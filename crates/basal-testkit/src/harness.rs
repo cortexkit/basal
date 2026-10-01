@@ -102,6 +102,9 @@ impl Point {
     }
 }
 
+/// Something a test does at a boundary instead of crashing.
+pub type Action = Box<dyn Fn(&str, &Boundary) + Send + Sync>;
+
 /// Records every boundary passed, and crashes (or runs an action) at one.
 #[derive(Default)]
 pub struct Probe {
@@ -110,7 +113,7 @@ pub struct Probe {
     pub target: Option<Point>,
     pub fired: AtomicBool,
     /// Instead of crashing, run this at the target and continue.
-    pub action: Option<Box<dyn Fn(&str, &Boundary) + Send + Sync>>,
+    pub action: Option<Action>,
 }
 
 impl Probe {

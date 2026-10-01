@@ -515,6 +515,22 @@ pub fn unknown_positions(conn: &Connection, run_id: &str) -> Result<Vec<u64>> {
         .collect()
 }
 
+/// Positions the host accepted as long-running that have no released
+/// outcome yet.
+pub fn accepted_positions(conn: &Connection, run_id: &str) -> Result<Vec<u64>> {
+    let mut stmt = conn.prepare(
+        "SELECT position FROM journal WHERE run_id = ?1 AND dispatch = 'accepted' \
+         AND settlement IS NULL ORDER BY position",
+    )?;
+    let positions = stmt
+        .query_map([run_id], |r| r.get::<_, i64>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    positions
+        .into_iter()
+        .map(|p| to_u64(p, "position"))
+        .collect()
+}
+
 /// Positions with an outcome waiting in the mailbox.
 pub fn mailbox_positions(conn: &Connection, run_id: &str) -> Result<Vec<u64>> {
     let mut stmt = conn.prepare("SELECT position FROM mailbox WHERE run_id = ?1 ORDER BY seq")?;

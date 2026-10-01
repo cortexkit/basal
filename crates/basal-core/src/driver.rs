@@ -636,16 +636,13 @@ impl Activation<'_> {
                 self.at(Boundary::Delivered { position })?;
                 return Ok(Flow::Continue);
             }
-            let rows = self.rt.store().read(|c| journal::rows(c, &run_id))?;
-            let long: Vec<u64> = rows
-                .iter()
-                .filter(|r| {
-                    r.outcome.is_none()
-                        && r.dispatch == DispatchState::Accepted
-                        && awaiting.contains(&r.position)
-                        && !self.long_reported.contains(&r.position)
-                })
-                .map(|r| r.position)
+            let accepted = self
+                .rt
+                .store()
+                .read(|c| journal::accepted_positions(c, &run_id))?;
+            let long: Vec<u64> = accepted
+                .into_iter()
+                .filter(|p| awaiting.contains(p) && !self.long_reported.contains(p))
                 .collect();
             if !long.is_empty() {
                 self.long_reported.extend(long.iter().copied());
