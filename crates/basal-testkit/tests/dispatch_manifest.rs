@@ -198,10 +198,22 @@ fn install_refuses_shell_capable_ops_listed_by_marker_or_denylist() {
             shell_capable: false,
         },
     );
+    // An op only the catalog marks shell-capable: the denylist does not
+    // name it, so the marker alone must refuse it.
+    world.catalog.set_op(
+        "mock",
+        "runner",
+        OpDecl {
+            kind: Some(OpKind::Mutate),
+            cause_echo: false,
+            shell_capable: true,
+        },
+    );
     let rt = runtime(&world);
-    let marked = manifest_with(|m| m["ops"] = json!([{"module": "aft", "op": "bash"}]));
+    let marked = manifest_with(|m| m["ops"] = json!([{"module": "mock", "op": "runner"}]));
     let denylisted = manifest_with(|m| m["ops"] = json!([{"module": "basal", "op": "codemode"}]));
-    for m in [marked, denylisted] {
+    let both = manifest_with(|m| m["ops"] = json!([{"module": "aft", "op": "bash"}]));
+    for m in [marked, denylisted, both] {
         assert!(
             matches!(
                 install(&rt, &m, true),

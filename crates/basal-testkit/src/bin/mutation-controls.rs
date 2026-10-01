@@ -1486,8 +1486,9 @@ fn main() -> ExitCode {
     // `--journal` selects the journal and runtime controls (basal-core,
     // driven through basal-testkit's tests); the default is the worker's.
     let mut args: Vec<String> = std::env::args().skip(1).collect();
-    // `--dispatch` selects manifests, authorization and the dispatch
-    // ledgers (basal-core too).
+    // `--dispatch` selects the manifest, authorization, audit, token, kv,
+    // slot, deadline, rate-limit, disable and per-run limit controls, also
+    // in basal-core.
     let journal = args.first().is_some_and(|a| a == "--journal");
     let dispatch = args.first().is_some_and(|a| a == "--dispatch");
     if journal || dispatch {

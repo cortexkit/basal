@@ -781,9 +781,9 @@ impl Activation<'_> {
         }
     }
 
-    /// The run's host-call and journal-size limits. Passing either fails the
-    /// run before anything about the call is written, so the failure
-    /// replays the same way (it never does: the run is over).
+    /// Checks the run's host-call and journal-size limits. Passing either
+    /// fails the run before anything about the call is written, refusal
+    /// included: a refusal would itself add a journal row.
     fn check_run_limits(
         &mut self,
         call: &HostCall,
@@ -859,7 +859,8 @@ impl Activation<'_> {
         Ok(())
     }
 
-    /// A call refused before anything else about it was decided.
+    /// Journals a call refused by a check that needs no store (argument
+    /// size, valid JSON, the manifest), in its own transaction.
     fn refuse(&mut self, call: &HostCall, flow_id: &str, refusal: &Refusal) -> Result<Flow> {
         self.rt
             .store()

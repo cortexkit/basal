@@ -1,0 +1,296 @@
+[
+  {
+    "applied_evidence": "crates/basal-core/src/manifest.rs; during:  1 file changed, 2 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test manifest_refuses_unknown_fields ... FAILED\nthread 'manifest_refuses_unknown_fields' (183863324) panicked at crates/basal-testkit/tests/dispatch_manifest.rs:98:22:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s",
+    "control": "manifest accepts unknown fields",
+    "expected_red": "manifest_refuses_unknown_fields",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/manifest.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test trigger_needs_exactly_one_kind ... FAILED\nthread 'trigger_needs_exactly_one_kind' (183869546) panicked at crates/basal-testkit/tests/dispatch_manifest.rs:115:5:\n  left: Ok(Manifest { format: 1, id: \"flow-test\", version: 1, purpose: \"Exercise the runtime against the mock host.\", trigger: Trigger { events: Some([EventRef { module: \"plexus\", name: \"pull_request_review\", version: 1 }]), schedule:",
+    "control": "manifest accepts both trigger kinds",
+    "expected_red": "trigger_needs_exactly_one_kind",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/install.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test install_refuses_unknown_events_and_versions ... FAILED\nthread 'install_refuses_unknown_events_and_versions' (183873454) panicked at crates/basal-testkit/tests/dispatch_manifest.rs:156:9:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.17s",
+    "control": "install accepts undeclared events and versions",
+    "expected_red": "install_refuses_unknown_events_and_versions",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/install.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test install_refuses_unknown_and_unmarked_ops ... FAILED\nthread 'install_refuses_unknown_and_unmarked_ops' (183876780) panicked at crates/basal-testkit/tests/dispatch_manifest.rs:176:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.10s",
+    "control": "install accepts ops missing from the catalog",
+    "expected_red": "install_refuses_unknown_and_unmarked_ops",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/install.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test install_refuses_unknown_and_unmarked_ops ... FAILED\nthread 'install_refuses_unknown_and_unmarked_ops' (183880155) panicked at crates/basal-testkit/tests/dispatch_manifest.rs:181:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 1.82s",
+    "control": "install accepts ops with no query or mutate marker",
+    "expected_red": "install_refuses_unknown_and_unmarked_ops",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/install.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.22s",
+    "control": "install ignores the catalog's shell-capable marker",
+    "expected_red": "install_refuses_shell_capable_ops_listed_by_marker_or_denylist",
+    "outcome": "undefended"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/install.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test install_refuses_shell_capable_ops_listed_by_marker_or_denylist ... FAILED\nthread 'install_refuses_shell_capable_ops_listed_by_marker_or_denylist' (183885470) panicked at crates/basal-testkit/tests/dispatch_manifest.rs:205:9:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.26s",
+    "control": "install ignores the shell denylist",
+    "expected_red": "install_refuses_shell_capable_ops_listed_by_marker_or_denylist",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/install.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test install_refuses_unknown_agents ... FAILED\nthread 'install_refuses_unknown_agents' (183889356) panicked at crates/basal-testkit/tests/dispatch_manifest.rs:229:9:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.06s",
+    "control": "install accepts unknown agents",
+    "expected_red": "install_refuses_unknown_agents",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/install.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test loop_install_rule_needs_the_operator_override ... FAILED\nthread 'loop_install_rule_needs_the_operator_override' (183891710) panicked at crates/basal-testkit/tests/dispatch_manifest.rs:249:5:\n  left: Ok(Installed { flow_id: \"flow-test\", version: 1, code_hash: [223, 218, 16, 94, 218, 165, 82, 99, 48, 230, 72, 73, 227, 82, 156, 74, 29, 193, 153, 76, 24, 28, 77, 187, 172, 31, 170, 215, 35, 7, 23,",
+    "control": "loop install rule not applied",
+    "expected_red": "loop_install_rule_needs_the_operator_override",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/admission.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test new_version_applies_to_newly_admitted_triggers_only ... FAILED\nthread 'new_version_applies_to_newly_admitted_triggers_only' (183894218) panicked at crates/basal-testkit/tests/dispatch_manifest.rs:327:5:\n  left: Admitted { run_id: \"run-db16b21eb027d5de-2\" }\n right: NotApproved\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.37s",
+    "control": "admission does not require the approved version's exact code",
+    "expected_red": "new_version_applies_to_newly_admitted_triggers_only",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/authorize.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test unlisted_op_is_denied_journaled_and_catchable ... FAILED\nthread 'unlisted_op_is_denied_journaled_and_catchable' (183898117) panicked at crates/basal-testkit/tests/dispatch_authorization.rs:47:5:\n  left: Object {\"after\": Null, \"code\": Null}\n right: Object {\"after\": String(\"denied\"), \"code\": String(\"denied\")}\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7 filtered out; finish",
+    "control": "ops outside the manifest are dispatched",
+    "expected_red": "unlisted_op_is_denied_journaled_and_catchable",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/authorize.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test listed_op_on_the_denylist_is_refused_at_dispatch ... FAILED\nthread 'listed_op_on_the_denylist_is_refused_at_dispatch' (183902049) panicked at crates/basal-testkit/tests/dispatch_authorization.rs:180:5:\n  left: String(\"sent\")\n right: String(\"denied\")\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.61s",
+    "control": "shell denylist not checked at dispatch",
+    "expected_red": "listed_op_on_the_denylist_is_refused_at_dispatch",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/authorize.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test listed_op_marked_shell_capable_is_refused_at_dispatch ... FAILED\nthread 'listed_op_marked_shell_capable_is_refused_at_dispatch' (183910039) panicked at crates/basal-testkit/tests/dispatch_authorization.rs:148:5:\n  left: String(\"sent\")\n right: String(\"denied\")\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7 filtered out; finished in 1.30s",
+    "control": "catalog shell marker not checked at dispatch",
+    "expected_red": "listed_op_marked_shell_capable_is_refused_at_dispatch",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/driver.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test a_compromised_worker_cannot_issue_sh ... FAILED\nthread 'a_compromised_worker_cannot_issue_sh' (183914510) panicked at crates/basal-testkit/tests/dispatch_authorization.rs:234:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7 filtered out; finished in 1.71s",
+    "control": "the dispatcher does not refuse sh from the worker",
+    "expected_red": "a_compromised_worker_cannot_issue_sh",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/authorize.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test facts_sinks_and_model_calls_are_checked_against_the_manifest ... FAILED\nthread 'facts_sinks_and_model_calls_are_checked_against_the_manifest' (183917979) panicked at crates/basal-testkit/tests/dispatch_authorization.rs:279:5:\n  left: Object {\"digest\": String(\"ok\"), \"digest_above_cap\": String(\"denied\"), \"digest_other\": String(\"denied\"), \"facts\": String(\"ok\"), \"facts_other\": String(\"ok\"), \"fact",
+    "control": "facts of agents outside the manifest's targets are allowed",
+    "expected_red": "facts_sinks_and_model_calls_are_checked_against_the_manifest",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/authorize.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test facts_sinks_and_model_calls_are_checked_against_the_manifest ... FAILED\nthread 'facts_sinks_and_model_calls_are_checked_against_the_manifest' (183920601) panicked at crates/basal-testkit/tests/dispatch_authorization.rs:279:5:\n  left: Object {\"digest\": String(\"ok\"), \"digest_above_cap\": String(\"ok\"), \"digest_other\": String(\"denied\"), \"facts\": String(\"ok\"), \"facts_other\": String(\"denied\"), \"fact",
+    "control": "digest actions above the manifest's cap are allowed",
+    "expected_red": "facts_sinks_and_model_calls_are_checked_against_the_manifest",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/driver.rs; during:  1 file changed, 3 insertions(+), 10 deletions(-); after restore: empty git diff --stat",
+    "captured_output": "test every_cut_recovers_to_the_uncut_state ... FAILED\nthread 'every_cut_recovers_to_the_uncut_state' (183927800) panicked at crates/basal-testkit/tests/journal_cut.rs:129:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 25.15s",
+    "control": "audit row written outside the transaction that journals the call (cut harness)",
+    "expected_red": "every_cut_recovers_to_the_uncut_state",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/tokens.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test concurrent_llm_calls_cannot_spend_the_same_remainder ... FAILED\nthread 'concurrent_llm_calls_cannot_spend_the_same_remainder' (183942742) panicked at crates/basal-testkit/tests/dispatch_tokens.rs:78:5:\n  left: Array [String(\"ok\"), String(\"ok\")]\n right: Array [String(\"ok\"), String(\"token_cap\")]\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.93s",
+    "control": "token reservation ignores outstanding reservations",
+    "expected_red": "concurrent_llm_calls_cannot_spend_the_same_remainder",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/tokens.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test llm_call_over_the_cap_is_a_journaled_rejection ... FAILED\nthread 'llm_call_over_the_cap_is_a_journaled_rejection' (183945416) panicked at crates/basal-testkit/tests/dispatch_tokens.rs:112:5:\n  left: String(\"sent\")\n right: String(\"token_cap\")\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.73s",
+    "control": "a model call over the cap is dispatched",
+    "expected_red": "llm_call_over_the_cap_is_a_journaled_rejection",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/runtime.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test reissue_after_a_cut_sends_identical_bytes_under_the_same_send_id ... FAILED\nthread 'reissue_after_a_cut_sends_identical_bytes_under_the_same_send_id' (183947149) panicked at crates/basal-testkit/tests/dispatch_tokens.rs:145:9:\n  left: None\n right: Some(Bool(true))\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 3.72s",
+    "control": "a re-issued model call sends the script's bytes, not the journaled request",
+    "expected_red": "reissue_after_a_cut_sends_identical_bytes_under_the_same_send_id",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/tokens.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test reissue_after_a_cut_sends_identical_bytes_under_the_same_send_id ... FAILED\nthread 'reissue_after_a_cut_sends_identical_bytes_under_the_same_send_id' (183949704) panicked at crates/basal-testkit/tests/dispatch_tokens.rs:144:9:\n  left: [false]\n right: [true]\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 2.37s",
+    "control": "requested output not clamped to the manifest's ceiling",
+    "expected_red": "reissue_after_a_cut_sends_identical_bytes_under_the_same_send_id",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/tokens.rs; during:  1 file changed, 4 insertions(+), 2 deletions(-); after restore: empty git diff --stat",
+    "captured_output": "test duplicate_usage_report_is_applied_once ... FAILED\nthread 'duplicate_usage_report_is_applied_once' (183953376) panicked at crates/basal-testkit/tests/dispatch_tokens.rs:208:47:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 1.46s",
+    "control": "usage applied again for a settled send id",
+    "expected_red": "duplicate_usage_report_is_applied_once",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/tokens.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test usage_lands_in_the_reservation_window_across_suspension_and_rollover ... FAILED\nthread 'usage_lands_in_the_reservation_window_across_suspension_and_rollover' (183957534) panicked at crates/basal-testkit/tests/dispatch_tokens.rs:295:5:\n  left: (2454, 0, 0)\n right: (0, 300, 40)\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 1.15s",
+    "control": "usage settled in the current window instead of the reservation's",
+    "expected_red": "usage_lands_in_the_reservation_window_across_suspension_and_rollover",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/schema.rs; during:  1 file changed, 3 insertions(+); after restore: empty git diff --stat",
+    "captured_output": "test kv_writes_survive_a_later_failure_of_their_run ... FAILED\nthread 'kv_writes_survive_a_later_failure_of_their_run' (183960836) panicked at crates/basal-testkit/tests/dispatch_kv.rs:50:5:\n  left: Array [Null, Null, Null]\n right: Array [String(\"x\"), Number(1), Null]\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 1.19s",
+    "control": "kv writes roll back when their run fails",
+    "expected_red": "kv_writes_survive_a_later_failure_of_their_run",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/kv.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test kv_caps_refuse_with_journaled_rejections ... FAILED\nthread 'kv_caps_refuse_with_journaled_rejections' (183963738) panicked at crates/basal-testkit/tests/dispatch_kv.rs:91:5:\n  left: Object {\"big_value\": String(\"kv_limit\"), \"c\": Null, \"first\": String(\"ok\"), \"long_key\": String(\"ok\"), \"over_total\": String(\"kv_limit\"), \"replace\": String(\"ok\"), \"second\": String(\"ok\")}\n right: Object {\"big_value\": ",
+    "control": "kv key size not capped",
+    "expected_red": "kv_caps_refuse_with_journaled_rejections",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/kv.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test kv_caps_refuse_with_journaled_rejections ... FAILED\nthread 'kv_caps_refuse_with_journaled_rejections' (183967824) panicked at crates/basal-testkit/tests/dispatch_kv.rs:91:5:\n  left: Object {\"big_value\": String(\"ok\"), \"c\": Null, \"first\": String(\"ok\"), \"long_key\": String(\"kv_limit\"), \"over_total\": String(\"kv_limit\"), \"replace\": String(\"ok\"), \"second\": String(\"ok\")}\n right: Object {\"big_value\": ",
+    "control": "kv value size not capped",
+    "expected_red": "kv_caps_refuse_with_journaled_rejections",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/kv.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test kv_caps_refuse_with_journaled_rejections ... FAILED\nthread 'kv_caps_refuse_with_journaled_rejections' (183969959) panicked at crates/basal-testkit/tests/dispatch_kv.rs:91:5:\n  left: Object {\"big_value\": String(\"kv_limit\"), \"c\": String(\"zzzzzzzzzzzzzz\"), \"first\": String(\"ok\"), \"long_key\": String(\"kv_limit\"), \"over_total\": String(\"ok\"), \"replace\": String(\"ok\"), \"second\": String(\"ok\")}\n right: O",
+    "control": "kv total bytes per flow not capped",
+    "expected_red": "kv_caps_refuse_with_journaled_rejections",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/driver.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test kv_write_is_applied_once_across_every_cut ... FAILED\nthread 'kv_write_is_applied_once_across_every_cut' (183978922) panicked at crates/basal-testkit/tests/dispatch_kv.rs:158:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 28.06s",
+    "control": "recovery applies a committed kv write again",
+    "expected_red": "kv_write_is_applied_once_across_every_cut",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/runs.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test second_run_waits_for_the_first_even_while_suspended ... FAILED\nthread 'second_run_waits_for_the_first_even_while_suspended' (183994518) panicked at crates/basal-testkit/tests/dispatch_slots.rs:54:5:\n  left: Suspended { awaited: [0] }\n right: Waiting { holder: \"run-9ecef77b01d1fbdc-1\" }\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 1.00s",
+    "control": "a run starts while an earlier run of its flow holds the slot",
+    "expected_red": "second_run_waits_for_the_first_even_while_suspended",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/driver.rs, crates/basal-core/src/runs.rs; during:  2 files changed, 6 insertions(+), 2 deletions(-); after restore: empty git diff --stat",
+    "captured_output": "test deadline_fails_a_stuck_run_and_frees_the_slot ... FAILED\nthread 'deadline_fails_a_stuck_run_and_frees_the_slot' (183999732) panicked at crates/basal-testkit/tests/dispatch_slots.rs:124:5:\n  left: Some(\"still waiting on [0] when the activation ran out of time\")\n right: Some(\"the run passed its wall-clock deadline\")\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out;",
+    "control": "run deadline never enforced (activation and expiry)",
+    "expected_red": "deadline_fails_a_stuck_run_and_frees_the_slot",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/runs.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test deadline_fails_a_suspended_run_and_frees_the_slot ... FAILED\nthread 'deadline_fails_a_suspended_run_and_frees_the_slot' (184008410) panicked at crates/basal-testkit/tests/dispatch_slots.rs:166:5:\n  left: []\n right: [\"run-8aa9da50f42e3b2c-1\"]\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.56s",
+    "control": "suspended runs never expire",
+    "expected_red": "deadline_fails_a_suspended_run_and_frees_the_slot",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/admission.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test run_rate_limit_and_auto_disable_after_k_saturated_windows ... FAILED\nthread 'run_rate_limit_and_auto_disable_after_k_saturated_windows' (184010691) panicked at crates/basal-testkit/tests/dispatch_limits.rs:67:5:\n  left: Admitted { run_id: \"run-878f04c277513524-3\" }\n right: RateLimited\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.33s",
+    "control": "admission ignores the run rate limit",
+    "expected_red": "run_rate_limit_and_auto_disable_after_k_saturated_windows",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/rate.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test run_rate_limit_and_auto_disable_after_k_saturated_windows ... FAILED\nthread 'run_rate_limit_and_auto_disable_after_k_saturated_windows' (184013031) panicked at crates/basal-testkit/tests/dispatch_limits.rs:77:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 2.90s",
+    "control": "sustained saturation never disables the flow",
+    "expected_red": "run_rate_limit_and_auto_disable_after_k_saturated_windows",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/rate.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test saturated_windows_that_are_not_consecutive_do_not_disable ... FAILED\nthread 'saturated_windows_that_are_not_consecutive_do_not_disable' (184019090) panicked at crates/basal-testkit/tests/dispatch_limits.rs:105:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 1.22s",
+    "control": "saturated windows counted without being consecutive",
+    "expected_red": "saturated_windows_that_are_not_consecutive_do_not_disable",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/admission.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test run_rate_limit_and_auto_disable_after_k_saturated_windows ... FAILED\nthread 'run_rate_limit_and_auto_disable_after_k_saturated_windows' (184028260) panicked at crates/basal-testkit/tests/dispatch_limits.rs:86:5:\n  left: Admitted { run_id: \"run-92a84e9955f810db-5\" }\n right: Disabled\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 1.37s",
+    "control": "admission ignores a disabled flow",
+    "expected_red": "run_rate_limit_and_auto_disable_after_k_saturated_windows",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/driver.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test dispatch_budget_refuses_beyond_the_window ... FAILED\nthread 'dispatch_budget_refuses_beyond_the_window' (184032643) panicked at crates/basal-testkit/tests/dispatch_limits.rs:131:5:\n  left: Array [String(\"ok\"), String(\"ok\"), String(\"ok\")]\n right: Array [String(\"ok\"), String(\"ok\"), String(\"dispatch_budget\")]\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finishe",
+    "control": "dispatch budget not checked",
+    "expected_red": "dispatch_budget_refuses_beyond_the_window",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/driver.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test disable_fences_a_resumed_run_while_in_flight_calls_settle ... FAILED\nthread 'disable_fences_a_resumed_run_while_in_flight_calls_settle' (184035496) panicked at crates/basal-testkit/tests/dispatch_limits.rs:169:5:\n  left: Object {\"clock\": Bool(true), \"codes\": Array [String(\"sent\"), String(\"flow_disabled\")], \"first\": Bool(true)}\n right: Object {\"clock\": Bool(true), \"codes\": Array [String(\"flow_",
+    "control": "a disabled flow's resumed run still dispatches",
+    "expected_red": "disable_fences_a_resumed_run_while_in_flight_calls_settle",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/install.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test only_the_operator_or_the_owning_agent_disables ... FAILED\nthread 'only_the_operator_or_the_owning_agent_disables' (184059565) panicked at crates/basal-testkit/tests/dispatch_limits.rs:192:5:\n  left: Ok(true)\n right: Err(NotOwner { flow_id: \"flow-test\", agent: \"SYNAPSE\" })\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.14s",
+    "control": "any agent can disable any flow",
+    "expected_red": "only_the_operator_or_the_owning_agent_disables",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/driver.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test per_run_call_limit_fails_the_run ... FAILED\nthread 'per_run_call_limit_fails_the_run' (184062860) panicked at crates/basal-testkit/tests/dispatch_limits.rs:230:5:\n  left: Succeeded\n right: Failed\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.20s",
+    "control": "per-run host-call limit not checked",
+    "expected_red": "per_run_call_limit_fails_the_run",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/driver.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test per_run_journal_bytes_limit_fails_the_run ... FAILED\nthread 'per_run_journal_bytes_limit_fails_the_run' (184066396) panicked at crates/basal-testkit/tests/dispatch_limits.rs:246:5:\n  left: Succeeded\n right: Failed\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.33s",
+    "control": "per-run journal byte limit not checked",
+    "expected_red": "per_run_journal_bytes_limit_fails_the_run",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/driver.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test argument_over_the_cap_is_refused_before_it_is_parsed ... FAILED\nthread 'argument_over_the_cap_is_refused_before_it_is_parsed' (184069263) panicked at crates/basal-testkit/tests/dispatch_limits.rs:267:5:\n  left: String(\"sent\")\n right: String(\"too_large\")\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.26s",
+    "control": "argument byte cap not checked before parsing",
+    "expected_red": "argument_over_the_cap_is_refused_before_it_is_parsed",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/runtime.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test result_over_the_cap_is_recorded_as_a_rejection ... FAILED\nthread 'result_over_the_cap_is_recorded_as_a_rejection' (184072297) panicked at crates/basal-testkit/tests/dispatch_limits.rs:285:5:\n  left: String(\"returned\")\n right: String(\"result_too_large\")\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.15s",
+    "control": "result byte cap not checked",
+    "expected_red": "result_over_the_cap_is_recorded_as_a_rejection",
+    "outcome": "reddened"
+  }
+]

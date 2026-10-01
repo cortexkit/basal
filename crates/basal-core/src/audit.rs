@@ -17,7 +17,9 @@ use crate::model::to_u64;
 /// The outcome recorded for a call that was allowed.
 pub const ALLOWED: &str = "allowed";
 
-/// Writes the audit row of the call at (run, position).
+/// Writes the audit row of the call at (run, position). One argument per
+/// column, so every call site names each value it records.
+#[allow(clippy::too_many_arguments)]
 pub fn record(
     tx: &Transaction,
     flow_id: &str,

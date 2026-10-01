@@ -365,7 +365,7 @@ pub fn approve(
     Ok(())
 }
 
-/// The approved version of a flow, as admission snapshots it.
+/// The approved version of a flow: what admission copies into each new run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Approved {
     pub version: u32,
@@ -408,13 +408,14 @@ pub struct FlowRecord {
 }
 
 pub fn flow(conn: &Connection, flow_id: &str) -> Result<Option<FlowRecord>> {
-    let row: Option<(
+    type Row = (
         Option<String>,
         String,
         Option<i64>,
         Option<String>,
         Option<String>,
-    )> = conn
+    );
+    let row: Option<Row> = conn
         .query_row(
             "SELECT owner, state, approved_version, disabled_by, disabled_reason FROM flows \
              WHERE flow_id = ?1",
@@ -473,6 +474,18 @@ impl Actor {
             Self::Runtime => "runtime".to_owned(),
         }
     }
+}
+
+/// A notification for a flow's owner, waiting in the outbox.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Notification {
+    /// `flow.disabled` or `flow.auto_disabled`.
+    pub kind: String,
+    pub flow_id: String,
+    /// The flow's owner when it was written; none if it had none.
+    pub recipient: Option<String>,
+    /// JSON with the details.
+    pub body: String,
 }
 
 /// Writes a notification for the flow's owner.
@@ -556,8 +569,9 @@ fn decide<T>(
 }
 
 impl Runtime {
-    /// Validates and records a flow version (design section 6, up to but
-    /// not including the consent card and the dry run).
+    /// Validates and records a flow version. The steps that come between
+    /// this and approval (the dry run and the operator's consent card) are
+    /// not part of it.
     pub fn install(
         &self,
         request: &InstallRequest,
@@ -595,7 +609,8 @@ impl Runtime {
         })
     }
 
-    /// Disables a flow at once: the operator any flow, an agent its own.
+    /// Disables a flow at once. The operator may disable any flow; an agent
+    /// only a flow it owns.
     pub fn disable_flow(
         &self,
         flow_id: &str,
@@ -604,7 +619,8 @@ impl Runtime {
     ) -> std::result::Result<bool, InstallError> {
         let now = self.config().clock.now_ms();
         let changed = decide(self, |tx| disable(tx, flow_id, actor, reason, now))?;
-        // Blocked activations re-check what they wait for.
+        // Wake activations waiting for outcomes, so their next call is
+        // checked against the flow's new state without delay.
         self.shared.signal.bump();
         Ok(changed)
     }
@@ -618,16 +634,22 @@ impl Runtime {
         self.store().read(|c| flow(c, flow_id))
     }
 
-    /// Owner notifications not yet delivered, as (kind, flow, recipient,
-    /// body).
-    pub fn outbox(&self) -> Result<Vec<(String, String, Option<String>, String)>> {
+    /// Owner notifications not yet delivered, oldest first.
+    pub fn outbox(&self) -> Result<Vec<Notification>> {
         self.store().read(|c| {
             let mut stmt = c.prepare(
                 "SELECT kind, flow_id, recipient, body FROM outbox \
                  WHERE delivered_at IS NULL ORDER BY seq",
             )?;
             let rows = stmt
-                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+                .query_map([], |r| {
+                    Ok(Notification {
+                        kind: r.get(0)?,
+                        flow_id: r.get(1)?,
+                        recipient: r.get(2)?,
+                        body: r.get(3)?,
+                    })
+                })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             Ok(rows)
         })

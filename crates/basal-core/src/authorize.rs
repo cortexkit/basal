@@ -59,14 +59,15 @@ pub mod codes {
     pub const KV_LIMIT: &str = "kv_limit";
 }
 
-/// The module ops a flow never reaches, listed or not: anything that runs
-/// commands. Matched without regard to ASCII case, so a module or op name
-/// spelt differently cannot slip past.
+/// The module ops a flow may never call, even when its manifest lists
+/// them: anything that runs commands. Matched without regard to ASCII case,
+/// so a module or op name spelt differently cannot slip past.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShellDenylist(pub Vec<OpRef>);
 
 impl Default for ShellDenylist {
-    /// AFT's `bash` and codemode itself.
+    /// AFT's `bash` tool (a shell) and basal's own `codemode`, which runs
+    /// scripts with a shell.
     fn default() -> Self {
         Self(vec![
             OpRef {
@@ -114,7 +115,7 @@ pub fn shell_or_unknown(
     }
 }
 
-fn agent_arg<'a>(args: &'a Value, primitive: Primitive) -> Result<&'a str, Refusal> {
+fn agent_arg(args: &Value, primitive: Primitive) -> Result<&str, Refusal> {
     args.get("agent").and_then(Value::as_str).ok_or_else(|| {
         Refusal::new(
             codes::INVALID_ARGUMENTS,

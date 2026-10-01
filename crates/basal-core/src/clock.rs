@@ -1,5 +1,5 @@
-//! The clock basal's own limits read: token windows, rate windows and run
-//! deadlines.
+//! The time basal's own limits are measured on: token windows, rate
+//! windows and run deadlines.
 //!
 //! It is separate from the clock a script reads (`Date.now()`, which comes
 //! from the host and is journaled): these decisions are the runtime's, and

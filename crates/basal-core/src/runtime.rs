@@ -90,7 +90,7 @@ pub struct Config {
     pub auto_resume: bool,
     /// The clock for token windows, rate windows and run deadlines.
     pub clock: Clock,
-    /// Ops no flow reaches, listed or not.
+    /// Module ops no flow may call, even when its manifest lists them.
     pub shell_denylist: ShellDenylist,
     pub limits: RunLimits,
     pub kv: KvLimits,
@@ -534,8 +534,8 @@ impl Runtime {
             match run.state {
                 RunState::Pending => {
                     if let ActivationEnd::Waiting { .. } = self.resume(run_id)? {
-                        // Another run of the flow holds the slot; anything
-                        // that ends it bumps the signal.
+                        // An earlier run of the flow holds the slot. The
+                        // signal is bumped when that run ends.
                         self.shared
                             .signal
                             .wait(seen, (deadline - now).min(Duration::from_millis(50)));

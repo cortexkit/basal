@@ -317,7 +317,8 @@ pub struct Run {
     pub admit_seq: Option<i64>,
     /// The run's wall-clock budget, from its manifest or the default.
     pub deadline_ms: Option<i64>,
-    /// When the run fails for running too long, fixed when it first starts.
+    /// The time (on the runtime's clock) after which the run fails for
+    /// running too long, set when the run is first claimed.
     pub deadline_at: Option<i64>,
 }
 

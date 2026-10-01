@@ -78,8 +78,12 @@ fn run_rate_limit_and_auto_disable_after_k_saturated_windows() {
     assert_eq!(flow.disabled_by.as_deref(), Some("runtime"));
     let outbox = rt.outbox().expect("outbox");
     assert_eq!(outbox.len(), 1, "{outbox:?}");
-    assert_eq!(outbox[0].0, "flow.auto_disabled");
-    assert_eq!(outbox[0].2.as_deref(), Some("ALF"), "the owner is told");
+    assert_eq!(outbox[0].kind, "flow.auto_disabled");
+    assert_eq!(
+        outbox[0].recipient.as_deref(),
+        Some("ALF"),
+        "the owner is told"
+    );
 
     // Disabled: nothing is admitted, in this window or any later one.
     clock.advance(60_000);
@@ -181,7 +185,7 @@ fn disable_fences_a_resumed_run_while_in_flight_calls_settle() {
     ));
     let outbox = rt.outbox().expect("outbox");
     assert_eq!(outbox.len(), 1);
-    assert_eq!(outbox[0].0, "flow.disabled");
+    assert_eq!(outbox[0].kind, "flow.disabled");
 }
 
 #[test]

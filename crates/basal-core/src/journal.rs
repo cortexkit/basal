@@ -458,7 +458,8 @@ pub fn accept_outcome(
         return Ok(not_woken(CompletionAck::Quarantined));
     }
     // The call's outcome is known now, whether or not its run still wants
-    // it, so a model call's reservation is replaced by what it used, once.
+    // it (a cancelled run's model call still spent tokens), so a model
+    // call's token reservation is replaced by its reported usage, once.
     crate::tokens::settle_outcome(tx, run_id, position, outcome, now_ms())?;
     if state == "cancelled" {
         quarantine(tx, run_id, p, handle, outcome, &hash, "run_cancelled")?;

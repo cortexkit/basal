@@ -22,7 +22,9 @@
 //! Windows are fixed intervals anchored at the Unix epoch in UTC: a call's
 //! window is `floor(now / length)`. That makes "the window a reservation
 //! was made in" one number that survives restarts, and a `"1d"` window a
-//! UTC calendar day. The reasoning is in the dispatch findings note.
+//! UTC calendar day. A rolling window would have no single window to
+//! attribute usage to, and windows anchored at approval would reset with
+//! every new version.
 
 use basal_host::HostOutcome;
 use basal_proto::{JsonText, Primitive, Settlement};
