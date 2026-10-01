@@ -471,6 +471,78 @@ fn drain_stops_admission_until_resumed() {
 }
 
 #[test]
+fn an_operator_disable_takes_over_the_owners_disable() {
+    let f = owned_flow("ops-takeover");
+    let owner = agent(OWNER);
+    let flow = json!({ "flow_id": FLOW });
+    call(
+        &f,
+        &owner,
+        "flow.disable",
+        json!({ "flow_id": FLOW, "reason": "pause" }),
+    )
+    .expect("the owner disables");
+    let notified = f.module.rt.outbox().expect("outbox").len();
+    // The flow is already disabled, but the operator's disable still lands:
+    // it now stands as the operator's.
+    let reply = call(
+        &f,
+        &Caller::Operator,
+        "flow.disable",
+        json!({ "flow_id": FLOW, "reason": "stop" }),
+    )
+    .expect("the operator disables");
+    assert_eq!(reply["changed"], true);
+    let record = f.module.rt.flow(FLOW).expect("flow").expect("exists");
+    assert_eq!(record.disabled_by.as_deref(), Some("operator:operator"));
+    assert_eq!(record.disabled_reason.as_deref(), Some("stop"));
+    assert_eq!(
+        f.module.rt.outbox().expect("outbox").len(),
+        notified + 1,
+        "the owner is told"
+    );
+    // So the owner can no longer undo it.
+    let r = call(&f, &owner, "flow.enable", flow.clone());
+    assert!(refused(&r), "{r:?}");
+    assert!(
+        !f.module
+            .rt
+            .flow(FLOW)
+            .expect("flow")
+            .expect("exists")
+            .enabled
+    );
+    // An agent's disable of a disabled flow changes nothing.
+    let again = call(
+        &f,
+        &owner,
+        "flow.disable",
+        json!({ "flow_id": FLOW, "reason": "mine" }),
+    )
+    .expect("no-op");
+    assert_eq!(again["changed"], false);
+    assert_eq!(
+        f.module
+            .rt
+            .flow(FLOW)
+            .expect("flow")
+            .expect("exists")
+            .disabled_by
+            .as_deref(),
+        Some("operator:operator")
+    );
+    call(&f, &Caller::Operator, "flow.enable", flow).expect("the operator enables");
+    assert!(
+        f.module
+            .rt
+            .flow(FLOW)
+            .expect("flow")
+            .expect("exists")
+            .enabled
+    );
+}
+
+#[test]
 fn the_owner_disables_and_enables_its_flow() {
     let f = owned_flow("ops-disable");
     let reply = call(

@@ -511,6 +511,10 @@ pub fn is_disabled(conn: &Connection, flow_id: &str) -> Result<bool> {
 /// saturation) is recorded in `flows.disabled_by`.
 pub const RUNTIME_ACTOR: &str = "runtime";
 
+/// How every operator disable begins in `flows.disabled_by`
+/// (`operator:<who>`).
+pub const OPERATOR_ACTOR_PREFIX: &str = "operator:";
+
 /// Who disables a flow.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Actor {
@@ -525,7 +529,7 @@ pub enum Actor {
 impl Actor {
     fn label(&self) -> String {
         match self {
-            Self::Operator(who) => format!("operator:{who}"),
+            Self::Operator(who) => format!("{OPERATOR_ACTOR_PREFIX}{who}"),
             Self::Agent(who) => format!("agent:{who}"),
             Self::Runtime => RUNTIME_ACTOR.to_owned(),
         }
@@ -568,7 +572,8 @@ pub fn notify_owner(
 }
 
 /// Disables a flow and tells its owner. Returns false when it was already
-/// disabled (nothing is written then).
+/// disabled (nothing is written then), with one exception: the operator
+/// takes over a disable made by anyone else (see below).
 pub fn disable(
     tx: &Transaction,
     flow_id: &str,
@@ -593,11 +598,36 @@ pub fn disable(
         params![flow_id, actor.label(), reason, now_ms],
     )?;
     if changed == 0 {
-        return Ok(false);
+        // The flow is already disabled. Who disabled it decides who may
+        // enable it again, and an owner may undo its own disable; so the
+        // operator must be able to take over a disable the owner (or the
+        // runtime) made, or the operator could not stop a flow its owner
+        // had paused and would re-enable. The record moves to the
+        // operator; the schedule is already stopped. Agent and runtime
+        // disables of a disabled flow change nothing.
+        let takes_over = matches!(actor, Actor::Operator(_))
+            && !record.enabled
+            && !record
+                .disabled_by
+                .as_deref()
+                .is_some_and(|by| by.starts_with(OPERATOR_ACTOR_PREFIX));
+        if !takes_over {
+            return Ok(false);
+        }
+        let taken = tx.execute(
+            "UPDATE flows SET disabled_by = ?2, disabled_reason = ?3, disabled_at = ?4 \
+             WHERE flow_id = ?1 AND state = 'disabled'",
+            params![flow_id, actor.label(), reason, now_ms],
+        )?;
+        if taken == 0 {
+            return Ok(false);
+        }
+    } else {
+        // The flow's schedule stops in the same commit: due times passing
+        // while it is disabled never fire, and fires planned but not
+        // admitted go.
+        schedule::table::disable(tx, flow_id, timestamp(now_ms)?)?;
     }
-    // The flow's schedule stops in the same commit: due times passing while
-    // it is disabled never fire, and fires planned but not admitted go.
-    schedule::table::disable(tx, flow_id, timestamp(now_ms)?)?;
     let kind = match actor {
         Actor::Runtime => "flow.auto_disabled",
         _ => "flow.disabled",

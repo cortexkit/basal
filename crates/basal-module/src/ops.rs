@@ -635,7 +635,7 @@ impl Module {
 /// The kind of actor a recorded `disabled_by` names: `operator`, `auto`
 /// for the runtime's own disable, or the agent label as recorded.
 fn disabled_kind(by: &str) -> &str {
-    if by.starts_with("operator:") {
+    if by.starts_with(basal_core::install::OPERATOR_ACTOR_PREFIX) {
         "operator"
     } else if by == basal_core::install::RUNTIME_ACTOR {
         "auto"

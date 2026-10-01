@@ -1670,6 +1670,17 @@ const MODULE_CONTROLS: &[Control] = &[
         test: "authorization_matrix",
     },
     Control {
+        label: "an operator disable of a flow the owner disabled changes nothing",
+        edits: &[(
+            INSTALL,
+            "let takes_over = matches!(actor, Actor::Operator(_))",
+            "let takes_over = false && matches!(actor, Actor::Operator(_))",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("ops"),
+        test: "an_operator_disable_takes_over_the_owners_disable",
+    },
+    Control {
         label: "health does not say who disabled a flow",
         edits: &[(M_OPS, "\"by\": disabled_kind(by),", "\"by\": by,")],
         also_restore: NO_EXTRA,
