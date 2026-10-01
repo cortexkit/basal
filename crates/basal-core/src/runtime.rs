@@ -95,6 +95,9 @@ pub struct Config {
     pub limits: RunLimits,
     pub kv: KvLimits,
     pub rate: RateLimits,
+    /// The scheduler's settings, used when an approval plans the fires a
+    /// replaced schedule owed, and by [`Runtime::scheduler`].
+    pub schedule: crate::schedule::SchedulerConfig,
 }
 
 impl Default for Config {
@@ -112,6 +115,7 @@ impl Default for Config {
             limits: RunLimits::default(),
             kv: KvLimits::default(),
             rate: RateLimits::default(),
+            schedule: crate::schedule::SchedulerConfig::default(),
         }
     }
 }
@@ -340,19 +344,24 @@ impl Runtime {
     ) -> Result<Admission> {
         let store_id = self.shared.store.store_id().to_owned();
         let ctx = self.admit_context()?;
-        self.shared.store.write(|tx| {
-            let Some(approved) = crate::install::approved(tx, flow_id)? else {
-                return Ok(Admission::NotApproved);
-            };
-            let spec = TriggerSpec {
-                flow_id: flow_id.to_owned(),
-                trigger_id: trigger_id.to_owned(),
-                trigger,
-                script: approved.script,
-                manifest: approved.manifest,
-            };
-            admission::admit(tx, &store_id, &spec, &ctx)
-        })
+        self.shared
+            .store
+            .write(|tx| admission::admit_current(tx, &store_id, flow_id, trigger_id, trigger, &ctx))
+    }
+
+    /// A scheduler over this runtime's store that reads this runtime's
+    /// clock and admits fires under its admission limits.
+    pub fn scheduler(&self) -> Result<crate::schedule::Scheduler> {
+        let ctx = self.admit_context()?;
+        Ok(crate::schedule::Scheduler::new(
+            self.shared.store.clone(),
+            Arc::new(self.config.clock.clone()),
+            self.config.schedule.clone(),
+        )
+        .with_limits(crate::schedule::AdmitLimits {
+            rate: ctx.rate,
+            default_deadline_ms: ctx.default_deadline_ms,
+        }))
     }
 
     pub fn retrigger(&self, run_id: &str) -> Result<Admission> {

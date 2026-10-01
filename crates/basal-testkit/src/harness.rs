@@ -87,7 +87,7 @@ pub fn test_manifest() -> Value {
         "id": TEST_FLOW,
         "version": 1,
         "purpose": "Exercise the runtime against the mock host.",
-        "trigger": { "schedule": { "every": "1m" } },
+        "trigger": { "events": [ { "module": "plexus", "name": "pull_request_review", "version": 1 } ] },
         "sinks": [ { "agent": "ALF", "digest_max": "wake" } ],
         "status": [ "ALF" ],
         "ops": [

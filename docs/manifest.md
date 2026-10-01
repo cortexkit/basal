@@ -35,7 +35,17 @@ A duration is a positive whole number followed by one unit: `s`, `m`, `h` or `d`
 ### `trigger`
 
 - `{ "events": [ { "module": "plexus", "name": "pull_request_review", "version": 1 }, ... ] }`: at least one event. Install refuses an event or version the catalog does not declare, and an event whose `resolve_op` is not a query.
-- `{ "schedule": { ... } }`: the schedule spec (cron with an optional named time zone, or an interval, and the `missed` policy, design section 5). Its exact type belongs to the scheduler; until that is wired in, any JSON object is accepted here and anything else is refused (`manifest::validate_schedule`).
+- `{ "schedule": { ... } }`: the scheduler's `ScheduleSpec` (`crates/basal-core/src/schedule/spec.rs`), decoded with unknown fields refused and compiled by `schedule::validate` when the manifest is checked. Exactly one of `cron` and `interval`:
+
+  | Field | Type | Default | Limits and meaning |
+  |---|---|---|---|
+  | `cron` | string | | A five-field pattern (minute granularity; no seconds or years field) that matches at least one date. |
+  | `tz` | string | `UTC` | With `cron` only: a canonical IANA zone name, spelt exactly (`Europe/Madrid`). A time in a spring-forward gap fires once at the transition; a time in a fall-back overlap fires once, at its first occurrence. |
+  | `interval` | duration | | `"60s"` to `"365d"`; due times are the approval instant (to the second) plus whole periods. |
+  | `missed` | `"once"`, `"skip"` or `"each"` | `"once"` | What happens to due times that passed while basal was not ticking (asleep, stopped, or more than the grace period late): one catch-up fire, none, or one each. |
+  | `each_cap` | integer | 3 | With `each` only: 1 to 10; the newest missed due times are kept. |
+
+  The scheduler's findings (`docs/findings/slice-4-scheduler.md`) describe due times, catch-up payloads and trigger ids. A scheduled fire, like every trigger, runs the flow's version approved and enabled when it is admitted.
 - Both, or neither, is refused.
 
 ### Sink grant

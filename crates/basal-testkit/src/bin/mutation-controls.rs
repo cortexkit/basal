@@ -9,13 +9,14 @@
 //! committed or staged:
 //!
 //! ```text
-//! cargo run -p basal-testkit --bin mutation-controls [-- [--journal|--dispatch] [--check] [<label filter>]]
+//! cargo run -p basal-testkit --bin mutation-controls [-- [--journal | --dispatch | --schedule] [--check] [<label filter>]]
 //! ```
 //!
-//! Without a flag it runs the worker engine's controls; with `--journal`,
-//! the journal, run state machine and driver controls in basal-core; with
-//! `--dispatch`, the manifest, authorization, audit, token, `kv`, slot,
-//! deadline, rate-limit, disable and per-run limit controls in basal-core.
+//! Without a suite flag it runs the worker engine's controls; with
+//! `--journal`, the journal, run state machine and driver controls in
+//! basal-core; with `--dispatch`, the manifest, authorization, audit, token,
+//! `kv`, slot, deadline, rate-limit, disable and per-run limit controls in
+//! basal-core; with `--schedule`, the scheduler's controls in basal-core.
 //! basal-core's tests live in basal-testkit. `--check` only verifies that every edit's
 //! text occurs exactly once in the current source.
 //!
@@ -25,9 +26,10 @@
 //! checks the tree is clean again before the next control. It never stashes
 //! and never restores from HEAD. Every temporary edit carries the marker
 //! `NON-VACUITY BREAK` so a break left behind by a crash is easy to find.
-//! Evidence is written to `docs/findings/slice-1-mutations.json` (worker)
-//! `docs/findings/slice-2-mutations.json` (journal) or
-//! `docs/findings/slice-3-mutations.json` (dispatch), beside the findings
+//! Evidence is written to `docs/findings/slice-1-mutations.json` (worker),
+//! `docs/findings/slice-2-mutations.json` (journal),
+//! `docs/findings/slice-3-mutations.json` (dispatch) or
+//! `docs/findings/slice-4-mutations.json` (scheduler), beside the findings
 //! notes in `docs/findings/`.
 
 use std::io::Read;
@@ -1303,6 +1305,426 @@ const DISPATCH_CONTROLS: &[Control] = &[
         target: Target::Testkit("dispatch_limits"),
         test: "result_over_the_cap_is_recorded_as_a_rejection",
     },
+    Control {
+        label: "manifest schedule not validated by the scheduler",
+        edits: &[(
+            MANIFEST,
+            "crate::schedule::validate(schedule)\n                    .map_err(|e| ManifestError::Schedule(e.to_string()))?;",
+            "let _ = schedule;",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_manifest"),
+        test: "schedule_triggers_are_typed_and_validated_by_the_scheduler",
+    },
+];
+
+const SCHED_SPEC: &str = "crates/basal-core/src/schedule/spec.rs";
+const SCHED_DUE: &str = "crates/basal-core/src/schedule/due.rs";
+const SCHED_TICK: &str = "crates/basal-core/src/schedule/tick.rs";
+const SCHED_TABLE: &str = "crates/basal-core/src/schedule/table.rs";
+
+/// The scheduler: each control disables one mechanism in basal-core's
+/// schedule module and runs the basal-testkit test named for it.
+const SCHEDULE_CONTROLS: &[Control] = &[
+    Control {
+        label: "a gap time fires at the compatible reading (shifted by the gap's length) instead of at the transition",
+        edits: &[(
+            SCHED_DUE,
+            "            tz.following(before_transition)\n                .next()\n                .map(|t| t.timestamp())",
+            "            ambiguous.compatible().ok()",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("schedule_tick"),
+        test: "spring_forward_gap_fires_once_at_the_first_valid_instant",
+    },
+    Control {
+        label: "an overlap time fires at its second occurrence",
+        edits: &[(
+            SCHED_DUE,
+            "AmbiguousOffset::Fold { .. } => ambiguous\n            .earlier()",
+            "AmbiguousOffset::Fold { .. } => ambiguous\n            .later()",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("schedule_tick"),
+        test: "fall_back_overlap_fires_once_at_the_first_occurrence",
+    },
+    Control {
+        label: "matches landing on an instant already due are not skipped",
+        edits: &[(
+            SCHED_DUE,
+            "        if at > after {\n            return Ok(Some(at));",
+            "        if at >= after {\n            return Ok(Some(at));",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("schedule_tick"),
+        test: "half_hourly_cron_collapses_the_gap_and_skips_the_repeated_pass",
+    },
+    Control {
+        label: "an interval's next due time counts from the tick, not the anchor",
+        edits: &[(
+            SCHED_DUE,
+            "let next = timestamp_ms(newest_ms + every);",
+            "let next = timestamp_ms(i128::from(now.as_millisecond()) + every);",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("schedule_tick"),
+        test: "interval_due_times_are_the_anchor_plus_whole_periods",
+    },
+    Control {
+        label: "once fires every kept missed due time instead of one catch-up",
+        edits: &[(
+            SCHED_TICK,
+            "MissedPolicy::Once => fires.push(fire(last_missed)),",
+            "MissedPolicy::Once => fires.extend(kept_missed.iter().map(|d| fire(*d))),",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("schedule_tick"),
+        test: "a_sleep_gap_under_once_makes_one_catch_up_fire_with_count_and_window",
+    },
+    Control {
+        label: "skip fires a catch-up",
+        edits: &[(
+            SCHED_TICK,
+            "MissedPolicy::Skip => {}",
+            "MissedPolicy::Skip => fires.push(fire(last_missed)),",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("schedule_tick"),
+        test: "a_sleep_gap_under_skip_makes_no_fire",
+    },
+    Control {
+        label: "each ignores its cap",
+        edits: &[(
+            SCHED_TICK,
+            "let start = kept_missed.len().saturating_sub(cap);",
+            "let start = cap.saturating_sub(cap);",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("schedule_tick"),
+        test: "a_sleep_gap_under_each_fires_the_newest_up_to_the_cap_oldest_first",
+    },
+    Control {
+        label: "each admits its fires newest first",
+        edits: &[(
+            SCHED_TICK,
+            "fires.extend(kept_missed[start..].iter().map(|d| fire(*d)));",
+            "fires.extend(kept_missed[start..].iter().rev().map(|d| fire(*d)));",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("schedule_tick"),
+        test: "a_sleep_gap_under_each_fires_the_newest_up_to_the_cap_oldest_first",
+    },
+    Control {
+        label: "a due time is on time however late it is seen (sleep not counted as missed)",
+        edits: &[(
+            SCHED_TICK,
+            "let on_time = now.duration_since(newest) <= config.grace();",
+            "let on_time = now.duration_since(newest) <= config.grace() || true;",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("schedule_tick"),
+        test: "a_single_due_time_seen_after_the_grace_period_is_missed",
+    },
+    Control {
+        label: "an on-time due time does not fire when missed ones precede it",
+        edits: &[(
+            SCHED_TICK,
+            "    if on_time {\n        fires.push(PlannedFire {",
+            "    if on_time && missed_count == 0 {\n        fires.push(PlannedFire {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("schedule_tick"),
+        test: "an_on_time_due_time_fires_after_the_catch_up",
+    },
+    Control {
+        label: "the missed count walks without its limit",
+        edits: &[(
+            SCHED_DUE,
+            "if count == count_limit {",
+            "if count == u64::MAX {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("schedule_tick"),
+        test: "a_missed_count_past_the_limit_is_reported_as_a_lower_bound",
+    },
+    Control {
+        label: "the schedule advance is not committed with its planned fires",
+        edits: &[(
+            SCHED_TICK,
+            "params![flow_id, scan.next.map(to_ms), last_fired, at],",
+            "params![flow_id, row.next_due.map(to_ms), last_fired, at],",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("schedule_tick"),
+        test: "a_restart_after_planning_a_catch_up_mints_no_second_fire",
+    },
+    Control {
+        label: "planned fires are not persisted with the advance",
+        edits: &[(
+            SCHED_TICK,
+            "for fire in &fires {",
+            "for fire in fires.iter().filter(|_| false) {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("schedule_tick"),
+        test: "a_restart_after_planning_a_catch_up_mints_no_second_fire",
+    },
+    Control {
+        label: "planned fires are not persisted (restart mid-admission)",
+        edits: &[(
+            SCHED_TICK,
+            "for fire in &fires {",
+            "for fire in fires.iter().filter(|_| false) {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("schedule_tick"),
+        test: "a_restart_between_admitting_planned_fires_admits_each_once",
+    },
+    Control {
+        label: "planned fires are admitted newest first",
+        edits: &[(
+            SCHED_TICK,
+            "FROM schedule_fires ORDER BY seq LIMIT 1",
+            "FROM schedule_fires ORDER BY seq DESC LIMIT 1",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("schedule_tick"),
+        test: "a_restart_between_admitting_planned_fires_admits_each_once",
+    },
+    Control {
+        label: "the schedule is not advanced and fire ids are not derived from the due time",
+        edits: &[
+            (
+                SCHED_TICK,
+                "params![flow_id, scan.next.map(to_ms), last_fired, at],",
+                "params![flow_id, row.next_due.map(to_ms), last_fired, at],",
+            ),
+            (
+                SCHED_TICK,
+                "format!(\"schedule:{due}\")",
+                "format!(\"schedule:{due}:{:?}\", std::time::Instant::now())",
+            ),
+        ],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("schedule_tick"),
+        test: "a_repeated_tick_with_the_same_now_admits_nothing_new",
+    },
+    Control {
+        label: "a newer version counts its due times from the old version's last fire",
+        edits: &[(
+            SCHED_TABLE,
+            "let counted_from = now;",
+            "let counted_from = old.last_fired_due.unwrap_or(now);",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("schedule_tick"),
+        test: "approving_a_newer_version_does_not_fire_for_the_gap_the_swap_creates",
+    },
+    Control {
+        label: "approving a newer version drops what the old version owed",
+        edits: &[(
+            SCHED_TABLE,
+            "if old.state == ScheduleState::Active {",
+            "if false && old.state == ScheduleState::Active {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("schedule_tick"),
+        test: "approving_a_newer_version_first_fires_what_the_old_version_owed",
+    },
+    Control {
+        label: "a disabled schedule ticks",
+        edits: &[
+            (
+                SCHED_TICK,
+                "if row.state != ScheduleState::Active {",
+                "if false && row.state != ScheduleState::Active {",
+            ),
+            (
+                SCHED_TICK,
+                "WHERE state = 'active' AND next_due_ms IS NOT NULL",
+                "WHERE next_due_ms IS NOT NULL",
+            ),
+        ],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("schedule_tick"),
+        test: "a_disabled_schedule_does_not_tick_and_does_not_catch_up_when_enabled",
+    },
+    Control {
+        label: "enabling resumes from the stale next due time and catches up the disabled hours",
+        edits: &[(
+            SCHED_TABLE,
+            "            next_due,\n            to_ms(now)\n        ],\n    )?;\n    Ok(true)",
+            "            row.next_due.map(to_ms),\n            to_ms(now)\n        ],\n    )?;\n    Ok(true)",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("schedule_tick"),
+        test: "a_disabled_schedule_does_not_tick_and_does_not_catch_up_when_enabled",
+    },
+    Control {
+        label: "removing a schedule keeps its planned fires",
+        edits: &[(
+            SCHED_TABLE,
+            "    tx.execute(\"DELETE FROM schedule_fires WHERE flow_id = ?1\", [flow_id])?;\n    let removed",
+            "    let removed",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("schedule_tick"),
+        test: "removing_a_schedule_stops_it_and_drops_its_planned_fires",
+    },
+    Control {
+        label: "a fire refused by a draining admission is dropped instead of kept",
+        edits: &[(
+            SCHED_TICK,
+            "if admission != Admission::Draining {",
+            "if admission != Admission::Draining || true {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("schedule_tick"),
+        test: "fires_planned_while_admission_drains_wait_and_are_admitted_after",
+    },
+    Control {
+        label: "unknown spec fields accepted",
+        edits: &[(
+            SCHED_SPEC,
+            "#[serde(deny_unknown_fields)]\npub struct ScheduleSpec",
+            "pub struct ScheduleSpec",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("schedule_spec"),
+        test: "validation_refuses_unknown_fields_and_values",
+    },
+    Control {
+        label: "each cap not bounded above",
+        edits: &[(
+            SCHED_SPEC,
+            "if cap == 0 || cap > MAX_EACH_CAP {",
+            "if cap == 0 {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("schedule_spec"),
+        test: "validation_refuses_a_missed_cap_above_the_limit",
+    },
+    Control {
+        label: "interval range not checked",
+        edits: &[(
+            SCHED_SPEC,
+            "if !(MIN_INTERVAL_SECS..=MAX_INTERVAL_SECS).contains(&secs) {",
+            "if secs == u64::MAX {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("schedule_spec"),
+        test: "validation_refuses_zero_and_out_of_range_intervals",
+    },
+    Control {
+        label: "an unknown zone falls back to UTC",
+        edits: &[(
+            SCHED_SPEC,
+            "tz: zone(zone_name)?,",
+            "tz: zone(zone_name).unwrap_or(TimeZone::UTC),",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("schedule_spec"),
+        test: "validation_refuses_unknown_zones",
+    },
+    Control {
+        label: "zone names matched case-insensitively",
+        edits: &[(
+            SCHED_SPEC,
+            "if tz.iana_name() != Some(name) {",
+            "if tz.iana_name().is_none() {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("schedule_spec"),
+        test: "validation_refuses_unknown_zones",
+    },
+    Control {
+        label: "seconds fields accepted in cron patterns",
+        edits: &[(
+            SCHED_SPEC,
+            ".seconds(Seconds::Disallowed)",
+            ".seconds(Seconds::Optional)",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("schedule_spec"),
+        test: "validation_refuses_malformed_cron",
+    },
+    Control {
+        label: "a cron pattern that never matches is accepted",
+        edits: &[(
+            SCHED_SPEC,
+            "if parsed.find_next_occurrence(&probe, true).is_err() {",
+            "if parsed.find_next_occurrence(&probe, true).is_err() && false {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("schedule_spec"),
+        test: "validation_refuses_a_cron_that_never_fires",
+    },
+    Control {
+        label: "approving a version with a schedule trigger does not create its schedule",
+        edits: &[(
+            INSTALL,
+            "match manifest.trigger.schedule {",
+            "match None::<crate::schedule::ScheduleSpec> {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("schedule_flows"),
+        test: "a_scheduled_flow_runs_from_install_through_tick_admission_and_run",
+    },
+    Control {
+        label: "a version swap does not plan what the old version owed (installed flows)",
+        edits: &[(
+            SCHED_TABLE,
+            "if old.state == ScheduleState::Active {",
+            "if false && old.state == ScheduleState::Active {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("schedule_flows"),
+        test: "owed_fires_after_a_version_swap_run_the_version_approved_at_admission",
+    },
+    Control {
+        label: "disabling a flow leaves its schedule ticking",
+        edits: &[(
+            INSTALL,
+            "    schedule::table::disable(tx, flow_id, timestamp(now_ms)?)?;",
+            "    let _ = timestamp(now_ms)?;",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("schedule_flows"),
+        test: "disabling_and_enabling_a_flow_stops_and_restarts_its_schedule",
+    },
+    Control {
+        label: "enabling a flow leaves its schedule stopped",
+        edits: &[(
+            INSTALL,
+            "        schedule::table::enable(tx, flow_id, timestamp(now_ms)?)?;",
+            "        let _ = timestamp(now_ms)?;",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("schedule_flows"),
+        test: "disabling_and_enabling_a_flow_stops_and_restarts_its_schedule",
+    },
+    Control {
+        label: "approving a version without a schedule trigger keeps the old schedule",
+        edits: &[(
+            INSTALL,
+            "            schedule::table::remove(tx, flow_id)?;\n            Ok(None)",
+            "            Ok(None)",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("schedule_tick"),
+        test: "removing_a_schedule_stops_it_and_drops_its_planned_fires",
+    },
+    Control {
+        label: "a fire refused by the rate limit is dropped without a record",
+        edits: &[(
+            SCHED_TICK,
+            "if let Some(reason) = dropped_reason(&admission) {",
+            "if let Some(reason) = dropped_reason(&admission).filter(|_| false) {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("schedule_flows"),
+        test: "a_rate_limited_scheduled_fire_is_dropped_and_recorded",
+    },
 ];
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(600);
@@ -1483,23 +1905,24 @@ fn run_control(root: &Path, control: &Control) -> Result<Value, String> {
 }
 
 fn main() -> ExitCode {
-    // `--journal` selects the journal and runtime controls (basal-core,
-    // driven through basal-testkit's tests); the default is the worker's.
+    // `--journal` selects the journal and runtime controls, `--dispatch`
+    // the manifest, authorization and dispatch-ledger controls, and
+    // `--schedule` the scheduler's (all in basal-core, driven through
+    // basal-testkit's tests); the default is the worker's.
     let mut args: Vec<String> = std::env::args().skip(1).collect();
-    // `--dispatch` selects the manifest, authorization, audit, token, kv,
-    // slot, deadline, rate-limit, disable and per-run limit controls, also
-    // in basal-core.
-    let journal = args.first().is_some_and(|a| a == "--journal");
-    let dispatch = args.first().is_some_and(|a| a == "--dispatch");
-    if journal || dispatch {
-        args.remove(0);
-    }
-    let (controls, evidence_file) = if journal {
-        (JOURNAL_CONTROLS, "docs/findings/slice-2-mutations.json")
-    } else if dispatch {
-        (DISPATCH_CONTROLS, "docs/findings/slice-3-mutations.json")
-    } else {
-        (CONTROLS, "docs/findings/slice-1-mutations.json")
+    let suite = match args.first().map(String::as_str) {
+        Some(flag @ ("--journal" | "--dispatch" | "--schedule")) => {
+            let flag = flag.to_owned();
+            args.remove(0);
+            flag
+        }
+        _ => String::new(),
+    };
+    let (controls, evidence_file) = match suite.as_str() {
+        "--journal" => (JOURNAL_CONTROLS, "docs/findings/slice-2-mutations.json"),
+        "--dispatch" => (DISPATCH_CONTROLS, "docs/findings/slice-3-mutations.json"),
+        "--schedule" => (SCHEDULE_CONTROLS, "docs/findings/slice-4-mutations.json"),
+        _ => (CONTROLS, "docs/findings/slice-1-mutations.json"),
     };
     // `--check` only verifies that every edit's text occurs exactly once,
     // without touching anything.

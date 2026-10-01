@@ -22,6 +22,15 @@ basal-host = { path = "crates/basal-host" }
 basal-proto = { path = "crates/basal-proto" }
 basal-testkit = { path = "crates/basal-testkit" }
 blake3 = "1.8"
+# Cron patterns for schedules. Used only to parse a pattern and to find the
+# wall-clock times that match it; basal applies its own time-zone rules on
+# top (see basal-core's schedule module), so croner's own DST behaviour is
+# never relied on. The jiff backend lets both sides share one time type.
+croner = { version = "4.0", default-features = false, features = ["jiff"] }
+# Time zones for schedules. Only the bundled IANA database is used, never
+# the host's zoneinfo or its local zone, so due times are the same on every
+# machine and in every test.
+jiff = { version = "0.2.37", default-features = false, features = ["std", "tzdb-bundle-always"] }
 # The fleet's storage mechanics: open with the single-writer lease, WAL and a
 # busy timeout, and versioned migrations. Pinned exactly, as astrocyte does.
 cortexkit-store = { version = "=0.2.0", features = ["sqlite"] }
@@ -33,9 +42,8 @@ libc = "0.2.180"
 # The engine. Only the default `std` feature: no module loader, no futures
 # adapter, no dynamic loading.
 rquickjs = { version = "=0.14.0", default-features = false, features = ["std"] }
-serde_json = "1"
-# Typed manifests, decoded with unknown fields refused.
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [profile.release]
 opt-level = 3

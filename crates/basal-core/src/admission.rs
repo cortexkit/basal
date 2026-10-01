@@ -224,6 +224,34 @@ pub fn admit(
     })
 }
 
+/// Admits a trigger under the flow's version approved now: the one rule
+/// every trigger source follows, so a trigger always runs the code that is
+/// approved and enabled at the moment it is admitted. A flow with no
+/// approved version is offered an empty spec, which still goes through
+/// deduplication and tombstones and is then refused as
+/// [`Admission::NotApproved`].
+pub fn admit_current(
+    tx: &Transaction,
+    store_id: &str,
+    flow_id: &str,
+    trigger_id: &str,
+    trigger: JsonText,
+    ctx: &AdmitContext,
+) -> Result<Admission> {
+    let (script, manifest) = match install::approved(tx, flow_id)? {
+        Some(approved) => (approved.script, approved.manifest),
+        None => (String::new(), String::new()),
+    };
+    let spec = TriggerSpec {
+        flow_id: flow_id.to_owned(),
+        trigger_id: trigger_id.to_owned(),
+        trigger,
+        script,
+        manifest,
+    };
+    admit(tx, store_id, &spec, ctx)
+}
+
 /// Admits the run's trigger again as new work: a new run with a new id, so
 /// every call gets a new idempotency key. Only an explicit retrigger does
 /// this; nothing in recovery ever does. The new run is newly admitted

@@ -108,8 +108,7 @@ fn manifest_refuses_unknown_fields() {
 #[test]
 fn trigger_needs_exactly_one_kind() {
     let both = manifest_with(|m| {
-        m["trigger"]["events"] =
-            json!([{"module": "plexus", "name": "pull_request_review", "version": 1}]);
+        m["trigger"]["schedule"] = json!({ "interval": "15m" });
     });
     let neither = manifest_with(|m| m["trigger"] = json!({}));
     assert_eq!(
@@ -126,11 +125,47 @@ fn trigger_needs_exactly_one_kind() {
             schedule: false
         })
     );
-    let not_object = manifest_with(|m| m["trigger"] = json!({"schedule": "every minute"}));
-    assert!(matches!(
-        Manifest::parse(&not_object.to_string()),
-        Err(ManifestError::Schedule(_))
-    ));
+}
+
+/// `trigger.schedule` is the scheduler's typed spec: its shape is decoded
+/// with unknown fields refused, and its content compiled by the
+/// scheduler's validation (a cron pattern, a zone, an interval range).
+#[test]
+fn schedule_triggers_are_typed_and_validated_by_the_scheduler() {
+    let schedule = |spec: Value| manifest_with(|m| m["trigger"] = json!({ "schedule": spec }));
+    let ok = Manifest::parse(
+        &schedule(json!({ "cron": "*/30 * * * *", "tz": "Europe/Madrid", "missed": "each", "each_cap": 5 }))
+            .to_string(),
+    )
+    .expect("a valid schedule");
+    let spec = ok.trigger.schedule.expect("typed schedule");
+    assert_eq!(spec.cron.as_deref(), Some("*/30 * * * *"));
+    for shape in [
+        json!("every minute"),
+        json!({ "cron": "0 * * * *", "timezone": "UTC" }),
+    ] {
+        assert!(
+            matches!(
+                Manifest::parse(&schedule(shape.clone()).to_string()),
+                Err(ManifestError::Decode(_))
+            ),
+            "{shape}"
+        );
+    }
+    for content in [
+        json!({ "cron": "not a pattern" }),
+        json!({ "cron": "0 * * * *", "tz": "Nowhere/Land" }),
+        json!({ "interval": "10s" }),
+        json!({ "cron": "0 * * * *", "interval": "1h" }),
+    ] {
+        assert!(
+            matches!(
+                Manifest::parse(&schedule(content.clone()).to_string()),
+                Err(ManifestError::Schedule(_))
+            ),
+            "{content}"
+        );
+    }
 }
 
 fn events_manifest(events: Value, ops: Value) -> Value {

@@ -22,6 +22,7 @@ use crate::error::{CoreError, Result};
 use crate::ids::code_hash;
 use crate::manifest::{Manifest, ManifestError, OpRef};
 use crate::runtime::Runtime;
+use crate::schedule::{self, Approval, ScheduledFlow, SchedulerConfig};
 
 /// A version offered for install.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -312,7 +313,8 @@ pub fn approve(
     code_hash: &[u8; 32],
     approval_ref: &str,
     now_ms: i64,
-) -> std::result::Result<(), InstallError> {
+    schedule: &SchedulerConfig,
+) -> std::result::Result<Option<Approval>, InstallError> {
     let row: Option<(Vec<u8>, String, String)> = tx
         .query_row(
             "SELECT code_hash, state, author FROM installs WHERE flow_id = ?1 AND version = ?2",
@@ -333,7 +335,9 @@ pub fn approve(
         });
     }
     if state == "approved" {
-        return Ok(());
+        // A retried approval changes nothing, its schedule included.
+        let has_schedule = schedule::table::load(tx, flow_id)?.is_some();
+        return Ok(has_schedule.then_some(Approval::Unchanged));
     }
     let approved: Option<i64> = tx.query_row(
         "SELECT approved_version FROM flows WHERE flow_id = ?1",
@@ -362,7 +366,47 @@ pub fn approve(
         "UPDATE flows SET approved_version = ?2, owner = ?3 WHERE flow_id = ?1",
         params![flow_id, version_i64(version), author],
     )?;
-    Ok(())
+    schedule_approved(tx, flow_id, version, now_ms, schedule)
+}
+
+/// Brings the flow's schedule in line with the version just approved, in
+/// the approval's transaction: a version with a schedule trigger creates or
+/// replaces the schedule (planning what the old one owed first); a version
+/// without one removes any schedule an earlier version had, with its
+/// planned fires.
+fn schedule_approved(
+    tx: &Transaction,
+    flow_id: &str,
+    version: u32,
+    now_ms: i64,
+    config: &SchedulerConfig,
+) -> std::result::Result<Option<Approval>, InstallError> {
+    let manifest_text: String = tx.query_row(
+        "SELECT manifest FROM installs WHERE flow_id = ?1 AND version = ?2",
+        params![flow_id, version_i64(version)],
+        |r| r.get(0),
+    )?;
+    let manifest = Manifest::parse(&manifest_text)
+        .map_err(|e| CoreError::Corrupt(format!("installed manifest of {flow_id}: {e}")))?;
+    match manifest.trigger.schedule {
+        Some(spec) => {
+            let flow = ScheduledFlow {
+                flow_id: flow_id.to_owned(),
+                version: u64::from(version),
+                spec,
+            };
+            let approval = schedule::table::approve(tx, &flow, timestamp(now_ms)?, config)?;
+            Ok(Some(approval))
+        }
+        None => {
+            schedule::table::remove(tx, flow_id)?;
+            Ok(None)
+        }
+    }
+}
+
+fn timestamp(ms: i64) -> Result<jiff::Timestamp> {
+    jiff::Timestamp::from_millisecond(ms).map_err(|e| CoreError::Invalid(format!("time {ms}: {e}")))
 }
 
 /// The approved version of a flow: what admission copies into each new run.
@@ -539,6 +583,9 @@ pub fn disable(
     if changed == 0 {
         return Ok(false);
     }
+    // The flow's schedule stops in the same commit: due times passing while
+    // it is disabled never fire, and fires planned but not admitted go.
+    schedule::table::disable(tx, flow_id, timestamp(now_ms)?)?;
     let kind = match actor {
         Actor::Runtime => "flow.auto_disabled",
         _ => "flow.disabled",
@@ -595,17 +642,29 @@ impl Runtime {
     }
 
     /// Approves an installed version, bound to its code hash. New triggers
-    /// are admitted under it; runs already admitted keep their version.
+    /// are admitted under it; runs already admitted keep their version. The
+    /// flow's schedule follows in the same commit: what happened to it is
+    /// returned, `None` when the approved version has no schedule trigger
+    /// (any schedule an earlier version had is removed).
     pub fn approve(
         &self,
         flow_id: &str,
         version: u32,
         code_hash: &[u8; 32],
         approval_ref: &str,
-    ) -> std::result::Result<(), InstallError> {
+    ) -> std::result::Result<Option<Approval>, InstallError> {
         let now = self.config().clock.now_ms();
+        let schedule = self.config().schedule.clone();
         decide(self, |tx| {
-            approve(tx, flow_id, version, code_hash, approval_ref, now)
+            approve(
+                tx,
+                flow_id,
+                version,
+                code_hash,
+                approval_ref,
+                now,
+                &schedule,
+            )
         })
     }
 
@@ -627,7 +686,8 @@ impl Runtime {
 
     /// Enables a disabled flow again. Operator only.
     pub fn enable_flow(&self, flow_id: &str) -> std::result::Result<bool, InstallError> {
-        decide(self, |tx| enable(tx, flow_id))
+        let now = self.config().clock.now_ms();
+        decide(self, |tx| enable(tx, flow_id, now))
     }
 
     pub fn flow(&self, flow_id: &str) -> Result<Option<FlowRecord>> {
@@ -658,8 +718,13 @@ impl Runtime {
 
 /// Enables a disabled flow again (operator only). Its saturation history
 /// is cleared, so windows from before the disable cannot count towards
-/// disabling it again.
-pub fn enable(tx: &Transaction, flow_id: &str) -> std::result::Result<bool, InstallError> {
+/// disabling it again. Its schedule, if it has one, starts again in the same
+/// commit, first due after `now_ms`: time spent disabled is not missed.
+pub fn enable(
+    tx: &Transaction,
+    flow_id: &str,
+    now_ms: i64,
+) -> std::result::Result<bool, InstallError> {
     if flow(tx, flow_id)?.is_none() {
         return Err(InstallError::NoSuchFlow(flow_id.to_owned()));
     }
@@ -672,5 +737,8 @@ pub fn enable(tx: &Transaction, flow_id: &str) -> std::result::Result<bool, Inst
         "UPDATE rate_windows SET saturated = 0 WHERE flow_id = ?1",
         [flow_id],
     )?;
+    if changed > 0 {
+        schedule::table::enable(tx, flow_id, timestamp(now_ms)?)?;
+    }
     Ok(changed > 0)
 }

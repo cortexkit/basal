@@ -9,7 +9,8 @@
 //! (`crate::install`). `docs/manifest.md` documents every field.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+
+use crate::schedule::ScheduleSpec;
 
 /// The manifest format this build reads.
 pub const MANIFEST_FORMAT: u32 = 1;
@@ -83,10 +84,11 @@ pub struct Manifest {
 pub struct Trigger {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub events: Option<Vec<EventRef>>,
-    /// The schedule spec, kept as JSON here and checked by
-    /// [`validate_schedule`].
+    /// The schedule: cron in a named zone or an interval, and the missed
+    /// policy. Decoded with unknown fields refused and compiled by
+    /// [`crate::schedule::validate`] when the manifest is checked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub schedule: Option<Value>,
+    pub schedule: Option<ScheduleSpec>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -220,21 +222,6 @@ impl std::fmt::Display for ManifestError {
 }
 
 impl std::error::Error for ManifestError {}
-
-/// Why a schedule spec was refused.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ScheduleError(pub String);
-
-/// Checks a schedule spec. The scheduler owns the schedule's real type;
-/// until it is wired in here, any JSON object is accepted and everything
-/// else is refused.
-pub fn validate_schedule(spec: &Value) -> Result<(), ScheduleError> {
-    if spec.is_object() {
-        Ok(())
-    } else {
-        Err(ScheduleError("a schedule must be a JSON object".into()))
-    }
-}
 
 /// Parses a duration such as `"90s"`, `"10m"`, `"6h"` or `"1d"` into
 /// milliseconds. A positive whole number and one unit, nothing else.
@@ -379,7 +366,8 @@ impl Manifest {
                 )?;
             }
             (None, Some(schedule)) => {
-                validate_schedule(schedule).map_err(|e| ManifestError::Schedule(e.0))?;
+                crate::schedule::validate(schedule)
+                    .map_err(|e| ManifestError::Schedule(e.to_string()))?;
             }
             (events, schedule) => {
                 return Err(ManifestError::TriggerKinds {

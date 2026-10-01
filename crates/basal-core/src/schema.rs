@@ -169,6 +169,57 @@ CREATE TABLE local_effects (
         version: 2,
         statements: DISPATCH,
     },
+    // Schedules. A schedule's fires are planned in the same commit that
+    // advances it and wait in `schedule_fires` until they are admitted, so
+    // a restart between the two never recomputes a catch-up fire over due
+    // times already accounted for. Times are milliseconds since the Unix
+    // epoch, UTC.
+    Migration {
+        version: 3,
+        statements: r#"
+-- One row per flow whose approved version has a schedule trigger. It
+-- holds the schedule's own state only: the code a fire runs is the flow's
+-- approved version at admission (installs), never a copy kept here.
+CREATE TABLE schedules (
+    flow_id       TEXT PRIMARY KEY,
+    version       INTEGER NOT NULL CHECK (version >= 0),
+    spec          TEXT NOT NULL,
+    state         TEXT NOT NULL CHECK (state IN ('active', 'disabled')),
+    anchor_ms     INTEGER NOT NULL,
+    next_due_ms   INTEGER,
+    last_fired_ms INTEGER,
+    updated_at    INTEGER NOT NULL
+);
+CREATE INDEX schedules_due ON schedules (state, next_due_ms);
+
+-- Fires decided by a tick and not yet admitted. `version` is the version
+-- whose schedule planned the fire, kept for the record: admission binds the
+-- fire to whatever version is approved when it is admitted.
+CREATE TABLE schedule_fires (
+    seq        INTEGER PRIMARY KEY AUTOINCREMENT,
+    flow_id    TEXT NOT NULL,
+    trigger_id TEXT NOT NULL,
+    version    INTEGER NOT NULL,
+    due_ms     INTEGER NOT NULL,
+    payload    TEXT NOT NULL,
+    planned_at INTEGER NOT NULL,
+    UNIQUE (flow_id, trigger_id)
+);
+
+-- Planned fires admission refused for good (the flow was disabled, had no
+-- approved version, or was over its run rate limit): dropped, and recorded
+-- here so a missing run can be explained.
+CREATE TABLE schedule_dropped (
+    seq        INTEGER PRIMARY KEY AUTOINCREMENT,
+    flow_id    TEXT NOT NULL,
+    trigger_id TEXT NOT NULL,
+    due_ms     INTEGER NOT NULL,
+    payload    TEXT NOT NULL,
+    reason     TEXT NOT NULL CHECK (reason IN ('disabled', 'not_approved', 'rate_limited')),
+    at         INTEGER NOT NULL
+);
+"#,
+    },
 ];
 
 /// Flows, their installed versions and what decides whether a flow may do
