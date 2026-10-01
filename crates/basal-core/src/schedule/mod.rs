@@ -81,7 +81,8 @@ impl Scheduler {
         }
     }
 
-    /// The same scheduler, stopping where `hooks` says.
+    /// The same scheduler, asking `hooks` at every commit boundary of a tick
+    /// whether to carry on or to stop as if the process had died there.
     pub fn with_hooks(mut self, hooks: Arc<dyn TickHooks>) -> Self {
         self.hooks = hooks;
         self
@@ -106,7 +107,8 @@ impl Scheduler {
     }
 
     /// Records an approved flow version with a schedule trigger (see
-    /// [`table::approve`]), then admits any fires the old version owed.
+    /// [`table::approve`]), then admits the fires that approval planned for
+    /// the previous version's due times that had already passed.
     pub fn approve(&self, flow: &ScheduledFlow) -> Result<Approval> {
         let now = self.now();
         let approval = self

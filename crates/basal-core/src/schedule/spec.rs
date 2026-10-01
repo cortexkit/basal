@@ -13,8 +13,8 @@
 //!
 //! [`validate`] turns a spec into a [`CompiledSchedule`]: the parsed cron
 //! pattern and the resolved zone, or the interval's length. Nothing else in
-//! the scheduler accepts an unvalidated spec, so a pattern that parses at
-//! install parses the same way at every tick.
+//! the scheduler accepts an unvalidated spec: a stored spec is validated
+//! again when it is loaded, so every tick works from a compiled schedule.
 
 use std::fmt;
 use std::sync::OnceLock;
@@ -25,15 +25,16 @@ use jiff::civil::DateTime;
 use jiff::tz::{TimeZone, TimeZoneDatabase};
 use serde::{Deserialize, Serialize};
 
-/// How many fires `each` replays when the spec does not say.
+/// How many missed due times `each` replays when the spec omits `each_cap`.
 pub const DEFAULT_EACH_CAP: u32 = 3;
 
 /// The largest `each_cap` a spec may ask for. Every replayed fire is a run,
 /// so the cap bounds the burst of runs one wake-up can start.
 pub const MAX_EACH_CAP: u32 = 10;
 
-/// The shortest interval: cron's own granularity. A flow is not a
-/// busy-loop; anything faster belongs in an event trigger.
+/// The shortest interval, 60 seconds: the same one-minute granularity as a
+/// cron pattern. A flow that wants to run more often than that is polling,
+/// and belongs on an event trigger instead.
 pub const MIN_INTERVAL_SECS: u64 = 60;
 
 /// The longest interval: a year. Longer periods are calendar periods and

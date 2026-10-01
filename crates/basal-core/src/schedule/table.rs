@@ -252,7 +252,9 @@ pub fn approve(
         };
     }
 
-    // Fires the old version owes up to now are decided before it goes.
+    // Plan the old version's due times that have already passed, under the
+    // old version's code, before its schedule is replaced: they fell due
+    // while it was the approved version.
     if old.state == ScheduleState::Active {
         tick::plan_flow(tx, &flow.flow_id, now, config)?;
     }
