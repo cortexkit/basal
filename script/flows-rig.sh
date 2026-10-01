@@ -38,6 +38,10 @@ RESULTS="$RIG/results"
 CONFIG_HOME="$RIG/config"
 DATA_HOME="$RIG/data"
 RUNTIME_DIR="$RIG/runtime"
+# HOME for every rig process. A module that falls back to $HOME for any path
+# (OpenCode's auth.json, a ~/.config file, a dot-directory) then lands inside
+# the rig instead of reaching the user's real files.
+RIG_HOME="$RIG/home"
 CONN="$RUNTIME_DIR/subc-connection.json"
 PIDFILE="$RUNTIME_DIR/ckdev-subc.pid"
 SUBC_CONFIG="$CONFIG_HOME/cortexkit/subc.jsonc"
@@ -99,7 +103,7 @@ guard_all_paths() {
   esac
   for path in "$BIN" "$SRC" "$TARGETS" "$STACK" "$LOGS" "$RESULTS" \
       "$CONFIG_HOME" "$DATA_HOME" "$RUNTIME_DIR" "$CONN" "$PIDFILE" \
-      "$SUBC_CONFIG" "$VAULT_DIR" "$VAULT_KEY"; do
+      "$SUBC_CONFIG" "$VAULT_DIR" "$VAULT_KEY" "$RIG_HOME"; do
     guard_path "$path"
   done
 }
@@ -171,9 +175,10 @@ rig_path() {
 }
 
 # Run a command in the rig's environment: an empty environment plus the rig's
-# three XDG homes, its connection file, a temp dir inside its runtime dir, and
-# the user's identity. Nothing inherited from the caller can redirect a module
-# at production state (CK_MASTER_KEY_PATH, BROCA_STATE_ROOT, SUBC_PORT, ...).
+# own HOME (also the working directory), its three XDG homes, its connection
+# file, a temp dir inside its runtime dir, and the user's name. Nothing
+# inherited from the caller can redirect a module at production state
+# (CK_MASTER_KEY_PATH, BROCA_STATE_ROOT, SUBC_PORT, the real HOME, ...).
 # rig_env_exec replaces the calling (sub)shell, so `(rig_env_exec cmd) &`
 # leaves $! naming cmd itself.
 rig_env() {
@@ -181,8 +186,9 @@ rig_env() {
 }
 
 rig_env_exec() {
+  cd "$RIG_HOME" || die "no rig home at $RIG_HOME; run start first"
   exec env -i \
-    HOME="$HOME" USER="${USER:-}" LOGNAME="${LOGNAME:-}" LANG="${LANG:-en_US.UTF-8}" \
+    HOME="$RIG_HOME" USER="${USER:-}" LOGNAME="${LOGNAME:-}" LANG="${LANG:-en_US.UTF-8}" \
     PATH="$(rig_path)" \
     TMPDIR="$RUNTIME_DIR/tmp" \
     XDG_CONFIG_HOME="$CONFIG_HOME" \
@@ -528,7 +534,7 @@ cmd_start() {
       [ -x "$BIN/$file" ] || die "$BIN/$file is not placed; run place first"
     done
   fi
-  run mkdir -p -m 700 "$RUNTIME_DIR" "$RUNTIME_DIR/tmp" "$LOGS" "$DATA_HOME" "$(dirname "$VAULT_KEY")"
+  run mkdir -p -m 700 "$RUNTIME_DIR" "$RUNTIME_DIR/tmp" "$LOGS" "$DATA_HOME" "$(dirname "$VAULT_KEY")" "$RIG_HOME"
 
   # An empty vault of the rig's own. Bootstrap mints a fresh master key into
   # the rig's key file and is idempotent; nothing is copied from anywhere.
@@ -579,8 +585,9 @@ cmd_status() {
     say "+ read $PIDFILE; check $CONN and port $PORT name that pid"
     say "+ rig_env $BIN/ckdev-ck daemon; rig_env $BIN/ckdev-ck module list"
     say "+ per module: ps (pid by program path), codesign -dv (identifier),"
-    say "  lsof -d txt (running inode vs placed file), lsof (every open .db file),"
-    say "  failing on any store or CortexKit file outside the rig's homes"
+    say "  lsof -d txt (running inode vs placed file), lsof -Ftn (open regular files),"
+    say "  failing on any store outside $CONFIG_HOME, $DATA_HOME or $RUNTIME_DIR,"
+    say "  and on any other open file under $HOME that is outside $RIG"
     say "+ rig_env $BIN/ckdev-auth list --data-dir $VAULT_DIR --key-path $VAULT_KEY"
     return
   fi
@@ -621,9 +628,10 @@ cmd_status() {
 }
 
 # One module's row: running, pid, identifier, whether the running image is
-# the placed file, and every store and CortexKit file the process has open.
-# Returns non-zero when any of those files lies outside the rig's three XDG
-# homes (config/, data/ and runtime/ under the rig root).
+# the placed file, every store the process has open, and any open regular
+# file under the user's real home that is not inside the rig root. Returns
+# non-zero for a store outside the rig's three XDG homes (config/, data/ and
+# runtime/ under the rig root) or for any such file outside the rig root.
 report_process() {
   name=$1
   placed=$2
@@ -646,27 +654,38 @@ report_process() {
   [ "$identifier" = "$want_identifier" ] || image="$image; identifier should be $want_identifier"
   say "$name: running · pid $pid · identifier $identifier · $image"
   bad=0
-  opened=$(lsof -nP -a -p "$pid" -Fn 2>/dev/null | sed -n 's/^n\(\/.*\)$/\1/p' | sort -u)
-  stores=$(printf '%s\n' "$opened" | grep -E '\.(db|sqlite)$' || true)
-  [ -n "$stores" ] || say "  store: none open"
-  # Any store, and any other file the process holds in a CortexKit tree, must
-  # lie inside those homes.
-  while IFS= read -r path; do
+  # Every open file as "<lsof type><tab><path>"; lsof prints a file's type
+  # field before its name field.
+  opened=$(lsof -nP -a -p "$pid" -Ftn 2>/dev/null | awk '
+    /^t/ { type = substr($0, 2) }
+    /^n\// { print type "\t" substr($0, 2) }' | sort -u)
+  tab=$(printf '\t')
+  stores=0
+  while IFS="$tab" read -r type path; do
+    [ "$type" = REG ] || continue
     case "$path" in
       *.db | *.sqlite)
+        # A store must lie inside the rig's XDG homes.
+        stores=$((stores + 1))
         verdict=$(store_verdict "$path")
         say "  store: $path ($verdict)"
-        case "$verdict" in inside*) ;; *) bad=1 ;; esac ;;
-      "$CK_SHARE"/* | "$CK_CONFIG"/*)
-        verdict=$(store_verdict "$path")
-        case "$verdict" in
-          inside*) ;;
-          *) say "  open file: $path ($verdict)"; bad=1 ;;
-        esac ;;
+        case "$verdict" in inside*) ;; *) bad=1 ;; esac
+        continue ;;
+    esac
+    # Any other file under the user's real home must lie inside the rig root.
+    # The placed binary is inside it too; it is named here so the rule does
+    # not depend on where bin/ is.
+    [ "$path" != "$placed" ] || continue
+    case "$path" in
+      "$RIG"/*) ;;
+      "$HOME"/*)
+        say "  open file: $path ($(store_verdict "$path"))"
+        bad=1 ;;
     esac
   done <<EOF
 $opened
 EOF
+  [ "$stores" -gt 0 ] || say "  store: none open"
   return "$bad"
 }
 
@@ -676,6 +695,7 @@ store_verdict() {
     "$DATA_HOME"/* | "$CONFIG_HOME"/* | "$RUNTIME_DIR"/*) say "inside the rig's homes" ;;
     "$RIG"/*) say "OUTSIDE the rig's homes, inside the rig root" ;;
     "$CK_SHARE"/* | "$CK_CONFIG"/*) say "PRODUCTION CortexKit path" ;;
+    "$HOME"/*) say "OUTSIDE the rig, in the user's real home" ;;
     *) say "OUTSIDE the rig" ;;
   esac
 }
