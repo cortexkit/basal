@@ -311,6 +311,10 @@ cmd_build() {
   if [ -n "$(git -C "$ROOT" status --porcelain --untracked-files=no)" ]; then
     say "note: $ROOT has uncommitted changes; the rig builds its HEAD commit only"
   fi
+  # Forget the previous build before starting this one. The record is written
+  # again only when every crate has built, so after a failed build `place`
+  # refuses instead of placing a mix of new and old binaries.
+  run rm -f "$STACK"
 
   stack=""
   for line in $(repos | tr '\t' '|'); do
