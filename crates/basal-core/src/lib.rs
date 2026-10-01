@@ -28,6 +28,7 @@
 pub mod admission;
 pub mod audit;
 pub mod authorize;
+pub mod broca;
 pub mod cards;
 pub mod channel;
 pub mod clock;

@@ -9,7 +9,7 @@
 //! committed or staged:
 //!
 //! ```text
-//! cargo run -p basal-testkit --bin mutation-controls [-- [--journal | --dispatch | --schedule | --module | --hosts] [--check] [<label filter>]]
+//! cargo run -p basal-testkit --bin mutation-controls [-- [--journal | --dispatch | --schedule | --module | --broca | --hosts] [--check] [<label filter>]]
 //! ```
 //!
 //! Without a suite flag it runs the worker engine's controls; with
@@ -20,6 +20,7 @@
 //! with `--module`, the module shell's (pool, engine, ops, dry run, consent,
 //! manifest), whose tests live in basal-module; with `--hosts`, the consumer
 //! adapters and their journal integration, also driven by basal-module tests.
+//! `--broca` selects model host contracts, recovery, token metadata and restart controls.
 //! basal-core's tests live in basal-testkit. `--check` only verifies that every edit's
 //! text occurs exactly once in the current source.
 //!
@@ -33,10 +34,10 @@
 //! `docs/findings/slice-2-mutations.json` (journal),
 //! `docs/findings/slice-3-mutations.json` (dispatch),
 //! `docs/findings/slice-4-mutations.json` (scheduler) or
-//! `docs/findings/slice-5-mutations.json` (module), beside the findings
-//! notes in `docs/findings/`. Host-adapter evidence is written to
-//! `docs/findings/i1a-host-mutations.json`. Each evidence row names the changed
-//! mechanism, the test expected to fail, its output and the restore checks.
+//! `docs/findings/slice-5-mutations.json` (module),
+//! `docs/findings/i1a-broca-mutations.json` (model host), or
+//! `docs/findings/i1a-host-mutations.json` (consumer adapters). Each evidence
+//! row names the changed mechanism, expected failing test and restore checks.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -68,6 +69,8 @@ enum Target {
     Module(&'static str),
     /// A unit test inside the module library.
     ModuleLib,
+    /// An integration test of the Broca host with a fake instead of a live service.
+    Host(&'static str),
 }
 
 struct Control {
@@ -2232,6 +2235,229 @@ const SCHEDULE_CONTROLS: &[Control] = &[
     },
 ];
 
+const BROCA: &str = "crates/basal-host/src/broca/mod.rs";
+const BROCA_CONTROLS: &[Control] = &[
+    Control {
+        label: "Broca absent usage becomes zero",
+        edits: &[(
+            BROCA,
+            "input_tokens: u.input_tokens,",
+            "input_tokens: u.input_tokens.or(Some(0)),",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Host("broca"),
+        test: "usage_absent_empty_and_zero_remain_distinct",
+    },
+    Control {
+        label: "Broca fake accepts send id reuse",
+        edits: &[(
+            "crates/basal-host/src/broca/fake.rs",
+            "if old.bytes != params || &old.route != route {",
+            "if false && (old.bytes != params || &old.route != route) {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Host("broca"),
+        test: "fake_refuses_send_id_reuse_and_restarts_with_same_run",
+    },
+    Control {
+        label: "Broca call sessions lose the position",
+        edits: &[(
+            TOKENS,
+            "basal:flow-{flow_id}:{run_id}:{position}",
+            "basal:flow-{flow_id}:{run_id}",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("broca_reservations"),
+        test: "broca_usage_settles_reservation_once_and_classify_returns_a_string",
+    },
+    Control {
+        label: "Broca value can masquerade as usage metadata",
+        edits: &[(
+            TOKENS,
+            "let report = match outcome.usage {",
+            "let report = match outcome.usage.or_else(|| value.get(\"usage\").cloned().and_then(|u| serde_json::from_value(u).ok())) {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("broca_reservations"),
+        test: "script_value_cannot_supply_usage_and_absent_ledger_fields_are_nullable",
+    },
+    Control {
+        label: "Broca SQLite snapshot omits text",
+        edits: &[(
+            "crates/basal-core/src/broca.rs",
+            "serde_json::to_string(call)",
+            "serde_json::to_string(&{ let mut lost = call.clone(); lost.text = None; lost })",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("broca_reservations"),
+        test: "sqlite_snapshot_cut_never_persists_a_cursor_without_its_text",
+    },
+    Control {
+        label: "Broca read refusal loses its code",
+        edits: &[(
+            BROCA,
+            "call.outcome = Some(rejection(&code, &detail, usage));",
+            "call.outcome = Some(rejection(\"result_unavailable\", &detail, usage));",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Host("broca"),
+        test: "read_refusal_is_journalable_with_status_usage",
+    },
+    Control {
+        label: "Broca tools are not explicitly empty",
+        edits: &[(
+            BROCA,
+            "tools: vec![],",
+            "tools: vec![json!({\"name\":\"forbidden\"})],",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Host("broca"),
+        test: "exact_send_contract_and_parallel_sessions",
+    },
+    Control {
+        label: "Broca output clamp is ignored",
+        edits: &[(
+            BROCA,
+            "generation.max_output_tokens = Some(e.max_output);",
+            "generation.max_output_tokens = Some(999);",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Host("broca"),
+        test: "exact_send_contract_and_parallel_sessions",
+    },
+    Control {
+        label: "Broca reissue changes bytes",
+        edits: &[(
+            BROCA,
+            "self.transport.send(&call.route, &call.params)",
+            "self.transport.send(&call.route, &[call.params.clone(), if call.handle.is_some() { vec![b' '] } else { vec![] }].concat())",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Host("broca"),
+        test: "reissue_after_cut_is_byte_identical_and_finished_is_immediate",
+    },
+    Control {
+        label: "Broca pending handle is replaced",
+        edits: &[(
+            BROCA,
+            "if call.handle.is_none() {\n            call.handle = Some(handle);\n        }",
+            "call.handle = Some(handle); call.handle = call.broca_run_id.clone().or_else(|| Some(\"wrong\".into()));",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Host("broca"),
+        test: "pending_submission_keeps_its_handle_and_usage_is_metadata",
+    },
+    Control {
+        label: "Broca cursor is not durable",
+        edits: &[(BROCA, "call.cursor = Some(cursor);", "call.cursor = None;")],
+        also_restore: NO_EXTRA,
+        target: Target::Host("broca"),
+        test: "durable_cursor_resumes_text_without_loss_or_duplicate",
+    },
+    Control {
+        label: "Broca acknowledged completion is delivered again",
+        edits: &[(
+            BROCA,
+            "if call.acknowledged {",
+            "if false && call.acknowledged {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Host("broca"),
+        test: "durable_cursor_resumes_text_without_loss_or_duplicate",
+    },
+    Control {
+        label: "Broca text is not saved with cursor",
+        edits: &[(
+            BROCA,
+            "self.store.save(call)?;\n                }",
+            "let mut lost = call.clone(); lost.text = None; self.store.save(&lost)?;\n                }",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Host("broca"),
+        test: "cursor_and_text_commit_together_at_a_cut",
+    },
+    Control {
+        label: "Broca status fallback is disabled",
+        edits: &[
+            (
+                BROCA,
+                "if let Some((reason, metadata)) = status.terminal() {\n                if call.finish",
+                "if let Some((reason, metadata)) = status.terminal().filter(|_| false) {\n                if call.finish",
+            ),
+            (
+                BROCA,
+                "if let Some((reason, metadata)) = status.terminal() {\n                    call.finish",
+                "if let Some((reason, metadata)) = status.terminal().filter(|_| false) {\n                    call.finish",
+            ),
+        ],
+        also_restore: NO_EXTRA,
+        target: Target::Host("broca"),
+        test: "status_recovers_missed_finish_and_archived_read_recovers_text",
+    },
+    Control {
+        label: "Broca read text fallback is disabled",
+        edits: &[(
+            BROCA,
+            "call.text = Some(text_parts(&message.message.content));",
+            "call.text = None;",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Host("broca"),
+        test: "status_recovers_missed_finish_and_archived_read_recovers_text",
+    },
+    Control {
+        label: "Broca usage metadata is ignored by the ledger",
+        edits: &[(
+            TOKENS,
+            "Some(usage) => Report::Metadata(usage),",
+            "Some(_usage) => Report::NoEffect,",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("broca_reservations"),
+        test: "broca_usage_settles_reservation_once_and_classify_returns_a_string",
+    },
+    Control {
+        label: "Broca classify accepts outside labels",
+        edits: &[(
+            BROCA,
+            "if labels.contains(text) {",
+            "if true || labels.contains(text) {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Host("broca"),
+        test: "classify_contract_is_exact_not_trimmed_or_parsed",
+    },
+    Control {
+        label: "Broca terminal failures are fulfilled",
+        edits: &[(
+            BROCA,
+            "if *reason != RunFinishReason::Completed {",
+            "if false && *reason != RunFinishReason::Completed {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Host("broca"),
+        test: "every_status_terminal_rejects_or_completes_and_nonterminals_wait",
+    },
+    Control {
+        label: "Broca completion is not delivered after module restart",
+        edits: &[
+            (
+                BROCA,
+                "sink.complete(&Completion",
+                "if false { sink.complete(&Completion",
+            ),
+            (
+                BROCA,
+                "BrocaError::Sink(e.to_string()))?;",
+                "BrocaError::Sink(e.to_string()))?; }",
+            ),
+        ],
+        also_restore: NO_EXTRA,
+        target: Target::Module("e2e"),
+        test: "a_broca_llm_suspends_survives_module_kill_and_settles_after_restart",
+    },
+];
+
 const TEST_TIMEOUT: Duration = Duration::from_secs(600);
 
 fn git(root: &Path, args: &[&str]) -> Result<String, String> {
@@ -2363,6 +2589,7 @@ fn run_control(root: &Path, control: &Control) -> Result<Value, String> {
         Target::Testkit(file) => command.args(["-p", "basal-testkit", "--test", file]),
         Target::Module(file) => command.args(["-p", "basal-module", "--test", file]),
         Target::ModuleLib => command.args(["-p", "basal-module", "--lib"]),
+        Target::Host(file) => command.args(["-p", "basal-host", "--test", file]),
     };
     command.args([control.test, "--", "--exact"]);
     let ran = run_with_timeout(command, TEST_TIMEOUT);
@@ -2418,7 +2645,9 @@ fn main() -> ExitCode {
     // basal-testkit's tests); the default is the worker's.
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let suite = match args.first().map(String::as_str) {
-        Some(flag @ ("--journal" | "--dispatch" | "--schedule" | "--module" | "--hosts")) => {
+        Some(
+            flag @ ("--journal" | "--dispatch" | "--schedule" | "--module" | "--broca" | "--hosts"),
+        ) => {
             let flag = flag.to_owned();
             args.remove(0);
             flag
@@ -2431,6 +2660,7 @@ fn main() -> ExitCode {
         "--schedule" => (SCHEDULE_CONTROLS, "docs/findings/slice-4-mutations.json"),
         "--module" => (MODULE_CONTROLS, "docs/findings/slice-5-mutations.json"),
         "--hosts" => (HOST_CONTROLS, "docs/findings/i1a-host-mutations.json"),
+        "--broca" => (BROCA_CONTROLS, "docs/findings/i1a-broca-mutations.json"),
         _ => (CONTROLS, "docs/findings/slice-1-mutations.json"),
     };
     // `--check` only verifies that every edit's text occurs exactly once,

@@ -265,3 +265,52 @@ fn a_store_error_ends_the_process_non_zero_and_the_restart_recovers() {
     h.quit();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_broca_llm_suspends_survives_module_kill_and_settles_after_restart() {
+    let dir = scratch("broca-restart");
+    let mut h = Harness::start(&dir, &["--broca"]);
+    let manifest = json!({
+        "id": "flow-model", "version": 1, "purpose": "Obtain one model answer.",
+        "trigger": {"schedule": {"cron": "0 * * * *", "missed": "once"}},
+        "llm": {"token_cap": {"tokens": 10000, "window": "1h"}, "max_output": 32}
+    })
+    .to_string();
+    let installed = h.ok(json!({"cmd":"op","as":{"agent":"SYNAPSE"},"method":"flow.install","params":{"manifest":manifest,"script":"return await llm({prompt:'hello',max_output:999});"}}));
+    h.ok(json!({"cmd":"decide","card_id":installed["card_id"],"approve":true,"by":"operator"}));
+    h.ok(json!({"cmd":"clock","set_ms":T0+HOUR}));
+    h.ok(json!({"cmd":"pump"}));
+    let before = h.ok(json!({"cmd":"runs"}));
+    assert_eq!(before[0]["state"], "suspended", "{before:#}");
+    let sends = h.ok(json!({"cmd":"broca_sends"}));
+    assert_eq!(sends.as_array().unwrap().len(), 1);
+    assert_eq!(sends[0]["params"]["tools"], json!([]));
+    assert_eq!(sends[0]["params"]["generation"]["max_output_tokens"], 32);
+    h.child.kill().expect("kill the module");
+    let status = h.wait();
+    assert_eq!(status.signal(), Some(libc::SIGKILL));
+
+    let mut h = Harness::start(&dir, &["--broca"]);
+    assert_eq!(h.ok(json!({"cmd":"runs"}))[0]["state"], "suspended");
+    h.ok(json!({"cmd":"broca_finish","text":"after restart","usage":{"input_tokens":7,"cache_write_tokens":2,"output_tokens":5,"cached_input_tokens":100,"reasoning_tokens":3}}));
+    h.ok(json!({"cmd":"pump"}));
+    let runs = h.ok(json!({"cmd":"runs"}));
+    assert_eq!(runs[0]["state"], "succeeded", "{runs:#}");
+    let result: Value = serde_json::from_str(runs[0]["result"].as_str().unwrap()).unwrap();
+    assert_eq!(result, json!({"text":"after restart"}));
+    assert_eq!(
+        h.ok(json!({"cmd":"broca_sends"})).as_array().unwrap().len(),
+        1
+    );
+    h.quit();
+    let c = rusqlite::Connection::open(dir.join("basal.db")).unwrap();
+    let row: (String,i64,i64,i64,i64) = c.query_row("SELECT state,input_tokens,cache_write_tokens,output_tokens,cached_input_tokens FROM token_ledger",[],|r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).unwrap();
+    assert_eq!(row, ("settled".into(), 7, 2, 5, 100));
+    let snapshot: String = c
+        .query_row("SELECT snapshot FROM broca_calls", [], |r| r.get(0))
+        .unwrap();
+    let snapshot: Value = serde_json::from_str(&snapshot).unwrap();
+    assert_eq!(snapshot["acknowledged"], true);
+    assert!(snapshot["cursor"].is_object());
+    assert_eq!(snapshot["text"], "after restart");
+}

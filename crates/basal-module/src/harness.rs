@@ -33,7 +33,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
+use basal_core::broca::BrocaStore;
 use basal_core::{Boundary, Clock, Config, Durability, Hooks, Step};
+use basal_host::Host;
+use basal_host::broca::{BrocaHost, fake::FakeBroca, wire::ModelParams};
 use basal_host::mock::MockHost;
 use basal_host::{CardDecision, MockCatalog, MockConsent};
 use serde_json::{Value, json};
@@ -59,6 +62,7 @@ struct Args {
     warm_spares: usize,
     max_concurrent: usize,
     routing_fake: bool,
+    broca: bool,
 }
 
 fn parse() -> Result<Args, String> {
@@ -71,6 +75,7 @@ fn parse() -> Result<Args, String> {
         warm_spares: 1,
         max_concurrent: 4,
         routing_fake: false,
+        broca: false,
     };
     let mut it = std::env::args().skip(1);
     let mut dir = None;
@@ -79,6 +84,7 @@ fn parse() -> Result<Args, String> {
         let mut value = || it.next().ok_or_else(|| format!("{a} needs a value"));
         match a.as_str() {
             "--routing-fake" => args.routing_fake = true,
+            "--broca" => args.broca = true,
             "--dir" => dir = Some(PathBuf::from(value()?)),
             "--worker" => worker = Some(PathBuf::from(value()?)),
             "--kill-worker-at" => args.kill_worker_at = Some(value()?),
@@ -253,6 +259,30 @@ pub fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
+    let broca_store = Arc::new(BrocaStore::default());
+    let fake = match FakeBroca::persistent(args.dir.join("broca.json")) {
+        Ok(fake) => Arc::new(fake),
+        Err(error) => {
+            eprintln!("ck-basal-harness: {error}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let broca = Arc::new(BrocaHost::new(
+        fake.clone(),
+        broca_store.clone(),
+        args.dir.to_string_lossy().into_owned(),
+        "basal".into(),
+        ModelParams {
+            provider: "fake".into(),
+            model: "test".into(),
+            variant: None,
+        },
+    ));
+    let model_host: Arc<dyn Host> = if args.broca {
+        broca.clone()
+    } else {
+        Arc::new(mock.clone())
+    };
     let consent = MockConsent::new();
     let clock = Clock::manual(read_clock(&args.dir));
     let pool_slot = Arc::new(OnceLock::new());
@@ -292,10 +322,10 @@ pub fn main() -> std::process::ExitCode {
         Arc::new(RoutingHost::new(
             Arc::new(ModuleOpsHost::new(transport.clone(), catalog)),
             Arc::new(CoreHost::new(transport)),
-            Arc::new(mock.clone()),
+            model_host.clone(),
         ))
     } else {
-        Arc::new(mock.clone())
+        model_host
     };
     let module = match Module::start(
         config,
@@ -313,6 +343,15 @@ pub fn main() -> std::process::ExitCode {
             return std::process::ExitCode::from(EXIT_STORE_FAILURE as u8);
         }
     };
+    if args.broca {
+        if let Err(error) = broca_store
+            .bind(module.rt.shared_store())
+            .and_then(|_| broca.poll())
+        {
+            eprintln!("ck-basal-harness: {error}");
+            return std::process::ExitCode::FAILURE;
+        }
+    }
     let _ = pool_slot.set(module.pool.clone());
     module.fatal.exit_when_raised();
 
@@ -324,7 +363,49 @@ pub fn main() -> std::process::ExitCode {
             continue;
         }
         let reply = match serde_json::from_str::<Value>(&line) {
-            Ok(command) => command_reply(&module, &mock, &consent, &clock, &args.dir, &command),
+            Ok(command) => {
+                if args.broca && command.get("cmd").and_then(Value::as_str) == Some("broca_finish")
+                {
+                    let text = command.get("text").and_then(Value::as_str).unwrap_or("");
+                    let usage = command
+                        .get("usage")
+                        .filter(|v| !v.is_null())
+                        .cloned()
+                        .map(serde_json::from_value)
+                        .transpose();
+                    match usage {
+                        Ok(usage) => {
+                            let result = fake.keys().iter().try_for_each(|key| {
+                                fake.finish(
+                                    key,
+                                    text,
+                                    basal_host::broca::wire::RunFinishReason::Completed,
+                                    usage.clone(),
+                                )
+                            });
+                            match result.and_then(|_| broca.poll()) {
+                                Ok(()) => json!({"ok": true, "result": true}),
+                                Err(error) => json!({"ok": false, "error": error.to_string()}),
+                            }
+                        }
+                        Err(error) => json!({"ok": false, "error": error.to_string()}),
+                    }
+                } else if args.broca
+                    && command.get("cmd").and_then(Value::as_str) == Some("broca_sends")
+                {
+                    let sends: Vec<Value> = fake.sends().into_iter().map(|(route, bytes)| json!({"route": route, "params": serde_json::from_slice::<Value>(&bytes).ok()})).collect();
+                    json!({"ok": true, "result": sends})
+                } else {
+                    let reply =
+                        command_reply(&module, &mock, &consent, &clock, &args.dir, &command);
+                    if args.broca {
+                        if let Err(error) = broca.poll() {
+                            eprintln!("ck-basal-harness: {error}");
+                        }
+                    }
+                    reply
+                }
+            }
             Err(e) => json!({ "ok": false, "error": format!("not JSON: {e}") }),
         };
         if reply.get("quit").is_some() {

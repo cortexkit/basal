@@ -78,6 +78,7 @@ dependencies = [
  "subc-client-rs",
  "subc-protocol",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

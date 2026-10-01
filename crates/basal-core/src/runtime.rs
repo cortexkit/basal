@@ -299,6 +299,12 @@ impl Runtime {
         &self.shared.store
     }
 
+    /// Shared store for adapters that must use the runtime's single-writer
+    /// SQLite connection rather than opening a competing store lease.
+    pub fn shared_store(&self) -> Arc<Store> {
+        self.shared.store.clone()
+    }
+
     pub fn config(&self) -> &Config {
         &self.config
     }
@@ -506,10 +512,12 @@ impl Runtime {
         let cap = self.config.limits.max_result_bytes;
         let bytes = outcome.value.len();
         (bytes > cap).then(|| {
-            crate::kv::rejection(
+            let mut rejected = crate::kv::rejection(
                 "result_too_large",
                 &format!("the host's result of {bytes} bytes exceeds the cap of {cap}"),
-            )
+            );
+            rejected.usage = outcome.usage;
+            rejected
         })
     }
 

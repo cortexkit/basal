@@ -606,6 +606,7 @@ impl Module {
                 let value = observed.get("value").cloned().unwrap_or(Value::Null);
                 let text = JsonText::new(value.to_string()).map_err(invalid_params)?;
                 Resolution::ObservedResult(HostOutcome {
+                    usage: None,
                     settlement,
                     value: text,
                 })

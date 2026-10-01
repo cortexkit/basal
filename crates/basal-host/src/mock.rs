@@ -10,7 +10,7 @@
 //! | `ops.call('mock', 'post', args)` | mutation, ignores keys | one effect per send |
 //! | `ops.call('mock', 'long', args)` | mutation, honours keys | accepted as long-running; completes when the test says so |
 //! | `llm(request)` | mutation, honours keys | as `long`, Broca-shaped (below) |
-//! | `classify(text, labels)` | query | completes now with `{label, usage}`, Broca-shaped |
+//! | `classify(text, labels)` | query | completes now with a label and separate usage metadata |
 //! | `sink.digest`, `sink.status` | mutation, honours keys | as `send` |
 //! | `facts`, any other op | query | fixed data, or `args` |
 //!
@@ -313,6 +313,7 @@ impl MockHost {
                 return false;
             };
             if call.outcome.is_none() {
+                call.usage = outcome.usage.and_then(|u| serde_json::to_value(u).ok());
                 call.outcome = Some((outcome.settlement, outcome.value.as_str().to_owned()));
                 call.acknowledged = false;
             }
@@ -331,11 +332,9 @@ impl MockHost {
                 .long
                 .get(&handle)
                 .and_then(|c| c.usage.clone());
-            let value = match usage {
-                Some(usage) => json!({"done": true, "usage": usage}),
-                None => json!({"done": true}),
-            };
-            self.complete(&handle, HostOutcome::fulfilled(text(&value)));
+            let mut outcome = HostOutcome::fulfilled(text(&json!({"done": true})));
+            outcome.usage = usage.and_then(|u| serde_json::from_value(u).ok());
+            self.complete(&handle, outcome);
         }
     }
 
@@ -384,6 +383,7 @@ impl MockHost {
                     outcome: HostOutcome {
                         settlement,
                         value: JsonText::new(value).ok()?,
+                        usage: c.usage.clone().and_then(|u| serde_json::from_value(u).ok()),
                     },
                 })
             })
@@ -658,9 +658,9 @@ impl Host for MockHost {
                         .and_then(|l| l.get(0))
                         .cloned()
                         .unwrap_or(Value::Null);
-                    Dispatched::Completed(HostOutcome::fulfilled(text(
-                        &json!({"label": label, "usage": usage}),
-                    )))
+                    let mut outcome = HostOutcome::fulfilled(text(&label));
+                    outcome.usage = usage.clone().and_then(|u| serde_json::from_value(u).ok());
+                    Dispatched::Completed(outcome)
                 }
                 _ => Dispatched::Completed(HostOutcome::fulfilled(request.args.clone())),
             }

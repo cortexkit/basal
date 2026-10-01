@@ -224,6 +224,21 @@ CREATE TABLE schedule_dropped (
         version: 4,
         statements: CARDS,
     },
+    Migration {
+        version: 5,
+        statements: r#"
+-- Text, terminal metadata and stream cursor are one atomic snapshot. Keeping
+-- it beside the journal prevents a cursor from skipping unrecorded text.
+CREATE TABLE broca_calls (
+    send_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    position INTEGER NOT NULL CHECK (position >= 0),
+    snapshot TEXT NOT NULL,
+    UNIQUE (run_id, position),
+    FOREIGN KEY (run_id, position) REFERENCES journal (run_id, position) ON DELETE CASCADE
+);
+"#,
+    },
 ];
 
 /// Install cards: one consent card per installed version, raised before
