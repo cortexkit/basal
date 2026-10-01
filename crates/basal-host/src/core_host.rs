@@ -23,7 +23,7 @@ pub fn intent(
     match kind {
         Primitive::SinkDigest => {
             json!({"flow_id":flow_id,"flow_version":version,"run_id":run_id,"call_position":position,
-            "agent":args["agent"],"action":args.get("action").filter(|v| !v.is_null()).cloned().unwrap_or(json!("silent")),
+            "agent":args["agent"],"action":args["action"],
             "due_at":due_at,"created_at":created_at,"item":args["item"],"claim":null})
         }
         Primitive::SinkStatus => {
