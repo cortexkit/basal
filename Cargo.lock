@@ -36,6 +36,7 @@ dependencies = [
  "cortexkit-store",
  "cortexkit-store-types",
  "rusqlite",
+ "serde",
  "serde_json",
 ]
 

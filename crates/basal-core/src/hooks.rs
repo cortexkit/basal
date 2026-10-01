@@ -31,6 +31,8 @@ pub enum Boundary {
     SyncReplied { position: u64 },
     /// A local call's row, effect and outcome are committed.
     LocalCommitted { position: u64 },
+    /// A refused call's row, audit row and rejection are committed.
+    RefusalCommitted { position: u64 },
     /// The host answered a dispatch; nothing about the answer is committed.
     HostAnswered { position: u64 },
     /// An outcome is committed to the mailbox.

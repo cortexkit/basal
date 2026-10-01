@@ -90,10 +90,40 @@ pub fn readiness(conn: &Connection, run_id: &str) -> Result<u64> {
     crate::model::to_u64(r, "readiness")
 }
 
+/// The states a run holds its flow's concurrency slot in: every state that
+/// is not terminal, `suspended` and `needs_reconcile` included.
+pub const HOLDS_SLOT: &str = "('pending', 'running', 'suspended', 'needs_reconcile')";
+
+/// The earliest-admitted run of the same flow that was admitted before
+/// `run_id` and has not reached a terminal state, if any. Runs of one flow
+/// run one at a time in trigger order, so such a run holds the slot.
+pub fn slot_holder(conn: &Connection, run_id: &str) -> Result<Option<String>> {
+    Ok(conn
+        .query_row(
+            &format!(
+                "SELECT o.run_id FROM runs r JOIN runs o ON o.flow_id = r.flow_id \
+                 WHERE r.run_id = ?1 AND o.admit_seq < r.admit_seq AND o.state IN {HOLDS_SLOT} \
+                 ORDER BY o.admit_seq LIMIT 1"
+            ),
+            [run_id],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
 /// Takes a pending run for a new activation: compare-and-set from
 /// `pending` to `running`, with a new generation. Two callers racing for
-/// the same run cannot both succeed.
-pub fn claim(tx: &Transaction, run_id: &str, owner: &str) -> Result<Lease> {
+/// the same run cannot both succeed. A run waits while an earlier run of
+/// its flow holds the slot. Its wall-clock deadline is fixed at its first
+/// claim, from `clock_ms` (the runtime's clock), so time spent waiting for
+/// the slot is not counted against it.
+pub fn claim(tx: &Transaction, run_id: &str, owner: &str, clock_ms: i64) -> Result<Lease> {
+    if let Some(holder) = slot_holder(tx, run_id)? {
+        return Err(CoreError::SlotBusy {
+            run_id: run_id.to_owned(),
+            holder,
+        });
+    }
     let changed = tx.execute(
         "UPDATE runs SET state = 'running', owner = ?2, generation = generation + 1, \
          awaited = NULL WHERE run_id = ?1 AND state = 'pending'",
@@ -113,6 +143,11 @@ pub fn claim(tx: &Transaction, run_id: &str, owner: &str) -> Result<Lease> {
         |r| r.get(0),
     )?;
     tx.execute(
+        "UPDATE runs SET deadline_at = ?2 + deadline_ms \
+         WHERE run_id = ?1 AND deadline_at IS NULL AND deadline_ms IS NOT NULL",
+        params![run_id, clock_ms],
+    )?;
+    tx.execute(
         "INSERT INTO activations (run_id, generation, owner, started_at) VALUES (?1, ?2, ?3, ?4)",
         params![run_id, generation, owner, now_ms()],
     )?;
@@ -121,6 +156,38 @@ pub fn claim(tx: &Transaction, run_id: &str, owner: &str) -> Result<Lease> {
         owner: owner.to_owned(),
         generation: crate::model::to_u64(generation, "generation")?,
     })
+}
+
+/// Fails every run past its wall-clock deadline that is pending, running
+/// or suspended, and returns them as (run, flow). The generation moves, so
+/// an activation still driving one loses ownership at its next fenced
+/// write (or its next ownership check) and its worker is killed. Calls the
+/// run already dispatched keep their obligations. `needs_reconcile` runs
+/// are left for the operator: failing one would take away the chance to
+/// reconcile its unknown call as not applied.
+pub fn expire(
+    tx: &Transaction,
+    clock_ms: i64,
+    only: Option<&str>,
+) -> Result<Vec<(String, String)>> {
+    let mut stmt = tx.prepare(
+        "SELECT run_id, flow_id FROM runs WHERE deadline_at IS NOT NULL AND deadline_at <= ?1 \
+         AND state IN ('pending', 'running', 'suspended') AND (?2 IS NULL OR run_id = ?2) \
+         ORDER BY admit_seq",
+    )?;
+    let expired: Vec<(String, String)> = stmt
+        .query_map(params![clock_ms, only], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    drop(stmt);
+    for (run_id, _) in &expired {
+        tx.execute(
+            "UPDATE runs SET state = 'failed', owner = NULL, generation = generation + 1, \
+             awaited = NULL, error_kind = 'deadline', error_detail = ?2, ended_at = ?3 \
+             WHERE run_id = ?1 AND state IN ('pending', 'running', 'suspended')",
+            params![run_id, "the run passed its wall-clock deadline", now_ms()],
+        )?;
+    }
+    Ok(expired)
 }
 
 /// Takes a running run away from its current activation, as a lease

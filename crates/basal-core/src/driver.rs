@@ -18,17 +18,24 @@ use basal_proto::{
     JsonText, Nondeterminism, Outcome, ParentMessage, Primitive, Profile, Settlement,
     WorkerMessage,
 };
-use serde_json::Number;
+use rusqlite::Transaction;
+use serde_json::{Number, Value};
 
+use crate::audit;
+use crate::authorize::{self, Refusal, codes};
 use crate::channel::{ChannelError, WorkerChannel};
 use crate::error::{CoreError, Result};
 use crate::hooks::Boundary;
-use crate::ids::{Fingerprint, code_hash};
+use crate::ids::{Fingerprint, code_hash, idempotency_key};
+use crate::install;
 use crate::journal::{self, NewCall, Source};
-use crate::local;
+use crate::kv;
+use crate::manifest::Manifest;
 use crate::model::{DispatchState, Run, RunState, StoredClass};
+use crate::rate::{self, Take};
 use crate::runs::{self, Exit, Lease, Parked};
 use crate::runtime::{ActivationEnd, Runtime};
+use crate::tokens::{self, Reservation};
 
 /// How long a blocked activation sleeps between mailbox checks when nothing
 /// signals it (a backstop; arrivals wake it at once).
@@ -73,6 +80,19 @@ struct Activation<'a> {
     /// The run's readiness sequence as of the last mailbox check.
     readiness_seen: u64,
     deadline: Instant,
+    /// The run's approved manifest, decoded once per activation; every new
+    /// call is authorized against it.
+    manifest: Option<Manifest>,
+}
+
+/// A call that passed the manifest check, ready to journal.
+#[derive(Debug, Default)]
+struct Prepared {
+    /// The exact bytes to send when they are not the script's arguments: a
+    /// model call's clamped request.
+    request: Option<JsonText>,
+    /// Tokens to reserve for a model call.
+    tokens: Option<u64>,
 }
 
 impl Runtime {
@@ -81,7 +101,7 @@ impl Runtime {
     pub fn activate(&self, run_id: &str, worker: &mut dyn WorkerChannel) -> Result<ActivationEnd> {
         let lease = match self.claim(run_id)? {
             Ok(lease) => lease,
-            Err(state) => return Ok(ActivationEnd::NotRunnable { state }),
+            Err(end) => return Ok(end),
         };
         Ok(self.drive(lease, worker))
     }
@@ -93,7 +113,7 @@ impl Runtime {
         };
         let lease = match self.claim(run_id)? {
             Ok(lease) => lease,
-            Err(state) => return Ok(ActivationEnd::NotRunnable { state }),
+            Err(end) => return Ok(end),
         };
         let mut worker = match source.worker() {
             Ok(w) => w,
@@ -108,14 +128,41 @@ impl Runtime {
         Ok(self.drive(lease, worker.as_mut()))
     }
 
-    /// Claims a pending run, or reports the state that prevented it.
-    fn claim(&self, run_id: &str) -> Result<std::result::Result<Lease, RunState>> {
+    /// Claims a pending run, or reports why no activation started: the run
+    /// is not pending (a pending run already past its deadline is failed
+    /// here instead), or an earlier run of its flow holds the slot.
+    fn claim(&self, run_id: &str) -> Result<std::result::Result<Lease, ActivationEnd>> {
         let owner = self.config.owner.clone();
-        match self
-            .shared
-            .store
-            .write(|tx| runs::claim(tx, run_id, &owner))
-        {
+        let now = self.config.clock.now_ms();
+        let claimed = self.shared.store.write(|tx| {
+            if !runs::expire(tx, now, Some(run_id))?.is_empty() {
+                return Ok(Err(ActivationEnd::NotRunnable {
+                    state: RunState::Failed,
+                }));
+            }
+            match runs::claim(tx, run_id, &owner, now) {
+                Ok(lease) => Ok(Ok(lease)),
+                Err(CoreError::SlotBusy { holder, .. }) => {
+                    Ok(Err(ActivationEnd::Waiting { holder }))
+                }
+                Err(e) => Err(e),
+            }
+        });
+        let claimed = match claimed {
+            Ok(Err(end)) => {
+                if let ActivationEnd::NotRunnable { .. } = end
+                    && let Ok(run) = self.run(run_id)
+                {
+                    // It expired just now: the slot it held is free.
+                    self.shared.signal.bump();
+                    self.wake_flow(&run.flow_id);
+                }
+                return Ok(Err(end));
+            }
+            Ok(Ok(lease)) => Ok(lease),
+            Err(e) => Err(e),
+        };
+        match claimed {
             Ok(lease) => {
                 self.at(
                     run_id,
@@ -125,7 +172,9 @@ impl Runtime {
                 )?;
                 Ok(Ok(lease))
             }
-            Err(CoreError::WrongState { state, .. }) => Ok(Err(state)),
+            Err(CoreError::WrongState { state, .. }) => {
+                Ok(Err(ActivationEnd::NotRunnable { state }))
+            }
             Err(e) => Err(e),
         }
     }
@@ -147,6 +196,7 @@ impl Runtime {
                     run,
                     worker,
                     deadline,
+                    manifest: None,
                 };
                 match activation.run() {
                     Ok(Flow::Done { end, idle }) => (Ok(end), idle),
@@ -167,7 +217,19 @@ impl Runtime {
                 self.wake(&run_id);
                 ActivationEnd::Requeued
             }
-            Ok(end) => end,
+            Ok(end) => {
+                // A run that reached a terminal state frees its flow's slot.
+                if matches!(
+                    end,
+                    ActivationEnd::Succeeded { .. }
+                        | ActivationEnd::Failed { .. }
+                        | ActivationEnd::EngineMismatch { .. }
+                ) && let Ok(run) = self.run(&run_id)
+                {
+                    self.wake_flow(&run.flow_id);
+                }
+                end
+            }
             Err(CoreError::OwnerLost { .. }) => ActivationEnd::OwnerLost,
             Err(CoreError::Cut) => ActivationEnd::Crashed,
             // Storage failed: fail closed. The worker is already killed and
@@ -181,9 +243,40 @@ impl Runtime {
     }
 }
 
+/// The failure detail of a run that passed its wall-clock deadline.
+const RUN_DEADLINE: &str = "the run passed its wall-clock deadline";
+
+/// What a disabled flow's new calls are refused with.
+fn disabled_refusal() -> Refusal {
+    Refusal::new(
+        codes::FLOW_DISABLED,
+        "the flow is disabled; it makes no new calls",
+    )
+}
+
+/// The audit outcome of a call the runtime served itself: allowed, or the
+/// code it was refused with (a `kv` limit, invalid arguments).
+fn outcome_label(outcome: &basal_host::HostOutcome) -> String {
+    match outcome.settlement {
+        Settlement::Fulfilled => audit::ALLOWED.to_owned(),
+        Settlement::Rejected => serde_json::from_str::<Value>(outcome.value.as_str())
+            .ok()
+            .and_then(|v| v.get("code").and_then(Value::as_str).map(str::to_owned))
+            .unwrap_or_else(|| "rejected".to_owned()),
+    }
+}
+
 impl Activation<'_> {
     fn at(&self, boundary: Boundary) -> Result<()> {
         self.rt.at(&self.lease.run_id, boundary)
+    }
+
+    /// Whether the run's wall-clock deadline, fixed at its first claim, has
+    /// passed on the runtime's clock.
+    fn run_deadline_passed(&self) -> bool {
+        self.run
+            .deadline_at
+            .is_some_and(|d| self.rt.config.clock.now_ms() >= d)
     }
 
     fn exit(&self, exit: Exit) -> Result<RunState> {
@@ -227,6 +320,16 @@ impl Activation<'_> {
         if let Flow::Done { end, idle } = self.check_identity()? {
             return Ok(done(end, idle));
         }
+        match Manifest::parse(&self.run.manifest) {
+            Ok(manifest) => self.manifest = Some(manifest),
+            Err(e) => {
+                return self.fail(
+                    "manifest",
+                    format!("the run's approved manifest does not decode: {e}"),
+                    true,
+                );
+            }
+        }
         if let Flow::Done { end, idle } = self.recover_calls()? {
             return Ok(done(end, idle));
         }
@@ -252,6 +355,9 @@ impl Activation<'_> {
         })?;
         self.deadline = Instant::now() + self.rt.config.activation_deadline;
         loop {
+            if self.run_deadline_passed() {
+                return self.fail("deadline", RUN_DEADLINE.into(), false);
+            }
             let now = Instant::now();
             if now >= self.deadline {
                 return self.fail(
@@ -260,9 +366,18 @@ impl Activation<'_> {
                     false,
                 );
             }
-            let message = match self.worker.recv(self.deadline - now) {
+            let message = match self.worker.recv((self.deadline - now).min(WAIT_SLICE)) {
                 Ok(m) => m,
-                Err(ChannelError::Timeout) => continue,
+                Err(ChannelError::Timeout) => {
+                    // Between frames, notice a run failed or taken from
+                    // outside (its deadline enforced, a cancel), so a worker
+                    // busy in a loop is killed rather than left running.
+                    let lease = self.lease.clone();
+                    if !self.rt.store().read(|c| lease.holds(c))? {
+                        return Err(self.lease.lost());
+                    }
+                    continue;
+                }
                 Err(e) => return self.broken(e.to_string()),
             };
             let flow = match message {
@@ -363,9 +478,9 @@ impl Activation<'_> {
                     // A local call's effect commits with its outcome, so a
                     // row without one never took effect; run it now.
                     let flow_id = self.run.flow_id.clone();
+                    let limits = self.rt.config.kv;
                     self.rt.store().write(|tx| {
-                        let outcome =
-                            local::apply(tx, &flow_id, &row.idempotency_key, &row.kind, &row.args)?;
+                        let outcome = kv::apply(tx, &flow_id, &row.kind, &row.args, &limits)?;
                         journal::accept_outcome(
                             tx,
                             &run_id,
@@ -475,17 +590,44 @@ impl Activation<'_> {
         }
         let class = self.rt.class_of(&call.kind);
         let flow_id = self.run.flow_id.clone();
+        // Clock reads and random samples need no grant. Every other call is
+        // checked against the approved manifest first; a refusal is still
+        // journaled, as a rejection, below.
+        let prepared = match class {
+            StoredClass::Sync => Ok(Prepared::default()),
+            _ => self.prepare(&call),
+        };
+        let request = prepared.as_ref().ok().and_then(|p| p.request.as_ref());
+        if let Some(flow) = self.check_run_limits(&call, request)? {
+            return Ok(flow);
+        }
+        let prepared = match prepared {
+            Ok(prepared) => prepared,
+            Err(refusal) => return self.refuse(&call, &flow_id, &refusal),
+        };
         let new = NewCall {
             position: call.position,
             kind: &call.kind,
             args: &call.args,
             class,
+            request: prepared.request.as_ref(),
         };
+        let audited_at = self.rt.config.clock.now_ms();
         match class {
             StoredClass::Sync => {
                 let (settlement, value, clock) = self.sync_value(&call.kind)?;
                 let outcome = self.rt.store().write(|tx| {
                     journal::insert_call(tx, &self.lease, &flow_id, &new)?;
+                    audit::record(
+                        tx,
+                        &flow_id,
+                        &self.lease.run_id,
+                        call.position,
+                        &call.kind,
+                        &ArgsDigest::of(&call.args),
+                        audit::ALLOWED,
+                        audited_at,
+                    )?;
                     // Re-read the latest clock inside the transaction, so
                     // the value is monotonic against everything committed.
                     let clock = match (clock, journal::last_clock(tx, &self.lease.run_id)?) {
@@ -502,9 +644,26 @@ impl Activation<'_> {
                 self.reply(outcome)
             }
             StoredClass::Local => {
-                let ack = self.rt.store().write(|tx| {
-                    let key = journal::insert_call(tx, &self.lease, &flow_id, &new)?;
-                    let outcome = local::apply(tx, &flow_id, &key, &call.kind, &call.args)?;
+                let limits = self.rt.config.kv;
+                let refused = self.rt.store().write(|tx| {
+                    if install::is_disabled(tx, &flow_id)? {
+                        self.record_refusal(tx, &flow_id, &call, &disabled_refusal())?;
+                        return Ok(true);
+                    }
+                    journal::insert_call(tx, &self.lease, &flow_id, &new)?;
+                    // The effect, its audit row and its outcome commit with
+                    // the journal row: all of them or none.
+                    let outcome = kv::apply(tx, &flow_id, &call.kind, &call.args, &limits)?;
+                    audit::record(
+                        tx,
+                        &flow_id,
+                        &self.lease.run_id,
+                        call.position,
+                        &call.kind,
+                        &ArgsDigest::of(&call.args),
+                        &outcome_label(&outcome),
+                        audited_at,
+                    )?;
                     journal::accept_outcome(
                         tx,
                         &self.lease.run_id,
@@ -512,12 +671,18 @@ impl Activation<'_> {
                         None,
                         &outcome,
                         Source::Local,
-                    )
+                    )?;
+                    Ok(false)
                 })?;
-                let _ = ack;
                 self.next_position += 1;
-                self.at(Boundary::LocalCommitted {
-                    position: call.position,
+                self.at(if refused {
+                    Boundary::RefusalCommitted {
+                        position: call.position,
+                    }
+                } else {
+                    Boundary::LocalCommitted {
+                        position: call.position,
+                    }
                 })?;
                 self.rt.shared.signal.bump();
                 Ok(Flow::Continue)
@@ -525,12 +690,22 @@ impl Activation<'_> {
             _ => {
                 let run_id = self.lease.run_id.clone();
                 self.rt.register(&run_id, call.position);
-                let key = match self
-                    .rt
-                    .store()
-                    .write(|tx| journal::insert_call(tx, &self.lease, &flow_id, &new))
-                {
-                    Ok(key) => key,
+                let committed = self.rt.store().write(|tx| {
+                    self.commit_remote(tx, &flow_id, &call, &new, &prepared, audited_at)
+                });
+                let key = match committed {
+                    Ok(Some(key)) => key,
+                    Ok(None) => {
+                        // Refused inside the transaction (disabled flow,
+                        // dispatch budget, token cap); nothing is sent.
+                        self.rt.unregister(&run_id, call.position);
+                        self.next_position += 1;
+                        self.at(Boundary::RefusalCommitted {
+                            position: call.position,
+                        })?;
+                        self.rt.shared.signal.bump();
+                        return Ok(Flow::Continue);
+                    }
                     Err(e) => {
                         self.rt.unregister(&run_id, call.position);
                         return Err(e);
@@ -546,7 +721,7 @@ impl Activation<'_> {
                         run_id,
                         position: call.position,
                         kind: call.kind,
-                        args: call.args,
+                        args: prepared.request.unwrap_or(call.args),
                         idempotency_key: key,
                         attempt: 1,
                     },
@@ -555,6 +730,217 @@ impl Activation<'_> {
                 Ok(Flow::Continue)
             }
         }
+    }
+
+    /// Checks a new call's argument size and its grant in the approved
+    /// manifest, and builds a model call's clamped request. Needs no store.
+    fn prepare(&self, call: &HostCall) -> std::result::Result<Prepared, Refusal> {
+        let cap = self.rt.config.limits.max_arg_bytes;
+        if call.args.len() > cap {
+            return Err(Refusal::new(
+                codes::TOO_LARGE,
+                format!(
+                    "arguments of {} bytes exceed the cap of {cap}",
+                    call.args.len()
+                ),
+            ));
+        }
+        let args: Value = serde_json::from_str(call.args.as_str())
+            .map_err(|_| Refusal::new(codes::INVALID_ARGUMENTS, "arguments are not JSON"))?;
+        let Some(manifest) = &self.manifest else {
+            return Err(Refusal::denied("the run has no approved manifest"));
+        };
+        authorize::check(
+            manifest,
+            &self.rt.config.shell_denylist,
+            self.rt.catalog(),
+            &call.kind,
+            &args,
+        )?;
+        match &call.kind {
+            CallKind::Primitive(p @ (Primitive::Llm | Primitive::Classify)) => {
+                let Some(grant) = &manifest.llm else {
+                    return Err(Refusal::denied("the manifest grants no model calls"));
+                };
+                let send_id = idempotency_key(&self.run.flow_id, &self.lease.run_id, call.position);
+                let clamped = tokens::clamp(
+                    *p,
+                    &call.args,
+                    &args,
+                    grant,
+                    &self.run.flow_id,
+                    &self.lease.run_id,
+                    &send_id,
+                )?;
+                Ok(Prepared {
+                    request: Some(clamped.request),
+                    tokens: Some(clamped.reserve),
+                })
+            }
+            _ => Ok(Prepared::default()),
+        }
+    }
+
+    /// The run's host-call and journal-size limits. Passing either fails the
+    /// run before anything about the call is written, so the failure
+    /// replays the same way (it never does: the run is over).
+    fn check_run_limits(
+        &mut self,
+        call: &HostCall,
+        request: Option<&JsonText>,
+    ) -> Result<Option<Flow>> {
+        let limits = self.rt.config.limits;
+        let run_id = self.lease.run_id.clone();
+        let (calls, bytes) = self.rt.store().read(|c| journal::run_size(c, &run_id))?;
+        if calls >= limits.max_calls {
+            return self
+                .fail(
+                    "limit",
+                    format!(
+                        "the run reached its limit of {} host calls",
+                        limits.max_calls
+                    ),
+                    false,
+                )
+                .map(Some);
+        }
+        let incoming = (call.args.len() + request.map_or(0, JsonText::len)) as u64;
+        if bytes.saturating_add(incoming) > limits.max_journal_bytes {
+            return self
+                .fail(
+                    "limit",
+                    format!(
+                        "the run's journal would pass its limit of {} bytes",
+                        limits.max_journal_bytes
+                    ),
+                    false,
+                )
+                .map(Some);
+        }
+        Ok(None)
+    }
+
+    /// Journals a refused call: its row, its audit row and its rejection,
+    /// in the caller's transaction. The row is stored as served locally: it
+    /// was never sent, and its outcome is already known.
+    fn record_refusal(
+        &self,
+        tx: &Transaction,
+        flow_id: &str,
+        call: &HostCall,
+        refusal: &Refusal,
+    ) -> Result<()> {
+        let new = NewCall {
+            position: call.position,
+            kind: &call.kind,
+            args: &call.args,
+            class: StoredClass::Local,
+            request: None,
+        };
+        journal::insert_call(tx, &self.lease, flow_id, &new)?;
+        audit::record(
+            tx,
+            flow_id,
+            &self.lease.run_id,
+            call.position,
+            &call.kind,
+            &ArgsDigest::of(&call.args),
+            refusal.code,
+            self.rt.config.clock.now_ms(),
+        )?;
+        journal::accept_outcome(
+            tx,
+            &self.lease.run_id,
+            call.position,
+            None,
+            &refusal.outcome(),
+            Source::Local,
+        )?;
+        Ok(())
+    }
+
+    /// A call refused before anything else about it was decided.
+    fn refuse(&mut self, call: &HostCall, flow_id: &str, refusal: &Refusal) -> Result<Flow> {
+        self.rt
+            .store()
+            .write(|tx| self.record_refusal(tx, flow_id, call, refusal))?;
+        self.next_position += 1;
+        self.at(Boundary::RefusalCommitted {
+            position: call.position,
+        })?;
+        self.rt.shared.signal.bump();
+        Ok(Flow::Continue)
+    }
+
+    /// In one transaction, the checks that need the store and the journal
+    /// row of a remote call: a disabled flow and the dispatch budget refuse
+    /// it; a model call reserves its tokens or is refused. Returns the
+    /// call's idempotency key when it may be dispatched, or `None` when it
+    /// was journaled as refused.
+    fn commit_remote(
+        &self,
+        tx: &Transaction,
+        flow_id: &str,
+        call: &HostCall,
+        new: &NewCall<'_>,
+        prepared: &Prepared,
+        now_ms: i64,
+    ) -> Result<Option<String>> {
+        let rate = self.rt.config.rate;
+        if install::is_disabled(tx, flow_id)? {
+            self.record_refusal(tx, flow_id, call, &disabled_refusal())?;
+            return Ok(None);
+        }
+        if let Take::Refused { .. } = rate::check(tx, flow_id, rate::Kind::Dispatch, now_ms, &rate)?
+        {
+            let refusal = Refusal::new(
+                codes::DISPATCH_BUDGET,
+                format!(
+                    "the flow's budget of {} dispatches per window is spent",
+                    rate.max_dispatches
+                ),
+            );
+            self.record_refusal(tx, flow_id, call, &refusal)?;
+            return Ok(None);
+        }
+        let key = idempotency_key(flow_id, &self.lease.run_id, call.position);
+        if let Some(amount) = prepared.tokens {
+            let Some(manifest) = &self.manifest else {
+                return Err(CoreError::Invalid("a model call without a manifest".into()));
+            };
+            let (Some(window_ms), Some(grant)) = (manifest.token_window_ms(), &manifest.llm) else {
+                return Err(CoreError::Invalid(
+                    "a model call without a token cap".into(),
+                ));
+            };
+            let reservation = Reservation {
+                send_id: &key,
+                flow_id,
+                run_id: &self.lease.run_id,
+                position: call.position,
+                window_ms,
+                cap: grant.token_cap.tokens,
+                amount,
+                now_ms,
+            };
+            if let Err(refusal) = tokens::reserve(tx, &reservation)? {
+                self.record_refusal(tx, flow_id, call, &refusal)?;
+                return Ok(None);
+            }
+        }
+        rate::count(tx, flow_id, rate::Kind::Dispatch, now_ms, &rate)?;
+        let inserted = journal::insert_call(tx, &self.lease, flow_id, new)?;
+        audit::record(
+            tx,
+            flow_id,
+            &self.lease.run_id,
+            call.position,
+            &call.kind,
+            &ArgsDigest::of(&call.args),
+            audit::ALLOWED,
+            now_ms,
+        )?;
+        Ok(Some(inserted))
     }
 
     /// A synchronous call journaled without its value comes back at its
@@ -659,6 +1045,9 @@ impl Activation<'_> {
                 }
                 self.at(Boundary::LongRunningSent)?;
                 return Ok(Flow::Continue);
+            }
+            if self.run_deadline_passed() {
+                return self.fail("deadline", RUN_DEADLINE.into(), false);
             }
             let now = Instant::now();
             if now >= self.deadline {

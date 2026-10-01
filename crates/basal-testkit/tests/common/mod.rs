@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use basal_core::{Config, Hooks, NoHooks, Run, Runtime};
-use basal_testkit::harness::{World, drive};
+use basal_testkit::harness::{World, drive, test_manifest};
 
 pub fn config() -> Config {
     Config {
@@ -26,15 +26,20 @@ pub fn runtime_with(world: &World, hooks: Arc<dyn Hooks>) -> Runtime {
 }
 
 pub fn admit(rt: &Runtime, world: &World, script: &str) -> String {
-    rt.admit(&world.spec(script))
+    rt.admit(&world.spec(rt, script).expect("approve"))
         .expect("admit")
         .run_id()
         .expect("admitted")
         .to_owned()
 }
 
+/// Admits `script` as a flow of its own, named after `trigger_id`, so
+/// tests that drive several runs side by side are not serialised by one
+/// flow's concurrency slot.
 pub fn admit_as(rt: &Runtime, world: &World, script: &str, trigger_id: &str) -> String {
-    let mut spec = world.spec(script);
+    let mut manifest = test_manifest();
+    manifest["id"] = serde_json::json!(format!("flow-{trigger_id}"));
+    let mut spec = world.spec_with(rt, script, &manifest).expect("approve");
     spec.trigger_id = trigger_id.to_owned();
     rt.admit(&spec)
         .expect("admit")

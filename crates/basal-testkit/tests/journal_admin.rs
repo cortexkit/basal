@@ -17,7 +17,7 @@ fn far_future() -> i64 {
 fn admission_deduplicates_and_tombstones_refuse_after_pruning() {
     let world = World::new("admission");
     let rt = runtime(&world);
-    let spec = world.spec("return 1;");
+    let spec = world.spec(&rt, "return 1;").expect("approve");
     let first = rt.admit(&spec).expect("admit");
     let Admission::Admitted { run_id } = first.clone() else {
         panic!("{first:?}");
@@ -161,7 +161,7 @@ fn drain_stops_admission_and_lists_unfinished_runs() {
     rt.resume(&suspended).expect("activation");
     let unfinished = rt.drain().expect("drain");
     assert_eq!(unfinished.get("suspended"), Some(&vec![suspended.clone()]));
-    let mut spec = world.spec("return 1;");
+    let mut spec = world.spec(&rt, "return 1;").expect("approve");
     spec.trigger_id = "b".into();
     assert_eq!(rt.admit(&spec).expect("admit"), Admission::Draining);
     rt.undrain().expect("undrain");

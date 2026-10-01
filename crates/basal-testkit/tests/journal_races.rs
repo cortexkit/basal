@@ -276,8 +276,13 @@ fn local_effect_behind_unresolved_call_applies_once() {
     assert_eq!(run.fired, vec![true]);
     assert_eq!(run.summary.state, "succeeded", "{run:#?}");
     assert_eq!(run.summary.result, Some(json!({"v": 7, "lv": true})));
-    assert_eq!(run.summary.local_effects.get(&1), Some(&1), "{run:#?}");
-    assert_eq!(run.summary.kv.get("k").map(String::as_str), Some("7"));
+    // Written once: a second application would show as revision 2.
+    assert_eq!(
+        run.summary.kv.get("k").map(String::as_str),
+        Some("7@1"),
+        "{run:#?}"
+    );
+    assert!(run.summary.audit_complete(), "{run:#?}");
 }
 
 /// A synchronous call journaled without its value (its row committed, its

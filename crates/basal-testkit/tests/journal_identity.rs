@@ -96,6 +96,7 @@ fn fingerprint_mismatch_is_engine_mismatch_without_replay() {
     let rt = Runtime::new(
         store,
         Arc::new(world.mock.clone()),
+        Arc::new(world.catalog.clone()),
         Arc::new(NoHooks),
         Some(other.clone()),
         config(),

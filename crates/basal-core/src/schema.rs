@@ -18,9 +18,10 @@ pub const NAMESPACE: &str = "basal_core";
 /// under one layout is never replayed under another.
 pub const JOURNAL_FORMAT: u32 = 1;
 
-pub const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    statements: r#"
+pub const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        statements: r#"
 CREATE TABLE meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -163,4 +164,153 @@ CREATE TABLE local_effects (
     op              TEXT NOT NULL
 );
 "#,
-}];
+    },
+    Migration {
+        version: 2,
+        statements: DISPATCH,
+    },
+];
+
+/// Flows, their installed versions and what decides whether a flow may do
+/// something, and how much: the call audit, `kv`, token reservations, rate
+/// windows and the owner notification outbox.
+const DISPATCH: &str = r#"
+-- One row per flow id, across its versions: whether it is enabled, which
+-- version is approved, and who owns it (the approved version's author).
+CREATE TABLE flows (
+    flow_id          TEXT PRIMARY KEY,
+    owner            TEXT,
+    state            TEXT NOT NULL DEFAULT 'enabled' CHECK (state IN ('enabled', 'disabled')),
+    approved_version INTEGER,
+    disabled_by      TEXT,
+    disabled_reason  TEXT,
+    disabled_at      INTEGER,
+    created_at       INTEGER NOT NULL,
+    CHECK ((state = 'disabled') = (disabled_by IS NOT NULL))
+);
+
+-- Every validated version. Approval binds to the exact code hash; at most
+-- one version per flow is approved at a time, and approving another
+-- supersedes it.
+CREATE TABLE installs (
+    flow_id       TEXT NOT NULL REFERENCES flows (flow_id),
+    version       INTEGER NOT NULL CHECK (version >= 1),
+    code_hash     BLOB NOT NULL CHECK (length(code_hash) = 32),
+    manifest      TEXT NOT NULL,
+    script        TEXT NOT NULL,
+    author        TEXT NOT NULL,
+    loop_override INTEGER NOT NULL DEFAULT 0 CHECK (loop_override IN (0, 1)),
+    approval_ref  TEXT,
+    state         TEXT NOT NULL CHECK (state IN ('validated', 'approved', 'superseded')),
+    installed_at  INTEGER NOT NULL,
+    approved_at   INTEGER,
+    PRIMARY KEY (flow_id, version),
+    CHECK ((state = 'validated') = (approval_ref IS NULL))
+);
+CREATE UNIQUE INDEX installs_one_approved ON installs (flow_id) WHERE state = 'approved';
+
+-- The version a run was admitted under, its place in its flow's trigger
+-- order (the concurrency slot goes to the earliest unfinished run), its
+-- wall-clock budget, and the deadline fixed when it first starts.
+ALTER TABLE runs ADD COLUMN flow_version INTEGER;
+ALTER TABLE runs ADD COLUMN admit_seq INTEGER;
+ALTER TABLE runs ADD COLUMN deadline_ms INTEGER;
+ALTER TABLE runs ADD COLUMN deadline_at INTEGER;
+CREATE INDEX runs_flow_order ON runs (flow_id, admit_seq);
+
+-- The exact bytes sent to the host when they differ from the script's
+-- argument bytes: the clamped model request, journaled with the intent so a
+-- re-issue sends the same bytes under the same send id.
+ALTER TABLE journal ADD COLUMN request TEXT;
+
+-- One row per call, allowed or refused, written in the transaction that
+-- journals it, never again (replay serves recorded calls without the
+-- parent seeing them).
+CREATE TABLE call_audit (
+    run_id      TEXT NOT NULL,
+    position    INTEGER NOT NULL CHECK (position >= 0),
+    flow_id     TEXT NOT NULL,
+    op          TEXT NOT NULL,
+    args_digest BLOB NOT NULL CHECK (length(args_digest) = 32),
+    outcome     TEXT NOT NULL,
+    at          INTEGER NOT NULL,
+    PRIMARY KEY (run_id, position)
+);
+
+-- A flow's own durable state, shared by its versions. Each write commits
+-- with its journal row; revision counts the writes to a key.
+DROP TABLE local_kv;
+DROP TABLE local_effects;
+CREATE TABLE kv (
+    flow_id  TEXT NOT NULL,
+    key      TEXT NOT NULL,
+    value    TEXT NOT NULL,
+    bytes    INTEGER NOT NULL CHECK (bytes >= 0),
+    revision INTEGER NOT NULL CHECK (revision >= 1),
+    PRIMARY KEY (flow_id, key)
+);
+
+-- One reservation per model call, keyed by its send id. While reserved it
+-- counts at its reserved size; once settled, at what was reported (or at
+-- its reserved size when nothing was). It stays in the window it was
+-- reserved in.
+CREATE TABLE token_ledger (
+    send_id             TEXT PRIMARY KEY,
+    flow_id             TEXT NOT NULL,
+    run_id              TEXT NOT NULL,
+    position            INTEGER NOT NULL,
+    window_ms           INTEGER NOT NULL CHECK (window_ms > 0),
+    window_start        INTEGER NOT NULL,
+    reserved            INTEGER NOT NULL CHECK (reserved >= 0),
+    state               TEXT NOT NULL CHECK (state IN ('reserved', 'settled')),
+    input_tokens        INTEGER,
+    cache_write_tokens  INTEGER,
+    output_tokens       INTEGER,
+    cached_input_tokens INTEGER,
+    unreported_tokens   INTEGER,
+    reserved_at         INTEGER NOT NULL,
+    settled_at          INTEGER,
+    UNIQUE (run_id, position),
+    CHECK ((state = 'settled') = (settled_at IS NOT NULL))
+);
+
+-- Per flow and window, the running totals the cap is checked against:
+-- outstanding reservations plus settled fresh input, cache write, output
+-- and unreported charges. Cached input is kept for display, not capped.
+CREATE TABLE token_windows (
+    flow_id             TEXT NOT NULL,
+    window_ms           INTEGER NOT NULL,
+    window_start        INTEGER NOT NULL,
+    reserved            INTEGER NOT NULL DEFAULT 0 CHECK (reserved >= 0),
+    input_tokens        INTEGER NOT NULL DEFAULT 0,
+    cache_write_tokens  INTEGER NOT NULL DEFAULT 0,
+    output_tokens       INTEGER NOT NULL DEFAULT 0,
+    cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+    unreported_tokens   INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (flow_id, window_ms, window_start)
+);
+
+-- Per flow and rate window: runs admitted, calls dispatched, and whether a
+-- limit refused something in it (saturated).
+CREATE TABLE rate_windows (
+    flow_id      TEXT NOT NULL,
+    window_ms    INTEGER NOT NULL,
+    window_start INTEGER NOT NULL,
+    runs         INTEGER NOT NULL DEFAULT 0,
+    dispatches   INTEGER NOT NULL DEFAULT 0,
+    saturated    INTEGER NOT NULL DEFAULT 0 CHECK (saturated IN (0, 1)),
+    PRIMARY KEY (flow_id, window_ms, window_start)
+);
+
+-- Notifications for a flow's owner, written in the transaction that
+-- decides them. Delivery is a separate concern.
+CREATE TABLE outbox (
+    seq          INTEGER PRIMARY KEY AUTOINCREMENT,
+    at           INTEGER NOT NULL,
+    kind         TEXT NOT NULL,
+    flow_id      TEXT NOT NULL,
+    recipient    TEXT,
+    body         TEXT NOT NULL,
+    delivered_at INTEGER
+);
+"#;

@@ -9,9 +9,19 @@
 //! | `ops.call('mock', 'send', args)` | mutation, honours keys | one effect per idempotency key; a repeat returns the first reply |
 //! | `ops.call('mock', 'post', args)` | mutation, ignores keys | one effect per send |
 //! | `ops.call('mock', 'long', args)` | mutation, honours keys | accepted as long-running; completes when the test says so |
-//! | `llm(request)` | mutation, honours keys | as `long` |
+//! | `llm(request)` | mutation, honours keys | as `long`, Broca-shaped (below) |
+//! | `classify(text, labels)` | query | completes now with `{label, usage}`, Broca-shaped |
 //! | `sink.digest`, `sink.status` | mutation, honours keys | as `send` |
-//! | `facts`, `classify`, any other op | query | fixed data, or `args` |
+//! | `facts`, any other op | query | fixed data, or `args` |
+//!
+//! Broca-shaped: the request is basal's envelope, whose `send_id` Broca
+//! deduplicates on. The mock records every send's exact bytes per
+//! `send_id`; a second send under the same `send_id` with different bytes
+//! is refused with code `send_id_reuse`, as Broca refuses it. Usage is
+//! reported with the outcome: the script's request may carry `usage` to set
+//! it, otherwise input is a quarter of the envelope's bytes and output is
+//! the smaller of the clamped `max_output` and 16. [`MockHost::complete_all`]
+//! attaches it to an `llm` completion.
 //!
 //! Arguments may carry `delay_ms` (real time to wait before answering),
 //! `gate` (a name: the call waits until the test opens that gate),
@@ -68,6 +78,8 @@ struct LongCall {
     key: String,
     outcome: Option<(Settlement, String)>,
     acknowledged: bool,
+    /// The usage an `llm` call reports when it completes.
+    usage: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -78,6 +90,8 @@ struct State {
     /// Every send that reached the mock: (key, module, op).
     sends: Vec<(String, String, String)>,
     long: BTreeMap<String, LongCall>,
+    /// Every Broca send: (send_id, exact request bytes).
+    broca_sends: Vec<(String, String)>,
     clock_ms: f64,
     clock_step_ms: f64,
     random_state: u64,
@@ -90,6 +104,7 @@ impl Default for State {
             replies: BTreeMap::new(),
             sends: Vec::new(),
             long: BTreeMap::new(),
+            broca_sends: Vec::new(),
             clock_ms: 1_767_225_600_000.0, // 2026-01-01T00:00:00Z
             clock_step_ms: 1.0,
             random_state: 0x9E37_79B9_7F4A_7C15,
@@ -308,14 +323,46 @@ impl MockHost {
         true
     }
 
-    /// Completes every pending long-running call with `{done: true}`.
+    /// Completes every pending long-running call with `{done: true}`, plus
+    /// the reported `usage` for an `llm` call.
     pub fn complete_all(&self) {
         for handle in self.pending_long() {
-            self.complete(
-                &handle,
-                HostOutcome::fulfilled(text(&json!({"done": true}))),
-            );
+            let usage = lock(&self.shared.state)
+                .long
+                .get(&handle)
+                .and_then(|c| c.usage.clone());
+            let value = match usage {
+                Some(usage) => json!({"done": true, "usage": usage}),
+                None => json!({"done": true}),
+            };
+            self.complete(&handle, HostOutcome::fulfilled(text(&value)));
         }
+    }
+
+    /// Every Broca send, as (send_id, exact request bytes), in send order.
+    pub fn broca_sends(&self) -> Vec<(String, String)> {
+        lock(&self.shared.state).broca_sends.clone()
+    }
+
+    /// The usage the mock reports for `llm` and `classify`: what the
+    /// script's request asks for under `usage`, or a quarter of the
+    /// envelope's bytes as input and at most 16 tokens of output.
+    fn usage_for(envelope: &Value, bytes: usize) -> Value {
+        if let Some(usage) = envelope.get("request").and_then(|r| r.get("usage"))
+            && usage.is_object()
+        {
+            return usage.clone();
+        }
+        let max_output = envelope
+            .get("max_output")
+            .and_then(Value::as_u64)
+            .unwrap_or(16);
+        json!({
+            "input_tokens": bytes.div_ceil(4),
+            "cache_write_tokens": 0,
+            "output_tokens": max_output.min(16),
+            "cached_input_tokens": 0,
+        })
     }
 
     /// Delivers every completed, unacknowledged long-running call to the
@@ -475,7 +522,17 @@ impl Host for MockHost {
     }
 
     fn dispatch(&self, request: &CallRequest) -> Result<Dispatched, TransportError> {
-        let args: Value = serde_json::from_str(request.args.as_str()).unwrap_or(Value::Null);
+        let envelope: Value = serde_json::from_str(request.args.as_str()).unwrap_or(Value::Null);
+        let broca = matches!(
+            &request.kind,
+            CallKind::Primitive(Primitive::Llm | Primitive::Classify)
+        );
+        // A Broca call's own options sit inside the envelope basal built.
+        let args = if broca {
+            envelope.get("request").cloned().unwrap_or(Value::Null)
+        } else {
+            envelope.clone()
+        };
         if let Some(ms) = args.get("delay_ms").and_then(Value::as_u64) {
             thread::sleep(Duration::from_millis(ms.min(60_000)));
         }
@@ -506,6 +563,27 @@ impl Host for MockHost {
         state
             .sends
             .push((request.idempotency_key.clone(), module.clone(), op.clone()));
+        if broca {
+            let send_id = envelope
+                .get("send_id")
+                .and_then(Value::as_str)
+                .unwrap_or(&request.idempotency_key)
+                .to_owned();
+            let reused = state
+                .broca_sends
+                .iter()
+                .any(|(id, bytes)| *id == send_id && bytes != request.args.as_str());
+            state
+                .broca_sends
+                .push((send_id, request.args.as_str().to_owned()));
+            if reused {
+                self.save(&state);
+                return Ok(Dispatched::Completed(HostOutcome::rejected(text(
+                    &json!({"message": "send_id reused with a different request", "code": "send_id_reuse"}),
+                ))));
+            }
+        }
+        let usage = broca.then(|| Self::usage_for(&envelope, request.args.len()));
         let honours = matches!(
             class,
             CallClass::Mutation {
@@ -535,6 +613,7 @@ impl Host for MockHost {
                 key: request.idempotency_key.clone(),
                 outcome: None,
                 acknowledged: false,
+                usage: usage.clone(),
             });
             if let Some(ms) = args.get("complete_after_ms").and_then(Value::as_u64) {
                 let mock = self.clone();
@@ -579,7 +658,9 @@ impl Host for MockHost {
                         .and_then(|l| l.get(0))
                         .cloned()
                         .unwrap_or(Value::Null);
-                    Dispatched::Completed(HostOutcome::fulfilled(text(&label)))
+                    Dispatched::Completed(HostOutcome::fulfilled(text(
+                        &json!({"label": label, "usage": usage}),
+                    )))
                 }
                 _ => Dispatched::Completed(HostOutcome::fulfilled(request.args.clone())),
             }
@@ -659,7 +740,9 @@ fn encode_state(state: &State) -> Value {
             "key": c.key,
             "outcome": c.outcome.as_ref().map(|(s, v)| json!([settlement_code(*s), v])),
             "acknowledged": c.acknowledged,
+            "usage": c.usage,
         })).collect::<Vec<_>>(),
+        "broca_sends": state.broca_sends.iter().map(|(id, b)| json!([id, b])).collect::<Vec<_>>(),
         "clock_ms": state.clock_ms,
         "clock_step_ms": state.clock_step_ms,
         "random_state": state.random_state,
@@ -715,8 +798,13 @@ fn decode_state(v: &Value) -> Option<State> {
                 key: c.get("key")?.as_str()?.to_owned(),
                 outcome,
                 acknowledged: c.get("acknowledged")?.as_bool()?,
+                usage: c.get("usage").filter(|u| !u.is_null()).cloned(),
             },
         );
+    }
+    for s in v.get("broca_sends")?.as_array()? {
+        let s = strings(s, 2)?;
+        state.broca_sends.push((s[0].clone(), s[1].clone()));
     }
     state.clock_ms = v.get("clock_ms")?.as_f64()?;
     state.clock_step_ms = v.get("clock_step_ms")?.as_f64()?;

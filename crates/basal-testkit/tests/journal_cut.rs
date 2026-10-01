@@ -30,6 +30,7 @@ fn check_uncut(summary: &Summary) {
         Some(json!({
             "winner": "fast",
             "caught": "denied",
+            "denied": "denied",
             "a": 1,
             "b": 2,
             "r": true,
@@ -39,18 +40,34 @@ fn check_uncut(summary: &Summary) {
         }))
     );
     // Each keyed mutation (the race loser, the send, the llm call) took
-    // effect exactly once; the local write once.
+    // effect exactly once; the local write once (its first revision).
     assert!(
         summary.effects_per_call.values().all(|n| *n == 1),
         "{summary:#?}"
     );
     assert_eq!(summary.effects_per_call.len(), 3, "{summary:#?}");
     assert_eq!(
-        summary.local_effects.values().sum::<usize>(),
-        1,
+        summary.kv.get("seen").map(String::as_str),
+        Some("\"fast\"@1"),
         "{summary:#?}"
     );
     assert_eq!(summary.open_obligations, 0);
+    // One audit row per journaled call, the refused call's saying so.
+    assert!(summary.audit_complete(), "{summary:#?}");
+    assert_eq!(
+        summary.audit.values().filter(|o| *o == "denied").count(),
+        1,
+        "{summary:#?}"
+    );
+    // The llm call's reservation was settled by its reported usage, and
+    // every send under its send id carried the same bytes.
+    assert_eq!(summary.tokens.get("open"), Some(&0), "{summary:#?}");
+    assert!(
+        summary.tokens.get("input").is_some_and(|n| *n > 0),
+        "{summary:#?}"
+    );
+    assert_eq!(summary.tokens.get("unreported"), Some(&0), "{summary:#?}");
+    assert_eq!(summary.broca_reuse, 0, "{summary:#?}");
 }
 
 /// Runs every cut list in parallel and returns (cuts, result) pairs.
@@ -90,7 +107,11 @@ fn assert_equivalent(
                 if run.fired.iter().all(|f| *f) {
                     fired.push(cuts.clone());
                 }
-                if &run.summary != expected {
+                // Equality covers the audit rows (one per call, the same
+                // outcomes), kv revisions, token usage and Broca sends;
+                // completeness is checked again so a cut run cannot pass by
+                // matching an incomplete uncut run.
+                if &run.summary != expected || !run.summary.audit_complete() {
                     failures.push(format!(
                         "cuts {:?} (fired {:?}): {:#?}",
                         cuts.iter().map(Point::render).collect::<Vec<_>>(),
@@ -146,15 +167,17 @@ fn cuts_in_recovery_generated_suffixes_recover_too() {
     let exhaustive = std::env::var_os("BASAL_CUT_EXHAUSTIVE").is_some();
     // First cuts whose recovery does distinctive work: re-sending a query
     // and a keyed mutation, releasing an outcome that arrived during the
-    // gap, re-asking for a synchronous value, a local effect behind an
-    // unresolved call, and a cut inside the resumed activation.
+    // gap, re-asking for a synchronous value, a refused call journaled
+    // behind an unresolved one, a local effect behind an unresolved call,
+    // and a cut inside the resumed activation.
     let chosen = [
         "CallCommitted { position: 0 }#1",
         "OrderCommitted { position: 1 }#1",
         "SyncCommitted { position: 2 }#1",
-        "LocalCommitted { position: 4 }#1",
-        "CallCommitted { position: 5 }#1",
-        "HostAnswered { position: 5 }#1",
+        "RefusalCommitted { position: 4 }#1",
+        "LocalCommitted { position: 5 }#1",
+        "CallCommitted { position: 6 }#1",
+        "HostAnswered { position: 6 }#1",
         "Claimed { generation: 2 }#1",
     ];
     let firsts: Vec<Point> = base.phases[0]

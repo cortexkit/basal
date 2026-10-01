@@ -34,6 +34,8 @@ libc = "0.2.180"
 # adapter, no dynamic loading.
 rquickjs = { version = "=0.14.0", default-features = false, features = ["std"] }
 serde_json = "1"
+# Typed manifests, decoded with unknown fields refused.
+serde = { version = "1", features = ["derive"] }
 
 [profile.release]
 opt-level = 3
