@@ -773,8 +773,15 @@ fn a_disabled_schedule_does_not_tick_and_does_not_catch_up_when_enabled() {
         "2026-05-01T02:00:00Z",
         "2026-05-01T03:30:00Z",
     ] {
-        assert!(fx.tick(now).is_empty(), "{now}");
+        // The schedule itself plans nothing: admission refusing a disabled
+        // flow's fires would hide a schedule that still ticked, so the
+        // test looks at planning and at dropped fires, not only at runs.
+        fx.set(now);
+        let report = fx.s().tick().expect("tick");
+        assert!(report.planned.is_empty(), "{now}: {report:?}");
+        assert!(report.admitted.is_empty(), "{now}: {report:?}");
     }
+    assert!(fx.s().dropped().expect("dropped").is_empty());
     let row = fx.s().schedule("f").expect("read").expect("row");
     assert_eq!(row.state, ScheduleState::Disabled);
 
