@@ -1,133 +1,140 @@
 [
   {
     "applied_evidence": "crates/basal-host/src/broca/mod.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test usage_absent_empty_and_zero_remain_distinct ... FAILED\nthread 'usage_absent_empty_and_zero_remain_distinct' (199976361) panicked at crates/basal-host/tests/broca.rs:205:18:\n  left: Some(TokenUsage { input_tokens: Some(0), cache_write_tokens: None, output_tokens: None, cached_input_tokens: None })\n right: Some(TokenUsage { input_tokens: None, cache_write_tokens: None, output_tokens: None, cach",
+    "captured_output": "test expired_stream_history_commits_its_head_with_the_recovered_text ... FAILED\nthread 'expired_stream_history_commits_its_head_with_the_recovered_text' (215631773) panicked at crates/basal-host/tests/broca.rs:653:5:\n  left: None\n right: Some(Cursor { wal_seq: 1, sub_index: 1 })\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.00s",
+    "control": "Broca recovered history head is not durable",
+    "expected_red": "expired_stream_history_commits_its_head_with_the_recovered_text",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-host/src/broca/mod.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test usage_absent_empty_and_zero_remain_distinct ... FAILED\nthread 'usage_absent_empty_and_zero_remain_distinct' (215632534) panicked at crates/basal-host/tests/broca.rs:214:18:\n  left: Some(TokenUsage { input_tokens: Some(0), cache_write_tokens: None, output_tokens: None, cached_input_tokens: None })\n right: Some(TokenUsage { input_tokens: None, cache_write_tokens: None, output_tokens: None, cach",
     "control": "Broca absent usage becomes zero",
     "expected_red": "usage_absent_empty_and_zero_remain_distinct",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/broca/fake.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test fake_refuses_send_id_reuse_and_restarts_with_same_run ... FAILED\nthread 'fake_refuses_send_id_reuse_and_restarts_with_same_run' (199983289) panicked at crates/basal-host/tests/broca.rs:481:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.02s",
+    "captured_output": "test fake_refuses_send_id_reuse_and_restarts_with_same_run ... FAILED\nthread 'fake_refuses_send_id_reuse_and_restarts_with_same_run' (215633246) panicked at crates/basal-host/tests/broca.rs:490:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.02s",
     "control": "Broca fake accepts send id reuse",
     "expected_red": "fake_refuses_send_id_reuse_and_restarts_with_same_run",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/tokens.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test broca_usage_settles_reservation_once_and_classify_returns_a_string ... FAILED\nthread 'broca_usage_settles_reservation_once_and_classify_returns_a_string' (199999911) panicked at crates/basal-testkit/tests/broca_reservations.rs:65:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.41s",
+    "captured_output": "test broca_usage_settles_reservation_once_and_classify_returns_a_string ... FAILED\nthread 'broca_usage_settles_reservation_once_and_classify_returns_a_string' (215634727) panicked at crates/basal-testkit/tests/broca_reservations.rs:62:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.46s",
     "control": "Broca call sessions lose the position",
     "expected_red": "broca_usage_settles_reservation_once_and_classify_returns_a_string",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/tokens.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test script_value_cannot_supply_usage_and_absent_ledger_fields_are_nullable ... FAILED\nthread 'script_value_cannot_supply_usage_and_absent_ledger_fields_are_nullable' (200010422) panicked at crates/basal-testkit/tests/broca_reservations.rs:205:13:\n  left: 556\n right: 0\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.53s",
+    "captured_output": "test script_value_cannot_supply_usage_and_absent_ledger_fields_are_nullable ... FAILED\nthread 'script_value_cannot_supply_usage_and_absent_ledger_fields_are_nullable' (215636039) panicked at crates/basal-testkit/tests/broca_reservations.rs:203:13:\n  left: 556\n right: 0\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.41s",
     "control": "Broca value can masquerade as usage metadata",
     "expected_red": "script_value_cannot_supply_usage_and_absent_ledger_fields_are_nullable",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/broca.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test sqlite_snapshot_cut_never_persists_a_cursor_without_its_text ... FAILED\nthread 'sqlite_snapshot_cut_never_persists_a_cursor_without_its_text' (200027534) panicked at crates/basal-testkit/tests/broca_reservations.rs:254:5:\n  left: None\n right: Some(\"buffered\")\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.60s",
+    "captured_output": "test sqlite_snapshot_cut_never_persists_a_cursor_without_its_text ... FAILED\nthread 'sqlite_snapshot_cut_never_persists_a_cursor_without_its_text' (215637467) panicked at crates/basal-testkit/tests/broca_reservations.rs:248:5:\n  left: None\n right: Some(\"buffered\")\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.21s",
     "control": "Broca SQLite snapshot omits text",
     "expected_red": "sqlite_snapshot_cut_never_persists_a_cursor_without_its_text",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/broca/mod.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test read_refusal_is_journalable_with_status_usage ... FAILED\nthread 'read_refusal_is_journalable_with_status_usage' (200041111) panicked at crates/basal-host/tests/broca.rs:376:5:\n  left: String(\"result_unavailable\")\n right: \"access_denied\"\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s",
+    "captured_output": "test read_refusal_is_journalable_with_status_usage ... FAILED\nthread 'read_refusal_is_journalable_with_status_usage' (215638515) panicked at crates/basal-host/tests/broca.rs:385:5:\n  left: String(\"result_unavailable\")\n right: \"access_denied\"\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.00s",
     "control": "Broca read refusal loses its code",
     "expected_red": "read_refusal_is_journalable_with_status_usage",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/broca/mod.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test exact_send_contract_and_parallel_sessions ... FAILED\nthread 'exact_send_contract_and_parallel_sessions' (200054529) panicked at crates/basal-host/tests/broca.rs:92:5:\n  left: Object {\"append_episode\": Bool(false), \"cache\": Null, \"generation\": Object {\"max_output_tokens\": Number(12)}, \"model\": Object {\"model\": String(\"test\"), \"provider\": String(\"fake\")}, \"prompt\": String(\"hello\"), \"send_id\": S",
+    "captured_output": "test exact_send_contract_and_parallel_sessions ... FAILED\nthread 'exact_send_contract_and_parallel_sessions' (215639347) panicked at crates/basal-host/tests/broca.rs:101:5:\n  left: Object {\"append_episode\": Bool(false), \"cache\": Null, \"generation\": Object {\"max_output_tokens\": Number(12)}, \"model\": Object {\"model\": String(\"test\"), \"provider\": String(\"fake\")}, \"prompt\": String(\"hello\"), \"send_id\": ",
     "control": "Broca tools are not explicitly empty",
     "expected_red": "exact_send_contract_and_parallel_sessions",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/broca/mod.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test exact_send_contract_and_parallel_sessions ... FAILED\nthread 'exact_send_contract_and_parallel_sessions' (200069563) panicked at crates/basal-host/tests/broca.rs:92:5:\n  left: Object {\"append_episode\": Bool(false), \"cache\": Null, \"generation\": Object {\"max_output_tokens\": Number(999)}, \"model\": Object {\"model\": String(\"test\"), \"provider\": String(\"fake\")}, \"prompt\": String(\"hello\"), \"send_id\": ",
+    "captured_output": "test exact_send_contract_and_parallel_sessions ... FAILED\nthread 'exact_send_contract_and_parallel_sessions' (215640208) panicked at crates/basal-host/tests/broca.rs:101:5:\n  left: Object {\"append_episode\": Bool(false), \"cache\": Null, \"generation\": Object {\"max_output_tokens\": Number(999)}, \"model\": Object {\"model\": String(\"test\"), \"provider\": String(\"fake\")}, \"prompt\": String(\"hello\"), \"send_id\":",
     "control": "Broca output clamp is ignored",
     "expected_red": "exact_send_contract_and_parallel_sessions",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/broca/mod.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test reissue_after_cut_is_byte_identical_and_finished_is_immediate ... FAILED\nthread 'reissue_after_cut_is_byte_identical_and_finished_is_immediate' (200081540) panicked at crates/basal-host/tests/broca.rs:140:5:\n  left: Object {\"code\": String(\"send_id_reuse\"), \"message\": String(\"fake refused send_id_reuse\")}\n right: Object {\"text\": String(\"done\")}\ntest result: FAILED. 0 passed; 1 failed; 0 ignore",
+    "captured_output": "test reissue_after_cut_is_byte_identical_and_finished_is_immediate ... FAILED\nthread 'reissue_after_cut_is_byte_identical_and_finished_is_immediate' (215641032) panicked at crates/basal-host/tests/broca.rs:149:5:\n  left: Object {\"code\": String(\"send_id_reuse\"), \"message\": String(\"fake refused send_id_reuse\")}\n right: Object {\"text\": String(\"done\")}\ntest result: FAILED. 0 passed; 1 failed; 0 ignore",
     "control": "Broca reissue changes bytes",
     "expected_red": "reissue_after_cut_is_byte_identical_and_finished_is_immediate",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/broca/mod.rs; during:  1 file changed, 3 insertions(+), 3 deletions(-); after restore: empty git diff --stat",
-    "captured_output": "test pending_submission_keeps_its_handle_and_usage_is_metadata ... FAILED\nthread 'pending_submission_keeps_its_handle_and_usage_is_metadata' (200106715) panicked at crates/basal-host/tests/broca.rs:155:5:\n  left: Accepted { handle: \"wrong\" }\n right: Accepted { handle: \"submission:key:0\" }\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s",
+    "captured_output": "test pending_submission_keeps_its_handle_and_usage_is_metadata ... FAILED\nthread 'pending_submission_keeps_its_handle_and_usage_is_metadata' (215641943) panicked at crates/basal-host/tests/broca.rs:164:5:\n  left: Accepted { handle: \"wrong\" }\n right: Accepted { handle: \"submission:key:0\" }\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.00s",
     "control": "Broca pending handle is replaced",
     "expected_red": "pending_submission_keeps_its_handle_and_usage_is_metadata",
     "outcome": "reddened"
   },
   {
-    "applied_evidence": "crates/basal-host/src/broca/mod.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test durable_cursor_resumes_text_without_loss_or_duplicate ... FAILED\nthread 'durable_cursor_resumes_text_without_loss_or_duplicate' (200112700) panicked at crates/basal-host/tests/broca.rs:230:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s",
+    "applied_evidence": "crates/basal-host/src/broca/mod.rs; during:  1 file changed, 4 insertions(+), 2 deletions(-); after restore: empty git diff --stat",
+    "captured_output": "test durable_cursor_resumes_text_without_loss_or_duplicate ... FAILED\nthread 'durable_cursor_resumes_text_without_loss_or_duplicate' (215643677) panicked at crates/basal-host/tests/broca.rs:239:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.00s",
     "control": "Broca cursor is not durable",
     "expected_red": "durable_cursor_resumes_text_without_loss_or_duplicate",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/broca/mod.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test durable_cursor_resumes_text_without_loss_or_duplicate ... FAILED\nthread 'durable_cursor_resumes_text_without_loss_or_duplicate' (200119625) panicked at crates/basal-host/tests/broca.rs:251:5:\n  left: 3\n right: 1\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s",
+    "captured_output": "test durable_cursor_resumes_text_without_loss_or_duplicate ... FAILED\nthread 'durable_cursor_resumes_text_without_loss_or_duplicate' (215644421) panicked at crates/basal-host/tests/broca.rs:260:5:\n  left: 3\n right: 1\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.00s",
     "control": "Broca acknowledged completion is delivered again",
     "expected_red": "durable_cursor_resumes_text_without_loss_or_duplicate",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/broca/mod.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test cursor_and_text_commit_together_at_a_cut ... FAILED\nthread 'cursor_and_text_commit_together_at_a_cut' (200123041) panicked at crates/basal-host/tests/broca.rs:288:5:\n  left: Some(Cursor { wal_seq: 1, sub_index: 1 })\n right: Some(Cursor { wal_seq: 1, sub_index: 0 })\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s",
+    "captured_output": "test cursor_and_text_commit_together_at_a_cut ... FAILED\nthread 'cursor_and_text_commit_together_at_a_cut' (215645223) panicked at crates/basal-host/tests/broca.rs:297:5:\n  left: Some(Cursor { wal_seq: 1, sub_index: 1 })\n right: Some(Cursor { wal_seq: 1, sub_index: 0 })\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.00s",
     "control": "Broca text is not saved with cursor",
     "expected_red": "cursor_and_text_commit_together_at_a_cut",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/broca/mod.rs; during:  1 file changed, 4 insertions(+), 2 deletions(-); after restore: empty git diff --stat",
-    "captured_output": "test status_recovers_missed_finish_and_archived_read_recovers_text ... FAILED\nthread 'status_recovers_missed_finish_and_archived_read_recovers_text' (200127994) panicked at crates/basal-host/tests/broca.rs:341:52:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s",
+    "captured_output": "test status_recovers_missed_finish_and_archived_read_recovers_text ... FAILED\nthread 'status_recovers_missed_finish_and_archived_read_recovers_text' (215645956) panicked at crates/basal-host/tests/broca.rs:350:52:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.00s",
     "control": "Broca status fallback is disabled",
     "expected_red": "status_recovers_missed_finish_and_archived_read_recovers_text",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/broca/mod.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test status_recovers_missed_finish_and_archived_read_recovers_text ... FAILED\nthread 'status_recovers_missed_finish_and_archived_read_recovers_text' (200131625) panicked at crates/basal-host/tests/broca.rs:341:52:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s",
+    "captured_output": "test status_recovers_missed_finish_and_archived_read_recovers_text ... FAILED\nthread 'status_recovers_missed_finish_and_archived_read_recovers_text' (215646708) panicked at crates/basal-host/tests/broca.rs:350:52:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.00s",
     "control": "Broca read text fallback is disabled",
     "expected_red": "status_recovers_missed_finish_and_archived_read_recovers_text",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/tokens.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test broca_usage_settles_reservation_once_and_classify_returns_a_string ... FAILED\nthread 'broca_usage_settles_reservation_once_and_classify_returns_a_string' (200154065) panicked at crates/basal-testkit/tests/broca_reservations.rs:122:9:\n  left: (\"settled\", 0, 0, 0, 0, 0)\n right: (\"settled\", 7, 2, 5, 100, 0)\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished ",
+    "captured_output": "test broca_usage_settles_reservation_once_and_classify_returns_a_string ... FAILED\nthread 'broca_usage_settles_reservation_once_and_classify_returns_a_string' (215647983) panicked at crates/basal-testkit/tests/broca_reservations.rs:119:9:\n  left: (\"settled\", 0, 0, 0, 0, 0)\n right: (\"settled\", 7, 2, 5, 100, 0)\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished ",
     "control": "Broca usage metadata is ignored by the ledger",
     "expected_red": "broca_usage_settles_reservation_once_and_classify_returns_a_string",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/broca/mod.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test classify_contract_is_exact_not_trimmed_or_parsed ... FAILED\nthread 'classify_contract_is_exact_not_trimmed_or_parsed' (200161290) panicked at crates/basal-host/tests/broca.rs:456:13:\n  left: Null\n right: \"classify_invalid\"\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s",
+    "captured_output": "test classify_contract_is_exact_not_trimmed_or_parsed ... FAILED\nthread 'classify_contract_is_exact_not_trimmed_or_parsed' (215648797) panicked at crates/basal-host/tests/broca.rs:465:13:\n  left: Null\n right: \"classify_invalid\"\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.00s",
     "control": "Broca classify accepts outside labels",
     "expected_red": "classify_contract_is_exact_not_trimmed_or_parsed",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/broca/mod.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test every_status_terminal_rejects_or_completes_and_nonterminals_wait ... FAILED\nthread 'every_status_terminal_rejects_or_completes_and_nonterminals_wait' (200169662) panicked at crates/basal-host/tests/broca.rs:418:17:\n  left: Fulfilled\n right: Rejected\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s",
+    "captured_output": "test every_status_terminal_rejects_or_completes_and_nonterminals_wait ... FAILED\nthread 'every_status_terminal_rejects_or_completes_and_nonterminals_wait' (215649519) panicked at crates/basal-host/tests/broca.rs:427:17:\n  left: Fulfilled\n right: Rejected\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.00s",
     "control": "Broca terminal failures are fulfilled",
     "expected_red": "every_status_terminal_rejects_or_completes_and_nonterminals_wait",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/broca/mod.rs; during:  1 file changed, 4 insertions(+), 2 deletions(-); after restore: empty git diff --stat",
-    "captured_output": "test a_broca_llm_suspends_survives_module_kill_and_settles_after_restart ... FAILED\nthread 'a_broca_llm_suspends_survives_module_kill_and_settles_after_restart' (200193367) panicked at crates/basal-module/tests/e2e.rs:296:5:\n  left: String(\"suspended\")\n right: \"succeeded\"\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 1.88s",
+    "captured_output": "test a_broca_llm_suspends_survives_module_kill_and_settles_after_restart ... FAILED\nthread 'a_broca_llm_suspends_survives_module_kill_and_settles_after_restart' (215652093) panicked at crates/basal-module/tests/e2e.rs:298:5:\n  left: String(\"suspended\")\n right: \"succeeded\"\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.99s",
     "control": "Broca completion is not delivered after module restart",
     "expected_red": "a_broca_llm_suspends_survives_module_kill_and_settles_after_restart",
     "outcome": "reddened"

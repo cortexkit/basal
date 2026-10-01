@@ -1,217 +1,217 @@
 [
   {
     "applied_evidence": "crates/basal-worker/src/prelude.js; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test removed_globals_are_absent ... FAILED\nthread 'removed_globals_are_absent' (157362674) panicked at crates/basal-worker/tests/lockdown.rs:106:5:\n  left: Array [String(\"eval\"), String(\"Function\"), String(\"Atomics\"), String(\"SharedArrayBuffer\"), String(\"queueMicrotask\")]\n right: Array []\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.22s",
+    "captured_output": "test removed_globals_are_absent ... FAILED\nthread 'removed_globals_are_absent' (214353415) panicked at crates/basal-worker/tests/lockdown.rs:108:5:\n  left: Array [String(\"eval\"), String(\"Function\"), String(\"Atomics\"), String(\"SharedArrayBuffer\"), String(\"queueMicrotask\")]\n right: Array []\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.19s",
     "control": "lockdown: forbidden globals are not removed",
     "expected_red": "removed_globals_are_absent",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-worker/src/prelude.js; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test global_inventory_is_exactly_the_allowlist ... FAILED\nthread 'global_inventory_is_exactly_the_allowlist' (157363692) panicked at crates/basal-worker/tests/lockdown.rs:89:5:\n  left: Array [String(\"AggregateError\"), String(\"Array\"), String(\"ArrayBuffer\"), String(\"AsyncDisposableStack\"), String(\"Atomics\"), String(\"BigInt\"), String(\"BigInt64Array\"), String(\"BigUint64Array\"), String(\"Boolean\"), Str",
+    "captured_output": "test global_inventory_is_exactly_the_allowlist ... FAILED\nthread 'global_inventory_is_exactly_the_allowlist' (214354413) panicked at crates/basal-worker/tests/lockdown.rs:91:5:\n  left: Array [String(\"AggregateError\"), String(\"Array\"), String(\"ArrayBuffer\"), String(\"AsyncDisposableStack\"), String(\"Atomics\"), String(\"BigInt\"), String(\"BigInt64Array\"), String(\"BigUint64Array\"), String(\"Boolean\"), Str",
     "control": "lockdown: forbidden globals are not removed (inventory)",
     "expected_red": "global_inventory_is_exactly_the_allowlist",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-worker/src/prelude.js; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test code_from_strings_is_unreachable ... FAILED\nthread 'code_from_strings_is_unreachable' (157364907) panicked at crates/basal-worker/tests/lockdown.rs:142:9:\n  left: String(\"function\")\n right: \"undefined\"\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.39s",
+    "captured_output": "test code_from_strings_is_unreachable ... FAILED\nthread 'code_from_strings_is_unreachable' (214355285) panicked at crates/basal-worker/tests/lockdown.rs:144:9:\n  left: String(\"function\")\n right: \"undefined\"\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.18s",
     "control": "lockdown: function-kind constructors are left in place",
     "expected_red": "code_from_strings_is_unreachable",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-worker/src/prelude.js; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test date_constructor_cannot_be_recovered ... FAILED\nthread 'date_constructor_cannot_be_recovered' (157366102) panicked at crates/basal-worker/tests/lockdown.rs:173:9:\n  left: Bool(false)\n right: true\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.21s",
+    "captured_output": "test date_constructor_cannot_be_recovered ... FAILED\nthread 'date_constructor_cannot_be_recovered' (214356151) panicked at crates/basal-worker/tests/lockdown.rs:176:9:\n  left: Bool(false)\n right: true\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.21s",
     "control": "lockdown: Date.prototype.constructor still names the native Date",
     "expected_red": "date_constructor_cannot_be_recovered",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-worker/src/prelude.js; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test local_time_and_locale_are_removed ... FAILED\nthread 'local_time_and_locale_are_removed' (157367111) panicked at crates/basal-worker/tests/lockdown.rs:225:5:\n  left: Array [String(\"getDate\"), String(\"getDay\"), String(\"getFullYear\"), String(\"getHours\"), String(\"getMilliseconds\"), String(\"getMinutes\"), String(\"getMonth\"), String(\"getSeconds\"), String(\"getYear\"), String(\"getTimezoneOffset\"), Stri",
+    "captured_output": "test local_time_and_locale_are_removed ... FAILED\nthread 'local_time_and_locale_are_removed' (214357041) panicked at crates/basal-worker/tests/lockdown.rs:228:5:\n  left: Array [String(\"getDate\"), String(\"getDay\"), String(\"getFullYear\"), String(\"getHours\"), String(\"getMilliseconds\"), String(\"getMinutes\"), String(\"getMonth\"), String(\"getSeconds\"), String(\"getYear\"), String(\"getTimezoneOffset\"), Stri",
     "control": "lockdown: local-time methods are kept",
     "expected_red": "local_time_and_locale_are_removed",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-worker/src/prelude.js; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test payloads_arrive_as_plain_data ... FAILED\nthread 'payloads_arrive_as_plain_data' (157368021) panicked at crates/basal-testkit/src/parent.rs:122:18:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.28s",
+    "captured_output": "test payloads_arrive_as_plain_data ... FAILED\nthread 'payloads_arrive_as_plain_data' (214358041) panicked at crates/basal-testkit/src/parent.rs:124:18:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.18s",
     "control": "values evaluated as source instead of parsed as data",
     "expected_red": "payloads_arrive_as_plain_data",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-worker/src/engine.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test intrinsics_are_frozen ... FAILED\nthread 'intrinsics_are_frozen' (157369195) panicked at crates/basal-worker/tests/lockdown.rs:310:5:\n  left: Null\n right: true\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.39s",
+    "captured_output": "test intrinsics_are_frozen ... FAILED\nthread 'intrinsics_are_frozen' (214358889) panicked at crates/basal-worker/tests/lockdown.rs:313:5:\n  left: Null\n right: true\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.24s",
     "control": "intrinsics are not frozen",
     "expected_red": "intrinsics_are_frozen",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-worker/src/engine.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test clock_and_random_are_journaled_and_replayed ... FAILED\nthread 'clock_and_random_are_journaled_and_replayed' (157370605) panicked at crates/basal-worker/tests/clock.rs:52:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.26s",
+    "captured_output": "test clock_and_random_are_journaled_and_replayed ... FAILED\nthread 'clock_and_random_are_journaled_and_replayed' (214359969) panicked at crates/basal-worker/tests/clock.rs:52:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.22s",
     "control": "recorded clock and random outcomes are not served from the prefix",
     "expected_red": "clock_and_random_are_journaled_and_replayed",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-worker/src/prelude.js; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test clock_and_random_are_journaled_and_replayed ... FAILED\nthread 'clock_and_random_are_journaled_and_replayed' (157372364) panicked at crates/basal-worker/tests/clock.rs:24:5:\n  left: [Primitive(Now), Primitive(Now), Primitive(Now), Primitive(Now), Primitive(Random), Primitive(Now)]\n right: [Primitive(Now), Primitive(Now), Primitive(Now), Primitive(Now), Primitive(Random), Primitive(Random), Pri",
+    "captured_output": "test clock_and_random_are_journaled_and_replayed ... FAILED\nthread 'clock_and_random_are_journaled_and_replayed' (214361489) panicked at crates/basal-worker/tests/clock.rs:24:5:\n  left: [Primitive(Now), Primitive(Now), Primitive(Now), Primitive(Now), Primitive(Random), Primitive(Now)]\n right: [Primitive(Now), Primitive(Now), Primitive(Now), Primitive(Now), Primitive(Random), Primitive(Random), Pri",
     "control": "Math.random is not a host call",
     "expected_red": "clock_and_random_are_journaled_and_replayed",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-worker/src/prelude.js; during:  1 file changed, 5 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test fresh_clock_read_after_a_gap_returns_the_new_time ... FAILED\nthread 'fresh_clock_read_after_a_gap_returns_the_new_time' (157373503) panicked at crates/basal-worker/tests/clock.rs:83:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.21s",
+    "captured_output": "test fresh_clock_read_after_a_gap_returns_the_new_time ... FAILED\nthread 'fresh_clock_read_after_a_gap_returns_the_new_time' (214362390) panicked at crates/basal-worker/tests/clock.rs:83:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.21s",
     "control": "one clock value reused for the whole activation",
     "expected_red": "fresh_clock_read_after_a_gap_returns_the_new_time",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-worker/src/engine.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test race_and_any_keep_their_winner_on_replay ... FAILED\nthread 'race_and_any_keep_their_winner_on_replay' (157374524) panicked at crates/basal-testkit/src/parent.rs:122:18:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.63s",
+    "captured_output": "test race_and_any_keep_their_winner_on_replay ... FAILED\nthread 'race_and_any_keep_their_winner_on_replay' (214363384) panicked at crates/basal-testkit/src/parent.rs:124:18:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.25s",
     "control": "recorded outcomes released in issue order, not delivery order (race/any)",
     "expected_red": "race_and_any_keep_their_winner_on_replay",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-worker/src/engine.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test recorded_outcomes_are_released_in_delivery_order ... FAILED\nthread 'recorded_outcomes_are_released_in_delivery_order' (157375466) panicked at crates/basal-worker/tests/replay.rs:54:5:\n  left: Array [String(\"a\"), String(\"b\"), String(\"c\")]\n right: Array [String(\"b\"), String(\"c\"), String(\"a\")]\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.26s",
+    "captured_output": "test recorded_outcomes_are_released_in_delivery_order ... FAILED\nthread 'recorded_outcomes_are_released_in_delivery_order' (214364221) panicked at crates/basal-worker/tests/replay.rs:54:5:\n  left: Array [String(\"a\"), String(\"b\"), String(\"c\")]\n right: Array [String(\"b\"), String(\"c\"), String(\"a\")]\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.06s",
     "control": "recorded outcomes released in issue order, not delivery order",
     "expected_red": "recorded_outcomes_are_released_in_delivery_order",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-worker/src/engine.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test caught_rejection_replays_as_a_rejection ... FAILED\nthread 'caught_rejection_replays_as_a_rejection' (157376254) panicked at crates/basal-worker/tests/replay.rs:83:5:\n  left: Array [Object {\"code\": String(\"denied\"), \"message\": String(\"nope\")}, String(\"after\")]\n right: Array [Array [String(\"caught\"), String(\"HostError\"), String(\"nope\"), String(\"denied\")], String(\"after\")]\ntest result: FAILED. 0",
+    "captured_output": "test caught_rejection_replays_as_a_rejection ... FAILED\nthread 'caught_rejection_replays_as_a_rejection' (214364960) panicked at crates/basal-worker/tests/replay.rs:87:5:\n  left: Array [Object {\"code\": String(\"denied\"), \"message\": String(\"nope\")}, String(\"after\")]\n right: Array [Array [String(\"caught\"), String(\"HostError\"), String(\"nope\"), String(\"denied\")], String(\"after\")]\ntest result: FAILED. 0",
     "control": "recorded rejections replayed as fulfilments (caught rejection)",
     "expected_red": "caught_rejection_replays_as_a_rejection",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-worker/src/engine.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test all_rejected_any_replays_in_order ... FAILED\nthread 'all_rejected_any_replays_in_order' (157376918) panicked at crates/basal-worker/tests/replay.rs:83:5:\n  left: String(\"fulfilled\")\n right: Array [String(\"AggregateError\"), Array [String(\"first\"), String(\"second\")]]\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.27s",
+    "captured_output": "test all_rejected_any_replays_in_order ... FAILED\nthread 'all_rejected_any_replays_in_order' (214365932) panicked at crates/basal-worker/tests/replay.rs:87:5:\n  left: String(\"fulfilled\")\n right: Array [String(\"AggregateError\"), Array [String(\"first\"), String(\"second\")]]\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.07s",
     "control": "recorded rejections replayed as fulfilments (all-rejected any)",
     "expected_red": "all_rejected_any_replays_in_order",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-worker/src/engine.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test early_all_rejection_replays_with_calls_in_flight ... FAILED\nthread 'early_all_rejection_replays_with_calls_in_flight' (157377595) panicked at crates/basal-testkit/src/parent.rs:122:18:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.28s",
+    "captured_output": "test early_all_rejection_replays_with_calls_in_flight ... FAILED\nthread 'early_all_rejection_replays_with_calls_in_flight' (214366666) panicked at crates/basal-testkit/src/parent.rs:124:18:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.06s",
     "control": "recorded rejections replayed as fulfilments (early all rejection)",
     "expected_red": "early_all_rejection_replays_with_calls_in_flight",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-worker/src/engine.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test divergent_call_fails_with_a_typed_error ... FAILED\nthread 'divergent_call_fails_with_a_typed_error' (157378280) panicked at crates/basal-worker/tests/common/mod.rs:34:18:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.31s",
+    "captured_output": "test divergent_call_fails_with_a_typed_error ... FAILED\nthread 'divergent_call_fails_with_a_typed_error' (214367440) panicked at crates/basal-worker/tests/common/mod.rs:34:18:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.19s",
     "control": "divergence check disabled",
     "expected_red": "divergent_call_fails_with_a_typed_error",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-worker/src/engine.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test blocked_only_on_long_calls_suspends_and_resumes ... FAILED\nthread 'blocked_only_on_long_calls_suspends_and_resumes' (157378810) panicked at crates/basal-worker/tests/common/mod.rs:27:18:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 5.28s",
+    "captured_output": "test blocked_only_on_long_calls_suspends_and_resumes ... FAILED\nthread 'blocked_only_on_long_calls_suspends_and_resumes' (214368366) panicked at crates/basal-worker/tests/common/mod.rs:27:18:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 5.25s",
     "control": "suspension on long-running calls disabled",
     "expected_red": "blocked_only_on_long_calls_suspends_and_resumes",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-worker/src/engine.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test cpu_bound_loop_is_stopped_by_the_js_time_budget ... FAILED\nthread 'cpu_bound_loop_is_stopped_by_the_js_time_budget' (157380518) panicked at crates/basal-worker/tests/common/mod.rs:27:18:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 15.22s",
+    "captured_output": "test cpu_bound_loop_is_stopped_by_the_js_time_budget ... FAILED\nthread 'cpu_bound_loop_is_stopped_by_the_js_time_budget' (214373357) panicked at crates/basal-worker/tests/common/mod.rs:27:18:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 15.19s",
     "control": "interrupt handler never stops the engine (CPU loop)",
     "expected_red": "cpu_bound_loop_is_stopped_by_the_js_time_budget",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-worker/src/engine.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test catastrophic_regex_is_stopped_by_the_js_time_budget ... FAILED\nthread 'catastrophic_regex_is_stopped_by_the_js_time_budget' (157387342) panicked at crates/basal-worker/tests/common/mod.rs:27:18:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 15.22s",
+    "captured_output": "test catastrophic_regex_is_stopped_by_the_js_time_budget ... FAILED\nthread 'catastrophic_regex_is_stopped_by_the_js_time_budget' (214386091) panicked at crates/basal-worker/tests/common/mod.rs:27:18:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 15.09s",
     "control": "interrupt handler never stops the engine (catastrophic regex)",
     "expected_red": "catastrophic_regex_is_stopped_by_the_js_time_budget",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-worker/src/clock.rs; during:  1 file changed, 5 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test long_host_waits_do_not_consume_the_js_time_budget ... FAILED\nthread 'long_host_waits_do_not_consume_the_js_time_budget' (157393505) panicked at crates/basal-worker/tests/budgets.rs:43:5:\n  left: BudgetExhausted(JsTime)\n right: Completed { value: JsonText(\"\\\"number\\\"\") }\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.51s",
+    "captured_output": "test long_host_waits_do_not_consume_the_js_time_budget ... FAILED\nthread 'long_host_waits_do_not_consume_the_js_time_budget' (214398600) panicked at crates/basal-worker/tests/budgets.rs:43:5:\n  left: BudgetExhausted(JsTime)\n right: Completed { value: JsonText(\"\\\"number\\\"\") }\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.49s",
     "control": "JS time measured as wall time from the first engine entry",
     "expected_red": "long_host_waits_do_not_consume_the_js_time_budget",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-worker/src/engine.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test memory_limit_holds ... FAILED\nthread 'memory_limit_holds' (157394445) panicked at crates/basal-worker/tests/budgets.rs:62:5:\n  left: Completed { value: JsonText(\"33554432\") }\n right: BudgetExhausted(Memory)\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.67s",
+    "captured_output": "test memory_limit_holds ... FAILED\nthread 'memory_limit_holds' (214399630) panicked at crates/basal-worker/tests/budgets.rs:62:5:\n  left: Completed { value: JsonText(\"33554432\") }\n right: BudgetExhausted(Memory)\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.36s",
     "control": "memory limit not applied",
     "expected_red": "memory_limit_holds",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-worker/src/engine.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test stack_limit_holds ... FAILED\nthread 'stack_limit_holds' (157395975) panicked at crates/basal-worker/tests/budgets.rs:84:5:\n  left: Completed { value: JsonText(\"50\") }\n right: BudgetExhausted(Stack)\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.23s",
+    "captured_output": "test stack_limit_holds ... FAILED\nthread 'stack_limit_holds' (214400599) panicked at crates/basal-worker/tests/budgets.rs:84:5:\n  left: Completed { value: JsonText(\"50\") }\n right: BudgetExhausted(Stack)\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.22s",
     "control": "stack limit not applied",
     "expected_red": "stack_limit_holds",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-worker/src/engine.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test stalled_promise_is_reported_as_stalled ... FAILED\nthread 'stalled_promise_is_reported_as_stalled' (157397168) panicked at crates/basal-worker/tests/budgets.rs:99:9:\n  left: Suspended { awaited: [] }\n right: Stalled\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.24s",
+    "captured_output": "test stalled_promise_is_reported_as_stalled ... FAILED\nthread 'stalled_promise_is_reported_as_stalled' (214401700) panicked at crates/basal-worker/tests/budgets.rs:99:9:\n  left: Suspended { awaited: [] }\n right: Stalled\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.31s",
     "control": "stall detection disabled",
     "expected_red": "stalled_promise_is_reported_as_stalled",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-worker/src/prelude.js; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test sh_is_unreachable_in_the_flow_profile ... FAILED\nthread 'sh_is_unreachable_in_the_flow_profile' (157398170) panicked at crates/basal-testkit/src/parent.rs:122:18:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.23s",
+    "captured_output": "test sh_is_unreachable_in_the_flow_profile ... FAILED\nthread 'sh_is_unreachable_in_the_flow_profile' (214403163) panicked at crates/basal-testkit/src/parent.rs:124:18:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s",
     "control": "sh installed in every profile",
     "expected_red": "sh_is_unreachable_in_the_flow_profile",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-worker/src/engine.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test engine::tests::raw_bridge_cannot_issue_sh_in_flow_profile ... FAILED\nthread 'engine::tests::raw_bridge_cannot_issue_sh_in_flow_profile' (157399130) panicked at crates/basal-worker/src/engine/tests.rs:103:5:\n  left: Failed(Engine { detail: \"no pending call at position 0\" })\n right: Failed(ProfileViolation { kind: Primitive(Sh) })\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; ",
+    "captured_output": "test engine::tests::raw_bridge_cannot_issue_sh_in_flow_profile ... FAILED\nthread 'engine::tests::raw_bridge_cannot_issue_sh_in_flow_profile' (214404098) panicked at crates/basal-worker/src/engine/tests.rs:103:5:\n  left: Failed(Engine { detail: \"no pending call at position 0\" })\n right: Failed(ProfileViolation { kind: Primitive(Sh) })\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; ",
     "control": "native bridge accepts sh in the flow profile",
     "expected_red": "engine::tests::raw_bridge_cannot_issue_sh_in_flow_profile",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-proto/src/frame.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test oversized_frame_is_refused_and_the_worker_exits_cleanly ... FAILED\nthread 'oversized_frame_is_refused_and_the_worker_exits_cleanly' (157400197) panicked at crates/basal-worker/tests/ipc.rs:55:18:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 10.42s",
+    "captured_output": "test oversized_frame_is_refused_and_the_worker_exits_cleanly ... FAILED\nthread 'oversized_frame_is_refused_and_the_worker_exits_cleanly' (214407426) panicked at crates/basal-worker/tests/ipc.rs:55:18:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 10.22s",
     "control": "frame size not checked before reading the payload",
     "expected_red": "oversized_frame_is_refused_and_the_worker_exits_cleanly",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-worker/src/link.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test malformed_frames_are_refused_and_the_worker_survives ... FAILED\nthread 'malformed_frames_are_refused_and_the_worker_survives' (157403537) panicked at crates/basal-worker/tests/ipc.rs:55:18:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.23s",
+    "captured_output": "test malformed_frames_are_refused_and_the_worker_survives ... FAILED\nthread 'malformed_frames_are_refused_and_the_worker_survives' (214416543) panicked at crates/basal-worker/tests/ipc.rs:55:18:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.35s",
     "control": "malformed frames break the channel instead of being refused",
     "expected_red": "malformed_frames_are_refused_and_the_worker_survives",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-worker/src/link.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test out_of_order_frames_are_refused ... FAILED\nthread 'out_of_order_frames_are_refused' (157404323) panicked at crates/basal-worker/tests/ipc.rs:55:18:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.21s",
+    "captured_output": "test out_of_order_frames_are_refused ... FAILED\nthread 'out_of_order_frames_are_refused' (214417600) panicked at crates/basal-worker/tests/ipc.rs:55:18:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.20s",
     "control": "deliveries for positions not awaited are accepted",
     "expected_red": "out_of_order_frames_are_refused",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-worker/src/link.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test out_of_order_frames_are_refused ... FAILED\nthread 'out_of_order_frames_are_refused' (157405179) panicked at crates/basal-worker/tests/ipc.rs:55:18:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.22s",
+    "captured_output": "test out_of_order_frames_are_refused ... FAILED\nthread 'out_of_order_frames_are_refused' (214418520) panicked at crates/basal-worker/tests/ipc.rs:55:18:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.19s",
     "control": "delivery order regressions are accepted",
     "expected_red": "out_of_order_frames_are_refused",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-worker/Cargo.toml; during:  1 file changed, 3 insertions(+); after restore: empty git diff --stat",
-    "captured_output": "test worker_dependency_tree_has_no_store_no_subc_and_no_core ... FAILED\nthread 'worker_dependency_tree_has_no_store_no_subc_and_no_core' (157407402) panicked at crates/basal-worker/tests/dependency_fence.rs:54:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s",
+    "captured_output": "test worker_dependency_tree_has_no_store_no_subc_and_no_core ... FAILED\nthread 'worker_dependency_tree_has_no_store_no_subc_and_no_core' (214423751) panicked at crates/basal-worker/tests/dependency_fence.rs:56:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s",
     "control": "worker depends on a subc crate",
     "expected_red": "worker_dependency_tree_has_no_store_no_subc_and_no_core",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-worker/src/confinement.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test sandbox_denies_files_sockets_and_exec ... FAILED\nthread 'sandbox_denies_files_sockets_and_exec' (157408593) panicked at crates/basal-worker/tests/confinement.rs:69:9:\n  left: Bool(true)\n right: false\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s",
+    "captured_output": "test sandbox_denies_files_sockets_and_exec ... FAILED\nthread 'sandbox_denies_files_sockets_and_exec' (214425256) panicked at crates/basal-worker/tests/confinement.rs:69:9:\n  left: Bool(true)\n right: false\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s",
     "control": "Seatbelt profile not applied",
     "expected_red": "sandbox_denies_files_sockets_and_exec",
     "outcome": "reddened"
