@@ -188,7 +188,14 @@ rig_env() {
 
 rig_env_exec() {
   cd "$RIG_HOME" || die "no rig home at $RIG_HOME; run start first"
-  exec env -i \
+  # Close every descriptor above stderr first. Whatever launched this script
+  # (an agent's shell tool, a terminal multiplexer) may hold files open, and a
+  # daemon inheriting them would keep files outside the rig open for its whole
+  # life and pass them on to every module it spawns.
+  exec python3 -c 'import os, sys
+os.closerange(3, min(os.sysconf("SC_OPEN_MAX"), 1 << 16))
+os.execvp(sys.argv[1], sys.argv[1:])' \
+    env -i \
     HOME="$RIG_HOME" USER="${USER:-}" LOGNAME="${LOGNAME:-}" LANG="${LANG:-en_US.UTF-8}" \
     PATH="$(rig_path)" \
     TMPDIR="$RUNTIME_DIR/tmp" \
@@ -622,13 +629,15 @@ cmd_status() {
   failed=0
   processes=$(ps -axo pid=,ppid=,command=)
   say ""
-  report_process subc "$BIN/ckdev-subc" "$pid" ckdev-subc || failed=1
+  # report_process runs in a subshell: sh has no local variables, and its own
+  # assignments (pid among them) would otherwise overwrite this function's.
+  (report_process subc "$BIN/ckdev-subc" "$pid" ckdev-subc) || failed=1
   for line in $(modules | tr '\t' '|'); do
     id=${line%%|*}
     file=${line#*|}
     child=$(printf '%s\n' "$processes" | awk -v parent="$pid" -v prog="$BIN/$file" \
       '$2 == parent && $3 == prog { print $1; exit }')
-    report_process "$id" "$BIN/$file" "$child" "ckdev-${file#ckdev-}" || failed=1
+    (report_process "$id" "$BIN/$file" "$child" "ckdev-${file#ckdev-}") || failed=1
   done
   basal=$(printf '%s\n' "$processes" | awk -v parent="$pid" -v prog="$BIN/ckdev-basal" \
     '$2 == parent && $3 == prog { print $1; exit }')
@@ -641,7 +650,7 @@ cmd_status() {
     say "basal-worker: none running"
   fi
   for worker in $workers; do
-    report_process basal-worker "$BIN/ck-basal-worker" "$worker" ckdev-basal-worker || failed=1
+    (report_process basal-worker "$BIN/ck-basal-worker" "$worker" ckdev-basal-worker) || failed=1
   done
   report_credentials
   [ "$failed" = 0 ] || die "status found a module outside the rig (see above)"
