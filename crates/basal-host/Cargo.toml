@@ -1,0 +1,12 @@
+[package]
+name = "basal-host"
+version = "0.1.0"
+description = "The Host trait basal dispatches flow host calls through, and a deterministic mock."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+basal-proto.workspace = true
+serde_json.workspace = true

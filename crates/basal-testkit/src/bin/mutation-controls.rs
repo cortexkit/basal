@@ -9,8 +9,13 @@
 //! committed or staged:
 //!
 //! ```text
-//! cargo run -p basal-testkit --bin mutation-controls [-- <label filter>]
+//! cargo run -p basal-testkit --bin mutation-controls [-- [--journal] [--check] [<label filter>]]
 //! ```
+//!
+//! Without `--journal` it runs the worker engine's controls; with it, the
+//! journal, run state machine and driver controls in basal-core, whose
+//! tests live in basal-testkit. `--check` only verifies that every edit's
+//! text occurs exactly once in the current source.
 //!
 //! Safety of the working tree: the runner stages every file it will touch so
 //! the index holds the current source, refuses to start if anything is
@@ -18,8 +23,9 @@
 //! checks the tree is clean again before the next control. It never stashes
 //! and never restores from HEAD. Every temporary edit carries the marker
 //! `NON-VACUITY BREAK` so a break left behind by a crash is easy to find.
-//! Evidence is written to `docs/findings/slice-1-mutations.json`, beside the
-//! worker engine's findings note `docs/findings/slice-1-worker.md`.
+//! Evidence is written to `docs/findings/slice-1-mutations.json` (worker)
+//! or `docs/findings/slice-2-mutations.json` (journal), beside the findings
+//! notes in `docs/findings/`.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -45,6 +51,8 @@ enum Target {
     Integration(&'static str),
     /// A unit test inside the worker library.
     Lib,
+    /// An integration test file under `crates/basal-testkit/tests/`.
+    Testkit(&'static str),
 }
 
 struct Control {
@@ -403,6 +411,407 @@ const CONTROLS: &[Control] = &[
     },
 ];
 
+const JOURNAL: &str = "crates/basal-core/src/journal.rs";
+const DRIVER: &str = "crates/basal-core/src/driver.rs";
+const RUNS: &str = "crates/basal-core/src/runs.rs";
+const RUNTIME: &str = "crates/basal-core/src/runtime.rs";
+const ADMISSION: &str = "crates/basal-core/src/admission.rs";
+const RETENTION: &str = "crates/basal-core/src/retention.rs";
+const STORE: &str = "crates/basal-core/src/store.rs";
+
+/// The journal, run state machine and driver: each control disables one
+/// mechanism in basal-core and runs the basal-testkit test named for it.
+const JOURNAL_CONTROLS: &[Control] = &[
+    Control {
+        label: "late outcome shipped in the prefix with a higher order (replay barrier removed)",
+        edits: &[(
+            JOURNAL,
+            "let prefix: Vec<RecordedCall> = rows.iter().map(CallRow::recorded).collect();",
+            "let mut prefix: Vec<RecordedCall> = rows.iter().map(CallRow::recorded).collect();\n    let mut next = prefix.iter().filter_map(|c| c.outcome.as_ref().map(|o| o.delivery_order + 1)).max().unwrap_or(0);\n    let mut stmt = conn.prepare(\"SELECT position, settlement, value FROM mailbox WHERE run_id = ?1 ORDER BY seq\")?;\n    let late = stmt.query_map([run_id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;\n    for (p, s, v) in late {\n        if let Some(call) = prefix.get_mut(to_u64(p, \"position\")? as usize) {\n            call.outcome = Some(basal_proto::RecordedOutcome { settlement: parse_settlement(&s)?, value: json(v, \"late value\")?, delivery_order: next });\n            next += 1;\n        }\n    }",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("journal_races"),
+        test: "race_cut_late_outcome_waits_for_the_barrier",
+    },
+    Control {
+        label: "suspend transition does not re-read arrivals (lost wakeup)",
+        edits: &[(
+            RUNS,
+            "let arrived = settled_awaited\n        || in_mailbox > 0\n        || crate::model::to_u64(readiness, \"readiness\")? != seen_readiness;",
+            "let arrived = false;",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("journal_races"),
+        test: "completion_after_suspended_report_is_not_lost",
+    },
+    Control {
+        label: "claim is not a compare-and-set from pending",
+        edits: &[(
+            RUNS,
+            "awaited = NULL WHERE run_id = ?1 AND state = 'pending'\",",
+            "awaited = NULL WHERE run_id = ?1 AND state IN ('pending', 'running')\",",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("journal_races"),
+        test: "concurrent_resumes_start_one_activation",
+    },
+    Control {
+        label: "outcomes arriving during an activation are never released by it",
+        edits: &[(
+            JOURNAL,
+            "payload_hash FROM mailbox \\\n         WHERE run_id = ?1 ORDER BY seq\",",
+            "payload_hash FROM mailbox \\\n         WHERE run_id = ?1 AND arrived_generation < (SELECT generation FROM runs WHERE run_id = ?1) ORDER BY seq\",",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("journal_races"),
+        test: "completion_during_replay_is_released_after_the_prefix",
+    },
+    Control {
+        label: "rejections journaled as fulfilments (caught rejection)",
+        edits: &[(
+            JOURNAL,
+            "            position,\n            settlement,\n            value,\n            hash\n        ],",
+            "            position,\n            { let _ = &settlement; \"fulfilled\" },\n            value,\n            hash\n        ],",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("journal_races"),
+        test: "caught_rejection_through_the_parent",
+    },
+    Control {
+        label: "rejections journaled as fulfilments (all-rejected any)",
+        edits: &[(
+            JOURNAL,
+            "            position,\n            settlement,\n            value,\n            hash\n        ],",
+            "            position,\n            { let _ = &settlement; \"fulfilled\" },\n            value,\n            hash\n        ],",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("journal_races"),
+        test: "all_rejected_any_through_the_parent",
+    },
+    Control {
+        label: "rejections journaled as fulfilments (early all rejection)",
+        edits: &[(
+            JOURNAL,
+            "            position,\n            settlement,\n            value,\n            hash\n        ],",
+            "            position,\n            { let _ = &settlement; \"fulfilled\" },\n            value,\n            hash\n        ],",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("journal_races"),
+        test: "early_all_rejection_through_the_parent",
+    },
+    Control {
+        label: "calls of one run dispatched serially on the activation's thread",
+        edits: &[(
+            RUNTIME,
+            "let handle = thread::spawn(f);",
+            "f();\n        let handle = thread::spawn(|| {});",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("journal_races"),
+        test: "calls_of_one_run_are_dispatched_concurrently",
+    },
+    Control {
+        label: "recovery applies a committed local effect again",
+        edits: &[(
+            DRIVER,
+            "if waiting.contains(&row.position) || self.rt.is_inflight(&run_id, row.position) {",
+            "if self.rt.is_inflight(&run_id, row.position) {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("journal_races"),
+        test: "local_effect_behind_unresolved_call_applies_once",
+    },
+    Control {
+        label: "a synchronous call journaled without its value is not answered again",
+        edits: &[(
+            DRIVER,
+            "if row.class != StoredClass::Sync || row.outcome.is_some() {",
+            "if true || row.class != StoredClass::Sync || row.outcome.is_some() {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("journal_races"),
+        test: "sync_call_journaled_without_value_is_answered_again",
+    },
+    Control {
+        label: "clock reads not kept monotonic within a run",
+        edits: &[
+            (
+                DRIVER,
+                "let value = last.map_or(now, |last| now.max(last));",
+                "let value = last.map_or(now, |_| now);",
+            ),
+            (
+                DRIVER,
+                "(Some(c), Some(last)) => Some(c.max(last)),",
+                "(Some(c), Some(_)) => Some(c),",
+            ),
+        ],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("journal_races"),
+        test: "clock_stays_monotonic_across_activations",
+    },
+    Control {
+        label: "the activation's call insert is not fenced",
+        edits: &[(
+            JOURNAL,
+            "WHERE {FENCE} AND ?4 = (SELECT COUNT(*) FROM journal WHERE run_id = ?1)",
+            "WHERE (1 OR {FENCE}) AND ?4 = (SELECT COUNT(*) FROM journal WHERE run_id = ?1)",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("journal_ownership"),
+        test: "owner_loss_before_call_commit_dispatches_nothing",
+    },
+    Control {
+        label: "recovery resends a call this process is still dispatching",
+        edits: &[(
+            DRIVER,
+            "if waiting.contains(&row.position) || self.rt.is_inflight(&run_id, row.position) {",
+            "if waiting.contains(&row.position) {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("journal_ownership"),
+        test: "owner_loss_after_call_commit_dispatches_once",
+    },
+    Control {
+        label: "delivery-order allocation is not fenced",
+        edits: &[
+            (
+                JOURNAL,
+                "    if !lease.holds(tx)? {\n        return Err(lease.lost());\n    }\n    let readiness: i64",
+                "    let readiness: i64",
+            ),
+            (
+                JOURNAL,
+                "payload_hash = ?7, \\\n             delivery_order = {NEXT_ORDER} \\\n             WHERE run_id = ?1 AND position = ?4 AND settlement IS NULL AND {FENCE}\"",
+                "payload_hash = ?7, \\\n             delivery_order = {NEXT_ORDER} \\\n             WHERE run_id = ?1 AND position = ?4 AND settlement IS NULL AND (1 OR {FENCE})\"",
+            ),
+        ],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("journal_ownership"),
+        test: "owner_loss_around_order_commit_delivers_nothing_more",
+    },
+    Control {
+        label: "a call is dispatched before its row commits",
+        edits: &[(
+            DRIVER,
+            "                let run_id = self.lease.run_id.clone();\n                self.rt.register(&run_id, call.position);",
+            "                let run_id = self.lease.run_id.clone();\n                self.rt.spawn_dispatch(basal_host::CallRequest { flow_id: flow_id.clone(), run_id: run_id.clone(), position: call.position, kind: call.kind.clone(), args: call.args.clone(), idempotency_key: crate::ids::idempotency_key(&flow_id, &run_id, call.position), attempt: 1 }, class);\n                self.rt.register(&run_id, call.position);",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("journal_ownership"),
+        test: "storage_failure_before_commit_dispatches_nothing",
+    },
+    Control {
+        label: "recovery resends a mutation that ignores idempotency keys",
+        edits: &[(
+            DRIVER,
+            "(class, _) if class.safe_to_resend() => resend.push(row.clone()),",
+            "(_, _) => resend.push(row.clone()),",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("journal_unknown"),
+        test: "unknown_unkeyed_mutation_needs_reconcile",
+    },
+    Control {
+        label: "a resend mints a new idempotency key",
+        edits: &[(
+            RUNTIME,
+            "idempotency_key: row.idempotency_key.clone(),",
+            "idempotency_key: format!(\"{}-resent\", row.idempotency_key),",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("journal_unknown"),
+        test: "unknown_keyed_mutation_is_reissued_with_the_same_key",
+    },
+    Control {
+        label: "Unavailable retried for every mutation",
+        edits: &[(
+            RUNTIME,
+            "let may_retry = class.safe_to_resend() || proven_unsent;",
+            "let may_retry = true || class.safe_to_resend() || proven_unsent;",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("journal_unknown"),
+        test: "unavailable_is_retried_only_when_safe",
+    },
+    Control {
+        label: "a call reconciled as not applied is not sent again",
+        edits: &[(
+            DRIVER,
+            "(_, DispatchState::NotApplied) => resend.push(row.clone()),",
+            "(_, DispatchState::NotApplied) => unknown.push(row.position),",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("journal_unknown"),
+        test: "reconcile_not_applied_reissues_with_the_same_key",
+    },
+    Control {
+        label: "completions for a cancelled run are accepted",
+        edits: &[(
+            JOURNAL,
+            "if state == \"cancelled\" {",
+            "if false && state == \"cancelled\" {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("journal_unknown"),
+        test: "reconcile_cancel_ends_the_run_and_refuses_later_completions",
+    },
+    Control {
+        label: "a contradictory completion is taken for a redelivery",
+        edits: &[(
+            JOURNAL,
+            "if waiting == hash {",
+            "if true || waiting == hash {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("journal_unknown"),
+        test: "redelivered_completion_is_a_noop_and_contradictory_one_is_quarantined",
+    },
+    Control {
+        label: "divergence reported as a script error",
+        edits: &[(
+            DRIVER,
+            "self.fail(\"nondeterminism\", format!(\"{n:?}\"), true)",
+            "self.fail(\"script\", format!(\"{n:?}\"), true)",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("journal_identity"),
+        test: "divergence_fails_the_run_as_nondeterminism",
+    },
+    Control {
+        label: "code hash not checked before replay",
+        edits: &[(
+            DRIVER,
+            "if code_hash(&self.run.script, &self.run.manifest) != self.run.code_hash {",
+            "if false && code_hash(&self.run.script, &self.run.manifest) != self.run.code_hash {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("journal_identity"),
+        test: "code_hash_mismatch_is_engine_mismatch_without_replay",
+    },
+    Control {
+        label: "runtime fingerprint not checked before replay",
+        edits: &[(
+            DRIVER,
+            "Some(recorded) if *recorded != current => {",
+            "Some(recorded) if false && *recorded != current => {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("journal_identity"),
+        test: "fingerprint_mismatch_is_engine_mismatch_without_replay",
+    },
+    Control {
+        label: "admission does not consult tombstones",
+        edits: &[(
+            ADMISSION,
+            "if let Some(run_id) = tomb {",
+            "if let Some(run_id) = tomb.filter(|_| false) {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("journal_admin"),
+        test: "admission_deduplicates_and_tombstones_refuse_after_pruning",
+    },
+    Control {
+        label: "admission does not deduplicate",
+        edits: &[(
+            ADMISSION,
+            "if let Some(run_id) = existing {",
+            "if let Some(run_id) = existing.filter(|_| false) {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("journal_admin"),
+        test: "admission_deduplicates_and_tombstones_refuse_after_pruning",
+    },
+    Control {
+        label: "pruning ignores open obligations",
+        edits: &[(
+            RETENTION,
+            "if !journal::unsettled_positions(tx, &run_id)?.is_empty() {",
+            "if false && !journal::unsettled_positions(tx, &run_id)?.is_empty() {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("journal_admin"),
+        test: "pruning_spares_unfinished_runs_and_open_obligations",
+    },
+    Control {
+        label: "pruning touches runs that have not ended",
+        edits: &[(
+            RETENTION,
+            "WHERE state IN ('succeeded', 'failed', 'engine_mismatch', 'cancelled') \\\n         AND ended_at IS NOT NULL AND ended_at <= ?1",
+            "WHERE state IN ('succeeded', 'failed', 'engine_mismatch', 'cancelled', 'pending', 'suspended') \\\n         AND (ended_at IS NULL OR ended_at <= ?1)",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("journal_admin"),
+        test: "pruning_spares_unfinished_runs_and_open_obligations",
+    },
+    Control {
+        label: "store runs synchronous = NORMAL",
+        edits: &[(
+            STORE,
+            "c.pragma_update(None, \"synchronous\", \"FULL\")?;",
+            "c.pragma_update(None, \"synchronous\", \"NORMAL\")?;",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("journal_admin"),
+        test: "store_runs_synchronous_full_and_the_chosen_fullfsync",
+    },
+    Control {
+        label: "fullfsync choice not applied",
+        edits: &[(
+            STORE,
+            "c.pragma_update(None, \"fullfsync\", durability.fullfsync)?;",
+            "c.pragma_update(None, \"fullfsync\", false)?;",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("journal_admin"),
+        test: "store_runs_synchronous_full_and_the_chosen_fullfsync",
+    },
+    Control {
+        label: "recovery does not resend queries (cut harness)",
+        edits: &[(
+            DRIVER,
+            "(class, _) if class.safe_to_resend() => resend.push(row.clone()),",
+            "(StoredClass::KeyedMutation, _) => resend.push(row.clone()),",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("journal_cut"),
+        test: "every_cut_recovers_to_the_uncut_state",
+    },
+    Control {
+        label: "recovery does not resend queries (cuts in recovery suffixes)",
+        edits: &[(
+            DRIVER,
+            "(class, _) if class.safe_to_resend() => resend.push(row.clone()),",
+            "(StoredClass::KeyedMutation, _) => resend.push(row.clone()),",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("journal_cut"),
+        test: "cuts_in_recovery_generated_suffixes_recover_too",
+    },
+    Control {
+        label: "recovery does not resend keyed mutations (parent kill -9)",
+        edits: &[(
+            DRIVER,
+            "(class, _) if class.safe_to_resend() => resend.push(row.clone()),",
+            "(StoredClass::Query, _) => resend.push(row.clone()),",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("journal_kill"),
+        test: "killing_the_parent_at_every_boundary_recovers_to_the_uncut_state",
+    },
+    Control {
+        label: "a broken worker fails the run instead of replaying it on another (worker kill -9)",
+        edits: &[(
+            DRIVER,
+            "if self.run.broken + 1 >= self.rt.config.max_broken_activations {",
+            "if true || self.run.broken + 1 >= self.rt.config.max_broken_activations {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("journal_kill"),
+        test: "killing_the_worker_at_every_boundary_recovers_to_the_uncut_state",
+    },
+];
+
 const TEST_TIMEOUT: Duration = Duration::from_secs(600);
 
 fn git(root: &Path, args: &[&str]) -> Result<String, String> {
@@ -526,10 +935,12 @@ fn run_control(root: &Path, control: &Control) -> Result<Value, String> {
     command
         .current_dir(root)
         .env_remove("BASAL_WORKER_BIN")
-        .args(["test", "-p", "basal-worker"]);
+        .env_remove("BASAL_CUT_EXHAUSTIVE")
+        .arg("test");
     match control.target {
-        Target::Integration(file) => command.args(["--test", file]),
-        Target::Lib => command.arg("--lib"),
+        Target::Integration(file) => command.args(["-p", "basal-worker", "--test", file]),
+        Target::Lib => command.args(["-p", "basal-worker", "--lib"]),
+        Target::Testkit(file) => command.args(["-p", "basal-testkit", "--test", file]),
     };
     command.args([control.test, "--", "--exact"]);
     let ran = run_with_timeout(command, TEST_TIMEOUT);
@@ -579,7 +990,44 @@ fn run_control(root: &Path, control: &Control) -> Result<Value, String> {
 }
 
 fn main() -> ExitCode {
-    let filter = std::env::args().nth(1);
+    // `--journal` selects the journal and runtime controls (basal-core,
+    // driven through basal-testkit's tests); the default is the worker's.
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let journal = args.first().is_some_and(|a| a == "--journal");
+    if journal {
+        args.remove(0);
+    }
+    let (controls, evidence_file) = if journal {
+        (JOURNAL_CONTROLS, "docs/findings/slice-2-mutations.json")
+    } else {
+        (CONTROLS, "docs/findings/slice-1-mutations.json")
+    };
+    // `--check` only verifies that every edit's text occurs exactly once,
+    // without touching anything.
+    let check = args.first().is_some_and(|a| a == "--check");
+    if check {
+        args.remove(0);
+    }
+    let filter = args.into_iter().next();
+    if check {
+        let mut ok = true;
+        for control in controls {
+            for (path, old, _) in control.edits {
+                let count = std::fs::read_to_string(path)
+                    .map(|t| t.matches(old).count())
+                    .unwrap_or(0);
+                if count != 1 {
+                    ok = false;
+                    eprintln!("{}: {path}: found {count} times", control.label);
+                }
+            }
+        }
+        return if ok {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        };
+    }
     let root = match git(Path::new("."), &["rev-parse", "--show-toplevel"]) {
         Ok(r) => PathBuf::from(r),
         Err(e) => {
@@ -589,7 +1037,7 @@ fn main() -> ExitCode {
     };
     // Stage every file a control may touch, so restoring from the index
     // brings back the current source rather than an older commit.
-    let mut files: Vec<&str> = CONTROLS
+    let mut files: Vec<&str> = controls
         .iter()
         .flat_map(|c| {
             c.edits
@@ -620,7 +1068,7 @@ fn main() -> ExitCode {
 
     let mut evidence = Vec::new();
     let mut all_red = true;
-    for control in CONTROLS {
+    for control in controls {
         if let Some(f) = &filter
             && !control.label.contains(f.as_str())
             && !control.test.contains(f.as_str())
@@ -642,7 +1090,7 @@ fn main() -> ExitCode {
     }
     let text = serde_json::to_string_pretty(&evidence).unwrap_or_default() + "\n";
     if filter.is_none() {
-        let path = root.join("docs/findings/slice-1-mutations.json");
+        let path = root.join(evidence_file);
         if let Err(e) = std::fs::create_dir_all(root.join("docs/findings"))
             .and_then(|_| std::fs::write(&path, &text))
         {
