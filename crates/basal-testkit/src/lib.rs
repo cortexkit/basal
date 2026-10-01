@@ -4,6 +4,7 @@
 //! runner (`src/bin/mutation-controls.rs`) that proves each safety test can
 //! fail.
 
+pub mod fuzz;
 pub mod mock;
 pub mod parent;
 pub mod process;

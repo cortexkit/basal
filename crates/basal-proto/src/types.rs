@@ -23,7 +23,11 @@ pub struct ValueTooLarge {
 
 impl fmt::Display for ValueTooLarge {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "value of {} bytes exceeds the cap of {}", self.bytes, self.cap)
+        write!(
+            f,
+            "value of {} bytes exceeds the cap of {}",
+            self.bytes, self.cap
+        )
     }
 }
 
@@ -74,7 +78,12 @@ impl fmt::Debug for JsonText {
             while !self.0.is_char_boundary(end) {
                 end -= 1;
             }
-            write!(f, "JsonText({:?}... {} bytes)", &self.0[..end], self.0.len())
+            write!(
+                f,
+                "JsonText({:?}... {} bytes)",
+                &self.0[..end],
+                self.0.len()
+            )
         }
     }
 }
@@ -379,29 +388,50 @@ pub enum Nondeterminism {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Failure {
     /// The script threw or its top-level promise rejected.
-    Script { message: String },
+    Script {
+        message: String,
+    },
     Nondeterminism(Nondeterminism),
     /// The script tried to issue a call its profile forbids.
-    ProfileViolation { kind: CallKind },
+    ProfileViolation {
+        kind: CallKind,
+    },
     /// The parent expected a different prelude.
     EngineMismatch {
         expected: PreludeHash,
         actual: PreludeHash,
     },
     /// The activation request was inconsistent (bad prefix, bad budgets).
-    InvalidRequest { detail: String },
+    InvalidRequest {
+        detail: String,
+    },
     /// The script passed arguments larger than the value cap.
-    ArgumentsTooLarge { bytes: u64, cap: u64 },
+    ArgumentsTooLarge {
+        bytes: u64,
+        cap: u64,
+    },
     /// The script's result is larger than the value cap.
-    ResultTooLarge { bytes: u64, cap: u64 },
+    ResultTooLarge {
+        bytes: u64,
+        cap: u64,
+    },
     /// The script's result cannot be expressed as JSON.
-    ResultNotSerializable { detail: String },
+    ResultNotSerializable {
+        detail: String,
+    },
     /// A value from the parent could not be parsed as data.
-    InvalidHostValue { position: u64, detail: String },
+    InvalidHostValue {
+        position: u64,
+        detail: String,
+    },
     /// The channel to the parent broke during the activation.
-    HostLink { detail: String },
+    HostLink {
+        detail: String,
+    },
     /// The engine failed in a way no script action explains.
-    Engine { detail: String },
+    Engine {
+        detail: String,
+    },
 }
 
 /// Which per-activation limit ended an activation.
@@ -415,11 +445,15 @@ pub enum BudgetKind {
 /// How an activation ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActivationResult {
-    Completed { value: JsonText },
+    Completed {
+        value: JsonText,
+    },
     Failed(Failure),
     /// The script is blocked only on calls the parent reported as
     /// long-running; the VM is dropped and the run resumes by replay.
-    Suspended { awaited: Vec<u64> },
+    Suspended {
+        awaited: Vec<u64>,
+    },
     /// The script is waiting on a promise that no host call will settle.
     Stalled,
     BudgetExhausted(BudgetKind),
@@ -449,29 +483,46 @@ pub enum MessageKind {
 /// longer be split into frames and the worker exits cleanly.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
-    Malformed { detail: String },
-    Oversized { declared: u64, max: u64 },
+    Malformed {
+        detail: String,
+    },
+    Oversized {
+        declared: u64,
+        max: u64,
+    },
     UnexpectedFrame {
         received: MessageKind,
         state: WorkerState,
     },
-    VersionMismatch { supported: u32, requested: u32 },
+    VersionMismatch {
+        supported: u32,
+        requested: u32,
+    },
     /// A delivery or long-running report named a position the worker is not
     /// waiting on.
-    UnknownPosition { position: u64 },
+    UnknownPosition {
+        position: u64,
+    },
     /// A delivery order did not increase.
-    DeliveryOrderRegression { last: u64, received: u64 },
+    DeliveryOrderRegression {
+        last: u64,
+        received: u64,
+    },
 }
 
 /// Frames the parent sends.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParentMessage {
-    Hello { protocol_version: u32 },
+    Hello {
+        protocol_version: u32,
+    },
     Activate(Box<ActivationRequest>),
     Deliver(Outcome),
     /// In reply to [`WorkerMessage::Blocked`]: these awaited calls are
     /// long-running and will not settle soon.
-    LongRunning { positions: Vec<u64> },
+    LongRunning {
+        positions: Vec<u64>,
+    },
     Shutdown,
 }
 
@@ -483,7 +534,9 @@ pub enum WorkerMessage {
     /// The script can make no progress until one of these calls settles. The
     /// parent answers with exactly one [`ParentMessage::Deliver`] for one of
     /// them, or a [`ParentMessage::LongRunning`] naming the ones that are.
-    Blocked { awaiting: Vec<u64> },
+    Blocked {
+        awaiting: Vec<u64>,
+    },
     Finished {
         activation_id: u64,
         result: ActivationResult,

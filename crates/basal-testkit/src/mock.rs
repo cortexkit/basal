@@ -149,7 +149,11 @@ impl MockHost {
                 ),
                 Primitive::Classify => ready(
                     Settlement::Fulfilled,
-                    text(args.get("labels").and_then(|l| l.get(0)).unwrap_or(&Value::Null)),
+                    text(
+                        args.get("labels")
+                            .and_then(|l| l.get(0))
+                            .unwrap_or(&Value::Null),
+                    ),
                 ),
                 Primitive::SinkDigest | Primitive::SinkStatus => {
                     ready(Settlement::Fulfilled, text(&json!({"accepted": true})))

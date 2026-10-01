@@ -94,12 +94,14 @@ fn read_call_kind(dec: &mut Decoder<'_>) -> Result<CallKind, DecodeError> {
             module: dec.string("module", MAX_NAME_BYTES)?,
             op: dec.string("op", MAX_NAME_BYTES)?,
         }),
-        code => Primitive::from_code(code)
-            .map(CallKind::Primitive)
-            .ok_or(DecodeError::UnknownTag {
-                field: "call kind",
-                tag: code,
-            }),
+        code => {
+            Primitive::from_code(code)
+                .map(CallKind::Primitive)
+                .ok_or(DecodeError::UnknownTag {
+                    field: "call kind",
+                    tag: code,
+                })
+        }
     }
 }
 

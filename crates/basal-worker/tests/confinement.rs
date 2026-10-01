@@ -7,28 +7,32 @@ mod common;
 
 use std::io::Read;
 use std::net::TcpListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
 
 use serde_json::Value;
 
 fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "basal-confinement-{}-{name}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("basal-confinement-{}-{name}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("scratch dir");
     dir
 }
 
-fn probe(extra: &[&str], read: &PathBuf, write: &PathBuf, connect: &str) -> Value {
+fn probe(extra: &[&str], read: &Path, write: &Path, connect: &str) -> Value {
     let mut args = vec!["--confinement-probe"];
     args.extend_from_slice(extra);
     let read = read.to_string_lossy().into_owned();
     let write = write.to_string_lossy().into_owned();
     args.extend_from_slice(&[
-        "--read", &read, "--write", &write, "--connect", connect, "--exec", "/bin/echo",
+        "--read",
+        &read,
+        "--write",
+        &write,
+        "--connect",
+        connect,
+        "--exec",
+        "/bin/echo",
     ]);
     let output = Command::new(common::worker_binary())
         .args(&args)
@@ -67,7 +71,10 @@ fn sandbox_denies_files_sockets_and_exec() {
             "{attempt} succeeded inside the sandbox: {confined}"
         );
     }
-    assert!(!confined_write.exists(), "the confined write created a file");
+    assert!(
+        !confined_write.exists(),
+        "the confined write created a file"
+    );
     // Nothing but stdio is left open once confined.
     assert_eq!(confined["open_descriptors"], serde_json::json!([0, 1, 2]));
 
@@ -77,7 +84,10 @@ fn sandbox_denies_files_sockets_and_exec() {
     let open = probe(&["--no-sandbox"], &secret, &open_write, &addr);
     assert_eq!(open["confinement"], "none");
     for attempt in ["read", "write", "connect", "exec"] {
-        assert_eq!(open[attempt]["ok"], true, "{attempt} failed without the sandbox: {open}");
+        assert_eq!(
+            open[attempt]["ok"], true,
+            "{attempt} failed without the sandbox: {open}"
+        );
     }
     assert!(open_write.exists());
     let _ = std::fs::remove_dir_all(&dir);

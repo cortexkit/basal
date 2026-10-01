@@ -18,10 +18,16 @@ pub enum FrameError {
     /// The stream ended cleanly at a frame boundary.
     Closed,
     /// The stream ended inside a frame.
-    Truncated { expected: usize, received: usize },
+    Truncated {
+        expected: usize,
+        received: usize,
+    },
     /// The declared length exceeds [`MAX_FRAME_BYTES`]. The payload was not
     /// read, so the stream can no longer be split into frames.
-    Oversized { declared: u64, max: u64 },
+    Oversized {
+        declared: u64,
+        max: u64,
+    },
     Io(io::Error),
     /// The whole frame was read but its payload is not a valid message. The
     /// stream is still in sync and the next frame can be read.
@@ -40,7 +46,10 @@ impl fmt::Display for FrameError {
         match self {
             Self::Closed => write!(f, "stream closed"),
             Self::Truncated { expected, received } => {
-                write!(f, "stream ended inside a frame: {received} of {expected} bytes")
+                write!(
+                    f,
+                    "stream ended inside a frame: {received} of {expected} bytes"
+                )
             }
             Self::Oversized { declared, max } => {
                 write!(f, "frame of {declared} bytes exceeds the maximum of {max}")

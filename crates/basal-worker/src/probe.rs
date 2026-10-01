@@ -113,10 +113,7 @@ pub fn run(args: &[String]) -> u8 {
     }
 
     let mut line = format!("{{\"confinement\":{}", json_string(confinement));
-    let fds: Vec<String> = descriptors
-        .iter()
-        .map(|fd| fd.to_string())
-        .collect();
+    let fds: Vec<String> = descriptors.iter().map(|fd| fd.to_string()).collect();
     line.push_str(&format!(",\"open_descriptors\":[{}]", fds.join(",")));
     for attempt in &attempts {
         match &attempt.result {

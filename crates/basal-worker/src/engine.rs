@@ -9,6 +9,10 @@
 //! blocked on a host call simply has no jobs to run, and the worker decides
 //! whether that is a wait, a suspension or a stall.
 
+// Errors here are whole activation results, returned once per activation or
+// per host call; boxing them would buy nothing measurable.
+#![allow(clippy::result_large_err)]
+
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, VecDeque};
 use std::rc::Rc;
@@ -253,17 +257,19 @@ impl Shared {
         };
 
         if recorded.kind != kind || recorded.args_digest != digest {
-            return Err(failed(Failure::Nondeterminism(Nondeterminism::Divergence {
-                position,
-                recorded: CallSignature {
-                    kind: recorded.kind.clone(),
-                    args_digest: recorded.args_digest,
+            return Err(failed(Failure::Nondeterminism(
+                Nondeterminism::Divergence {
+                    position,
+                    recorded: CallSignature {
+                        kind: recorded.kind.clone(),
+                        args_digest: recorded.args_digest,
+                    },
+                    observed: CallSignature {
+                        kind,
+                        args_digest: digest,
+                    },
                 },
-                observed: CallSignature {
-                    kind,
-                    args_digest: digest,
-                },
-            })));
+            )));
         }
         if !synchronous {
             // Served from the prefix: its recorded outcome (if any) is
@@ -405,7 +411,11 @@ fn native_bridge<'js>(ctx: &Ctx<'js>, shared: &Rc<Shared>) -> rquickjs::Result<O
         "issueOp",
         Function::new(
             ctx.clone(),
-            move |ctx: Ctx<'js>, module: String, op: String, args: String| -> rquickjs::Result<f64> {
+            move |ctx: Ctx<'js>,
+                  module: String,
+                  op: String,
+                  args: String|
+                  -> rquickjs::Result<f64> {
                 if module.len() > MAX_NAME_BYTES || op.len() > MAX_NAME_BYTES {
                     return Err(Exception::throw_range(
                         &ctx,
@@ -429,7 +439,10 @@ fn native_bridge<'js>(ctx: &Ctx<'js>, shared: &Rc<Shared>) -> rquickjs::Result<O
                 let primitive = primitive_from_code(&ctx, code)?;
                 let kind = CallKind::Primitive(primitive);
                 if kind.is_synchronous() {
-                    return Err(Exception::throw_type(&ctx, "synchronous primitive issued asynchronously"));
+                    return Err(Exception::throw_type(
+                        &ctx,
+                        "synchronous primitive issued asynchronously",
+                    ));
                 }
                 match s.issue(kind, args) {
                     Ok(Issued::Async(position)) => Ok(position as f64),
@@ -448,7 +461,10 @@ fn native_bridge<'js>(ctx: &Ctx<'js>, shared: &Rc<Shared>) -> rquickjs::Result<O
                 let primitive = primitive_from_code(&ctx, code)?;
                 let kind = CallKind::Primitive(primitive);
                 if !kind.is_synchronous() {
-                    return Err(Exception::throw_type(&ctx, "asynchronous primitive issued synchronously"));
+                    return Err(Exception::throw_type(
+                        &ctx,
+                        "asynchronous primitive issued synchronously",
+                    ));
                 }
                 match s.issue(kind, args) {
                     Ok(Issued::Sync { fulfilled, value }) => {
@@ -708,7 +724,10 @@ impl Activation {
     }
 
     /// Runs a closure inside the engine with the JS clock running.
-    fn enter<R>(&self, f: impl FnOnce(&Ctx<'_>) -> rquickjs::Result<R>) -> Result<R, ActivationResult> {
+    fn enter<R>(
+        &self,
+        f: impl FnOnce(&Ctx<'_>) -> rquickjs::Result<R>,
+    ) -> Result<R, ActivationResult> {
         self.shared.clock.enter();
         let result = self.ctx.with(|ctx| f(&ctx));
         self.shared.clock.leave();
@@ -726,27 +745,29 @@ impl Activation {
         #[cfg(test)]
         let expose = self.expose_raw_bridge;
         // The prelude's own work is not charged to the script's budget.
-        let hooks = self.ctx.with(|ctx| -> rquickjs::Result<(Hooks, Persistent<Function<'static>>)> {
-            let native = native_bridge(&ctx, &shared)?;
-            #[cfg(test)]
-            if expose {
-                ctx.globals().set("__rawBridge", native.clone())?;
-            }
-            let mut options = EvalOptions::default();
-            options.filename = Some("prelude.js".into());
-            let prelude: Function = ctx.eval_with_options(PRELUDE, options)?;
-            let hooks: Object = prelude.call((native, codemode, request.trigger.as_str()))?;
-            let deliver: Function = hooks.get("deliver")?;
-            let start: Function = hooks.get("start")?;
-            let status: Function = hooks.get("status")?;
-            Ok((
-                Hooks {
-                    deliver: Persistent::save(&ctx, deliver),
-                    status: Persistent::save(&ctx, status),
-                },
-                Persistent::save(&ctx, start),
-            ))
-        });
+        let hooks = self.ctx.with(
+            |ctx| -> rquickjs::Result<(Hooks, Persistent<Function<'static>>)> {
+                let native = native_bridge(&ctx, &shared)?;
+                #[cfg(test)]
+                if expose {
+                    ctx.globals().set("__rawBridge", native.clone())?;
+                }
+                let mut options = EvalOptions::default();
+                options.filename = Some("prelude.js".into());
+                let prelude: Function = ctx.eval_with_options(PRELUDE, options)?;
+                let hooks: Object = prelude.call((native, codemode, request.trigger.as_str()))?;
+                let deliver: Function = hooks.get("deliver")?;
+                let start: Function = hooks.get("start")?;
+                let status: Function = hooks.get("status")?;
+                Ok((
+                    Hooks {
+                        deliver: Persistent::save(&ctx, deliver),
+                        status: Persistent::save(&ctx, status),
+                    },
+                    Persistent::save(&ctx, start),
+                ))
+            },
+        );
         let (hooks, start) = match hooks {
             Ok(h) => h,
             Err(e) => {
@@ -772,7 +793,10 @@ impl Activation {
             options.filename = Some("flow.js".into());
             let main: Value = ctx.eval_with_options(source, options)?;
             if !main.is_function() {
-                return Err(Exception::throw_type(ctx, "the script must be a function body"));
+                return Err(Exception::throw_type(
+                    ctx,
+                    "the script must be a function body",
+                ));
             }
             start.call::<_, ()>((main,))
         });
@@ -781,7 +805,12 @@ impl Activation {
         started
     }
 
-    fn deliver(&self, position: u64, settlement: Settlement, value: &JsonText) -> Result<(), ActivationResult> {
+    fn deliver(
+        &self,
+        position: u64,
+        settlement: Settlement,
+        value: &JsonText,
+    ) -> Result<(), ActivationResult> {
         let Some(hooks) = &self.hooks else {
             return Err(failed(Failure::Engine {
                 detail: "delivery before setup".into(),
@@ -851,7 +880,10 @@ impl Activation {
         }
     }
 
-    fn drive_inner(&mut self, request: &ActivationRequest) -> Result<ActivationResult, ActivationResult> {
+    fn drive_inner(
+        &mut self,
+        request: &ActivationRequest,
+    ) -> Result<ActivationResult, ActivationResult> {
         self.setup(request)?;
         loop {
             self.drain_jobs()?;

@@ -181,7 +181,11 @@ impl<'a> Decoder<'a> {
 
     /// Reads a length-prefixed byte string, checking the declared length
     /// against `max` before touching the bytes.
-    pub(crate) fn bytes(&mut self, field: &'static str, max: usize) -> Result<&'a [u8], DecodeError> {
+    pub(crate) fn bytes(
+        &mut self,
+        field: &'static str,
+        max: usize,
+    ) -> Result<&'a [u8], DecodeError> {
         let len = self.u32(field)? as usize;
         if len > max {
             return Err(DecodeError::TooLong { field, len, max });
@@ -189,7 +193,11 @@ impl<'a> Decoder<'a> {
         self.take(field, len)
     }
 
-    pub(crate) fn string(&mut self, field: &'static str, max: usize) -> Result<String, DecodeError> {
+    pub(crate) fn string(
+        &mut self,
+        field: &'static str,
+        max: usize,
+    ) -> Result<String, DecodeError> {
         let bytes = self.bytes(field, max)?;
         std::str::from_utf8(bytes)
             .map(str::to_owned)

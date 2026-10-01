@@ -26,7 +26,10 @@ pub fn thread_cpu_time() -> Duration {
     if rc != 0 {
         return Duration::ZERO;
     }
-    Duration::new(ts.tv_sec.max(0) as u64, ts.tv_nsec.clamp(0, 999_999_999) as u32)
+    Duration::new(
+        ts.tv_sec.max(0) as u64,
+        ts.tv_nsec.clamp(0, 999_999_999) as u32,
+    )
 }
 
 /// Engine time spent so far and the limit it is held to.
@@ -60,8 +63,7 @@ impl JsClock {
     pub fn leave(&self) {
         if let Some(start) = self.entered_at.take() {
             let now = thread_cpu_time();
-            self.spent
-                .set(self.spent.get() + now.saturating_sub(start));
+            self.spent.set(self.spent.get() + now.saturating_sub(start));
         }
     }
 

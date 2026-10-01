@@ -116,9 +116,8 @@ impl Report {
     pub fn value(&self) -> serde_json::Value {
         match &self.ending {
             Ending::Finished(ActivationResult::Completed { value }) => {
-                serde_json::from_str(value.as_str()).unwrap_or_else(|e| {
-                    panic!("result is not JSON ({e}): {value:?}")
-                })
+                serde_json::from_str(value.as_str())
+                    .unwrap_or_else(|e| panic!("result is not JSON ({e}): {value:?}"))
             }
             _ => panic!("activation did not complete: {self:#?}"),
         }
@@ -215,7 +214,12 @@ impl TestParent {
 
     /// Runs with an explicit prefix, for tests that tamper with the journal
     /// as shipped (the journal itself still records new calls).
-    pub fn run_with_prefix(&mut self, run: &str, script: &str, prefix: Vec<RecordedCall>) -> Report {
+    pub fn run_with_prefix(
+        &mut self,
+        run: &str,
+        script: &str,
+        prefix: Vec<RecordedCall>,
+    ) -> Report {
         let started = Instant::now();
         let mut report = Report {
             ending: Ending::Hung,
@@ -399,9 +403,7 @@ impl TestParent {
                         }
                     }
                     WorkerMessage::Welcome(_) => {
-                        return Ending::Broken(ParentError::Protocol(
-                            "unexpected Welcome".into(),
-                        ));
+                        return Ending::Broken(ParentError::Protocol("unexpected Welcome".into()));
                     }
                 };
                 if let Some(reply) = reply

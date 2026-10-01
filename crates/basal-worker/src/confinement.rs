@@ -71,7 +71,8 @@ mod macos {
     }
 
     pub fn apply(profile: &str) -> Result<(), String> {
-        let profile = CString::new(profile).map_err(|_| "profile contains a NUL byte".to_owned())?;
+        let profile =
+            CString::new(profile).map_err(|_| "profile contains a NUL byte".to_owned())?;
         let mut error: *mut c_char = std::ptr::null_mut();
         // SAFETY: `profile` is a valid NUL-terminated string and `error` is a
         // valid out-pointer. Flags 0 means the string is SBPL source.
@@ -84,7 +85,9 @@ mod macos {
         } else {
             // SAFETY: on failure sandbox_init sets `error` to a NUL-terminated
             // string that must be released with sandbox_free_error.
-            let text = unsafe { CStr::from_ptr(error) }.to_string_lossy().into_owned();
+            let text = unsafe { CStr::from_ptr(error) }
+                .to_string_lossy()
+                .into_owned();
             unsafe { sandbox_free_error(error) };
             text
         };

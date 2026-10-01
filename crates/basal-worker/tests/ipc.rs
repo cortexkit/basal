@@ -6,9 +6,9 @@ mod common;
 use std::time::Duration;
 
 use basal_proto::{
-    ActivationRequest, ActivationResult, Budgets, CallKind, Confinement, JsonText,
-    MAX_FRAME_BYTES, MessageKind, Outcome, PROTOCOL_VERSION, ParentMessage, PreludeHash, Primitive,
-    Profile, Refusal, Settlement, Welcome, WorkerMessage, WorkerState, write_raw_frame,
+    ActivationRequest, ActivationResult, Budgets, CallKind, Confinement, JsonText, MAX_FRAME_BYTES,
+    MessageKind, Outcome, PROTOCOL_VERSION, ParentMessage, PreludeHash, Primitive, Profile,
+    Refusal, Settlement, Welcome, WorkerMessage, WorkerState, write_raw_frame,
 };
 use basal_testkit::{ParentError, WorkerProcess};
 
@@ -62,7 +62,9 @@ fn unexpected(received: MessageKind, state: WorkerState) -> Refusal {
 
 /// Runs a trivial activation to show the worker is alive and in sync.
 fn still_serves(worker: &mut WorkerProcess, prelude_hash: PreludeHash) {
-    worker.send(&activation(prelude_hash, "return 42")).expect("send");
+    worker
+        .send(&activation(prelude_hash, "return 42"))
+        .expect("send");
     match worker.recv(WAIT) {
         Ok(WorkerMessage::Finished { result, .. }) => assert_eq!(
             result,
@@ -105,8 +107,8 @@ fn malformed_frames_are_refused_and_the_worker_survives() {
     worker.send_raw(&frame(&payload)).expect("send");
     assert!(matches!(refusal(&worker), Refusal::Malformed { .. }));
     // A worker-to-parent message sent the wrong way.
-    let wrong_way =
-        basal_proto::encode_worker_frame(&WorkerMessage::Blocked { awaiting: vec![] }).expect("frame");
+    let wrong_way = basal_proto::encode_worker_frame(&WorkerMessage::Blocked { awaiting: vec![] })
+        .expect("frame");
     worker.send_raw(&wrong_way).expect("send");
     assert!(matches!(refusal(&worker), Refusal::Malformed { .. }));
     // Trailing bytes after a valid message.
@@ -135,7 +137,12 @@ fn oversized_frame_is_refused_and_the_worker_exits_cleanly() {
     // The stream cannot be framed any more, so the worker leaves with its
     // documented exit code rather than a signal.
     let status = worker.wait_exit(WAIT).expect("worker exits");
-    assert_eq!(status.code(), Some(3), "{status:?}: {}", worker.stderr_text());
+    assert_eq!(
+        status.code(),
+        Some(3),
+        "{status:?}: {}",
+        worker.stderr_text()
+    );
 }
 
 #[test]
@@ -143,7 +150,9 @@ fn out_of_order_frames_are_refused() {
     let mut worker = spawn();
 
     // Before the handshake.
-    worker.send(&activation(PreludeHash([0; 32]), "return 1")).expect("send");
+    worker
+        .send(&activation(PreludeHash([0; 32]), "return 1"))
+        .expect("send");
     assert_eq!(
         refusal(&worker),
         unexpected(MessageKind::Activate, WorkerState::AwaitingHello)
@@ -169,7 +178,10 @@ fn out_of_order_frames_are_refused() {
 
     // Between activations.
     worker.send(&deliver(0, "1", 0)).expect("send");
-    assert_eq!(refusal(&worker), unexpected(MessageKind::Deliver, WorkerState::Idle));
+    assert_eq!(
+        refusal(&worker),
+        unexpected(MessageKind::Deliver, WorkerState::Idle)
+    );
     worker
         .send(&ParentMessage::LongRunning { positions: vec![0] })
         .expect("send");
@@ -182,7 +194,10 @@ fn out_of_order_frames_are_refused() {
             protocol_version: PROTOCOL_VERSION,
         })
         .expect("send");
-    assert_eq!(refusal(&worker), unexpected(MessageKind::Hello, WorkerState::Idle));
+    assert_eq!(
+        refusal(&worker),
+        unexpected(MessageKind::Hello, WorkerState::Idle)
+    );
 
     // While blocked on an asynchronous call.
     worker
@@ -238,7 +253,9 @@ fn out_of_order_frames_are_refused() {
     }
 
     // While waiting for a synchronous answer.
-    worker.send(&activation(hash, "return typeof Date.now();")).expect("send");
+    worker
+        .send(&activation(hash, "return typeof Date.now();"))
+        .expect("send");
     match worker.recv(WAIT) {
         Ok(WorkerMessage::HostCall(c)) => {
             assert_eq!(c.kind, CallKind::Primitive(Primitive::Now));

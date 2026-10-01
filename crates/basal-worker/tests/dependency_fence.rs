@@ -37,7 +37,10 @@ fn worker_dependency_tree_has_no_store_no_subc_and_no_core() {
 
     // The tree was really read: the worker and what it must link are there.
     for required in ["basal-worker", "basal-proto", "rquickjs"] {
-        assert!(packages.contains(&required), "{required} missing from:\n{tree}");
+        assert!(
+            packages.contains(&required),
+            "{required} missing from:\n{tree}"
+        );
     }
     let forbidden: Vec<&&str> = packages
         .iter()
@@ -48,5 +51,8 @@ fn worker_dependency_tree_has_no_store_no_subc_and_no_core() {
                 || name.starts_with("cortexkit-store")
         })
         .collect();
-    assert!(forbidden.is_empty(), "forbidden dependencies: {forbidden:?}\n{tree}");
+    assert!(
+        forbidden.is_empty(),
+        "forbidden dependencies: {forbidden:?}\n{tree}"
+    );
 }

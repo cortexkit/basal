@@ -78,7 +78,10 @@ fn shell_issued(link: &EchoLink) -> bool {
 fn echo_round_trip() {
     let link = Rc::new(RefCell::new(EchoLink::default()));
     let result = run_activation(
-        &request(Profile::Flow, "return await ops.call('mock', 'echo', {a: 1})"),
+        &request(
+            Profile::Flow,
+            "return await ops.call('mock', 'echo', {a: 1})",
+        ),
         link.clone(),
     );
     assert_eq!(
@@ -115,7 +118,10 @@ fn raw_bridge_issues_sh_in_codemode_profile() {
     // The raw call registered no promise, so the activation cannot take its
     // outcome; what matters here is that the call reached the host.
     assert!(
-        !matches!(result, ActivationResult::Failed(Failure::ProfileViolation { .. })),
+        !matches!(
+            result,
+            ActivationResult::Failed(Failure::ProfileViolation { .. })
+        ),
         "{result:?}"
     );
     assert!(shell_issued(&link.borrow()));

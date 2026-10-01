@@ -9,16 +9,75 @@ use serde_json::json;
 /// upgrade, say) fails this test until someone decides whether a flow may
 /// see it.
 const ALLOWED_GLOBALS: &[&str] = &[
-    "AggregateError", "Array", "ArrayBuffer", "AsyncDisposableStack", "BigInt", "BigInt64Array",
-    "BigUint64Array", "Boolean", "DataView", "Date", "DisposableStack", "Error", "EvalError",
-    "Float16Array", "Float32Array", "Float64Array", "Infinity", "Int16Array", "Int32Array",
-    "Int8Array", "InternalError", "Iterator", "JSON", "Map", "Math", "NaN", "Number", "Object",
-    "Promise", "Proxy", "RangeError", "ReferenceError", "Reflect", "RegExp", "Set", "String",
-    "SuppressedError", "Symbol", "SyntaxError", "TypeError", "URIError", "Uint16Array",
-    "Uint32Array", "Uint8Array", "Uint8ClampedArray", "WeakMap", "WeakSet", "classify",
-    "decodeURI", "decodeURIComponent", "encodeURI", "encodeURIComponent", "escape", "facts",
-    "globalThis", "isFinite", "isNaN", "kv", "llm", "now", "ops", "parseFloat", "parseInt",
-    "random", "sink", "step", "trigger", "undefined", "unescape",
+    "AggregateError",
+    "Array",
+    "ArrayBuffer",
+    "AsyncDisposableStack",
+    "BigInt",
+    "BigInt64Array",
+    "BigUint64Array",
+    "Boolean",
+    "DataView",
+    "Date",
+    "DisposableStack",
+    "Error",
+    "EvalError",
+    "Float16Array",
+    "Float32Array",
+    "Float64Array",
+    "Infinity",
+    "Int16Array",
+    "Int32Array",
+    "Int8Array",
+    "InternalError",
+    "Iterator",
+    "JSON",
+    "Map",
+    "Math",
+    "NaN",
+    "Number",
+    "Object",
+    "Promise",
+    "Proxy",
+    "RangeError",
+    "ReferenceError",
+    "Reflect",
+    "RegExp",
+    "Set",
+    "String",
+    "SuppressedError",
+    "Symbol",
+    "SyntaxError",
+    "TypeError",
+    "URIError",
+    "Uint16Array",
+    "Uint32Array",
+    "Uint8Array",
+    "Uint8ClampedArray",
+    "WeakMap",
+    "WeakSet",
+    "classify",
+    "decodeURI",
+    "decodeURIComponent",
+    "encodeURI",
+    "encodeURIComponent",
+    "escape",
+    "facts",
+    "globalThis",
+    "isFinite",
+    "isNaN",
+    "kv",
+    "llm",
+    "now",
+    "ops",
+    "parseFloat",
+    "parseInt",
+    "random",
+    "sink",
+    "step",
+    "trigger",
+    "undefined",
+    "unescape",
 ];
 
 #[test]
@@ -79,7 +138,10 @@ fn code_from_strings_is_unreachable() {
     "#;
     let value = parent.run("t", script).value();
     for (route, kind) in value["routes"].as_object().expect("routes object") {
-        assert_eq!(kind, "undefined", "code-from-string route {route} is reachable");
+        assert_eq!(
+            kind, "undefined",
+            "code-from-string route {route} is reachable"
+        );
     }
     assert_eq!(value["constructed"], "refused");
     assert_eq!(value["imported"], "refused");
@@ -107,13 +169,20 @@ fn date_constructor_cannot_be_recovered() {
     let report = parent.run("t", script);
     let value = report.value();
     for key in ["instance", "proto", "viaInstance", "descriptor"] {
-        assert_eq!(value[key], true, "{key}: the native Date constructor is reachable");
+        assert_eq!(
+            value[key], true,
+            "{key}: the native Date constructor is reachable"
+        );
     }
     assert_eq!(value["name"], "Date");
     assert_eq!(value["length"], 7);
     assert_eq!(value["recovered"], json!(start));
     assert_eq!(
-        report.host_calls.iter().map(|c| c.kind.clone()).collect::<Vec<_>>(),
+        report
+            .host_calls
+            .iter()
+            .map(|c| c.kind.clone())
+            .collect::<Vec<_>>(),
         vec![CallKind::Primitive(Primitive::Now)]
     );
 }
@@ -154,7 +223,11 @@ fn local_time_and_locale_are_removed() {
     let value = parent.run("t", script).value();
     assert_eq!(value["present"], json!([]), "local-time methods remain");
     assert!(
-        value["locale"].as_array().expect("array").iter().all(|t| t == "undefined"),
+        value["locale"]
+            .as_array()
+            .expect("array")
+            .iter()
+            .all(|t| t == "undefined"),
         "locale methods remain: {}",
         value["locale"]
     );
@@ -193,7 +266,10 @@ fn payloads_arrive_as_plain_data() {
         "text": true,
     });
     let first = parent.run("t", script);
-    assert_eq!(first.value(), json!({"host": expected, "trigger": expected}));
+    assert_eq!(
+        first.value(),
+        json!({"host": expected, "trigger": expected})
+    );
     // The same value replayed from the journal takes the same data path.
     let replay = parent.run("t", script);
     assert!(replay.host_calls.is_empty());

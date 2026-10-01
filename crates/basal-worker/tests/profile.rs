@@ -78,7 +78,11 @@ fn sh_is_unreachable_in_the_flow_profile() {
     let report = codemode.run("c", "return await sh('ls');");
     assert_eq!(report.value(), json!({"stdout": "mock shell", "exit": 0}));
     assert_eq!(
-        report.host_calls.iter().map(|c| c.kind.clone()).collect::<Vec<_>>(),
+        report
+            .host_calls
+            .iter()
+            .map(|c| c.kind.clone())
+            .collect::<Vec<_>>(),
         vec![CallKind::Primitive(Primitive::Sh)]
     );
 }

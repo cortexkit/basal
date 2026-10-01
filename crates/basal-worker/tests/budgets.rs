@@ -40,7 +40,11 @@ fn long_host_waits_do_not_consume_the_js_time_budget() {
         return typeof t;
     "#;
     let report = parent.run("t", script);
-    assert!(report.wall >= Duration::from_millis(900), "{:?}", report.wall);
+    assert!(
+        report.wall >= Duration::from_millis(900),
+        "{:?}",
+        report.wall
+    );
     assert_eq!(
         common::finished(&report),
         &ActivationResult::Completed {
@@ -72,7 +76,10 @@ fn stack_limit_holds() {
     parent.budgets.stack_bytes = 32 * 1024;
     // Fifty levels fit easily in the engine's default stack, so this fails
     // only because of the configured limit.
-    let report = parent.run("t", "function f(n) { return n ? 1 + f(n - 1) : 0; } return f(50);");
+    let report = parent.run(
+        "t",
+        "function f(n) { return n ? 1 + f(n - 1) : 0; } return f(50);",
+    );
     assert_eq!(
         common::finished(&report),
         &ActivationResult::BudgetExhausted(BudgetKind::Stack)
@@ -88,7 +95,11 @@ fn stalled_promise_is_reported_as_stalled() {
         "const never = new Promise(() => {}); await Promise.all([never, ops.call('mock', 'echo', 1)]);",
     ] {
         let report = parent.run("t", script);
-        assert_eq!(common::finished(&report), &ActivationResult::Stalled, "{script}");
+        assert_eq!(
+            common::finished(&report),
+            &ActivationResult::Stalled,
+            "{script}"
+        );
         parent.journals.clear();
     }
 }

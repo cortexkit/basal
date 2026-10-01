@@ -37,7 +37,11 @@ pub trait HostLink {
     fn issue(&mut self, call: &HostCall) -> Result<(), LinkError>;
 
     /// Sends a synchronous call and waits for its outcome.
-    fn issue_sync(&mut self, call: &HostCall, last_order: Option<u64>) -> Result<Outcome, LinkError>;
+    fn issue_sync(
+        &mut self,
+        call: &HostCall,
+        last_order: Option<u64>,
+    ) -> Result<Outcome, LinkError>;
 
     /// Reports that the script is blocked on `awaiting` and waits for the
     /// parent's one reply.
@@ -157,9 +161,7 @@ impl<R: Read, W: Write> Channel<R, W> {
 
 fn check_order(last: Option<u64>, received: u64) -> Result<(), Refusal> {
     match last {
-        Some(last) if received <= last => {
-            Err(Refusal::DeliveryOrderRegression { last, received })
-        }
+        Some(last) if received <= last => Err(Refusal::DeliveryOrderRegression { last, received }),
         _ => Ok(()),
     }
 }
@@ -176,7 +178,11 @@ impl<R: Read, W: Write> HostLink for Channel<R, W> {
         self.send(&WorkerMessage::HostCall(call.clone()))
     }
 
-    fn issue_sync(&mut self, call: &HostCall, last_order: Option<u64>) -> Result<Outcome, LinkError> {
+    fn issue_sync(
+        &mut self,
+        call: &HostCall,
+        last_order: Option<u64>,
+    ) -> Result<Outcome, LinkError> {
         self.send(&WorkerMessage::HostCall(call.clone()))?;
         let position = call.position;
         self.receive_expected(WorkerState::AwaitingSyncReply, |message| match message {

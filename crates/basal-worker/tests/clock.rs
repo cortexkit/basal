@@ -23,7 +23,15 @@ fn clock_and_random_are_journaled_and_replayed() {
     let random = CallKind::Primitive(Primitive::Random);
     assert_eq!(
         kinds,
-        vec![now.clone(), now.clone(), now.clone(), now.clone(), random.clone(), random, now]
+        vec![
+            now.clone(),
+            now.clone(),
+            now.clone(),
+            now.clone(),
+            random.clone(),
+            random,
+            now
+        ]
     );
     let value = first.value();
     // The mock clock advances 1 ms per read.
@@ -62,7 +70,12 @@ fn fresh_clock_read_after_a_gap_returns_the_new_time() {
 
     // The long call finishes an hour later.
     parent.host.advance(Duration::from_secs(3600));
-    parent.complete("t", 1, Settlement::Fulfilled, JsonText::new("{}").expect("small"));
+    parent.complete(
+        "t",
+        1,
+        Settlement::Fulfilled,
+        JsonText::new("{}").expect("small"),
+    );
     let resumed = parent.run("t", script);
     let value = resumed.value();
     let before = value[0].as_u64().expect("number");

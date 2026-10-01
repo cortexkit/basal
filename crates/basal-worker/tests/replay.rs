@@ -96,7 +96,10 @@ fn caught_rejection_replays_as_a_rejection() {
         return [first, await ops.call('mock', 'echo', 'after')];
         "#,
     );
-    assert_eq!(value, json!([["caught", "HostError", "nope", "denied"], "after"]));
+    assert_eq!(
+        value,
+        json!([["caught", "HostError", "nope", "denied"], "after"])
+    );
 }
 
 #[test]
@@ -139,7 +142,9 @@ fn early_all_rejection_replays_with_calls_in_flight() {
 #[test]
 fn divergent_call_fails_with_a_typed_error() {
     let mut parent = common::parent();
-    parent.run("t", "return await ops.call('mock', 'echo', 1)").value();
+    parent
+        .run("t", "return await ops.call('mock', 'echo', 1)")
+        .value();
     let report = parent.run("t", "return await ops.call('mock', 'echo', 2)");
     let op = CallKind::Op {
         module: "mock".into(),
@@ -159,7 +164,10 @@ fn divergent_call_fails_with_a_typed_error() {
             },
         }
     );
-    assert!(report.host_calls.is_empty(), "the divergent call crossed the channel");
+    assert!(
+        report.host_calls.is_empty(),
+        "the divergent call crossed the channel"
+    );
 
     // A different kind at the same position diverges too.
     let report = parent.run("t", "return await facts('x')");
@@ -207,16 +215,28 @@ fn blocked_only_on_long_calls_suspends_and_resumes() {
     let first = parent.run("t", script);
     assert_eq!(
         common::finished(&first),
-        &ActivationResult::Suspended { awaited: vec![1, 2] }
+        &ActivationResult::Suspended {
+            awaited: vec![1, 2]
+        }
     );
-    parent.complete("t", 1, Settlement::Fulfilled, JsonText::new("\"done\"").expect("small"));
+    parent.complete(
+        "t",
+        1,
+        Settlement::Fulfilled,
+        JsonText::new("\"done\"").expect("small"),
+    );
     let partial = parent.run("t", script);
     assert_eq!(
         common::finished(&partial),
         &ActivationResult::Suspended { awaited: vec![2] }
     );
     assert!(partial.host_calls.is_empty());
-    parent.complete("t", 2, Settlement::Fulfilled, JsonText::new("7").expect("small"));
+    parent.complete(
+        "t",
+        2,
+        Settlement::Fulfilled,
+        JsonText::new("7").expect("small"),
+    );
     let resumed = parent.run("t", script);
     assert_eq!(resumed.value(), json!(["before", "done", 7]));
 }

@@ -32,8 +32,8 @@ mod wire;
 pub use codec::DecodeError;
 pub use frame::{
     FrameError, decode_parent_payload, decode_worker_payload, encode_parent_frame,
-    encode_worker_frame, read_frame, read_parent_message, read_worker_message, write_parent_message,
-    write_raw_frame, write_worker_message,
+    encode_worker_frame, read_frame, read_parent_message, read_worker_message,
+    write_parent_message, write_raw_frame, write_worker_message,
 };
 pub use limits::*;
 pub use types::*;
@@ -243,8 +243,8 @@ mod tests {
             })
         );
         // A worker message sent to the worker is not a parent message.
-        let welcome = encode_worker_frame(&WorkerMessage::Blocked { awaiting: vec![] })
-            .expect("encodes");
+        let welcome =
+            encode_worker_frame(&WorkerMessage::Blocked { awaiting: vec![] }).expect("encodes");
         assert!(matches!(
             decode_parent_payload(&welcome[4..]),
             Err(DecodeError::UnknownTag { .. })
@@ -292,7 +292,11 @@ mod tests {
     fn synchronous_kinds_are_exactly_clock_and_random() {
         for p in Primitive::ALL {
             let sync = CallKind::Primitive(p).is_synchronous();
-            assert_eq!(sync, matches!(p, Primitive::Now | Primitive::Random), "{p:?}");
+            assert_eq!(
+                sync,
+                matches!(p, Primitive::Now | Primitive::Random),
+                "{p:?}"
+            );
             assert_eq!(Primitive::from_code(p.code()), Some(p));
         }
         assert!(
