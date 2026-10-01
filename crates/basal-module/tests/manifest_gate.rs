@@ -52,7 +52,10 @@ fn the_built_binary_prints_a_manifest_subc_protocol_accepts() {
     assert_eq!(manifest.protocol_ver, PROTOCOL_VERSION);
     assert_eq!(manifest.module_version, env!("CARGO_PKG_VERSION"));
     let [ProviderRole::ManagementSurface { operations, .. }] = manifest.provides.as_slice() else {
-        panic!("exactly one management surface, got {:?}", manifest.provides);
+        panic!(
+            "exactly one management surface, got {:?}",
+            manifest.provides
+        );
     };
     let declared: BTreeSet<(String, bool)> = operations
         .iter()

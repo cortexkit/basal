@@ -22,7 +22,9 @@ use basal_module::unconfigured::{EmptyCatalog, UnconfiguredConsent, Unconfigured
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let serving = args.iter().any(|a| a == "--subc" || a.starts_with("--subc="));
+    let serving = args
+        .iter()
+        .any(|a| a == "--subc" || a.starts_with("--subc="));
     match args.as_slice() {
         [flag] if flag == "--manifest" => match serde_json::to_string(&manifest()) {
             Ok(json) => {

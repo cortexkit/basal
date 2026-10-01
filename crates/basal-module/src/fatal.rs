@@ -83,11 +83,7 @@ impl Fatal {
             if let Some(why) = guard.clone() {
                 return why;
             }
-            guard = self
-                .inner
-                .1
-                .wait(guard)
-                .unwrap_or_else(|p| p.into_inner());
+            guard = self.inner.1.wait(guard).unwrap_or_else(|p| p.into_inner());
         }
     }
 

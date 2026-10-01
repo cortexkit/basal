@@ -50,7 +50,10 @@ fn capture_mode_executes_no_host_call_and_replays_the_schedule_window() {
     assert_eq!(runs.len(), 10);
     for run in runs {
         assert_eq!(run["state"], "succeeded", "{run:#}");
-        assert_eq!(run["result"], "captured", "the script saw a rejection, not a result");
+        assert_eq!(
+            run["result"], "captured",
+            "the script saw a rejection, not a result"
+        );
         let c = calls(run);
         assert_eq!(c[0]["op"], "echo");
         assert_eq!(c[0]["action"], "captured");
@@ -102,8 +105,14 @@ fn a_captured_call_the_script_uses_marks_the_trace_partial() {
     let run = &used["runs"][0];
     assert_eq!(run["partial"], true);
     let c = calls(run);
-    assert_eq!(c[0]["partial"], false, "the captured call itself is listed whole");
-    assert_eq!(c[1]["partial"], true, "the write after it was decided on a fiction");
+    assert_eq!(
+        c[0]["partial"], false,
+        "the captured call itself is listed whole"
+    );
+    assert_eq!(
+        c[1]["partial"], true,
+        "the write after it was decided on a fiction"
+    );
 
     // A script that stops on the captured rejection is partial too: the real
     // run would have gone on.
@@ -123,7 +132,11 @@ fn a_captured_call_the_script_uses_marks_the_trace_partial() {
         "flow-ignores",
     );
     assert_eq!(ignored["partial"], false, "{ignored:#}");
-    assert!(calls(&ignored["runs"][0]).iter().all(|c| c["partial"] == false));
+    assert!(
+        calls(&ignored["runs"][0])
+            .iter()
+            .all(|c| c["partial"] == false)
+    );
     assert_eq!(f.mock.total_sends(), 0);
 }
 
@@ -135,7 +148,8 @@ fn live_mode_runs_only_query_ops_and_only_for_the_operator() {
                   const s = await sink.digest('SYNAPSE', { title: 't' }, 'piggyback').catch((e) => e.data.code);\n\
                   return { a: a.n, b, s };";
     install(&f, &agent("SYNAPSE"), script, &events_manifest("flow-live"));
-    let params = json!({ "flow_id": "flow-live", "mode": "live", "trigger": { "kind": "synthetic" } });
+    let params =
+        json!({ "flow_id": "flow-live", "mode": "live", "trigger": { "kind": "synthetic" } });
 
     for caller in [agent("SYNAPSE"), agent("ALF"), Caller::Core] {
         let refused = dry_run(&f, &caller, params.clone());
@@ -149,13 +163,21 @@ fn live_mode_runs_only_query_ops_and_only_for_the_operator() {
 
     let summary = dry_run(&f, &Caller::Operator, params).expect("live dry run");
     let run = &summary["runs"][0];
-    assert_eq!(run["result"], json!({ "a": 1, "b": "captured", "s": "captured" }), "{run:#}");
+    assert_eq!(
+        run["result"],
+        json!({ "a": 1, "b": "captured", "s": "captured" }),
+        "{run:#}"
+    );
     let c = calls(run);
     assert_eq!(c[0]["action"], "live");
     assert_eq!(c[0]["outcome"]["fulfilled"], true);
     assert_eq!(c[1]["action"], "captured", "a mutate op is never run live");
     assert_eq!(c[2]["action"], "captured", "a sink write is never run live");
-    assert_eq!(f.mock.total_sends(), 1, "exactly the query reached the host");
+    assert_eq!(
+        f.mock.total_sends(),
+        1,
+        "exactly the query reached the host"
+    );
     assert!(f.mock.effects().is_empty());
 }
 
@@ -195,7 +217,10 @@ fn each_dry_run_has_its_own_scratch_store_and_the_real_kv_and_runs_are_untouched
     );
     let run = admit(&f, &flow, "real-1");
     f.module.engine.run_until_idle(50).expect("idle");
-    assert_eq!(f.module.rt.run(&run).expect("run").state, RunState::Succeeded);
+    assert_eq!(
+        f.module.rt.run(&run).expect("run").state,
+        RunState::Succeeded
+    );
     let kv_before = real_kv(&f, &flow);
     assert_eq!(kv_before.len(), 1);
     assert_eq!(kv_before[0].1, "1");
@@ -213,9 +238,16 @@ fn each_dry_run_has_its_own_scratch_store_and_the_real_kv_and_runs_are_untouched
         assert_eq!(calls(&summary["runs"][0])[1]["action"], "local");
     }
     assert_eq!(real_kv(&f, &flow), kv_before, "the flow's kv is untouched");
-    assert_eq!(real_runs(&f), runs_before, "no run was added to the real store");
+    assert_eq!(
+        real_runs(&f),
+        runs_before,
+        "no run was added to the real store"
+    );
     let leftovers: Vec<_> = std::fs::read_dir(f.dir.join("dry-run"))
         .map(|d| d.flatten().map(|e| e.path()).collect())
         .unwrap_or_default();
-    assert!(leftovers.is_empty(), "scratch stores are removed: {leftovers:?}");
+    assert!(
+        leftovers.is_empty(),
+        "scratch stores are removed: {leftovers:?}"
+    );
 }

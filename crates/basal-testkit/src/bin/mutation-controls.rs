@@ -1337,8 +1337,8 @@ const M_UNCONFIGURED: &str = "crates/basal-module/src/unconfigured.rs";
 const CORE_OPS: &str = "crates/basal-core/src/ops.rs";
 
 /// The module shell: each control disables one mechanism in basal-module
-/// (or the core function only it uses) and runs the basal-module test
-/// named for it.
+/// (or in a basal-core function only the module calls, such as the health
+/// figures) and runs the basal-module test named for it.
 const MODULE_CONTROLS: &[Control] = &[
     Control {
         label: "the manifest declares a capability subc-protocol's grammar refuses",
@@ -1470,14 +1470,22 @@ const MODULE_CONTROLS: &[Control] = &[
     },
     Control {
         label: "a storage error does not raise the fatal latch (in process)",
-        edits: &[(M_FATAL, "        if slot.is_none() {\n            *slot = Some(why);", "        if false {\n            *slot = Some(why);")],
+        edits: &[(
+            M_FATAL,
+            "        if slot.is_none() {\n            *slot = Some(why);",
+            "        if false {\n            *slot = Some(why);",
+        )],
         also_restore: NO_EXTRA,
         target: Target::Module("engine"),
         test: "a_storage_error_stops_the_engine_and_raises_the_fatal_latch",
     },
     Control {
         label: "a storage error does not end the process",
-        edits: &[(M_FATAL, "        if slot.is_none() {\n            *slot = Some(why);", "        if false {\n            *slot = Some(why);")],
+        edits: &[(
+            M_FATAL,
+            "        if slot.is_none() {\n            *slot = Some(why);",
+            "        if false {\n            *slot = Some(why);",
+        )],
         also_restore: NO_EXTRA,
         target: Target::Module("e2e"),
         test: "a_store_error_ends_the_process_non_zero_and_the_restart_recovers",
@@ -1506,7 +1514,11 @@ const MODULE_CONTROLS: &[Control] = &[
     },
     Control {
         label: "capture mode sends calls to the host",
-        edits: &[(M_DRYRUN, "if !self.runs_live(&request.kind) {", "if false {")],
+        edits: &[(
+            M_DRYRUN,
+            "if !self.runs_live(&request.kind) {",
+            "if false {",
+        )],
         also_restore: NO_EXTRA,
         target: Target::Module("dry_run"),
         test: "capture_mode_executes_no_host_call_and_replays_the_schedule_window",
@@ -1549,8 +1561,8 @@ const MODULE_CONTROLS: &[Control] = &[
         edits: &[
             (
                 M_DRYRUN,
-                ".join(format!(\"dry-{}-{}-{n}\", std::process::id(), request.now_ms));",
-                ".join(format!(\"dry-shared{}\", n * 0));",
+                "\"dry-{}-{}-{n}\",\n            std::process::id(),\n            request.now_ms\n        ));",
+                "\"dry-shared{}\",\n            n * 0\n        ));",
             ),
             (
                 M_DRYRUN,
@@ -1652,7 +1664,11 @@ const MODULE_CONTROLS: &[Control] = &[
     },
     Control {
         label: "the unconfigured host's refusal is not proven unsent",
-        edits: &[(M_UNCONFIGURED, "proven_unsent: true,", "proven_unsent: false,")],
+        edits: &[(
+            M_UNCONFIGURED,
+            "proven_unsent: true,",
+            "proven_unsent: false,",
+        )],
         also_restore: NO_EXTRA,
         target: Target::Module("engine"),
         test: "the_unconfigured_host_refuses_every_dispatch_as_never_sent",

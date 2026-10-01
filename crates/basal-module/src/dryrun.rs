@@ -1,4 +1,4 @@
-//! Dry runs (design section 10): run a flow against the fires its schedule
+//! Dry runs (`docs/design.md` section 10): run a flow against the fires its schedule
 //! would have produced over a window, or against a synthetic trigger, and
 //! report every call and sink write it made.
 //!
@@ -45,7 +45,9 @@ use basal_host::{
     CallClass, CallRequest, Catalog, CompletionSink, Dispatched, Host, HostOutcome, OpKind,
     TransportError,
 };
-use basal_proto::{CallKind, JsonText, ParentMessage, Primitive, Settlement, Welcome, WorkerMessage};
+use basal_proto::{
+    CallKind, JsonText, ParentMessage, Primitive, Settlement, Welcome, WorkerMessage,
+};
 use jiff::Timestamp;
 use serde_json::{Value, json};
 
@@ -198,10 +200,11 @@ impl DryRunner {
         Metrics::bump(&self.metrics.dry_runs);
 
         let n = self.counter.fetch_add(1, Ordering::Relaxed);
-        let dir = self
-            .config
-            .scratch_root
-            .join(format!("dry-{}-{}-{n}", std::process::id(), request.now_ms));
+        let dir = self.config.scratch_root.join(format!(
+            "dry-{}-{}-{n}",
+            std::process::id(),
+            request.now_ms
+        ));
         std::fs::create_dir_all(&dir).map_err(failed)?;
         let outcome = self.run_in(&dir, &manifest, request, &fires);
         // The scratch store is the dry run's alone; nothing outlives it.
@@ -248,8 +251,8 @@ impl DryRunner {
                         self.config.max_window.as_secs()
                     )));
                 }
-                let compiled =
-                    schedule::spec::validate(spec).map_err(|e| DryRunError::Invalid(e.to_string()))?;
+                let compiled = schedule::spec::validate(spec)
+                    .map_err(|e| DryRunError::Invalid(e.to_string()))?;
                 let window_ms = i64::try_from(window.as_millis())
                     .map_err(|_| DryRunError::Invalid("window too long".into()))?;
                 let to = timestamp(request.now_ms)?;
@@ -315,8 +318,8 @@ impl DryRunner {
         request: &DryRunRequest,
         fires: &[(String, Value)],
     ) -> Result<Vec<Value>, DryRunError> {
-        let store = Store::open(dir.join("scratch.db"), Durability { fullfsync: false })
-            .map_err(failed)?;
+        let store =
+            Store::open(dir.join("scratch.db"), Durability { fullfsync: false }).map_err(failed)?;
         let clock = basal_core::Clock::manual(request.now_ms);
         let host = Arc::new(CaptureHost {
             mode: request.mode,
@@ -367,7 +370,10 @@ impl DryRunner {
                 .map_or(request.now_ms, |t| t.as_millisecond());
             clock.set(at);
             let text = JsonText::new(payload.to_string()).map_err(failed)?;
-            let run_id = match rt.admit_trigger(&installed.flow_id, trigger_id, text).map_err(failed)? {
+            let run_id = match rt
+                .admit_trigger(&installed.flow_id, trigger_id, text)
+                .map_err(failed)?
+            {
                 Admission::Admitted { run_id } => run_id,
                 other => {
                     runs.push(json!({
@@ -383,7 +389,10 @@ impl DryRunner {
             for _ in 0..self.config.attempts_per_fire {
                 let mut lease = self
                     .pool
-                    .acquire(Binding::DryRun(format!("{}:{trigger_id}", installed.flow_id)))
+                    .acquire(Binding::DryRun(format!(
+                        "{}:{trigger_id}",
+                        installed.flow_id
+                    )))
                     .map_err(failed)?;
                 let end = {
                     let mut recording = Recording {
@@ -510,7 +519,9 @@ fn describe_call(call: &CallRow, config: &DryRunConfig) -> Value {
         let value = serde_json::from_str::<Value>(o.value.as_str()).unwrap_or(Value::Null);
         match o.settlement {
             Settlement::Fulfilled => json!({ "fulfilled": true }),
-            Settlement::Rejected => json!({ "rejected": value.get("code").cloned().unwrap_or(Value::Null) }),
+            Settlement::Rejected => {
+                json!({ "rejected": value.get("code").cloned().unwrap_or(Value::Null) })
+            }
         }
     });
     json!({
@@ -523,10 +534,11 @@ fn describe_call(call: &CallRow, config: &DryRunConfig) -> Value {
     })
 }
 
-/// The action a digest write would have taken: the lowest of what the flow
-/// asked for (Wake when it names none, as core's planner starts from Wake)
-/// and the manifest's cap for the recipient. The recipient's own policy is
-/// core's and is not consulted here.
+/// The action a digest write would have taken: the less intrusive of what
+/// the flow asked for (Wake when it names none, since core's delivery
+/// planner starts from Wake) and the manifest's cap for the recipient. The
+/// recipient's own delivery policy lives in core, which a dry run does not
+/// reach, so it is not applied.
 fn effective_sink_action(manifest: &Manifest, args: &JsonText) -> Value {
     let args: Value = serde_json::from_str(args.as_str()).unwrap_or(Value::Null);
     let agent = args.get("agent").and_then(Value::as_str).unwrap_or("");
@@ -654,7 +666,9 @@ impl Host for CaptureHost {
             CallClass::Query
         } else {
             // Captured calls are answered at once by this host, so the class
-            // never decides a resend; the most careful one is used anyway.
+            // never decides a resend. A mutation that ignores idempotency
+            // keys is the class the runtime never resends, so it is the safe
+            // answer if that ever changes.
             CallClass::Mutation {
                 honours_idempotency_keys: false,
             }
@@ -698,8 +712,8 @@ impl Host for CaptureHost {
     }
 
     fn attach(&self, _sink: Arc<dyn CompletionSink>) {
-        // Never handed to the real host: the real host's sink belongs to the
-        // real runtime, and attaching would steal it.
+        // The scratch runtime's completion sink is not passed on to the
+        // real host: the real host has one sink, the real runtime's, and
+        // attaching another would take completions away from it.
     }
 }
-

@@ -15,7 +15,9 @@ use basal_module::engine::EngineConfig;
 use basal_module::module::{Hosts, Module, ModuleConfig};
 use basal_module::pool::ProcessSpawner;
 use basal_module::unconfigured::UnconfiguredHost;
-use common::{Options, T0, admit, agent, events_manifest, fixture, install_approved, pool_config, scratch};
+use common::{
+    Options, T0, admit, agent, events_manifest, fixture, install_approved, pool_config, scratch,
+};
 use serde_json::json;
 
 #[test]
@@ -42,17 +44,27 @@ fn activations_are_bounded_across_flows() {
     let first = admit(&f, &held, "h-1");
     let second = admit(&f, &other, "o-1");
     let report = f.module.engine.pass().expect("pass");
-    assert_eq!(report.started, vec![first.clone()], "one activation at a time");
+    assert_eq!(
+        report.started,
+        vec![first.clone()],
+        "one activation at a time"
+    );
     assert!(f.module.engine.wait_active(&first, Duration::from_secs(60)));
     // The first run waits at the gate, inside the host; another pass starts
     // nothing, although the other flow's run could start.
     let report = f.module.engine.pass().expect("pass");
     assert!(report.started.is_empty(), "{report:?}");
-    assert_eq!(f.module.rt.run(&second).expect("run").state, RunState::Pending);
+    assert_eq!(
+        f.module.rt.run(&second).expect("run").state,
+        RunState::Pending
+    );
     f.mock.open_gate("hold");
     f.module.engine.run_until_idle(50).expect("idle");
     for run in [&first, &second] {
-        assert_eq!(f.module.rt.run(run).expect("run").state, RunState::Succeeded);
+        assert_eq!(
+            f.module.rt.run(run).expect("run").state,
+            RunState::Succeeded
+        );
     }
 }
 
@@ -85,7 +97,11 @@ fn a_storage_error_stops_the_engine_and_raises_the_fatal_latch() {
         &events_manifest("flow-cut"),
     );
     admit(&f, &flow, "c-1");
-    let err = f.module.engine.run_until_idle(50).expect_err("the engine stops");
+    let err = f
+        .module
+        .engine
+        .run_until_idle(50)
+        .expect_err("the engine stops");
     assert!(f.module.fatal.get().is_some(), "{err}");
     // The latch stays raised: no further pass runs.
     assert!(f.module.engine.pass().is_err());

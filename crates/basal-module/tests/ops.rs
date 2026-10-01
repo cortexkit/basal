@@ -52,7 +52,11 @@ fn authorization_matrix() {
     // (op, params, [operator, owner, another agent, core, another module])
     let install_v2 = json!({ "script": SCRIPT, "manifest": v2().to_string() });
     let cases: Vec<(&str, Value, [bool; 5])> = vec![
-        ("flow.install", install_v2, [true, true, false, false, false]),
+        (
+            "flow.install",
+            install_v2,
+            [true, true, false, false, false],
+        ),
         (
             "flow.dry_run",
             json!({ "flow_id": FLOW, "trigger": { "kind": "synthetic" } }),
@@ -63,15 +67,31 @@ fn authorization_matrix() {
             json!({ "flow_id": FLOW, "mode": "live", "trigger": { "kind": "synthetic" } }),
             [true, false, false, false, false],
         ),
-        ("flow.health", Value::Null, [true, false, false, true, false]),
+        (
+            "flow.health",
+            Value::Null,
+            [true, false, false, true, false],
+        ),
         (
             "flow.reconcile",
             json!({ "run_id": "run-none", "position": 0, "resolution": "cancel" }),
             [true, false, false, false, false],
         ),
-        ("flow.drain", json!({ "resume": true }), [true, false, false, false, false]),
-        ("flow.disable", json!({ "flow_id": FLOW }), [true, true, false, false, false]),
-        ("flow.enable", json!({ "flow_id": FLOW }), [true, true, false, false, false]),
+        (
+            "flow.drain",
+            json!({ "resume": true }),
+            [true, false, false, false, false],
+        ),
+        (
+            "flow.disable",
+            json!({ "flow_id": FLOW }),
+            [true, true, false, false, false],
+        ),
+        (
+            "flow.enable",
+            json!({ "flow_id": FLOW }),
+            [true, true, false, false, false],
+        ),
     ];
     for (method, params, expected) in cases {
         for (caller, allowed) in [&operator, &owner, &other, &core, &module]
@@ -121,10 +141,21 @@ fn install_raises_one_card_per_version_and_its_decision_approves_or_rejects() {
     assert_eq!(again["card_id"], reply["card_id"]);
     assert_eq!(f.consent.raise_count(&card_id), 2);
     assert_eq!(f.consent.cards().len(), 1);
-    assert!(f.module.rt.flow(FLOW).expect("flow").expect("exists").approved_version.is_none());
+    assert!(
+        f.module
+            .rt
+            .flow(FLOW)
+            .expect("flow")
+            .expect("exists")
+            .approved_version
+            .is_none()
+    );
 
     // The decision arrives through the consent interface and approves.
-    assert!(f.consent.decide(&card_id, CardDecision::Approve, "operator"));
+    assert!(
+        f.consent
+            .decide(&card_id, CardDecision::Approve, "operator")
+    );
     let record = f.module.rt.flow(FLOW).expect("flow").expect("exists");
     assert_eq!(record.approved_version, Some(1));
     assert_eq!(record.owner.as_deref(), Some(OWNER));
@@ -133,21 +164,37 @@ fn install_raises_one_card_per_version_and_its_decision_approves_or_rejects() {
     // A second delivery of a decision changes nothing.
     assert!(f.consent.decide(&card_id, CardDecision::Reject, "operator"));
     assert_eq!(
-        f.module.rt.flow(FLOW).expect("flow").expect("exists").approved_version,
+        f.module
+            .rt
+            .flow(FLOW)
+            .expect("flow")
+            .expect("exists")
+            .approved_version,
         Some(1)
     );
     // The author is told.
     let outbox = f.module.rt.outbox().expect("outbox");
-    assert!(outbox.iter().any(|n| n.kind == "flow.install_approved"
-        && n.recipient.as_deref() == Some(OWNER)));
+    assert!(
+        outbox
+            .iter()
+            .any(|n| n.kind == "flow.install_approved" && n.recipient.as_deref() == Some(OWNER))
+    );
 
     // A rejected version is not approved, and installing it again does not
     // raise it again.
     let second = install(&f, &owner, SCRIPT, &v2());
     let second_card = second["card_id"].as_str().expect("card").to_owned();
-    assert!(f.consent.decide(&second_card, CardDecision::Reject, "operator"));
+    assert!(
+        f.consent
+            .decide(&second_card, CardDecision::Reject, "operator")
+    );
     assert_eq!(
-        f.module.rt.flow(FLOW).expect("flow").expect("exists").approved_version,
+        f.module
+            .rt
+            .flow(FLOW)
+            .expect("flow")
+            .expect("exists")
+            .approved_version,
         Some(1)
     );
     let again = install(&f, &owner, SCRIPT, &v2());
@@ -190,7 +237,10 @@ fn install_refuses_what_an_agent_may_not_do() {
         json!({ "script": SCRIPT, "manifest": events_manifest("flow-alf").to_string(), "author": "ALF" }),
     )
     .expect("operator installs for ALF");
-    let card = f.consent.card(r["card_id"].as_str().expect("card")).expect("raised");
+    let card = f
+        .consent
+        .card(r["card_id"].as_str().expect("card"))
+        .expect("raised");
     assert_eq!(card.fields["author"], "ALF");
     // An invalid manifest is refused before anything is recorded.
     let r = call(
@@ -199,7 +249,10 @@ fn install_refuses_what_an_agent_may_not_do() {
         "flow.install",
         json!({ "script": SCRIPT, "manifest": "{\"id\": \"x\"}" }),
     );
-    assert!(matches!(&r, Err(e) if e.starts_with("install_refused")), "{r:?}");
+    assert!(
+        matches!(&r, Err(e) if e.starts_with("install_refused")),
+        "{r:?}"
+    );
 }
 
 #[test]
@@ -212,7 +265,10 @@ fn install_keeps_the_version_when_the_consent_plane_is_down_and_raises_on_retry(
         "flow.install",
         json!({ "script": SCRIPT, "manifest": events_manifest(FLOW).to_string() }),
     );
-    assert!(matches!(&r, Err(e) if e.starts_with("consent_unavailable")), "{r:?}");
+    assert!(
+        matches!(&r, Err(e) if e.starts_with("consent_unavailable")),
+        "{r:?}"
+    );
     assert!(f.consent.cards().is_empty());
     f.consent.set_unavailable(false);
     let reply = install(&f, &agent(OWNER), SCRIPT, &events_manifest(FLOW));
@@ -246,7 +302,10 @@ fn health_reports_flows_runs_and_the_module() {
     assert_eq!(failing_health["last_run"]["state"], "failed");
     assert_eq!(failing_health["last_run"]["error_kind"], "script");
     let own = flows.iter().find(|x| x["flow_id"] == FLOW).expect("listed");
-    assert_eq!(own["oldest_overdue_ms"], 5_000, "the admitted run not yet started: {h:#}");
+    assert_eq!(
+        own["oldest_overdue_ms"], 5_000,
+        "the admitted run not yet started: {h:#}"
+    );
     assert_eq!(own["owner"], OWNER);
     assert_eq!(h["runs"]["oldest_pending_ms"], 5_000);
     assert!(h["runs"]["oldest_suspended_ms"].is_null());
@@ -255,7 +314,11 @@ fn health_reports_flows_runs_and_the_module() {
     assert!(h["pool"]["live"].as_u64().is_some());
 
     f.module
-        .handle(&Caller::Operator, "flow.disable", json!({ "flow_id": FLOW }))
+        .handle(
+            &Caller::Operator,
+            "flow.disable",
+            json!({ "flow_id": FLOW }),
+        )
         .expect("disable");
     let h = call(&f, &Caller::Operator, "flow.health", Value::Null).expect("health");
     let own = h["flows"]
@@ -289,7 +352,10 @@ fn reconcile_resolves_an_unknown_call_for_the_operator() {
     );
     let run = admit(&f, &flow, "p-1");
     f.module.engine.run_until_idle(50).expect("idle");
-    assert_eq!(f.module.rt.run(&run).expect("run").state, RunState::NeedsReconcile);
+    assert_eq!(
+        f.module.rt.run(&run).expect("run").state,
+        RunState::NeedsReconcile
+    );
     let h = call(&f, &Caller::Operator, "flow.health", Value::Null).expect("health");
     assert_eq!(h["runs"]["oldest_needs_reconcile_ms"], 0);
     let post = h["flows"]
@@ -328,7 +394,13 @@ fn drain_stops_admission_until_resumed() {
             .expect("admit"),
         Admission::Draining
     );
-    call(&f, &Caller::Operator, "flow.drain", json!({ "resume": true })).expect("resume");
+    call(
+        &f,
+        &Caller::Operator,
+        "flow.drain",
+        json!({ "resume": true }),
+    )
+    .expect("resume");
     admit(&f, FLOW, "d-1");
 }
 

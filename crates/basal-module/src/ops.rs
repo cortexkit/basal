@@ -375,7 +375,11 @@ impl Module {
 
     /// The version a dry run runs: the one named, else the approved one,
     /// else the newest installed.
-    fn pick_version(&self, flow_id: &str, version: Option<u32>) -> Result<InstalledVersion, OpError> {
+    fn pick_version(
+        &self,
+        flow_id: &str,
+        version: Option<u32>,
+    ) -> Result<InstalledVersion, OpError> {
         let found = self
             .rt
             .store()
@@ -383,15 +387,19 @@ impl Module {
                 let sql = "SELECT version, script, manifest, author, loop_override FROM installs \
                            WHERE flow_id = ?1 AND (?2 IS NULL OR version = ?2) \
                            ORDER BY (state = 'approved') DESC, version DESC LIMIT 1";
-                Ok(c.query_row(sql, rusqlite::params![flow_id, version.map(i64::from)], |r| {
-                    Ok((
-                        r.get::<_, i64>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, String>(2)?,
-                        r.get::<_, String>(3)?,
-                        r.get::<_, i64>(4)?,
-                    ))
-                })
+                Ok(c.query_row(
+                    sql,
+                    rusqlite::params![flow_id, version.map(i64::from)],
+                    |r| {
+                        Ok((
+                            r.get::<_, i64>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, String>(2)?,
+                            r.get::<_, String>(3)?,
+                            r.get::<_, i64>(4)?,
+                        ))
+                    },
+                )
                 .optional()?)
             })
             .map_err(|e| self.core_error(e))?;
@@ -511,7 +519,11 @@ impl Module {
                 let settlement = match observed.get("settlement").and_then(Value::as_str) {
                     Some("fulfilled") => Settlement::Fulfilled,
                     Some("rejected") => Settlement::Rejected,
-                    _ => return Err(invalid_params("observed_result needs settlement fulfilled or rejected")),
+                    _ => {
+                        return Err(invalid_params(
+                            "observed_result needs settlement fulfilled or rejected",
+                        ));
+                    }
                 };
                 let value = observed.get("value").cloned().unwrap_or(Value::Null);
                 let text = JsonText::new(value.to_string()).map_err(invalid_params)?;

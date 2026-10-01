@@ -68,7 +68,9 @@ impl WorkerProcess {
         else {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(SpawnError::Exec("the worker's pipes were not created".into()));
+            return Err(SpawnError::Exec(
+                "the worker's pipes were not created".into(),
+            ));
         };
         let pid = child.id();
 
@@ -175,7 +177,8 @@ impl WorkerProcess {
     }
 
     pub fn send(&mut self, message: &ParentMessage) -> Result<(), ChannelError> {
-        let frame = encode_parent_frame(message).map_err(|e| ChannelError::Broken(e.to_string()))?;
+        let frame =
+            encode_parent_frame(message).map_err(|e| ChannelError::Broken(e.to_string()))?;
         let stdin = self.stdin.as_mut().ok_or(ChannelError::Closed)?;
         stdin
             .write_all(&frame)

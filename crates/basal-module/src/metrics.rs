@@ -1,4 +1,4 @@
-//! The module's own counters (design section 13): worker kills and
+//! The module's own counters (`docs/design.md` section 13): worker kills and
 //! respawns, and what replay costs. They live in memory and start from zero
 //! at each process start; the durable figures (run ages, token windows,
 //! flow health) are read from the store when asked for.
@@ -12,7 +12,8 @@ pub struct Metrics {
     pub workers_spawned: AtomicU64,
     pub spawn_failures: AtomicU64,
     /// Workers the parent killed: a broken protocol, a budget or deadline
-    /// breach, a lost ownership, or any activation that did not end cleanly.
+    /// breach, an activation that lost its run to another activation, or
+    /// any other activation that did not end cleanly.
     pub workers_killed: AtomicU64,
     /// Workers found dead that nobody killed.
     pub workers_crashed: AtomicU64,
@@ -47,7 +48,8 @@ impl Metrics {
         Self::bump(&self.activations);
         self.replayed_calls.fetch_add(replayed, Ordering::Relaxed);
         self.activation_micros.fetch_add(micros, Ordering::Relaxed);
-        self.activation_micros_max.fetch_max(micros, Ordering::Relaxed);
+        self.activation_micros_max
+            .fetch_max(micros, Ordering::Relaxed);
     }
 
     pub fn to_json(&self) -> Value {

@@ -70,8 +70,9 @@ struct Inner {
     fatal: Fatal,
     active: Mutex<Active>,
     cond: Condvar,
-    /// Bumped whenever an activation ends in a way that changed something
-    /// (anything but finding the run not runnable or its slot taken).
+    /// Bumped whenever an activation ran: any ending except finding the run
+    /// not pending or its flow's slot held by an earlier run, the two that
+    /// leave everything as it was.
     progress: AtomicU64,
 }
 
@@ -121,8 +122,10 @@ impl Engine {
             return Err(why);
         }
         let fatal = |e: CoreError| {
-            // Every core error here comes from the store: these calls take
-            // no input but the store's own contents.
+            // These calls take no input but the store's own contents, so an
+            // error means the store failed or holds something this build
+            // cannot read. Serving on cannot fix either; a restart runs
+            // recovery.
             let why = e.to_string();
             inner.fatal.raise(why.clone());
             why
@@ -164,7 +167,9 @@ impl Engine {
         let changed = match self.drive_on_pool(&run_id, &flow_id) {
             None => false,
             Some(Err(e)) => {
-                // The claim failed in the store.
+                // `Runtime::activate` returns an error only when claiming
+                // the run failed in the store; everything after the claim
+                // is reported as an ending.
                 inner.fatal.raise(format!("activating {run_id}: {e}"));
                 false
             }
@@ -214,16 +219,18 @@ impl Engine {
     /// Handles an activation's end; returns whether anything changed.
     fn after(&self, run_id: &str, end: ActivationEnd) -> bool {
         match end {
-            // The driver turns every error inside an activation other than a
-            // lost ownership into this ending, and they are all store
-            // failures: the run stays `running` until recovery.
+            // The driver turns every error inside an activation, other than
+            // a lost ownership, into this ending. Each one left the run
+            // `running` with no activation driving it, and only recovery at
+            // the next start puts it back in line.
             ActivationEnd::Failed { kind, detail } if kind == "store" => {
                 self.inner
                     .fatal
                     .raise(format!("activation of {run_id}: {detail}"));
                 false
             }
-            // The store was cut under the activation.
+            // The store was cut under the activation (`Store::cut`, a
+            // simulated storage failure): every later write fails.
             ActivationEnd::Crashed => {
                 self.inner
                     .fatal

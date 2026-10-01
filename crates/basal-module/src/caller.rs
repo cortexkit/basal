@@ -67,7 +67,10 @@ pub fn from_route(principal: Option<&Principal>, scope: Option<&ScopeStamp>) -> 
             &scope.owner,
             Principal::Reserved { module_id } if module_id == CORE_MODULE
         );
-        return match (&scope.attributes.agent_id, core_owned && scope.owner_authorized) {
+        return match (
+            &scope.attributes.agent_id,
+            core_owned && scope.owner_authorized,
+        ) {
             (Some(agent), true) if !agent.is_empty() => Caller::Agent(agent.clone()),
             _ => Caller::Other(format!(
                 "a scope of {} without a vouched agent",

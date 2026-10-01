@@ -23,7 +23,7 @@ pub struct InstallCard {
     pub card_id: String,
     pub flow_id: String,
     pub version: u32,
-    /// The card's fields as JSON (design section 6): flow id, version,
+    /// The card's fields as JSON (`docs/design.md` section 6): flow id, version,
     /// purpose, author, trigger, sinks, status targets, claims, ops, facts,
     /// token cap, placement, warnings, code hash and code, and the dry run's
     /// summary.
@@ -180,7 +180,9 @@ impl Consent for MockConsent {
     fn raise(&self, card: &InstallCard) -> Result<(), ConsentError> {
         let mut state = self.lock();
         if state.unavailable {
-            return Err(ConsentError::Unavailable("the mock is set unavailable".into()));
+            return Err(ConsentError::Unavailable(
+                "the mock is set unavailable".into(),
+            ));
         }
         *state.raises.entry(card.card_id.clone()).or_insert(0) += 1;
         state

@@ -1,5 +1,7 @@
 //! The module assembled: store, runtime, pool, engine, dry runner and the
-//! consent plane, started in the order recovery needs.
+//! consent plane. Recovery runs right after the runtime exists, before
+//! anything can read or drive a run, so no run a previous process left
+//! `running` is mistaken for one in progress.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -19,8 +21,10 @@ use crate::pool::{Pool, PoolConfig, PoolSource, Spawn};
 pub struct ModuleConfig {
     pub store_path: PathBuf,
     pub durability: Durability,
-    /// The runtime's settings. The module drives runs itself, so
-    /// `auto_resume` is forced off.
+    /// The runtime's settings. `auto_resume` (the runtime starting an
+    /// activation by itself when a completion makes a run runnable) is
+    /// forced off: the engine drives every run, so that a worker is always
+    /// acquired before the run is claimed and activations stay bounded.
     pub runtime: Config,
     pub pool: PoolConfig,
     pub engine: EngineConfig,
@@ -131,7 +135,10 @@ impl DecisionSink for DecisionApplier {
             CardDecision::Approve => Decision::Approve,
             CardDecision::Reject => Decision::Reject,
         };
-        match self.rt.decide_card(&event.card_id, decision, &event.decided_by) {
+        match self
+            .rt
+            .decide_card(&event.card_id, decision, &event.decided_by)
+        {
             Ok(Decided::Applied(state)) => {
                 tracing::info!(
                     target: "consent",

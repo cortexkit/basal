@@ -94,8 +94,7 @@ pub fn card_id(flow_id: &str, version: u32, code_hash: &[u8; 32]) -> String {
     format!("card:{flow_id}:v{version}:{hex}")
 }
 
-const COLUMNS: &str =
-    "card_id, flow_id, version, code_hash, author, card, state, decided_by";
+const COLUMNS: &str = "card_id, flow_id, version, code_hash, author, card, state, decided_by";
 
 fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<CardRecord>> {
     let card_id: String = row.get(0)?;

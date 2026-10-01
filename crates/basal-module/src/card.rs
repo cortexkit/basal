@@ -1,4 +1,4 @@
-//! The install card's fields (design section 6), built from the version as
+//! The install card's fields (`docs/design.md` section 6), built from the version as
 //! installed, the catalog, the dry run and the flow's token window.
 
 use basal_core::manifest::Manifest;

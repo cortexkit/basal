@@ -43,10 +43,7 @@ impl Drop for Fixture {
 pub fn scratch(tag: &str) -> PathBuf {
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!(
-        "basal-module-{tag}-{}-{n}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("basal-module-{tag}-{}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("scratch dir");
     dir
@@ -176,7 +173,10 @@ pub fn install_approved(f: &Fixture, caller: &Caller, script: &str, manifest: &V
     let reply = install(f, caller, script, manifest);
     let card = reply["card_id"].as_str().expect("card id").to_owned();
     assert!(f.consent.decide(&card, CardDecision::Approve, "operator"));
-    assert!(f.consent.undelivered().is_empty(), "the decision was applied");
+    assert!(
+        f.consent.undelivered().is_empty(),
+        "the decision was applied"
+    );
     reply["flow_id"].as_str().expect("flow id").to_owned()
 }
 

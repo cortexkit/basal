@@ -79,7 +79,9 @@ fn parse() -> Result<Args, String> {
             "--kill-self-at" => args.kill_self_at = Some(value()?),
             "--cut-store-at" => args.cut_store_at = Some(value()?),
             "--warm-spares" => {
-                args.warm_spares = value()?.parse().map_err(|e| format!("--warm-spares: {e}"))?;
+                args.warm_spares = value()?
+                    .parse()
+                    .map_err(|e| format!("--warm-spares: {e}"))?;
             }
             "--max-concurrent" => {
                 args.max_concurrent = value()?

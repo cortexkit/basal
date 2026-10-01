@@ -36,7 +36,12 @@ use basal_proto::{ParentMessage, Welcome, WorkerMessage};
 use crate::metrics::Metrics;
 use crate::process::{SpawnError, WorkerProcess};
 
-/// The pool's parameters. The findings note explains the defaults.
+/// The pool's parameters. The defaults keep two spares (an install's dry
+/// run uses up to ten single-use workers in a row), cap the pool at 16
+/// processes (about 5 MiB each when idle), retire a worker after 256
+/// activations or 10 idle minutes so no engine process lives indefinitely,
+/// and give a handshake 180 s because a launch has been measured stalling
+/// for over a minute while macOS assesses the binary.
 #[derive(Debug, Clone)]
 pub struct PoolConfig {
     /// `ck-basal-worker`; by default the one beside the running binary.

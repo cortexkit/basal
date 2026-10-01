@@ -34,7 +34,10 @@ fn a_worker_is_never_reused_across_flows() {
     for (flow, trigger) in [(&a, "a-1"), (&b, "b-1"), (&a, "a-2"), (&b, "b-2")] {
         let run = admit(&f, flow, trigger);
         f.module.engine.run_until_idle(50).expect("idle");
-        assert_eq!(f.module.rt.run(&run).expect("run").state, RunState::Succeeded);
+        assert_eq!(
+            f.module.rt.run(&run).expect("run").state,
+            RunState::Succeeded
+        );
     }
     let on_a = workers_of(&f.module.pool, &a);
     let on_b = workers_of(&f.module.pool, &b);
@@ -46,7 +49,10 @@ fn a_worker_is_never_reused_across_flows() {
         f.module.pool.handouts()
     );
     // Reuse within a flow happens, so the check above is not vacuous.
-    assert_eq!(on_a[0], on_a[1], "the second run of a flow reuses its worker");
+    assert_eq!(
+        on_a[0], on_a[1],
+        "the second run of a flow reuses its worker"
+    );
     assert_eq!(on_b[0], on_b[1]);
 }
 
@@ -123,10 +129,18 @@ fn an_activation_uses_a_warm_spare() {
     let f = fixture("pool-spare", Options::default());
     assert!(f.module.pool.wait_for_spares(1, Duration::from_secs(120)));
     let spawned_before = f.module.metrics.workers_spawned.load(Ordering::Relaxed);
-    let flow = install_approved(&f, &agent("SYNAPSE"), SCRIPT, &events_manifest("flow-spare"));
+    let flow = install_approved(
+        &f,
+        &agent("SYNAPSE"),
+        SCRIPT,
+        &events_manifest("flow-spare"),
+    );
     let run = admit(&f, &flow, "s-1");
     f.module.engine.run_until_idle(50).expect("idle");
-    assert_eq!(f.module.rt.run(&run).expect("run").state, RunState::Succeeded);
+    assert_eq!(
+        f.module.rt.run(&run).expect("run").state,
+        RunState::Succeeded
+    );
     let handouts = f.module.pool.handouts();
     let last = handouts.last().expect("a handout");
     assert_eq!(last.source, Source::Spare, "{handouts:?}");
@@ -150,7 +164,12 @@ fn a_bound_worker_is_retired_after_its_activation_count_and_its_idle_period() {
             ..Options::default()
         },
     );
-    let flow = install_approved(&f, &agent("SYNAPSE"), SCRIPT, &events_manifest("flow-retire"));
+    let flow = install_approved(
+        &f,
+        &agent("SYNAPSE"),
+        SCRIPT,
+        &events_manifest("flow-retire"),
+    );
     for trigger in ["r-1", "r-2", "r-3"] {
         admit(&f, &flow, trigger);
         f.module.engine.run_until_idle(50).expect("idle");

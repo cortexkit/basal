@@ -12,9 +12,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use cortexkit_store_types::{
-    Isolation, StorageBackend, StorageDescriptor, sqlite_store_path,
-};
+use cortexkit_store_types::{Isolation, StorageBackend, StorageDescriptor, sqlite_store_path};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use subc_client_rs::{
@@ -96,7 +94,9 @@ fn store_path(ack: &ModuleHelloAckBody) -> Result<PathBuf, String> {
     match descriptor.backend {
         StorageBackend::Sqlite { path } => Ok(PathBuf::from(path)),
         #[allow(unreachable_patterns)]
-        other => Err(format!("basal needs a SQLite store, the daemon offered {other:?}")),
+        other => Err(format!(
+            "basal needs a SQLite store, the daemon offered {other:?}"
+        )),
     }
 }
 

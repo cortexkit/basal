@@ -115,7 +115,9 @@ fn install_and_approve(h: &mut Harness, id: &str, schedule: Value) {
     assert_eq!(reply["state"], "pending");
     let cards = h.ok(json!({ "cmd": "cards" }));
     assert_eq!(cards[0]["card_id"], reply["card_id"]);
-    h.ok(json!({ "cmd": "decide", "card_id": reply["card_id"], "approve": true, "by": "operator" }));
+    h.ok(
+        json!({ "cmd": "decide", "card_id": reply["card_id"], "approve": true, "by": "operator" }),
+    );
     let health = h.ok(json!({ "cmd": "op", "as": "operator", "method": "flow.health" }));
     assert_eq!(health["flows"][0]["approved_version"], 1, "{health:#}");
 }
@@ -136,9 +138,17 @@ fn a_schedule_flow_survives_a_catch_up_a_worker_kill_and_a_module_kill_with_each
 
     // Install, approve, and sleep through five due times.
     let mut h = Harness::start(&dir, &[]);
-    install_and_approve(&mut h, "flow-hourly", json!({ "cron": "0 * * * *", "missed": "once" }));
+    install_and_approve(
+        &mut h,
+        "flow-hourly",
+        json!({ "cron": "0 * * * *", "missed": "once" }),
+    );
     h.ok(json!({ "cmd": "pump" }));
-    assert_eq!(h.ok(json!({ "cmd": "runs" })), json!([]), "nothing due before 01:00");
+    assert_eq!(
+        h.ok(json!({ "cmd": "runs" })),
+        json!([]),
+        "nothing due before 01:00"
+    );
     h.ok(json!({ "cmd": "clock", "set_ms": T0 + 5 * HOUR + 10_000 }));
     h.quit();
 
@@ -154,7 +164,10 @@ fn a_schedule_flow_survives_a_catch_up_a_worker_kill_and_a_module_kill_with_each
             "HostAnswered { position: 2 }#1",
         ],
     );
-    assert!(h.send(json!({ "cmd": "pump" })).is_none(), "the module died mid-run");
+    assert!(
+        h.send(json!({ "cmd": "pump" })).is_none(),
+        "the module died mid-run"
+    );
     let status = h.wait();
     assert_eq!(status.signal(), Some(libc::SIGKILL), "{status:?}");
 
@@ -162,7 +175,10 @@ fn a_schedule_flow_survives_a_catch_up_a_worker_kill_and_a_module_kill_with_each
     let mut h = Harness::start(&dir, &[]);
     let runs = h.ok(json!({ "cmd": "runs" }));
     assert_eq!(runs.as_array().map(Vec::len), Some(2), "{runs:#}");
-    assert_eq!(runs[0]["state"], "pending", "recovered from running: {runs:#}");
+    assert_eq!(
+        runs[0]["state"], "pending",
+        "recovered from running: {runs:#}"
+    );
     h.ok(json!({ "cmd": "pump" }));
     let runs = h.ok(json!({ "cmd": "runs" }));
     let ids: Vec<&str> = runs
@@ -173,24 +189,45 @@ fn a_schedule_flow_survives_a_catch_up_a_worker_kill_and_a_module_kill_with_each
         .collect();
     assert_eq!(
         ids,
-        ["schedule:2026-05-01T04:00:00Z", "schedule:2026-05-01T05:00:00Z"],
+        [
+            "schedule:2026-05-01T04:00:00Z",
+            "schedule:2026-05-01T05:00:00Z"
+        ],
         "one catch-up fire for 01:00 to 04:00, then the on-time 05:00"
     );
     for run in runs.as_array().expect("runs") {
         assert_eq!(run["state"], "succeeded", "{runs:#}");
     }
     assert_eq!(runs[0]["broken"], 1, "the first run lost one worker");
-    let first: Value = serde_json::from_str(runs[0]["result"].as_str().expect("result")).expect("json");
-    let second: Value = serde_json::from_str(runs[1]["result"].as_str().expect("result")).expect("json");
-    assert_eq!(first, json!({ "due": "2026-05-01T04:00:00Z", "before": 0, "missed": 4 }));
-    assert_eq!(second, json!({ "due": "2026-05-01T05:00:00Z", "before": 1, "missed": 0 }));
+    let first: Value =
+        serde_json::from_str(runs[0]["result"].as_str().expect("result")).expect("json");
+    let second: Value =
+        serde_json::from_str(runs[1]["result"].as_str().expect("result")).expect("json");
+    assert_eq!(
+        first,
+        json!({ "due": "2026-05-01T04:00:00Z", "before": 0, "missed": 4 })
+    );
+    assert_eq!(
+        second,
+        json!({ "due": "2026-05-01T05:00:00Z", "before": 1, "missed": 0 })
+    );
 
     let effects = h.ok(json!({ "cmd": "effects" }));
     let writes = digests(&effects);
     assert_eq!(writes.len(), 2, "one digest write per fire: {effects:#}");
     assert_ne!(writes[0]["key"], writes[1]["key"]);
-    assert!(writes[0]["args"].as_str().unwrap_or("").contains("2026-05-01T04:00:00Z"));
-    assert!(writes[1]["args"].as_str().unwrap_or("").contains("2026-05-01T05:00:00Z"));
+    assert!(
+        writes[0]["args"]
+            .as_str()
+            .unwrap_or("")
+            .contains("2026-05-01T04:00:00Z")
+    );
+    assert!(
+        writes[1]["args"]
+            .as_str()
+            .unwrap_or("")
+            .contains("2026-05-01T05:00:00Z")
+    );
     // The write whose outcome the kill lost was sent again under its key
     // and applied once.
     assert_eq!(writes[0]["sends"], 2, "{effects:#}");
@@ -213,7 +250,10 @@ fn a_store_error_ends_the_process_non_zero_and_the_restart_recovers() {
 
     let mut h = Harness::start(&dir, &[]);
     let runs = h.ok(json!({ "cmd": "runs" }));
-    assert_eq!(runs[0]["state"], "pending", "recovery put the run back: {runs:#}");
+    assert_eq!(
+        runs[0]["state"], "pending",
+        "recovery put the run back: {runs:#}"
+    );
     h.ok(json!({ "cmd": "pump" }));
     let runs = h.ok(json!({ "cmd": "runs" }));
     assert_eq!(runs.as_array().map(Vec::len), Some(1));

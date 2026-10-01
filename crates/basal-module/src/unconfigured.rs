@@ -20,7 +20,8 @@ use basal_host::{
 use basal_proto::CallKind;
 
 /// Why the unconfigured host refused a dispatch.
-pub const NO_HOST: &str = "no host adapter is configured in this build of ck-basal; the call was never sent";
+pub const NO_HOST: &str =
+    "no host adapter is configured in this build of ck-basal; the call was never sent";
 
 /// A host that sends nothing.
 #[derive(Default)]
