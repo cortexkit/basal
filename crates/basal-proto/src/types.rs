@@ -132,7 +132,9 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Which primitive set a script gets.
+/// Which host-call primitives a script is given. Both profiles get the same
+/// primitives (ops, facts, sinks, kv, llm, classify, clock and random) except
+/// `sh`, the shell, which only the codemode profile has.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Profile {
     /// Unattended flows: every host call journaled, and no shell by any route.
@@ -213,8 +215,9 @@ impl Primitive {
     }
 }
 
-/// What a host call asks for. Module ops are structured pairs, never a
-/// dotted string, so no check ever depends on parsing a name.
+/// What a host call asks for. A module op is a call to a named operation on
+/// a named module; it is carried as separate module and op names, never as
+/// one dotted string, so no check ever depends on parsing a name.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CallKind {
     Op { module: String, op: String },
@@ -313,8 +316,9 @@ pub struct ActivationRequest {
     /// a result to the activation it started.
     pub activation_id: u64,
     pub profile: Profile,
-    /// The prelude the parent expects. A worker with a different prelude
-    /// refuses the activation rather than replay under changed semantics.
+    /// The prelude the parent expects. A worker with a different lockdown
+    /// prelude refuses the activation: the replayed run would not execute in
+    /// the same environment as the recorded run, so its calls could differ.
     pub prelude_hash: PreludeHash,
     /// The exact approved script source.
     pub script: String,
@@ -399,7 +403,8 @@ pub enum Failure {
         kind: CallKind,
     },
     /// The worker's lockdown prelude differs from the one the parent recorded
-    /// for the run, so replay would run under changed semantics.
+    /// for the run, so the replayed run would not execute in the same
+    /// environment as the recorded run.
     EngineMismatch {
         expected: PreludeHash,
         actual: PreludeHash,

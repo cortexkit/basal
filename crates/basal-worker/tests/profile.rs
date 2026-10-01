@@ -1,5 +1,6 @@
-//! The profile fence: no shell in the flow profile, by any route a script
-//! can take. (The native bridge itself is covered by the engine's unit test
+//! The profile fence: no shell in the flow profile (the one unattended,
+//! operator-approved flows run under), by any route a script can take. The
+//! codemode profile, used interactively by an agent, does get `sh`. (The native bridge itself is covered by the engine's unit test
 //! `raw_bridge_cannot_issue_sh_in_flow_profile`, because a script cannot
 //! reach it.)
 
@@ -45,7 +46,8 @@ const ROUTES: &str = r#"
     try { bare = typeof sh === 'undefined' ? 'undefined' : 'reachable'; sh('ls'); } catch (e) { bare = e.name; }
     // A module op that happens to be named sh is still a module op, not the
     // shell primitive; whether it may run is decided by the parent against
-    // the flow's approved manifest.
+    // the flow's approved manifest (the list of module ops the operator
+    // allowed this flow to call).
     const op = await ops.call('sh', 'sh', 'ls');
     return { found, routes, bare, op };
 "#;

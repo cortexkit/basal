@@ -35,7 +35,9 @@ fn worker_dependency_tree_has_no_store_no_subc_and_no_core() {
         .filter_map(|line| line.split_whitespace().next())
         .collect();
 
-    // The tree was really read: the worker and what it must link are there.
+    // Positive check first: the worker and what it must link appear, which
+    // proves the cargo tree output was parsed. Without it, an empty output or
+    // a failed parse would pass the forbidden-package check below vacuously.
     for required in ["basal-worker", "basal-proto", "rquickjs"] {
         assert!(
             packages.contains(&required),

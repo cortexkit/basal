@@ -54,8 +54,12 @@ fn recorded_outcomes_are_released_in_delivery_order() {
     assert_eq!(replay.value(), json!(["b", "c", "a"]));
 }
 
-/// Releasing recorded outcomes in issue order would let the slow call win a
-/// race it lost originally, and the next call would diverge.
+/// The script races a slow call (issued first) against a fast one (issued
+/// second); the fast one wins, and the script's next call takes the
+/// winner's id as its argument. Releasing recorded outcomes in issue order
+/// would hand the slow call's outcome to the VM first, so on replay the slow
+/// call would win and the next call would carry "slow" instead of "fast":
+/// a divergence from the journal.
 #[test]
 fn race_and_any_keep_their_winner_on_replay() {
     for combinator in ["race", "any"] {

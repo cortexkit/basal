@@ -31,7 +31,9 @@ struct Pending {
     answer: Option<(Settlement, JsonText, Duration)>,
 }
 
-/// A run's journal and its in-flight calls.
+/// A run's journal (every call issued, with its outcome once delivered) and
+/// the calls dispatched to the mock whose outcomes have not been delivered
+/// yet.
 #[derive(Debug, Clone, Default)]
 pub struct Journal {
     pub entries: Vec<JournalEntry>,
@@ -212,8 +214,9 @@ impl TestParent {
         self.run_with_prefix(run, script, prefix)
     }
 
-    /// Runs with an explicit prefix, for tests that tamper with the journal
-    /// as shipped (the journal itself still records new calls).
+    /// Runs with a caller-supplied prefix sent to the worker in place of the
+    /// one built from the run's journal, for tests that alter what the worker
+    /// replays. New calls are still recorded in the run's journal.
     pub fn run_with_prefix(
         &mut self,
         run: &str,

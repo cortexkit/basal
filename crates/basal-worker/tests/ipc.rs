@@ -134,8 +134,8 @@ fn oversized_frame_is_refused_and_the_worker_exits_cleanly() {
             max: MAX_FRAME_BYTES as u64
         }
     );
-    // The stream cannot be framed any more, so the worker leaves with its
-    // documented exit code rather than a signal.
+    // The stream cannot be framed any more, so the worker exits with code 3
+    // (a broken channel) rather than crashing on a signal.
     let status = worker.wait_exit(WAIT).expect("worker exits");
     assert_eq!(
         status.code(),

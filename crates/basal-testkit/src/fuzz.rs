@@ -163,8 +163,8 @@ pub fn payload(seed: u64, index: u64) -> String {
                 .unwrap_or(0);
             format!("{}{}{}", &text[..at], junk, &text[at..])
         }
-        // A long string, up to about 16 KiB of escapes, the inline payload
-        // size the design proposes for module events.
+        // A long string of up to about 16 KiB of escapes, to exercise
+        // payloads of the size module events may carry inline.
         3 => format!("\"{}\"", "\\u2028ab".repeat(rng.below(2048) as usize)),
         _ => value(&mut rng, 6),
     }
@@ -217,9 +217,11 @@ pub struct Tally {
     pub memory: u64,
     pub stack: u64,
     pub script_error: u64,
-    /// Every other ending: a hang, a broken channel, an engine failure, or a
-    /// completed result whose JSON round trip failed. Any entry here is a
-    /// defect to investigate.
+    /// Every ending other than the expected ones counted above (a completed
+    /// round trip, a refused invalid value, an exhausted JS-time, memory or
+    /// stack budget, or a script error): a hang, a broken channel, an engine
+    /// failure, or a completed result whose JSON round trip failed. Any entry
+    /// here is a defect to investigate.
     pub unexpected: Vec<String>,
 }
 

@@ -1,4 +1,6 @@
-//! The lockdown: what a script can and cannot reach.
+//! The lockdown: what a script can and cannot reach. A flow is an
+//! operator-approved script that basal runs unattended; the lockdown keeps
+//! it to the globals listed below and the host calls basal journals.
 
 mod common;
 
@@ -97,8 +99,8 @@ fn removed_globals_are_absent() {
             'SharedArrayBuffer', 'Intl', 'performance', 'setTimeout', 'setInterval',
             'clearTimeout', 'clearInterval', 'setImmediate', 'queueMicrotask', 'gc', 'os', 'std',
             'navigator', 'WebAssembly', 'console', 'print', 'structuredClone',
-            // Names of the worker's bridge internals, and names an earlier
-            // prototype exposed as globals; none may be reachable.
+            // Names that would give a script the host-call bridge's
+            // internals; none may be reachable.
             'pending', 'issueOp', 'issuePrimitive', 'issueSync', 'deliver', 'native', 'start',
             'status', '__enqueue', '__sync', '__rawBridge', 'call', 'settle', 'lockdown'];
         return names.filter((n) => n in globalThis || typeof globalThis[n] !== 'undefined');
@@ -162,8 +164,9 @@ fn date_constructor_cannot_be_recovered() {
             descriptor: Object.getOwnPropertyDescriptor(Date.prototype, 'constructor').value === Date,
             name: Date.name,
             length: Date.length,
-            // Constructing through the recovered constructor still reads the
-            // host clock, not the machine's.
+            // Constructing through the constructor reached from an instance
+            // (Date.prototype.constructor, via Object.getPrototypeOf) still
+            // reads the host clock, not the machine's.
             recovered: new viaInstance().getTime(),
         };
     "#;

@@ -354,8 +354,8 @@
   }
   enableOverride(ObjectGetPrototypeOf(function () {}), 'toString');
 
-  // Intrinsic objects that no global property names, but that a script can
-  // still obtain through syntax: the prototypes of async functions,
+  // Intrinsic objects that are not the value of any global property, but
+  // that a script can still obtain through syntax: the prototypes of async functions,
   // generators and the built-in iterators. The worker freezes everything
   // reachable from these and from the global object once this function
   // returns (see harden.rs), before the script is compiled.
