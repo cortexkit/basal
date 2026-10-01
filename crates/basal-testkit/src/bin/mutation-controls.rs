@@ -9,12 +9,14 @@
 //! committed or staged:
 //!
 //! ```text
-//! cargo run -p basal-testkit --bin mutation-controls [-- [--journal] [--check] [<label filter>]]
+//! cargo run -p basal-testkit --bin mutation-controls [-- [--journal|--dispatch] [--check] [<label filter>]]
 //! ```
 //!
-//! Without `--journal` it runs the worker engine's controls; with it, the
-//! journal, run state machine and driver controls in basal-core, whose
-//! tests live in basal-testkit. `--check` only verifies that every edit's
+//! Without a flag it runs the worker engine's controls; with `--journal`,
+//! the journal, run state machine and driver controls in basal-core; with
+//! `--dispatch`, the manifest, authorization, audit, token, `kv`, slot,
+//! deadline, rate-limit, disable and per-run limit controls in basal-core.
+//! basal-core's tests live in basal-testkit. `--check` only verifies that every edit's
 //! text occurs exactly once in the current source.
 //!
 //! Safety of the working tree: the runner stages every file it will touch so
@@ -24,7 +26,8 @@
 //! and never restores from HEAD. Every temporary edit carries the marker
 //! `NON-VACUITY BREAK` so a break left behind by a crash is easy to find.
 //! Evidence is written to `docs/findings/slice-1-mutations.json` (worker)
-//! or `docs/findings/slice-2-mutations.json` (journal), beside the findings
+//! `docs/findings/slice-2-mutations.json` (journal) or
+//! `docs/findings/slice-3-mutations.json` (dispatch), beside the findings
 //! notes in `docs/findings/`.
 
 use std::io::Read;
@@ -812,6 +815,496 @@ const JOURNAL_CONTROLS: &[Control] = &[
     },
 ];
 
+const MANIFEST: &str = "crates/basal-core/src/manifest.rs";
+const INSTALL: &str = "crates/basal-core/src/install.rs";
+const AUTHORIZE: &str = "crates/basal-core/src/authorize.rs";
+const TOKENS: &str = "crates/basal-core/src/tokens.rs";
+const KV: &str = "crates/basal-core/src/kv.rs";
+const RATE: &str = "crates/basal-core/src/rate.rs";
+const SCHEMA: &str = "crates/basal-core/src/schema.rs";
+
+/// Manifests, install validation, authorization at dispatch, the call
+/// audit, token reservations, `kv`, the concurrency slot and deadline, the
+/// rate limits, disable and the per-run limits: each control disables one
+/// mechanism in basal-core and runs the basal-testkit test named for it.
+const DISPATCH_CONTROLS: &[Control] = &[
+    Control {
+        label: "manifest accepts unknown fields",
+        edits: &[(
+            MANIFEST,
+            "#[serde(deny_unknown_fields)]\npub struct Manifest {",
+            "pub struct Manifest {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_manifest"),
+        test: "manifest_refuses_unknown_fields",
+    },
+    Control {
+        label: "manifest accepts both trigger kinds",
+        edits: &[(
+            MANIFEST,
+            "(Some(events), None) => {",
+            "(Some(events), _) => {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_manifest"),
+        test: "trigger_needs_exactly_one_kind",
+    },
+    Control {
+        label: "install accepts undeclared events and versions",
+        edits: &[(
+            INSTALL,
+            "let Some(decl) = catalog.event(&e.module, &e.name, e.version) else {",
+            "let Some(decl) = catalog.event(&e.module, &e.name, e.version).or(Some(basal_host::EventDecl { origin: basal_host::EventOrigin::Internal, body: EventBody::Inline })) else {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_manifest"),
+        test: "install_refuses_unknown_events_and_versions",
+    },
+    Control {
+        label: "install accepts ops missing from the catalog",
+        edits: &[(
+            INSTALL,
+            "let Some(decl) = catalog.op(module, op) else {",
+            "let Some(decl) = catalog.op(module, op).or(Some(basal_host::OpDecl { kind: Some(OpKind::Query), cause_echo: false, shell_capable: false })) else {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_manifest"),
+        test: "install_refuses_unknown_and_unmarked_ops",
+    },
+    Control {
+        label: "install accepts ops with no query or mutate marker",
+        edits: &[(
+            INSTALL,
+            "let Some(kind) = decl.kind else {",
+            "let Some(kind) = decl.kind.or(Some(OpKind::Query)) else {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_manifest"),
+        test: "install_refuses_unknown_and_unmarked_ops",
+    },
+    Control {
+        label: "install ignores the catalog's shell-capable marker",
+        edits: &[(
+            INSTALL,
+            "if decl.shell_capable {",
+            "if false && decl.shell_capable {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_manifest"),
+        test: "install_refuses_shell_capable_ops_listed_by_marker_or_denylist",
+    },
+    Control {
+        label: "install ignores the shell denylist",
+        edits: &[(
+            INSTALL,
+            "if denylist.contains(module, op) {",
+            "if false && denylist.contains(module, op) {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_manifest"),
+        test: "install_refuses_shell_capable_ops_listed_by_marker_or_denylist",
+    },
+    Control {
+        label: "install accepts unknown agents",
+        edits: &[(
+            INSTALL,
+            "if !catalog.agent_known(agent) {",
+            "if false && !catalog.agent_known(agent) {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_manifest"),
+        test: "install_refuses_unknown_agents",
+    },
+    Control {
+        label: "loop install rule not applied",
+        edits: &[(
+            INSTALL,
+            "if trigger_modules.contains(&module.as_str()) && !decl.cause_echo {",
+            "if false && trigger_modules.contains(&module.as_str()) && !decl.cause_echo {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_manifest"),
+        test: "loop_install_rule_needs_the_operator_override",
+    },
+    Control {
+        label: "admission does not require the approved version's exact code",
+        edits: &[(
+            ADMISSION,
+            "if approved.code_hash != code_hash(&spec.script, &spec.manifest) {",
+            "if false && approved.code_hash != code_hash(&spec.script, &spec.manifest) {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_manifest"),
+        test: "new_version_applies_to_newly_admitted_triggers_only",
+    },
+    Control {
+        label: "ops outside the manifest are dispatched",
+        edits: &[(
+            AUTHORIZE,
+            "if !manifest.lists_op(module, op) {",
+            "if false && !manifest.lists_op(module, op) {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_authorization"),
+        test: "unlisted_op_is_denied_journaled_and_catchable",
+    },
+    Control {
+        label: "shell denylist not checked at dispatch",
+        edits: &[(
+            AUTHORIZE,
+            "if denylist.contains(module, op) {",
+            "if false && denylist.contains(module, op) {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_authorization"),
+        test: "listed_op_on_the_denylist_is_refused_at_dispatch",
+    },
+    Control {
+        label: "catalog shell marker not checked at dispatch",
+        edits: &[(
+            AUTHORIZE,
+            "Some(decl) if decl.shell_capable => Some(Refusal::denied(format!(",
+            "Some(decl) if false && decl.shell_capable => Some(Refusal::denied(format!(",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_authorization"),
+        test: "listed_op_marked_shell_capable_is_refused_at_dispatch",
+    },
+    Control {
+        label: "the dispatcher does not refuse sh from the worker",
+        edits: &[(
+            DRIVER,
+            "if call.kind.is_shell() {",
+            "if false && call.kind.is_shell() {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_authorization"),
+        test: "a_compromised_worker_cannot_issue_sh",
+    },
+    Control {
+        label: "facts of agents outside the manifest's targets are allowed",
+        edits: &[(
+            AUTHORIZE,
+            "if !grant.targets.iter().any(|t| t == agent) {",
+            "if false && !grant.targets.iter().any(|t| t == agent) {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_authorization"),
+        test: "facts_sinks_and_model_calls_are_checked_against_the_manifest",
+    },
+    Control {
+        label: "digest actions above the manifest's cap are allowed",
+        edits: &[(
+            AUTHORIZE,
+            "Some(action) if action <= cap => Ok(()),",
+            "Some(_) => Ok(()),",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_authorization"),
+        test: "facts_sinks_and_model_calls_are_checked_against_the_manifest",
+    },
+    Control {
+        label: "audit row written outside the transaction that journals the call (cut harness)",
+        edits: &[
+            (
+                DRIVER,
+                "        audit::record(\n            tx,\n            flow_id,\n            &self.lease.run_id,\n            call.position,\n            &call.kind,\n            &ArgsDigest::of(&call.args),\n            audit::ALLOWED,\n            now_ms,\n        )?;\n        Ok(Some(inserted))",
+                "        Ok(Some(inserted))",
+            ),
+            (
+                DRIVER,
+                "                self.at(Boundary::CallCommitted {\n                    position: call.position,\n                })?;\n",
+                "                self.at(Boundary::CallCommitted {\n                    position: call.position,\n                })?;\n                self.rt.store().write(|tx| audit::record(tx, &flow_id, &run_id, call.position, &call.kind, &ArgsDigest::of(&call.args), audit::ALLOWED, audited_at))?;\n",
+            ),
+        ],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("journal_cut"),
+        test: "every_cut_recovers_to_the_uncut_state",
+    },
+    Control {
+        label: "token reservation ignores outstanding reservations",
+        edits: &[(
+            TOKENS,
+            "\"SELECT reserved + input_tokens + cache_write_tokens + output_tokens + unreported_tokens \\",
+            "\"SELECT 0 + input_tokens + cache_write_tokens + output_tokens + unreported_tokens \\",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_tokens"),
+        test: "concurrent_llm_calls_cannot_spend_the_same_remainder",
+    },
+    Control {
+        label: "a model call over the cap is dispatched",
+        edits: &[(
+            TOKENS,
+            "if used.saturating_add(r.amount) > r.cap {",
+            "if false && used.saturating_add(r.amount) > r.cap {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_tokens"),
+        test: "llm_call_over_the_cap_is_a_journaled_rejection",
+    },
+    Control {
+        label: "a re-issued model call sends the script's bytes, not the journaled request",
+        edits: &[(
+            RUNTIME,
+            "args: row.dispatch_args(),",
+            "args: row.args.clone(),",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_tokens"),
+        test: "reissue_after_a_cut_sends_identical_bytes_under_the_same_send_id",
+    },
+    Control {
+        label: "requested output not clamped to the manifest's ceiling",
+        edits: &[(TOKENS, "requested.min(grant.max_output)", "requested")],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_tokens"),
+        test: "reissue_after_a_cut_sends_identical_bytes_under_the_same_send_id",
+    },
+    Control {
+        label: "usage applied again for a settled send id",
+        edits: &[
+            (
+                TOKENS,
+                "FROM token_ledger \\\n                 WHERE send_id = ?1 AND state = 'reserved'\"",
+                "FROM token_ledger \\\n                 WHERE send_id = ?1\"",
+            ),
+            (
+                TOKENS,
+                "settled_at = ?7 \\\n         WHERE send_id = ?1 AND state = 'reserved'\"",
+                "settled_at = ?7 \\\n         WHERE send_id = ?1\"",
+            ),
+        ],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_tokens"),
+        test: "duplicate_usage_report_is_applied_once",
+    },
+    Control {
+        label: "usage settled in the current window instead of the reservation's",
+        edits: &[(
+            TOKENS,
+            "            window_ms,\n            start,\n            reserved,",
+            "            window_ms,\n            crate::tokens::window_start(now_ms, window_ms),\n            reserved,",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_tokens"),
+        test: "usage_lands_in_the_reservation_window_across_suspension_and_rollover",
+    },
+    Control {
+        label: "kv writes roll back when their run fails",
+        edits: &[(
+            SCHEMA,
+            "    revision INTEGER NOT NULL CHECK (revision >= 1),\n    PRIMARY KEY (flow_id, key)\n);",
+            "    revision INTEGER NOT NULL CHECK (revision >= 1),\n    PRIMARY KEY (flow_id, key)\n);\nCREATE TRIGGER kv_rolls_back AFTER UPDATE OF state ON runs WHEN NEW.state = 'failed' BEGIN DELETE FROM kv WHERE flow_id = NEW.flow_id; END;",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_kv"),
+        test: "kv_writes_survive_a_later_failure_of_their_run",
+    },
+    Control {
+        label: "kv key size not capped",
+        edits: &[(
+            KV,
+            "if key.len() > limits.max_key_bytes {",
+            "if false && key.len() > limits.max_key_bytes {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_kv"),
+        test: "kv_caps_refuse_with_journaled_rejections",
+    },
+    Control {
+        label: "kv value size not capped",
+        edits: &[(
+            KV,
+            "if value.len() > limits.max_value_bytes {",
+            "if false && value.len() > limits.max_value_bytes {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_kv"),
+        test: "kv_caps_refuse_with_journaled_rejections",
+    },
+    Control {
+        label: "kv total bytes per flow not capped",
+        edits: &[(
+            KV,
+            "if total - previous + entry > bytes_i64(limits.max_flow_bytes)? {",
+            "if false && total - previous + entry > bytes_i64(limits.max_flow_bytes)? {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_kv"),
+        test: "kv_caps_refuse_with_journaled_rejections",
+    },
+    Control {
+        label: "recovery applies a committed kv write again",
+        edits: &[(
+            DRIVER,
+            "if waiting.contains(&row.position) || self.rt.is_inflight(&run_id, row.position) {",
+            "if self.rt.is_inflight(&run_id, row.position) {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_kv"),
+        test: "kv_write_is_applied_once_across_every_cut",
+    },
+    Control {
+        label: "a run starts while an earlier run of its flow holds the slot",
+        edits: &[(
+            RUNS,
+            "if let Some(holder) = slot_holder(tx, run_id)? {",
+            "if let Some(holder) = slot_holder(tx, run_id)?.filter(|_| false) {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_slots"),
+        test: "second_run_waits_for_the_first_even_while_suspended",
+    },
+    Control {
+        label: "run deadline never enforced (activation and expiry)",
+        edits: &[
+            (
+                DRIVER,
+                ".is_some_and(|d| self.rt.config.clock.now_ms() >= d)",
+                ".is_some_and(|_| false)",
+            ),
+            (
+                RUNS,
+                "deadline_at IS NOT NULL AND deadline_at <= ?1 \\",
+                "deadline_at IS NOT NULL AND deadline_at <= ?1 AND 0 \\",
+            ),
+        ],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_slots"),
+        test: "deadline_fails_a_stuck_run_and_frees_the_slot",
+    },
+    Control {
+        label: "suspended runs never expire",
+        edits: &[(
+            RUNS,
+            "deadline_at IS NOT NULL AND deadline_at <= ?1 \\",
+            "deadline_at IS NOT NULL AND deadline_at <= ?1 AND 0 \\",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_slots"),
+        test: "deadline_fails_a_suspended_run_and_frees_the_slot",
+    },
+    Control {
+        label: "admission ignores the run rate limit",
+        edits: &[(
+            ADMISSION,
+            "        return Ok(Err(Admission::RateLimited));",
+            "        let _ = Admission::RateLimited;",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_limits"),
+        test: "run_rate_limit_and_auto_disable_after_k_saturated_windows",
+    },
+    Control {
+        label: "sustained saturation never disables the flow",
+        edits: &[(RATE, "if streak < k {", "if true || streak < k {")],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_limits"),
+        test: "run_rate_limit_and_auto_disable_after_k_saturated_windows",
+    },
+    Control {
+        label: "saturated windows counted without being consecutive",
+        edits: &[(
+            RATE,
+            "AND saturated = 1 AND window_start BETWEEN ?3 AND ?4\",",
+            "AND saturated = 1 AND window_start <= ?4\",",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_limits"),
+        test: "saturated_windows_that_are_not_consecutive_do_not_disable",
+    },
+    Control {
+        label: "admission ignores a disabled flow",
+        edits: &[(
+            ADMISSION,
+            "Some(flow) if !flow.enabled => return Ok(Err(Admission::Disabled)),",
+            "Some(flow) if false && !flow.enabled => return Ok(Err(Admission::Disabled)),",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_limits"),
+        test: "run_rate_limit_and_auto_disable_after_k_saturated_windows",
+    },
+    Control {
+        label: "dispatch budget not checked",
+        edits: &[(
+            DRIVER,
+            "if let Take::Refused { .. } = rate::check(tx, flow_id, rate::Kind::Dispatch, now_ms, &rate)?",
+            "if let Take::Refused { .. } = Take::Allowed",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_limits"),
+        test: "dispatch_budget_refuses_beyond_the_window",
+    },
+    Control {
+        label: "a disabled flow's resumed run still dispatches",
+        edits: &[(
+            DRIVER,
+            "        let rate = self.rt.config.rate;\n        if install::is_disabled(tx, flow_id)? {",
+            "        let rate = self.rt.config.rate;\n        if false && install::is_disabled(tx, flow_id)? {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_limits"),
+        test: "disable_fences_a_resumed_run_while_in_flight_calls_settle",
+    },
+    Control {
+        label: "any agent can disable any flow",
+        edits: &[(
+            INSTALL,
+            "&& record.owner.as_deref() != Some(agent.as_str())",
+            "&& false",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_limits"),
+        test: "only_the_operator_or_the_owning_agent_disables",
+    },
+    Control {
+        label: "per-run host-call limit not checked",
+        edits: &[(
+            DRIVER,
+            "if calls >= limits.max_calls {",
+            "if false && calls >= limits.max_calls {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_limits"),
+        test: "per_run_call_limit_fails_the_run",
+    },
+    Control {
+        label: "per-run journal byte limit not checked",
+        edits: &[(
+            DRIVER,
+            "if bytes.saturating_add(incoming) > limits.max_journal_bytes {",
+            "if false && bytes.saturating_add(incoming) > limits.max_journal_bytes {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_limits"),
+        test: "per_run_journal_bytes_limit_fails_the_run",
+    },
+    Control {
+        label: "argument byte cap not checked before parsing",
+        edits: &[(
+            DRIVER,
+            "if call.args.len() > cap {",
+            "if false && call.args.len() > cap {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_limits"),
+        test: "argument_over_the_cap_is_refused_before_it_is_parsed",
+    },
+    Control {
+        label: "result byte cap not checked",
+        edits: &[(
+            RUNTIME,
+            "(bytes > cap).then(|| {",
+            "(false && bytes > cap).then(|| {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_limits"),
+        test: "result_over_the_cap_is_recorded_as_a_rejection",
+    },
+];
+
 const TEST_TIMEOUT: Duration = Duration::from_secs(600);
 
 fn git(root: &Path, args: &[&str]) -> Result<String, String> {
@@ -993,12 +1486,17 @@ fn main() -> ExitCode {
     // `--journal` selects the journal and runtime controls (basal-core,
     // driven through basal-testkit's tests); the default is the worker's.
     let mut args: Vec<String> = std::env::args().skip(1).collect();
+    // `--dispatch` selects manifests, authorization and the dispatch
+    // ledgers (basal-core too).
     let journal = args.first().is_some_and(|a| a == "--journal");
-    if journal {
+    let dispatch = args.first().is_some_and(|a| a == "--dispatch");
+    if journal || dispatch {
         args.remove(0);
     }
     let (controls, evidence_file) = if journal {
         (JOURNAL_CONTROLS, "docs/findings/slice-2-mutations.json")
+    } else if dispatch {
+        (DISPATCH_CONTROLS, "docs/findings/slice-3-mutations.json")
     } else {
         (CONTROLS, "docs/findings/slice-1-mutations.json")
     };

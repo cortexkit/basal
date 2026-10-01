@@ -120,6 +120,11 @@ fn deadline_fails_a_stuck_run_and_frees_the_slot() {
     let run = rt.run(&first).expect("run");
     assert_eq!(run.state, RunState::Failed);
     assert_eq!(run.error_kind.as_deref(), Some("deadline"));
+    // The run's own deadline, not the activation's wall-time budget.
+    assert_eq!(
+        run.error_detail.as_deref(),
+        Some("the run passed its wall-clock deadline")
+    );
 
     // The slot is free.
     assert!(
@@ -162,7 +167,9 @@ fn deadline_fails_a_suspended_run_and_frees_the_slot() {
         rt.enforce_deadlines().expect("enforce"),
         vec![first.clone()]
     );
-    assert_eq!(rt.run(&first).expect("run").state, RunState::Failed);
+    let failed = rt.run(&first).expect("run");
+    assert_eq!(failed.state, RunState::Failed);
+    assert_eq!(failed.error_kind.as_deref(), Some("deadline"));
     let run = finish(&rt, &world, &second);
     assert_eq!(result(&run), json!(2));
     // The suspended run's model call still settles when it completes.
