@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use basal_core::{NoHooks, RunState};
 use basal_host::core_consent::CoreConsent;
-use basal_host::core_host::{CoreHost, intent, validate_reply};
+use basal_host::core_host::{CoreHost, IntentContext, intent, validate_reply};
 use basal_host::routing::{ModuleOpsHost, RoutingHost};
 use basal_host::subc_catalog::SubcCatalog;
 use basal_host::transport::{WireError, map_error, tool_body};
@@ -38,12 +38,14 @@ fn core_requests_match_c3_c4_field_for_field() {
     let digest = intent(
         Primitive::SinkDigest,
         &json!({"agent":"SYNAPSE","action":"piggyback","item":{"title":"New inference post","body":"Plain text body.","data":{"posts":2},"links":[{"kind":"url","url":"https://x.com/someone/status/1"},{"kind":"work","id":"wi_0123"}]}}),
-        "synapse-xcom-inference-news",
-        3,
-        "run_01JB4M5N6P7Q8R9S",
-        7,
-        1790000000000,
-        1790000000000,
+        IntentContext {
+            flow_id: "synapse-xcom-inference-news",
+            version: 3,
+            run_id: "run_01JB4M5N6P7Q8R9S",
+            position: 7,
+            due_at: 1790000000000,
+            created_at: 1790000000000,
+        },
     );
     let expected = json!({"flow_id":"synapse-xcom-inference-news","flow_version":3,"run_id":"run_01JB4M5N6P7Q8R9S","call_position":7,"agent":"SYNAPSE","action":"piggyback","due_at":1790000000000i64,"created_at":1790000000000i64,"item":{"title":"New inference post","body":"Plain text body.","data":{"posts":2},"links":[{"kind":"url","url":"https://x.com/someone/status/1"},{"kind":"work","id":"wi_0123"}]},"claim":null});
     host.dispatch(&call(Primitive::SinkDigest, digest)).unwrap();
@@ -54,12 +56,14 @@ fn core_requests_match_c3_c4_field_for_field() {
     let status = intent(
         Primitive::SinkStatus,
         &json!({"agent":"SYNAPSE","value":"x.com: 2 new"}),
-        "synapse-xcom-inference-news",
-        3,
-        "run",
-        7,
-        0,
-        1790000000000,
+        IntentContext {
+            flow_id: "synapse-xcom-inference-news",
+            version: 3,
+            run_id: "run",
+            position: 7,
+            due_at: 0,
+            created_at: 1790000000000,
+        },
     );
     host.dispatch(&call(Primitive::SinkStatus, status)).unwrap();
     assert_eq!(
@@ -69,12 +73,14 @@ fn core_requests_match_c3_c4_field_for_field() {
     let facts = intent(
         Primitive::Facts,
         &json!({"agent":"BASAL","options":{"fields":["identity","residence","activity","attention"],"include":[],"max_age_ms":null}}),
-        "dark-wake-basal",
-        1,
-        "run",
-        7,
-        0,
-        0,
+        IntentContext {
+            flow_id: "dark-wake-basal",
+            version: 1,
+            run_id: "run",
+            position: 7,
+            due_at: 0,
+            created_at: 0,
+        },
     );
     host.dispatch(&call(Primitive::Facts, facts)).unwrap();
     assert_eq!(

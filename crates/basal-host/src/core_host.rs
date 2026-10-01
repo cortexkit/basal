@@ -8,18 +8,27 @@ use basal_proto::{CallKind, JsonText, Primitive};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
+/// The call's identity and times, fixed when its intent is built.
+pub struct IntentContext<'a> {
+    pub flow_id: &'a str,
+    pub version: u32,
+    pub run_id: &'a str,
+    pub position: u64,
+    pub due_at: i64,
+    pub created_at: i64,
+}
+
 /// Builds the exact payload before the runtime journals its intent. The host
 /// never samples a clock during dispatch, including a crash re-issue.
-pub fn intent(
-    kind: Primitive,
-    args: &Value,
-    flow_id: &str,
-    version: u32,
-    run_id: &str,
-    position: u64,
-    due_at: i64,
-    created_at: i64,
-) -> Value {
+pub fn intent(kind: Primitive, args: &Value, ctx: IntentContext<'_>) -> Value {
+    let IntentContext {
+        flow_id,
+        version,
+        run_id,
+        position,
+        due_at,
+        created_at,
+    } = ctx;
     match kind {
         Primitive::SinkDigest => {
             json!({"flow_id":flow_id,"flow_version":version,"run_id":run_id,"call_position":position,

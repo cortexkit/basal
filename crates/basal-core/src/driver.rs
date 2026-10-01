@@ -863,12 +863,14 @@ impl Activation<'_> {
                 let value = basal_host::core_host::intent(
                     *p,
                     &args,
-                    &self.run.flow_id,
-                    version,
-                    &self.lease.run_id,
-                    call.position,
-                    due_at,
-                    self.rt.config.clock.now_ms(),
+                    basal_host::core_host::IntentContext {
+                        flow_id: &self.run.flow_id,
+                        version,
+                        run_id: &self.lease.run_id,
+                        position: call.position,
+                        due_at,
+                        created_at: self.rt.config.clock.now_ms(),
+                    },
                 );
                 let request = JsonText::new(value.to_string())
                     .map_err(|e| Refusal::new(codes::INVALID_ARGUMENTS, e.to_string()))?;
