@@ -206,12 +206,15 @@ pub fn approve(
         .map_err(|e| CoreError::Invalid(format!("schedule spec: {e}")))?;
     let hash = code_hash(&flow.script, &flow.manifest);
     let anchor = anchor_at(now)?;
-    let next_due = compiled
-        .next_due_after(anchor, now)
-        .map_err(|e| due_error(&flow.flow_id, e))?
-        .map(to_ms);
+    let next_due_after = |after: Timestamp| -> Result<Option<i64>> {
+        Ok(compiled
+            .next_due_after(anchor, after)
+            .map_err(|e| due_error(&flow.flow_id, e))?
+            .map(to_ms))
+    };
 
     let Some(old) = load(tx, &flow.flow_id)? else {
+        let next_due = next_due_after(now)?;
         tx.execute(
             "INSERT INTO schedules (flow_id, version, spec, script, manifest, code_hash, state, \
              anchor_ms, next_due_ms, last_fired_ms, updated_at) \
@@ -253,6 +256,11 @@ pub fn approve(
     if old.state == ScheduleState::Active {
         tick::plan_flow(tx, &flow.flow_id, now, config)?;
     }
+    // The new version counts from its own approval. Its pattern's due times
+    // between the old version's last fire and now were never its to fire,
+    // so the swap itself creates no missed time.
+    let counted_from = now;
+    let next_due = next_due_after(counted_from)?;
     tx.execute(
         "UPDATE schedules SET version = ?2, spec = ?3, script = ?4, manifest = ?5, \
          code_hash = ?6, anchor_ms = ?7, next_due_ms = ?8, updated_at = ?9 WHERE flow_id = ?1",
