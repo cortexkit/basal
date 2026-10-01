@@ -2460,11 +2460,18 @@ const BROCA_CONTROLS: &[Control] = &[
     },
     Control {
         label: "Broca saved outcome is read from Broca again on redelivery",
-        edits: &[(
-            BROCA,
-            "if call.outcome.is_none() && call.unknown.is_none() {\n            if call.handle",
-            "if call.unknown.is_none() {\n            if call.handle",
-        )],
+        edits: &[
+            (
+                BROCA,
+                "if call.outcome.is_none() && call.unknown.is_none() {\n            if call.handle",
+                "if call.unknown.is_none() {\n            if call.handle",
+            ),
+            (
+                BROCA,
+                "if call.outcome.is_none() {\n                self.resolve(call)?;",
+                "{\n                self.resolve(call)?;",
+            ),
+        ],
         also_restore: NO_EXTRA,
         target: Target::Testkit("broca_reservations"),
         test: "usage_settles_once_when_an_outcome_is_redelivered_after_a_restart",
