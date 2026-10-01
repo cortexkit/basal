@@ -7,7 +7,8 @@
 //! deterministic [`mock::MockHost`] that records every effect so tests can
 //! prove a crash never repeats one. [`catalog`] holds what modules declare
 //! (events, ops and their markers, agents), which manifests are validated
-//! against.
+//! against. [`consent`] is where install cards are raised and their
+//! decisions come back from.
 //!
 //! `llm` and `classify` reach Broca. Their request is an envelope basal
 //! builds and journals before the first send: `send_id` (the call's
@@ -25,9 +26,13 @@
 //!   even though its reply was lost.
 
 pub mod catalog;
+pub mod consent;
 pub mod mock;
 
 pub use catalog::{Catalog, EventBody, EventDecl, EventOrigin, MockCatalog, OpDecl, OpKind};
+pub use consent::{
+    CardDecision, Consent, ConsentError, DecisionEvent, DecisionSink, InstallCard, MockConsent,
+};
 
 /// The usage fields of a Broca outcome, in Broca's canonical names: fresh
 /// input, cache write, output (reasoning is already inside it) and cached

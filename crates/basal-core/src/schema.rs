@@ -220,7 +220,36 @@ CREATE TABLE schedule_dropped (
 );
 "#,
     },
+    Migration {
+        version: 4,
+        statements: CARDS,
+    },
 ];
+
+/// Install cards: one consent card per installed version, raised before
+/// approval. The card's decision arrives later, possibly after a restart, so
+/// the link from a card to the exact version (and code hash) it shows is
+/// durable, and a decision is applied at most once.
+const CARDS: &str = r#"
+-- `pending` until the consent plane answers; `approved` and `rejected`
+-- record the decision; `stale` marks an approval that arrived after a newer
+-- version of the flow had already been approved, so it changed nothing.
+CREATE TABLE install_cards (
+    card_id      TEXT PRIMARY KEY,
+    flow_id      TEXT NOT NULL,
+    version      INTEGER NOT NULL CHECK (version >= 1),
+    code_hash    BLOB NOT NULL CHECK (length(code_hash) = 32),
+    author       TEXT NOT NULL,
+    card         TEXT NOT NULL,
+    state        TEXT NOT NULL CHECK (state IN ('pending', 'approved', 'rejected', 'stale')),
+    decided_by   TEXT,
+    created_at   INTEGER NOT NULL,
+    decided_at   INTEGER,
+    UNIQUE (flow_id, version),
+    FOREIGN KEY (flow_id, version) REFERENCES installs (flow_id, version),
+    CHECK ((state = 'pending') = (decided_by IS NULL))
+);
+"#;
 
 /// Flows, their installed versions and what decides whether a flow may do
 /// something, and how much: the call audit, `kv`, token reservations, rate

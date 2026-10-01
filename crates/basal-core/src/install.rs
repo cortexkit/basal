@@ -100,12 +100,20 @@ pub enum InstallError {
         flow_id: String,
         version: u32,
     },
+    /// An agent tried to enable a flow whose current disable it did not
+    /// make itself (the operator's, or the runtime's auto-disable).
+    NotYourDisable {
+        flow_id: String,
+        disabled_by: String,
+    },
     /// An agent tried to disable a flow it does not own.
     NotOwner {
         flow_id: String,
         agent: String,
     },
     NoSuchFlow(String),
+    /// A decision named a consent card basal never raised.
+    NoSuchCard(String),
     Store(CoreError),
 }
 
@@ -499,6 +507,14 @@ pub fn is_disabled(conn: &Connection, flow_id: &str) -> Result<bool> {
     Ok(state.as_deref() != Some("enabled"))
 }
 
+/// How a disable by the runtime itself (auto-disable for sustained
+/// saturation) is recorded in `flows.disabled_by`.
+pub const RUNTIME_ACTOR: &str = "runtime";
+
+/// How every operator disable begins in `flows.disabled_by`
+/// (`operator:<who>`).
+pub const OPERATOR_ACTOR_PREFIX: &str = "operator:";
+
 /// Who disables a flow.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Actor {
@@ -513,9 +529,9 @@ pub enum Actor {
 impl Actor {
     fn label(&self) -> String {
         match self {
-            Self::Operator(who) => format!("operator:{who}"),
+            Self::Operator(who) => format!("{OPERATOR_ACTOR_PREFIX}{who}"),
             Self::Agent(who) => format!("agent:{who}"),
-            Self::Runtime => "runtime".to_owned(),
+            Self::Runtime => RUNTIME_ACTOR.to_owned(),
         }
     }
 }
@@ -556,7 +572,8 @@ pub fn notify_owner(
 }
 
 /// Disables a flow and tells its owner. Returns false when it was already
-/// disabled (nothing is written then).
+/// disabled (nothing is written then), with one exception: the operator
+/// takes over a disable made by anyone else (see below).
 pub fn disable(
     tx: &Transaction,
     flow_id: &str,
@@ -581,11 +598,36 @@ pub fn disable(
         params![flow_id, actor.label(), reason, now_ms],
     )?;
     if changed == 0 {
-        return Ok(false);
+        // The flow is already disabled. Who disabled it decides who may
+        // enable it again, and an owner may undo its own disable; so the
+        // operator must be able to take over a disable the owner (or the
+        // runtime) made, or the operator could not stop a flow its owner
+        // had paused and would re-enable. The record moves to the
+        // operator; the schedule is already stopped. Agent and runtime
+        // disables of a disabled flow change nothing.
+        let takes_over = matches!(actor, Actor::Operator(_))
+            && !record.enabled
+            && !record
+                .disabled_by
+                .as_deref()
+                .is_some_and(|by| by.starts_with(OPERATOR_ACTOR_PREFIX));
+        if !takes_over {
+            return Ok(false);
+        }
+        let taken = tx.execute(
+            "UPDATE flows SET disabled_by = ?2, disabled_reason = ?3, disabled_at = ?4 \
+             WHERE flow_id = ?1 AND state = 'disabled'",
+            params![flow_id, actor.label(), reason, now_ms],
+        )?;
+        if taken == 0 {
+            return Ok(false);
+        }
+    } else {
+        // The flow's schedule stops in the same commit: due times passing
+        // while it is disabled never fire, and fires planned but not
+        // admitted go.
+        schedule::table::disable(tx, flow_id, timestamp(now_ms)?)?;
     }
-    // The flow's schedule stops in the same commit: due times passing while
-    // it is disabled never fire, and fires planned but not admitted go.
-    schedule::table::disable(tx, flow_id, timestamp(now_ms)?)?;
     let kind = match actor {
         Actor::Runtime => "flow.auto_disabled",
         _ => "flow.disabled",
@@ -690,6 +732,18 @@ impl Runtime {
         decide(self, |tx| enable(tx, flow_id, now))
     }
 
+    /// Enables a disabled flow on behalf of `actor`, deciding whether the
+    /// actor may undo the flow's current disable in the same transaction
+    /// that enables it (see [`enable_as`]).
+    pub fn enable_flow_as(
+        &self,
+        flow_id: &str,
+        actor: &Actor,
+    ) -> std::result::Result<bool, InstallError> {
+        let now = self.config().clock.now_ms();
+        decide(self, |tx| enable_as(tx, flow_id, actor, now))
+    }
+
     pub fn flow(&self, flow_id: &str) -> Result<Option<FlowRecord>> {
         self.store().read(|c| flow(c, flow_id))
     }
@@ -714,6 +768,55 @@ impl Runtime {
             Ok(rows)
         })
     }
+}
+
+/// Enables a disabled flow for `actor`. The operator may always. An agent
+/// may only undo a disable it made itself, on a flow it owns: a disable by
+/// the operator is the operator's stop, and an auto-disable is the loop
+/// protection for a flow whose limits saturated, so letting the owner undo
+/// either would let a flow's own author override its brakes. The runtime
+/// never enables a flow. Enabling a flow that is not disabled changes
+/// nothing and is allowed for its owner.
+pub fn enable_as(
+    tx: &Transaction,
+    flow_id: &str,
+    actor: &Actor,
+    now_ms: i64,
+) -> std::result::Result<bool, InstallError> {
+    let Some(record) = flow(tx, flow_id)? else {
+        return Err(InstallError::NoSuchFlow(flow_id.to_owned()));
+    };
+    match actor {
+        Actor::Operator(_) => {}
+        Actor::Runtime => {
+            return Err(InstallError::NotYourDisable {
+                flow_id: flow_id.to_owned(),
+                disabled_by: record.disabled_by.unwrap_or_default(),
+            });
+        }
+        Actor::Agent(agent) => {
+            if record.owner.as_deref() != Some(agent.as_str()) {
+                return Err(InstallError::NotOwner {
+                    flow_id: flow_id.to_owned(),
+                    agent: agent.clone(),
+                });
+            }
+            if record.enabled {
+                return Ok(false);
+            }
+            let own = Actor::Agent(agent.clone()).label();
+            let refused = || InstallError::NotYourDisable {
+                flow_id: flow_id.to_owned(),
+                disabled_by: record.disabled_by.clone().unwrap_or_default(),
+            };
+            match record.disabled_by.as_deref() {
+                Some(by) if by == own => {}
+                Some(RUNTIME_ACTOR) => return Err(refused()),
+                _ => return Err(refused()),
+            }
+        }
+    }
+    enable(tx, flow_id, now_ms)
 }
 
 /// Enables a disabled flow again (operator only). Its saturation history

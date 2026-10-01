@@ -1,0 +1,237 @@
+//! Shared helpers: a module started in this process against the mocks, on a
+//! manual clock, with the real worker binary.
+
+#![allow(dead_code)]
+
+use std::path::PathBuf;
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
+
+use basal_core::{Clock, Config, Durability, Hooks, NoHooks};
+use basal_host::mock::MockHost;
+use basal_host::{CardDecision, MockCatalog, MockConsent};
+use basal_module::caller::Caller;
+use basal_module::dryrun::DryRunConfig;
+use basal_module::engine::EngineConfig;
+use basal_module::module::{Hosts, Module, ModuleConfig};
+use basal_module::pool::{PoolConfig, ProcessSpawner, Spawn};
+use basal_module::process::{SpawnError, WorkerProcess};
+use basal_testkit::channel::worker_binary;
+use serde_json::{Value, json};
+
+/// 2026-05-01T00:00:00Z.
+pub const T0: i64 = 1_777_593_600_000;
+pub const HOUR: i64 = 3_600_000;
+
+pub struct Fixture {
+    pub module: Module,
+    pub mock: MockHost,
+    pub consent: MockConsent,
+    pub catalog: MockCatalog,
+    pub clock: Clock,
+    pub dir: PathBuf,
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        self.module.pool.stop();
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+pub fn scratch(tag: &str) -> PathBuf {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("basal-module-{tag}-{}-{n}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    dir
+}
+
+pub struct Options {
+    pub warm_spares: usize,
+    pub max_concurrent: usize,
+    pub spawner: Option<Arc<dyn Spawn>>,
+    pub hooks: Arc<dyn Hooks>,
+    pub default_deadline: Duration,
+    pub max_activations: u32,
+    pub idle_retire: Duration,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            warm_spares: 1,
+            max_concurrent: 4,
+            spawner: None,
+            hooks: Arc::new(NoHooks),
+            default_deadline: Duration::from_secs(600),
+            max_activations: 256,
+            idle_retire: Duration::from_secs(600),
+        }
+    }
+}
+
+pub fn pool_config(o: &Options) -> PoolConfig {
+    let mut pool = PoolConfig::new(worker_binary());
+    pool.warm_spares = o.warm_spares;
+    pool.max_activations = o.max_activations;
+    pool.idle_retire = o.idle_retire;
+    pool
+}
+
+pub fn fixture(tag: &str, o: Options) -> Fixture {
+    let dir = scratch(tag);
+    let clock = Clock::manual(T0);
+    let mock = MockHost::new();
+    let consent = MockConsent::new();
+    let catalog = MockCatalog::standard();
+    let pool = pool_config(&o);
+    let spawner = o
+        .spawner
+        .clone()
+        .unwrap_or_else(|| Arc::new(ProcessSpawner::new(&pool)));
+    let mut runtime = Config {
+        clock: clock.clone(),
+        activation_deadline: Duration::from_secs(60),
+        ..Config::default()
+    };
+    runtime.limits.default_deadline = o.default_deadline;
+    let config = ModuleConfig {
+        store_path: dir.join("basal.db"),
+        durability: Durability { fullfsync: false },
+        runtime,
+        pool,
+        engine: EngineConfig {
+            max_concurrent_activations: o.max_concurrent,
+            ..EngineConfig::default()
+        },
+        dry_run: DryRunConfig::new(dir.join("dry-run")),
+    };
+    let module = Module::start(
+        config,
+        Hosts {
+            host: Arc::new(mock.clone()),
+            catalog: Arc::new(catalog.clone()),
+            consent: Arc::new(consent.clone()),
+            hooks: o.hooks.clone(),
+        },
+        spawner,
+    )
+    .expect("module starts");
+    Fixture {
+        module,
+        mock,
+        consent,
+        catalog,
+        clock,
+        dir,
+    }
+}
+
+/// A manifest for `id` with an events trigger (so approving it creates no
+/// schedule), one digest sink, the mock's query and keyed mutation, and
+/// `kv`.
+pub fn events_manifest(id: &str) -> Value {
+    json!({
+        "id": id,
+        "version": 1,
+        "purpose": "A test flow.",
+        "trigger": { "events": [ { "module": "plexus", "name": "pull_request_review", "version": 1 } ] },
+        "sinks": [ { "agent": "SYNAPSE", "digest_max": "piggyback" } ],
+        "ops": [
+            { "module": "mock", "op": "echo" },
+            { "module": "mock", "op": "send" }
+        ]
+    })
+}
+
+pub fn schedule_manifest(id: &str, schedule: Value) -> Value {
+    let mut m = events_manifest(id);
+    m["trigger"] = json!({ "schedule": schedule });
+    m
+}
+
+pub fn agent(name: &str) -> Caller {
+    Caller::Agent(name.to_owned())
+}
+
+/// Installs a version as `caller` and returns the op's reply.
+pub fn install(f: &Fixture, caller: &Caller, script: &str, manifest: &Value) -> Value {
+    f.module
+        .handle(
+            caller,
+            "flow.install",
+            json!({ "script": script, "manifest": manifest.to_string() }),
+        )
+        .expect("install")
+}
+
+/// Installs as `caller` and approves the card as the operator.
+pub fn install_approved(f: &Fixture, caller: &Caller, script: &str, manifest: &Value) -> String {
+    let reply = install(f, caller, script, manifest);
+    let card = reply["card_id"].as_str().expect("card id").to_owned();
+    assert!(f.consent.decide(&card, CardDecision::Approve, "operator"));
+    assert!(
+        f.consent.undelivered().is_empty(),
+        "the decision was applied"
+    );
+    reply["flow_id"].as_str().expect("flow id").to_owned()
+}
+
+/// Admits a trigger for an approved flow and returns its run.
+pub fn admit(f: &Fixture, flow: &str, trigger_id: &str) -> String {
+    f.module
+        .rt
+        .admit_trigger(flow, trigger_id, basal_proto::JsonText::null())
+        .expect("admit")
+        .run_id()
+        .expect("admitted")
+        .to_owned()
+}
+
+/// A spawner that stops before each spawn until the test lets it go, and
+/// tells the test it is waiting. Proves timing claims without timing.
+pub struct GatedSpawner {
+    inner: ProcessSpawner,
+    pub requested: Mutex<Option<Sender<()>>>,
+    open: Mutex<u32>,
+    cond: Condvar,
+}
+
+impl GatedSpawner {
+    pub fn new(pool: &PoolConfig) -> (Arc<Self>, Receiver<()>) {
+        let (tx, rx) = mpsc::channel();
+        (
+            Arc::new(Self {
+                inner: ProcessSpawner::new(pool),
+                requested: Mutex::new(Some(tx)),
+                open: Mutex::new(0),
+                cond: Condvar::new(),
+            }),
+            rx,
+        )
+    }
+
+    /// Lets `n` more spawns through.
+    pub fn release(&self, n: u32) {
+        *self.open.lock().unwrap() += n;
+        self.cond.notify_all();
+    }
+}
+
+impl Spawn for GatedSpawner {
+    fn spawn(&self) -> Result<WorkerProcess, SpawnError> {
+        if let Some(tx) = self.requested.lock().unwrap().as_ref() {
+            let _ = tx.send(());
+        }
+        let mut open = self.open.lock().unwrap();
+        while *open == 0 {
+            open = self.cond.wait(open).unwrap();
+        }
+        *open -= 1;
+        drop(open);
+        self.inner.spawn()
+    }
+}
