@@ -7,7 +7,7 @@ A flow is a script plus a manifest. The manifest says everything the flow may do
 - The manifest is one JSON object, at most 64 KiB, checked before it is parsed.
 - **Unknown fields are refused** at every level, and so are duplicate keys. A misspelt grant is an error, never a silently missing permission.
 - Lists hold at most 64 entries and no entry twice.
-- Approval binds to the **code hash**: BLAKE3 over the script's length (8 bytes, big-endian), the script's exact bytes and the manifest's exact bytes, so bytes cannot move between script and manifest without changing the hash. Any edit, whitespace included, is a new version and needs a new approval.
+- Approval binds to the **code hash**: BLAKE3 over the domain tag `basal-code-hash-v1` followed by a NUL byte, then the script's length as a little-endian u64, the script's exact bytes, the manifest's length as a little-endian u64 and the manifest's exact bytes, written as lowercase hex. Bytes cannot move between script and manifest without changing the hash. prefrontal-core recomputes the same hash for the consent card, and both sides pin the same test vectors (`ids::tests::code_hash_matches_the_shared_vectors`). Any edit, whitespace included, is a new version and needs a new approval.
 
 ## Fields
 

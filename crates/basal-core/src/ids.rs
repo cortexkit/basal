@@ -18,12 +18,23 @@ fn hex(bytes: &[u8]) -> String {
 /// BLAKE3 of the exact script and manifest bytes. The script's length comes
 /// first so that moving bytes between the two cannot produce the same hash.
 pub fn code_hash(script: &str, manifest: &str) -> [u8; 32] {
+    // prefrontal-core recomputes this hash when it creates the consent card
+    // and stores it on its own install record, so the framing is a contract
+    // between the two: a domain tag, then each part prefixed with its length
+    // as a little-endian u64, so bytes cannot move from one part to the
+    // other without changing the hash.
     let mut h = blake3::Hasher::new();
-    h.update(&(script.len() as u64).to_be_bytes());
+    h.update(CODE_HASH_TAG);
+    h.update(&(script.len() as u64).to_le_bytes());
     h.update(script.as_bytes());
+    h.update(&(manifest.len() as u64).to_le_bytes());
     h.update(manifest.as_bytes());
     *h.finalize().as_bytes()
 }
+
+/// The domain tag that opens every code hash, so a code hash can never equal
+/// a BLAKE3 hash computed for any other purpose over the same bytes.
+pub const CODE_HASH_TAG: &[u8] = b"basal-code-hash-v1\0";
 
 /// The idempotency key sent with a call: derived from (flow id, run id,
 /// position) only, so every send of the same call carries the same key, and
@@ -108,5 +119,35 @@ mod tests {
     #[test]
     fn code_hash_separates_script_from_manifest() {
         assert_ne!(code_hash("ab", "c"), code_hash("a", "bc"));
+    }
+
+    /// The same vectors are pinned in prefrontal-core, which recomputes the
+    /// hash for the consent card; a change here must change there too.
+    #[test]
+    fn code_hash_matches_the_shared_vectors() {
+        let hex = |h: [u8; 32]| h.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        for (script, manifest, expected) in [
+            (
+                "",
+                "",
+                "b5377f42c91b9631929ca590092769366de868dd1fc3c217d2abfc6f48382a78",
+            ),
+            (
+                "a",
+                "b",
+                "cbca786f5bfade88b7953752a4144f71d49f585751311684635ed1169a956473",
+            ),
+            (
+                "return 1;",
+                "{\"id\":\"flow-x\",\"version\":1}",
+                "7f9dcaf2bf757a09c91732726dc294f1178187e822c195c83ef66902ecb24841",
+            ),
+        ] {
+            assert_eq!(
+                hex(code_hash(script, manifest)),
+                expected,
+                "{script:?} {manifest:?}"
+            );
+        }
     }
 }
