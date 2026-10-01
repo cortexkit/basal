@@ -2459,6 +2459,17 @@ const BROCA_CONTROLS: &[Control] = &[
         test: "usage_comes_from_run_status_once_and_waits_while_status_lags",
     },
     Control {
+        label: "Broca outcome waits forever while run.status says active or paused after run.result ended",
+        edits: &[(
+            BROCA,
+            "if lagged < STATUS_LAG_POLLS {",
+            "if true || lagged < STATUS_LAG_POLLS {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Host("broca"),
+        test: "a_status_that_never_catches_up_charges_the_reservation_after_a_bounded_wait",
+    },
+    Control {
         label: "Broca saved outcome is read from Broca again on redelivery",
         edits: &[
             (

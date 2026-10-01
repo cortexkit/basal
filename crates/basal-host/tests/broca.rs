@@ -438,6 +438,35 @@ fn a_module_restart_with_calls_in_flight_delivers_each_exactly_once() {
 }
 
 #[test]
+fn a_status_that_never_catches_up_charges_the_reservation_after_a_bounded_wait() {
+    use basal_host::broca::STATUS_LAG_POLLS;
+    let fake = Arc::new(FakeBroca::default());
+    let store = Arc::new(MemoryStore::default());
+    let sink = Arc::new(Sink::default());
+    let h = host(fake.clone(), store.clone());
+    h.dispatch_model(&llm(0)).unwrap();
+    fake.finish("key:0", "stuck", RunFinishReason::Completed, Some(usage()))
+        .unwrap();
+    fake.set_status("key:0", RunStatusResponse::Active).unwrap();
+    // The count lives in memory: a restart part-way starts it again.
+    for _ in 1..STATUS_LAG_POLLS {
+        assert!(matches!(h.poll(), Err(BrocaError::Unavailable { .. })));
+    }
+    drop(h);
+    let h = host(fake.clone(), store.clone());
+    for _ in 1..STATUS_LAG_POLLS {
+        assert!(matches!(h.poll(), Err(BrocaError::Unavailable { .. })));
+    }
+    assert!(store.load().unwrap()[0].outcome.is_none());
+    h.attach(sink.clone());
+    let c = sink.completions.lock().unwrap();
+    assert_eq!(c.len(), 1, "the bounded wait ends at the last poll");
+    assert_eq!(value(&c[0]), json!({"text":"stuck"}));
+    // No usage reaches the ledger, so it charges the whole reservation.
+    assert_eq!(c[0].outcome.usage, None);
+}
+
+#[test]
 fn usage_comes_from_run_status_once_and_waits_while_status_lags() {
     let fake = Arc::new(FakeBroca::default());
     let store = Arc::new(MemoryStore::default());

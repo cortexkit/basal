@@ -13,6 +13,7 @@ pub mod fake;
 pub mod subc;
 pub mod wire;
 
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
@@ -139,6 +140,11 @@ pub struct BrocaHost {
     harness: String,
     selector: Arc<dyn ModelSelector>,
     gate: Mutex<()>,
+    /// Per send id, how many consecutive polls found the run terminal in
+    /// `run.result` while `run.status` still said active or paused (the
+    /// brief window described in `resolve`). Kept in memory only: a restart
+    /// starts the count again, which keeps it bounded.
+    status_lag: Mutex<HashMap<String, u32>>,
     sink: Mutex<Option<Arc<dyn CompletionSink>>>,
 }
 
@@ -161,6 +167,7 @@ impl BrocaHost {
             harness,
             selector,
             gate: Mutex::new(()),
+            status_lag: Mutex::new(HashMap::new()),
             sink: Mutex::new(None),
         }
     }
@@ -395,10 +402,22 @@ impl BrocaHost {
             return watched;
         }
         // Usage and the provider's finish reason come only from run.status.
-        // Right after a run ends, Broca's live actor can still call it
-        // active while run.result already reads the durable terminal. The
-        // outcome then waits rather than settle the reservation without
-        // the usage the run did report.
+        // In short: if run.status has not yet caught up with an ended run,
+        // wait for it so the reported usage is recorded, but only for a
+        // bounded number of polls. Why it can happen: the two reads disagree in one direction only, and only
+        // briefly. Per Broca's serve.rs `run_result`, the run task makes its
+        // terminal or pause durable in the WAL first, and only then does the
+        // session's live actor mark the run ended; run.result starts from
+        // run.status and upgrades it from the durable WAL, while run.status
+        // deliberately does not. So run.result can be terminal while
+        // run.status still says active or paused. That window is normally
+        // milliseconds but unbounded in principle, because the actor handles
+        // one command at a time. (A session with no live actor cannot
+        // disagree, from Broca v0.3.167.) The outcome waits for run.status
+        // rather than settle the reservation without the usage the run did
+        // report, but for at most STATUS_LAG_POLLS polls, the safety net
+        // that keeps a window that never closes from holding the call, and
+        // its run, forever.
         let status = self.transport.status(
             &call.route,
             &StatusParams {
@@ -407,10 +426,23 @@ impl BrocaHost {
         )?;
         let metadata = match &status {
             RunStatusResponse::Active | RunStatusResponse::Paused { .. } => {
-                return Err(BrocaError::Unavailable {
-                    proven_unsent: false,
-                    detail: format!("run.status still reports finished run {run_id} as live"),
-                });
+                let lagged = {
+                    let mut lag = lock(&self.status_lag);
+                    let polls = lag.entry(call.send_id.clone()).or_insert(0);
+                    *polls += 1;
+                    *polls
+                };
+                if lagged < STATUS_LAG_POLLS {
+                    return Err(BrocaError::Unavailable {
+                        proven_unsent: false,
+                        detail: format!(
+                            "run.status still reports run {run_id} as active or paused although run.result reports it ended"
+                        ),
+                    });
+                }
+                // Usage that is never reported is charged at the reservation.
+                tracing::warn!(broca_run_id = %run_id, send_id = %call.send_id, polls = lagged, "run.status still reports a Broca run as active or paused although run.result reports it ended; recording its outcome with usage unreported, so the whole token reservation is charged");
+                None
             }
             // A run.status that cannot place the run leaves usage unreported,
             // which charges the whole reservation.
@@ -456,6 +488,7 @@ impl BrocaHost {
             },
             other => rejection(other, "Broca run did not complete", usage),
         });
+        lock(&self.status_lag).remove(&call.send_id);
         call.state = Some(result.state);
         self.store.save(call)
     }
@@ -656,6 +689,14 @@ const TERMINAL_STATES: [&str; 6] = [
     "max_steps",
     "transform_unavailable",
 ];
+/// How many consecutive polls an ended run's outcome waits for `run.status`
+/// to stop saying active or paused before it is recorded with usage
+/// unreported (which charges the whole token reservation). Broca's window
+/// is brief but unbounded in principle (explained in `resolve`), so this is
+/// the safety net. Each waiting poll fails, and the module retries a failed
+/// poll after 5 s, so 12 polls take about a minute.
+pub const STATUS_LAG_POLLS: u32 = 12;
+
 /// States of a run that has not ended. A paused run can still resume.
 const NONTERMINAL_STATES: [&str; 2] = ["active", "paused"];
 

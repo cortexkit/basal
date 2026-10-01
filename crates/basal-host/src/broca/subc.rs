@@ -46,7 +46,8 @@ type Wake = Arc<dyn Fn() + Send + Sync>;
 
 /// How long a failed poll waits before trying again. A failure can leave a
 /// call that no event will wake again (Broca unreachable, a run whose
-/// status lags its result, a run still owned by an activation), so a
+/// `run.status` still says active or paused in the brief window after
+/// `run.result` reports it ended, a run still owned by an activation), so a
 /// failure is retried on its own rather than waiting for the next event.
 const RETRY_AFTER_FAILURE: Duration = Duration::from_secs(5);
 
