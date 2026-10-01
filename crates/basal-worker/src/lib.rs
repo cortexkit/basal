@@ -11,6 +11,7 @@
 pub mod clock;
 pub mod confinement;
 pub mod engine;
+pub mod harden;
 pub mod link;
 pub mod probe;
 pub mod serve;

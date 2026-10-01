@@ -29,7 +29,6 @@
   const ObjectDefineProperty = Object.defineProperty;
   const ObjectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
   const ObjectGetPrototypeOf = Object.getPrototypeOf;
-  const ObjectFreeze = Object.freeze;
   const ReflectApply = Reflect.apply;
   const ReflectConstruct = Reflect.construct;
   const ReflectOwnKeys = Reflect.ownKeys;
@@ -42,10 +41,7 @@
   const mapSet = Map.prototype.set;
   const mapDelete = Map.prototype.delete;
   const SetCtor = Set;
-  const setHas = Set.prototype.has;
-  const setAdd = Set.prototype.add;
   const arrayPush = Array.prototype.push;
-  const arrayPop = Array.prototype.pop;
   const NativeDate = Date;
   const dateUTC = Date.UTC;
   const dateParse = Date.parse;
@@ -358,42 +354,15 @@
   }
   enableOverride(ObjectGetPrototypeOf(function () {}), 'toString');
 
-  // Freezes everything reachable from the roots through prototypes and
-  // property values, getters and setters included.
-  function harden(roots) {
-    const seen = new SetCtor();
-    const work = [];
-    for (const root of roots) {
-      ReflectApply(arrayPush, work, [root]);
-    }
-    while (work.length > 0) {
-      const object = ReflectApply(arrayPop, work, []);
-      if (object === null || (typeof object !== 'object' && typeof object !== 'function')) {
-        continue;
-      }
-      if (ReflectApply(setHas, seen, [object])) {
-        continue;
-      }
-      ReflectApply(setAdd, seen, [object]);
-      ObjectFreeze(object);
-      ReflectApply(arrayPush, work, [ObjectGetPrototypeOf(object)]);
-      for (const key of ReflectOwnKeys(object)) {
-        const desc = ObjectGetOwnPropertyDescriptor(object, key);
-        if ('value' in desc) {
-          ReflectApply(arrayPush, work, [desc.value]);
-        } else {
-          ReflectApply(arrayPush, work, [desc.get, desc.set]);
-        }
-      }
-    }
-  }
-
   // Intrinsic objects that no global property names, but that a script can
   // still obtain through syntax: the prototypes of async functions,
-  // generators and the built-in iterators.
+  // generators and the built-in iterators. The worker freezes everything
+  // reachable from these and from the global object once this function
+  // returns (see harden.rs), before the script is compiled.
   function* generator() {}
   async function* asyncGenerator() {}
-  const hidden = [
+  const roots = [
+    G,
     ObjectGetPrototypeOf(async function () {}),
     ObjectGetPrototypeOf(generator),
     ObjectGetPrototypeOf(asyncGenerator),
@@ -407,12 +376,11 @@
     ObjectGetPrototypeOf((function () { return arguments; })()),
   ];
   if (typeof Iterator === 'function' && typeof Iterator.from === 'function') {
-    ReflectApply(arrayPush, hidden, [ObjectGetPrototypeOf(Iterator.from({ next() { return { done: true }; } }))]);
+    ReflectApply(arrayPush, roots, [ObjectGetPrototypeOf(Iterator.from({ next() { return { done: true }; } }))]);
   }
   if (typeof [].values().map === 'function') {
-    ReflectApply(arrayPush, hidden, [ObjectGetPrototypeOf([].values().map((x) => x))]);
+    ReflectApply(arrayPush, roots, [ObjectGetPrototypeOf([].values().map((x) => x))]);
   }
-  harden([G, ...hidden]);
 
   // ---- Driving the script ------------------------------------------------
 
@@ -477,5 +445,5 @@
     return [state, state === 1 ? resultText : failureKind, failureText];
   }
 
-  return { deliver, start, status };
+  return { deliver, start, status, roots };
 })

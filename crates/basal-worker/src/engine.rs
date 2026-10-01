@@ -28,6 +28,7 @@ use rquickjs::context::{EvalOptions, intrinsic};
 use rquickjs::{Array, Context, Ctx, Exception, Function, Object, Persistent, Runtime, Value, qjs};
 
 use crate::clock::JsClock;
+use crate::harden::harden;
 use crate::link::{HostLink, WaitReply};
 
 /// The lockdown prelude, embedded so a worker binary has exactly one.
@@ -767,6 +768,8 @@ impl Activation {
                 let deliver: Function = hooks.get("deliver")?;
                 let start: Function = hooks.get("start")?;
                 let status: Function = hooks.get("status")?;
+                let roots: Vec<Value> = hooks.get("roots")?;
+                harden(&ctx, roots)?;
                 Ok((
                     Hooks {
                         deliver: Persistent::save(&ctx, deliver),

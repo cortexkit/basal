@@ -97,7 +97,8 @@ fn removed_globals_are_absent() {
             'SharedArrayBuffer', 'Intl', 'performance', 'setTimeout', 'setInterval',
             'clearTimeout', 'clearInterval', 'setImmediate', 'queueMicrotask', 'gc', 'os', 'std',
             'navigator', 'WebAssembly', 'console', 'print', 'structuredClone',
-            // The worker's own bridge state, and the spike's exposed bridge names.
+            // Names of the worker's bridge internals, and names an earlier
+            // prototype exposed as globals; none may be reachable.
             'pending', 'issueOp', 'issuePrimitive', 'issueSync', 'deliver', 'native', 'start',
             'status', '__enqueue', '__sync', '__rawBridge', 'call', 'settle', 'lockdown'];
         return names.filter((n) => n in globalThis || typeof globalThis[n] !== 'undefined');
@@ -270,7 +271,8 @@ fn payloads_arrive_as_plain_data() {
         first.value(),
         json!({"host": expected, "trigger": expected})
     );
-    // The same value replayed from the journal takes the same data path.
+    // Replayed from the journal, the value is parsed the same way and the
+    // result is identical, with no call to the host.
     let replay = parent.run("t", script);
     assert!(replay.host_calls.is_empty());
     assert_eq!(replay.value(), first.value());

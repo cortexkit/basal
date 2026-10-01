@@ -129,7 +129,7 @@ const CONTROLS: &[Control] = &[
     },
     Control {
         label: "intrinsics are not frozen",
-        edits: &[(PRELUDE, "harden([G, ...hidden]);", "// harden skipped")],
+        edits: &[(ENGINE, "harden(&ctx, roots)?;", "drop(roots);")],
         also_restore: NO_EXTRA,
         target: Target::Integration("lockdown"),
         test: "intrinsics_are_frozen",

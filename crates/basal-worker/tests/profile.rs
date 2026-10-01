@@ -43,8 +43,9 @@ const ROUTES: &str = r#"
     };
     let bare;
     try { bare = typeof sh === 'undefined' ? 'undefined' : 'reachable'; sh('ls'); } catch (e) { bare = e.name; }
-    // A module op that happens to be called sh is an op, not the shell
-    // primitive; the parent's manifest check decides about it.
+    // A module op that happens to be named sh is still a module op, not the
+    // shell primitive; whether it may run is decided by the parent against
+    // the flow's approved manifest.
     const op = await ops.call('sh', 'sh', 'ls');
     return { found, routes, bare, op };
 "#;

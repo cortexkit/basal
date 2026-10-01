@@ -26,7 +26,8 @@ fn replay_crosses_the_channel_only_for_new_calls() {
     assert!(full.host_calls.is_empty(), "{:?}", full.host_calls);
     assert_eq!(full.value(), expected);
 
-    // Cut the journal after two calls: only the last two cross again.
+    // Truncate the journal to its first two calls, as a crash would: on the
+    // next run only the calls at positions 2 and 3 reach the host.
     parent.journal_mut("t").truncate(2);
     let cut = parent.run("t", script);
     let positions: Vec<u64> = cut.host_calls.iter().map(|c| c.position).collect();
@@ -169,7 +170,8 @@ fn divergent_call_fails_with_a_typed_error() {
         "the divergent call crossed the channel"
     );
 
-    // A different kind at the same position diverges too.
+    // A call of a different kind (facts instead of an op) at the same
+    // position is a divergence too.
     let report = parent.run("t", "return await facts('x')");
     match common::nondeterminism(&report) {
         Nondeterminism::Divergence {

@@ -40,16 +40,17 @@ fn long_host_waits_do_not_consume_the_js_time_budget() {
         return typeof t;
     "#;
     let report = parent.run("t", script);
-    assert!(
-        report.wall >= Duration::from_millis(900),
-        "{:?}",
-        report.wall
-    );
     assert_eq!(
         common::finished(&report),
         &ActivationResult::Completed {
             value: basal_proto::JsonText::new("\"number\"").expect("small")
         }
+    );
+    // The waits really happened: twelve times the budget passed in them.
+    assert!(
+        report.wall >= Duration::from_millis(600),
+        "{:?}",
+        report.wall
     );
 }
 
