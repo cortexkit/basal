@@ -57,8 +57,9 @@ pub struct LastRun {
     pub run_id: String,
     pub state: String,
     pub error_kind: Option<String>,
-    /// Wall-clock milliseconds since the Unix epoch.
-    pub ended_at: Option<i64>,
+    /// When it ended, in milliseconds since the Unix epoch (its admission
+    /// time if the store holds no end time, which a finished run always has).
+    pub ended_at: i64,
 }
 
 /// One flow's health, as core reads it to decide whether a claim holds:
@@ -104,7 +105,8 @@ pub fn flow_health(conn: &Connection, now_ms: i64) -> Result<Vec<FlowHealth>> {
         let mut consecutive_failures = 0;
         let mut counting = true;
         let mut stmt = conn.prepare(
-            "SELECT run_id, state, error_kind, ended_at FROM runs WHERE flow_id = ?1 \
+            "SELECT run_id, state, error_kind, COALESCE(ended_at, admitted_at) FROM runs \
+             WHERE flow_id = ?1 \
              AND state IN ('succeeded', 'failed', 'engine_mismatch', 'cancelled') \
              ORDER BY admit_seq DESC, run_id DESC",
         )?;

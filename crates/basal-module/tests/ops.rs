@@ -362,11 +362,11 @@ fn health_reports_flows_runs_and_the_module() {
         .expect("listed");
     assert_eq!(failing_health["state"], "enabled");
     assert_eq!(failing_health["consecutive_failures"], 2);
-    assert_eq!(failing_health["last_run"]["state"], "failed");
+    assert_eq!(failing_health["last_run"]["outcome"], "failed");
     assert_eq!(failing_health["last_run"]["error_kind"], "script");
     let own = flows.iter().find(|x| x["flow_id"] == FLOW).expect("listed");
     assert_eq!(
-        own["oldest_overdue_ms"], 5_000,
+        own["oldest_overdue_age_ms"], 5_000,
         "the admitted run not yet started: {h:#}"
     );
     assert_eq!(own["owner"], OWNER);
@@ -428,7 +428,8 @@ fn reconcile_resolves_an_unknown_call_for_the_operator() {
         .as_array()
         .and_then(|a| a.iter().find(|x| x["flow_id"] == "flow-post").cloned())
         .expect("listed");
-    assert_eq!(post["needs_reconcile"], json!([run.clone()]));
+    assert_eq!(post["needs_reconcile"], true);
+    assert_eq!(post["needs_reconcile_runs"], json!([run.clone()]));
 
     let reply = call(
         &f,

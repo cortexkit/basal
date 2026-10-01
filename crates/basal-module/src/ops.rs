@@ -108,7 +108,7 @@ impl Module {
         let result = match method {
             "flow.install" => self.op_install(caller, params),
             "flow.dry_run" => self.op_dry_run(caller, params),
-            "flow.health" => self.op_health(caller),
+            "flow.health" => self.op_health(caller, params),
             "flow.reconcile" => self.op_reconcile(caller, params),
             "flow.drain" => self.op_drain(caller, params),
             "flow.disable" => self.op_disable(caller, params),
@@ -425,12 +425,47 @@ impl Module {
 
     // ---- flow.health ---------------------------------------------------
 
-    fn op_health(&self, caller: &Caller) -> OpResult {
+    /// `flow.health`. prefrontal-core polls it on its own route to decide
+    /// whether a flow's claim on a source still holds, and treats any reply
+    /// it cannot decode as unhealthy. So the fields of that contract are
+    /// always present with fixed types: `as_of` (RFC 3339, UTC) and, per
+    /// flow, `flow_id`, `state` (`enabled`, `disabled`, or `shadow` once
+    /// shadow mode exists), `last_run` (`{outcome, at}` or null),
+    /// `oldest_overdue_age_ms` (0 when nothing is overdue),
+    /// `consecutive_failures`, and the booleans `needs_reconcile`,
+    /// `overflowed` and `auto_disabled`. Everything else in the reply is for
+    /// the operator, and core ignores it.
+    fn op_health(&self, caller: &Caller, params: Value) -> OpResult {
         if !matches!(caller, Caller::Operator | Caller::Core) {
             return Err(OpError::not_permitted("flow.health", caller));
         }
+        #[derive(Deserialize, Default)]
+        #[serde(deny_unknown_fields)]
+        struct Params {
+            /// The flows to report; absent means every flow. A flow basal
+            /// does not know is left out.
+            #[serde(default)]
+            flow_ids: Option<Vec<String>>,
+        }
+        let p: Params = if params.is_null() {
+            Params::default()
+        } else {
+            serde_json::from_value(params).map_err(invalid_params)?
+        };
         let now = self.rt.config().clock.now_ms();
-        let flows = self.rt.flow_health().map_err(|e| self.core_error(e))?;
+        let as_of = rfc3339(now)?;
+        let wanted = |flow_id: &str| {
+            p.flow_ids
+                .as_ref()
+                .is_none_or(|ids| ids.iter().any(|id| id == flow_id))
+        };
+        let flows: Vec<_> = self
+            .rt
+            .flow_health()
+            .map_err(|e| self.core_error(e))?
+            .into_iter()
+            .filter(|f| wanted(&f.flow_id))
+            .collect();
         let ages = self.rt.run_ages().map_err(|e| self.core_error(e))?;
         let health = self.rt.health().map_err(|e| self.core_error(e))?;
         let mut tokens = Vec::new();
@@ -451,43 +486,48 @@ impl Module {
                 }));
             }
         }
-        let flows: Vec<Value> = flows
-            .into_iter()
-            .map(|f| {
-                json!({
-                    "flow_id": f.flow_id,
-                    "state": if f.enabled { "enabled" } else { "disabled" },
-                    "owner": f.owner,
-                    "approved_version": f.approved_version,
-                    "disabled_by": f.disabled_by,
-                    // Who disabled the flow, by kind (operator, the owning
-                    // agent, or auto for the runtime's own saturation
-                    // disable), and why: core can tell a flow stopped by its
-                    // author from one stopped for it.
-                    "disabled": f.disabled_by.as_deref().map(|by| json!({
-                        "by": disabled_kind(by),
-                        "actor": by,
-                        "reason": f.disabled_reason,
-                    })),
-                    "auto_disabled": f.auto_disabled,
-                    // The event plane does not exist yet, so no backlog can
-                    // overflow.
-                    "overflowed": false,
-                    "last_run": f.last_run.map(|r| json!({
-                        "run_id": r.run_id,
-                        "state": r.state,
-                        "error_kind": r.error_kind,
-                        "ended_at": r.ended_at,
-                    })),
-                    "oldest_overdue_ms": f.oldest_overdue_ms,
-                    "consecutive_failures": f.consecutive_failures,
-                    "needs_reconcile": f.needs_reconcile,
-                })
-            })
-            .collect();
+        let mut entries = Vec::with_capacity(flows.len());
+        for f in flows {
+            let last_run = match f.last_run {
+                Some(r) => json!({
+                    "outcome": r.state,
+                    "at": rfc3339(r.ended_at)?,
+                    "run_id": r.run_id,
+                    "error_kind": r.error_kind,
+                }),
+                None => Value::Null,
+            };
+            let state = if f.enabled { "enabled" } else { "disabled" };
+            entries.push(json!({
+                "flow_id": f.flow_id,
+                "state": state,
+                "last_run": last_run,
+                "oldest_overdue_age_ms": f.oldest_overdue_ms.unwrap_or(0),
+                "consecutive_failures": f.consecutive_failures,
+                "needs_reconcile": !f.needs_reconcile.is_empty(),
+                // The event plane does not exist yet, so no backlog can
+                // overflow.
+                "overflowed": false,
+                "auto_disabled": f.auto_disabled,
+                "needs_reconcile_runs": f.needs_reconcile,
+                "owner": f.owner,
+                "approved_version": f.approved_version,
+                "disabled_by": f.disabled_by,
+                // Who disabled the flow, by kind (operator, the owning
+                // agent, or auto for the runtime's own saturation
+                // disable), and why: core can tell a flow stopped by its
+                // author from one stopped for it.
+                "disabled": f.disabled_by.as_deref().map(|by| json!({
+                    "by": disabled_kind(by),
+                    "actor": by,
+                    "reason": f.disabled_reason,
+                })),
+            }));
+        }
         let pool = self.pool.stats();
         Ok(json!({
-            "flows": flows,
+            "as_of": as_of,
+            "flows": entries,
             "runs": {
                 "by_state": health.runs,
                 "oldest_pending_ms": ages.oldest_pending_ms,
@@ -630,6 +670,13 @@ impl Module {
             .map_err(|e| self.install_error(e))?;
         Ok(json!({ "flow_id": p.flow_id, "state": "enabled", "changed": changed }))
     }
+}
+
+/// Milliseconds since the epoch as RFC 3339 in UTC (`2026-05-01T00:00:00Z`).
+fn rfc3339(ms: i64) -> Result<String, OpError> {
+    jiff::Timestamp::from_millisecond(ms)
+        .map(|t| t.to_string())
+        .map_err(|e| OpError::new("internal", format!("time {ms} out of range: {e}")))
 }
 
 /// The kind of actor a recorded `disabled_by` names: `operator`, `auto`
