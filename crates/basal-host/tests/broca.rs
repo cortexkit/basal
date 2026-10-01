@@ -3,6 +3,7 @@ use basal_host::broca::{
     fake::{FakeBroca, MemoryStore},
     wire::*,
 };
+use basal_host::selector::{FakeSelector, ModelSelector, SelectionRequest};
 use basal_host::{
     CallRequest, Completion, CompletionAck, CompletionSink, Dispatched, Host, SinkError, TokenUsage,
 };
@@ -10,17 +11,19 @@ use basal_proto::{CallKind, JsonText, Primitive, Settlement};
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 
-fn model() -> ModelParams {
-    ModelParams {
-        provider: "fake".into(),
-        model: "test".into(),
-        variant: None,
-    }
-}
 fn request(p: Primitive, position: u64, args: Value) -> CallRequest {
     let key = format!("key:{position}");
+    let selection = FakeSelector::default()
+        .select(&SelectionRequest {
+            iq: 40,
+            eq: 20,
+            flow_id: "f".into(),
+            run_id: "r".into(),
+            send_id: key.clone(),
+        })
+        .unwrap();
     CallRequest { flow_id: "f".into(), run_id: "r".into(), position, kind: CallKind::Primitive(p),
-        args: JsonText::new(json!({"send_id": key, "work_class": "flow:f", "session": format!("basal:flow-f:r:{position}"), "op": p.name(), "max_output": 12, "request": args}).to_string()).unwrap(),
+        args: JsonText::new(json!({"send_id": key, "work_class": "flow:f", "session": format!("basal:flow-f:r:{position}"), "op": p.name(), "max_output": 12, "request": args, "selection":selection}).to_string()).unwrap(),
         idempotency_key: key, attempt: 1 }
 }
 fn llm(position: u64) -> CallRequest {
@@ -31,7 +34,13 @@ fn llm(position: u64) -> CallRequest {
     )
 }
 fn host(fake: Arc<FakeBroca>, store: Arc<dyn StateStore>) -> BrocaHost {
-    BrocaHost::new(fake, store, "/project".into(), "basal".into(), model())
+    BrocaHost::new(
+        fake,
+        store,
+        "/project".into(),
+        "basal".into(),
+        Arc::new(FakeSelector::default()),
+    )
 }
 #[derive(Default)]
 struct Sink {
@@ -549,4 +558,77 @@ fn wire_fixtures_pin_control_read_and_status_shapes() {
         .unwrap(),
         json!({"from":{"wal_seq":8,"sub_index":2}})
     );
+}
+
+#[test]
+fn model_outcomes_report_the_selected_decision_best_effort() {
+    use basal_host::selector::{FakeSelector, ModelOutcome, SelectionError};
+    let fake = Arc::new(FakeBroca::default());
+    let selector = Arc::new(FakeSelector::default());
+    let store = Arc::new(MemoryStore::default());
+    let h = BrocaHost::new(
+        fake.clone(),
+        store,
+        "/project".into(),
+        "basal".into(),
+        selector.clone(),
+    );
+    *selector.report_error.lock().unwrap() = Some(SelectionError::Unavailable {
+        detail: "router disconnected".into(),
+    });
+    for (position, reason, expected) in [
+        (0, RunFinishReason::Completed, ModelOutcome::Completed),
+        (1, RunFinishReason::Error, ModelOutcome::Error),
+        (2, RunFinishReason::Cancelled, ModelOutcome::Cancelled),
+        (3, RunFinishReason::Interrupted, ModelOutcome::Interrupted),
+        (4, RunFinishReason::MaxSteps, ModelOutcome::Error),
+        (
+            5,
+            RunFinishReason::TransformUnavailable,
+            ModelOutcome::Error,
+        ),
+    ] {
+        h.dispatch_model(&llm(position)).unwrap();
+        fake.finish(&format!("key:{position}"), "answer", reason, None)
+            .unwrap();
+        h.poll().unwrap();
+        h.poll().unwrap();
+        assert_eq!(
+            selector.reports.lock().unwrap().len(),
+            position as usize + 1
+        );
+        assert_eq!(
+            selector.reports.lock().unwrap()[position as usize],
+            (format!("decision:key:{position}"), expected)
+        );
+    }
+}
+#[test]
+fn broker_rejects_script_model_choices_even_with_a_valid_journaled_selection() {
+    let fake = Arc::new(FakeBroca::default());
+    let h = host(fake.clone(), Arc::new(MemoryStore::default()));
+    for (position, options) in [
+        json!({"prompt":"x","model":{"provider":"fake","model":"test"}}),
+        json!({"prompt":"x","provider":"fake"}),
+        json!({"text":"x","labels":["a"],"model":null}),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let p = if position == 2 {
+            Primitive::Classify
+        } else {
+            Primitive::Llm
+        };
+        let dispatched = h.dispatch(&request(p, position as u64, options)).unwrap();
+        let Dispatched::Completed(outcome) = dispatched else {
+            panic!("must reject before sending")
+        };
+        assert_eq!(outcome.settlement, Settlement::Rejected);
+        assert_eq!(
+            serde_json::from_str::<Value>(outcome.value.as_str()).unwrap()["code"],
+            "model_not_allowed"
+        );
+    }
+    assert!(fake.sends().is_empty());
 }

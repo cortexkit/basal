@@ -33,6 +33,7 @@ pub mod core_consent;
 pub mod core_host;
 pub mod mock;
 pub mod routing;
+pub mod selector;
 pub mod subc_catalog;
 pub mod transport;
 
@@ -255,6 +256,9 @@ pub trait Host: Send + Sync {
 
     /// The current time in milliseconds since the Unix epoch, for a clock
     /// read. The runtime keeps the value monotonic within a run.
+    /// Invoked after the accepted handle or immediate outcome is durable, so
+    /// a fast model completion cannot arrive before its handle is journaled.
+    fn dispatch_committed(&self, _request: &CallRequest) {}
     fn now_ms(&self) -> f64;
 
     /// A sample in `[0, 1)`, for `Math.random()` and `random()`.

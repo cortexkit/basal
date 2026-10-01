@@ -22,6 +22,8 @@ pub enum Boundary {
     HostCallReceived { position: u64 },
     /// A `Blocked` frame arrived; nothing has been released for it.
     BlockedReceived,
+    /// The router selected a model, but the call is not journaled or sent yet.
+    ModelSelected { position: u64 },
     /// A remote call's row is committed; it has not been dispatched.
     CallCommitted { position: u64 },
     /// A synchronous call's row, value and order are committed; the reply

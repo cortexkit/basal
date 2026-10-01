@@ -152,11 +152,14 @@ impl Host for RoutingHost {
         self.target(&request.kind)
             .dispatch_classified(request, class)
     }
+    fn dispatch_committed(&self, request: &CallRequest) {
+        self.target(&request.kind).dispatch_committed(request);
+    }
     fn now_ms(&self) -> f64 {
-        self.model.now_ms()
+        self.ops.now_ms()
     }
     fn random(&self) -> f64 {
-        self.model.random()
+        self.ops.random()
     }
     fn attach(&self, sink: Arc<dyn CompletionSink>) {
         self.ops.attach(sink.clone());

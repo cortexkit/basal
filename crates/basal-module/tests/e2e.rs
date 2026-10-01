@@ -273,7 +273,7 @@ fn a_broca_llm_suspends_survives_module_kill_and_settles_after_restart() {
     let manifest = json!({
         "id": "flow-model", "version": 1, "purpose": "Obtain one model answer.",
         "trigger": {"schedule": {"cron": "0 * * * *", "missed": "once"}},
-        "llm": {"token_cap": {"tokens": 10000, "window": "1h"}, "max_output": 32}
+        "llm": {"iq": 0, "token_cap": {"tokens": 10000, "window": "1h"}, "max_output": 32}
     })
     .to_string();
     let installed = h.ok(json!({"cmd":"op","as":{"agent":"SYNAPSE"},"method":"flow.install","params":{"manifest":manifest,"script":"return await llm({prompt:'hello',max_output:999});"}}));

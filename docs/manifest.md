@@ -53,7 +53,7 @@ A duration is a positive whole number followed by one unit: `s`, `m`, `h` or `d`
 | Field | Type | Required | Default | Meaning |
 |---|---|---|---|---|
 | `agent` | agent name | yes | | Must be a known agent. |
-| `digest_max` | `"silent"`, `"piggyback"` or `"wake"` | yes | | The most intrusive action the flow may request for this agent. A `sink.digest` call asking for more is refused. |
+| `digest_max` | `"silent"`, `"piggyback"` or `"wake"` | yes | | The most intrusive action the flow may request for this agent. An omitted action uses this approved cap, in both live dispatch and dry runs. A `sink.digest` call asking for more is refused. |
 | `break_through` | boolean | no | `false` | Shown on the card as requested. Only the operator grants it, through policy. |
 
 ### Claim
@@ -84,9 +84,11 @@ At run time the denylist and the catalog's shell marker are checked again before
 |---|---|---|---|
 | `token_cap.tokens` | integer | yes | 1 to 1,000,000,000 tokens per window, counted as fresh input plus cache write plus output. Cached input is recorded, not capped. |
 | `token_cap.window` | duration | yes | `"1m"` to `"31d"`. Windows are fixed intervals anchored at the Unix epoch in UTC, so `"1d"` is a UTC calendar day. |
+| `iq` | integer | yes | 0 to 100. The minimum intelligence demand passed to fleet routing for every `llm` and `classify` call. |
+| `eq` | integer | no | 0 to 100; defaults to 0. The minimum judgment demand passed to fleet routing. |
 | `max_output` | integer | yes | 1 to 200,000, and not above the cap: the ceiling on any one call's output tokens. A call asking for more is clamped to it; `classify` is clamped to at most 64. |
 
-Model calls get no tools: an `llm` request with a `tools` field is refused.
+Model calls get no tools: an `llm` request with a `tools` field is refused. Scripts cannot supply a `model` or `provider`, even one previously selected: the call is rejected with `model_not_allowed`. Fleet routing chooses a Broca runner before the intent commits, and its exact selection and decision id are journaled. Retries reuse that selection; there is no default or environment-configured model.
 
 ## Card fields not in the manifest
 
@@ -109,7 +111,7 @@ This example is parsed, round-tripped and installed by `dispatch_manifest::docum
   "claims": [],
   "ops": [ { "module": "cerebellum", "op": "browser.read_page" } ],
   "facts": { "targets": [ "SYNAPSE" ], "text": false },
-  "llm": { "token_cap": { "tokens": 200000, "window": "1d" }, "max_output": 2000 },
+  "llm": { "iq": 65, "eq": 20, "token_cap": { "tokens": 200000, "window": "1d" }, "max_output": 2000 },
   "placement": "machine:ufuk-mbp",
   "concurrency": 1,
   "deadline": "10m"

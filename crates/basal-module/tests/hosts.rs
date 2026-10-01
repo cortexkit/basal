@@ -957,3 +957,565 @@ fn fact_identity_and_clock_fields_are_required_without_normalising_leaves() {
         ));
     }
 }
+
+fn model_manifest() -> Value {
+    let mut m = manifest();
+    m["llm"] = json!({"iq":70,"eq":20,"token_cap":{"tokens":10000,"window":"1h"},"max_output":32});
+    m
+}
+fn model_fixture(
+    tag: &str,
+    wire: Arc<Fake>,
+    selector: Arc<dyn basal_host::selector::ModelSelector>,
+    hooks: Arc<dyn basal_core::Hooks>,
+) -> (
+    common::Fixture,
+    Arc<basal_host::broca::BrocaHost>,
+    Arc<basal_host::broca::fake::FakeBroca>,
+    Arc<basal_core::broca::BrocaStore>,
+) {
+    let snapshots = Arc::new(basal_core::broca::BrocaStore::default());
+    let fake = Arc::new(basal_host::broca::fake::FakeBroca::default());
+    let model = Arc::new(basal_host::broca::BrocaHost::new(
+        fake.clone(),
+        snapshots.clone(),
+        "/project".into(),
+        "basal".into(),
+        selector.clone(),
+    ));
+    let consent = Arc::new(CoreConsent::new(wire.clone()));
+    let catalog = Arc::new(SubcCatalog::new(wire.clone()));
+    let dependencies = Hosts {
+        host: Arc::new(RoutingHost::new(
+            Arc::new(ModuleOpsHost::new(wire.clone(), catalog.clone())),
+            Arc::new(CoreHost::new(wire)),
+            model.clone(),
+        )),
+        catalog,
+        consent,
+        hooks,
+    };
+    let f = common::fixture_with_store(
+        tag,
+        common::Options {
+            hosts: Some(dependencies),
+            selector,
+            ..Default::default()
+        },
+        |shared| snapshots.bind(shared).map_err(|e| e.to_string()),
+    );
+    (f, model, fake, snapshots)
+}
+fn approve_model(f: &common::Fixture) {
+    let card = f.module.rt.cards("host-flow").unwrap()[0].card_id.clone();
+    f.module
+        .rt
+        .decide_card(&card, basal_core::cards::Decision::Approve, "operator")
+        .unwrap();
+}
+
+#[test]
+fn routing_host_model_selection_and_digest_sink_share_the_journal_store() {
+    use basal_host::broca::{
+        StateStore,
+        wire::{RunFinishReason, Usage},
+    };
+    let wire = Fake::new();
+    let selector = Arc::new(basal_host::selector::RoutingSelector::new(wire.clone()));
+    let (f, model, fake, snapshots) = model_fixture(
+        "model-and-digest",
+        wire.clone(),
+        selector,
+        Arc::new(NoHooks),
+    );
+    common::install(
+        &f,
+        &Caller::Operator,
+        "const answer=await llm({prompt:'hello',max_output:999}); const receipt=await sink.digest('SYNAPSE',{title:'answer',body:answer.text}); return {text:answer.text,disposition:receipt.disposition};",
+        &model_manifest(),
+    );
+    approve_model(&f);
+    let run = common::admit(&f, "host-flow", "one");
+    f.module.engine.run_until_idle(50).unwrap();
+    assert_eq!(f.module.rt.run(&run).unwrap().state, RunState::Suspended);
+    let call = f.module.rt.calls(&run).unwrap()[0].clone();
+    let request: Value = serde_json::from_str(call.request.as_ref().unwrap().as_str()).unwrap();
+    assert_eq!(
+        request["selection"],
+        json!({"providerID":"registry-provider","modelID":"registry-model","decisionID":format!("decision:{}",call.idempotency_key),"runner":{"provider":"fake","model":"test"}})
+    );
+    assert_eq!(
+        wire.calls("route.select")[0]["params"],
+        json!({"targetAgent":"flow","requirements":{"iq":70,"eq":20},"excludeRouteKeys":[],"sendID":call.idempotency_key,"taskId":format!("flow:host-flow:{run}"),"substrate":"broca"})
+    );
+    let sent: Value = serde_json::from_slice(&fake.sends()[0].1).unwrap();
+    assert_eq!(sent["model"], json!({"provider":"fake","model":"test"}));
+    assert_eq!(sent["generation"]["max_output_tokens"], 32);
+    f.module.rt.quiesce();
+    assert!(
+        snapshots.load().unwrap()[0].cursor.is_some(),
+        "accepted model call must begin subscribing after its handle commits"
+    );
+    assert_eq!(
+        snapshots.load().unwrap()[0].envelope,
+        call.request.unwrap().as_str()
+    );
+    fake.finish(
+        &call.idempotency_key,
+        "answer",
+        RunFinishReason::Completed,
+        Some(Usage {
+            input_tokens: Some(7),
+            cache_write_tokens: Some(2),
+            output_tokens: Some(5),
+            cached_input_tokens: Some(100),
+            reasoning_tokens: Some(3),
+        }),
+    )
+    .unwrap();
+    model.poll().unwrap();
+    f.module.engine.run_until_idle(50).unwrap();
+    let done = f.module.rt.run(&run).unwrap();
+    assert_eq!(done.state, RunState::Succeeded);
+    assert_eq!(
+        serde_json::from_str::<Value>(done.result.as_deref().unwrap()).unwrap(),
+        json!({"disposition":"stored","text":"answer"})
+    );
+    assert_eq!(
+        wire.calls("sink.digest")[0]["params"]["action"],
+        "piggyback"
+    );
+    assert_eq!(
+        wire.calls("sink.digest")[0]["params"]["item"]["body"],
+        "answer"
+    );
+    assert_eq!(
+        wire.calls("route.set_decision_outcome")[0]["params"],
+        json!({"decisionID":format!("decision:{}",call.idempotency_key),"outcome":"completed"})
+    );
+    f.module
+        .rt
+        .store()
+        .read(|c| {
+            let tokens: i64 = c.query_row(
+                "SELECT output_tokens FROM token_ledger WHERE send_id=?1",
+                [&call.idempotency_key],
+                |r| r.get(0),
+            )?;
+            assert_eq!(tokens, 5);
+            Ok(())
+        })
+        .unwrap();
+}
+#[test]
+fn routing_select_request_bytes_are_exact_without_available_models() {
+    use basal_host::selector::{ModelSelector, RoutingSelector, SelectionRequest};
+    let wire = Fake::new();
+    let selector = RoutingSelector::new(wire.clone());
+    selector
+        .select(&SelectionRequest {
+            iq: 70,
+            eq: 20,
+            flow_id: "flow-a".into(),
+            run_id: "run-a".into(),
+            send_id: "send-1".into(),
+        })
+        .unwrap();
+    assert_eq!(serde_json::to_vec(&wire.calls("route.select")[0]).unwrap(),br#"{"method":"route.select","params":{"excludeRouteKeys":[],"requirements":{"eq":20,"iq":70},"sendID":"send-1","substrate":"broca","targetAgent":"flow","taskId":"flow:flow-a:run-a"}}"#);
+    assert_eq!(wire.records.lock().unwrap()[0].0, "prefrontal-routing");
+    for (outcome, name) in [
+        (basal_host::selector::ModelOutcome::Completed, "completed"),
+        (basal_host::selector::ModelOutcome::Error, "error"),
+        (basal_host::selector::ModelOutcome::Cancelled, "cancelled"),
+        (
+            basal_host::selector::ModelOutcome::Interrupted,
+            "interrupted",
+        ),
+    ] {
+        selector.report_outcome("decision-1", outcome).unwrap();
+        let expected = format!(
+            "{{\"method\":\"route.set_decision_outcome\",\"params\":{{\"decisionID\":\"decision-1\",\"outcome\":\"{name}\"}}}}"
+        );
+        assert_eq!(
+            wire.calls("route.set_decision_outcome")
+                .last()
+                .unwrap()
+                .to_string(),
+            expected
+        );
+    }
+}
+#[test]
+fn routing_selection_reply_shapes_require_runner_and_preserve_both_identities() {
+    use basal_host::selector::{SelectionError, decode_selection};
+    for variant in [None, Some("thinking")] {
+        let mut reply = json!({"selected":{"model":{"providerID":"registry-provider","modelID":"registry-model"}},"decisionID":"decision-1","runner":{"provider":"runner-provider","model":"runner-model"}});
+        if let Some(v) = variant {
+            reply["selected"]["model"]["variant"] = json!(v);
+            reply["runner"]["variant"] = json!("runner-variant");
+        }
+        let selected = decode_selection(reply.clone()).unwrap();
+        assert_eq!(selected.provider_id, "registry-provider");
+        assert_eq!(selected.model_id, "registry-model");
+        assert_eq!(selected.variant.as_deref(), variant);
+        assert_eq!(selected.decision_id, "decision-1");
+        assert_eq!(
+            serde_json::to_value(selected.runner).unwrap(),
+            reply["runner"]
+        );
+        let mut missing = reply.clone();
+        missing.as_object_mut().unwrap().remove("runner");
+        assert!(
+            matches!(decode_selection(missing),Err(SelectionError::Refused {code,..}) if code=="route_runner_missing")
+        );
+        for key in ["providerID", "modelID"] {
+            let mut invalid = reply.clone();
+            invalid["selected"]["model"][key] = json!({});
+            assert!(
+                matches!(decode_selection(invalid),Err(SelectionError::Refused {code,..}) if code=="route_reply_invalid")
+            );
+        }
+        for key in ["provider", "model"] {
+            let mut invalid = reply.clone();
+            invalid["runner"][key] = json!({});
+            assert!(decode_selection(invalid).is_err());
+        }
+        let mut invalid = reply.clone();
+        invalid["decisionID"] = Value::Null;
+        assert!(decode_selection(invalid).is_err());
+        let mut invalid = reply;
+        invalid["runner"] = Value::Null;
+        assert!(decode_selection(invalid).is_err());
+    }
+}
+#[test]
+fn selector_refusals_are_journaled_with_each_code_and_never_send_broca() {
+    use basal_host::selector::RoutingSelector;
+    for code in [
+        "no_available_model",
+        "quota_or_cooldown_exhausted",
+        "all_routes_inadequate",
+        "no_adequate_route",
+        "missing_required_capability",
+        "context_too_small",
+        "invalid_requirements",
+        "route_runner_missing",
+    ] {
+        let wire = Fake::new();
+        let selector = Arc::new(RoutingSelector::new(wire.clone()));
+        let (f, _, fake, _) = model_fixture(code, wire.clone(), selector, Arc::new(NoHooks));
+        common::install(
+            &f,
+            &Caller::Operator,
+            "try {return await llm({prompt:'x'});}catch(e){return e.data.code;}",
+            &model_manifest(),
+        );
+        approve_model(&f);
+        if code == "route_runner_missing" {
+            wire.enqueue(
+                "route.select",
+                vec![Ok(
+                    json!({"selected":{"model":{"providerID":"p","modelID":"m"}},"decisionID":"d"}),
+                )],
+            );
+        } else {
+            wire.enqueue(
+                "route.select",
+                vec![Err(WireError::Refused {
+                    code: code.into(),
+                    message: "no route".into(),
+                })],
+            );
+        }
+        let run = common::admit(&f, "host-flow", "one");
+        f.module.engine.run_until_idle(50).unwrap();
+        let done = f.module.rt.run(&run).unwrap();
+        assert_eq!(done.state, RunState::Succeeded);
+        assert_eq!(done.result, Some(json!(code).to_string()));
+        assert!(fake.sends().is_empty());
+        assert_eq!(wire.calls("route.select").len(), 1);
+        let row = f.module.rt.calls(&run).unwrap()[0].clone();
+        assert_eq!(
+            row.outcome.as_ref().unwrap().settlement,
+            Settlement::Rejected
+        );
+        assert!(row.request.is_none());
+    }
+}
+#[test]
+fn unreachable_selector_retries_boundedly_then_journals_route_unavailable() {
+    use basal_host::selector::RoutingSelector;
+    let wire = Fake::new();
+    let selector = Arc::new(RoutingSelector::new(wire.clone()));
+    let (f, _, fake, _) = model_fixture("route-down", wire.clone(), selector, Arc::new(NoHooks));
+    common::install(
+        &f,
+        &Caller::Operator,
+        "try {return await classify('x',['a','b']);}catch(e){return e.data.code;}",
+        &model_manifest(),
+    );
+    approve_model(&f);
+    wire.enqueue(
+        "route.select",
+        vec![Err(WireError::Unknown("lost reply".into())); 10],
+    );
+    let run = common::admit(&f, "host-flow", "one");
+    f.module.engine.run_until_idle(50).unwrap();
+    assert_eq!(
+        f.module.rt.run(&run).unwrap().result.as_deref(),
+        Some("\"route_unavailable\"")
+    );
+    assert!(fake.sends().is_empty());
+    let requests = wire.calls("route.select");
+    assert_eq!(
+        requests.len(),
+        f.module.rt.config().unavailable_retries as usize + 1
+    );
+    assert!(requests.iter().all(|r| r == &requests[0]));
+}
+#[test]
+fn script_model_or_provider_is_rejected_before_selection_even_if_it_matches() {
+    use basal_host::selector::FakeSelector;
+    for selection in [
+        json!({"model":{"provider":"fake","model":"test"}}),
+        json!({"model":{"provider":"expensive","model":"other"}}),
+        json!({"provider":"fake"}),
+        json!({"provider":"other"}),
+        json!({"model":null}),
+    ] {
+        let wire = Fake::new();
+        let selector = Arc::new(FakeSelector::default());
+        let (f, _, fake, _) =
+            model_fixture("no-script-model", wire, selector.clone(), Arc::new(NoHooks));
+        let script = format!(
+            "try {{return await llm(Object.assign({{prompt:'x'}},{}));}}catch(e){{return e.data.code;}}",
+            selection
+        );
+        common::install(&f, &Caller::Operator, &script, &model_manifest());
+        approve_model(&f);
+        let run = common::admit(&f, "host-flow", "one");
+        f.module.engine.run_until_idle(50).unwrap();
+        assert_eq!(
+            f.module.rt.run(&run).unwrap().result.as_deref(),
+            Some("\"model_not_allowed\"")
+        );
+        assert!(fake.sends().is_empty());
+        assert!(selector.requests.lock().unwrap().is_empty());
+    }
+}
+#[test]
+fn omitted_digest_action_uses_each_recipient_approved_cap() {
+    for cap in ["silent", "piggyback", "wake"] {
+        let wire = Fake::new();
+        let consent = Arc::new(CoreConsent::new(wire.clone()));
+        let f = fixture(wire.clone(), consent.clone(), "digest-default");
+        let mut m = manifest();
+        m["sinks"][0]["digest_max"] = json!(cap);
+        common::install(
+            &f,
+            &Caller::Operator,
+            "await sink.digest('SYNAPSE',{title:'x'});return 1;",
+            &m,
+        );
+        approve(&wire, &consent);
+        let run = common::admit(&f, "host-flow", "one");
+        f.module.engine.run_until_idle(50).unwrap();
+        assert_eq!(f.module.rt.run(&run).unwrap().state, RunState::Succeeded);
+        assert_eq!(wire.calls("sink.digest")[0]["params"]["action"], cap);
+    }
+}
+
+#[test]
+fn selections_freeze_at_intent_commit_and_only_uncommitted_calls_reselect() {
+    use basal_core::{Clock, Config, Durability};
+    use basal_host::broca::{
+        BrocaHost,
+        fake::FakeBroca,
+        wire::{ModelParams, RunFinishReason},
+    };
+    use basal_host::selector::{FakeSelector, ModelSelection};
+    use basal_module::{
+        dryrun::DryRunConfig,
+        engine::EngineConfig,
+        module::{Module, ModuleConfig},
+        pool::{PoolConfig, ProcessSpawner},
+    };
+    use basal_testkit::harness::{Point, Probe};
+    for boundary in [
+        "ModelSelected { position: 0 }#1",
+        "CallCommitted { position: 0 }#1",
+        "HostAnswered { position: 0 }#1",
+    ] {
+        let dir = common::scratch("selection-cut");
+        let selector = Arc::new(FakeSelector::default());
+        let wire = Fake::new();
+        let fake = Arc::new(FakeBroca::default());
+        let choice = |id: &str| ModelSelection {
+            provider_id: format!("registry-{id}"),
+            model_id: format!("model-{id}"),
+            variant: Some("registry-variant".into()),
+            decision_id: id.into(),
+            runner: ModelParams {
+                provider: format!("provider-{id}"),
+                model: format!("runner-{id}"),
+                variant: Some("runner-variant".into()),
+            },
+        };
+        selector
+            .replies
+            .lock()
+            .unwrap()
+            .extend([Ok(choice("first")), Ok(choice("second"))]);
+        let pool = PoolConfig::new(basal_testkit::channel::worker_binary());
+        let config = ModuleConfig {
+            store_path: dir.join("basal.db"),
+            durability: Durability { fullfsync: false },
+            runtime: Config {
+                clock: Clock::manual(common::T0),
+                selector: selector.clone(),
+                retry_backoff: std::time::Duration::ZERO,
+                ..Default::default()
+            },
+            pool: pool.clone(),
+            engine: EngineConfig::default(),
+            dry_run: DryRunConfig::new(dir.join("dry")),
+        };
+        let start = |hooks: Arc<dyn basal_core::Hooks>| {
+            let snapshots = Arc::new(basal_core::broca::BrocaStore::default());
+            let model = Arc::new(BrocaHost::new(
+                fake.clone(),
+                snapshots.clone(),
+                "/project".into(),
+                "basal".into(),
+                selector.clone(),
+            ));
+            let cat = Arc::new(SubcCatalog::new(wire.clone()));
+            let dependencies = Hosts {
+                host: Arc::new(RoutingHost::new(
+                    Arc::new(ModuleOpsHost::new(wire.clone(), cat.clone())),
+                    Arc::new(CoreHost::new(wire.clone())),
+                    model.clone(),
+                )),
+                catalog: cat,
+                consent: Arc::new(CoreConsent::new(wire.clone())),
+                hooks,
+            };
+            let module = Module::start_with_store(
+                config.clone(),
+                dependencies,
+                Arc::new(ProcessSpawner::new(&pool)),
+                |shared| snapshots.bind(shared).map_err(|e| e.to_string()),
+            )
+            .unwrap();
+            (module, model, snapshots)
+        };
+        let probe = Arc::new(Probe::crash_at(Point::parse(boundary).unwrap()));
+        let (module, model, snapshots) = start(probe.clone());
+        module.handle(&Caller::Operator,"flow.install",json!({"script":"return await llm({prompt:'x'});","manifest":model_manifest().to_string()})).unwrap();
+        let card = module.rt.cards("host-flow").unwrap()[0].card_id.clone();
+        module
+            .rt
+            .decide_card(&card, basal_core::cards::Decision::Approve, "operator")
+            .unwrap();
+        let run = module
+            .rt
+            .admit_trigger("host-flow", "cut", JsonText::null())
+            .unwrap()
+            .run_id()
+            .unwrap()
+            .to_owned();
+        assert!(module.engine.run_until_idle(50).is_err());
+        assert!(probe.fired());
+        module.rt.quiesce();
+        module.pool.stop();
+        assert_eq!(selector.requests.lock().unwrap().len(), 1);
+        let before_commit = boundary.starts_with("ModelSelected");
+        if before_commit {
+            assert!(fake.sends().is_empty());
+        }
+        drop(module);
+        drop(model);
+        drop(snapshots);
+        let (module, model, snapshots) = start(Arc::new(NoHooks));
+        assert_eq!(
+            module.rt.calls(&run).unwrap().len(),
+            if before_commit { 0 } else { 1 }
+        );
+        module.engine.run_until_idle(50).unwrap();
+        module.rt.quiesce();
+        assert_eq!(module.rt.run(&run).unwrap().state, RunState::Suspended);
+        assert_eq!(
+            selector.requests.lock().unwrap().len(),
+            if before_commit { 2 } else { 1 }
+        );
+        let row = module.rt.calls(&run).unwrap()[0].clone();
+        let envelope: Value = serde_json::from_str(row.request.as_ref().unwrap().as_str()).unwrap();
+        let expected = choice(if before_commit { "second" } else { "first" });
+        assert_eq!(
+            envelope["selection"],
+            serde_json::to_value(&expected).unwrap()
+        );
+        let sends = fake.sends();
+        assert!(!sends.is_empty());
+        assert!(sends.iter().all(|(_, bytes)| bytes == &sends[0].1));
+        assert_eq!(
+            serde_json::from_slice::<Value>(&sends[0].1).unwrap()["model"],
+            serde_json::to_value(expected.runner).unwrap()
+        );
+        fake.finish(
+            &row.idempotency_key,
+            "answer",
+            RunFinishReason::Completed,
+            None,
+        )
+        .unwrap();
+        model.poll().unwrap();
+        module.engine.run_until_idle(50).unwrap();
+        assert_eq!(module.rt.run(&run).unwrap().state, RunState::Succeeded);
+        assert_eq!(selector.reports.lock().unwrap()[0].0, expected.decision_id);
+        module.pool.stop();
+        drop(module);
+        drop(model);
+        drop(snapshots);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[test]
+fn an_unconfigured_selector_has_no_default_model() {
+    let wire = Fake::new();
+    let (f, _, fake, _) = model_fixture(
+        "no-default-model",
+        wire,
+        Arc::new(basal_host::selector::UnconfiguredSelector),
+        Arc::new(NoHooks),
+    );
+    common::install(
+        &f,
+        &Caller::Operator,
+        "try{return await llm({prompt:'x'});}catch(e){return e.data.code;}",
+        &model_manifest(),
+    );
+    approve_model(&f);
+    let run = common::admit(&f, "host-flow", "one");
+    f.module.engine.run_until_idle(50).unwrap();
+    assert_eq!(
+        f.module.rt.run(&run).unwrap().result.as_deref(),
+        Some("\"route_not_configured\"")
+    );
+    assert!(fake.sends().is_empty());
+}
+#[test]
+fn management_envelopes_preserve_frozen_parameter_bytes() {
+    let params = br#"{ "prompt" : "unicode text", "send_id" : "key-1" }"#;
+    let bytes = basal_host::transport::management_bytes("session.send", params).unwrap();
+    assert_eq!(
+        bytes,
+        br#"{"method":"session.send","params":{ "prompt" : "unicode text", "send_id" : "key-1" }}"#
+    );
+    assert!(matches!(
+        basal_host::transport::management_bytes("session.send", b"broken"),
+        Err(WireError::NeverSent(_))
+    ));
+    assert!(basal_host::transport::management_bytes("session.send", b"[]").is_err());
+}

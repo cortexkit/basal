@@ -30,6 +30,7 @@ use crate::pool::{ProcessSpawner, Spawn};
 pub type Configure = Box<dyn Fn(PathBuf) -> ModuleConfig + Send + Sync>;
 /// Builds the hosts the module runs with.
 pub type MakeHosts = Box<dyn Fn() -> Hosts + Send + Sync>;
+pub type InitializeHosts = Box<dyn Fn(Arc<basal_core::Store>) -> Result<(), String> + Send + Sync>;
 
 enum Phase {
     Starting,
@@ -46,6 +47,7 @@ pub struct BasalHandler {
     routes: Mutex<HashMap<RouteKey, (Option<Principal>, String)>>,
     configure: Arc<Configure>,
     hosts: Arc<MakeHosts>,
+    initialize: Arc<InitializeHosts>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -59,7 +61,12 @@ impl BasalHandler {
             routes: Mutex::new(HashMap::new()),
             configure: Arc::new(configure),
             hosts: Arc::new(hosts),
+            initialize: Arc::new(Box::new(|_| Ok(()))),
         }
+    }
+    pub fn with_store_initializer(mut self, initialize: InitializeHosts) -> Self {
+        self.initialize = Arc::new(initialize);
+        self
     }
 }
 
@@ -110,14 +117,18 @@ fn start(
     path: PathBuf,
     configure: Arc<Configure>,
     hosts: Arc<MakeHosts>,
+    initialize: Arc<InitializeHosts>,
     phase: Arc<Mutex<Phase>>,
 ) {
     std::thread::spawn(move || {
+        let dependencies = hosts();
         let config = configure(path);
         let deadline = std::time::Instant::now() + OPEN_RETRY;
         let started = loop {
             let spawner: Arc<dyn Spawn> = Arc::new(ProcessSpawner::new(&config.pool));
-            match Module::start(config.clone(), hosts(), spawner) {
+            match Module::start_with_store(config.clone(), dependencies.clone(), spawner, |store| {
+                initialize(store)
+            }) {
                 Ok(module) => break Ok(module),
                 Err(e) if std::time::Instant::now() < deadline => {
                     tracing::warn!(target: "store", "starting: {e}; retrying");
@@ -230,6 +241,7 @@ impl ModuleHandler for BasalHandler {
                 path,
                 self.configure.clone(),
                 self.hosts.clone(),
+                self.initialize.clone(),
                 self.phase.clone(),
             ),
             Err(e) => {

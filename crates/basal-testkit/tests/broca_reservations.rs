@@ -4,7 +4,7 @@ use basal_core::{ActivationEnd, Config, NoHooks, Runtime, Store};
 use basal_host::broca::{
     BrocaHost, StateStore,
     fake::FakeBroca,
-    wire::{ModelParams, RunFinishReason, Usage},
+    wire::{RunFinishReason, Usage},
 };
 use basal_host::{Completion, CompletionAck, HostOutcome, TokenUsage};
 use basal_proto::JsonText;
@@ -22,11 +22,7 @@ fn setup(world: &World) -> (Runtime, Arc<BrocaHost>, Arc<FakeBroca>, Arc<BrocaSt
         snapshots.clone(),
         "/project".into(),
         "basal".into(),
-        ModelParams {
-            provider: "fake".into(),
-            model: "test".into(),
-            variant: None,
-        },
+        world.selector.clone(),
     ));
     let rt = Runtime::new(
         store,
@@ -35,6 +31,7 @@ fn setup(world: &World) -> (Runtime, Arc<BrocaHost>, Arc<FakeBroca>, Arc<BrocaSt
         Arc::new(NoHooks),
         Some(world.source.clone()),
         Config {
+            selector: world.selector.clone(),
             auto_resume: false,
             activation_deadline: Duration::from_secs(60),
             ..Config::default()
@@ -45,7 +42,7 @@ fn setup(world: &World) -> (Runtime, Arc<BrocaHost>, Arc<FakeBroca>, Arc<BrocaSt
 }
 fn admit(rt: &Runtime, world: &World, script: &str) -> String {
     let mut manifest = test_manifest();
-    manifest["llm"] = json!({"token_cap":{"tokens":10000,"window":"1h"},"max_output":100});
+    manifest["llm"] = json!({"iq":0,"token_cap":{"tokens":10000,"window":"1h"},"max_output":100});
     rt.admit(&world.spec_with(rt, script, &manifest).unwrap())
         .unwrap()
         .run_id()
@@ -181,6 +178,7 @@ fn script_value_cannot_supply_usage_and_absent_ledger_fields_are_nullable() {
         .runtime(
             Arc::new(NoHooks),
             Config {
+                selector: world.selector.clone(),
                 auto_resume: false,
                 activation_deadline: Duration::from_secs(60),
                 ..Config::default()
@@ -243,11 +241,7 @@ fn sqlite_snapshot_cut_never_persists_a_cursor_without_its_text() {
         snapshots.clone(),
         "/project".into(),
         "basal".into(),
-        ModelParams {
-            provider: "fake".into(),
-            model: "test".into(),
-            variant: None,
-        },
+        world.selector.clone(),
     );
     host.poll().unwrap();
     let after = snapshots.load().unwrap()[0].clone();

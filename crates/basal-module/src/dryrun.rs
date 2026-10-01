@@ -333,6 +333,7 @@ impl DryRunner {
             owner: format!("basal-dry-run-{}", std::process::id()),
             clock: clock.clone(),
             auto_resume: false,
+            selector: Arc::new(CapturedSelector),
             ..self.base.clone()
         };
         let rt = Runtime::new(
@@ -535,8 +536,8 @@ fn describe_call(call: &CallRow, config: &DryRunConfig) -> Value {
 }
 
 /// The action a digest write would have taken: the less intrusive of what
-/// the flow asked for (Wake when it names none, since core's delivery
-/// planner starts from Wake) and the manifest's cap for the recipient. The
+/// the flow asked for and the manifest's cap for the recipient. An omitted
+/// action means the approved digest_max, just as in a live journaled request. The
 /// recipient's own delivery policy lives in core, which a dry run does not
 /// reach, so it is not applied.
 fn effective_sink_action(manifest: &Manifest, args: &JsonText) -> Value {
@@ -544,7 +545,7 @@ fn effective_sink_action(manifest: &Manifest, args: &JsonText) -> Value {
     let agent = args.get("agent").and_then(Value::as_str).unwrap_or("");
     let requested = match args.get("action").and_then(Value::as_str) {
         Some(a) => DigestAction::parse(a),
-        None => Some(DigestAction::Wake),
+        None => manifest.digest_cap(agent),
     };
     let cap = manifest.digest_cap(agent);
     let effective = match (requested, cap) {
@@ -715,5 +716,27 @@ impl Host for CaptureHost {
         // The scratch runtime's completion sink is not passed on to the
         // real host: the real host has one sink, the real runtime's, and
         // attaching another would take completions away from it.
+    }
+}
+
+#[derive(Debug)]
+struct CapturedSelector;
+impl basal_host::selector::ModelSelector for CapturedSelector {
+    fn select(
+        &self,
+        _: &basal_host::selector::SelectionRequest,
+    ) -> Result<basal_host::selector::ModelSelection, basal_host::selector::SelectionError> {
+        // Previewing a model write must not allocate a real routing decision.
+        Err(basal_host::selector::SelectionError::Refused {
+            code: CAPTURED.into(),
+            detail: "model call captured without selecting or sending model work".into(),
+        })
+    }
+    fn report_outcome(
+        &self,
+        _: &str,
+        _: basal_host::selector::ModelOutcome,
+    ) -> Result<(), basal_host::selector::SelectionError> {
+        Ok(())
     }
 }

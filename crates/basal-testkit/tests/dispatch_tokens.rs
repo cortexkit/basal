@@ -16,8 +16,7 @@ use serde_json::{Value, json};
 
 fn manifest(tokens: u64, window: &str, max_output: u32) -> Value {
     let mut m = test_manifest();
-    m["llm"] =
-        json!({ "token_cap": { "tokens": tokens, "window": window }, "max_output": max_output });
+    m["llm"] = json!({ "iq": 0, "token_cap": { "tokens": tokens, "window": window }, "max_output": max_output });
     m["deadline"] = json!("24h");
     m
 }

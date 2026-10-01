@@ -51,6 +51,7 @@ pub fn scratch(tag: &str) -> PathBuf {
 
 pub struct Options {
     pub hosts: Option<Hosts>,
+    pub selector: Arc<dyn basal_host::selector::ModelSelector>,
     pub warm_spares: usize,
     pub max_concurrent: usize,
     pub spawner: Option<Arc<dyn Spawn>>,
@@ -64,6 +65,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             hosts: None,
+            selector: Arc::new(basal_host::selector::FakeSelector::default()),
             warm_spares: 1,
             max_concurrent: 4,
             spawner: None,
@@ -84,6 +86,14 @@ pub fn pool_config(o: &Options) -> PoolConfig {
 }
 
 pub fn fixture(tag: &str, o: Options) -> Fixture {
+    fixture_with_store(tag, o, |_| Ok(()))
+}
+
+pub fn fixture_with_store(
+    tag: &str,
+    o: Options,
+    initialize: impl FnOnce(Arc<basal_core::Store>) -> Result<(), String>,
+) -> Fixture {
     let dir = scratch(tag);
     let clock = Clock::manual(T0);
     let mock = MockHost::new();
@@ -95,6 +105,7 @@ pub fn fixture(tag: &str, o: Options) -> Fixture {
         .clone()
         .unwrap_or_else(|| Arc::new(ProcessSpawner::new(&pool)));
     let mut runtime = Config {
+        selector: o.selector.clone(),
         clock: clock.clone(),
         activation_deadline: Duration::from_secs(60),
         ..Config::default()
@@ -111,7 +122,7 @@ pub fn fixture(tag: &str, o: Options) -> Fixture {
         },
         dry_run: DryRunConfig::new(dir.join("dry-run")),
     };
-    let module = Module::start(
+    let module = Module::start_with_store(
         config,
         o.hosts.unwrap_or_else(|| Hosts {
             host: Arc::new(mock.clone()),
@@ -120,6 +131,7 @@ pub fn fixture(tag: &str, o: Options) -> Fixture {
             hooks: o.hooks.clone(),
         }),
         spawner,
+        initialize,
     )
     .expect("module starts");
     Fixture {

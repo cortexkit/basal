@@ -36,7 +36,7 @@ use std::time::Duration;
 use basal_core::broca::BrocaStore;
 use basal_core::{Boundary, Clock, Config, Durability, Hooks, Step};
 use basal_host::Host;
-use basal_host::broca::{BrocaHost, fake::FakeBroca, wire::ModelParams};
+use basal_host::broca::{BrocaHost, fake::FakeBroca};
 use basal_host::mock::MockHost;
 use basal_host::{CardDecision, MockCatalog, MockConsent};
 use serde_json::{Value, json};
@@ -260,6 +260,7 @@ pub fn main() -> std::process::ExitCode {
         }
     };
     let broca_store = Arc::new(BrocaStore::default());
+    let selector = Arc::new(basal_host::selector::FakeSelector::default());
     let fake = match FakeBroca::persistent(args.dir.join("broca.json")) {
         Ok(fake) => Arc::new(fake),
         Err(error) => {
@@ -272,11 +273,7 @@ pub fn main() -> std::process::ExitCode {
         broca_store.clone(),
         args.dir.to_string_lossy().into_owned(),
         "basal".into(),
-        ModelParams {
-            provider: "fake".into(),
-            model: "test".into(),
-            variant: None,
-        },
+        selector.clone(),
     ));
     let model_host: Arc<dyn Host> = if args.broca {
         broca.clone()
@@ -301,6 +298,7 @@ pub fn main() -> std::process::ExitCode {
         durability: Durability { fullfsync: false },
         runtime: Config {
             clock: clock.clone(),
+            selector: selector.clone(),
             activation_deadline: Duration::from_secs(60),
             ..Config::default()
         },
@@ -327,7 +325,7 @@ pub fn main() -> std::process::ExitCode {
     } else {
         model_host
     };
-    let module = match Module::start(
+    let module = match Module::start_with_store(
         config,
         Hosts {
             host,
@@ -336,6 +334,13 @@ pub fn main() -> std::process::ExitCode {
             hooks,
         },
         Arc::new(ProcessSpawner::new(&pool)),
+        |shared| {
+            if args.broca {
+                broca_store.bind(shared).map_err(|e| e.to_string())
+            } else {
+                Ok(())
+            }
+        },
     ) {
         Ok(m) => m,
         Err(e) => {
@@ -344,10 +349,7 @@ pub fn main() -> std::process::ExitCode {
         }
     };
     if args.broca {
-        if let Err(error) = broca_store
-            .bind(module.rt.shared_store())
-            .and_then(|_| broca.poll())
-        {
+        if let Err(error) = broca.poll() {
             eprintln!("ck-basal-harness: {error}");
             return std::process::ExitCode::FAILURE;
         }

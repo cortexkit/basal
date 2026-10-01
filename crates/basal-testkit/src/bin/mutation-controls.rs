@@ -9,7 +9,7 @@
 //! committed or staged:
 //!
 //! ```text
-//! cargo run -p basal-testkit --bin mutation-controls [-- [--journal | --dispatch | --schedule | --module | --broca | --hosts] [--check] [<label filter>]]
+//! cargo run -p basal-testkit --bin mutation-controls [-- [--worker | --journal | --dispatch | --schedule | --module | --broca | --hosts] [--check] [<label filter>]]
 //! ```
 //!
 //! Without a suite flag it runs the worker engine's controls; with
@@ -71,6 +71,7 @@ enum Target {
     ModuleLib,
     /// An integration test of the Broca host with a fake instead of a live service.
     Host(&'static str),
+    HostLib,
 }
 
 struct Control {
@@ -2590,6 +2591,7 @@ fn run_control(root: &Path, control: &Control) -> Result<Value, String> {
         Target::Module(file) => command.args(["-p", "basal-module", "--test", file]),
         Target::ModuleLib => command.args(["-p", "basal-module", "--lib"]),
         Target::Host(file) => command.args(["-p", "basal-host", "--test", file]),
+        Target::HostLib => command.args(["-p", "basal-host", "--lib"]),
     };
     command.args([control.test, "--", "--exact"]);
     let ran = run_with_timeout(command, TEST_TIMEOUT);
@@ -2638,21 +2640,48 @@ fn run_control(root: &Path, control: &Control) -> Result<Value, String> {
     }))
 }
 
+const KNOWN_SETS: &[&str] = &[
+    "--worker",
+    "--journal",
+    "--dispatch",
+    "--schedule",
+    "--module",
+    "--broca",
+    "--hosts",
+];
+fn parse_options(args: Vec<String>) -> Result<(String, bool, Option<String>), String> {
+    let mut suite = String::new();
+    let mut check = false;
+    let mut filter = None;
+    for arg in args {
+        if arg == "--check" {
+            check = true;
+        } else if KNOWN_SETS.contains(&arg.as_str()) {
+            if !suite.is_empty() {
+                return Err("choose exactly one control set".into());
+            }
+            suite = arg;
+        } else if arg.starts_with("--") {
+            return Err(format!("unknown control flag: {arg}"));
+        } else if filter.replace(arg).is_some() {
+            return Err("choose at most one label filter".into());
+        }
+    }
+    Ok((suite, check, filter))
+}
+
 fn main() -> ExitCode {
     // `--journal` selects the journal and runtime controls, `--dispatch`
     // the manifest, authorization and dispatch-ledger controls, and
     // `--schedule` the scheduler's (all in basal-core, driven through
     // basal-testkit's tests); the default is the worker's.
-    let mut args: Vec<String> = std::env::args().skip(1).collect();
-    let suite = match args.first().map(String::as_str) {
-        Some(
-            flag @ ("--journal" | "--dispatch" | "--schedule" | "--module" | "--broca" | "--hosts"),
-        ) => {
-            let flag = flag.to_owned();
-            args.remove(0);
-            flag
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let (suite, check, filter) = match parse_options(args) {
+        Ok(options) => options,
+        Err(error) => {
+            eprintln!("{error}\nKnown sets: {}", KNOWN_SETS.join(", "));
+            return ExitCode::from(2);
         }
-        _ => String::new(),
     };
     let (controls, evidence_file) = match suite.as_str() {
         "--journal" => (JOURNAL_CONTROLS, "docs/findings/slice-2-mutations.json"),
@@ -2665,11 +2694,6 @@ fn main() -> ExitCode {
     };
     // `--check` only verifies that every edit's text occurs exactly once,
     // without touching anything.
-    let check = args.first().is_some_and(|a| a == "--check");
-    if check {
-        args.remove(0);
-    }
-    let filter = args.into_iter().next();
     if check {
         let mut ok = true;
         for control in controls {
@@ -2768,6 +2792,409 @@ fn main() -> ExitCode {
 }
 
 const HOST_CONTROLS: &[Control] = &[
+    Control {
+        label: "selector: unconfigured selector chooses a default",
+        edits: &[(
+            "crates/basal-host/src/selector.rs",
+            "fn select(&self, _: &SelectionRequest) -> Result<ModelSelection, SelectionError> {",
+            "fn select(&self, request: &SelectionRequest) -> Result<ModelSelection, SelectionError> { return FakeSelector::default().select(request);",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "an_unconfigured_selector_has_no_default_model",
+    },
+    Control {
+        label: "selector: no_available_model code lost",
+        edits: &[(
+            "crates/basal-host/src/selector.rs",
+            "            code,\n            detail: message,",
+            "            code: if code == \"no_available_model\" {\"wrong\".into()} else {code},\n            detail: message,",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "selector_refusals_are_journaled_with_each_code_and_never_send_broca",
+    },
+    Control {
+        label: "selector: quota_or_cooldown_exhausted code lost",
+        edits: &[(
+            "crates/basal-host/src/selector.rs",
+            "            code,\n            detail: message,",
+            "            code: if code == \"quota_or_cooldown_exhausted\" {\"wrong\".into()} else {code},\n            detail: message,",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "selector_refusals_are_journaled_with_each_code_and_never_send_broca",
+    },
+    Control {
+        label: "selector: all_routes_inadequate code lost",
+        edits: &[(
+            "crates/basal-host/src/selector.rs",
+            "            code,\n            detail: message,",
+            "            code: if code == \"all_routes_inadequate\" {\"wrong\".into()} else {code},\n            detail: message,",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "selector_refusals_are_journaled_with_each_code_and_never_send_broca",
+    },
+    Control {
+        label: "selector: no_adequate_route code lost",
+        edits: &[(
+            "crates/basal-host/src/selector.rs",
+            "            code,\n            detail: message,",
+            "            code: if code == \"no_adequate_route\" {\"wrong\".into()} else {code},\n            detail: message,",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "selector_refusals_are_journaled_with_each_code_and_never_send_broca",
+    },
+    Control {
+        label: "selector: missing_required_capability code lost",
+        edits: &[(
+            "crates/basal-host/src/selector.rs",
+            "            code,\n            detail: message,",
+            "            code: if code == \"missing_required_capability\" {\"wrong\".into()} else {code},\n            detail: message,",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "selector_refusals_are_journaled_with_each_code_and_never_send_broca",
+    },
+    Control {
+        label: "selector: context_too_small code lost",
+        edits: &[(
+            "crates/basal-host/src/selector.rs",
+            "            code,\n            detail: message,",
+            "            code: if code == \"context_too_small\" {\"wrong\".into()} else {code},\n            detail: message,",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "selector_refusals_are_journaled_with_each_code_and_never_send_broca",
+    },
+    Control {
+        label: "selector: invalid_requirements code lost",
+        edits: &[(
+            "crates/basal-host/src/selector.rs",
+            "            code,\n            detail: message,",
+            "            code: if code == \"invalid_requirements\" {\"wrong\".into()} else {code},\n            detail: message,",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "selector_refusals_are_journaled_with_each_code_and_never_send_broca",
+    },
+    Control {
+        label: "selector: missing runner falls back to selected ids",
+        edits: &[(
+            "crates/basal-host/src/selector.rs",
+            "let raw = reply.get(\"runner\").ok_or_else(|| SelectionError::Refused {\n        code: \"route_runner_missing\".into(),\n        detail: \"routing did not supply a Broca runner\".into(),\n    })?;",
+            "let fallback=json!({\"provider\":reply[\"selected\"][\"model\"][\"providerID\"],\"model\":reply[\"selected\"][\"model\"][\"modelID\"]}); let raw=reply.get(\"runner\").unwrap_or(&fallback);",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "routing_selection_reply_shapes_require_runner_and_preserve_both_identities",
+    },
+    Control {
+        label: "selector: selection checkpoint moved after intent",
+        edits: &[
+            (
+                "crates/basal-core/src/driver.rs",
+                "        if matches!(\n            call.kind,\n            CallKind::Primitive(Primitive::Llm | Primitive::Classify)\n        ) {\n            self.at(Boundary::ModelSelected {\n                position: call.position,\n            })?;\n        }\n        let new = NewCall {",
+                "        let new = NewCall {",
+            ),
+            (
+                "crates/basal-core/src/driver.rs",
+                "                self.at(Boundary::CallCommitted {\n                    position: call.position,\n                })?;",
+                "                self.at(Boundary::CallCommitted {\n                    position: call.position,\n                })?; if matches!(call.kind, CallKind::Primitive(Primitive::Llm | Primitive::Classify)) { self.at(Boundary::ModelSelected {position:call.position})?; }",
+            ),
+        ],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "selections_freeze_at_intent_commit_and_only_uncommitted_calls_reselect",
+    },
+    Control {
+        label: "integration: unknown flags become filters",
+        edits: &[(
+            "crates/basal-testkit/src/bin/mutation-controls.rs",
+            "arg.starts_with(\"--\")",
+            "false",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("mutation_cli"),
+        test: "unknown_control_flags_refuse_without_running_any_set",
+    },
+    Control {
+        label: "integration: model store initialization omitted",
+        edits: &[(
+            "crates/basal-module/src/module.rs",
+            "initialize(store.clone())?;",
+            "let _ = initialize;",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "routing_host_model_selection_and_digest_sink_share_the_journal_store",
+    },
+    Control {
+        label: "integration: accepted model subscription wake omitted",
+        edits: &[(
+            "crates/basal-host/src/routing.rs",
+            "self.target(&request.kind).dispatch_committed(request);",
+            "let _ = request;",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "routing_host_model_selection_and_digest_sink_share_the_journal_store",
+    },
+    Control {
+        label: "integration: stream wake omitted",
+        edits: &[(
+            "crates/basal-host/src/broca/subc.rs",
+            "let terminal = self.push(bytes)?;\n        (wake)();",
+            "let terminal = self.push(bytes)?;\n        let _ = wake;",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::HostLib,
+        test: "broca::subc::tests::stream_and_reconnect_wakeups_are_coalesced_without_a_clock",
+    },
+    Control {
+        label: "integration: reconnect wake omitted",
+        edits: &[(
+            "crates/basal-host/src/broca/subc.rs",
+            "lock(streams).clear();\n    (wake)();",
+            "lock(streams).clear();\n    let _ = wake;",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::HostLib,
+        test: "broca::subc::tests::stream_and_reconnect_wakeups_are_coalesced_without_a_clock",
+    },
+    Control {
+        label: "integration: buffered events drained before commit",
+        edits: &[(
+            "crates/basal-host/src/broca/subc.rs",
+            "state.events.iter().cloned().collect()",
+            "state.events.drain(..).collect()",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::HostLib,
+        test: "broca::subc::tests::stream_batches_replay_until_a_durable_cursor_and_keep_error_order",
+    },
+    Control {
+        label: "integration: frozen management parameters reserialized",
+        edits: &[(
+            "crates/basal-host/src/transport.rs",
+            "body.extend(params);",
+            "body.extend(serde_json::to_vec(&value).map_err(|e|WireError::NeverSent(e.to_string()))?);",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "management_envelopes_preserve_frozen_parameter_bytes",
+    },
+    Control {
+        label: "integration: omitted digest sends silent",
+        edits: &[(
+            "crates/basal-core/src/driver.rs",
+            "serde_json::to_value(cap)",
+            "serde_json::to_value(\"silent\")",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "omitted_digest_action_uses_each_recipient_approved_cap",
+    },
+    Control {
+        label: "integration: dry run defaults digest to wake",
+        edits: &[(
+            "crates/basal-module/src/dryrun.rs",
+            "None => manifest.digest_cap(agent),",
+            "None => Some(DigestAction::Wake),",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("dry_run"),
+        test: "omitted_digest_action_in_dry_runs_is_the_recipient_digest_max",
+    },
+    Control {
+        label: "selector: iq becomes optional",
+        edits: &[(
+            "crates/basal-core/src/manifest.rs",
+            "pub iq: u32,",
+            "#[serde(default)]\n    pub iq: u32,",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_manifest"),
+        test: "llm_demands_are_required_bounded_and_default_eq_is_zero",
+    },
+    Control {
+        label: "selector: iq upper bound omitted",
+        edits: &[(
+            "crates/basal-core/src/manifest.rs",
+            "if llm.iq > 100 {",
+            "if false {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_manifest"),
+        test: "llm_demands_are_required_bounded_and_default_eq_is_zero",
+    },
+    Control {
+        label: "selector: eq upper bound omitted",
+        edits: &[(
+            "crates/basal-core/src/manifest.rs",
+            "if llm.eq > 100 {",
+            "if false {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("dispatch_manifest"),
+        test: "llm_demands_are_required_bounded_and_default_eq_is_zero",
+    },
+    Control {
+        label: "selector: script model guard omitted before routing",
+        edits: &[(
+            "crates/basal-core/src/driver.rs",
+            "(args.get(\"model\").is_some() || args.get(\"provider\").is_some())",
+            "false",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "script_model_or_provider_is_rejected_before_selection_even_if_it_matches",
+    },
+    Control {
+        label: "selector: broker script model guard omitted",
+        edits: &[(
+            "crates/basal-host/src/broca/mod.rs",
+            "e.request.get(\"model\").is_some() || e.request.get(\"provider\").is_some()",
+            "false",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Host("broca"),
+        test: "broker_rejects_script_model_choices_even_with_a_valid_journaled_selection",
+    },
+    Control {
+        label: "selector: flow target changed",
+        edits: &[(
+            "crates/basal-host/src/selector.rs",
+            "\"targetAgent\":\"flow\"",
+            "\"targetAgent\":\"operator\"",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "routing_select_request_bytes_are_exact_without_available_models",
+    },
+    Control {
+        label: "selector: demands swapped",
+        edits: &[(
+            "crates/basal-host/src/selector.rs",
+            "\"iq\":request.iq,\"eq\":request.eq",
+            "\"iq\":request.eq,\"eq\":request.iq",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "routing_select_request_bytes_are_exact_without_available_models",
+    },
+    Control {
+        label: "selector: availableModels added",
+        edits: &[(
+            "crates/basal-host/src/selector.rs",
+            "\"substrate\":\"broca\"",
+            "\"substrate\":\"broca\",\"availableModels\":[]",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "routing_select_request_bytes_are_exact_without_available_models",
+    },
+    Control {
+        label: "selector: runner mapped from registry identities",
+        edits: &[(
+            "crates/basal-host/src/selector.rs",
+            "pub fn decode_selection(reply: Value) -> Result<ModelSelection, SelectionError> {",
+            "pub fn decode_selection(mut reply: Value) -> Result<ModelSelection, SelectionError> { reply[\"runner\"] = json!({\"provider\":reply[\"selected\"][\"model\"][\"providerID\"],\"model\":reply[\"selected\"][\"model\"][\"modelID\"]});",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "routing_selection_reply_shapes_require_runner_and_preserve_both_identities",
+    },
+    Control {
+        label: "selector: registry variant not journaled",
+        edits: &[(
+            "crates/basal-host/src/selector.rs",
+            "        variant,\n        decision_id:",
+            "        variant: None,\n        decision_id:",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "routing_selection_reply_shapes_require_runner_and_preserve_both_identities",
+    },
+    Control {
+        label: "selector: unreachable retry bound omitted",
+        edits: &[(
+            "crates/basal-core/src/driver.rs",
+            "retries >= self.rt.config.unavailable_retries",
+            "retries >= u32::MAX",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "unreachable_selector_retries_boundedly_then_journals_route_unavailable",
+    },
+    Control {
+        label: "selector: provider refusal code lost in journal",
+        edits: &[(
+            "crates/basal-core/src/driver.rs",
+            "return Err(Refusal::new(code, detail));",
+            "return Err(Refusal::new(\"route_unavailable\", detail));",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "selector_refusals_are_journaled_with_each_code_and_never_send_broca",
+    },
+    Control {
+        label: "selector: reissue changes selected runner",
+        edits: &[(
+            "crates/basal-core/src/runtime.rs",
+            "args: row.dispatch_args(),",
+            "args: { let mut v: serde_json::Value = serde_json::from_str(row.dispatch_args().as_str()).map_err(|_| ()).unwrap_or(serde_json::Value::Null); v[\"selection\"][\"runner\"][\"model\"] = serde_json::json!(\"wrong\"); JsonText::new(v.to_string()).unwrap_or_else(|_| JsonText::null()) },",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "selections_freeze_at_intent_commit_and_only_uncommitted_calls_reselect",
+    },
+    Control {
+        label: "selector: outcome report omitted",
+        edits: &[(
+            "crates/basal-host/src/broca/mod.rs",
+            ".report_outcome(&call.selection.decision_id, outcome)",
+            ".report_outcome(\"wrong-decision\", outcome)",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Host("broca"),
+        test: "model_outcomes_report_the_selected_decision_best_effort",
+    },
+    Control {
+        label: "selector: outcome failure blocks completion",
+        edits: &[(
+            "crates/basal-host/src/broca/mod.rs",
+            "tracing::warn!(%error,\"model routing outcome report failed\");",
+            "return Err(BrocaError::Wire(error.to_string()));",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Host("broca"),
+        test: "model_outcomes_report_the_selected_decision_best_effort",
+    },
+    Control {
+        label: "selector: cancelled outcome marked completed",
+        edits: &[(
+            "crates/basal-host/src/broca/mod.rs",
+            "RunFinishReason::Cancelled => ModelOutcome::Cancelled",
+            "RunFinishReason::Cancelled => ModelOutcome::Completed",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Host("broca"),
+        test: "model_outcomes_report_the_selected_decision_best_effort",
+    },
+    Control {
+        label: "selector: decision outcome key changed",
+        edits: &[(
+            "crates/basal-host/src/selector.rs",
+            "\"decisionID\":decision_id,\"outcome\":outcome",
+            "\"decisionID\":\"wrong\",\"outcome\":outcome",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "routing_select_request_bytes_are_exact_without_available_models",
+    },
     Control {
         label: "hosts: facts request groups discarded",
         edits: &[(

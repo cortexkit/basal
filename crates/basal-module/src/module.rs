@@ -33,6 +33,7 @@ pub struct ModuleConfig {
 
 /// The systems the module reaches, supplied by whoever starts it: the real
 /// adapters, the unconfigured ones, or the mocks.
+#[derive(Clone)]
 pub struct Hosts {
     pub host: Arc<dyn Host>,
     pub catalog: Arc<dyn Catalog>,
@@ -61,8 +62,22 @@ impl Module {
         hosts: Hosts,
         spawner: Arc<dyn Spawn>,
     ) -> Result<Self, String> {
+        Self::start_with_store(config, hosts, spawner, |_| Ok(()))
+    }
+
+    /// Bind adapters to the SQLite Store used by Runtime before attaching
+    /// completion sinks or recovering calls. Broca must not save completions
+    /// through an unbound store or a second writer.
+    pub fn start_with_store(
+        config: ModuleConfig,
+        hosts: Hosts,
+        spawner: Arc<dyn Spawn>,
+        initialize: impl FnOnce(Arc<Store>) -> Result<(), String>,
+    ) -> Result<Self, String> {
         let store = Store::open(&config.store_path, config.durability)
             .map_err(|e| format!("opening the store at {}: {e}", config.store_path.display()))?;
+        let store = Arc::new(store);
+        initialize(store.clone())?;
         let runtime_config = Config {
             auto_resume: false,
             ..config.runtime
@@ -72,7 +87,7 @@ impl Module {
         let fatal = Fatal::new();
         let pool = Pool::new(config.pool.clone(), spawner, clock, metrics.clone());
         let rt = Runtime::new(
-            Arc::new(store),
+            store,
             hosts.host.clone(),
             hosts.catalog.clone(),
             hosts.hooks,

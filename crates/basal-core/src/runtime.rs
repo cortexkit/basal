@@ -82,6 +82,7 @@ pub struct Config {
     /// How many times a transient `Unavailable` is retried inside one call,
     /// when retrying is safe.
     pub unavailable_retries: u32,
+    pub selector: Arc<dyn basal_host::selector::ModelSelector>,
     pub retry_backoff: Duration,
     /// After this many activations end with a broken worker, the run fails.
     pub max_broken_activations: u32,
@@ -107,6 +108,7 @@ impl Default for Config {
             budgets: Budgets::default(),
             activation_deadline: Duration::from_secs(60),
             unavailable_retries: 3,
+            selector: Arc::new(basal_host::selector::UnconfiguredSelector),
             retry_backoff: Duration::from_millis(5),
             max_broken_activations: 3,
             auto_resume: false,
@@ -637,12 +639,14 @@ impl Runtime {
         match answer {
             Ok(Dispatched::Completed(outcome)) => {
                 self.accept(&run_id, position, None, &outcome, Source::Host)?;
+                self.shared.host.dispatch_committed(&request);
             }
             Ok(Dispatched::Accepted { handle }) => {
                 self.shared
                     .store
                     .write(|tx| journal::record_accepted(tx, &run_id, position, &handle))?;
                 self.at(&run_id, Boundary::AcceptedCommitted { position })?;
+                self.shared.host.dispatch_committed(&request);
             }
             Err(detail) if class == StoredClass::Query || !maybe_sent => {
                 // Nothing can have happened remotely: a query has no effect,

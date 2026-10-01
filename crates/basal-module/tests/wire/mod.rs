@@ -39,6 +39,10 @@ impl Fake {
             "agent.list" => Ok(
                 json!({"agents":[{"agent_id":"ag_synapse","name":"SYNAPSE","name_version":1,"tag":"synapse","labels":[],"role":"head","sleep":false,"wake_policy_version":1,"reachability":{"state":"unknown"},"created_at":0,"residence":{"machine_id":"local","harness":"opencode","address_json":"{\"session\":\"ses-author\"}","residence_epoch":1,"residence_state":"active"}}]}),
             ),
+            "route.select" => Ok(
+                json!({"selected":{"model":{"providerID":"registry-provider","modelID":"registry-model"}},"decisionID":format!("decision:{}",params["sendID"].as_str().unwrap_or("")),"runner":{"provider":"fake","model":"test"}}),
+            ),
+            "route.set_decision_outcome" => Ok(json!({"ok":true})),
             "elicitation.request" => Ok(json!({"elicitation_id":"el_1"})),
             "elicitation.answers" => Ok(json!({"records":[],"cursor":0})),
             "elicitation.ack" => Ok(json!({"ok":true})),

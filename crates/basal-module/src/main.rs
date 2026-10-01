@@ -9,7 +9,7 @@
 //! falls through to serving.
 
 use std::process::ExitCode;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use basal_core::{Config, Durability, NoHooks};
 use basal_module::dryrun::DryRunConfig;
@@ -62,6 +62,16 @@ fn serve() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    struct Models {
+        store: Arc<basal_core::broca::BrocaStore>,
+        host: Arc<basal_host::broca::BrocaHost>,
+        wake: Arc<basal_host::broca::subc::PollWake>,
+        selector: Arc<dyn basal_host::selector::ModelSelector>,
+    }
+    let models = Arc::new(Mutex::new(None::<Models>));
+    let configured_models = models.clone();
+    let built_models = models.clone();
+    let initialized_models = models.clone();
     tracing::info!("basal module starting");
     let handler = BasalHandler::new(
         Box::new(move |store_path| {
@@ -72,13 +82,21 @@ fn serve() -> ExitCode {
             ModuleConfig {
                 store_path,
                 durability: Durability::default(),
-                runtime: Config::default(),
+                runtime: Config {
+                    selector: configured_models
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .as_ref()
+                        .map(|m| m.selector.clone())
+                        .unwrap_or_else(|| Arc::new(basal_host::selector::UnconfiguredSelector)),
+                    ..Config::default()
+                },
                 pool: pool.clone(),
                 engine: EngineConfig::default(),
                 dry_run: DryRunConfig::new(scratch),
             }
         }),
-        Box::new(|| {
+        Box::new(move || {
             use basal_host::{
                 core_consent::CoreConsent,
                 core_host::CoreHost,
@@ -89,11 +107,34 @@ fn serve() -> ExitCode {
             match SubcTransport::connect(std::time::Duration::from_secs(30)) {
                 Ok(transport) => {
                     let catalog = Arc::new(SubcCatalog::new(transport.clone()));
+                    let selector = Arc::new(basal_host::selector::RoutingSelector::new(
+                        transport.clone(),
+                    ));
+                    let store = Arc::new(basal_core::broca::BrocaStore::default());
+                    let wake = basal_host::broca::subc::PollWake::new();
+                    let broca_transport = basal_host::broca::subc::SubcBrocaTransport::new(
+                        transport.clone(),
+                        "broca".into(),
+                        wake.callback(),
+                    );
+                    let model_host = Arc::new(basal_host::broca::BrocaHost::new(
+                        broca_transport,
+                        store.clone(),
+                        "/".into(),
+                        "basal".into(),
+                        selector.clone(),
+                    ));
+                    *built_models.lock().unwrap_or_else(|p| p.into_inner()) = Some(Models {
+                        store,
+                        host: model_host.clone(),
+                        wake,
+                        selector,
+                    });
                     Hosts {
                         host: Arc::new(RoutingHost::new(
                             Arc::new(ModuleOpsHost::new(transport.clone(), catalog.clone())),
                             Arc::new(CoreHost::new(transport.clone())),
-                            Arc::new(UnconfiguredHost::new()),
+                            model_host,
                         )),
                         catalog,
                         consent: Arc::new(CoreConsent::new(transport).with_polling()),
@@ -102,6 +143,7 @@ fn serve() -> ExitCode {
                 }
                 Err(error) => {
                     tracing::error!("consumer unavailable: {error:?}");
+                    *built_models.lock().unwrap_or_else(|p| p.into_inner()) = None;
                     Hosts {
                         host: Arc::new(UnconfiguredHost::new()),
                         catalog: Arc::new(EmptyCatalog),
@@ -111,7 +153,18 @@ fn serve() -> ExitCode {
                 }
             }
         }),
-    );
+    )
+    .with_store_initializer(Box::new(move |shared| {
+        if let Some(models) = initialized_models
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+        {
+            models.store.bind(shared).map_err(|e| e.to_string())?;
+            models.wake.start(&models.host);
+        }
+        Ok(())
+    }));
     match run(handler) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {

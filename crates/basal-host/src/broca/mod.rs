@@ -3,6 +3,7 @@
 //! The host records call identity, buffers final text and delivers outcomes.
 
 pub mod fake;
+pub mod subc;
 pub mod wire;
 
 use std::fmt;
@@ -12,6 +13,7 @@ use basal_proto::{CallKind, JsonText, Primitive, Settlement};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::selector::{ModelOutcome, ModelSelection, ModelSelector};
 use crate::{
     CallClass, CallRequest, Completion, CompletionSink, Dispatched, Host, HostOutcome, TokenUsage,
     TransportError,
@@ -56,6 +58,7 @@ pub trait Transport: Send + Sync {
     fn status(&self, route: &Route, params: &StatusParams)
     -> Result<RunStatusResponse, BrocaError>;
     fn read(&self, route: &Route, params: &ReadParams) -> Result<SessionReadResponse, BrocaError>;
+    fn release(&self, _route: &Route) {}
 }
 
 /// A save replaces one call's entire snapshot atomically. In particular text,
@@ -104,6 +107,9 @@ pub struct StoredCall {
     pub finish: Option<(RunFinishReason, Terminal)>,
     pub outcome: Option<StoredOutcome>,
     pub acknowledged: bool,
+    pub selection: ModelSelection,
+    #[serde(default)]
+    pub report_attempted: bool,
 }
 
 pub struct BrocaHost {
@@ -111,7 +117,7 @@ pub struct BrocaHost {
     store: Arc<dyn StateStore>,
     project_root: String,
     harness: String,
-    model: ModelParams,
+    selector: Arc<dyn ModelSelector>,
     gate: Mutex<()>,
     sink: Mutex<Option<Arc<dyn CompletionSink>>>,
 }
@@ -126,14 +132,14 @@ impl BrocaHost {
         store: Arc<dyn StateStore>,
         project_root: String,
         harness: String,
-        model: ModelParams,
+        selector: Arc<dyn ModelSelector>,
     ) -> Self {
         Self {
             transport,
             store,
             project_root,
             harness,
-            model,
+            selector,
             gate: Mutex::new(()),
             sink: Mutex::new(None),
         }
@@ -153,6 +159,7 @@ impl BrocaHost {
             op: String,
             max_output: u32,
             request: Value,
+            selection: ModelSelection,
         }
         let e: Envelope = serde_json::from_str(request.args.as_str())
             .map_err(|e| BrocaError::Invalid(e.to_string()))?;
@@ -170,7 +177,23 @@ impl BrocaHost {
                 "journaled model envelope does not match call identity".into(),
             ));
         }
-        let mut model = self.model.clone();
+        if e.request.get("model").is_some() || e.request.get("provider").is_some() {
+            return Err(BrocaError::Refused {
+                code: "model_not_allowed".into(),
+                detail: "scripts cannot select a provider or model".into(),
+            });
+        }
+        if e.selection.provider_id.is_empty()
+            || e.selection.model_id.is_empty()
+            || e.selection.decision_id.is_empty()
+            || e.selection.runner.provider.is_empty()
+            || e.selection.runner.model.is_empty()
+        {
+            return Err(BrocaError::Invalid(
+                "journaled model selection is incomplete".into(),
+            ));
+        }
+        let model = e.selection.runner.clone();
         let (prompt, system, labels) = if primitive == Primitive::Classify {
             let text = e
                 .request
@@ -189,10 +212,6 @@ impl BrocaHost {
         } else {
             if e.request.get("tools").is_some_and(|v| !v.is_null()) {
                 return Err(BrocaError::Invalid("model calls get no tools".into()));
-            }
-            if let Some(m) = e.request.get("model") {
-                model = serde_json::from_value(m.clone())
-                    .map_err(|e| BrocaError::Invalid(e.to_string()))?;
             }
             let prompt = e
                 .request
@@ -266,6 +285,8 @@ impl BrocaHost {
             finish: None,
             outcome: None,
             acknowledged: false,
+            selection: e.selection,
+            report_attempted: false,
         })
     }
 
@@ -336,6 +357,9 @@ impl BrocaHost {
             .find(|m| m.message.role == "assistant")
         {
             call.text = Some(text_parts(&message.message.content));
+        }
+        if let Some(head) = page.head {
+            call.cursor = Some(call.cursor.map_or(head, |cursor| cursor.max(head)));
         }
         Ok(())
     }
@@ -486,7 +510,30 @@ impl BrocaHost {
                 });
             }
         }
-        self.store.save(call)
+        self.store.save(call)?;
+        self.report_terminal(call)
+    }
+
+    fn report_terminal(&self, call: &mut StoredCall) -> Result<(), BrocaError> {
+        if !call.report_attempted {
+            if let Some((reason, _)) = &call.finish {
+                let outcome = match reason {
+                    RunFinishReason::Completed => ModelOutcome::Completed,
+                    RunFinishReason::Cancelled => ModelOutcome::Cancelled,
+                    RunFinishReason::Interrupted => ModelOutcome::Interrupted,
+                    _ => ModelOutcome::Error,
+                };
+                if let Err(error) = self
+                    .selector
+                    .report_outcome(&call.selection.decision_id, outcome)
+                {
+                    tracing::warn!(%error,"model routing outcome report failed");
+                }
+                call.report_attempted = true;
+                self.store.save(call)?;
+            }
+        }
+        Ok(())
     }
 
     /// Run on stream wakeups and after reconnect. Errors leave durable work
@@ -504,6 +551,7 @@ impl BrocaHost {
             if call.outcome.is_none() {
                 self.collect(&mut call)?;
             }
+            self.report_terminal(&mut call)?;
             if let (Some(outcome), Some(handle), Some(sink)) = (&call.outcome, &call.handle, &sink)
             {
                 sink.complete(&Completion {
@@ -515,6 +563,7 @@ impl BrocaHost {
                 .map_err(|e| BrocaError::Sink(e.to_string()))?;
                 call.acknowledged = true;
                 self.store.save(&call)?;
+                self.transport.release(&call.route);
             }
         }
         Ok(())
@@ -547,6 +596,7 @@ impl BrocaHost {
             }
         };
         if let Some(outcome) = &call.outcome {
+            self.transport.release(&call.route);
             return Ok(Dispatched::Completed(outcome.host()?));
         }
         let finished = self.issue(&mut call)?;
@@ -554,6 +604,7 @@ impl BrocaHost {
             self.collect(&mut call)?;
         }
         if let Some(outcome) = &call.outcome {
+            self.transport.release(&call.route);
             return Ok(Dispatched::Completed(outcome.host()?));
         }
         Ok(Dispatched::Accepted {
@@ -584,6 +635,9 @@ impl Host for BrocaHost {
             Err(BrocaError::Invalid(detail)) => Ok(Dispatched::Completed(HostOutcome::rejected(
                 json_text(json!({"code": "invalid_arguments", "message": detail})),
             ))),
+            Err(BrocaError::Refused { code, detail }) => Ok(Dispatched::Completed(
+                HostOutcome::rejected(json_text(json!({"code":code,"message":detail}))),
+            )),
             Err(BrocaError::UnsupportedKind) => Ok(Dispatched::Completed(HostOutcome::rejected(
                 json_text(json!({"code": "unsupported_kind"})),
             ))),
@@ -591,6 +645,11 @@ impl Host for BrocaHost {
                 proven_unsent: false,
                 detail: error.to_string(),
             }),
+        }
+    }
+    fn dispatch_committed(&self, _: &CallRequest) {
+        if let Err(error) = self.poll() {
+            tracing::error!(%error,"Broca completion remains pending after dispatch commit");
         }
     }
     fn now_ms(&self) -> f64 {

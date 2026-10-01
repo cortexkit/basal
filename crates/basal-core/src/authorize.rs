@@ -19,14 +19,14 @@ use crate::manifest::{DigestAction, Manifest, OpRef};
 /// `e.data.message`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refusal {
-    pub code: &'static str,
+    pub code: String,
     pub message: String,
 }
 
 impl Refusal {
-    pub fn new(code: &'static str, message: impl Into<String>) -> Self {
+    pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
-            code,
+            code: code.into(),
             message: message.into(),
         }
     }
@@ -37,7 +37,7 @@ impl Refusal {
     }
 
     pub fn outcome(&self) -> HostOutcome {
-        rejection(self.code, &self.message)
+        rejection(&self.code, &self.message)
     }
 }
 

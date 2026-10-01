@@ -605,6 +605,14 @@ impl Activation<'_> {
             Ok(prepared) => prepared,
             Err(refusal) => return self.refuse(&call, &flow_id, &refusal),
         };
+        if matches!(
+            call.kind,
+            CallKind::Primitive(Primitive::Llm | Primitive::Classify)
+        ) {
+            self.at(Boundary::ModelSelected {
+                position: call.position,
+            })?;
+        }
         let new = NewCall {
             position: call.position,
             kind: &call.kind,
@@ -733,7 +741,8 @@ impl Activation<'_> {
     }
 
     /// Checks a new call's argument size and its grant in the approved
-    /// manifest, and builds a model call's clamped request. Needs no store.
+    /// manifest, then selects a model and builds its clamped request. The
+    /// selector runs before the intent transaction, so refusal sends no model work.
     fn prepare(&self, call: &HostCall) -> std::result::Result<Prepared, Refusal> {
         let cap = self.rt.config.limits.max_arg_bytes;
         if call.args.len() > cap {
@@ -745,11 +754,33 @@ impl Activation<'_> {
                 ),
             ));
         }
-        let args: Value = serde_json::from_str(call.args.as_str())
+        let mut args: Value = serde_json::from_str(call.args.as_str())
             .map_err(|_| Refusal::new(codes::INVALID_ARGUMENTS, "arguments are not JSON"))?;
+        if matches!(
+            call.kind,
+            CallKind::Primitive(Primitive::Llm | Primitive::Classify)
+        ) && (args.get("model").is_some() || args.get("provider").is_some())
+        {
+            return Err(Refusal::new(
+                "model_not_allowed",
+                "scripts cannot select a provider or model",
+            ));
+        }
         let Some(manifest) = &self.manifest else {
             return Err(Refusal::denied("the run has no approved manifest"));
         };
+        if matches!(call.kind, CallKind::Primitive(Primitive::SinkDigest))
+            && args.get("action").is_none_or(Value::is_null)
+        {
+            if let Some(cap) = args
+                .get("agent")
+                .and_then(Value::as_str)
+                .and_then(|agent| manifest.digest_cap(agent))
+            {
+                args["action"] = serde_json::to_value(cap)
+                    .map_err(|e| Refusal::new(codes::INVALID_ARGUMENTS, e.to_string()))?;
+            }
+        }
         authorize::check(
             manifest,
             &self.rt.config.shell_denylist,
@@ -775,8 +806,37 @@ impl Activation<'_> {
                         position: call.position,
                     },
                 )?;
+                let selection_request = basal_host::selector::SelectionRequest {
+                    iq: grant.iq,
+                    eq: grant.eq,
+                    flow_id: self.run.flow_id.clone(),
+                    run_id: self.lease.run_id.clone(),
+                    send_id,
+                };
+                let mut retries = 0;
+                let selection = loop {
+                    match self.rt.config.selector.select(&selection_request) {
+                        Ok(selection) => break selection,
+                        Err(basal_host::selector::SelectionError::Refused { code, detail }) => {
+                            return Err(Refusal::new(code, detail));
+                        }
+                        Err(basal_host::selector::SelectionError::Unavailable { detail }) => {
+                            if retries >= self.rt.config.unavailable_retries {
+                                return Err(Refusal::new("route_unavailable", detail));
+                            }
+                            retries += 1;
+                            std::thread::sleep(self.rt.config.retry_backoff);
+                        }
+                    }
+                };
+                let mut envelope: Value = serde_json::from_str(clamped.request.as_str())
+                    .map_err(|e| Refusal::new(codes::INVALID_ARGUMENTS, e.to_string()))?;
+                envelope["selection"] = serde_json::to_value(selection)
+                    .map_err(|e| Refusal::new(codes::INVALID_ARGUMENTS, e.to_string()))?;
+                let request = JsonText::new(envelope.to_string())
+                    .map_err(|e| Refusal::new(codes::INVALID_ARGUMENTS, e.to_string()))?;
                 Ok(Prepared {
-                    request: Some(clamped.request),
+                    request: Some(request),
                     tokens: Some(clamped.reserve),
                 })
             }
@@ -885,7 +945,7 @@ impl Activation<'_> {
             call.position,
             &call.kind,
             &ArgsDigest::of(&call.args),
-            refusal.code,
+            &refusal.code,
             self.rt.config.clock.now_ms(),
         )?;
         journal::accept_outcome(

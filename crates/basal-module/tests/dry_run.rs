@@ -60,9 +60,8 @@ fn capture_mode_executes_no_host_call_and_replays_the_schedule_window() {
         assert_eq!(c[0]["outcome"]["rejected"], "captured");
         assert_eq!(c[1]["kind"], "sink.digest");
         assert_eq!(c[1]["action"], "captured");
-        // The write names no action, which core reads as Wake; the cap for
-        // SYNAPSE is piggyback.
-        assert_eq!(c[1]["sink"]["requested"], "wake");
+        // An omitted action uses the approved cap for the recipient.
+        assert_eq!(c[1]["sink"]["requested"], "piggyback");
         assert_eq!(c[1]["sink"]["effective"], "piggyback");
         // Asking for more than the cap is refused before anything else.
         assert_eq!(c[2]["action"], "refused");
@@ -250,4 +249,23 @@ fn each_dry_run_has_its_own_scratch_store_and_the_real_kv_and_runs_are_untouched
         leftovers.is_empty(),
         "scratch stores are removed: {leftovers:?}"
     );
+}
+
+#[test]
+fn omitted_digest_action_in_dry_runs_is_the_recipient_digest_max() {
+    for cap in ["silent", "piggyback", "wake"] {
+        let f = fixture("dry-digest-default", Options::default());
+        let mut m = schedule_manifest("flow-default", json!({"interval":"1h"}));
+        m["sinks"][0]["digest_max"] = json!(cap);
+        let reply = install(
+            &f,
+            &agent("SYNAPSE"),
+            "await sink.digest('SYNAPSE',{title:'x'}).catch(()=>null); return 1;",
+            &m,
+        );
+        let run = &reply["dry_run"]["runs"][0];
+        assert_eq!(run["calls"][0]["sink"]["requested"], cap);
+        assert_eq!(run["calls"][0]["sink"]["effective"], cap);
+        assert_eq!(f.mock.total_sends(), 0);
+    }
 }

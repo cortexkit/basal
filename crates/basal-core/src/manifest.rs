@@ -162,6 +162,10 @@ pub struct FactsGrant {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LlmGrant {
+    /// Minimum intelligence demand passed to routing instead of a model name.
+    pub iq: u32,
+    #[serde(default)]
+    pub eq: u32,
     pub token_cap: TokenCap,
     /// The ceiling on any one call's output tokens.
     pub max_output: u32,
@@ -411,6 +415,12 @@ impl Manifest {
             check_list("facts.targets", facts.targets.iter().cloned())?;
         }
         if let Some(llm) = &self.llm {
+            if llm.iq > 100 {
+                return Err(invalid("llm.iq", "must be between 0 and 100"));
+            }
+            if llm.eq > 100 {
+                return Err(invalid("llm.eq", "must be between 0 and 100"));
+            }
             let cap = llm.token_cap.tokens;
             if cap == 0 || cap > MAX_TOKEN_CAP {
                 return Err(invalid(

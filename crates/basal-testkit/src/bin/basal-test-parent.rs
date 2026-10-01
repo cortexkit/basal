@@ -85,6 +85,7 @@ fn run(args: Args) -> Result<serde_json::Value, String> {
     )
     .map_err(|e| e.to_string())?;
     let config = Config {
+        selector: Arc::new(basal_host::selector::FakeSelector::default()),
         activation_deadline: Duration::from_secs(30),
         ..Config::default()
     };

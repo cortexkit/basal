@@ -13,9 +13,8 @@
 # Usage: script/verify-controls.sh [set ...]
 # With no arguments it runs every set this build defines. A set is a runner
 # flag without the dashes (journal, dispatch, ...); `worker` runs the runner
-# with no flag. Only sets the runner's source names are accepted: the runner
-# reads an unrecognised flag as a test-name filter for its default set, which
-# would match nothing and look like a pass.
+# with no flag. This script accepts only sets named by the runner's source;
+# the runner also refuses unknown flags instead of treating them as filters.
 set -u
 cd "$(dirname "$0")/.." || exit 2
 

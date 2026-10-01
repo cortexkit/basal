@@ -55,6 +55,8 @@ fn documented_example_round_trips_and_installs() {
     let parsed = Manifest::parse(&text).expect("the documented example parses");
     assert_eq!(parsed.id, "synapse-xcom-inference-news");
     assert_eq!(parsed.version, 3);
+    assert_eq!(parsed.llm.as_ref().unwrap().iq, 65);
+    assert_eq!(parsed.llm.as_ref().unwrap().eq, 20);
     let again = serde_json::to_string(&parsed).expect("serialise");
     assert_eq!(Manifest::parse(&again).expect("reparse"), parsed);
     assert_eq!(parsed.deadline_ms(1), 600_000);
@@ -386,4 +388,35 @@ fn new_version_applies_to_newly_admitted_triggers_only() {
     assert_eq!(first_run.state, RunState::Succeeded, "{first_run:#?}");
     assert_eq!(result(&first_run), json!(1));
     assert_eq!(result(&second_run), json!(2));
+}
+
+#[test]
+fn llm_demands_are_required_bounded_and_default_eq_is_zero() {
+    let mut m = basal_testkit::harness::test_manifest();
+    let parsed = basal_core::manifest::Manifest::parse(&m.to_string()).unwrap();
+    assert_eq!(parsed.llm.as_ref().unwrap().iq, 0);
+    assert_eq!(parsed.llm.as_ref().unwrap().eq, 0);
+    m["llm"].as_object_mut().unwrap().remove("iq");
+    assert!(basal_core::manifest::Manifest::parse(&m.to_string()).is_err());
+    for field in ["iq", "eq"] {
+        for bad in [
+            serde_json::json!(-1),
+            serde_json::json!(101),
+            serde_json::json!(1.5),
+            serde_json::json!("70"),
+            serde_json::Value::Null,
+        ] {
+            let mut m = basal_testkit::harness::test_manifest();
+            m["llm"][field] = bad;
+            assert!(
+                basal_core::manifest::Manifest::parse(&m.to_string()).is_err(),
+                "{field}: {m}"
+            );
+        }
+        for good in [0, 100] {
+            let mut m = basal_testkit::harness::test_manifest();
+            m["llm"][field] = serde_json::json!(good);
+            assert!(basal_core::manifest::Manifest::parse(&m.to_string()).is_ok());
+        }
+    }
 }

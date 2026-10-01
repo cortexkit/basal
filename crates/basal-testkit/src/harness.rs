@@ -98,7 +98,7 @@ pub fn test_manifest() -> Value {
             { "module": "mock", "op": "post" }
         ],
         "facts": { "targets": [ "ALF" ], "text": false },
-        "llm": { "token_cap": { "tokens": 1_000_000, "window": "1d" }, "max_output": 2000 }
+        "llm": { "iq": 0, "token_cap": { "tokens": 1_000_000, "window": "1d" }, "max_output": 2000 }
     })
 }
 
@@ -466,6 +466,7 @@ pub fn summarize(rt: &Runtime, mock: &MockHost, run_id: &str) -> Result<Summary,
 pub struct World {
     pub dir: PathBuf,
     pub mock: MockHost,
+    pub selector: Arc<basal_host::selector::FakeSelector>,
     pub catalog: MockCatalog,
     pub source: Arc<ProcessSource>,
     pub durability: Durability,
@@ -476,6 +477,7 @@ impl World {
         Self {
             dir: scratch(tag),
             mock: MockHost::new(),
+            selector: Arc::new(basal_host::selector::FakeSelector::default()),
             catalog: MockCatalog::standard(),
             source: Arc::new(ProcessSource::new(worker_binary())),
             // The harness checks logic, not power loss; skipping F_FULLFSYNC
@@ -498,7 +500,10 @@ impl World {
             Arc::new(self.catalog.clone()),
             hooks,
             Some(self.source.clone()),
-            config,
+            Config {
+                selector: self.selector.clone(),
+                ..config
+            },
         );
         rt.recover()?;
         Ok(rt)
