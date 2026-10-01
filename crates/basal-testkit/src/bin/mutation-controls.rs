@@ -437,8 +437,8 @@ const JOURNAL_CONTROLS: &[Control] = &[
         label: "suspend transition does not re-read arrivals (lost wakeup)",
         edits: &[(
             RUNS,
-            "let arrived = settled_awaited",
-            "let arrived = false && settled_awaited",
+            "let arrived = settled_awaited\n        || in_mailbox > 0\n        || crate::model::to_u64(readiness, \"readiness\")? != seen_readiness;",
+            "let arrived = false;",
         )],
         also_restore: NO_EXTRA,
         target: Target::Testkit("journal_races"),
