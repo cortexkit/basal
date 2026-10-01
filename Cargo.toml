@@ -3,6 +3,8 @@ resolver = "3"
 members = [
     "crates/basal-proto",
     "crates/basal-worker",
+    "crates/basal-host",
+    "crates/basal-core",
     "crates/basal-testkit",
 ]
 
@@ -15,9 +17,18 @@ rust-version = "1.85"
 [workspace.dependencies]
 # Every dependency comes from crates.io, so a fresh clone builds with no
 # sibling checkouts beside it.
+basal-core = { path = "crates/basal-core" }
+basal-host = { path = "crates/basal-host" }
 basal-proto = { path = "crates/basal-proto" }
 basal-testkit = { path = "crates/basal-testkit" }
 blake3 = "1.8"
+# The fleet's storage mechanics: open with the single-writer lease, WAL and a
+# busy timeout, and versioned migrations. Pinned exactly, as astrocyte does.
+cortexkit-store = { version = "=0.2.0", features = ["sqlite"] }
+cortexkit-store-types = "0.2.2"
+# The driver cortexkit-store is built on. basal-core writes its own queries
+# against the connection the store hands out, so it names the same major.
+rusqlite = "0.32"
 libc = "0.2.180"
 # The engine. Only the default `std` feature: no module loader, no futures
 # adapter, no dynamic loading.

@@ -1,0 +1,20 @@
+[package]
+name = "basal-core"
+version = "0.1.0"
+description = "basal's runtime state: store, runs, the journal and mailbox, and the activation driver."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+# basal-core owns every durable thing and talks to hosts only through the Host
+# trait. It never depends on basal-worker: workers are separate processes
+# reached through the WorkerChannel trait.
+[dependencies]
+basal-host.workspace = true
+basal-proto.workspace = true
+blake3.workspace = true
+cortexkit-store.workspace = true
+cortexkit-store-types.workspace = true
+rusqlite.workspace = true
+serde_json.workspace = true

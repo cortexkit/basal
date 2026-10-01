@@ -1,13 +1,16 @@
 [package]
 name = "basal-testkit"
 version = "0.1.0"
-description = "Test parent, deterministic mock host and mutation controls for basal's worker."
+description = "Test parents, deterministic mock hosts, crash harnesses and mutation controls for basal."
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+basal-core.workspace = true
+basal-host.workspace = true
 basal-proto.workspace = true
+rusqlite.workspace = true
 serde_json.workspace = true
 libc.workspace = true
