@@ -632,3 +632,29 @@ fn broker_rejects_script_model_choices_even_with_a_valid_journaled_selection() {
     }
     assert!(fake.sends().is_empty());
 }
+
+#[test]
+fn expired_stream_history_commits_its_head_with_the_recovered_text() {
+    let fake = Arc::new(FakeBroca::default());
+    let store = Arc::new(MemoryStore::default());
+    let h = host(fake.clone(), store.clone());
+    h.dispatch_model(&llm(0)).unwrap();
+    fake.assistant(
+        "key:0",
+        vec![ContentBlock::Text {
+            text: "head-only".into(),
+        }],
+    )
+    .unwrap();
+    fake.configure("key:0", false, false, true, None).unwrap();
+    h.poll().unwrap();
+    let saved = store.load().unwrap()[0].clone();
+    assert_eq!(saved.text.as_deref(), Some("head-only"));
+    assert_eq!(
+        saved.cursor,
+        Some(Cursor {
+            wal_seq: 1,
+            sub_index: 1
+        })
+    );
+}

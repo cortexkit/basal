@@ -2239,6 +2239,17 @@ const SCHEDULE_CONTROLS: &[Control] = &[
 const BROCA: &str = "crates/basal-host/src/broca/mod.rs";
 const BROCA_CONTROLS: &[Control] = &[
     Control {
+        label: "Broca recovered history head is not durable",
+        edits: &[(
+            BROCA,
+            "call.cursor = Some(call.cursor.map_or(head, |cursor| cursor.max(head)));",
+            "call.cursor = None;",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Host("broca"),
+        test: "expired_stream_history_commits_its_head_with_the_recovered_text",
+    },
+    Control {
         label: "Broca absent usage becomes zero",
         edits: &[(
             BROCA,
@@ -2350,7 +2361,14 @@ const BROCA_CONTROLS: &[Control] = &[
     },
     Control {
         label: "Broca cursor is not durable",
-        edits: &[(BROCA, "call.cursor = Some(cursor);", "call.cursor = None;")],
+        edits: &[
+            (BROCA, "call.cursor = Some(cursor);", "call.cursor = None;"),
+            (
+                BROCA,
+                "call.cursor = Some(call.cursor.map_or(head, |cursor| cursor.max(head)));",
+                "call.cursor = None;",
+            ),
+        ],
         also_restore: NO_EXTRA,
         target: Target::Host("broca"),
         test: "durable_cursor_resumes_text_without_loss_or_duplicate",
