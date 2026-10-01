@@ -3,7 +3,7 @@
 
 mod common;
 
-use basal_core::{Admission, RunState};
+use basal_core::{Actor, Admission, RunState};
 use basal_host::CardDecision;
 use basal_host::mock::Fault;
 use basal_module::caller::Caller;
@@ -111,6 +111,69 @@ fn authorization_matrix() {
             }
         }
     }
+
+    // Enabling depends on who disabled the flow. The owner undoes a disable
+    // it made itself...
+    let flow = json!({ "flow_id": FLOW });
+    call(
+        &f,
+        &owner,
+        "flow.disable",
+        json!({ "flow_id": FLOW, "reason": "mine" }),
+    )
+    .expect("the owner disables");
+    let r = call(&f, &owner, "flow.enable", flow.clone());
+    assert_eq!(
+        r.as_ref().map(|v| v["changed"].clone()),
+        Ok(json!(true)),
+        "the owner re-enables its own disable: {r:?}"
+    );
+    // ...but not the operator's stop...
+    call(
+        &f,
+        &operator,
+        "flow.disable",
+        json!({ "flow_id": FLOW, "reason": "stop" }),
+    )
+    .expect("the operator disables");
+    let r = call(&f, &owner, "flow.enable", flow.clone());
+    assert!(refused(&r), "owner after an operator disable: {r:?}");
+    assert!(
+        !f.module
+            .rt
+            .flow(FLOW)
+            .expect("flow")
+            .expect("exists")
+            .enabled
+    );
+    call(&f, &operator, "flow.enable", flow.clone()).expect("the operator enables");
+    // ...nor the runtime's auto-disable, which is the flow's loop protection.
+    f.module
+        .rt
+        .disable_flow(FLOW, &Actor::Runtime, "saturated")
+        .expect("auto-disable");
+    let health = call(&f, &operator, "flow.health", Value::Null).expect("health");
+    let own = health["flows"]
+        .as_array()
+        .and_then(|a| a.iter().find(|x| x["flow_id"] == FLOW).cloned())
+        .expect("listed");
+    assert_eq!(own["disabled"]["by"], "auto", "{own:#}");
+    assert_eq!(own["disabled"]["reason"], "saturated");
+    let r = call(&f, &owner, "flow.enable", flow.clone());
+    assert!(refused(&r), "owner after an auto-disable: {r:?}");
+    assert!(
+        !f.module
+            .rt
+            .flow(FLOW)
+            .expect("flow")
+            .expect("exists")
+            .enabled
+    );
+    call(&f, &operator, "flow.enable", flow).expect("the operator enables");
+    let record = f.module.rt.flow(FLOW).expect("flow").expect("exists");
+    assert!(record.enabled);
+    assert_eq!(record.disabled_by, None, "enabling clears who disabled it");
+    assert_eq!(record.disabled_reason, None);
 }
 
 #[test]
@@ -327,6 +390,9 @@ fn health_reports_flows_runs_and_the_module() {
         .expect("listed");
     assert_eq!(own["state"], "disabled");
     assert_eq!(own["auto_disabled"], false);
+    assert_eq!(own["disabled"]["by"], "operator");
+    assert_eq!(own["disabled"]["actor"], "operator:operator");
+    assert_eq!(own["disabled"]["reason"], "disabled by request");
 }
 
 #[test]

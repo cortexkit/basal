@@ -1619,15 +1619,62 @@ const MODULE_CONTROLS: &[Control] = &[
         test: "authorization_matrix",
     },
     Control {
-        label: "any agent may enable any flow",
+        label: "any agent may enable any flow (the module's ownership check and the core's both removed)",
+        edits: &[
+            (
+                M_OPS,
+                "Caller::Agent(agent) if self.owns(agent, &p.flow_id)? => Actor::Agent(agent.to_owned()),",
+                "Caller::Agent(agent) => Actor::Agent(agent.to_owned()),",
+            ),
+            (
+                INSTALL,
+                "            if record.owner.as_deref() != Some(agent.as_str()) {",
+                "            if false && record.owner.as_deref() != Some(agent.as_str()) {",
+            ),
+        ],
+        also_restore: NO_EXTRA,
+        target: Target::Module("ops"),
+        test: "authorization_matrix",
+    },
+    Control {
+        label: "the owner may not re-enable even a disable it made itself",
         edits: &[(
-            M_OPS,
-            "Caller::Agent(agent) if self.owns(agent, &p.flow_id)? => {}",
-            "Caller::Agent(_) => {}",
+            INSTALL,
+            "Some(by) if by == own => {}",
+            "Some(by) if by == own && false => {}",
         )],
         also_restore: NO_EXTRA,
         target: Target::Module("ops"),
         test: "authorization_matrix",
+    },
+    Control {
+        label: "the owner may undo the operator's disable",
+        edits: &[(
+            INSTALL,
+            "                _ => return Err(refused()),",
+            "                _ => {}",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("ops"),
+        test: "authorization_matrix",
+    },
+    Control {
+        label: "the owner may undo an auto-disable",
+        edits: &[(
+            INSTALL,
+            "Some(RUNTIME_ACTOR) => return Err(refused()),",
+            "Some(RUNTIME_ACTOR) => {}",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("ops"),
+        test: "authorization_matrix",
+    },
+    Control {
+        label: "health does not say who disabled a flow",
+        edits: &[(M_OPS, "\"by\": disabled_kind(by),", "\"by\": by,")],
+        also_restore: NO_EXTRA,
+        target: Target::Module("ops"),
+        test: "health_reports_flows_runs_and_the_module",
     },
     Control {
         label: "an agent may install a flow in another author's name",

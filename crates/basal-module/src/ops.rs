@@ -9,10 +9,13 @@
 //! | `flow.reconcile` | yes | no | no | no |
 //! | `flow.drain` | yes | no | no | no |
 //! | `flow.disable` | yes | yes | no | no |
-//! | `flow.enable` | yes | yes | no | no |
+//! | `flow.enable` | yes | only to undo a disable it made itself | no | no |
 //!
 //! The owning agent is the author of the flow's approved version (before any
-//! version is approved, the author of its installed versions). The caller
+//! version is approved, the author of its installed versions). An owner
+//! cannot enable a flow the operator disabled, or one the runtime disabled
+//! for sustained saturation: that would let a flow's author undo the
+//! operator's stop or the flow's loop protection. The caller
 //! comes from the route the daemon stamped ([`crate::caller`]), never from a
 //! request field.
 
@@ -91,7 +94,9 @@ impl Module {
             return OpError::new("store_failure", text);
         }
         match e {
-            InstallError::NotOwner { .. } => OpError::new("not_permitted", e.to_string()),
+            InstallError::NotOwner { .. } | InstallError::NotYourDisable { .. } => {
+                OpError::new("not_permitted", e.to_string())
+            }
             InstallError::NoSuchFlow(f) => OpError::new("not_found", format!("no flow {f}")),
             InstallError::Store(inner) => self.core_error(inner),
             other => OpError::new("install_refused", format!("{other:?}")),
@@ -455,6 +460,15 @@ impl Module {
                     "owner": f.owner,
                     "approved_version": f.approved_version,
                     "disabled_by": f.disabled_by,
+                    // Who disabled the flow, by kind (operator, the owning
+                    // agent, or auto for the runtime's own saturation
+                    // disable), and why: core can tell a flow stopped by its
+                    // author from one stopped for it.
+                    "disabled": f.disabled_by.as_deref().map(|by| json!({
+                        "by": disabled_kind(by),
+                        "actor": by,
+                        "reason": f.disabled_reason,
+                    })),
                     "auto_disabled": f.auto_disabled,
                     // The event plane does not exist yet, so no backlog can
                     // overflow.
@@ -602,16 +616,31 @@ impl Module {
             flow_id: String,
         }
         let p: Params = serde_json::from_value(params).map_err(invalid_params)?;
-        match caller {
-            Caller::Operator => {}
-            Caller::Agent(agent) if self.owns(agent, &p.flow_id)? => {}
+        let actor = match caller {
+            Caller::Operator => Actor::Operator("operator".into()),
+            // Whether the owner may undo the flow's current disable (only
+            // one it made itself) is decided by the core, in the same
+            // transaction that enables the flow.
+            Caller::Agent(agent) if self.owns(agent, &p.flow_id)? => Actor::Agent(agent.to_owned()),
             _ => return Err(OpError::not_permitted("flow.enable", caller)),
-        }
+        };
         let changed = self
             .rt
-            .enable_flow(&p.flow_id)
+            .enable_flow_as(&p.flow_id, &actor)
             .map_err(|e| self.install_error(e))?;
         Ok(json!({ "flow_id": p.flow_id, "state": "enabled", "changed": changed }))
+    }
+}
+
+/// The kind of actor a recorded `disabled_by` names: `operator`, `auto`
+/// for the runtime's own disable, or the agent label as recorded.
+fn disabled_kind(by: &str) -> &str {
+    if by.starts_with("operator:") {
+        "operator"
+    } else if by == basal_core::install::RUNTIME_ACTOR {
+        "auto"
+    } else {
+        by
     }
 }
 

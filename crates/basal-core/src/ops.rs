@@ -71,7 +71,11 @@ pub struct FlowHealth {
     pub enabled: bool,
     pub owner: Option<String>,
     pub approved_version: Option<u32>,
+    /// Who disabled the flow, as recorded with the disable:
+    /// `operator:<who>`, `agent:<id>` or `runtime` (auto-disable).
     pub disabled_by: Option<String>,
+    /// Why, as recorded with the disable.
+    pub disabled_reason: Option<String>,
     /// Disabled by the runtime itself for sustained saturation.
     pub auto_disabled: bool,
     pub last_run: Option<LastRun>,
@@ -161,7 +165,8 @@ pub fn flow_health(conn: &Connection, now_ms: i64) -> Result<Vec<FlowHealth>> {
             .map(|since| now_ms - since)
             .max();
         flows.push(FlowHealth {
-            auto_disabled: record.disabled_by.as_deref() == Some("runtime"),
+            auto_disabled: record.disabled_by.as_deref() == Some(crate::install::RUNTIME_ACTOR),
+            disabled_reason: record.disabled_reason,
             flow_id,
             enabled: record.enabled,
             owner: record.owner,
