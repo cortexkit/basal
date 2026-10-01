@@ -2239,17 +2239,6 @@ const SCHEDULE_CONTROLS: &[Control] = &[
 const BROCA: &str = "crates/basal-host/src/broca/mod.rs";
 const BROCA_CONTROLS: &[Control] = &[
     Control {
-        label: "Broca recovered history head is not durable",
-        edits: &[(
-            BROCA,
-            "call.cursor = Some(call.cursor.map_or(head, |cursor| cursor.max(head)));",
-            "call.cursor = None;",
-        )],
-        also_restore: NO_EXTRA,
-        target: Target::Host("broca"),
-        test: "expired_stream_history_commits_its_head_with_the_recovered_text",
-    },
-    Control {
         label: "Broca absent usage becomes zero",
         edits: &[(
             BROCA,
@@ -2292,28 +2281,6 @@ const BROCA_CONTROLS: &[Control] = &[
         also_restore: NO_EXTRA,
         target: Target::Testkit("broca_reservations"),
         test: "script_value_cannot_supply_usage_and_absent_ledger_fields_are_nullable",
-    },
-    Control {
-        label: "Broca SQLite snapshot omits text",
-        edits: &[(
-            "crates/basal-core/src/broca.rs",
-            "serde_json::to_string(call)",
-            "serde_json::to_string(&{ let mut lost = call.clone(); lost.text = None; lost })",
-        )],
-        also_restore: NO_EXTRA,
-        target: Target::Testkit("broca_reservations"),
-        test: "sqlite_snapshot_cut_never_persists_a_cursor_without_its_text",
-    },
-    Control {
-        label: "Broca read refusal loses its code",
-        edits: &[(
-            BROCA,
-            "call.outcome = Some(rejection(&code, &detail, usage));",
-            "call.outcome = Some(rejection(\"result_unavailable\", &detail, usage));",
-        )],
-        also_restore: NO_EXTRA,
-        target: Target::Host("broca"),
-        test: "read_refusal_is_journalable_with_status_usage",
     },
     Control {
         label: "Broca tools are not explicitly empty",
@@ -2360,18 +2327,147 @@ const BROCA_CONTROLS: &[Control] = &[
         test: "pending_submission_keeps_its_handle_and_usage_is_metadata",
     },
     Control {
-        label: "Broca cursor is not durable",
-        edits: &[
-            (BROCA, "call.cursor = Some(cursor);", "call.cursor = None;"),
-            (
-                BROCA,
-                "call.cursor = Some(call.cursor.map_or(head, |cursor| cursor.max(head)));",
-                "call.cursor = None;",
-            ),
-        ],
+        label: "Broca completed text is not the run.result final message",
+        edits: &[(
+            BROCA,
+            "let text = &message.text;",
+            "let text = &message.mid;",
+        )],
         also_restore: NO_EXTRA,
         target: Target::Host("broca"),
-        test: "durable_cursor_resumes_text_without_loss_or_duplicate",
+        test: "every_run_result_state_maps_to_its_outcome_and_nonterminals_wait",
+    },
+    Control {
+        label: "Broca completed run with empty text is treated as missing its message",
+        edits: &[(
+            BROCA,
+            "let Some(message) = &result.final_message else {",
+            "let Some(message) = result.final_message.as_ref().filter(|m| !m.text.is_empty()) else {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Host("broca"),
+        test: "a_completed_run_without_text_fulfils_with_empty_text",
+    },
+    Control {
+        label: "Broca error rejection drops the error class",
+        edits: &[(
+            BROCA,
+            "json!({\"code\": \"error\", \"class\": error.class, \"message\": error.message})",
+            "json!({\"code\": \"error\", \"message\": error.message})",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Host("broca"),
+        test: "every_run_result_state_maps_to_its_outcome_and_nonterminals_wait",
+    },
+    Control {
+        label: "Broca cancelled, interrupted and max_steps lose their state code",
+        edits: &[(
+            BROCA,
+            "other => rejection(other, \"Broca run did not complete\", usage),",
+            "_ => rejection(\"error\", \"Broca run did not complete\", usage),",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Host("broca"),
+        test: "every_run_result_state_maps_to_its_outcome_and_nonterminals_wait",
+    },
+    Control {
+        label: "Broca active and paused runs are given an outcome",
+        edits: &[(
+            BROCA,
+            "if !TERMINAL_STATES.contains(&state) {",
+            "if false && !TERMINAL_STATES.contains(&state) {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Host("broca"),
+        test: "every_run_result_state_maps_to_its_outcome_and_nonterminals_wait",
+    },
+    Control {
+        label: "Broca unknown_run is not recognised as an anomaly",
+        edits: &[(
+            BROCA,
+            "Err(BrocaError::Refused { code, detail }) if code == UNKNOWN_RUN => {",
+            "Err(BrocaError::Refused { code, detail }) if false && code == UNKNOWN_RUN => {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Host("broca"),
+        test: "unknown_run_for_an_accepted_call_is_reported_as_unknown_not_rejected",
+    },
+    Control {
+        label: "Broca unknown_run report omits the Broca run id",
+        edits: &[(
+            BROCA,
+            "\"Broca answered unknown_run for run {run_id}, which",
+            "\"Broca answered unknown_run for a run, which",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Host("broca"),
+        test: "unknown_run_for_an_accepted_call_is_reported_as_unknown_not_rejected",
+    },
+    Control {
+        label: "Broca unknown run leaves the basal run suspended",
+        edits: &[(
+            JOURNAL,
+            "\"cancelled\" => return Ok(Some(CompletionAck::Refused)),\n        _ => {}",
+            "_ => return Ok(Some(CompletionAck::Accepted)),",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("broca_reservations"),
+        test: "an_unknown_broca_run_moves_the_run_to_needs_reconcile_naming_it",
+    },
+    Control {
+        label: "Broca poll does not read run.result for pending calls",
+        edits: &[(
+            BROCA,
+            "if call.outcome.is_none() {\n                self.resolve(call)?;\n            }",
+            "",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Host("broca"),
+        test: "a_missed_run_finished_is_recovered_on_reconnect_even_when_archived",
+    },
+    Control {
+        label: "Broca unwatchable session blocks reading a finished run",
+        edits: &[(
+            BROCA,
+            "let watched = self.transport.watch(&call.route);",
+            "self.transport.watch(&call.route)?; let watched: Result<(), BrocaError> = Ok(());",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Host("broca"),
+        test: "a_missed_run_finished_is_recovered_on_reconnect_even_when_archived",
+    },
+    Control {
+        label: "Broca pending call is not watched",
+        edits: &[(
+            BROCA,
+            "let watched = self.transport.watch(&call.route);",
+            "let watched: Result<(), BrocaError> = Ok(());",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Host("broca"),
+        test: "a_finished_run_wakes_through_the_watch_opened_at_the_live_head",
+    },
+    Control {
+        label: "Broca outcome settles before run.status reports usage",
+        edits: &[(
+            BROCA,
+            "RunStatusResponse::Active | RunStatusResponse::Paused { .. } => {",
+            "RunStatusResponse::Active | RunStatusResponse::Paused { .. } if false => {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Host("broca"),
+        test: "usage_comes_from_run_status_once_and_waits_while_status_lags",
+    },
+    Control {
+        label: "Broca saved outcome is read from Broca again on redelivery",
+        edits: &[(
+            BROCA,
+            "if call.outcome.is_none() && call.unknown.is_none() {\n            if call.handle",
+            "if call.unknown.is_none() {\n            if call.handle",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("broca_reservations"),
+        test: "usage_settles_once_when_an_outcome_is_redelivered_after_a_restart",
     },
     Control {
         label: "Broca acknowledged completion is delivered again",
@@ -2382,47 +2478,7 @@ const BROCA_CONTROLS: &[Control] = &[
         )],
         also_restore: NO_EXTRA,
         target: Target::Host("broca"),
-        test: "durable_cursor_resumes_text_without_loss_or_duplicate",
-    },
-    Control {
-        label: "Broca text is not saved with cursor",
-        edits: &[(
-            BROCA,
-            "self.store.save(call)?;\n                }",
-            "let mut lost = call.clone(); lost.text = None; self.store.save(&lost)?;\n                }",
-        )],
-        also_restore: NO_EXTRA,
-        target: Target::Host("broca"),
-        test: "cursor_and_text_commit_together_at_a_cut",
-    },
-    Control {
-        label: "Broca status fallback is disabled",
-        edits: &[
-            (
-                BROCA,
-                "if let Some((reason, metadata)) = status.terminal() {\n                if call.finish",
-                "if let Some((reason, metadata)) = status.terminal().filter(|_| false) {\n                if call.finish",
-            ),
-            (
-                BROCA,
-                "if let Some((reason, metadata)) = status.terminal() {\n                    call.finish",
-                "if let Some((reason, metadata)) = status.terminal().filter(|_| false) {\n                    call.finish",
-            ),
-        ],
-        also_restore: NO_EXTRA,
-        target: Target::Host("broca"),
-        test: "status_recovers_missed_finish_and_archived_read_recovers_text",
-    },
-    Control {
-        label: "Broca read text fallback is disabled",
-        edits: &[(
-            BROCA,
-            "call.text = Some(text_parts(&message.message.content));",
-            "call.text = None;",
-        )],
-        also_restore: NO_EXTRA,
-        target: Target::Host("broca"),
-        test: "status_recovers_missed_finish_and_archived_read_recovers_text",
+        test: "a_module_restart_with_calls_in_flight_delivers_each_exactly_once",
     },
     Control {
         label: "Broca usage metadata is ignored by the ledger",
@@ -2447,30 +2503,12 @@ const BROCA_CONTROLS: &[Control] = &[
         test: "classify_contract_is_exact_not_trimmed_or_parsed",
     },
     Control {
-        label: "Broca terminal failures are fulfilled",
+        label: "Broca completion is not delivered after module restart",
         edits: &[(
             BROCA,
-            "if *reason != RunFinishReason::Completed {",
-            "if false && *reason != RunFinishReason::Completed {",
+            "if let Some(outcome) = &call.outcome {\n            sink.complete",
+            "if let Some(outcome) = call.outcome.as_ref().filter(|_| false) {\n            sink.complete",
         )],
-        also_restore: NO_EXTRA,
-        target: Target::Host("broca"),
-        test: "every_status_terminal_rejects_or_completes_and_nonterminals_wait",
-    },
-    Control {
-        label: "Broca completion is not delivered after module restart",
-        edits: &[
-            (
-                BROCA,
-                "sink.complete(&Completion",
-                "if false { sink.complete(&Completion",
-            ),
-            (
-                BROCA,
-                "BrocaError::Sink(e.to_string()))?;",
-                "BrocaError::Sink(e.to_string()))?; }",
-            ),
-        ],
         also_restore: NO_EXTRA,
         target: Target::Module("e2e"),
         test: "a_broca_llm_suspends_survives_module_kill_and_settles_after_restart",
@@ -2964,12 +3002,12 @@ const HOST_CONTROLS: &[Control] = &[
         label: "integration: stream wake omitted",
         edits: &[(
             "crates/basal-host/src/broca/subc.rs",
-            "let terminal = self.push(bytes)?;\n        (wake)();",
-            "let terminal = self.push(bytes)?;\n        let _ = wake;",
+            "self.closed.store(true, Ordering::SeqCst);\n        (wake)();",
+            "self.closed.store(true, Ordering::SeqCst);\n        let _ = wake;",
         )],
         also_restore: NO_EXTRA,
         target: Target::HostLib,
-        test: "broca::subc::tests::stream_and_reconnect_wakeups_are_coalesced_without_a_clock",
+        test: "broca::subc::tests::only_a_finished_run_wakes_the_host_and_closes_the_stream",
     },
     Control {
         label: "integration: reconnect wake omitted",
@@ -2983,15 +3021,15 @@ const HOST_CONTROLS: &[Control] = &[
         test: "broca::subc::tests::stream_and_reconnect_wakeups_are_coalesced_without_a_clock",
     },
     Control {
-        label: "integration: buffered events drained before commit",
+        label: "integration: every control event ends the stream",
         edits: &[(
             "crates/basal-host/src/broca/subc.rs",
-            "state.events.iter().cloned().collect()",
-            "state.events.drain(..).collect()",
+            "matches!(*unit, ControlUnit::RunFinished { .. })",
+            "{ let _ = unit; true }",
         )],
         also_restore: NO_EXTRA,
         target: Target::HostLib,
-        test: "broca::subc::tests::stream_batches_replay_until_a_durable_cursor_and_keep_error_order",
+        test: "broca::subc::tests::only_a_finished_run_wakes_the_host_and_closes_the_stream",
     },
     Control {
         label: "integration: frozen management parameters reserialized",
@@ -3195,8 +3233,8 @@ const HOST_CONTROLS: &[Control] = &[
         label: "selector: cancelled outcome marked completed",
         edits: &[(
             "crates/basal-host/src/broca/mod.rs",
-            "RunFinishReason::Cancelled => ModelOutcome::Cancelled",
-            "RunFinishReason::Cancelled => ModelOutcome::Completed",
+            "\"cancelled\" => ModelOutcome::Cancelled",
+            "\"cancelled\" => ModelOutcome::Completed",
         )],
         also_restore: NO_EXTRA,
         target: Target::Host("broca"),

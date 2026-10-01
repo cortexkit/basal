@@ -1,5 +1,6 @@
-//! Saved Broca calls stored beside the call journal. Text, completion reason,
-//! token usage and the cursor used to resume reading commit together.
+//! Saved Broca calls stored beside the call journal: one snapshot per call,
+//! holding its frozen send, its Broca run, its outcome once `run.result`
+//! reported one, and whether the runtime has recorded that outcome.
 
 use crate::{CoreError, Store};
 use basal_host::broca::{BrocaError, StateStore, StoredCall};

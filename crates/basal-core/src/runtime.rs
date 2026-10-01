@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use basal_host::{
     CallRequest, Catalog, Completion, CompletionAck, CompletionSink, Dispatched, Host, HostOutcome,
-    SinkError, TransportError,
+    SinkError, TransportError, UnknownOutcome,
 };
 use basal_proto::{Budgets, CallKind, JsonText};
 use serde_json::json;
@@ -237,6 +237,20 @@ impl CompletionSink for Sink {
             Source::Completion,
         )
         .map_err(|e| SinkError(e.to_string()))
+    }
+
+    fn unknown(&self, u: &UnknownOutcome) -> std::result::Result<CompletionAck, SinkError> {
+        let shared = self
+            .shared
+            .upgrade()
+            .ok_or_else(|| SinkError("the runtime is gone".into()))?;
+        Runtime {
+            shared,
+            config: self.config.clone(),
+        }
+        .unknown(u)
+        .map_err(|e| SinkError(e.to_string()))?
+        .ok_or_else(|| SinkError("the run is running; report the unknown outcome again".into()))
     }
 }
 
@@ -481,6 +495,18 @@ impl Runtime {
             &completion.outcome,
             Source::Completion,
         )
+    }
+
+    /// Records a host's report that an accepted call's outcome cannot be
+    /// established. The same entry point the host's completion sink uses.
+    /// `None` means the run's activation is still running and the report
+    /// was not recorded: the host must make it again later.
+    pub fn unknown(&self, u: &UnknownOutcome) -> Result<Option<CompletionAck>> {
+        let ack = self.shared.store.write(|tx| {
+            journal::record_host_unknown(tx, &u.run_id, u.position, &u.handle, &u.detail)
+        })?;
+        self.shared.signal.bump();
+        Ok(ack)
     }
 
     /// Offers an outcome for a call, from any thread and any activation.

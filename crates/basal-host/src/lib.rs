@@ -227,9 +227,26 @@ impl fmt::Display for SinkError {
 
 impl std::error::Error for SinkError {}
 
+/// A long-running call whose outcome the host can no longer establish,
+/// although the host accepted it: for example Broca answering that it knows
+/// no run under the run id it gave at acceptance. The runtime records the
+/// call as unknown and the run waits for the operator in `needs_reconcile`,
+/// with `detail` as the run's error so the anomaly can be reported.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownOutcome {
+    pub run_id: String,
+    pub position: u64,
+    pub handle: String,
+    pub detail: String,
+}
+
 /// Where a host sends completions of long-running calls.
 pub trait CompletionSink: Send + Sync {
     fn complete(&self, completion: &Completion) -> Result<CompletionAck, SinkError>;
+    /// Reports an accepted call whose outcome cannot be established. Like
+    /// a completion, it is redelivered until the runtime records it, and a
+    /// redelivery is acknowledged as [`CompletionAck::Duplicate`].
+    fn unknown(&self, unknown: &UnknownOutcome) -> Result<CompletionAck, SinkError>;
 }
 
 /// The hosts a flow reaches. Implementations must be safe to call from

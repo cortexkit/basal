@@ -1058,9 +1058,10 @@ fn routing_host_model_selection_and_digest_sink_share_the_journal_store() {
     assert_eq!(sent["model"], json!({"provider":"fake","model":"test"}));
     assert_eq!(sent["generation"]["max_output_tokens"], 32);
     f.module.rt.quiesce();
-    assert!(
-        snapshots.load().unwrap()[0].cursor.is_some(),
-        "accepted model call must begin subscribing after its handle commits"
+    assert_eq!(
+        fake.watches().len(),
+        1,
+        "accepted model call must begin watching its session after its handle commits"
     );
     assert_eq!(
         snapshots.load().unwrap()[0].envelope,
