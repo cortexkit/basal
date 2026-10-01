@@ -1,0 +1,24 @@
+[package]
+name = "basal-worker"
+version = "0.1.0"
+description = "ck-basal-worker: the confined QuickJS engine that runs basal flows."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+# The worker links the protocol and the engine only. It must never depend on
+# a store, on subc, or on basal-core: a compromised worker then has no code
+# path to the journal or to hosts. tests/dependency_fence.rs enforces this.
+[dependencies]
+basal-proto.workspace = true
+libc.workspace = true
+rquickjs.workspace = true
+
+[dev-dependencies]
+basal-testkit.workspace = true
+serde_json.workspace = true
+
+[[bin]]
+name = "ck-basal-worker"
+path = "src/main.rs"

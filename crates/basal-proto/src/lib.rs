@@ -1,0 +1,306 @@
+//! The IPC protocol between basal's parent process and a `ck-basal-worker`.
+//!
+//! The parent owns every durable thing (journal, audit, manifests, dispatch);
+//! the worker is stateless compute that runs one activation of a script at a
+//! time. They talk over the worker's stdin and stdout in length-prefixed
+//! frames. One conversation goes:
+//!
+//! 1. The parent sends [`ParentMessage::Hello`] with its protocol version; the
+//!    worker answers [`WorkerMessage::Welcome`] (or refuses a mismatch).
+//! 2. The parent sends [`ParentMessage::Activate`] carrying the script, the
+//!    budgets and the run's recorded journal prefix. The worker replays the
+//!    prefix locally and crosses the boundary only for new calls:
+//!    - [`WorkerMessage::HostCall`] issues a new call. A synchronous call
+//!      (a clock read or a random sample) is answered at once with a
+//!      [`ParentMessage::Deliver`] for the same position.
+//!    - [`WorkerMessage::Blocked`] says the script cannot progress until an
+//!      awaited call settles; the parent answers with one `Deliver` or with
+//!      [`ParentMessage::LongRunning`].
+//! 3. The worker ends the activation with [`WorkerMessage::Finished`] and
+//!    waits for the next `Activate` or [`ParentMessage::Shutdown`].
+//!
+//! Any frame the worker does not expect is answered with
+//! [`WorkerMessage::Refused`] carrying a typed [`Refusal`]. This crate does
+//! no I/O beyond reading and writing frames on the streams it is handed.
+
+mod codec;
+mod frame;
+mod limits;
+mod types;
+mod wire;
+
+pub use codec::DecodeError;
+pub use frame::{
+    FrameError, decode_parent_payload, decode_worker_payload, encode_parent_frame,
+    encode_worker_frame, read_frame, read_parent_message, read_worker_message, write_parent_message,
+    write_raw_frame, write_worker_message,
+};
+pub use limits::*;
+pub use types::*;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn text(s: &str) -> JsonText {
+        JsonText::new(s).expect("small test value")
+    }
+
+    fn sample_request() -> ActivationRequest {
+        ActivationRequest {
+            activation_id: 7,
+            profile: Profile::Codemode,
+            prelude_hash: PreludeHash::of("prelude"),
+            script: "return 1".into(),
+            trigger: text("{\"a\":1}"),
+            budgets: Budgets::default(),
+            prefix: vec![
+                RecordedCall {
+                    position: 0,
+                    kind: CallKind::Op {
+                        module: "mock".into(),
+                        op: "echo".into(),
+                    },
+                    args_digest: ArgsDigest::of(&text("1")),
+                    outcome: Some(RecordedOutcome {
+                        settlement: Settlement::Rejected,
+                        value: text("{\"message\":\"no\"}"),
+                        delivery_order: 3,
+                    }),
+                },
+                RecordedCall {
+                    position: 1,
+                    kind: CallKind::Primitive(Primitive::Llm),
+                    args_digest: ArgsDigest::of(&text("{}")),
+                    outcome: None,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn every_parent_message_round_trips() {
+        let messages = vec![
+            ParentMessage::Hello {
+                protocol_version: PROTOCOL_VERSION,
+            },
+            ParentMessage::Activate(Box::new(sample_request())),
+            ParentMessage::Deliver(Outcome {
+                position: 4,
+                settlement: Settlement::Fulfilled,
+                value: text("\"\u{2028}\""),
+                delivery_order: 9,
+            }),
+            ParentMessage::LongRunning {
+                positions: vec![1, 2],
+            },
+            ParentMessage::Shutdown,
+        ];
+        for m in messages {
+            let frame = encode_parent_frame(&m).expect("encodes");
+            let back = read_parent_message(&mut frame.as_slice()).expect("decodes");
+            assert_eq!(back, m);
+        }
+    }
+
+    #[test]
+    fn every_worker_message_round_trips() {
+        let sig = CallSignature {
+            kind: CallKind::Primitive(Primitive::Facts),
+            args_digest: ArgsDigest::of(&text("null")),
+        };
+        let failures = vec![
+            Failure::Script {
+                message: "boom".into(),
+            },
+            Failure::Nondeterminism(Nondeterminism::Divergence {
+                position: 2,
+                recorded: sig.clone(),
+                observed: sig.clone(),
+            }),
+            Failure::Nondeterminism(Nondeterminism::UnreleasedOutcome {
+                position: 1,
+                delivery_order: 5,
+            }),
+            Failure::Nondeterminism(Nondeterminism::UnconsumedCall { position: 3 }),
+            Failure::ProfileViolation {
+                kind: CallKind::Primitive(Primitive::Sh),
+            },
+            Failure::EngineMismatch {
+                expected: PreludeHash::of("a"),
+                actual: PreludeHash::of("b"),
+            },
+            Failure::InvalidRequest { detail: "x".into() },
+            Failure::ArgumentsTooLarge { bytes: 9, cap: 8 },
+            Failure::ResultTooLarge { bytes: 9, cap: 8 },
+            Failure::ResultNotSerializable { detail: "y".into() },
+            Failure::InvalidHostValue {
+                position: 1,
+                detail: "z".into(),
+            },
+            Failure::HostLink { detail: "w".into() },
+            Failure::Engine { detail: "v".into() },
+        ];
+        let mut messages = vec![
+            WorkerMessage::Welcome(Welcome {
+                protocol_version: PROTOCOL_VERSION,
+                engine: "quickjs".into(),
+                prelude_hash: PreludeHash::of("p"),
+                confinement: Confinement::Seatbelt,
+            }),
+            WorkerMessage::HostCall(HostCall {
+                position: 3,
+                kind: CallKind::Op {
+                    module: "m".into(),
+                    op: "o".into(),
+                },
+                args: text("[1,2]"),
+            }),
+            WorkerMessage::Blocked {
+                awaiting: vec![1, 5],
+            },
+            WorkerMessage::Refused(Refusal::UnexpectedFrame {
+                received: MessageKind::Deliver,
+                state: WorkerState::Idle,
+            }),
+            WorkerMessage::Refused(Refusal::Oversized {
+                declared: 1 << 40,
+                max: MAX_FRAME_BYTES as u64,
+            }),
+        ];
+        for result in [
+            ActivationResult::Completed { value: text("42") },
+            ActivationResult::Suspended { awaited: vec![6] },
+            ActivationResult::Stalled,
+            ActivationResult::BudgetExhausted(BudgetKind::Stack),
+        ] {
+            messages.push(WorkerMessage::Finished {
+                activation_id: 1,
+                result,
+            });
+        }
+        for f in failures {
+            messages.push(WorkerMessage::Finished {
+                activation_id: 2,
+                result: ActivationResult::Failed(f),
+            });
+        }
+        for m in messages {
+            let frame = encode_worker_frame(&m).expect("encodes");
+            let back = read_worker_message(&mut frame.as_slice()).expect("decodes");
+            assert_eq!(back, m);
+        }
+    }
+
+    #[test]
+    fn oversized_header_is_refused_without_reading_the_payload() {
+        let header = ((MAX_FRAME_BYTES + 1) as u32).to_be_bytes();
+        match read_frame(&mut header.as_slice()) {
+            Err(FrameError::Oversized { declared, max }) => {
+                assert_eq!(declared, MAX_FRAME_BYTES as u64 + 1);
+                assert_eq!(max, MAX_FRAME_BYTES as u64);
+            }
+            other => panic!("expected an oversized refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn truncated_frames_and_payloads_are_typed_errors() {
+        assert!(matches!(
+            read_frame(&mut [0u8, 0].as_slice()),
+            Err(FrameError::Truncated { .. })
+        ));
+        assert!(matches!(
+            read_frame(&mut [0u8, 0, 0, 9, 1].as_slice()),
+            Err(FrameError::Truncated { .. })
+        ));
+        assert!(matches!(
+            read_frame(&mut [].as_slice()),
+            Err(FrameError::Closed)
+        ));
+        // A Deliver frame cut short inside its value.
+        let full = encode_parent_frame(&ParentMessage::Deliver(Outcome {
+            position: 1,
+            settlement: Settlement::Fulfilled,
+            value: text("[1,2,3]"),
+            delivery_order: 0,
+        }))
+        .expect("encodes");
+        let payload = &full[4..full.len() - 3];
+        assert!(matches!(
+            decode_parent_payload(payload),
+            Err(DecodeError::Truncated { .. })
+        ));
+    }
+
+    #[test]
+    fn unknown_tags_and_trailing_bytes_are_refused() {
+        assert_eq!(
+            decode_parent_payload(&[99]),
+            Err(DecodeError::UnknownTag {
+                field: "parent message",
+                tag: 99
+            })
+        );
+        // A worker message sent to the worker is not a parent message.
+        let welcome = encode_worker_frame(&WorkerMessage::Blocked { awaiting: vec![] })
+            .expect("encodes");
+        assert!(matches!(
+            decode_parent_payload(&welcome[4..]),
+            Err(DecodeError::UnknownTag { .. })
+        ));
+        assert_eq!(
+            decode_parent_payload(&[5, 0]),
+            Err(DecodeError::TrailingBytes { count: 1 })
+        );
+    }
+
+    #[test]
+    fn values_over_the_cap_are_refused_before_parsing() {
+        assert!(JsonText::new("x".repeat(MAX_VALUE_BYTES + 1)).is_err());
+        // Hand-build a Deliver whose value declares one byte over the cap.
+        let mut payload = vec![3u8];
+        payload.extend_from_slice(&1u64.to_be_bytes());
+        payload.push(0);
+        payload.extend_from_slice(&((MAX_VALUE_BYTES + 1) as u32).to_be_bytes());
+        assert!(matches!(
+            decode_parent_payload(&payload),
+            Err(DecodeError::TooLong {
+                field: "delivered value",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn invalid_utf8_is_refused() {
+        let mut payload = vec![3u8];
+        payload.extend_from_slice(&1u64.to_be_bytes());
+        payload.push(0);
+        payload.extend_from_slice(&2u32.to_be_bytes());
+        payload.extend_from_slice(&[0xff, 0xfe]);
+        payload.extend_from_slice(&0u64.to_be_bytes());
+        assert_eq!(
+            decode_parent_payload(&payload),
+            Err(DecodeError::InvalidUtf8 {
+                field: "delivered value"
+            })
+        );
+    }
+
+    #[test]
+    fn synchronous_kinds_are_exactly_clock_and_random() {
+        for p in Primitive::ALL {
+            let sync = CallKind::Primitive(p).is_synchronous();
+            assert_eq!(sync, matches!(p, Primitive::Now | Primitive::Random), "{p:?}");
+            assert_eq!(Primitive::from_code(p.code()), Some(p));
+        }
+        assert!(
+            !CallKind::Op {
+                module: "sh".into(),
+                op: "sh".into()
+            }
+            .is_synchronous()
+        );
+    }
+}

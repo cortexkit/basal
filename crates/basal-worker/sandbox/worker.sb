@@ -1,0 +1,16 @@
+;; Seatbelt profile for ck-basal-worker.
+;;
+;; The worker applies this profile to itself with sandbox_init(3) before it
+;; reads its first frame. Everything it needs from then on is already open or
+;; mapped: stdin and stdout carry its IPC, stderr carries its logs, and its
+;; code and libraries were mapped at launch. So the profile denies everything
+;; (files, network, process execution, IPC lookups) and allows only signals
+;; to itself, so that an abort inside the engine still terminates the process
+;; with SIGABRT where the parent can see it.
+;;
+;; Reads and writes on descriptors that were open before the profile applied
+;; are not file opens, so stdio keeps working.
+
+(version 1)
+(deny default)
+(allow signal (target self))
