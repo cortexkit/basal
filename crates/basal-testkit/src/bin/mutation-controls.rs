@@ -2539,6 +2539,39 @@ fn main() -> ExitCode {
 
 const HOST_CONTROLS: &[Control] = &[
     Control {
+        label: "hosts: facts request groups discarded",
+        edits: &[(
+            "crates/basal-host/src/core_host.rs",
+            "\"fields\":args[\"options\"].get(\"fields\").cloned().unwrap_or(json!([\"identity\",\"residence\",\"activity\",\"attention\"]))",
+            "\"fields\":[]",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "core_requests_match_c3_c4_field_for_field",
+    },
+    Control {
+        label: "hosts: facts identity validation bypassed",
+        edits: &[(
+            "crates/basal-host/src/core_host.rs",
+            "Primitive::Facts => {\n            value[\"agent_id\"].is_string()",
+            "Primitive::Facts => {\n            true || value[\"agent_id\"].is_string()",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "fact_identity_and_clock_fields_are_required_without_normalising_leaves",
+    },
+    Control {
+        label: "hosts: facts unknown activity normalised to idle",
+        edits: &[(
+            "crates/basal-host/src/core_host.rs",
+            "if valid {\n        Ok(value)",
+            "if valid {\n        let mut value = value; if kind == Primitive::Facts { value[\"activity\"][\"state\"][\"value\"] = json!(\"idle\"); value[\"activity\"][\"state\"][\"status\"] = json!(\"ok\"); }\n        Ok(value)",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "fact_identity_and_clock_fields_are_required_without_normalising_leaves",
+    },
+    Control {
         label: "hosts: journaled class not passed to transport host",
         edits: &[(
             "crates/basal-core/src/runtime.rs",

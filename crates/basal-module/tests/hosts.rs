@@ -927,3 +927,33 @@ fn catalog_changes_cannot_execute_mutations_under_a_query_retry_policy() {
         basal_core::StoredClass::Query
     );
 }
+
+#[test]
+fn fact_identity_and_clock_fields_are_required_without_normalising_leaves() {
+    let reply = json!({"agent_id":"ag_synapse","as_of":17,"home":"local","core_boot_at":0,"activity":{"state":{"value":null,"status":"unknown","observed_at":null,"privacy":"public","source":{"kind":"memory","ref":"session_activity_states","survives_restart":false}}},"attention":{"last_assistant_text":{"value":null,"status":"denied","observed_at":null,"privacy":"private-text","source":{"kind":"store","ref":"sessions","survives_restart":true}}},"future_group":{"opaque":[1,2]}});
+    let fake = Fake::new();
+    fake.enqueue("agent.facts", vec![Ok(reply.clone())]);
+    let host = CoreHost::new(fake);
+    let Dispatched::Completed(outcome) = host.dispatch(&call(Primitive::Facts, json!({}))).unwrap()
+    else {
+        panic!("completed")
+    };
+    assert_eq!(
+        serde_json::from_str::<Value>(outcome.value.as_str()).unwrap(),
+        reply
+    );
+    for key in ["agent_id", "as_of", "home", "core_boot_at"] {
+        let mut missing = reply.clone();
+        missing.as_object_mut().unwrap().remove(key);
+        assert!(matches!(
+            validate_reply(Primitive::Facts, missing),
+            Err(WireError::Unknown(_))
+        ));
+        let mut wrong = reply.clone();
+        wrong[key] = json!({});
+        assert!(matches!(
+            validate_reply(Primitive::Facts, wrong),
+            Err(WireError::Unknown(_))
+        ));
+    }
+}
