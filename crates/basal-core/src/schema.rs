@@ -18,9 +18,10 @@ pub const NAMESPACE: &str = "basal_core";
 /// under one layout is never replayed under another.
 pub const JOURNAL_FORMAT: u32 = 1;
 
-pub const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    statements: r#"
+pub const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        statements: r#"
 CREATE TABLE meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -163,4 +164,45 @@ CREATE TABLE local_effects (
     op              TEXT NOT NULL
 );
 "#,
-}];
+    },
+    // Schedules. A schedule's fires are planned in the same commit that
+    // advances it and wait in `schedule_fires` until they are admitted, so
+    // a restart between the two never recomputes a catch-up fire over due
+    // times already accounted for. Times are milliseconds since the Unix
+    // epoch, UTC.
+    Migration {
+        version: 3,
+        statements: r#"
+CREATE TABLE schedules (
+    flow_id       TEXT PRIMARY KEY,
+    version       INTEGER NOT NULL CHECK (version >= 0),
+    spec          TEXT NOT NULL,
+    script        TEXT NOT NULL,
+    manifest      TEXT NOT NULL,
+    code_hash     BLOB NOT NULL CHECK (length(code_hash) = 32),
+    state         TEXT NOT NULL CHECK (state IN ('active', 'disabled')),
+    anchor_ms     INTEGER NOT NULL,
+    next_due_ms   INTEGER,
+    last_fired_ms INTEGER,
+    updated_at    INTEGER NOT NULL
+);
+CREATE INDEX schedules_due ON schedules (state, next_due_ms);
+
+-- Fires decided by a tick and not yet admitted. Each keeps the code of the
+-- version that owed it, so a fire planned before a newer version was
+-- approved still runs the version that was approved when it fell due.
+CREATE TABLE schedule_fires (
+    seq        INTEGER PRIMARY KEY AUTOINCREMENT,
+    flow_id    TEXT NOT NULL,
+    trigger_id TEXT NOT NULL,
+    version    INTEGER NOT NULL,
+    due_ms     INTEGER NOT NULL,
+    payload    TEXT NOT NULL,
+    script     TEXT NOT NULL,
+    manifest   TEXT NOT NULL,
+    planned_at INTEGER NOT NULL,
+    UNIQUE (flow_id, trigger_id)
+);
+"#,
+    },
+];
