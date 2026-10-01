@@ -2,10 +2,12 @@
 //! replace), disable, enable and remove.
 //!
 //! One row per flow: the approved version whose manifest has a schedule
-//! trigger, its spec and code, whether it is active, the instant intervals
-//! count from, the next due time and the last due time that fired. Every
-//! function here takes the caller's transaction, so an install path can
-//! record an approval and its schedule in one commit.
+//! trigger, its spec, whether it is active, the instant intervals count
+//! from, the next due time and the last due time that fired. The row keeps
+//! no code: a fire runs the flow's approved version at the moment it is
+//! admitted. Every function here takes the caller's transaction, and the
+//! install path calls them in the transactions that approve, disable and
+//! enable the flow.
 
 use jiff::Timestamp;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -14,7 +16,6 @@ use super::config::SchedulerConfig;
 use super::spec::{CompiledSchedule, ScheduleSpec, validate};
 use super::tick;
 use crate::error::{CoreError, Result};
-use crate::ids::code_hash;
 
 /// An approved flow version whose trigger is a schedule.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,10 +23,6 @@ pub struct ScheduledFlow {
     pub flow_id: String,
     pub version: u64,
     pub spec: ScheduleSpec,
-    /// The approved script, snapshotted into every run a fire admits.
-    pub script: String,
-    /// The approved manifest bytes, snapshotted likewise.
-    pub manifest: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,8 +55,6 @@ pub struct ScheduleRow {
     pub flow_id: String,
     pub version: u64,
     pub spec: ScheduleSpec,
-    pub script: String,
-    pub manifest: String,
     pub state: ScheduleState,
     /// When this version's schedule was created; intervals count from it.
     pub anchor: Timestamp,
@@ -123,7 +118,7 @@ fn due_error(flow_id: &str, e: super::due::DueError) -> CoreError {
 pub fn load(c: &Connection, flow_id: &str) -> Result<Option<ScheduleRow>> {
     let raw = c
         .query_row(
-            "SELECT version, spec, script, manifest, state, anchor_ms, next_due_ms, last_fired_ms \
+            "SELECT version, spec, state, anchor_ms, next_due_ms, last_fired_ms \
              FROM schedules WHERE flow_id = ?1",
             [flow_id],
             |r| {
@@ -131,16 +126,14 @@ pub fn load(c: &Connection, flow_id: &str) -> Result<Option<ScheduleRow>> {
                     r.get::<_, i64>(0)?,
                     r.get::<_, String>(1)?,
                     r.get::<_, String>(2)?,
-                    r.get::<_, String>(3)?,
-                    r.get::<_, String>(4)?,
-                    r.get::<_, i64>(5)?,
-                    r.get::<_, Option<i64>>(6)?,
-                    r.get::<_, Option<i64>>(7)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, Option<i64>>(4)?,
+                    r.get::<_, Option<i64>>(5)?,
                 ))
             },
         )
         .optional()?;
-    let Some((version, spec, script, manifest, state, anchor, next_due, last_fired)) = raw else {
+    let Some((version, spec, state, anchor, next_due, last_fired)) = raw else {
         return Ok(None);
     };
     let version = u64::try_from(version)
@@ -151,8 +144,6 @@ pub fn load(c: &Connection, flow_id: &str) -> Result<Option<ScheduleRow>> {
         flow_id: flow_id.to_owned(),
         version,
         spec,
-        script,
-        manifest,
         state: ScheduleState::parse(&state)?,
         anchor: from_ms(anchor, "schedule anchor")?,
         next_due: next_due
@@ -184,15 +175,16 @@ pub fn list(c: &Connection) -> Result<Vec<ScheduleRow>> {
 /// - No schedule yet: one is created, anchored at `now`, first due after
 ///   `now`.
 /// - An older version's schedule: due times of the old version that have
-///   already passed are planned first, under the old version's code (they
-///   were due while it was the approved one). Then the new version takes
-///   over, anchored at `now` and first due after `now`: the new pattern's
-///   due times between the old schedule's last fire and the approval never
-///   fire, because the new version was not approved at those times. The
-///   schedule's state (active or disabled) is kept.
-/// - The same version and code again: nothing changes, so a retried
-///   install is harmless. The same version with different code, or an
-///   older version, is refused.
+///   already passed are planned first (they fell due while it was the
+///   approved one, so they are owed). Like every fire, they run the version
+///   approved when they are admitted, which is the new one. Then the new
+///   version takes over, anchored at `now` and first due after `now`: the
+///   new pattern's due times between the old schedule's last fire and the
+///   approval never fire, because the new version was not approved at
+///   those times. The schedule's state (active or disabled) is kept.
+/// - The same version again: nothing changes, so a retried approval is
+///   harmless (installs refuse the same version with other code). An older
+///   version is refused.
 pub fn approve(
     tx: &Transaction,
     flow: &ScheduledFlow,
@@ -204,7 +196,6 @@ pub fn approve(
     let version = version_sql(flow.version)?;
     let spec = serde_json::to_string(&flow.spec)
         .map_err(|e| CoreError::Invalid(format!("schedule spec: {e}")))?;
-    let hash = code_hash(&flow.script, &flow.manifest);
     let anchor = anchor_at(now)?;
     let next_due_after = |after: Timestamp| -> Result<Option<i64>> {
         Ok(compiled
@@ -216,16 +207,12 @@ pub fn approve(
     let Some(old) = load(tx, &flow.flow_id)? else {
         let next_due = next_due_after(now)?;
         tx.execute(
-            "INSERT INTO schedules (flow_id, version, spec, script, manifest, code_hash, state, \
-             anchor_ms, next_due_ms, last_fired_ms, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?8, NULL, ?9)",
+            "INSERT INTO schedules (flow_id, version, spec, state, anchor_ms, next_due_ms, \
+             last_fired_ms, updated_at) VALUES (?1, ?2, ?3, 'active', ?4, ?5, NULL, ?6)",
             params![
                 flow.flow_id,
                 version,
                 spec,
-                flow.script,
-                flow.manifest,
-                hash.as_slice(),
                 to_ms(anchor),
                 next_due,
                 to_ms(now)
@@ -241,20 +228,20 @@ pub fn approve(
         )));
     }
     if flow.version == old.version {
-        let same = old.spec == flow.spec && code_hash(&old.script, &old.manifest) == hash;
-        return if same {
+        return if old.spec == flow.spec {
             Ok(Approval::Unchanged)
         } else {
             Err(CoreError::Invalid(format!(
-                "{}: version {} is already approved with different code",
+                "{}: version {} already has a different schedule",
                 flow.flow_id, flow.version
             )))
         };
     }
 
-    // Plan the old version's due times that have already passed, under the
-    // old version's code, before its schedule is replaced: they fell due
-    // while it was the approved version.
+    // Plan the old version's due times that have already passed before its
+    // schedule is replaced: they fell due while it was the approved version,
+    // so they are owed. They run whatever version is approved when they are
+    // admitted.
     if old.state == ScheduleState::Active {
         tick::plan_flow(tx, &flow.flow_id, now, config)?;
     }
@@ -264,15 +251,12 @@ pub fn approve(
     let counted_from = now;
     let next_due = next_due_after(counted_from)?;
     tx.execute(
-        "UPDATE schedules SET version = ?2, spec = ?3, script = ?4, manifest = ?5, \
-         code_hash = ?6, anchor_ms = ?7, next_due_ms = ?8, updated_at = ?9 WHERE flow_id = ?1",
+        "UPDATE schedules SET version = ?2, spec = ?3, anchor_ms = ?4, next_due_ms = ?5, \
+         updated_at = ?6 WHERE flow_id = ?1",
         params![
             flow.flow_id,
             version,
             spec,
-            flow.script,
-            flow.manifest,
-            hash.as_slice(),
             to_ms(anchor),
             next_due,
             to_ms(now)

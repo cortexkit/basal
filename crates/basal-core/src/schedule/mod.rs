@@ -4,15 +4,19 @@
 //!   [`ScheduleSpec`], and [`validate`], which compiles it.
 //! - [`due`]: due times, with the time-zone rules for daylight saving
 //!   gaps and overlaps, and interval anchoring.
-//! - [`table`]: the `schedules` table and the lifecycle an install path
-//!   drives: [`table::approve`] (create or replace), [`table::disable`],
-//!   [`table::enable`] and [`table::remove`].
+//! - [`table`]: the `schedules` table and the lifecycle the install path
+//!   drives in its own transactions ([`crate::install`]): [`table::approve`]
+//!   (create or replace) when a version with a schedule trigger is
+//!   approved, [`table::remove`] when a newer version without one is, and
+//!   [`table::disable`] and [`table::enable`] with the flow.
 //! - [`tick`]: planning fires for due times that have passed, by the
 //!   `missed` policy, and admitting them through trigger admission.
 //!
-//! [`Scheduler`] bundles these over a [`Store`] with an injectable
-//! [`Clock`]. Every operation also exists as a function over a transaction,
-//! so a caller can combine it with its own writes in one commit.
+//! [`Scheduler`] ticks over a [`Store`] with an injectable [`Clock`]
+//! (`Runtime::scheduler` builds one sharing the runtime's clock and
+//! admission limits). Every operation also exists as a function over a
+//! transaction, so a caller can combine it with its own writes in one
+//! commit.
 
 pub mod config;
 pub mod due;
@@ -31,12 +35,38 @@ pub use spec::{
     MissedPolicy, ScheduleSpec, SpecError, When, validate,
 };
 pub use table::{Approval, ScheduleRow, ScheduleState, ScheduledFlow};
-pub use tick::{AdmittedFire, Planned, PlannedFire, fire_trigger_id};
+pub use tick::{AdmittedFire, DroppedFire, Planned, PlannedFire, fire_trigger_id};
 
-use crate::admission::Admission;
+use crate::admission::{Admission, AdmitContext};
 use crate::error::{CoreError, Result};
 use crate::hooks::{NoHooks, Step};
+use crate::rate::RateLimits;
 use crate::store::Store;
+
+/// The runtime's clock reads as the scheduler's, so ticks, approvals and
+/// admission limits all see one time.
+impl Clock for crate::clock::Clock {
+    fn now(&self) -> Timestamp {
+        Timestamp::from_millisecond(self.now_ms()).unwrap_or(Timestamp::UNIX_EPOCH)
+    }
+}
+
+/// The admission limits a tick admits fires under: the runtime's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AdmitLimits {
+    pub rate: RateLimits,
+    /// The deadline of a run whose manifest sets none, in milliseconds.
+    pub default_deadline_ms: i64,
+}
+
+impl Default for AdmitLimits {
+    fn default() -> Self {
+        Self {
+            rate: RateLimits::default(),
+            default_deadline_ms: 600_000,
+        }
+    }
+}
 
 /// What one tick did.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -69,6 +99,7 @@ pub struct Scheduler {
     clock: Arc<dyn Clock>,
     config: SchedulerConfig,
     hooks: Arc<dyn TickHooks>,
+    limits: AdmitLimits,
 }
 
 impl Scheduler {
@@ -78,7 +109,14 @@ impl Scheduler {
             clock,
             config,
             hooks: Arc::new(NoHooks),
+            limits: AdmitLimits::default(),
         }
+    }
+
+    /// The same scheduler, admitting fires under these limits.
+    pub fn with_limits(mut self, limits: AdmitLimits) -> Self {
+        self.limits = limits;
+        self
     }
 
     /// The same scheduler, asking `hooks` at every commit boundary of a tick
@@ -106,38 +144,17 @@ impl Scheduler {
         }
     }
 
-    /// Records an approved flow version with a schedule trigger (see
-    /// [`table::approve`]), then admits the fires that approval planned for
-    /// the previous version's due times that had already passed.
-    pub fn approve(&self, flow: &ScheduledFlow) -> Result<Approval> {
-        let now = self.now();
-        let approval = self
-            .store
-            .write(|tx| table::approve(tx, flow, now, &self.config))?;
-        self.admit_planned(&mut Vec::new())?;
-        Ok(approval)
-    }
-
-    pub fn disable(&self, flow_id: &str) -> Result<bool> {
-        let now = self.now();
-        self.store.write(|tx| table::disable(tx, flow_id, now))
-    }
-
-    pub fn enable(&self, flow_id: &str) -> Result<bool> {
-        let now = self.now();
-        self.store.write(|tx| table::enable(tx, flow_id, now))
-    }
-
-    pub fn remove(&self, flow_id: &str) -> Result<bool> {
-        self.store.write(|tx| table::remove(tx, flow_id))
-    }
-
     pub fn schedule(&self, flow_id: &str) -> Result<Option<ScheduleRow>> {
         self.store.read(|c| table::load(c, flow_id))
     }
 
     pub fn schedules(&self) -> Result<Vec<ScheduleRow>> {
         self.store.read(table::list)
+    }
+
+    /// Planned fires admission refused for good, oldest first.
+    pub fn dropped(&self) -> Result<Vec<DroppedFire>> {
+        self.store.read(tick::dropped)
     }
 
     /// Ticks at the clock's current time.
@@ -154,7 +171,7 @@ impl Scheduler {
         // While admission drains, planning still runs: fires are decided
         // when they fall due (so they count as on time) and wait in the
         // planned fires until admission resumes.
-        self.admit_planned(&mut report.admitted)?;
+        self.admit_planned(now, &mut report.admitted)?;
         let due = self.store.read(|c| tick::due_flows(c, now))?;
         for flow_id in due {
             let planned = self
@@ -167,17 +184,25 @@ impl Scheduler {
                 })?;
             }
         }
-        self.admit_planned(&mut report.admitted)?;
+        self.admit_planned(now, &mut report.admitted)?;
         report.waiting = self.store.read(tick::planned_count)?;
         Ok(report)
     }
 
     /// Admits planned fires oldest first, one commit each, until none is
     /// left or admission is draining.
-    fn admit_planned(&self, out: &mut Vec<AdmittedFire>) -> Result<()> {
+    fn admit_planned(&self, now: Timestamp, out: &mut Vec<AdmittedFire>) -> Result<()> {
         let store_id = self.store.store_id().to_owned();
+        let ctx = AdmitContext {
+            now_ms: now.as_millisecond(),
+            rate: self.limits.rate,
+            default_deadline_ms: self.limits.default_deadline_ms,
+        };
         loop {
-            let Some(fire) = self.store.write(|tx| tick::admit_next(tx, &store_id))? else {
+            let Some(fire) = self
+                .store
+                .write(|tx| tick::admit_next(tx, &store_id, &ctx))?
+            else {
                 return Ok(());
             };
             if fire.admission == Admission::Draining {

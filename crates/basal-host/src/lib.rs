@@ -5,7 +5,15 @@
 //! to a [`Host`]: module ops, facts, llm and classify, sinks. This crate
 //! defines that boundary only as wide as the runtime needs today, and a
 //! deterministic [`mock::MockHost`] that records every effect so tests can
-//! prove a crash never repeats one.
+//! prove a crash never repeats one. [`catalog`] holds what modules declare
+//! (events, ops and their markers, agents), which manifests are validated
+//! against.
+//!
+//! `llm` and `classify` reach Broca. Their request is an envelope basal
+//! builds and journals before the first send: `send_id` (the call's
+//! idempotency key), `work_class`, `session`, the clamped `max_output` and
+//! the script's own `request`. A fulfilled outcome carries the run's token
+//! usage as `usage`, in Broca's canonical fields (see [`USAGE_FIELDS`]).
 //!
 //! A dispatched call ends in one of three ways:
 //! - it completes now, fulfilled or rejected ([`Dispatched::Completed`]);
@@ -16,7 +24,20 @@
 //!   runtime may retry a mutation: a request that left may have taken effect
 //!   even though its reply was lost.
 
+pub mod catalog;
 pub mod mock;
+
+pub use catalog::{Catalog, EventBody, EventDecl, EventOrigin, MockCatalog, OpDecl, OpKind};
+
+/// The usage fields of a Broca outcome, in Broca's canonical names: fresh
+/// input, cache write, output (reasoning is already inside it) and cached
+/// input.
+pub const USAGE_FIELDS: [&str; 4] = [
+    "input_tokens",
+    "cache_write_tokens",
+    "output_tokens",
+    "cached_input_tokens",
+];
 
 use std::fmt;
 use std::sync::Arc;

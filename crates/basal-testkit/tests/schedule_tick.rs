@@ -8,13 +8,17 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use basal_core::hooks::Step;
+use basal_core::hooks::{NoHooks, Step};
 use basal_core::schedule::spec::from_value;
 use basal_core::schedule::{
-    Approval, ManualClock, ScheduleState, ScheduledFlow, Scheduler, SchedulerConfig, TickHooks,
-    TickPoint, validate,
+    Approval, ScheduleState, Scheduler, SchedulerConfig, TickHooks, TickPoint, validate,
 };
-use basal_core::{Admission, CoreError, Durability, Store};
+use basal_core::{
+    Actor, Admission, Clock, Config, CoreError, Durability, InstallError, InstallRequest,
+    ManifestError, Runtime, Store,
+};
+use basal_host::MockCatalog;
+use basal_host::mock::MockHost;
 use basal_testkit::harness::scratch;
 use jiff::{SignedDuration, Timestamp};
 use serde_json::{Value, json};
@@ -23,31 +27,77 @@ fn ts(text: &str) -> Timestamp {
     text.parse().expect("timestamp")
 }
 
-fn flow(id: &str, version: u64, spec: Value) -> ScheduledFlow {
-    ScheduledFlow {
-        flow_id: id.into(),
+/// A flow version with a schedule trigger, as a test describes it.
+#[derive(Debug, Clone)]
+struct TestFlow {
+    id: String,
+    version: u32,
+    spec: Value,
+    script: String,
+}
+
+fn flow(id: &str, version: u32, spec: Value) -> TestFlow {
+    TestFlow {
+        id: id.into(),
         version,
-        spec: from_value(spec).expect("spec"),
+        spec,
         script: format!("return 'version {version}';"),
-        manifest: format!("{{\"id\":\"{id}\",\"version\":{version}}}"),
     }
 }
 
-/// A store in a scratch directory, a manual clock, and a scheduler over
-/// them that can be dropped and reopened like a restarted process.
+impl TestFlow {
+    /// The version's manifest: only its schedule trigger matters here.
+    fn manifest(&self) -> String {
+        json!({
+            "id": self.id,
+            "version": self.version,
+            "purpose": "A scheduled test flow.",
+            "trigger": { "schedule": self.spec },
+        })
+        .to_string()
+    }
+}
+
+/// A store in a scratch directory, a manual clock, and a runtime and
+/// scheduler over them that can be dropped and reopened like a restarted
+/// process. Flows are installed and approved through the runtime, which
+/// keeps their schedules in step; the scheduler only ticks.
 struct Fixture {
     dir: PathBuf,
-    clock: Arc<ManualClock>,
+    clock: Clock,
+    rt: Option<Runtime>,
     sched: Option<Scheduler>,
 }
 
-fn open(dir: &Path, clock: &Arc<ManualClock>, hooks: Option<Arc<dyn TickHooks>>) -> Scheduler {
+fn open(
+    dir: &Path,
+    clock: &Clock,
+    hooks: Option<Arc<dyn TickHooks>>,
+    schedule: SchedulerConfig,
+) -> (Runtime, Scheduler) {
     let store = Store::open(dir.join("basal.db"), Durability { fullfsync: false }).expect("open");
-    let sched = Scheduler::new(Arc::new(store), clock.clone(), SchedulerConfig::default());
-    match hooks {
+    let rt = Runtime::new(
+        Arc::new(store),
+        Arc::new(MockHost::new()),
+        Arc::new(MockCatalog::standard()),
+        Arc::new(NoHooks),
+        None,
+        Config {
+            clock: clock.clone(),
+            schedule,
+            ..Config::default()
+        },
+    );
+    let sched = rt.scheduler().expect("scheduler");
+    let sched = match hooks {
         Some(h) => sched.with_hooks(h),
         None => sched,
-    }
+    };
+    (rt, sched)
+}
+
+fn manual(at: &str) -> Clock {
+    Clock::manual(ts(at).as_millisecond())
 }
 
 impl Fixture {
@@ -56,22 +106,59 @@ impl Fixture {
     }
 
     fn with_hooks(tag: &str, start: &str, hooks: Option<Arc<dyn TickHooks>>) -> Self {
+        Self::with_config(tag, start, hooks, SchedulerConfig::default())
+    }
+
+    fn with_config(
+        tag: &str,
+        start: &str,
+        hooks: Option<Arc<dyn TickHooks>>,
+        config: SchedulerConfig,
+    ) -> Self {
         let dir = scratch(tag);
-        let clock = Arc::new(ManualClock::new(ts(start)));
-        let sched = Some(open(&dir, &clock, hooks));
-        Self { dir, clock, sched }
+        let clock = manual(start);
+        let (rt, sched) = open(&dir, &clock, hooks, config);
+        Self {
+            dir,
+            clock,
+            rt: Some(rt),
+            sched: Some(sched),
+        }
     }
 
     fn s(&self) -> &Scheduler {
         self.sched.as_ref().expect("scheduler open")
     }
 
-    fn set(&self, now: &str) {
-        self.clock.set(ts(now));
+    fn rt(&self) -> &Runtime {
+        self.rt.as_ref().expect("runtime open")
     }
 
-    fn approve(&self, flow: &ScheduledFlow) -> Approval {
-        self.s().approve(flow).expect("approve")
+    fn set(&self, now: &str) {
+        self.clock.set(ts(now).as_millisecond());
+    }
+
+    /// Installs and approves a version; returns what happened to its
+    /// schedule.
+    fn try_approve(&self, flow: &TestFlow) -> Result<Option<Approval>, InstallError> {
+        let installed = self.rt().install(&InstallRequest {
+            script: flow.script.clone(),
+            manifest: flow.manifest(),
+            author: "ALF".into(),
+            loop_override: false,
+        })?;
+        self.rt().approve(
+            &flow.id,
+            flow.version,
+            &installed.code_hash,
+            "test-approval",
+        )
+    }
+
+    fn approve(&self, flow: &TestFlow) -> Approval {
+        self.try_approve(flow)
+            .expect("approve")
+            .expect("a schedule trigger")
     }
 
     /// Ticks at `now` and returns the trigger ids of the new runs.
@@ -80,11 +167,19 @@ impl Fixture {
         new_runs(&self.s().tick().expect("tick"))
     }
 
-    /// Drops the scheduler and its store, as a process exit does, and
-    /// opens the same store again.
-    fn restart(&mut self) {
+    /// Reopens the store with a scheduler that stops at `hooks`.
+    fn reopen_with(&mut self, hooks: Option<Arc<dyn TickHooks>>) {
         self.sched = None;
-        self.sched = Some(open(&self.dir, &self.clock, None));
+        self.rt = None;
+        let (rt, sched) = open(&self.dir, &self.clock, hooks, SchedulerConfig::default());
+        self.rt = Some(rt);
+        self.sched = Some(sched);
+    }
+
+    /// Drops the scheduler, the runtime and their store, as a process exit
+    /// does, and opens the same store again.
+    fn restart(&mut self) {
+        self.reopen_with(None);
     }
 
     /// Every run admitted for `flow_id`, in admission order: its trigger
@@ -132,6 +227,7 @@ impl Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         self.sched = None;
+        self.rt = None;
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
@@ -156,7 +252,7 @@ fn walk_minutes(fx: &Fixture, from: &str, to: &str) -> Vec<(Timestamp, String)> 
     let end = ts(to);
     let mut out = Vec::new();
     while now <= end {
-        fx.clock.set(now);
+        fx.clock.set(now.as_millisecond());
         for trigger_id in new_runs(&fx.s().tick().expect("tick")) {
             out.push((now, trigger_id));
         }
@@ -430,20 +526,15 @@ fn an_on_time_due_time_fires_after_the_catch_up() {
 /// last missed due time.
 #[test]
 fn a_missed_count_past_the_limit_is_reported_as_a_lower_bound() {
-    let dir = scratch("sched-limit");
-    let clock = Arc::new(ManualClock::new(ts("2026-05-01T00:00:30Z")));
-    let store = Store::open(dir.join("basal.db"), Durability { fullfsync: false }).expect("open");
     let config = SchedulerConfig {
         count_limit: 3,
         ..SchedulerConfig::default()
     };
-    let sched = Scheduler::new(Arc::new(store), clock.clone(), config);
-    sched
-        .approve(&flow("tens", 1, json!({ "cron": "*/10 * * * *" })))
-        .expect("approve");
+    let fx = Fixture::with_config("sched-limit", "2026-05-01T00:00:30Z", None, config);
+    fx.approve(&flow("tens", 1, json!({ "cron": "*/10 * * * *" })));
     // Twelve due times, 00:10 to 02:00, all missed.
-    clock.set(ts("2026-05-01T02:05:00Z"));
-    let report = sched.tick().expect("tick");
+    fx.set("2026-05-01T02:05:00Z");
+    let report = fx.s().tick().expect("tick");
     assert_eq!(new_runs(&report), [id("2026-05-01T02:00:00Z")]);
     let planned = &report.planned[0].fires[0];
     assert_eq!(
@@ -455,8 +546,6 @@ fn a_missed_count_past_the_limit_is_reported_as_a_lower_bound() {
             "missed_window": { "first": "2026-05-01T00:10:00Z", "last": "2026-05-01T02:00:00Z" },
         })
     );
-    drop(sched);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // ---- Restarts and repeated ticks ---------------------------------------------
@@ -498,8 +587,7 @@ fn a_restart_after_planning_a_catch_up_mints_no_second_fire() {
         [id("2026-05-01T01:00:00Z")]
     );
     // From here on, the process dies at its next plan commit.
-    fx.sched = None;
-    fx.sched = Some(open(&fx.dir, &fx.clock, crash_at(true)));
+    fx.reopen_with(crash_at(true));
 
     // Wake at 04:20: 02:00 to 04:00 were missed. The catch-up is planned
     // and the schedule advanced, then the process dies before admitting.
@@ -616,6 +704,9 @@ fn approving_a_newer_version_does_not_fire_for_the_gap_the_swap_creates() {
     assert_eq!(scripts, ["return 'version 1';", "return 'version 2';"]);
 }
 
+/// The old version's 01:00 had passed when version 2 was approved: it is
+/// owed and fires, planned by the approval. Like every trigger, it runs the
+/// version approved when it is admitted, which is version 2.
 #[test]
 fn approving_a_newer_version_first_fires_what_the_old_version_owed() {
     let fx = Fixture::new("sched-replace-owed", "2026-05-01T00:00:30Z");
@@ -623,10 +714,14 @@ fn approving_a_newer_version_first_fires_what_the_old_version_owed() {
     // 01:00 has passed but no tick has run yet when version 2 arrives.
     fx.set("2026-05-01T01:00:20Z");
     fx.approve(&flow("f", 2, json!({ "cron": "30 * * * *" })));
+    assert!(fx.fires("f").is_empty(), "planned, not yet admitted");
+    assert_eq!(
+        fx.tick("2026-05-01T01:00:20Z"),
+        [id("2026-05-01T01:00:00Z")]
+    );
     let fires = fx.fires("f");
     assert_eq!(fires.len(), 1);
-    assert_eq!(fires[0].0, id("2026-05-01T01:00:00Z"));
-    assert_eq!(fires[0].2, "return 'version 1';");
+    assert_eq!(fires[0].2, "return 'version 2';");
     assert_eq!(fx.next_due("f"), Some(ts("2026-05-01T01:30:00Z")));
 }
 
@@ -636,22 +731,30 @@ fn approval_is_idempotent_and_refuses_older_or_conflicting_versions() {
     let v2 = flow("f", 2, json!({ "cron": "0 * * * *" }));
     assert_eq!(fx.approve(&v2), Approval::Created);
     assert_eq!(fx.approve(&v2), Approval::Unchanged);
-    let older = fx
-        .s()
-        .approve(&flow("f", 1, json!({ "cron": "0 * * * *" })));
-    assert!(matches!(older, Err(CoreError::Invalid(_))), "{older:?}");
+    let older = fx.try_approve(&flow("f", 1, json!({ "cron": "0 * * * *" })));
+    assert!(
+        matches!(older, Err(InstallError::StaleVersion { .. })),
+        "{older:?}"
+    );
     let mut conflicting = v2.clone();
     conflicting.script = "return 'other';".into();
-    let conflict = fx.s().approve(&conflicting);
+    let conflict = fx.try_approve(&conflicting);
     assert!(
-        matches!(conflict, Err(CoreError::Invalid(_))),
+        matches!(conflict, Err(InstallError::VersionExists { .. })),
         "{conflict:?}"
     );
-    let invalid = fx.s().approve(&ScheduledFlow {
-        spec: from_value(json!({ "cron": "0 * * * *", "tz": "Nowhere/Land" })).expect("shape"),
-        ..flow("g", 1, json!({ "cron": "0 * * * *" }))
-    });
-    assert!(matches!(invalid, Err(CoreError::Invalid(_))), "{invalid:?}");
+    let invalid = fx.try_approve(&flow(
+        "g",
+        1,
+        json!({ "cron": "0 * * * *", "tz": "Nowhere/Land" }),
+    ));
+    assert!(
+        matches!(
+            invalid,
+            Err(InstallError::Manifest(ManifestError::Schedule(_)))
+        ),
+        "{invalid:?}"
+    );
     assert!(fx.s().schedule("g").expect("read").is_none());
 }
 
@@ -660,20 +763,31 @@ fn a_disabled_schedule_does_not_tick_and_does_not_catch_up_when_enabled() {
     let fx = Fixture::new("sched-disable", "2026-05-01T00:00:30Z");
     fx.approve(&flow("f", 1, json!({ "cron": "0 * * * *" })));
     fx.set("2026-05-01T00:30:00Z");
-    assert!(fx.s().disable("f").expect("disable"));
+    assert!(
+        fx.rt()
+            .disable_flow("f", &Actor::Operator("ufuk".into()), "testing")
+            .expect("disable")
+    );
     for now in [
         "2026-05-01T01:00:00Z",
         "2026-05-01T02:00:00Z",
         "2026-05-01T03:30:00Z",
     ] {
-        assert!(fx.tick(now).is_empty(), "{now}");
+        // The schedule itself plans nothing: admission refusing a disabled
+        // flow's fires would hide a schedule that still ticked, so the
+        // test looks at planning and at dropped fires, not only at runs.
+        fx.set(now);
+        let report = fx.s().tick().expect("tick");
+        assert!(report.planned.is_empty(), "{now}: {report:?}");
+        assert!(report.admitted.is_empty(), "{now}: {report:?}");
     }
+    assert!(fx.s().dropped().expect("dropped").is_empty());
     let row = fx.s().schedule("f").expect("read").expect("row");
     assert_eq!(row.state, ScheduleState::Disabled);
 
     // Enabled again at 03:40: the hours it spent disabled are not missed.
     fx.set("2026-05-01T03:40:00Z");
-    assert!(fx.s().enable("f").expect("enable"));
+    assert!(fx.rt().enable_flow("f").expect("enable"));
     assert_eq!(fx.next_due("f"), Some(ts("2026-05-01T04:00:00Z")));
     assert!(fx.tick("2026-05-01T03:40:00Z").is_empty());
     assert_eq!(
@@ -683,6 +797,8 @@ fn a_disabled_schedule_does_not_tick_and_does_not_catch_up_when_enabled() {
     assert_eq!(fx.fire_ids("f"), [id("2026-05-01T04:00:00Z")]);
 }
 
+/// Approving a newer version without a schedule trigger removes the
+/// schedule, with the fires it planned.
 #[test]
 fn removing_a_schedule_stops_it_and_drops_its_planned_fires() {
     let fx = Fixture::new("sched-remove", "2026-05-01T00:00:30Z");
@@ -695,7 +811,28 @@ fn removing_a_schedule_stops_it_and_drops_its_planned_fires() {
     fx.set("2026-05-01T01:00:00Z");
     let report = fx.s().tick().expect("tick");
     assert_eq!(report.waiting, 1);
-    assert!(fx.s().remove("f").expect("remove"));
+    let events = json!({
+        "id": "f",
+        "version": 2,
+        "purpose": "Now triggered by events.",
+        "trigger": { "events": [ { "module": "plexus", "name": "pull_request_review", "version": 1 } ] },
+    })
+    .to_string();
+    let installed = fx
+        .rt()
+        .install(&InstallRequest {
+            script: "return 'events';".into(),
+            manifest: events,
+            author: "ALF".into(),
+            loop_override: false,
+        })
+        .expect("install");
+    assert_eq!(
+        fx.rt()
+            .approve("f", 2, &installed.code_hash, "test-approval")
+            .expect("approve"),
+        None
+    );
     assert!(fx.s().schedule("f").expect("read").is_none());
     fx.s()
         .store()

@@ -25,11 +25,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use basal_core::{ActivationEnd, Config, Durability, NoHooks, Runtime, Store, TriggerSpec};
+use basal_host::MockCatalog;
 use basal_host::mock::MockHost;
 use basal_host::{Completion, HostOutcome};
 use basal_proto::JsonText;
 use basal_testkit::ProcessSource;
-use basal_testkit::harness::scratch;
+use basal_testkit::harness::{approve_spec, scratch, test_manifest};
 use serde_json::{Value, json};
 
 struct Args {
@@ -80,14 +81,11 @@ fn stats(samples: &[f64]) -> Value {
     json!({"n": n, "median_us": median, "p95_us": p95, "min_us": s[0], "max_us": s[n - 1], "samples_us": s})
 }
 
-fn spec(script: &str) -> TriggerSpec {
-    TriggerSpec {
-        flow_id: "bench".into(),
-        trigger_id: "t".into(),
-        trigger: JsonText::null(),
-        script: script.into(),
-        manifest: "{}".into(),
-    }
+/// Installs and approves `script` as the bench flow and returns its spec.
+fn spec(rt: &Runtime, script: &str) -> Result<TriggerSpec, String> {
+    let mut manifest = test_manifest();
+    manifest["id"] = json!("bench");
+    approve_spec(rt, script, &manifest, "t", JsonText::null())
 }
 
 fn runtime(
@@ -104,11 +102,18 @@ fn runtime(
             js_time_micros: 30_000_000,
             ..basal_proto::Budgets::default()
         },
+        // The bench makes up to 1000 calls in one run; the dispatch budget
+        // is not what it measures.
+        rate: basal_core::RateLimits {
+            max_dispatches: u32::MAX,
+            ..basal_core::RateLimits::default()
+        },
         ..Config::default()
     };
     Ok(Runtime::new(
         Arc::new(store),
         Arc::new(mock.clone()),
+        Arc::new(MockCatalog::standard()),
         Arc::new(NoHooks),
         Some(source),
         config,
@@ -159,7 +164,7 @@ fn record(n: usize, worker: &Path) -> Result<(PathBuf, String), String> {
          const x = await llm({{ prompt: 'p' }}); return x.done;"
     );
     let run_id = rt
-        .admit(&spec(&script))
+        .admit(&spec(&rt, &script)?)
         .map_err(|e| e.to_string())?
         .run_id()
         .ok_or("not admitted")?
@@ -228,7 +233,7 @@ fn activation_time(script: &str, fullfsync: bool, worker: &Path) -> Result<f64, 
     let source = Arc::new(ProcessSource::new(worker));
     let rt = runtime(&dir, fullfsync, &mock, source.clone())?;
     let run_id = rt
-        .admit(&spec(script))
+        .admit(&spec(&rt, script)?)
         .map_err(|e| e.to_string())?
         .run_id()
         .ok_or("not admitted")?

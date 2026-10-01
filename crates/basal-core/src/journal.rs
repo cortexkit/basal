@@ -56,6 +56,27 @@ pub fn row(conn: &Connection, run_id: &str, position: u64) -> Result<Option<Call
     .transpose()
 }
 
+/// How many calls a run has journaled and how many bytes its journal holds
+/// (arguments, requests sent and outcomes, the mailbox included).
+pub fn run_size(conn: &Connection, run_id: &str) -> Result<(u64, u64)> {
+    let (calls, journal_bytes): (i64, i64) = conn.query_row(
+        "SELECT COUNT(*), COALESCE(SUM(length(CAST(args AS BLOB)) \
+         + COALESCE(length(CAST(value AS BLOB)), 0) \
+         + COALESCE(length(CAST(request AS BLOB)), 0)), 0) FROM journal WHERE run_id = ?1",
+        [run_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let waiting: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(length(CAST(value AS BLOB))), 0) FROM mailbox WHERE run_id = ?1",
+        [run_id],
+        |r| r.get(0),
+    )?;
+    Ok((
+        to_u64(calls, "call count")?,
+        to_u64(journal_bytes.saturating_add(waiting), "journal bytes")?,
+    ))
+}
+
 pub fn call_count(conn: &Connection, run_id: &str) -> Result<u64> {
     let n: i64 = conn.query_row(
         "SELECT COUNT(*) FROM journal WHERE run_id = ?1",
@@ -81,6 +102,9 @@ pub struct NewCall<'a> {
     pub kind: &'a CallKind,
     pub args: &'a JsonText,
     pub class: StoredClass,
+    /// The exact bytes to send when they are not `args` (a model call's
+    /// clamped request).
+    pub request: Option<&'a JsonText>,
 }
 
 /// Journals a new call, fenced, and only at the run's next position, so
@@ -102,8 +126,8 @@ pub fn insert_call(
     let changed = tx.execute(
         &format!(
             "INSERT INTO journal (run_id, position, kind_code, module, op, args, args_digest, \
-             idempotency_key, class, dispatch, attempts, issued_generation) \
-             SELECT ?1, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?3 \
+             idempotency_key, class, dispatch, attempts, issued_generation, request) \
+             SELECT ?1, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?3, ?14 \
              WHERE {FENCE} AND ?4 = (SELECT COUNT(*) FROM journal WHERE run_id = ?1)"
         ),
         params![
@@ -120,6 +144,7 @@ pub fn insert_call(
             call.class.as_str(),
             dispatch.as_str(),
             attempts,
+            call.request.map(JsonText::as_str),
         ],
     )?;
     if changed == 0 {
@@ -432,6 +457,10 @@ pub fn accept_outcome(
         quarantine(tx, run_id, p, handle, outcome, &hash, "contradicts_outcome")?;
         return Ok(not_woken(CompletionAck::Quarantined));
     }
+    // The call's outcome is known now, whether or not its run still wants
+    // it (a cancelled run's model call still spent tokens), so a model
+    // call's token reservation is replaced by its reported usage, once.
+    crate::tokens::settle_outcome(tx, run_id, position, outcome, now_ms())?;
     if state == "cancelled" {
         quarantine(tx, run_id, p, handle, outcome, &hash, "run_cancelled")?;
         return Ok(not_woken(CompletionAck::Refused));

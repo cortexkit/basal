@@ -220,11 +220,14 @@ pub struct CallRow {
     /// Present only with its delivery order: the journal never holds an
     /// outcome that was not released.
     pub outcome: Option<RecordedOutcome>,
+    /// The exact bytes sent to the host when they are not `args` (a model
+    /// call's clamped request), fixed when the call was journaled.
+    pub request: Option<JsonText>,
 }
 
 /// The columns [`CallRow::from_row`] expects, in order.
 pub const CALL_COLUMNS: &str = "position, kind_code, module, op, args, args_digest, \
-    idempotency_key, class, dispatch, attempts, handle, settlement, value, delivery_order";
+    idempotency_key, class, dispatch, attempts, handle, settlement, value, delivery_order, request";
 
 impl CallRow {
     pub fn from_row(row: &Row<'_>) -> rusqlite::Result<Result<Self>> {
@@ -242,6 +245,7 @@ impl CallRow {
         let settlement: Option<String> = row.get(11)?;
         let value: Option<String> = row.get(12)?;
         let order: Option<i64> = row.get(13)?;
+        let request: Option<String> = row.get(14)?;
         Ok((|| {
             let outcome = match (settlement, value, order) {
                 (Some(s), Some(v), Some(o)) => Some(RecordedOutcome {
@@ -264,8 +268,14 @@ impl CallRow {
                     .map_err(|_| CoreError::Corrupt(format!("attempts {attempts}")))?,
                 handle,
                 outcome,
+                request: request.map(|r| json(r, "request")).transpose()?,
             })
         })())
+    }
+
+    /// The bytes a send of this call carries.
+    pub fn dispatch_args(&self) -> JsonText {
+        self.request.clone().unwrap_or_else(|| self.args.clone())
     }
 
     pub fn recorded(&self) -> RecordedCall {
@@ -301,11 +311,20 @@ pub struct Run {
     pub broken: u32,
     pub admitted_at: i64,
     pub ended_at: Option<i64>,
+    /// The approved version the run was admitted under.
+    pub flow_version: Option<u32>,
+    /// The run's place in its flow's trigger order.
+    pub admit_seq: Option<i64>,
+    /// The run's wall-clock budget, from its manifest or the default.
+    pub deadline_ms: Option<i64>,
+    /// The time (on the runtime's clock) after which the run fails for
+    /// running too long, set when the run is first claimed.
+    pub deadline_at: Option<i64>,
 }
 
 pub const RUN_COLUMNS: &str = "run_id, flow_id, trigger_id, attempt, trigger, script, manifest, \
     code_hash, fingerprint, state, owner, generation, readiness, awaited, result, error_kind, \
-    error_detail, broken, admitted_at, ended_at";
+    error_detail, broken, admitted_at, ended_at, flow_version, admit_seq, deadline_ms, deadline_at";
 
 impl Run {
     pub fn from_row(row: &Row<'_>) -> rusqlite::Result<Result<Self>> {
@@ -329,6 +348,10 @@ impl Run {
         let broken: i64 = row.get(17)?;
         let admitted_at: i64 = row.get(18)?;
         let ended_at: Option<i64> = row.get(19)?;
+        let flow_version: Option<i64> = row.get(20)?;
+        let admit_seq: Option<i64> = row.get(21)?;
+        let deadline_ms: Option<i64> = row.get(22)?;
+        let deadline_at: Option<i64> = row.get(23)?;
         Ok((|| {
             let awaited = match awaited {
                 None => Vec::new(),
@@ -358,6 +381,15 @@ impl Run {
                     .map_err(|_| CoreError::Corrupt(format!("broken count {broken}")))?,
                 admitted_at,
                 ended_at,
+                flow_version: flow_version
+                    .map(|v| {
+                        u32::try_from(v)
+                            .map_err(|_| CoreError::Corrupt(format!("flow version {v}")))
+                    })
+                    .transpose()?,
+                admit_seq,
+                deadline_ms,
+                deadline_at,
             })
         })())
     }

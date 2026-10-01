@@ -17,20 +17,58 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use basal_host::{
-    CallRequest, Completion, CompletionAck, CompletionSink, Dispatched, Host, HostOutcome,
+    CallRequest, Catalog, Completion, CompletionAck, CompletionSink, Dispatched, Host, HostOutcome,
     SinkError, TransportError,
 };
 use basal_proto::{Budgets, CallKind, JsonText};
 use serde_json::json;
 
-use crate::admission::{self, Admission, TriggerSpec};
+use crate::admission::{self, Admission, AdmitContext, TriggerSpec};
+use crate::authorize::ShellDenylist;
 use crate::channel::WorkerSource;
+use crate::clock::Clock;
 use crate::error::{CoreError, Result};
 use crate::hooks::{Boundary, Hooks, Step};
 use crate::journal::{self, Source};
+use crate::kv::KvLimits;
 use crate::model::{CallRow, Run, RunState, StoredClass};
+use crate::rate::RateLimits;
 use crate::runs::{self, Lease};
 use crate::store::Store;
+
+/// Per-run limits, besides the per-activation budgets the worker enforces.
+/// The JS heap limit does not cover the parent's buffers or the store, so
+/// every argument and result is capped in bytes in the parent before
+/// anything parses it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunLimits {
+    /// Host calls one run may issue; the next one fails the run.
+    pub max_calls: u64,
+    /// Bytes one run's journal may hold (arguments, requests sent and
+    /// outcomes); a call that would pass it fails the run. Kept well under
+    /// the IPC frame cap, so a run's replay prefix always fits one frame.
+    pub max_journal_bytes: u64,
+    /// The largest argument of one call; a larger one is refused as a
+    /// journaled rejection before it is parsed.
+    pub max_arg_bytes: usize,
+    /// The largest result of one call; a larger one is recorded as a
+    /// rejection with code `result_too_large` before anything parses it.
+    pub max_result_bytes: usize,
+    /// The wall-clock deadline of a run whose manifest sets none.
+    pub default_deadline: Duration,
+}
+
+impl Default for RunLimits {
+    fn default() -> Self {
+        Self {
+            max_calls: 10_000,
+            max_journal_bytes: 16 * 1024 * 1024,
+            max_arg_bytes: 256 * 1024,
+            max_result_bytes: 512 * 1024,
+            default_deadline: Duration::from_secs(600),
+        }
+    }
+}
 
 /// Runtime settings.
 #[derive(Debug, Clone)]
@@ -50,6 +88,16 @@ pub struct Config {
     /// A run made runnable by a completion is resumed at once on a worker
     /// from the source.
     pub auto_resume: bool,
+    /// The clock for token windows, rate windows and run deadlines.
+    pub clock: Clock,
+    /// Module ops no flow may call, even when its manifest lists them.
+    pub shell_denylist: ShellDenylist,
+    pub limits: RunLimits,
+    pub kv: KvLimits,
+    pub rate: RateLimits,
+    /// The scheduler's settings, used when an approval plans the fires a
+    /// replaced schedule owed, and by [`Runtime::scheduler`].
+    pub schedule: crate::schedule::SchedulerConfig,
 }
 
 impl Default for Config {
@@ -62,6 +110,12 @@ impl Default for Config {
             retry_backoff: Duration::from_millis(5),
             max_broken_activations: 3,
             auto_resume: false,
+            clock: Clock::system(),
+            shell_denylist: ShellDenylist::default(),
+            limits: RunLimits::default(),
+            kv: KvLimits::default(),
+            rate: RateLimits::default(),
+            schedule: crate::schedule::SchedulerConfig::default(),
         }
     }
 }
@@ -96,6 +150,11 @@ pub enum ActivationEnd {
     /// The run was not pending, so no activation started.
     NotRunnable {
         state: RunState,
+    },
+    /// An earlier run of the same flow holds the flow's slot; this one
+    /// waits until that run reaches a terminal state.
+    Waiting {
+        holder: String,
     },
 }
 
@@ -133,6 +192,7 @@ impl Signal {
 pub(crate) struct Shared {
     pub(crate) store: Arc<Store>,
     pub(crate) host: Arc<dyn Host>,
+    pub(crate) catalog: Arc<dyn Catalog>,
     pub(crate) hooks: Arc<dyn Hooks>,
     pub(crate) source: Option<Arc<dyn WorkerSource>>,
     /// Calls being dispatched by a thread of this process. A recovering
@@ -198,6 +258,7 @@ impl Runtime {
     pub fn new(
         store: Arc<Store>,
         host: Arc<dyn Host>,
+        catalog: Arc<dyn Catalog>,
         hooks: Arc<dyn Hooks>,
         source: Option<Arc<dyn WorkerSource>>,
         config: Config,
@@ -205,6 +266,7 @@ impl Runtime {
         let shared = Arc::new(Shared {
             store,
             host,
+            catalog,
             hooks,
             source,
             inflight: Mutex::new(HashSet::new()),
@@ -254,18 +316,60 @@ impl Runtime {
 
     // ---- Admission ---------------------------------------------------------
 
+    pub(crate) fn admit_context(&self) -> Result<AdmitContext> {
+        Ok(AdmitContext {
+            now_ms: self.config.clock.now_ms(),
+            rate: self.config.rate,
+            default_deadline_ms: i64::try_from(self.config.limits.default_deadline.as_millis())
+                .map_err(|_| CoreError::Invalid("default deadline too long".into()))?,
+        })
+    }
+
+    /// Admits a trigger whose spec carries the flow's approved script and
+    /// manifest. Anything else is refused as [`Admission::NotApproved`].
     pub fn admit(&self, spec: &TriggerSpec) -> Result<Admission> {
         let store_id = self.shared.store.store_id().to_owned();
+        let ctx = self.admit_context()?;
         self.shared
             .store
-            .write(|tx| admission::admit(tx, &store_id, spec))
+            .write(|tx| admission::admit(tx, &store_id, spec, &ctx))
+    }
+
+    /// Admits a trigger under the flow's currently approved version.
+    pub fn admit_trigger(
+        &self,
+        flow_id: &str,
+        trigger_id: &str,
+        trigger: JsonText,
+    ) -> Result<Admission> {
+        let store_id = self.shared.store.store_id().to_owned();
+        let ctx = self.admit_context()?;
+        self.shared
+            .store
+            .write(|tx| admission::admit_current(tx, &store_id, flow_id, trigger_id, trigger, &ctx))
+    }
+
+    /// A scheduler over this runtime's store that reads this runtime's
+    /// clock and admits fires under its admission limits.
+    pub fn scheduler(&self) -> Result<crate::schedule::Scheduler> {
+        let ctx = self.admit_context()?;
+        Ok(crate::schedule::Scheduler::new(
+            self.shared.store.clone(),
+            Arc::new(self.config.clock.clone()),
+            self.config.schedule.clone(),
+        )
+        .with_limits(crate::schedule::AdmitLimits {
+            rate: ctx.rate,
+            default_deadline_ms: ctx.default_deadline_ms,
+        }))
     }
 
     pub fn retrigger(&self, run_id: &str) -> Result<Admission> {
         let store_id = self.shared.store.store_id().to_owned();
+        let ctx = self.admit_context()?;
         self.shared
             .store
-            .write(|tx| admission::retrigger(tx, &store_id, run_id))
+            .write(|tx| admission::retrigger(tx, &store_id, run_id, &ctx))
     }
 
     // ---- Reading -----------------------------------------------------------
@@ -380,6 +484,8 @@ impl Runtime {
         outcome: &HostOutcome,
         source: Source,
     ) -> Result<CompletionAck> {
+        let capped = self.cap_result(outcome);
+        let outcome = capped.as_ref().unwrap_or(outcome);
         let accepted = self
             .shared
             .store
@@ -390,6 +496,21 @@ impl Runtime {
             self.wake(run_id);
         }
         Ok(accepted.ack)
+    }
+
+    /// A result over the byte cap, replaced before anything parses it by a
+    /// rejection that names its size. The replacement depends only on the
+    /// size, so a redelivery of the same oversized result is recognised as
+    /// a duplicate.
+    pub(crate) fn cap_result(&self, outcome: &HostOutcome) -> Option<HostOutcome> {
+        let cap = self.config.limits.max_result_bytes;
+        let bytes = outcome.value.len();
+        (bytes > cap).then(|| {
+            crate::kv::rejection(
+                "result_too_large",
+                &format!("the host's result of {bytes} bytes exceeds the cap of {cap}"),
+            )
+        })
     }
 
     /// Starts an activation for a run made runnable, if configured to.
@@ -421,7 +542,13 @@ impl Runtime {
             }
             match run.state {
                 RunState::Pending => {
-                    self.resume(run_id)?;
+                    if let ActivationEnd::Waiting { .. } = self.resume(run_id)? {
+                        // An earlier run of the flow holds the slot. The
+                        // signal is bumped when that run ends.
+                        self.shared
+                            .signal
+                            .wait(seen, (deadline - now).min(Duration::from_millis(50)));
+                    }
                 }
                 _ => self
                     .shared
@@ -526,7 +653,7 @@ impl Runtime {
             run_id: run.run_id.clone(),
             position: row.position,
             kind: row.kind.clone(),
-            args: row.args.clone(),
+            args: row.dispatch_args(),
             idempotency_key: row.idempotency_key.clone(),
             attempt,
         }
@@ -536,7 +663,7 @@ impl Runtime {
         if kind.is_synchronous() {
             return StoredClass::Sync;
         }
-        if crate::local::is_local(kind) {
+        if crate::kv::is_kv(kind) {
             return StoredClass::Local;
         }
         match self.shared.host.classify(kind) {
@@ -570,5 +697,84 @@ impl Runtime {
 
     pub fn health(&self) -> Result<crate::ops::Health> {
         self.shared.store.read(crate::ops::health)
+    }
+
+    pub fn catalog(&self) -> &dyn Catalog {
+        self.shared.catalog.as_ref()
+    }
+
+    // ---- Slots and deadlines ----------------------------------------------
+
+    /// Fails every run past its wall-clock deadline (see
+    /// [`runs::expire`]), frees its flow's slot and wakes the next run of
+    /// that flow. The module calls this on a timer; an activation also
+    /// notices its own run's deadline.
+    pub fn enforce_deadlines(&self) -> Result<Vec<String>> {
+        let now = self.config.clock.now_ms();
+        let expired = self.shared.store.write(|tx| runs::expire(tx, now, None))?;
+        self.shared.signal.bump();
+        for (_, flow_id) in &expired {
+            self.wake_flow(flow_id);
+        }
+        Ok(expired.into_iter().map(|(run, _)| run).collect())
+    }
+
+    /// Wakes the next pending run of a flow, if configured to resume runs.
+    pub(crate) fn wake_flow(&self, flow_id: &str) {
+        if !self.config.auto_resume || self.shared.source.is_none() {
+            return;
+        }
+        let next: Result<Option<String>> = self.shared.store.read(|c| {
+            use rusqlite::OptionalExtension;
+            Ok(c.query_row(
+                "SELECT run_id FROM runs WHERE flow_id = ?1 AND state = 'pending' \
+                 ORDER BY admit_seq LIMIT 1",
+                [flow_id],
+                |r| r.get(0),
+            )
+            .optional()?)
+        });
+        if let Ok(Some(run_id)) = next {
+            self.wake(&run_id);
+        }
+    }
+
+    // ---- Tokens ------------------------------------------------------------
+
+    /// Records a model call's usage reported apart from its outcome (Broca
+    /// reports usage with the run's end). Deduplicated by `send_id`: only
+    /// the first report for a reservation is applied, whichever way it
+    /// came. Returns whether this one was applied.
+    pub fn report_usage(&self, send_id: &str, usage: crate::tokens::Usage) -> Result<bool> {
+        let now = self.config.clock.now_ms();
+        self.shared.store.write(|tx| {
+            crate::tokens::settle(
+                tx,
+                crate::tokens::Key::SendId(send_id),
+                crate::tokens::Report::Usage(usage),
+                now,
+            )
+        })
+    }
+
+    /// What a flow's token window counts. `at_ms` picks the window; the
+    /// window length comes from the flow's approved manifest.
+    pub fn token_usage(
+        &self,
+        flow_id: &str,
+        at_ms: i64,
+    ) -> Result<Option<crate::tokens::WindowUsage>> {
+        self.shared.store.read(|c| {
+            let Some(approved) = crate::install::approved(c, flow_id)? else {
+                return Ok(None);
+            };
+            let manifest = crate::manifest::Manifest::parse(&approved.manifest)
+                .map_err(|e| CoreError::Corrupt(e.to_string()))?;
+            let Some(window_ms) = manifest.token_window_ms() else {
+                return Ok(None);
+            };
+            let start = crate::tokens::window_start(at_ms, window_ms);
+            crate::tokens::window_usage(c, flow_id, window_ms, start).map(Some)
+        })
     }
 }

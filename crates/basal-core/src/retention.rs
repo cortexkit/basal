@@ -38,6 +38,13 @@ fn prune_in(tx: &Transaction, cutoff: i64, now: i64) -> Result<PruneReport> {
             report.kept_unsettled.push(run_id);
             continue;
         }
+        // An open token reservation is an obligation too: its usage has not
+        // been reported. The call audit and the token ledger are records of
+        // what the flow did and spent, and outlive the journal.
+        if crate::tokens::open_reservations(tx, &run_id)? > 0 {
+            report.kept_unsettled.push(run_id);
+            continue;
+        }
         // Tombstones outlive the run: a redelivered trigger is refused, and
         // the run's idempotency keys stay reserved.
         tx.execute(

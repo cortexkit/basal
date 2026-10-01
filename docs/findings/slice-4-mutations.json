@@ -1,205 +1,247 @@
 [
   {
     "applied_evidence": "crates/basal-core/src/schedule/due.rs; during:  1 file changed, 3 insertions(+), 3 deletions(-); after restore: empty git diff --stat",
-    "captured_output": "test spring_forward_gap_fires_once_at_the_first_valid_instant ... FAILED\nthread 'spring_forward_gap_fires_once_at_the_first_valid_instant' (183075660) panicked at crates/basal-testkit/tests/schedule_tick.rs:187:5:\n  left: [(2026-03-28T01:30:00Z, \"schedule:2026-03-28T01:30:00Z\"), (2026-03-29T01:30:00Z, \"schedule:2026-03-29T01:30:00Z\"), (2026-03-30T00:30:00Z, \"schedule:2026-03-30T00:30:00Z\")]\n right",
+    "captured_output": "test spring_forward_gap_fires_once_at_the_first_valid_instant ... FAILED\nthread 'spring_forward_gap_fires_once_at_the_first_valid_instant' (186359214) panicked at crates/basal-testkit/tests/schedule_tick.rs:283:5:\n  left: [(2026-03-28T01:30:00Z, \"schedule:2026-03-28T01:30:00Z\"), (2026-03-29T01:30:00Z, \"schedule:2026-03-29T01:30:00Z\"), (2026-03-30T00:30:00Z, \"schedule:2026-03-30T00:30:00Z\")]\n right",
     "control": "a gap time fires at the compatible reading (shifted by the gap's length) instead of at the transition",
     "expected_red": "spring_forward_gap_fires_once_at_the_first_valid_instant",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/schedule/due.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test fall_back_overlap_fires_once_at_the_first_occurrence ... FAILED\nthread 'fall_back_overlap_fires_once_at_the_first_occurrence' (183080590) panicked at crates/basal-testkit/tests/schedule_tick.rs:215:5:\n  left: [(2026-10-24T00:30:00Z, \"schedule:2026-10-24T00:30:00Z\"), (2026-10-25T01:30:00Z, \"schedule:2026-10-25T01:30:00Z\"), (2026-10-26T01:30:00Z, \"schedule:2026-10-26T01:30:00Z\")]\n right: [(2026",
+    "captured_output": "test fall_back_overlap_fires_once_at_the_first_occurrence ... FAILED\nthread 'fall_back_overlap_fires_once_at_the_first_occurrence' (186369979) panicked at crates/basal-testkit/tests/schedule_tick.rs:311:5:\n  left: [(2026-10-24T00:30:00Z, \"schedule:2026-10-24T00:30:00Z\"), (2026-10-25T01:30:00Z, \"schedule:2026-10-25T01:30:00Z\"), (2026-10-26T01:30:00Z, \"schedule:2026-10-26T01:30:00Z\")]\n right: [(2026",
     "control": "an overlap time fires at its second occurrence",
     "expected_red": "fall_back_overlap_fires_once_at_the_first_occurrence",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/schedule/due.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test half_hourly_cron_collapses_the_gap_and_skips_the_repeated_pass ... FAILED\nthread 'half_hourly_cron_collapses_the_gap_and_skips_the_repeated_pass' (183081782) panicked at crates/basal-testkit/tests/schedule_tick.rs:249:5:\n  left: [\"2026-03-29T00:00:00Z\", \"2026-03-29T00:00:00Z\", \"2026-03-29T00:00:00Z\", \"2026-03-29T00:00:00Z\"]\n right: [\"2026-03-29T00:30:00Z\", \"2026-03-29T01:00:00Z\", \"2026-03-29T",
+    "captured_output": "test half_hourly_cron_collapses_the_gap_and_skips_the_repeated_pass ... FAILED\nthread 'half_hourly_cron_collapses_the_gap_and_skips_the_repeated_pass' (186402975) panicked at crates/basal-testkit/tests/schedule_tick.rs:345:5:\n  left: [\"2026-03-29T00:00:00Z\", \"2026-03-29T00:00:00Z\", \"2026-03-29T00:00:00Z\", \"2026-03-29T00:00:00Z\"]\n right: [\"2026-03-29T00:30:00Z\", \"2026-03-29T01:00:00Z\", \"2026-03-29T",
     "control": "matches landing on an instant already due are not skipped",
     "expected_red": "half_hourly_cron_collapses_the_gap_and_skips_the_repeated_pass",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/schedule/due.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test interval_due_times_are_the_anchor_plus_whole_periods ... FAILED\nthread 'interval_due_times_are_the_anchor_plus_whole_periods' (183082727) panicked at crates/basal-testkit/tests/schedule_tick.rs:282:5:\n  left: Some(2026-05-01T10:30:37Z)\n right: Some(2026-05-01T10:30:07Z)\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.01s",
+    "captured_output": "test interval_due_times_are_the_anchor_plus_whole_periods ... FAILED\nthread 'interval_due_times_are_the_anchor_plus_whole_periods' (186420423) panicked at crates/basal-testkit/tests/schedule_tick.rs:378:5:\n  left: Some(2026-05-01T10:30:37Z)\n right: Some(2026-05-01T10:30:07Z)\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.21s",
     "control": "an interval's next due time counts from the tick, not the anchor",
     "expected_red": "interval_due_times_are_the_anchor_plus_whole_periods",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/schedule/tick.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test a_sleep_gap_under_once_makes_one_catch_up_fire_with_count_and_window ... FAILED\nthread 'a_sleep_gap_under_once_makes_one_catch_up_fire_with_count_and_window' (183084099) panicked at crates/basal-testkit/tests/schedule_tick.rs:313:5:\n  left: [\"schedule:2026-05-01T05:00:00Z\", \"schedule:2026-05-01T06:00:00Z\"]\n right: [\"schedule:2026-05-01T06:00:00Z\"]\ntest result: FAILED. 0 passed; 1 failed; 0 ig",
+    "captured_output": "test a_sleep_gap_under_once_makes_one_catch_up_fire_with_count_and_window ... FAILED\nthread 'a_sleep_gap_under_once_makes_one_catch_up_fire_with_count_and_window' (186436040) panicked at crates/basal-testkit/tests/schedule_tick.rs:409:5:\n  left: [\"schedule:2026-05-01T05:00:00Z\", \"schedule:2026-05-01T06:00:00Z\"]\n right: [\"schedule:2026-05-01T06:00:00Z\"]\ntest result: FAILED. 0 passed; 1 failed; 0 ig",
     "control": "once fires every kept missed due time instead of one catch-up",
     "expected_red": "a_sleep_gap_under_once_makes_one_catch_up_fire_with_count_and_window",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/schedule/tick.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test a_sleep_gap_under_skip_makes_no_fire ... FAILED\nthread 'a_sleep_gap_under_skip_makes_no_fire' (183087699) panicked at crates/basal-testkit/tests/schedule_tick.rs:341:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.01s",
+    "captured_output": "test a_sleep_gap_under_skip_makes_no_fire ... FAILED\nthread 'a_sleep_gap_under_skip_makes_no_fire' (186455020) panicked at crates/basal-testkit/tests/schedule_tick.rs:437:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.03s",
     "control": "skip fires a catch-up",
     "expected_red": "a_sleep_gap_under_skip_makes_no_fire",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/schedule/tick.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test a_sleep_gap_under_each_fires_the_newest_up_to_the_cap_oldest_first ... FAILED\nthread 'a_sleep_gap_under_each_fires_the_newest_up_to_the_cap_oldest_first' (183091079) panicked at crates/basal-testkit/tests/schedule_tick.rs:355:5:\n  left: [\"schedule:2026-05-01T03:00:00Z\", \"schedule:2026-05-01T04:00:00Z\", \"schedule:2026-05-01T05:00:00Z\", \"schedule:2026-05-01T06:00:00Z\"]\n right: [\"schedule:2026-0",
+    "captured_output": "test a_sleep_gap_under_each_fires_the_newest_up_to_the_cap_oldest_first ... FAILED\nthread 'a_sleep_gap_under_each_fires_the_newest_up_to_the_cap_oldest_first' (186469300) panicked at crates/basal-testkit/tests/schedule_tick.rs:451:5:\n  left: [\"schedule:2026-05-01T03:00:00Z\", \"schedule:2026-05-01T04:00:00Z\", \"schedule:2026-05-01T05:00:00Z\", \"schedule:2026-05-01T06:00:00Z\"]\n right: [\"schedule:2026-0",
     "control": "each ignores its cap",
     "expected_red": "a_sleep_gap_under_each_fires_the_newest_up_to_the_cap_oldest_first",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/schedule/tick.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test a_sleep_gap_under_each_fires_the_newest_up_to_the_cap_oldest_first ... FAILED\nthread 'a_sleep_gap_under_each_fires_the_newest_up_to_the_cap_oldest_first' (183094077) panicked at crates/basal-testkit/tests/schedule_tick.rs:355:5:\n  left: [\"schedule:2026-05-01T06:00:00Z\", \"schedule:2026-05-01T05:00:00Z\", \"schedule:2026-05-01T04:00:00Z\"]\n right: [\"schedule:2026-05-01T04:00:00Z\", \"schedule:2026-0",
+    "captured_output": "test a_sleep_gap_under_each_fires_the_newest_up_to_the_cap_oldest_first ... FAILED\nthread 'a_sleep_gap_under_each_fires_the_newest_up_to_the_cap_oldest_first' (186474238) panicked at crates/basal-testkit/tests/schedule_tick.rs:451:5:\n  left: [\"schedule:2026-05-01T06:00:00Z\", \"schedule:2026-05-01T05:00:00Z\", \"schedule:2026-05-01T04:00:00Z\"]\n right: [\"schedule:2026-05-01T04:00:00Z\", \"schedule:2026-0",
     "control": "each admits its fires newest first",
     "expected_red": "a_sleep_gap_under_each_fires_the_newest_up_to_the_cap_oldest_first",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/schedule/tick.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test a_single_due_time_seen_after_the_grace_period_is_missed ... FAILED\nthread 'a_single_due_time_seen_after_the_grace_period_is_missed' (183109513) panicked at crates/basal-testkit/tests/schedule_tick.rs:397:5:\n  left: [\"schedule:2026-05-02T03:00:00Z\", \"schedule:2026-05-02T03:00:00Z\"]\n right: [\"schedule:2026-05-02T03:00:00Z\"]\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filt",
+    "captured_output": "test a_single_due_time_seen_after_the_grace_period_is_missed ... FAILED\nthread 'a_single_due_time_seen_after_the_grace_period_is_missed' (186490828) panicked at crates/basal-testkit/tests/schedule_tick.rs:493:5:\n  left: [\"schedule:2026-05-02T03:00:00Z\", \"schedule:2026-05-02T03:00:00Z\"]\n right: [\"schedule:2026-05-02T03:00:00Z\"]\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filt",
     "control": "a due time is on time however late it is seen (sleep not counted as missed)",
     "expected_red": "a_single_due_time_seen_after_the_grace_period_is_missed",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/schedule/tick.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test an_on_time_due_time_fires_after_the_catch_up ... FAILED\nthread 'an_on_time_due_time_fires_after_the_catch_up' (183189653) panicked at crates/basal-testkit/tests/schedule_tick.rs:419:5:\n  left: [\"schedule:2026-05-01T00:10:00Z\"]\n right: [\"schedule:2026-05-01T00:10:00Z\", \"schedule:2026-05-01T00:15:00Z\"]\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in ",
+    "captured_output": "test an_on_time_due_time_fires_after_the_catch_up ... FAILED\nthread 'an_on_time_due_time_fires_after_the_catch_up' (186521449) panicked at crates/basal-testkit/tests/schedule_tick.rs:515:5:\n  left: [\"schedule:2026-05-01T00:10:00Z\"]\n right: [\"schedule:2026-05-01T00:10:00Z\", \"schedule:2026-05-01T00:15:00Z\"]\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in ",
     "control": "an on-time due time does not fire when missed ones precede it",
     "expected_red": "an_on_time_due_time_fires_after_the_catch_up",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/schedule/due.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test a_missed_count_past_the_limit_is_reported_as_a_lower_bound ... FAILED\nthread 'a_missed_count_past_the_limit_is_reported_as_a_lower_bound' (183523050) panicked at crates/basal-testkit/tests/schedule_tick.rs:449:5:\n  left: Object {\"missed_count\": Number(12), \"missed_window\": Object {\"first\": String(\"2026-05-01T00:10:00Z\"), \"last\": String(\"2026-05-01T02:00:00Z\")}, \"policy\": String(\"once\")}\n righ",
+    "captured_output": "test a_missed_count_past_the_limit_is_reported_as_a_lower_bound ... FAILED\nthread 'a_missed_count_past_the_limit_is_reported_as_a_lower_bound' (186538150) panicked at crates/basal-testkit/tests/schedule_tick.rs:540:5:\n  left: Object {\"missed_count\": Number(12), \"missed_window\": Object {\"first\": String(\"2026-05-01T00:10:00Z\"), \"last\": String(\"2026-05-01T02:00:00Z\")}, \"policy\": String(\"once\")}\n righ",
     "control": "the missed count walks without its limit",
     "expected_red": "a_missed_count_past_the_limit_is_reported_as_a_lower_bound",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/schedule/tick.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test a_restart_after_planning_a_catch_up_mints_no_second_fire ... FAILED\nthread 'a_restart_after_planning_a_catch_up_mints_no_second_fire' (183541596) panicked at crates/basal-testkit/tests/schedule_tick.rs:521:5:\n  left: Object {\"missed_count\": Number(4), \"missed_window\": Object {\"first\": String(\"2026-05-01T01:00:00Z\"), \"last\": String(\"2026-05-01T04:00:00Z\")}, \"policy\": String(\"once\")}\n right: Ob",
+    "captured_output": "test a_restart_after_planning_a_catch_up_mints_no_second_fire ... FAILED\nthread 'a_restart_after_planning_a_catch_up_mints_no_second_fire' (186551079) panicked at crates/basal-testkit/tests/schedule_tick.rs:609:5:\n  left: Object {\"missed_count\": Number(4), \"missed_window\": Object {\"first\": String(\"2026-05-01T01:00:00Z\"), \"last\": String(\"2026-05-01T04:00:00Z\")}, \"policy\": String(\"once\")}\n right: Ob",
     "control": "the schedule advance is not committed with its planned fires",
     "expected_red": "a_restart_after_planning_a_catch_up_mints_no_second_fire",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/schedule/tick.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test a_restart_after_planning_a_catch_up_mints_no_second_fire ... FAILED\nthread 'a_restart_after_planning_a_catch_up_mints_no_second_fire' (183551983) panicked at crates/basal-testkit/tests/schedule_tick.rs:496:5:\n  left: []\n right: [\"schedule:2026-05-01T01:00:00Z\"]\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.01s",
+    "captured_output": "test a_restart_after_planning_a_catch_up_mints_no_second_fire ... FAILED\nthread 'a_restart_after_planning_a_catch_up_mints_no_second_fire' (186563967) panicked at crates/basal-testkit/tests/schedule_tick.rs:585:5:\n  left: []\n right: [\"schedule:2026-05-01T01:00:00Z\"]\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 1.18s",
     "control": "planned fires are not persisted with the advance",
     "expected_red": "a_restart_after_planning_a_catch_up_mints_no_second_fire",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/schedule/tick.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test a_restart_between_admitting_planned_fires_admits_each_once ... FAILED\nthread 'a_restart_between_admitting_planned_fires_admits_each_once' (183560102) panicked at crates/basal-testkit/tests/schedule_tick.rs:553:29:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.02s",
+    "captured_output": "test a_restart_between_admitting_planned_fires_admits_each_once ... FAILED\nthread 'a_restart_between_admitting_planned_fires_admits_each_once' (186589376) panicked at crates/basal-testkit/tests/schedule_tick.rs:641:29:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.25s",
     "control": "planned fires are not persisted (restart mid-admission)",
     "expected_red": "a_restart_between_admitting_planned_fires_admits_each_once",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/schedule/tick.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test a_restart_between_admitting_planned_fires_admits_each_once ... FAILED\nthread 'a_restart_between_admitting_planned_fires_admits_each_once' (183569997) panicked at crates/basal-testkit/tests/schedule_tick.rs:556:5:\n  left: [\"schedule:2026-05-01T06:00:00Z\"]\n right: [\"schedule:2026-05-01T04:00:00Z\"]\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.01s",
+    "captured_output": "test a_restart_between_admitting_planned_fires_admits_each_once ... FAILED\nthread 'a_restart_between_admitting_planned_fires_admits_each_once' (186592578) panicked at crates/basal-testkit/tests/schedule_tick.rs:644:5:\n  left: [\"schedule:2026-05-01T06:00:00Z\"]\n right: [\"schedule:2026-05-01T04:00:00Z\"]\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.04s",
     "control": "planned fires are admitted newest first",
     "expected_red": "a_restart_between_admitting_planned_fires_admits_each_once",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/schedule/tick.rs; during:  1 file changed, 4 insertions(+), 2 deletions(-); after restore: empty git diff --stat",
-    "captured_output": "test a_repeated_tick_with_the_same_now_admits_nothing_new ... FAILED\nthread 'a_repeated_tick_with_the_same_now_admits_nothing_new' (183576386) panicked at crates/basal-testkit/tests/schedule_tick.rs:585:9:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.03s",
+    "captured_output": "test a_repeated_tick_with_the_same_now_admits_nothing_new ... FAILED\nthread 'a_repeated_tick_with_the_same_now_admits_nothing_new' (186595269) panicked at crates/basal-testkit/tests/schedule_tick.rs:673:9:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.06s",
     "control": "the schedule is not advanced and fire ids are not derived from the due time",
     "expected_red": "a_repeated_tick_with_the_same_now_admits_nothing_new",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/schedule/table.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test approving_a_newer_version_does_not_fire_for_the_gap_the_swap_creates ... FAILED\nthread 'approving_a_newer_version_does_not_fire_for_the_gap_the_swap_creates' (183579640) panicked at crates/basal-testkit/tests/schedule_tick.rs:609:5:\n  left: Some(2026-05-01T01:15:00Z)\n right: Some(2026-05-01T01:45:00Z)\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in",
+    "captured_output": "test approving_a_newer_version_does_not_fire_for_the_gap_the_swap_creates ... FAILED\nthread 'approving_a_newer_version_does_not_fire_for_the_gap_the_swap_creates' (186598163) panicked at crates/basal-testkit/tests/schedule_tick.rs:697:5:\n  left: Some(2026-05-01T01:15:00Z)\n right: Some(2026-05-01T01:45:00Z)\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in",
     "control": "a newer version counts its due times from the old version's last fire",
     "expected_red": "approving_a_newer_version_does_not_fire_for_the_gap_the_swap_creates",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/schedule/table.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test approving_a_newer_version_first_fires_what_the_old_version_owed ... FAILED\nthread 'approving_a_newer_version_first_fires_what_the_old_version_owed' (183582032) panicked at crates/basal-testkit/tests/schedule_tick.rs:627:5:\n  left: 0\n right: 1\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.01s",
+    "captured_output": "test approving_a_newer_version_first_fires_what_the_old_version_owed ... FAILED\nthread 'approving_a_newer_version_first_fires_what_the_old_version_owed' (186611592) panicked at crates/basal-testkit/tests/schedule_tick.rs:718:5:\n  left: []\n right: [\"schedule:2026-05-01T01:00:00Z\"]\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.06s",
     "control": "approving a newer version drops what the old version owed",
     "expected_red": "approving_a_newer_version_first_fires_what_the_old_version_owed",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/schedule/tick.rs; during:  1 file changed, 4 insertions(+), 2 deletions(-); after restore: empty git diff --stat",
-    "captured_output": "test a_disabled_schedule_does_not_tick_and_does_not_catch_up_when_enabled ... FAILED\nthread 'a_disabled_schedule_does_not_tick_and_does_not_catch_up_when_enabled' (183588388) panicked at crates/basal-testkit/tests/schedule_tick.rs:669:9:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.04s",
+    "captured_output": "test a_disabled_schedule_does_not_tick_and_does_not_catch_up_when_enabled ... FAILED\nthread 'a_disabled_schedule_does_not_tick_and_does_not_catch_up_when_enabled' (186621480) panicked at crates/basal-testkit/tests/schedule_tick.rs:781:9:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.11s",
     "control": "a disabled schedule ticks",
     "expected_red": "a_disabled_schedule_does_not_tick_and_does_not_catch_up_when_enabled",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/schedule/table.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test a_disabled_schedule_does_not_tick_and_does_not_catch_up_when_enabled ... FAILED\nthread 'a_disabled_schedule_does_not_tick_and_does_not_catch_up_when_enabled' (183592841) panicked at crates/basal-testkit/tests/schedule_tick.rs:677:5:\n  left: Some(2026-05-01T01:00:00Z)\n right: Some(2026-05-01T04:00:00Z)\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in",
+    "captured_output": "test a_disabled_schedule_does_not_tick_and_does_not_catch_up_when_enabled ... FAILED\nthread 'a_disabled_schedule_does_not_tick_and_does_not_catch_up_when_enabled' (186623467) panicked at crates/basal-testkit/tests/schedule_tick.rs:791:5:\n  left: Some(2026-05-01T01:00:00Z)\n right: Some(2026-05-01T04:00:00Z)\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in",
     "control": "enabling resumes from the stale next due time and catches up the disabled hours",
     "expected_red": "a_disabled_schedule_does_not_tick_and_does_not_catch_up_when_enabled",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/schedule/table.rs; during:  1 file changed, 2 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test removing_a_schedule_stops_it_and_drops_its_planned_fires ... FAILED\nthread 'removing_a_schedule_stops_it_and_drops_its_planned_fires' (183595148) panicked at crates/basal-testkit/tests/schedule_tick.rs:704:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.01s",
+    "captured_output": "test removing_a_schedule_stops_it_and_drops_its_planned_fires ... FAILED\nthread 'removing_a_schedule_stops_it_and_drops_its_planned_fires' (186625923) panicked at crates/basal-testkit/tests/schedule_tick.rs:841:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.24s",
     "control": "removing a schedule keeps its planned fires",
     "expected_red": "removing_a_schedule_stops_it_and_drops_its_planned_fires",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/schedule/tick.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test fires_planned_while_admission_drains_wait_and_are_admitted_after ... FAILED\nthread 'fires_planned_while_admission_drains_wait_and_are_admitted_after' (183597149) panicked at crates/basal-testkit/tests/schedule_tick.rs:719:5:\n  left: 0\n right: 1\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.01s",
+    "captured_output": "test fires_planned_while_admission_drains_wait_and_are_admitted_after ... FAILED\nthread 'fires_planned_while_admission_drains_wait_and_are_admitted_after' (186631313) panicked at crates/basal-testkit/tests/schedule_tick.rs:856:5:\n  left: 0\n right: 1\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.65s",
     "control": "a fire refused by a draining admission is dropped instead of kept",
     "expected_red": "fires_planned_while_admission_drains_wait_and_are_admitted_after",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/schedule/spec.rs; during:  1 file changed, 2 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test validation_refuses_unknown_fields_and_values ... FAILED\nthread 'validation_refuses_unknown_fields_and_values' (183599528) panicked at crates/basal-testkit/tests/schedule_spec.rs:149:40:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s",
+    "captured_output": "test validation_refuses_unknown_fields_and_values ... FAILED\nthread 'validation_refuses_unknown_fields_and_values' (186634642) panicked at crates/basal-testkit/tests/schedule_spec.rs:149:40:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s",
     "control": "unknown spec fields accepted",
     "expected_red": "validation_refuses_unknown_fields_and_values",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/schedule/spec.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test validation_refuses_a_missed_cap_above_the_limit ... FAILED\nthread 'validation_refuses_a_missed_cap_above_the_limit' (183602109) panicked at crates/basal-testkit/tests/schedule_spec.rs:129:83:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s",
+    "captured_output": "test validation_refuses_a_missed_cap_above_the_limit ... FAILED\nthread 'validation_refuses_a_missed_cap_above_the_limit' (186637298) panicked at crates/basal-testkit/tests/schedule_spec.rs:129:83:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s",
     "control": "each cap not bounded above",
     "expected_red": "validation_refuses_a_missed_cap_above_the_limit",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/schedule/spec.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test validation_refuses_zero_and_out_of_range_intervals ... FAILED\nthread 'validation_refuses_zero_and_out_of_range_intervals' (183607883) panicked at crates/basal-testkit/tests/schedule_spec.rs:110:58:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s",
+    "captured_output": "test validation_refuses_zero_and_out_of_range_intervals ... FAILED\nthread 'validation_refuses_zero_and_out_of_range_intervals' (186640898) panicked at crates/basal-testkit/tests/schedule_spec.rs:110:58:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s",
     "control": "interval range not checked",
     "expected_red": "validation_refuses_zero_and_out_of_range_intervals",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/schedule/spec.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test validation_refuses_unknown_zones ... FAILED\nthread 'validation_refuses_unknown_zones' (183613972) panicked at crates/basal-testkit/tests/schedule_spec.rs:100:69:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s",
+    "captured_output": "test validation_refuses_unknown_zones ... FAILED\nthread 'validation_refuses_unknown_zones' (186645145) panicked at crates/basal-testkit/tests/schedule_spec.rs:100:69:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s",
     "control": "an unknown zone falls back to UTC",
     "expected_red": "validation_refuses_unknown_zones",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/schedule/spec.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test validation_refuses_unknown_zones ... FAILED\nthread 'validation_refuses_unknown_zones' (183616815) panicked at crates/basal-testkit/tests/schedule_spec.rs:100:69:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s",
+    "captured_output": "test validation_refuses_unknown_zones ... FAILED\nthread 'validation_refuses_unknown_zones' (186647582) panicked at crates/basal-testkit/tests/schedule_spec.rs:100:69:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s",
     "control": "zone names matched case-insensitively",
     "expected_red": "validation_refuses_unknown_zones",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/schedule/spec.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test validation_refuses_malformed_cron ... FAILED\nthread 'validation_refuses_malformed_cron' (183618669) panicked at crates/basal-testkit/tests/schedule_spec.rs:78:53:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s",
+    "captured_output": "test validation_refuses_malformed_cron ... FAILED\nthread 'validation_refuses_malformed_cron' (186651248) panicked at crates/basal-testkit/tests/schedule_spec.rs:78:53:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s",
     "control": "seconds fields accepted in cron patterns",
     "expected_red": "validation_refuses_malformed_cron",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/schedule/spec.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test validation_refuses_a_cron_that_never_fires ... FAILED\nthread 'validation_refuses_a_cron_that_never_fires' (183620741) panicked at crates/basal-testkit/tests/schedule_spec.rs:85:54:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.06s",
+    "captured_output": "test validation_refuses_a_cron_that_never_fires ... FAILED\nthread 'validation_refuses_a_cron_that_never_fires' (186656482) panicked at crates/basal-testkit/tests/schedule_spec.rs:85:54:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.07s",
     "control": "a cron pattern that never matches is accepted",
     "expected_red": "validation_refuses_a_cron_that_never_fires",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/install.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test a_scheduled_flow_runs_from_install_through_tick_admission_and_run ... FAILED\nthread 'a_scheduled_flow_runs_from_install_through_tick_admission_and_run' (186668796) panicked at crates/basal-testkit/tests/schedule_flows.rs:90:10:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.80s",
+    "control": "approving a version with a schedule trigger does not create its schedule",
+    "expected_red": "a_scheduled_flow_runs_from_install_through_tick_admission_and_run",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/schedule/table.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test owed_fires_after_a_version_swap_run_the_version_approved_at_admission ... FAILED\nthread 'owed_fires_after_a_version_swap_run_the_version_approved_at_admission' (186710130) panicked at crates/basal-testkit/tests/schedule_flows.rs:137:5:\n  left: 0\n right: 1\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.33s",
+    "control": "a version swap does not plan what the old version owed (installed flows)",
+    "expected_red": "owed_fires_after_a_version_swap_run_the_version_approved_at_admission",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/install.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test disabling_and_enabling_a_flow_stops_and_restarts_its_schedule ... FAILED\nthread 'disabling_and_enabling_a_flow_stops_and_restarts_its_schedule' (186717273) panicked at crates/basal-testkit/tests/schedule_flows.rs:167:5:\n  left: Active\n right: Disabled\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 1.34s",
+    "control": "disabling a flow leaves its schedule ticking",
+    "expected_red": "disabling_and_enabling_a_flow_stops_and_restarts_its_schedule",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/install.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test disabling_and_enabling_a_flow_stops_and_restarts_its_schedule ... FAILED\nthread 'disabling_and_enabling_a_flow_stops_and_restarts_its_schedule' (186725809) panicked at crates/basal-testkit/tests/schedule_flows.rs:186:5:\n  left: Disabled\n right: Active\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.29s",
+    "control": "enabling a flow leaves its schedule stopped",
+    "expected_red": "disabling_and_enabling_a_flow_stops_and_restarts_its_schedule",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/install.rs; during:  1 file changed, 2 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test removing_a_schedule_stops_it_and_drops_its_planned_fires ... FAILED\nthread 'removing_a_schedule_stops_it_and_drops_its_planned_fires' (186731699) panicked at crates/basal-testkit/tests/schedule_tick.rs:836:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.15s",
+    "control": "approving a version without a schedule trigger keeps the old schedule",
+    "expected_red": "removing_a_schedule_stops_it_and_drops_its_planned_fires",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/schedule/tick.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test a_rate_limited_scheduled_fire_is_dropped_and_recorded ... FAILED\nthread 'a_rate_limited_scheduled_fire_is_dropped_and_recorded' (186741306) panicked at crates/basal-testkit/tests/schedule_flows.rs:231:5:\n  left: []\n right: [(\"schedule:2026-05-01T02:00:00Z\", \"rate_limited\"), (\"schedule:2026-05-01T03:00:00Z\", \"rate_limited\")]\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 fil",
+    "control": "a fire refused by the rate limit is dropped without a record",
+    "expected_red": "a_rate_limited_scheduled_fire_is_dropped_and_recorded",
     "outcome": "reddened"
   }
 ]

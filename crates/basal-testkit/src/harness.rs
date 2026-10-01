@@ -20,9 +20,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use basal_core::{
-    Boundary, Config, CoreError, Durability, Hooks, Run, RunState, Runtime, Step, Store,
-    TriggerSpec,
+    Boundary, Config, CoreError, Durability, Hooks, InstallRequest, Run, RunState, Runtime, Step,
+    Store, TriggerSpec,
 };
+use basal_host::MockCatalog;
 use basal_host::mock::MockHost;
 use basal_proto::JsonText;
 use serde_json::{Value, json};
@@ -31,9 +32,10 @@ use crate::channel::{ProcessSource, worker_binary};
 
 /// The representative run: a race whose loser is long-running and still
 /// outstanding long after the winner was released, a synchronous clock read,
-/// a caught rejection, a local eager effect, two calls completing in
-/// parallel, a random sample, an `llm` call that suspends the run, and a
-/// resume that reads the local effect back.
+/// a caught rejection, a call the manifest does not allow (refused in the
+/// parent and caught), a local eager effect, two calls completing in
+/// parallel, a random sample, an `llm` call that reserves tokens and
+/// suspends the run, and a resume that reads the local effect back.
 pub const REPRESENTATIVE: &str = r#"
 const winner = await Promise.race([
     ops.call('mock', 'long', { tag: 'slow' }),
@@ -45,6 +47,12 @@ try {
     await ops.call('mock', 'fail', { message: 'nope' });
 } catch (e) {
     caught = e.data.code;
+}
+let denied = null;
+try {
+    await ops.call('mock', 'unlisted', {});
+} catch (e) {
+    denied = e.data.code;
 }
 await kv.set('seen', winner.tag);
 const [a, b] = await Promise.all([
@@ -58,6 +66,7 @@ const t2 = Date.now();
 return {
     winner: winner.tag,
     caught,
+    denied,
     a: a.applied.n,
     b: b.n,
     r: r >= 0 && r < 1,
@@ -66,6 +75,86 @@ return {
     monotonic: t2 >= t1,
 };
 "#;
+
+/// The flow id every harness run belongs to.
+pub const TEST_FLOW: &str = "flow-test";
+
+/// The manifest harness flows run under unless a test says otherwise: the
+/// mock host's ops except `unlisted`, one digest sink, a status target,
+/// facts and a model grant large enough never to refuse.
+pub fn test_manifest() -> Value {
+    json!({
+        "id": TEST_FLOW,
+        "version": 1,
+        "purpose": "Exercise the runtime against the mock host.",
+        "trigger": { "events": [ { "module": "plexus", "name": "pull_request_review", "version": 1 } ] },
+        "sinks": [ { "agent": "ALF", "digest_max": "wake" } ],
+        "status": [ "ALF" ],
+        "ops": [
+            { "module": "mock", "op": "echo" },
+            { "module": "mock", "op": "fail" },
+            { "module": "mock", "op": "send" },
+            { "module": "mock", "op": "long" },
+            { "module": "mock", "op": "post" }
+        ],
+        "facts": { "targets": [ "ALF" ], "text": false },
+        "llm": { "token_cap": { "tokens": 1_000_000, "window": "1d" }, "max_output": 2000 }
+    })
+}
+
+/// Installs and approves `script` under `manifest` (its `id` must be the
+/// flow's; its `version` is chosen here) and returns a spec that admits a
+/// trigger under it. The same script and manifest as the approved version
+/// reuse it; anything else becomes the next version, so a restarted test
+/// parent finds the version its run was admitted under.
+pub fn approve_spec(
+    rt: &Runtime,
+    script: &str,
+    manifest: &Value,
+    trigger_id: &str,
+    trigger: JsonText,
+) -> Result<TriggerSpec, String> {
+    let flow_id = manifest
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or("the manifest has no id")?
+        .to_owned();
+    let with_version = |v: u32| -> Result<String, String> {
+        let mut m = manifest.clone();
+        m["version"] = json!(v);
+        serde_json::to_string(&m).map_err(|e| e.to_string())
+    };
+    let approved = rt
+        .store()
+        .read(|c| basal_core::install::approved(c, &flow_id))
+        .map_err(|e| e.to_string())?;
+    let spec = |manifest: String| TriggerSpec {
+        flow_id: flow_id.clone(),
+        trigger_id: trigger_id.to_owned(),
+        trigger: trigger.clone(),
+        script: script.to_owned(),
+        manifest,
+    };
+    if let Some(a) = &approved {
+        let same = with_version(a.version)?;
+        if a.script == script && a.manifest == same {
+            return Ok(spec(same));
+        }
+    }
+    let version = approved.map_or(1, |a| a.version + 1);
+    let text = with_version(version)?;
+    let installed = rt
+        .install(&InstallRequest {
+            script: script.to_owned(),
+            manifest: text.clone(),
+            author: "ALF".into(),
+            loop_override: false,
+        })
+        .map_err(|e| format!("install: {e}"))?;
+    rt.approve(&flow_id, version, &installed.code_hash, "test-approval")
+        .map_err(|e| format!("approve: {e}"))?;
+    Ok(spec(text))
+}
 
 /// A unique scratch directory.
 pub fn scratch(tag: &str) -> PathBuf {
@@ -215,11 +304,30 @@ pub struct Summary {
     pub effects: BTreeMap<String, usize>,
     /// Remote effects per idempotency key, as (position, count).
     pub effects_per_call: BTreeMap<u64, usize>,
-    /// Local effects per call position.
-    pub local_effects: BTreeMap<u64, usize>,
+    /// The call audit: each position's recorded outcome. Exactly one row
+    /// per journaled call when [`Summary::audit_complete`] holds.
+    pub audit: BTreeMap<u64, String>,
+    /// Audit rows counted, which must equal `calls`.
+    pub audit_rows: usize,
+    /// The flow's `kv`, as key to `value@revision`: a write applied twice
+    /// shows as a higher revision.
     pub kv: BTreeMap<String, String>,
+    /// The flow's token ledger: reservations still open and settled
+    /// usage summed by field.
+    pub tokens: BTreeMap<String, u64>,
+    /// Broca sends whose bytes differ from an earlier send under the same
+    /// `send_id`.
+    pub broca_reuse: usize,
     pub calls: usize,
     pub open_obligations: usize,
+}
+
+impl Summary {
+    /// Every journaled call has exactly one audit row, and no audit row
+    /// names a call that is not journaled.
+    pub fn audit_complete(&self) -> bool {
+        self.audit_rows == self.calls && self.audit.keys().copied().eq(0..self.calls as u64)
+    }
 }
 
 impl Summary {
@@ -234,8 +342,11 @@ impl Summary {
             "error_kind": self.error_kind,
             "effects": self.effects,
             "effects_per_call": positions(&self.effects_per_call),
-            "local_effects": positions(&self.local_effects),
+            "audit": self.audit.iter().map(|(k, v)| (k.to_string(), v.clone())).collect::<BTreeMap<_, _>>(),
+            "audit_rows": self.audit_rows,
             "kv": self.kv,
+            "tokens": self.tokens,
+            "broca_reuse": self.broca_reuse,
             "calls": self.calls,
             "open_obligations": self.open_obligations,
         })
@@ -252,30 +363,84 @@ pub fn summarize(rt: &Runtime, mock: &MockHost, run_id: &str) -> Result<Summary,
     let mut effects = BTreeMap::new();
     let mut per_call = BTreeMap::new();
     for e in mock.effects() {
+        // A model call's envelope names its send id and run, which differ
+        // between stores; the script's own request inside it does not.
+        let args = match (e.module.as_str(), e.op.as_str()) {
+            ("primitive", "llm" | "classify") => serde_json::from_str::<Value>(&e.args)
+                .ok()
+                .and_then(|v| v.get("request").map(Value::to_string))
+                .unwrap_or_else(|| e.args.clone()),
+            _ => e.args.clone(),
+        };
         *effects
-            .entry(format!("{}.{} {}", e.module, e.op, e.args))
+            .entry(format!("{}.{} {}", e.module, e.op, args))
             .or_insert(0) += 1;
         if let Some(p) = positions.get(&e.key) {
             *per_call.entry(*p).or_insert(0) += 1;
         }
     }
-    let (local, kv) = rt.store().read(|c| {
-        let mut stmt = c.prepare(
-            "SELECT idempotency_key, COUNT(*) FROM local_effects GROUP BY idempotency_key",
+    let (audit, audit_rows, kv, tokens) = rt.store().read(|c| {
+        let audit: BTreeMap<u64, String> = basal_core::audit::rows(c, run_id)?
+            .into_iter()
+            .map(|r| (r.position, r.outcome))
+            .collect();
+        let rows: i64 = c.query_row(
+            "SELECT COUNT(*) FROM call_audit WHERE run_id = ?1",
+            [run_id],
+            |r| r.get(0),
         )?;
-        let rows = stmt
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut stmt = c.prepare("SELECT key, value FROM local_kv ORDER BY key")?;
+        let mut stmt =
+            c.prepare("SELECT key, value, revision FROM kv WHERE flow_id = ?1 ORDER BY key")?;
         let kv = stmt
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .query_map([&run.flow_id], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    format!("{}@{}", r.get::<_, String>(1)?, r.get::<_, i64>(2)?),
+                ))
+            })?
             .collect::<rusqlite::Result<BTreeMap<_, _>>>()?;
-        Ok((rows, kv))
-    })?;
-    let local_effects = local
+        let (open, input, cache_write, output, cached, unreported): (i64, i64, i64, i64, i64, i64) =
+            c.query_row(
+                "SELECT COALESCE(SUM(state = 'reserved'), 0), COALESCE(SUM(input_tokens), 0), \
+                 COALESCE(SUM(cache_write_tokens), 0), COALESCE(SUM(output_tokens), 0), \
+                 COALESCE(SUM(cached_input_tokens), 0), COALESCE(SUM(unreported_tokens), 0) \
+                 FROM token_ledger WHERE run_id = ?1",
+                [run_id],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                    ))
+                },
+            )?;
+        let tokens: BTreeMap<String, u64> = [
+            ("open", open),
+            ("input", input),
+            ("cache_write", cache_write),
+            ("output", output),
+            ("cached_input", cached),
+            ("unreported", unreported),
+        ]
         .into_iter()
-        .map(|(k, n)| (positions.get(&k).copied().unwrap_or(u64::MAX), n as usize))
+        .map(|(k, v)| (k.to_owned(), u64::try_from(v).unwrap_or(u64::MAX)))
         .collect();
+        Ok((audit, rows as usize, kv, tokens))
+    })?;
+    let mut first: HashMap<String, String> = HashMap::new();
+    let mut broca_reuse = 0;
+    for (send_id, bytes) in mock.broca_sends() {
+        match first.get(&send_id) {
+            Some(b) if *b != bytes => broca_reuse += 1,
+            Some(_) => {}
+            None => {
+                first.insert(send_id, bytes);
+            }
+        }
+    }
     let open = rt.health()?.open_obligations.len();
     Ok(Summary {
         state: run.state.as_str().to_owned(),
@@ -286,8 +451,11 @@ pub fn summarize(rt: &Runtime, mock: &MockHost, run_id: &str) -> Result<Summary,
         error_kind: run.error_kind,
         effects,
         effects_per_call: per_call,
-        local_effects,
+        audit,
+        audit_rows,
         kv,
+        tokens,
+        broca_reuse,
         calls: calls.len(),
         open_obligations: open,
     })
@@ -298,6 +466,7 @@ pub fn summarize(rt: &Runtime, mock: &MockHost, run_id: &str) -> Result<Summary,
 pub struct World {
     pub dir: PathBuf,
     pub mock: MockHost,
+    pub catalog: MockCatalog,
     pub source: Arc<ProcessSource>,
     pub durability: Durability,
 }
@@ -307,6 +476,7 @@ impl World {
         Self {
             dir: scratch(tag),
             mock: MockHost::new(),
+            catalog: MockCatalog::standard(),
             source: Arc::new(ProcessSource::new(worker_binary())),
             // The harness checks logic, not power loss; skipping F_FULLFSYNC
             // keeps hundreds of cuts fast. Durability is measured separately.
@@ -325,6 +495,7 @@ impl World {
         let rt = Runtime::new(
             store,
             Arc::new(self.mock.clone()),
+            Arc::new(self.catalog.clone()),
             hooks,
             Some(self.source.clone()),
             config,
@@ -333,15 +504,25 @@ impl World {
         Ok(rt)
     }
 
-    pub fn spec(&self, script: &str) -> TriggerSpec {
-        TriggerSpec {
-            flow_id: "flow-test".into(),
-            trigger_id: "trigger-1".into(),
-            trigger: JsonText::new(json!({"kind": "test"}).to_string())
-                .unwrap_or_else(|_| JsonText::null()),
-            script: script.to_owned(),
-            manifest: "{\"id\":\"flow-test\"}".into(),
-        }
+    /// A spec for `script` under the test manifest, approved first.
+    pub fn spec(&self, rt: &Runtime, script: &str) -> Result<TriggerSpec, String> {
+        self.spec_with(rt, script, &test_manifest())
+    }
+
+    /// A spec for `script` under `manifest`, approved first.
+    pub fn spec_with(
+        &self,
+        rt: &Runtime,
+        script: &str,
+        manifest: &Value,
+    ) -> Result<TriggerSpec, String> {
+        approve_spec(
+            rt,
+            script,
+            manifest,
+            "trigger-1",
+            JsonText::new(json!({"kind": "test"}).to_string()).unwrap_or_else(|_| JsonText::null()),
+        )
     }
 }
 
@@ -392,6 +573,17 @@ pub fn run_with_cuts(
     cuts: &[Point],
     config: &Config,
 ) -> Result<CutRun, String> {
+    run_with_cuts_under(world, script, &test_manifest(), cuts, config)
+}
+
+/// [`run_with_cuts`] under a manifest of the test's choosing.
+pub fn run_with_cuts_under(
+    world: &World,
+    script: &str,
+    manifest: &Value,
+    cuts: &[Point],
+    config: &Config,
+) -> Result<CutRun, String> {
     let mut fired = Vec::new();
     let mut phases = Vec::new();
     let mut run_id = None;
@@ -415,9 +607,8 @@ pub fn run_with_cuts(
         let id = match &run_id {
             Some(id) => id,
             None => {
-                let admitted = rt
-                    .admit(&world.spec(script))
-                    .map_err(|e| format!("admit: {e}"))?;
+                let spec = world.spec_with(&rt, script, manifest)?;
+                let admitted = rt.admit(&spec).map_err(|e| format!("admit: {e}"))?;
                 run_id.insert(admitted.run_id().unwrap_or_default().to_owned())
             }
         };

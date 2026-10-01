@@ -23,9 +23,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use basal_core::{Config, Durability, Runtime, Store};
+use basal_host::MockCatalog;
 use basal_host::mock::MockHost;
 use basal_testkit::ProcessSource;
-use basal_testkit::harness::{Point, Probe, REPRESENTATIVE, drive, summarize};
+use basal_testkit::harness::{
+    Point, Probe, REPRESENTATIVE, approve_spec, drive, summarize, test_manifest,
+};
 use serde_json::json;
 
 struct Args {
@@ -88,18 +91,21 @@ fn run(args: Args) -> Result<serde_json::Value, String> {
     let rt = Runtime::new(
         Arc::new(store),
         Arc::new(mock.clone()),
+        Arc::new(MockCatalog::standard()),
         probe.clone(),
         Some(Arc::new(ProcessSource::new(&args.worker))),
         config,
     );
     rt.recover().map_err(|e| e.to_string())?;
-    let spec = basal_core::TriggerSpec {
-        flow_id: "flow-test".into(),
-        trigger_id: "trigger-1".into(),
-        trigger: basal_proto::JsonText::null(),
-        script: REPRESENTATIVE.into(),
-        manifest: "{\"id\":\"flow-test\"}".into(),
-    };
+    // A restart finds the version it approved before and admits the same
+    // trigger, which deduplicates to the run already in the store.
+    let spec = approve_spec(
+        &rt,
+        REPRESENTATIVE,
+        &test_manifest(),
+        "trigger-1",
+        basal_proto::JsonText::null(),
+    )?;
     let admission = rt.admit(&spec).map_err(|e| e.to_string())?;
     let run_id = admission.run_id().ok_or("not admitted")?.to_owned();
     let run = drive(&rt, &mock, &run_id, Duration::from_secs(120)).map_err(|e| e.to_string())?;

@@ -138,7 +138,7 @@ fn killing_the_worker_at_every_boundary_recovers_to_the_uncut_state() {
                         .runtime(probe.clone(), Config::default())
                         .expect("runtime");
                     let run_id = rt
-                        .admit(&world.spec(REPRESENTATIVE))
+                        .admit(&world.spec(&rt, REPRESENTATIVE).expect("approve"))
                         .expect("admit")
                         .run_id()
                         .unwrap_or_default()

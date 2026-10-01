@@ -16,8 +16,13 @@
 //!    fire's trigger id is its due time, so admitting the same fire again
 //!    is a duplicate, never a second run.
 //!
-//! While admission is draining, planned fires stay in `schedule_fires` and
-//! are admitted by the first tick after the drain ends.
+//! A fire binds to the flow's approved, enabled version at the moment it is
+//! admitted, like every trigger: a fire planned before a newer version was
+//! approved runs the newer version. A fire admission refuses for good (the
+//! flow is disabled, has no approved version, or is over its run rate
+//! limit) is dropped and recorded in `schedule_dropped`. While admission is
+//! draining, planned fires stay in `schedule_fires` and are admitted by the
+//! first tick after the drain ends.
 //!
 //! **Which fires.** The due times in `[next due, now]` are examined. The
 //! newest is on time if it is at most the grace period old; every other
@@ -38,7 +43,7 @@ use super::config::SchedulerConfig;
 use super::due::DueScan;
 use super::spec::MissedPolicy;
 use super::table::{self, ScheduleState, from_ms, to_ms};
-use crate::admission::{self, Admission, TriggerSpec};
+use crate::admission::{self, Admission, AdmitContext};
 use crate::error::{CoreError, Result};
 
 /// The trigger id of the fire for one due time. Admission deduplicates on
@@ -172,8 +177,8 @@ pub fn plan_flow(
     let at = to_ms(now);
     for fire in &fires {
         tx.execute(
-            "INSERT INTO schedule_fires (flow_id, trigger_id, version, due_ms, payload, script, \
-             manifest, planned_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
+            "INSERT INTO schedule_fires (flow_id, trigger_id, version, due_ms, payload, \
+             planned_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
              ON CONFLICT (flow_id, trigger_id) DO NOTHING",
             params![
                 flow_id,
@@ -181,8 +186,6 @@ pub fn plan_flow(
                 i64::try_from(row.version).unwrap_or(i64::MAX),
                 to_ms(fire.due),
                 fire.payload.to_string(),
-                row.script,
-                row.manifest,
                 at
             ],
         )?;
@@ -226,13 +229,28 @@ pub struct AdmittedFire {
     pub admission: Admission,
 }
 
-/// Admits the oldest planned fire, in the caller's transaction, and
-/// removes it from the planned fires unless admission is draining.
-/// `None` when nothing is planned.
-pub fn admit_next(tx: &Transaction, store_id: &str) -> Result<Option<AdmittedFire>> {
+/// Why a planned fire was dropped instead of admitted, if it was.
+fn dropped_reason(admission: &Admission) -> Option<&'static str> {
+    match admission {
+        Admission::Disabled => Some("disabled"),
+        Admission::NotApproved => Some("not_approved"),
+        Admission::RateLimited => Some("rate_limited"),
+        _ => None,
+    }
+}
+
+/// Admits the oldest planned fire, in the caller's transaction, under the
+/// flow's version approved now, and removes it from the planned fires
+/// unless admission is draining. A fire refused for good is recorded in
+/// `schedule_dropped`. `None` when nothing is planned.
+pub fn admit_next(
+    tx: &Transaction,
+    store_id: &str,
+    ctx: &AdmitContext,
+) -> Result<Option<AdmittedFire>> {
     let row = tx
         .query_row(
-            "SELECT seq, flow_id, trigger_id, due_ms, payload, script, manifest \
+            "SELECT seq, flow_id, trigger_id, due_ms, payload \
              FROM schedule_fires ORDER BY seq LIMIT 1",
             [],
             |r| {
@@ -242,26 +260,24 @@ pub fn admit_next(tx: &Transaction, store_id: &str) -> Result<Option<AdmittedFir
                     r.get::<_, String>(2)?,
                     r.get::<_, i64>(3)?,
                     r.get::<_, String>(4)?,
-                    r.get::<_, String>(5)?,
-                    r.get::<_, String>(6)?,
                 ))
             },
         )
         .optional()?;
-    let Some((seq, flow_id, trigger_id, due, payload, script, manifest)) = row else {
+    let Some((seq, flow_id, trigger_id, due, payload)) = row else {
         return Ok(None);
     };
-    let trigger = JsonText::new(payload)
+    let trigger = JsonText::new(payload.clone())
         .map_err(|e| CoreError::Corrupt(format!("planned fire {trigger_id}: {e:?}")))?;
-    let spec = TriggerSpec {
-        flow_id: flow_id.clone(),
-        trigger_id: trigger_id.clone(),
-        trigger,
-        script,
-        manifest,
-    };
-    let admission = admission::admit(tx, store_id, &spec)?;
+    let admission = admission::admit_current(tx, store_id, &flow_id, &trigger_id, trigger, ctx)?;
     if admission != Admission::Draining {
+        if let Some(reason) = dropped_reason(&admission) {
+            tx.execute(
+                "INSERT INTO schedule_dropped (flow_id, trigger_id, due_ms, payload, reason, at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![flow_id, trigger_id, due, payload, reason, ctx.now_ms],
+            )?;
+        }
         tx.execute("DELETE FROM schedule_fires WHERE seq = ?1", [seq])?;
     }
     Ok(Some(AdmittedFire {
@@ -276,4 +292,29 @@ pub fn admit_next(tx: &Transaction, store_id: &str) -> Result<Option<AdmittedFir
 pub fn planned_count(c: &rusqlite::Connection) -> Result<u64> {
     let n: i64 = c.query_row("SELECT COUNT(*) FROM schedule_fires", [], |r| r.get(0))?;
     u64::try_from(n).map_err(|_| CoreError::Corrupt(format!("planned fire count {n}")))
+}
+
+/// A planned fire admission refused for good.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DroppedFire {
+    pub flow_id: String,
+    pub trigger_id: String,
+    /// `disabled`, `not_approved` or `rate_limited`.
+    pub reason: String,
+}
+
+/// Every dropped fire, oldest first.
+pub fn dropped(c: &rusqlite::Connection) -> Result<Vec<DroppedFire>> {
+    let mut stmt =
+        c.prepare("SELECT flow_id, trigger_id, reason FROM schedule_dropped ORDER BY seq")?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(DroppedFire {
+                flow_id: r.get(0)?,
+                trigger_id: r.get(1)?,
+                reason: r.get(2)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(rows)
 }
