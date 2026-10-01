@@ -107,6 +107,14 @@ fn json_string(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_owned())
 }
 
+/// Parent-assigned call identity, used for the send key and isolated session.
+pub struct Identity<'a> {
+    pub flow_id: &'a str,
+    pub run_id: &'a str,
+    pub position: u64,
+    pub send_id: &'a str,
+}
+
 /// Builds the request basal sends for an `llm` or `classify` call: the
 /// script's own argument bytes, unchanged, inside an envelope that carries
 /// the `send_id`, the flow's work class and session, and the clamped
@@ -117,10 +125,14 @@ pub fn clamp(
     args_text: &JsonText,
     args: &Value,
     grant: &LlmGrant,
-    flow_id: &str,
-    run_id: &str,
-    send_id: &str,
+    identity: Identity<'_>,
 ) -> std::result::Result<Clamped, Refusal> {
+    let Identity {
+        flow_id,
+        run_id,
+        position,
+        send_id,
+    } = identity;
     let invalid = |m: &str| Refusal::new(codes::INVALID_ARGUMENTS, m);
     let max_output = match primitive {
         Primitive::Llm => {
@@ -158,7 +170,7 @@ pub fn clamp(
         "{{\"send_id\":{},\"work_class\":{},\"session\":{},\"op\":{},\"max_output\":{},\"request\":{}}}",
         json_string(send_id),
         json_string(&format!("flow:{flow_id}")),
-        json_string(&format!("basal:flow-{flow_id}:{run_id}")),
+        json_string(&format!("basal:flow-{flow_id}:{run_id}:{position}")),
         json_string(primitive.name()),
         max_output,
         args_text.as_str(),
@@ -252,6 +264,9 @@ pub fn reserve(tx: &Transaction, r: &Reservation<'_>) -> Result<std::result::Res
 pub enum Report {
     /// Broca's usage.
     Usage(Usage),
+    /// Token measurements attached to the outcome, with missing fields
+    /// retained as absent instead of being converted to zero.
+    Metadata(basal_host::TokenUsage),
     /// The call provably had no effect (a send that never left), so it
     /// cost nothing.
     NoEffect,
@@ -295,17 +310,46 @@ pub fn settle(tx: &Transaction, key: Key<'_>, report: Report, now_ms: i64) -> Re
     let Some((send_id, flow_id, window_ms, start, reserved)) = row else {
         return Ok(false);
     };
-    let (usage, unreported) = match report {
-        Report::Usage(u) => (u, 0),
-        Report::NoEffect => (Usage::default(), 0),
-        Report::Unreported => (Usage::default(), reserved),
+    let (usage, mut unreported) = match report {
+        Report::Usage(u) => (
+            basal_host::TokenUsage {
+                input_tokens: Some(u.input_tokens),
+                cache_write_tokens: Some(u.cache_write_tokens),
+                output_tokens: Some(u.output_tokens),
+                cached_input_tokens: Some(u.cached_input_tokens),
+            },
+            0,
+        ),
+        Report::Metadata(u) => (u, 0),
+        Report::NoEffect => (
+            basal_host::TokenUsage {
+                input_tokens: Some(0),
+                cache_write_tokens: Some(0),
+                output_tokens: Some(0),
+                cached_input_tokens: Some(0),
+            },
+            0,
+        ),
+        Report::Unreported => (basal_host::TokenUsage::default(), reserved),
     };
     let (input, cache_write, output, cached) = (
-        to_i64(usage.input_tokens)?,
-        to_i64(usage.cache_write_tokens)?,
-        to_i64(usage.output_tokens)?,
-        to_i64(usage.cached_input_tokens)?,
+        usage.input_tokens.map(to_i64).transpose()?,
+        usage.cache_write_tokens.map(to_i64).transpose()?,
+        usage.output_tokens.map(to_i64).transpose()?,
+        usage.cached_input_tokens.map(to_i64).transpose()?,
     );
+    // Missing capped measurements retain the unmeasured part of the upper
+    // bound. Nullable ledger columns still distinguish absence from zero.
+    if input.is_none() || cache_write.is_none() || output.is_none() {
+        unreported = reserved
+            .saturating_sub(
+                input
+                    .unwrap_or(0)
+                    .saturating_add(cache_write.unwrap_or(0))
+                    .saturating_add(output.unwrap_or(0)),
+            )
+            .max(0);
+    }
     let changed = tx.execute(
         "UPDATE token_ledger SET state = 'settled', input_tokens = ?2, cache_write_tokens = ?3, \
          output_tokens = ?4, cached_input_tokens = ?5, unreported_tokens = ?6, settled_at = ?7 \
@@ -337,10 +381,10 @@ pub fn settle(tx: &Transaction, key: Key<'_>, report: Report, now_ms: i64) -> Re
             window_ms,
             start,
             reserved,
-            input,
-            cache_write,
-            output,
-            cached,
+            input.unwrap_or(0),
+            cache_write.unwrap_or(0),
+            output.unwrap_or(0),
+            cached.unwrap_or(0),
             unreported
         ],
     )?;
@@ -368,8 +412,8 @@ pub fn settle_outcome(
         return Ok(false);
     }
     let value: Value = serde_json::from_str(outcome.value.as_str()).unwrap_or(Value::Null);
-    let report = match value.get("usage").and_then(Usage::from_value) {
-        Some(usage) => Report::Usage(usage),
+    let report = match outcome.usage {
+        Some(usage) => Report::Metadata(usage),
         None if outcome.settlement == Settlement::Rejected
             && value.get("code").and_then(Value::as_str) == Some(UNAVAILABLE_CODE) =>
         {

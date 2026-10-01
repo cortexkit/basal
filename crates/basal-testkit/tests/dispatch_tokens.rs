@@ -159,21 +159,15 @@ fn reissue_after_a_cut_sends_identical_bytes_under_the_same_send_id() {
 }
 
 fn usage_outcome(input: u64, cache_write: u64, output: u64, cached: u64) -> HostOutcome {
-    HostOutcome::fulfilled(
-        JsonText::new(
-            json!({
-                "text": "hi",
-                "usage": {
-                    "input_tokens": input,
-                    "cache_write_tokens": cache_write,
-                    "output_tokens": output,
-                    "cached_input_tokens": cached,
-                }
-            })
-            .to_string(),
-        )
-        .expect("small"),
-    )
+    let mut outcome =
+        HostOutcome::fulfilled(JsonText::new(json!({"text": "hi"}).to_string()).expect("small"));
+    outcome.usage = Some(basal_host::TokenUsage {
+        input_tokens: Some(input),
+        cache_write_tokens: Some(cache_write),
+        output_tokens: Some(output),
+        cached_input_tokens: Some(cached),
+    });
+    outcome
 }
 
 /// Usage is applied once per `send_id`: a report arriving apart from the

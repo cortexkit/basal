@@ -768,9 +768,12 @@ impl Activation<'_> {
                     &call.args,
                     &args,
                     grant,
-                    &self.run.flow_id,
-                    &self.lease.run_id,
-                    &send_id,
+                    tokens::Identity {
+                        flow_id: &self.run.flow_id,
+                        run_id: &self.lease.run_id,
+                        send_id: &send_id,
+                        position: call.position,
+                    },
                 )?;
                 Ok(Prepared {
                     request: Some(clamped.request),

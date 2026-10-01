@@ -14,7 +14,8 @@
 //! builds and journals before the first send: `send_id` (the call's
 //! idempotency key), `work_class`, `session`, the clamped `max_output` and
 //! the script's own `request`. A fulfilled outcome carries the run's token
-//! usage as `usage`, in Broca's canonical fields (see [`USAGE_FIELDS`]).
+//! usage as metadata, in Broca's canonical fields (see [`USAGE_FIELDS`]),
+//! separate from the value delivered to the script.
 //!
 //! A dispatched call ends in one of three ways:
 //! - it completes now, fulfilled or rejected ([`Dispatched::Completed`]);
@@ -25,6 +26,7 @@
 //!   runtime may retry a mutation: a request that left may have taken effect
 //!   even though its reply was lost.
 
+pub mod broca;
 pub mod catalog;
 pub mod consent;
 pub mod mock;
@@ -54,6 +56,8 @@ use basal_proto::{CallKind, JsonText, Settlement};
 pub struct HostOutcome {
     pub settlement: Settlement,
     pub value: JsonText,
+    /// Call metadata, never part of the script-visible value.
+    pub usage: Option<TokenUsage>,
 }
 
 impl HostOutcome {
@@ -61,6 +65,7 @@ impl HostOutcome {
         Self {
             settlement: Settlement::Fulfilled,
             value,
+            usage: None,
         }
     }
 
@@ -68,8 +73,23 @@ impl HostOutcome {
         Self {
             settlement: Settlement::Rejected,
             value,
+            usage: None,
         }
     }
+}
+
+/// Canonical token measurements. Missing fields are unreported, not zero.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TokenUsage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_tokens: Option<u64>,
+    /// Reasoning is already included in output and must not be added again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_input_tokens: Option<u64>,
 }
 
 /// What repeating a call could do, which decides what the runtime may do
