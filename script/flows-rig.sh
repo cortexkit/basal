@@ -166,7 +166,8 @@ write_file() {
 # PATH with every entry under the CortexKit data or config tree removed, so a
 # rig process that runs a program by name can never reach a production binary.
 rig_path() {
-  printf '%s' "$PATH" | tr ':' '\n' | while IFS= read -r entry; do
+  # The trailing newline matters: read drops a final line that lacks one.
+  printf '%s\n' "$PATH" | tr ':' '\n' | while IFS= read -r entry; do
     case "$entry" in
       "$CK_SHARE" | "$CK_SHARE"/* | "$CK_CONFIG" | "$CK_CONFIG"/* | "") ;;
       *) printf '%s\n' "$entry" ;;
@@ -494,6 +495,8 @@ cmd_config() {
     },
     // The projects registry is off: this rig runs no entorhinal, and core's
     // registry consumer would otherwise dial for it on every route bind.
+    // Never set PREFRONTAL_CORE_DIAGNOSTICS here: it opens core's test seams,
+    // which exist for prefrontal's end-to-end harness only.
     "prefrontal-core": {
       "program": "$BIN/ckdev-prefrontal-core",
       "args": [],
@@ -506,7 +509,8 @@ cmd_config() {
       "program": "$BIN/ckdev-prefrontal-routing",
       "args": [],
       "env": {},
-      "enabled": true
+      "enabled": true,
+      "launch_nonce_env": false
     },
     // Reserved, so its routes carry the principal reserved:basal.
     "basal": {
@@ -534,6 +538,7 @@ cmd_start() {
       [ -x "$BIN/$file" ] || die "$BIN/$file is not placed; run place first"
     done
   fi
+  check_rig_tools
   run mkdir -p -m 700 "$RUNTIME_DIR" "$RUNTIME_DIR/tmp" "$LOGS" "$DATA_HOME" "$(dirname "$VAULT_KEY")" "$RIG_HOME"
 
   # An empty vault of the rig's own. Bootstrap mints a fresh master key into
@@ -563,6 +568,21 @@ cmd_start() {
   sleep 10
   rig_ck module list
   say "started (pid $pid, daemon output: $log); check it with: $0 status"
+}
+
+# prefrontal-core runs git constantly, and the rig's PATH is the caller's with
+# CortexKit directories removed, so refuse to start unless /usr/bin is still
+# on it and git resolves through it. Read-only, so a dry run performs it too.
+check_rig_tools() {
+  path=$(rig_path)
+  case ":$path:" in
+    *:/usr/bin:*) ;;
+    *) die "refusing: /usr/bin is not on the rig's PATH ($path)" ;;
+  esac
+  git=$(PATH=$path; command -v git) \
+    || die "refusing: git is not reachable through the rig's PATH ($path)"
+  version=$(PATH=$path; git --version) || die "refusing: $git does not run"
+  say "rig PATH reaches /usr/bin and $git ($version)"
 }
 
 # The daemon answering on the rig's connection file is the one this script
