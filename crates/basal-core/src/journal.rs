@@ -1,11 +1,22 @@
 //! The journal (issue log), the mailbox and the quarantine.
 //!
+//! - The journal has one row per issued call. A row's outcome is written
+//!   only together with its delivery order, when it is handed to a worker.
+//! - The mailbox holds outcomes that have arrived but have not been handed
+//!   to a worker yet. Each arrival bumps the run's readiness sequence, a
+//!   counter an activation compares to notice arrivals it has not looked at.
+//! - The quarantine keeps completions that were not applied: ones that
+//!   contradict a recorded outcome or name an unknown call, and ones for a
+//!   cancelled run.
+//!
 //! Writes that extend or advance a run (a new call row, authorizing a send,
-//! allocating a delivery order) are fenced by the activation's lease in the
-//! same statement. Writes that record a fact about a call already sent (an
-//! outcome arriving, a host accepting a call as long-running, a send ending
-//! in an unknown state) are not fenced: they are accepted from any
-//! activation, identified by the call itself.
+//! allocating a delivery order) are fenced: the statement itself requires
+//! that the run is still `running` under the writing activation's owner and
+//! generation (see [`crate::runs::FENCE`]), so a superseded activation's
+//! write changes nothing. Writes that record a fact about a call already
+//! sent (an outcome arriving, a host accepting a call as long-running, a
+//! send ending in an unknown state) are not fenced: they are accepted from
+//! any activation, identified by the call itself.
 
 use basal_host::{CompletionAck, HostOutcome};
 use basal_proto::{ArgsDigest, CallKind, JsonText, Outcome, RecordedCall, Settlement};

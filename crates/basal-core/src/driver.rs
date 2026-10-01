@@ -636,10 +636,18 @@ impl Activation<'_> {
                 self.at(Boundary::Delivered { position })?;
                 return Ok(Flow::Continue);
             }
-            let accepted = self
-                .rt
-                .store()
-                .read(|c| journal::accepted_positions(c, &run_id))?;
+            // Read the acceptances and the readiness sequence together (the
+            // store's one connection serialises every writer), so an
+            // acceptance committed after the release attempt above does not
+            // later look like an unseen arrival and requeue the run for
+            // nothing.
+            let (accepted, readiness) = self.rt.store().read(|c| {
+                Ok((
+                    journal::accepted_positions(c, &run_id)?,
+                    runs::readiness(c, &run_id)?,
+                ))
+            })?;
+            self.readiness_seen = readiness;
             let long: Vec<u64> = accepted
                 .into_iter()
                 .filter(|p| awaiting.contains(p) && !self.long_reported.contains(p))

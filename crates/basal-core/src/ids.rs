@@ -52,9 +52,10 @@ pub fn payload_hash(settlement: Settlement, value: &JsonText) -> [u8; 32] {
 }
 
 /// Everything that decides how a recorded run replays besides its code: the
-/// engine and prelude the worker reported in its handshake, and the bridge,
-/// argument-digest and journal formats. A run is replayed only under the
-/// fingerprint it was recorded with.
+/// engine and prelude the worker reported in its handshake, and the formats
+/// of the parent-worker bridge (its IPC protocol version), the argument
+/// digests and the journal. A run is replayed only under the fingerprint it
+/// was recorded with.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fingerprint {
     pub engine: String,

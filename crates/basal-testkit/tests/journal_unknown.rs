@@ -18,7 +18,8 @@ fn text(v: serde_json::Value) -> JsonText {
     JsonText::new(v.to_string()).expect("small")
 }
 
-/// Runs `script` and crashes at `cut`, then opens a recovering runtime.
+/// Runs `script`, simulates a crash when the runtime reaches the boundary
+/// named by `cut` (see `harness::Point`), then opens a recovering runtime.
 fn crash_then_recover(world: &World, script: &str, cut: &str) -> (basal_core::Runtime, String) {
     let probe = Arc::new(Probe::crash_at(Point::parse(cut).expect("point")));
     let rt = runtime_with(world, probe.clone());
@@ -265,7 +266,8 @@ fn redelivered_completion_is_a_noop_and_contradictory_one_is_quarantined() {
     );
     let run = finish(&rt, &world, &run_id);
     assert_eq!(result(&run), json!(1));
-    // After release the recorded outcome is compared, not the mailbox.
+    // Once the outcome has been released into the journal, a redelivery is
+    // compared with the journal's copy.
     assert_eq!(
         rt.complete(&completion(1)).expect("late"),
         CompletionAck::Duplicate

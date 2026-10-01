@@ -133,7 +133,9 @@ fn pruning_spares_unfinished_runs_and_open_obligations() {
     assert!(rt.run(&suspended).is_ok());
 }
 
-/// The store runs `synchronous = FULL`, and `fullfsync` as chosen.
+/// The store runs `synchronous = FULL`, and `fullfsync` (with
+/// `checkpoint_fullfsync`) matches the durability it was opened with, for
+/// both choices.
 #[test]
 fn store_runs_synchronous_full_and_the_chosen_fullfsync() {
     for fullfsync in [true, false] {

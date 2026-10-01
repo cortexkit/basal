@@ -21,7 +21,8 @@ use crate::schema::{MIGRATIONS, NAMESPACE};
 /// hands data to the drive, which may still hold it in a volatile cache;
 /// `fullfsync` makes SQLite issue `F_FULLFSYNC`, which asks the drive to
 /// flush that cache too. It is far more expensive, so it is a separate
-/// choice (see `docs/findings/slice-2-journal.md` for the measurements).
+/// choice (the measurements are in the journal findings note under
+/// `docs/findings/`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Durability {
     pub fullfsync: bool,

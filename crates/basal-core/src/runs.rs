@@ -79,6 +79,17 @@ pub fn state(conn: &Connection, run_id: &str) -> Result<RunState> {
     RunState::parse(&s.ok_or_else(|| CoreError::NoSuchRun(run_id.to_owned()))?)
 }
 
+/// The run's readiness sequence: bumped by every outcome, acceptance or
+/// unknown result recorded for one of its calls.
+pub fn readiness(conn: &Connection, run_id: &str) -> Result<u64> {
+    let r: i64 = conn.query_row(
+        "SELECT readiness FROM runs WHERE run_id = ?1",
+        [run_id],
+        |r| r.get(0),
+    )?;
+    crate::model::to_u64(r, "readiness")
+}
+
 /// Takes a pending run for a new activation: compare-and-set from
 /// `pending` to `running`, with a new generation. Two callers racing for
 /// the same run cannot both succeed.

@@ -69,8 +69,9 @@ impl Runtime {
         self.store().write(|tx| prune_in(tx, cutoff, now_ms))
     }
 
-    /// Drops tombstones written before `before_ms`, once the redelivery
-    /// horizon has passed.
+    /// Drops tombstones written before `before_ms`. Call it only once no
+    /// source can still redeliver a trigger that old (the broker's
+    /// redelivery horizon); until then a tombstone is what refuses it.
     pub fn prune_tombstones(&self, before_ms: i64) -> Result<usize> {
         self.store()
             .write(|tx| Ok(tx.execute("DELETE FROM tombstones WHERE pruned_at < ?1", [before_ms])?))

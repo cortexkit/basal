@@ -658,7 +658,11 @@ const JOURNAL_CONTROLS: &[Control] = &[
     },
     Control {
         label: "a contradictory completion is taken for a redelivery",
-        edits: &[(JOURNAL, "if waiting == hash {", "if true || waiting == hash {")],
+        edits: &[(
+            JOURNAL,
+            "if waiting == hash {",
+            "if true || waiting == hash {",
+        )],
         also_restore: NO_EXTRA,
         target: Target::Testkit("journal_unknown"),
         test: "redelivered_completion_is_a_noop_and_contradictory_one_is_quarantined",

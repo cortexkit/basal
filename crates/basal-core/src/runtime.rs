@@ -80,7 +80,7 @@ pub enum ActivationEnd {
         awaited: Vec<u64>,
     },
     /// The run is runnable again: something arrived as it suspended, or the
-    /// worker broke and the run will be replayed on another.
+    /// worker broke and the run will be replayed on another worker.
     Requeued,
     NeedsReconcile {
         positions: Vec<u64>,

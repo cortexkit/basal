@@ -1,5 +1,6 @@
-//! Release order, the replay barrier, suspension and concurrency through
-//! the parent with the store.
+//! Release order, the replay barrier, suspension and concurrency, driven
+//! through basal-core's runtime (store, driver and dispatch) on a real
+//! worker.
 
 mod common;
 
@@ -18,7 +19,8 @@ fn done_value() -> HostOutcome {
     HostOutcome::fulfilled(JsonText::new("{\"done\":true}").expect("small"))
 }
 
-/// The exact cut from the design: positions 0 and 1 race, 1 wins and is
+/// The race cut `docs/design.md` section 7 uses as its counterexample:
+/// positions 0 and 1 race, 1 wins and is
 /// released, and the process dies before the winner's continuation issues
 /// position 2. Position 0 completes during recovery. Shipping it in the
 /// prefix with an order above 1's would make the worker see position 2

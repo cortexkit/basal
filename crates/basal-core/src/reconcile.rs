@@ -20,7 +20,9 @@ pub enum Resolution {
     /// The call did not take effect; it is sent again with the same
     /// idempotency key.
     NotApplied,
-    /// End the run. Calls already sent keep their obligations.
+    /// End the run. Calls already sent stay open obligations: when their
+    /// outcomes arrive they are logged (refused, since the run is
+    /// cancelled), which settles them.
     Cancel,
 }
 
