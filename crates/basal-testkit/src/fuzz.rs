@@ -137,7 +137,8 @@ fn value(rng: &mut Rng, depth: u32) -> String {
 pub fn payload(seed: u64, index: u64) -> String {
     let mut rng = Rng::new(seed ^ index.wrapping_mul(0x9E37_79B9_7F4A_7C15));
     match rng.below(10) {
-        // Deep nesting, past what the engine's parser can recurse into.
+        // Nesting 100 to 20,099 levels deep. The deeper cases exceed the
+        // stack the engine's JSON parser may use and must fail typed.
         0 => {
             let depth = 100 + rng.below(20_000) as usize;
             format!("{}{}", "[".repeat(depth), "]".repeat(depth))
@@ -162,7 +163,8 @@ pub fn payload(seed: u64, index: u64) -> String {
                 .unwrap_or(0);
             format!("{}{}{}", &text[..at], junk, &text[at..])
         }
-        // A long string near the size the flows' events allow.
+        // A long string, up to about 16 KiB of escapes, the inline payload
+        // size the design proposes for module events.
         3 => format!("\"{}\"", "\\u2028ab".repeat(rng.below(2048) as usize)),
         _ => value(&mut rng, 6),
     }
@@ -206,7 +208,7 @@ pub const SCRIPT: &str = r#"
     };
 "#;
 
-/// Counts of how fuzz activations ended.
+/// How the fuzz activations ended, by kind of result.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Tally {
     pub completed: u64,
@@ -215,8 +217,9 @@ pub struct Tally {
     pub memory: u64,
     pub stack: u64,
     pub script_error: u64,
-    /// Anything else: a hang, a broken channel, an engine failure, or a
-    /// completed result whose round trip failed. Each is a finding.
+    /// Every other ending: a hang, a broken channel, an engine failure, or a
+    /// completed result whose JSON round trip failed. Any entry here is a
+    /// defect to investigate.
     pub unexpected: Vec<String>,
 }
 

@@ -68,7 +68,8 @@ fn completed(parent: &mut TestParent, run: &str, script: &str) -> Duration {
     }
 }
 
-/// Fresh process to Welcome.
+/// Time from spawning a fresh worker process to receiving its handshake
+/// reply (`Welcome`).
 fn spawn_cost(worker: &Path, runs: usize) -> (Value, f64) {
     let mut samples = Vec::new();
     let mut first = 0.0;
@@ -119,7 +120,9 @@ fn activation_costs(worker: &PathBuf, runs: usize) -> Value {
     })
 }
 
-/// Per new host call: K sequential calls minus a zero-call baseline, over K.
+/// Cost per host call that crosses the channel: the time of an activation
+/// making K sequential calls, minus an activation making none, divided by K.
+/// Measured for asynchronous op calls and for synchronous clock reads.
 fn host_call_costs(worker: &PathBuf, batches: usize, k: usize) -> Value {
     let mut parent = TestParent::new(worker);
     parent.budgets.js_time_micros = 30_000_000;
@@ -226,7 +229,8 @@ fn rss(worker: &PathBuf) -> Value {
         parent.journals.clear();
     }
 
-    // Several idle workers, for the per-process floor.
+    // Eight idle workers side by side: the resident memory each process
+    // costs before it runs anything.
     let mut pool = Vec::new();
     for _ in 0..8 {
         pool.push(WorkerProcess::start(worker, HANDSHAKE).expect("spawn").0);

@@ -355,7 +355,9 @@ pub enum Confinement {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Welcome {
     pub protocol_version: u32,
-    /// The engine and binding versions, part of a run's runtime fingerprint.
+    /// The engine and binding versions as one string (for example
+    /// "quickjs-ng 0.16.2 via rquickjs 0.14.0"), part of a run's runtime
+    /// fingerprint together with the prelude hash.
     pub engine: String,
     pub prelude_hash: PreludeHash,
     pub confinement: Confinement,
@@ -396,7 +398,8 @@ pub enum Failure {
     ProfileViolation {
         kind: CallKind,
     },
-    /// The parent expected a different prelude.
+    /// The worker's lockdown prelude differs from the one the parent recorded
+    /// for the run, so replay would run under changed semantics.
     EngineMismatch {
         expected: PreludeHash,
         actual: PreludeHash,

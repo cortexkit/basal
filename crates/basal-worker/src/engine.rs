@@ -44,8 +44,8 @@ pub fn prelude_hash() -> PreludeHash {
 }
 
 /// The intrinsics a context gets. `Performance`, `WeakRef` and
-/// `DOMException` are never created; the prelude removes the rest of what
-/// the lockdown forbids. `Eval` is the engine's ability to compile source at
+/// `DOMException` are never created; the prelude deletes the other
+/// forbidden globals (eval, Function, timers, Atomics, Intl and so on). `Eval` is the engine's ability to compile source at
 /// all, which the worker needs for the prelude and the script; the prelude
 /// removes every route by which the script could reach it.
 type Intrinsics = (
@@ -204,8 +204,10 @@ impl Shared {
                 detail: "call issued after the activation halted".into(),
             }));
         }
-        // The flow profile has no `sh` global, and this refuses it again for
-        // any route that reaches the native bridge anyway.
+        // Unattended flows must never reach a shell. The prelude does not
+        // install the `sh` global in the flow profile; this check refuses a
+        // shell call again in case a script reaches the native bridge by some
+        // other route.
         if bridge.profile == Profile::Flow && kind.is_shell() {
             return Err(failed(Failure::ProfileViolation { kind }));
         }
@@ -232,10 +234,11 @@ impl Shared {
         let synchronous = kind.is_synchronous();
 
         let Some(recorded) = bridge.prefix.get(position as usize) else {
-            // A new call. In a faithful replay every recorded outcome is
-            // released before the script can reach a call the journal has
-            // never seen, because the journal records each call before any
-            // later delivery.
+            // A call beyond the recorded prefix. In a replay that matches the
+            // journal, every recorded outcome has been released before the
+            // script reaches such a call: the parent journals each call when
+            // it is issued, so a call issued before some recorded delivery
+            // would itself be in the prefix.
             if let Some(next) = bridge.release.front() {
                 return Err(failed(Failure::Nondeterminism(
                     Nondeterminism::UnreleasedOutcome {
@@ -303,8 +306,8 @@ impl Shared {
                     value: outcome.value,
                 }))
             }
-            // Recorded but never answered: ask the parent, which owns the
-            // intent at this position.
+            // The call was journaled but its outcome was not (the journal
+            // was cut between the two), so ask the parent for the outcome.
             None => Ok(Prepared::AskSync(
                 HostCall {
                     position,
@@ -713,11 +716,16 @@ impl Activation {
     }
 
     /// After every engine entry: did a native call or the budget end it?
+    ///
+    /// The budget is checked here as well as in the interrupt handler,
+    /// because the engine polls its handler only every few thousand
+    /// operations, and a script that does a little work between many host
+    /// calls could otherwise outrun its budget between polls.
     fn interrupted(&self) -> Option<ActivationResult> {
         if let Some(halt) = self.shared.take_halt() {
             return Some(halt);
         }
-        if self.shared.clock.exhausted() {
+        if self.shared.clock.over_budget() {
             return Some(ActivationResult::BudgetExhausted(BudgetKind::JsTime));
         }
         None

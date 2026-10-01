@@ -20,8 +20,8 @@
   const issuePrimitive = native.issuePrimitive;
   const issueSync = native.issueSync;
 
-  // Primitive codes, shared with the worker's Rust side (basal-proto's
-  // Primitive::code).
+  // Numeric codes naming each host primitive when it is passed to the native
+  // bridge. They must equal basal-proto's Primitive::code on the Rust side.
   const NOW = 1, RANDOM = 2, FACTS = 3, CLASSIFY = 4, LLM = 5, SINK_DIGEST = 6,
     SINK_STATUS = 7, KV_GET = 8, KV_SET = 9, KV_DELETE = 10, SH = 11;
 
@@ -388,7 +388,9 @@
     }
   }
 
-  // Intrinsics that no global names but that syntax hands to the script.
+  // Intrinsic objects that no global property names, but that a script can
+  // still obtain through syntax: the prototypes of async functions,
+  // generators and the built-in iterators.
   function* generator() {}
   async function* asyncGenerator() {}
   const hidden = [

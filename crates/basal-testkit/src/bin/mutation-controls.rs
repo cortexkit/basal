@@ -18,7 +18,8 @@
 //! checks the tree is clean again before the next control. It never stashes
 //! and never restores from HEAD. Every temporary edit carries the marker
 //! `NON-VACUITY BREAK` so a break left behind by a crash is easy to find.
-//! Evidence is written to `docs/findings/slice-1-mutations.json`.
+//! Evidence is written to `docs/findings/slice-1-mutations.json`, beside the
+//! worker engine's findings note `docs/findings/slice-1-worker.md`.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -533,7 +534,8 @@ fn run_control(root: &Path, control: &Control) -> Result<Value, String> {
     command.args([control.test, "--", "--exact"]);
     let ran = run_with_timeout(command, TEST_TIMEOUT);
 
-    // Restore from the index whatever happened above.
+    // Restore the edited files (and any cargo rewrote) from the git index,
+    // whether or not the test run succeeded.
     let mut checkout = vec!["checkout", "--"];
     checkout.extend(restore.iter().copied());
     git(root, &checkout)?;
