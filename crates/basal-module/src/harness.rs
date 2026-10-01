@@ -127,6 +127,11 @@ impl Hooks for HarnessHooks {
             unsafe {
                 libc::kill(libc::getpid(), libc::SIGKILL);
             }
+            // kill(2) can return before the signal takes the process down;
+            // this thread must not go on to the next commit meanwhile.
+            loop {
+                std::thread::park();
+            }
         }
         if self.cut_store_at.as_deref() == Some(point.as_str()) {
             eprintln!("ck-basal-harness: cutting the store at {point}");

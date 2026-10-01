@@ -9,14 +9,16 @@
 //! committed or staged:
 //!
 //! ```text
-//! cargo run -p basal-testkit --bin mutation-controls [-- [--journal | --dispatch | --schedule] [--check] [<label filter>]]
+//! cargo run -p basal-testkit --bin mutation-controls [-- [--journal | --dispatch | --schedule | --module] [--check] [<label filter>]]
 //! ```
 //!
 //! Without a suite flag it runs the worker engine's controls; with
 //! `--journal`, the journal, run state machine and driver controls in
 //! basal-core; with `--dispatch`, the manifest, authorization, audit, token,
 //! `kv`, slot, deadline, rate-limit, disable and per-run limit controls in
-//! basal-core; with `--schedule`, the scheduler's controls in basal-core.
+//! basal-core; with `--schedule`, the scheduler's controls in basal-core;
+//! with `--module`, the module shell's (pool, engine, ops, dry run, consent,
+//! manifest), whose tests live in basal-module.
 //! basal-core's tests live in basal-testkit. `--check` only verifies that every edit's
 //! text occurs exactly once in the current source.
 //!
@@ -28,8 +30,9 @@
 //! `NON-VACUITY BREAK` so a break left behind by a crash is easy to find.
 //! Evidence is written to `docs/findings/slice-1-mutations.json` (worker),
 //! `docs/findings/slice-2-mutations.json` (journal),
-//! `docs/findings/slice-3-mutations.json` (dispatch) or
-//! `docs/findings/slice-4-mutations.json` (scheduler), beside the findings
+//! `docs/findings/slice-3-mutations.json` (dispatch),
+//! `docs/findings/slice-4-mutations.json` (scheduler) or
+//! `docs/findings/slice-5-mutations.json` (module), beside the findings
 //! notes in `docs/findings/`.
 
 use std::io::Read;
@@ -58,6 +61,10 @@ enum Target {
     Lib,
     /// An integration test file under `crates/basal-testkit/tests/`.
     Testkit(&'static str),
+    /// An integration test file under `crates/basal-module/tests/`.
+    Module(&'static str),
+    /// A unit test inside the module library.
+    ModuleLib,
 }
 
 struct Control {
@@ -1318,6 +1325,340 @@ const DISPATCH_CONTROLS: &[Control] = &[
     },
 ];
 
+const M_MANIFEST: &str = "crates/basal-module/src/manifest.rs";
+const M_CALLER: &str = "crates/basal-module/src/caller.rs";
+const M_POOL: &str = "crates/basal-module/src/pool.rs";
+const M_ENGINE: &str = "crates/basal-module/src/engine.rs";
+const M_FATAL: &str = "crates/basal-module/src/fatal.rs";
+const M_MODULE: &str = "crates/basal-module/src/module.rs";
+const M_DRYRUN: &str = "crates/basal-module/src/dryrun.rs";
+const M_OPS: &str = "crates/basal-module/src/ops.rs";
+const M_UNCONFIGURED: &str = "crates/basal-module/src/unconfigured.rs";
+const CORE_OPS: &str = "crates/basal-core/src/ops.rs";
+
+/// The module shell: each control disables one mechanism in basal-module
+/// (or the core function only it uses) and runs the basal-module test
+/// named for it.
+const MODULE_CONTROLS: &[Control] = &[
+    Control {
+        label: "the manifest declares a capability subc-protocol's grammar refuses",
+        edits: &[(
+            M_MANIFEST,
+            ".capabilities(None)",
+            ".capabilities(Some(subc_protocol::manifest::CapabilityDeclarations { provides: vec![\"Not A Capability\".into()], requires: Vec::new(), must_never_reach: Vec::new() }))",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("manifest_gate"),
+        test: "the_built_binary_prints_a_manifest_subc_protocol_accepts",
+    },
+    Control {
+        label: "the manifest leaves out an op the module serves",
+        edits: &[(
+            M_MANIFEST,
+            "operations: OPERATIONS\n                .iter()",
+            "operations: OPERATIONS\n                .iter()\n                .skip(1)",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("manifest_gate"),
+        test: "the_built_binary_prints_a_manifest_subc_protocol_accepts",
+    },
+    Control {
+        label: "an agent id in a scope nobody vouched for is taken as the caller",
+        edits: &[(
+            M_CALLER,
+            "core_owned && scope.owner_authorized",
+            "core_owned",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::ModuleLib,
+        test: "caller::tests::identity_comes_only_from_the_stamp",
+    },
+    Control {
+        label: "an idle worker bound to any flow is reused for another",
+        edits: &[(
+            M_POOL,
+            "let reuse = state.bound.get_mut(flow).and_then(Vec::pop);",
+            "let reuse = state.bound.values_mut().find_map(Vec::pop);",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("pool"),
+        test: "a_worker_is_never_reused_across_flows",
+    },
+    Control {
+        label: "a killed worker goes back to its flow's idle list and is handed out again",
+        edits: &[
+            (
+                M_POOL,
+                "let keep = match (&lease.binding, lease.killed || crashed) {",
+                "let keep = match (&lease.binding, false) {",
+            ),
+            (
+                M_POOL,
+                "if let Some(mut idle) = reuse {\n                    if idle.process.has_exited() {",
+                "if let Some(mut idle) = reuse {\n                    if false && idle.process.has_exited() {",
+            ),
+        ],
+        also_restore: NO_EXTRA,
+        target: Target::Module("pool"),
+        test: "a_killed_worker_is_replaced_and_the_run_continues",
+    },
+    Control {
+        label: "a killed worker is not owed a replacement",
+        edits: &[(
+            M_POOL,
+            "Metrics::bump(&self.shared.metrics.workers_killed);\n                    self.shared.lost(&mut state, true);",
+            "Metrics::bump(&self.shared.metrics.workers_killed);\n                    self.shared.lost(&mut state, false);",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("pool"),
+        test: "a_killed_worker_is_replaced_and_the_run_continues",
+    },
+    Control {
+        label: "warm spares are never handed out",
+        edits: &[(
+            M_POOL,
+            "if let Some((id, mut process)) = state.spares.pop_front() {",
+            "if let Some((id, mut process)) = None::<(u64, WorkerProcess)> {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("pool"),
+        test: "an_activation_uses_a_warm_spare",
+    },
+    Control {
+        label: "a worker is never retired for its activation count",
+        edits: &[(
+            M_POOL,
+            "if activations >= self.shared.config.max_activations => None,",
+            "if activations >= u32::MAX => None,",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("pool"),
+        test: "a_bound_worker_is_retired_after_its_activation_count_and_its_idle_period",
+    },
+    Control {
+        label: "a bound worker is never retired for idling",
+        edits: &[(
+            M_POOL,
+            "} else if now.saturating_sub(idle.idle_since_ms) >= idle_ms {",
+            "} else if idle_ms < 0 && now.saturating_sub(idle.idle_since_ms) >= idle_ms {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("pool"),
+        test: "a_bound_worker_is_retired_after_its_activation_count_and_its_idle_period",
+    },
+    Control {
+        label: "the run is claimed before its worker is spawned and greeted",
+        edits: &[(
+            M_ENGINE,
+            "        let mut lease = match self.inner.pool.acquire(Binding::Flow(flow_id.to_owned())) {\n            Ok(lease) => lease,\n            Err(e) => {\n                tracing::warn!(target: \"engine\", run = %run_id, \"no worker for the run: {e}\");\n                return None;\n            }\n        };\n        lease.serve_run(run_id);\n        Some(self.inner.rt.activate(run_id, &mut lease))",
+            "        let _ = (flow_id, Binding::DryRun(String::new()));\n        Some(self.inner.rt.resume(run_id))",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("pool"),
+        test: "the_run_deadline_starts_after_the_worker_answers_its_handshake",
+    },
+    Control {
+        label: "activations are not bounded",
+        edits: &[(
+            M_ENGINE,
+            "if active.runs.len() >= inner.config.max_concurrent_activations {",
+            "if active.runs.len() >= usize::MAX {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("engine"),
+        test: "activations_are_bounded_across_flows",
+    },
+    Control {
+        label: "a storage error does not raise the fatal latch (in process)",
+        edits: &[(M_FATAL, "        if slot.is_none() {\n            *slot = Some(why);", "        if false {\n            *slot = Some(why);")],
+        also_restore: NO_EXTRA,
+        target: Target::Module("engine"),
+        test: "a_storage_error_stops_the_engine_and_raises_the_fatal_latch",
+    },
+    Control {
+        label: "a storage error does not end the process",
+        edits: &[(M_FATAL, "        if slot.is_none() {\n            *slot = Some(why);", "        if false {\n            *slot = Some(why);")],
+        also_restore: NO_EXTRA,
+        target: Target::Module("e2e"),
+        test: "a_store_error_ends_the_process_non_zero_and_the_restart_recovers",
+    },
+    Control {
+        label: "the module starts without recovering runs left running",
+        edits: &[(
+            M_MODULE,
+            "let recovered = rt.recover().map_err(|e| format!(\"recovering runs: {e}\"))?;",
+            "let recovered: Vec<String> = Vec::new();",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("e2e"),
+        test: "a_schedule_flow_survives_a_catch_up_a_worker_kill_and_a_module_kill_with_each_write_once",
+    },
+    Control {
+        label: "a card's approval is applied as a rejection",
+        edits: &[(
+            M_MODULE,
+            "CardDecision::Approve => Decision::Approve,",
+            "CardDecision::Approve => Decision::Reject,",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("ops"),
+        test: "install_raises_one_card_per_version_and_its_decision_approves_or_rejects",
+    },
+    Control {
+        label: "capture mode sends calls to the host",
+        edits: &[(M_DRYRUN, "if !self.runs_live(&request.kind) {", "if false {")],
+        also_restore: NO_EXTRA,
+        target: Target::Module("dry_run"),
+        test: "capture_mode_executes_no_host_call_and_replays_the_schedule_window",
+    },
+    Control {
+        label: "a delivered captured rejection does not taint what follows",
+        edits: &[(
+            M_DRYRUN,
+            "Event::Delivered(p) if captured.contains(p) => tainted = true,",
+            "Event::Delivered(p) if captured.contains(p) && false => tainted = true,",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("dry_run"),
+        test: "a_captured_call_the_script_uses_marks_the_trace_partial",
+    },
+    Control {
+        label: "live mode runs ops that are not marked query",
+        edits: &[(
+            M_DRYRUN,
+            ".is_some_and(|d| d.kind == Some(OpKind::Query) && !d.shell_capable),",
+            ".is_some(),",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("dry_run"),
+        test: "live_mode_runs_only_query_ops_and_only_for_the_operator",
+    },
+    Control {
+        label: "an owning agent may ask for a live dry run",
+        edits: &[(
+            M_OPS,
+            "(Caller::Agent(agent), Mode::Capture) if self.owns(agent, &p.flow_id)? => {}",
+            "(Caller::Agent(agent), _) if self.owns(agent, &p.flow_id)? => {}",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("dry_run"),
+        test: "live_mode_runs_only_query_ops_and_only_for_the_operator",
+    },
+    Control {
+        label: "dry runs share one scratch store that is never removed",
+        edits: &[
+            (
+                M_DRYRUN,
+                ".join(format!(\"dry-{}-{}-{n}\", std::process::id(), request.now_ms));",
+                ".join(format!(\"dry-shared{}\", n * 0));",
+            ),
+            (
+                M_DRYRUN,
+                "let _ = std::fs::remove_dir_all(&dir);",
+                "let _ = &dir;",
+            ),
+        ],
+        also_restore: NO_EXTRA,
+        target: Target::Module("dry_run"),
+        test: "each_dry_run_has_its_own_scratch_store_and_the_real_kv_and_runs_are_untouched",
+    },
+    Control {
+        label: "any agent may run a capture dry run of another's flow",
+        edits: &[(
+            M_OPS,
+            "(Caller::Agent(agent), Mode::Capture) if self.owns(agent, &p.flow_id)? => {}",
+            "(Caller::Agent(_), Mode::Capture) => {}",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("ops"),
+        test: "authorization_matrix",
+    },
+    Control {
+        label: "agents may read flow.health",
+        edits: &[(
+            M_OPS,
+            "if !matches!(caller, Caller::Operator | Caller::Core) {",
+            "if matches!(caller, Caller::Other(_)) {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("ops"),
+        test: "authorization_matrix",
+    },
+    Control {
+        label: "anyone may reconcile",
+        edits: &[(
+            M_OPS,
+            "        if *caller != Caller::Operator {\n            return Err(OpError::not_permitted(\"flow.reconcile\", caller));",
+            "        if false {\n            return Err(OpError::not_permitted(\"flow.reconcile\", caller));",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("ops"),
+        test: "authorization_matrix",
+    },
+    Control {
+        label: "anyone may drain",
+        edits: &[(
+            M_OPS,
+            "        if *caller != Caller::Operator {\n            return Err(OpError::not_permitted(\"flow.drain\", caller));",
+            "        if false {\n            return Err(OpError::not_permitted(\"flow.drain\", caller));",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("ops"),
+        test: "authorization_matrix",
+    },
+    Control {
+        label: "any agent may enable any flow",
+        edits: &[(
+            M_OPS,
+            "Caller::Agent(agent) if self.owns(agent, &p.flow_id)? => {}",
+            "Caller::Agent(_) => {}",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("ops"),
+        test: "authorization_matrix",
+    },
+    Control {
+        label: "an agent may install a flow in another author's name",
+        edits: &[(
+            M_OPS,
+            "if p.author.as_ref().is_some_and(|a| a != agent) {",
+            "if p.author.as_ref().is_some_and(|a| a == \"nobody\" && a != agent) {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("ops"),
+        test: "install_refuses_what_an_agent_may_not_do",
+    },
+    Control {
+        label: "health reports no oldest pending run",
+        edits: &[(
+            CORE_OPS,
+            "oldest_pending_ms: oldest(\"pending\")?,",
+            "oldest_pending_ms: oldest(\"pending\")?.filter(|_| false),",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("ops"),
+        test: "health_reports_flows_runs_and_the_module",
+    },
+    Control {
+        label: "health does not count failed runs as consecutive failures",
+        edits: &[(
+            CORE_OPS,
+            "\"failed\" | \"engine_mismatch\" => consecutive_failures += 1,",
+            "\"engine_mismatch\" => consecutive_failures += 1,",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("ops"),
+        test: "health_reports_flows_runs_and_the_module",
+    },
+    Control {
+        label: "the unconfigured host's refusal is not proven unsent",
+        edits: &[(M_UNCONFIGURED, "proven_unsent: true,", "proven_unsent: false,")],
+        also_restore: NO_EXTRA,
+        target: Target::Module("engine"),
+        test: "the_unconfigured_host_refuses_every_dispatch_as_never_sent",
+    },
+];
+
 const SCHED_SPEC: &str = "crates/basal-core/src/schedule/spec.rs";
 const SCHED_DUE: &str = "crates/basal-core/src/schedule/due.rs";
 const SCHED_TICK: &str = "crates/basal-core/src/schedule/tick.rs";
@@ -1856,6 +2197,8 @@ fn run_control(root: &Path, control: &Control) -> Result<Value, String> {
         Target::Integration(file) => command.args(["-p", "basal-worker", "--test", file]),
         Target::Lib => command.args(["-p", "basal-worker", "--lib"]),
         Target::Testkit(file) => command.args(["-p", "basal-testkit", "--test", file]),
+        Target::Module(file) => command.args(["-p", "basal-module", "--test", file]),
+        Target::ModuleLib => command.args(["-p", "basal-module", "--lib"]),
     };
     command.args([control.test, "--", "--exact"]);
     let ran = run_with_timeout(command, TEST_TIMEOUT);
@@ -1911,7 +2254,7 @@ fn main() -> ExitCode {
     // basal-testkit's tests); the default is the worker's.
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let suite = match args.first().map(String::as_str) {
-        Some(flag @ ("--journal" | "--dispatch" | "--schedule")) => {
+        Some(flag @ ("--journal" | "--dispatch" | "--schedule" | "--module")) => {
             let flag = flag.to_owned();
             args.remove(0);
             flag
@@ -1922,6 +2265,7 @@ fn main() -> ExitCode {
         "--journal" => (JOURNAL_CONTROLS, "docs/findings/slice-2-mutations.json"),
         "--dispatch" => (DISPATCH_CONTROLS, "docs/findings/slice-3-mutations.json"),
         "--schedule" => (SCHEDULE_CONTROLS, "docs/findings/slice-4-mutations.json"),
+        "--module" => (MODULE_CONTROLS, "docs/findings/slice-5-mutations.json"),
         _ => (CONTROLS, "docs/findings/slice-1-mutations.json"),
     };
     // `--check` only verifies that every edit's text occurs exactly once,
