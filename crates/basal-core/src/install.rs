@@ -106,6 +106,8 @@ pub enum InstallError {
         agent: String,
     },
     NoSuchFlow(String),
+    /// A decision named a consent card basal never raised.
+    NoSuchCard(String),
     Store(CoreError),
 }
 

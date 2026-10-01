@@ -16,6 +16,8 @@
 //!   decides, in the parent and before dispatch, whether a call may go out
 //!   and how much a flow may spend.
 //! - [`clock`]: the time those limits read, settable in tests.
+//! - [`cards`]: the consent card between installing a version and
+//!   approving it.
 //! - [`schedule`]: schedule triggers, due times in a named zone, missed
 //!   fires, and their admission.
 //!
@@ -26,6 +28,7 @@
 pub mod admission;
 pub mod audit;
 pub mod authorize;
+pub mod cards;
 pub mod channel;
 pub mod clock;
 pub mod driver;

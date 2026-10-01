@@ -1,0 +1,40 @@
+[package]
+name = "basal-module"
+version = "0.1.0"
+description = "The supervised ck-basal module: subc manifest and serve, the worker pool, the loops, the flow ops and the dry run."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "ck-basal"
+path = "src/main.rs"
+
+# The same module against the mock hosts, driven over its stdin and stdout
+# instead of subc. It exists for tests that need a real process to kill; the
+# deploy script never places it.
+[[bin]]
+name = "ck-basal-harness"
+path = "src/bin/ck-basal-harness.rs"
+test = false
+
+[dependencies]
+basal-core.workspace = true
+basal-host.workspace = true
+basal-proto.workspace = true
+async-trait.workspace = true
+cortexkit-log.workspace = true
+cortexkit-store-types.workspace = true
+jiff.workspace = true
+libc.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+subc-client-rs.workspace = true
+subc-protocol.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+basal-testkit.workspace = true

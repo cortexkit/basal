@@ -699,6 +699,25 @@ impl Runtime {
         self.shared.store.read(crate::ops::health)
     }
 
+    /// The age of the oldest pending, suspended and `needs_reconcile` run,
+    /// on the runtime's clock.
+    pub fn run_ages(&self) -> Result<crate::ops::RunAges> {
+        let now = self.config.clock.now_ms();
+        self.shared.store.read(|c| crate::ops::run_ages(c, now))
+    }
+
+    /// Every flow's health, on the runtime's clock.
+    pub fn flow_health(&self) -> Result<Vec<crate::ops::FlowHealth>> {
+        let now = self.config.clock.now_ms();
+        self.shared.store.read(|c| crate::ops::flow_health(c, now))
+    }
+
+    /// Pending runs no earlier run of their flow holds back, as (run,
+    /// flow), in admission order: what can start now.
+    pub fn startable(&self) -> Result<Vec<(String, String)>> {
+        self.shared.store.read(runs::startable)
+    }
+
     pub fn catalog(&self) -> &dyn Catalog {
         self.shared.catalog.as_ref()
     }

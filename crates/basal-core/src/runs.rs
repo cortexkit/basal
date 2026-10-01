@@ -111,6 +111,21 @@ pub fn slot_holder(conn: &Connection, run_id: &str) -> Result<Option<String>> {
         .optional()?)
 }
 
+/// Pending runs that no earlier run of their flow holds back, in admission
+/// order, as (run, flow). Runs of one flow run one at a time, so this is at
+/// most one run per flow: the runs a scheduler of activations may start now.
+pub fn startable(conn: &Connection) -> Result<Vec<(String, String)>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT r.run_id, r.flow_id FROM runs r WHERE r.state = 'pending' AND NOT EXISTS \
+         (SELECT 1 FROM runs o WHERE o.flow_id = r.flow_id AND o.admit_seq < r.admit_seq \
+          AND o.state IN {HOLDS_SLOT}) ORDER BY r.admit_seq, r.run_id"
+    ))?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
 /// Takes a pending run for a new activation: compare-and-set from
 /// `pending` to `running`, with a new generation. Two callers racing for
 /// the same run cannot both succeed. A run waits while an earlier run of
