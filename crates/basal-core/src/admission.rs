@@ -15,7 +15,6 @@ use crate::install;
 use crate::manifest::Manifest;
 use crate::rate::{self, RateLimits, Take};
 use crate::runs;
-use crate::store::now_ms;
 
 /// What admission needs besides the trigger: the time on the runtime's
 /// clock, the rate limits, and the deadline of a run whose manifest sets
@@ -155,9 +154,11 @@ fn insert_run(
     spec: &TriggerSpec,
     attempt: u32,
     grant: &Grant,
+    // The runtime's clock, like run deadlines and rate windows, so a run's
+    // age (how long it has waited since admission) is measured on one clock.
+    now: i64,
 ) -> Result<String> {
     let (run_id, seq) = next_run_id(tx, store_id)?;
-    let now = now_ms();
     let hash = code_hash(&spec.script, &spec.manifest);
     tx.execute(
         "INSERT INTO runs (run_id, flow_id, trigger_id, attempt, trigger, script, manifest, \
@@ -220,7 +221,7 @@ pub fn admit(
         Err(refused) => return Ok(refused),
     };
     Ok(Admission::Admitted {
-        run_id: insert_run(tx, store_id, spec, 1, &grant)?,
+        run_id: insert_run(tx, store_id, spec, 1, &grant, ctx.now_ms)?,
     })
 }
 
@@ -285,7 +286,7 @@ pub fn retrigger(
         Err(refused) => return Ok(refused),
     };
     Ok(Admission::Admitted {
-        run_id: insert_run(tx, store_id, &spec, attempt, &grant)?,
+        run_id: insert_run(tx, store_id, &spec, attempt, &grant, ctx.now_ms)?,
     })
 }
 

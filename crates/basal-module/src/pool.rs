@@ -638,6 +638,24 @@ impl Shared {
     }
 }
 
+/// The pool as the runtime's own worker source. The runtime asks a source
+/// for a worker only when it resumes a run by itself, which the module never
+/// lets it do (the engine drives every run). A worker handed out this way
+/// knows nothing of the run it will serve, so it is single-use and can never
+/// carry one flow's state into another's.
+pub struct PoolSource {
+    pub pool: Pool,
+}
+
+impl basal_core::WorkerSource for PoolSource {
+    fn worker(&self) -> Result<Box<dyn WorkerChannel>, ChannelError> {
+        self.pool
+            .acquire(Binding::DryRun("runtime-source".into()))
+            .map(|lease| Box::new(lease) as Box<dyn WorkerChannel>)
+            .map_err(|e| ChannelError::Broken(e.to_string()))
+    }
+}
+
 /// A worker handed out for one activation. It goes back to the pool (or is
 /// ended) when dropped.
 pub struct Lease {

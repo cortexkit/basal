@@ -12,7 +12,7 @@ use crate::dryrun::{DryRunConfig, DryRunner};
 use crate::engine::{Engine, EngineConfig};
 use crate::fatal::{Fatal, install_is_storage, is_storage};
 use crate::metrics::Metrics;
-use crate::pool::{Pool, PoolConfig, Spawn};
+use crate::pool::{Pool, PoolConfig, PoolSource, Spawn};
 
 /// Everything the module is configured with, apart from its hosts.
 #[derive(Debug, Clone)]
@@ -64,21 +64,21 @@ impl Module {
             ..config.runtime
         };
         let clock = runtime_config.clock.clone();
+        let metrics = Arc::new(Metrics::default());
+        let fatal = Fatal::new();
+        let pool = Pool::new(config.pool.clone(), spawner, clock, metrics.clone());
         let rt = Runtime::new(
             Arc::new(store),
             hosts.host.clone(),
             hosts.catalog.clone(),
             hosts.hooks,
-            None,
+            Some(Arc::new(PoolSource { pool: pool.clone() })),
             runtime_config.clone(),
         );
         let recovered = rt.recover().map_err(|e| format!("recovering runs: {e}"))?;
         if !recovered.is_empty() {
             tracing::info!(target: "engine", "recovered {} runs left running", recovered.len());
         }
-        let metrics = Arc::new(Metrics::default());
-        let fatal = Fatal::new();
-        let pool = Pool::new(config.pool.clone(), spawner, clock, metrics.clone());
         pool.replenish();
         let engine = Engine::new(
             rt.clone(),

@@ -148,6 +148,7 @@ impl Engine {
             let engine = self.clone();
             thread::spawn(move || engine.activate(run_id, flow_id));
         }
+        inner.cond.notify_all();
         Ok(PassReport {
             admitted,
             expired,
@@ -155,39 +156,27 @@ impl Engine {
         })
     }
 
-    /// One activation of `run_id` on a worker bound to `flow_id`. The worker
-    /// is acquired before the run is claimed, so the run's deadline (fixed
-    /// at its first claim) never counts the time a spawn took.
+    /// One activation of `run_id`, on its own thread.
     fn activate(&self, run_id: String, flow_id: String) {
         let inner = &self.inner;
-        let changed = match inner.pool.acquire(Binding::Flow(flow_id.clone())) {
-            Err(e) => {
-                tracing::warn!(target: "engine", run = %run_id, "no worker for the run: {e}");
+        let replayed = journal_rows(&inner.rt, &run_id);
+        let started = Instant::now();
+        let changed = match self.drive_on_pool(&run_id, &flow_id) {
+            None => false,
+            Some(Err(e)) => {
+                // The claim failed in the store.
+                inner.fatal.raise(format!("activating {run_id}: {e}"));
                 false
             }
-            Ok(mut lease) => {
-                lease.serve_run(&run_id);
-                let replayed = journal_rows(&inner.rt, &run_id);
-                let started = Instant::now();
-                let end = inner.rt.activate(&run_id, &mut lease);
-                drop(lease);
+            Some(Ok(end)) => {
                 let micros = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
-                match end {
-                    Err(e) => {
-                        // The claim failed in the store.
-                        inner.fatal.raise(format!("activating {run_id}: {e}"));
-                        false
-                    }
-                    Ok(end) => {
-                        if !matches!(
-                            end,
-                            ActivationEnd::Waiting { .. } | ActivationEnd::NotRunnable { .. }
-                        ) {
-                            inner.metrics.activation(replayed, micros);
-                        }
-                        self.after(&run_id, end)
-                    }
+                if !matches!(
+                    end,
+                    ActivationEnd::Waiting { .. } | ActivationEnd::NotRunnable { .. }
+                ) {
+                    inner.metrics.activation(replayed, micros);
                 }
+                self.after(&run_id, end)
             }
         };
         if changed {
@@ -199,6 +188,27 @@ impl Engine {
             active.flows.remove(&flow_id);
         }
         inner.cond.notify_all();
+    }
+
+    /// Drives the run on a worker bound to its flow. The worker is acquired
+    /// first and the run claimed after, so the run's wall-clock deadline,
+    /// fixed at its first claim, never counts the time a spawn and its
+    /// handshake took (a launch can stall for over a minute on macOS).
+    /// `None` when no worker could be had; the run stays pending.
+    fn drive_on_pool(
+        &self,
+        run_id: &str,
+        flow_id: &str,
+    ) -> Option<Result<ActivationEnd, CoreError>> {
+        let mut lease = match self.inner.pool.acquire(Binding::Flow(flow_id.to_owned())) {
+            Ok(lease) => lease,
+            Err(e) => {
+                tracing::warn!(target: "engine", run = %run_id, "no worker for the run: {e}");
+                return None;
+            }
+        };
+        lease.serve_run(run_id);
+        Some(self.inner.rt.activate(run_id, &mut lease))
     }
 
     /// Handles an activation's end; returns whether anything changed.
