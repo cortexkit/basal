@@ -9,7 +9,9 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use basal_core::Config;
-use basal_testkit::harness::{Point, Probe, REPRESENTATIVE, World, drive, scratch, summarize};
+use basal_testkit::harness::{
+    Point, Probe, REPRESENTATIVE, World, drive, is_repeat_prone, scratch, summarize,
+};
 use basal_testkit::worker_binary;
 use serde_json::Value;
 
@@ -57,6 +59,7 @@ fn killing_the_parent_at_every_boundary_recovers_to_the_uncut_state() {
     let queue = Mutex::new(points.clone());
     let failures = Mutex::new(Vec::new());
     let fired = std::sync::atomic::AtomicUsize::new(0);
+    let missed = Mutex::new(Vec::new());
     std::thread::scope(|s| {
         for _ in 0..PARALLEL {
             s.spawn(|| {
@@ -65,6 +68,10 @@ fn killing_the_parent_at_every_boundary_recovers_to_the_uncut_state() {
                     let (killed, out, err) = parent(&dir, Some(&point));
                     if killed {
                         fired.fetch_add(1, Ordering::SeqCst);
+                    } else if !is_repeat_prone(&point)
+                        && let Ok(mut m) = missed.lock()
+                    {
+                        m.push(point.render());
                     }
                     // The restarted parent recovers and finishes the run.
                     let (_, after, err2) = parent(&dir, None);
@@ -90,12 +97,11 @@ fn killing_the_parent_at_every_boundary_recovers_to_the_uncut_state() {
         points.len(),
         failures.join("\n")
     );
+    // Every boundary must have been hit, except the few whose number of
+    // occurrences depends on when outcomes arrive.
+    let missed = missed.into_inner().unwrap_or_default();
+    assert!(missed.is_empty(), "kills that did not land: {missed:?}");
     let fired = fired.load(Ordering::SeqCst);
-    assert!(
-        fired * 10 >= points.len() * 9,
-        "only {fired} of {} kills landed",
-        points.len()
-    );
     eprintln!("{fired} of {} parent kills landed", points.len());
 }
 
@@ -110,6 +116,7 @@ fn killing_the_worker_at_every_boundary_recovers_to_the_uncut_state() {
     let queue = Mutex::new(points.clone());
     let failures = Mutex::new(Vec::new());
     let fired = std::sync::atomic::AtomicUsize::new(0);
+    let missed = Mutex::new(Vec::new());
     std::thread::scope(|s| {
         for _ in 0..PARALLEL {
             s.spawn(|| {
@@ -145,6 +152,10 @@ fn killing_the_worker_at_every_boundary_recovers_to_the_uncut_state() {
                     rt.quiesce();
                     if probe.fired() {
                         fired.fetch_add(1, Ordering::SeqCst);
+                    } else if !is_repeat_prone(&point)
+                        && let Ok(mut m) = missed.lock()
+                    {
+                        m.push(point.render());
                     }
                     let summary = outcome.and_then(|_| summarize(&rt, &world.mock, &run_id));
                     if summary.as_ref().ok() != Some(&expected) {
@@ -164,11 +175,10 @@ fn killing_the_worker_at_every_boundary_recovers_to_the_uncut_state() {
         points.len(),
         failures.join("\n")
     );
+    // Every boundary must have been hit, except the few whose number of
+    // occurrences depends on when outcomes arrive.
+    let missed = missed.into_inner().unwrap_or_default();
+    assert!(missed.is_empty(), "kills that did not land: {missed:?}");
     let fired = fired.load(Ordering::SeqCst);
-    assert!(
-        fired * 10 >= points.len() * 9,
-        "only {fired} of {} kills landed",
-        points.len()
-    );
     eprintln!("{fired} of {} worker kills landed", points.len());
 }
