@@ -50,6 +50,7 @@ pub fn scratch(tag: &str) -> PathBuf {
 }
 
 pub struct Options {
+    pub hosts: Option<Hosts>,
     pub warm_spares: usize,
     pub max_concurrent: usize,
     pub spawner: Option<Arc<dyn Spawn>>,
@@ -62,6 +63,7 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
+            hosts: None,
             warm_spares: 1,
             max_concurrent: 4,
             spawner: None,
@@ -111,12 +113,12 @@ pub fn fixture(tag: &str, o: Options) -> Fixture {
     };
     let module = Module::start(
         config,
-        Hosts {
+        o.hosts.unwrap_or_else(|| Hosts {
             host: Arc::new(mock.clone()),
             catalog: Arc::new(catalog.clone()),
             consent: Arc::new(consent.clone()),
             hooks: o.hooks.clone(),
-        },
+        }),
         spawner,
     )
     .expect("module starts");
@@ -154,7 +156,10 @@ pub fn schedule_manifest(id: &str, schedule: Value) -> Value {
 }
 
 pub fn agent(name: &str) -> Caller {
-    Caller::Agent(name.to_owned())
+    Caller::Agent {
+        agent_id: name.to_owned(),
+        session: "ses-test-author".into(),
+    }
 }
 
 /// Installs a version as `caller` and returns the op's reply.

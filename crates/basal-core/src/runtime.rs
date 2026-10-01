@@ -595,7 +595,17 @@ impl Runtime {
         let mut retries = 0;
         let mut maybe_sent = false;
         let answer = loop {
-            match self.shared.host.dispatch(&request) {
+            let expected_class = match class {
+                StoredClass::Query => basal_host::CallClass::Query,
+                _ => basal_host::CallClass::Mutation {
+                    honours_idempotency_keys: class == StoredClass::KeyedMutation,
+                },
+            };
+            match self
+                .shared
+                .host
+                .dispatch_classified(&request, expected_class)
+            {
                 Ok(d) => break Ok(d),
                 Err(TransportError::Unavailable {
                     proven_unsent,

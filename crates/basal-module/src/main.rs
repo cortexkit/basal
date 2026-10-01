@@ -78,13 +78,38 @@ fn serve() -> ExitCode {
                 dry_run: DryRunConfig::new(scratch),
             }
         }),
-        // No real adapters exist yet: every dispatch is refused as never
-        // sent, no op or agent is known, and no card can be raised.
-        Box::new(|| Hosts {
-            host: Arc::new(UnconfiguredHost::new()),
-            catalog: Arc::new(EmptyCatalog),
-            consent: Arc::new(UnconfiguredConsent),
-            hooks: Arc::new(NoHooks),
+        Box::new(|| {
+            use basal_host::{
+                core_consent::CoreConsent,
+                core_host::CoreHost,
+                routing::{ModuleOpsHost, RoutingHost},
+                subc_catalog::SubcCatalog,
+                transport::SubcTransport,
+            };
+            match SubcTransport::connect(std::time::Duration::from_secs(30)) {
+                Ok(transport) => {
+                    let catalog = Arc::new(SubcCatalog::new(transport.clone()));
+                    Hosts {
+                        host: Arc::new(RoutingHost::new(
+                            Arc::new(ModuleOpsHost::new(transport.clone(), catalog.clone())),
+                            Arc::new(CoreHost::new(transport.clone())),
+                            Arc::new(UnconfiguredHost::new()),
+                        )),
+                        catalog,
+                        consent: Arc::new(CoreConsent::new(transport).with_polling()),
+                        hooks: Arc::new(NoHooks),
+                    }
+                }
+                Err(error) => {
+                    tracing::error!("consumer unavailable: {error:?}");
+                    Hosts {
+                        host: Arc::new(UnconfiguredHost::new()),
+                        catalog: Arc::new(EmptyCatalog),
+                        consent: Arc::new(UnconfiguredConsent),
+                        hooks: Arc::new(NoHooks),
+                    }
+                }
+            }
         }),
     );
     match run(handler) {

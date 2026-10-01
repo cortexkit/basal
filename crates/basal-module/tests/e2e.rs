@@ -1,5 +1,6 @@
 //! End to end with the real module process (`ck-basal-harness`: the module
-//! against the mock hosts, over stdio), the real worker, and real kills.
+//! against wire-shaped fake providers or mock hosts over stdio), the real
+//! worker, and real kills.
 //!
 //! A schedule flow is installed and its card approved through the mock
 //! consent; the clock jumps over a sleep gap so a catch-up fires; the
@@ -137,7 +138,7 @@ fn a_schedule_flow_survives_a_catch_up_a_worker_kill_and_a_module_kill_with_each
     let dir = scratch("catch-up");
 
     // Install, approve, and sleep through five due times.
-    let mut h = Harness::start(&dir, &[]);
+    let mut h = Harness::start(&dir, &["--routing-fake"]);
     install_and_approve(
         &mut h,
         "flow-hourly",
@@ -158,6 +159,7 @@ fn a_schedule_flow_survives_a_catch_up_a_worker_kill_and_a_module_kill_with_each
     let mut h = Harness::start(
         &dir,
         &[
+            "--routing-fake",
             "--kill-worker-at",
             "CallCommitted { position: 1 }#1",
             "--kill-self-at",
@@ -172,7 +174,7 @@ fn a_schedule_flow_survives_a_catch_up_a_worker_kill_and_a_module_kill_with_each
     assert_eq!(status.signal(), Some(libc::SIGKILL), "{status:?}");
 
     // The restart recovers the run and finishes both fires.
-    let mut h = Harness::start(&dir, &[]);
+    let mut h = Harness::start(&dir, &["--routing-fake"]);
     let runs = h.ok(json!({ "cmd": "runs" }));
     assert_eq!(runs.as_array().map(Vec::len), Some(2), "{runs:#}");
     assert_eq!(

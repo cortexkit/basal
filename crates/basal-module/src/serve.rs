@@ -43,7 +43,7 @@ pub struct BasalHandler {
     phase: Arc<Mutex<Phase>>,
     /// The principal the daemon stamped on each route at bind. The daemon
     /// stamps it once, at `route.bind`, never per request.
-    routes: Mutex<HashMap<RouteKey, Option<Principal>>>,
+    routes: Mutex<HashMap<RouteKey, (Option<Principal>, String)>>,
     configure: Arc<Configure>,
     hosts: Arc<MakeHosts>,
 }
@@ -168,11 +168,12 @@ impl ModuleHandler for BasalHandler {
         let principal = lock(&self.routes)
             .get(&(handle.channel, handle.epoch))
             .cloned()
-            .flatten();
+            .unwrap_or((None, String::new()));
+        let (principal, session) = principal;
         // subc-client-rs 0.23.5 does not hand the route's scope stamp to
         // the module, so no route can name an agent yet: agent callers are
         // refused until it does.
-        let caller = caller::from_route(principal.as_ref(), None);
+        let caller = caller::from_route(principal.as_ref(), None, &session);
         let module = match &*lock(&self.phase) {
             Phase::Ready(m) => m.clone(),
             Phase::Starting => {
@@ -214,7 +215,7 @@ impl ModuleHandler for BasalHandler {
     async fn on_bind(&self, request: &RouteBindRequest) -> BindDecision {
         lock(&self.routes).insert(
             (request.handle.channel, request.handle.epoch),
-            request.principal.clone(),
+            (request.principal.clone(), request.identity.session.clone()),
         );
         BindDecision::accept()
     }

@@ -220,8 +220,9 @@ pub struct CallRow {
     /// Present only with its delivery order: the journal never holds an
     /// outcome that was not released.
     pub outcome: Option<RecordedOutcome>,
-    /// The exact bytes sent to the host when they are not `args` (a model
-    /// call's clamped request), fixed when the call was journaled.
+    /// The journal stores the exact prepared request bytes (a model envelope
+    /// or core sink/facts request) alongside the intent, so re-issues do not
+    /// reconstruct the request from script arguments or a new clock sample.
     pub request: Option<JsonText>,
 }
 

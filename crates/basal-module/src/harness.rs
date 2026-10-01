@@ -24,6 +24,9 @@
 //! Commands are one JSON object per line; each gets one JSON line back:
 //! `op`, `clock`, `decide`, `cards`, `pump`, `runs`, `effects`, `quit`.
 
+#[path = "harness_transport.rs"]
+mod harness_transport;
+
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -55,6 +58,7 @@ struct Args {
     cut_store_at: Option<String>,
     warm_spares: usize,
     max_concurrent: usize,
+    routing_fake: bool,
 }
 
 fn parse() -> Result<Args, String> {
@@ -66,6 +70,7 @@ fn parse() -> Result<Args, String> {
         cut_store_at: None,
         warm_spares: 1,
         max_concurrent: 4,
+        routing_fake: false,
     };
     let mut it = std::env::args().skip(1);
     let mut dir = None;
@@ -73,6 +78,7 @@ fn parse() -> Result<Args, String> {
     while let Some(a) = it.next() {
         let mut value = || it.next().ok_or_else(|| format!("{a} needs a value"));
         match a.as_str() {
+            "--routing-fake" => args.routing_fake = true,
             "--dir" => dir = Some(PathBuf::from(value()?)),
             "--worker" => worker = Some(PathBuf::from(value()?)),
             "--kill-worker-at" => args.kill_worker_at = Some(value()?),
@@ -275,10 +281,26 @@ pub fn main() -> std::process::ExitCode {
         },
         dry_run: DryRunConfig::new(args.dir.join("dry-run")),
     };
+    let host: Arc<dyn basal_host::Host> = if args.routing_fake {
+        use basal_host::{
+            core_host::CoreHost,
+            routing::{ModuleOpsHost, RoutingHost},
+            subc_catalog::SubcCatalog,
+        };
+        let transport = Arc::new(harness_transport::HarnessTransport(mock.clone()));
+        let catalog = Arc::new(SubcCatalog::new(transport.clone()));
+        Arc::new(RoutingHost::new(
+            Arc::new(ModuleOpsHost::new(transport.clone(), catalog)),
+            Arc::new(CoreHost::new(transport)),
+            Arc::new(mock.clone()),
+        ))
+    } else {
+        Arc::new(mock.clone())
+    };
     let module = match Module::start(
         config,
         Hosts {
-            host: Arc::new(mock.clone()),
+            host,
             catalog: Arc::new(MockCatalog::standard()),
             consent: Arc::new(consent.clone()),
             hooks,
@@ -336,7 +358,7 @@ fn command_reply(
     match command.get("cmd").and_then(Value::as_str) {
         Some("op") => {
             let (principal, scope) = stamp(command.get("as").unwrap_or(&Value::Null));
-            let caller = caller::from_route(principal.as_ref(), scope.as_ref());
+            let caller = caller::from_route(principal.as_ref(), scope.as_ref(), "ses-harness");
             let method = command.get("method").and_then(Value::as_str).unwrap_or("");
             let params = command.get("params").cloned().unwrap_or(Value::Null);
             match module.handle(&caller, method, params) {

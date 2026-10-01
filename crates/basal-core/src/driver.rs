@@ -777,6 +777,43 @@ impl Activation<'_> {
                     tokens: Some(clamped.reserve),
                 })
             }
+            CallKind::Primitive(
+                p @ (Primitive::SinkDigest | Primitive::SinkStatus | Primitive::Facts),
+            ) => {
+                let version = self
+                    .run
+                    .flow_version
+                    .ok_or_else(|| Refusal::denied("core calls require an installed version"))?;
+                let trigger: Value = serde_json::from_str(self.run.trigger.as_str())
+                    .map_err(|_| Refusal::new(codes::INVALID_ARGUMENTS, "invalid trigger JSON"))?;
+                let due_at = match trigger.get("due").and_then(Value::as_str) {
+                    Some(due) => due
+                        .parse::<jiff::Timestamp>()
+                        .map_err(|_| {
+                            Refusal::new(codes::INVALID_ARGUMENTS, "invalid schedule due time")
+                        })?
+                        .as_millisecond(),
+                    None => self.run.admitted_at,
+                };
+                // Store the entire core request with the intent so a restart
+                // reuses its timestamps instead of sampling a new clock.
+                let value = basal_host::core_host::intent(
+                    *p,
+                    &args,
+                    &self.run.flow_id,
+                    version,
+                    &self.lease.run_id,
+                    call.position,
+                    due_at,
+                    self.rt.config.clock.now_ms(),
+                );
+                let request = JsonText::new(value.to_string())
+                    .map_err(|e| Refusal::new(codes::INVALID_ARGUMENTS, e.to_string()))?;
+                Ok(Prepared {
+                    request: Some(request),
+                    tokens: None,
+                })
+            }
             _ => Ok(Prepared::default()),
         }
     }

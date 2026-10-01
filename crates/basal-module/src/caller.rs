@@ -25,7 +25,7 @@ pub enum Caller {
     /// Core itself, on its own route (not under an agent's scope).
     Core,
     /// An agent, by the `agent_id` its session scope carries.
-    Agent(String),
+    Agent { agent_id: String, session: String },
     /// Anyone else: another module, an unverified route, or a route whose
     /// principal the daemon did not record. Refused by every op that names
     /// a caller.
@@ -38,7 +38,7 @@ impl Caller {
         match self {
             Self::Operator => "operator".to_owned(),
             Self::Core => format!("reserved:{CORE_MODULE}"),
-            Self::Agent(a) => format!("agent:{a}"),
+            Self::Agent { agent_id, .. } => format!("agent:{agent_id}"),
             Self::Other(o) => o.clone(),
         }
     }
@@ -61,7 +61,11 @@ fn principal_label(principal: Option<&Principal>) -> String {
 /// route under an agent's scope is that agent's even when its principal is
 /// `direct` (an agent's harness is a direct key-holder too); only an
 /// unscoped direct route is the operator.
-pub fn from_route(principal: Option<&Principal>, scope: Option<&ScopeStamp>) -> Caller {
+pub fn from_route(
+    principal: Option<&Principal>,
+    scope: Option<&ScopeStamp>,
+    session: &str,
+) -> Caller {
     if let Some(scope) = scope {
         let core_owned = matches!(
             &scope.owner,
@@ -71,7 +75,10 @@ pub fn from_route(principal: Option<&Principal>, scope: Option<&ScopeStamp>) -> 
             &scope.attributes.agent_id,
             core_owned && scope.owner_authorized,
         ) {
-            (Some(agent), true) if !agent.is_empty() => Caller::Agent(agent.clone()),
+            (Some(agent), true) if !agent.is_empty() => Caller::Agent {
+                agent_id: agent.clone(),
+                session: session.to_owned(),
+            },
             _ => Caller::Other(format!(
                 "a scope of {} without a vouched agent",
                 principal_label(Some(&scope.owner))
@@ -111,49 +118,63 @@ mod tests {
 
     #[test]
     fn identity_comes_only_from_the_stamp() {
-        assert_eq!(from_route(Some(&Principal::Direct), None), Caller::Operator);
+        assert_eq!(
+            from_route(Some(&Principal::Direct), None, "ses-author"),
+            Caller::Operator
+        );
         assert_eq!(
             from_route(
                 Some(&Principal::Reserved {
                     module_id: CORE_MODULE.into()
                 }),
-                None
+                None,
+                "ses-author"
             ),
             Caller::Core
         );
         assert_eq!(
             from_route(
                 Some(&Principal::Direct),
-                Some(&scope(CORE_MODULE, Some("SYNAPSE"), true))
+                Some(&scope(CORE_MODULE, Some("SYNAPSE"), true)),
+                "ses-author"
             ),
-            Caller::Agent("SYNAPSE".into())
+            Caller::Agent {
+                agent_id: "SYNAPSE".into(),
+                session: "ses-author".into()
+            }
         );
         // An agent id nobody vouched for is not an identity.
         assert!(matches!(
             from_route(
                 Some(&Principal::Direct),
-                Some(&scope(CORE_MODULE, Some("SYNAPSE"), false))
+                Some(&scope(CORE_MODULE, Some("SYNAPSE"), false)),
+                "ses-author"
             ),
             Caller::Other(_)
         ));
         assert!(matches!(
             from_route(
                 Some(&Principal::Direct),
-                Some(&scope("aft", Some("SYNAPSE"), true))
+                Some(&scope("aft", Some("SYNAPSE"), true)),
+                "ses-author"
             ),
             Caller::Other(_)
         ));
         assert!(matches!(
-            from_route(Some(&Principal::Unverified), None),
+            from_route(Some(&Principal::Unverified), None, "ses-author"),
             Caller::Other(_)
         ));
-        assert!(matches!(from_route(None, None), Caller::Other(_)));
+        assert!(matches!(
+            from_route(None, None, "ses-author"),
+            Caller::Other(_)
+        ));
         assert!(matches!(
             from_route(
                 Some(&Principal::Reserved {
                     module_id: "aft".into()
                 }),
-                None
+                None,
+                "ses-author"
             ),
             Caller::Other(_)
         ));

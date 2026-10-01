@@ -97,6 +97,16 @@ impl Module {
             InstallError::NotOwner { .. } | InstallError::NotYourDisable { .. } => {
                 OpError::new("not_permitted", e.to_string())
             }
+            InstallError::UnknownEvent {
+                module,
+                name,
+                version,
+            } => OpError::new(
+                "event_not_declared",
+                format!(
+                    "event {module}.{name} v{version} is not catalogued; an events trigger requires a published declaration"
+                ),
+            ),
             InstallError::NoSuchFlow(f) => OpError::new("not_found", format!("no flow {f}")),
             InstallError::Store(inner) => self.core_error(inner),
             other => OpError::new("install_refused", format!("{other:?}")),
@@ -172,7 +182,9 @@ impl Module {
         // operator's loop override, and only a flow no other agent wrote.
         let author = match caller {
             Caller::Operator => p.author.unwrap_or_else(|| "operator".to_owned()),
-            Caller::Agent(agent) => {
+            Caller::Agent {
+                agent_id: agent, ..
+            } => {
                 if p.author.as_ref().is_some_and(|a| a != agent) {
                     return Err(OpError::new(
                         "not_permitted",
@@ -249,7 +261,7 @@ impl Module {
                             "unreported_tokens": w.unreported_tokens,
                         })
                     });
-                let fields = card::fields(&CardInput {
+                let mut fields = card::fields(&CardInput {
                     manifest: &manifest,
                     script: &p.script,
                     manifest_text: &p.manifest,
@@ -259,6 +271,13 @@ impl Module {
                     token_window,
                     dry_run,
                 });
+                match caller {
+                    Caller::Agent { agent_id, session } => {
+                        fields["wire_author"] = json!({"agent":agent_id});
+                        fields["session_ref"] = json!(session);
+                    }
+                    _ => fields["wire_author"] = json!({"operator":true}),
+                }
                 self.rt
                     .record_card(
                         &installed.flow_id,
@@ -336,7 +355,12 @@ impl Module {
         // for the operator only, because it runs ops with basal's authority.
         match (caller, mode) {
             (Caller::Operator, _) => {}
-            (Caller::Agent(agent), Mode::Capture) if self.owns(agent, &p.flow_id)? => {}
+            (
+                Caller::Agent {
+                    agent_id: agent, ..
+                },
+                Mode::Capture,
+            ) if self.owns(agent, &p.flow_id)? => {}
             _ => {
                 return Err(OpError::not_permitted(
                     &format!("flow.dry_run in {} mode", mode.as_str()),
@@ -638,7 +662,9 @@ impl Module {
         let actor = match caller {
             Caller::Operator => Actor::Operator("operator".into()),
             // The core checks ownership again in the disabling transaction.
-            Caller::Agent(agent) if self.owns(agent, &p.flow_id)? => Actor::Agent(agent.clone()),
+            Caller::Agent {
+                agent_id: agent, ..
+            } if self.owns(agent, &p.flow_id)? => Actor::Agent(agent.clone()),
             _ => return Err(OpError::not_permitted("flow.disable", caller)),
         };
         let reason = p.reason.unwrap_or_else(|| "disabled by request".into());
@@ -661,7 +687,9 @@ impl Module {
             // Whether the owner may undo the flow's current disable (only
             // one it made itself) is decided by the core, in the same
             // transaction that enables the flow.
-            Caller::Agent(agent) if self.owns(agent, &p.flow_id)? => Actor::Agent(agent.to_owned()),
+            Caller::Agent {
+                agent_id: agent, ..
+            } if self.owns(agent, &p.flow_id)? => Actor::Agent(agent.to_owned()),
             _ => return Err(OpError::not_permitted("flow.enable", caller)),
         };
         let changed = self

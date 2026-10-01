@@ -73,7 +73,11 @@ name = "basal-host"
 version = "0.1.0"
 dependencies = [
  "basal-proto",
+ "serde",
  "serde_json",
+ "subc-client-rs",
+ "subc-protocol",
+ "tokio",
 ]
 
 [[package]]

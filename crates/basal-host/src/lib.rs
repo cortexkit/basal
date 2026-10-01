@@ -27,7 +27,12 @@
 
 pub mod catalog;
 pub mod consent;
+pub mod core_consent;
+pub mod core_host;
 pub mod mock;
+pub mod routing;
+pub mod subc_catalog;
+pub mod transport;
 
 pub use catalog::{Catalog, EventBody, EventDecl, EventOrigin, MockCatalog, OpDecl, OpKind};
 pub use consent::{
@@ -108,7 +113,8 @@ pub struct CallRequest {
     pub run_id: String,
     pub position: u64,
     pub kind: CallKind,
-    /// The exact argument text the script produced.
+    /// The journaled dispatch bytes: script arguments for module ops, or a
+    /// prepared envelope for core and model calls.
     pub args: JsonText,
     /// Derived from (flow id, run id, position), so every send of this call,
     /// across crashes and re-issues, carries the same key.
@@ -215,6 +221,17 @@ pub trait Host: Send + Sync {
     /// Sends one call. May block until the host answers; the runtime calls it
     /// off the activation's thread.
     fn dispatch(&self, request: &CallRequest) -> Result<Dispatched, TransportError>;
+
+    /// Dispatches under the retry policy already stored with the intent.
+    /// If a catalog changes an operation from query to mutation, refuse it
+    /// before sending: the runtime will repeat queries after a lost reply.
+    fn dispatch_classified(
+        &self,
+        request: &CallRequest,
+        _class: CallClass,
+    ) -> Result<Dispatched, TransportError> {
+        self.dispatch(request)
+    }
 
     /// The current time in milliseconds since the Unix epoch, for a clock
     /// read. The runtime keeps the value monotonic within a run.

@@ -9,7 +9,7 @@
 //! committed or staged:
 //!
 //! ```text
-//! cargo run -p basal-testkit --bin mutation-controls [-- [--journal | --dispatch | --schedule | --module] [--check] [<label filter>]]
+//! cargo run -p basal-testkit --bin mutation-controls [-- [--journal | --dispatch | --schedule | --module | --hosts] [--check] [<label filter>]]
 //! ```
 //!
 //! Without a suite flag it runs the worker engine's controls; with
@@ -18,7 +18,8 @@
 //! `kv`, slot, deadline, rate-limit, disable and per-run limit controls in
 //! basal-core; with `--schedule`, the scheduler's controls in basal-core;
 //! with `--module`, the module shell's (pool, engine, ops, dry run, consent,
-//! manifest), whose tests live in basal-module.
+//! manifest), whose tests live in basal-module; with `--hosts`, the consumer
+//! adapters and their journal integration, also driven by basal-module tests.
 //! basal-core's tests live in basal-testkit. `--check` only verifies that every edit's
 //! text occurs exactly once in the current source.
 //!
@@ -33,7 +34,9 @@
 //! `docs/findings/slice-3-mutations.json` (dispatch),
 //! `docs/findings/slice-4-mutations.json` (scheduler) or
 //! `docs/findings/slice-5-mutations.json` (module), beside the findings
-//! notes in `docs/findings/`.
+//! notes in `docs/findings/`. Host-adapter evidence is written to
+//! `docs/findings/i1a-host-mutations.json`. Each evidence row names the changed
+//! mechanism, the test expected to fail, its output and the restore checks.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -1549,8 +1552,8 @@ const MODULE_CONTROLS: &[Control] = &[
         label: "an owning agent may ask for a live dry run",
         edits: &[(
             M_OPS,
-            "(Caller::Agent(agent), Mode::Capture) if self.owns(agent, &p.flow_id)? => {}",
-            "(Caller::Agent(agent), _) if self.owns(agent, &p.flow_id)? => {}",
+            "(\n                Caller::Agent {\n                    agent_id: agent, ..\n                },\n                Mode::Capture,\n            ) if self.owns(agent, &p.flow_id)? => {}",
+            "(Caller::Agent { agent_id: agent, .. }, _) if self.owns(agent, &p.flow_id)? => {}",
         )],
         also_restore: NO_EXTRA,
         target: Target::Module("dry_run"),
@@ -1578,8 +1581,8 @@ const MODULE_CONTROLS: &[Control] = &[
         label: "any agent may run a capture dry run of another's flow",
         edits: &[(
             M_OPS,
-            "(Caller::Agent(agent), Mode::Capture) if self.owns(agent, &p.flow_id)? => {}",
-            "(Caller::Agent(_), Mode::Capture) => {}",
+            "(\n                Caller::Agent {\n                    agent_id: agent, ..\n                },\n                Mode::Capture,\n            ) if self.owns(agent, &p.flow_id)? => {}",
+            "(Caller::Agent { .. }, Mode::Capture) => {}",
         )],
         also_restore: NO_EXTRA,
         target: Target::Module("ops"),
@@ -1623,8 +1626,8 @@ const MODULE_CONTROLS: &[Control] = &[
         edits: &[
             (
                 M_OPS,
-                "Caller::Agent(agent) if self.owns(agent, &p.flow_id)? => Actor::Agent(agent.to_owned()),",
-                "Caller::Agent(agent) => Actor::Agent(agent.to_owned()),",
+                "Caller::Agent {\n                agent_id: agent, ..\n            } if self.owns(agent, &p.flow_id)? => Actor::Agent(agent.to_owned()),",
+                "Caller::Agent { agent_id: agent, .. } => Actor::Agent(agent.to_owned()),",
             ),
             (
                 INSTALL,
@@ -2415,7 +2418,7 @@ fn main() -> ExitCode {
     // basal-testkit's tests); the default is the worker's.
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let suite = match args.first().map(String::as_str) {
-        Some(flag @ ("--journal" | "--dispatch" | "--schedule" | "--module")) => {
+        Some(flag @ ("--journal" | "--dispatch" | "--schedule" | "--module" | "--hosts")) => {
             let flag = flag.to_owned();
             args.remove(0);
             flag
@@ -2427,6 +2430,7 @@ fn main() -> ExitCode {
         "--dispatch" => (DISPATCH_CONTROLS, "docs/findings/slice-3-mutations.json"),
         "--schedule" => (SCHEDULE_CONTROLS, "docs/findings/slice-4-mutations.json"),
         "--module" => (MODULE_CONTROLS, "docs/findings/slice-5-mutations.json"),
+        "--hosts" => (HOST_CONTROLS, "docs/findings/i1a-host-mutations.json"),
         _ => (CONTROLS, "docs/findings/slice-1-mutations.json"),
     };
     // `--check` only verifies that every edit's text occurs exactly once,
@@ -2532,3 +2536,310 @@ fn main() -> ExitCode {
         ExitCode::FAILURE
     }
 }
+
+const HOST_CONTROLS: &[Control] = &[
+    Control {
+        label: "hosts: journaled class not passed to transport host",
+        edits: &[(
+            "crates/basal-core/src/runtime.rs",
+            ".dispatch_classified(&request, expected_class)",
+            ".dispatch(&request)",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "catalog_changes_cannot_execute_mutations_under_a_query_retry_policy",
+    },
+    Control {
+        label: "hosts: routing loses journaled class",
+        edits: &[(
+            "crates/basal-host/src/routing.rs",
+            ".dispatch_classified(request, class)",
+            ".dispatch(request)",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "catalog_changes_cannot_execute_mutations_under_a_query_retry_policy",
+    },
+    Control {
+        label: "hosts: changed operation kind accepted",
+        edits: &[(
+            "crates/basal-host/src/routing.rs",
+            "expected.is_some_and(|class| class != self.declared_class(module, op, &decl))",
+            "false",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "catalog_changes_cannot_execute_mutations_under_a_query_retry_policy",
+    },
+    Control {
+        label: "hosts: consent provider refusal treated as outage",
+        edits: &[(
+            "crates/basal-host/src/core_consent.rs",
+            "ConsentError::Refused(format!(\"{code}: {message}\"))",
+            "ConsentError::Unavailable(format!(\"{code}: {message}\"))",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "consent_refusal_codes_and_unknown_transport_are_typed",
+    },
+    Control {
+        label: "hosts: expiry tombstone identity is not retrieved",
+        edits: &[(
+            "crates/basal-host/src/core_consent.rs",
+            "record.get(\"flow_install\").is_none()",
+            "false",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "expired_answer_tombstones_read_the_owned_record_before_ack",
+    },
+    Control {
+        label: "hosts: keyed tool contract ignored",
+        edits: &[(
+            "crates/basal-host/src/routing.rs",
+            "self.keyed.contains(&(module.to_owned(), op.to_owned()))",
+            "false",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "operator_keyed_tools_retry_but_unfenceable_tools_do_not",
+    },
+    Control {
+        label: "hosts: status revision substituted",
+        edits: &[(
+            "crates/basal-host/src/core_host.rs",
+            "\"revision\":created_at",
+            "\"revision\":0",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "core_requests_match_c3_c4_field_for_field",
+    },
+    Control {
+        label: "hosts: status replay marker ignored",
+        edits: &[(
+            "crates/basal-host/src/core_host.rs",
+            "Primitive::SinkStatus => {\n            value[\"replayed\"].is_boolean()",
+            "Primitive::SinkStatus => {\n            true",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "sink_reply_missing_fields_and_wrong_types_are_unknown_outcomes",
+    },
+    Control {
+        label: "hosts: missing management op accepted",
+        edits: &[(
+            "crates/basal-host/src/subc_catalog.rs",
+            "find(|o| o.name == op)",
+            "find(|_| true)",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "catalog_install_refuses_missing_ops_and_events_and_marks_mutations",
+    },
+    Control {
+        label: "hosts: undeclared events fabricated",
+        edits: &[(
+            "crates/basal-host/src/subc_catalog.rs",
+            "fn event(&self, _: &str, _: &str, _: u32) -> Option<EventDecl> {\n        None\n    }",
+            "fn event(&self, _: &str, _: &str, _: u32) -> Option<EventDecl> { Some(EventDecl { origin: crate::EventOrigin::Internal, body: crate::EventBody::Inline }) }",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "catalog_install_refuses_missing_ops_and_events_and_marks_mutations",
+    },
+    Control {
+        label: "hosts: registry admission bypassed",
+        edits: &[(
+            "crates/basal-host/src/subc_catalog.rs",
+            "self.known_agent(agent).unwrap_or(false)",
+            "true",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "denylist_and_paged_agent_registry_fail_closed",
+    },
+    Control {
+        label: "hosts: shell denylist disabled",
+        edits: &[(
+            "crates/basal-host/src/subc_catalog.rs",
+            ".any(|(m, o)| m.eq_ignore_ascii_case(module) && o.eq_ignore_ascii_case(op))",
+            ".any(|_| false)",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "denylist_and_paged_agent_registry_fail_closed",
+    },
+    Control {
+        label: "hosts: declining answer approves",
+        edits: &[(
+            "crates/basal-host/src/core_consent.rs",
+            "(Some(\"answered\"), Some(\"decline\")) | (Some(\"expired\"), _) => CardDecision::Reject",
+            "(Some(\"answered\"), Some(\"decline\")) | (Some(\"expired\"), _) => CardDecision::Approve",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "decline_and_expiry_are_rejections_and_unrecognised_answers_are_not_acked",
+    },
+    Control {
+        label: "hosts: proven unsent becomes unknown",
+        edits: &[(
+            "crates/basal-host/src/transport.rs",
+            "CallError::NotSent(e) => WireError::NeverSent(e.to_string())",
+            "CallError::NotSent(e) => WireError::Unknown(e.to_string())",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "transport_certainty_and_tool_key_are_explicit",
+    },
+    Control {
+        label: "hosts: unknown becomes provably unsent",
+        edits: &[(
+            "crates/basal-host/src/transport.rs",
+            "other => WireError::Unknown(other.to_string())",
+            "other => WireError::NeverSent(other.to_string())",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "transport_certainty_and_tool_key_are_explicit",
+    },
+    Control {
+        label: "hosts: tool key omitted",
+        edits: &[(
+            "crates/basal-host/src/transport.rs",
+            "request.call_key = Some(call_key.to_owned());",
+            "request.call_key = None;",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "transport_certainty_and_tool_key_are_explicit",
+    },
+    Control {
+        label: "hosts: provider refusal fulfilled",
+        edits: &[(
+            "crates/basal-host/src/core_host.rs",
+            "HostOutcome::rejected(v)",
+            "HostOutcome::fulfilled(v)",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "every_core_refusal_retains_its_code",
+    },
+    Control {
+        label: "hosts: closed sink decoder bypassed",
+        edits: &[(
+            "crates/basal-host/src/core_host.rs",
+            "if valid {",
+            "if true {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "closed_sink_dispositions_and_unknown_facts_survive",
+    },
+    Control {
+        label: "hosts: sink idempotency disabled",
+        edits: &[(
+            "crates/basal-host/src/core_host.rs",
+            "honours_idempotency_keys: true",
+            "honours_idempotency_keys: false",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "transport_failures_reach_journal_with_safe_retries_only",
+    },
+    Control {
+        label: "hosts: management mutation marked query",
+        edits: &[(
+            "crates/basal-host/src/subc_catalog.rs",
+            "ManagementOperationKind::Mutate => OpKind::Mutate",
+            "ManagementOperationKind::Mutate => OpKind::Query",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "catalog_install_refuses_missing_ops_and_events_and_marks_mutations",
+    },
+    Control {
+        label: "hosts: unfenceable tool becomes repeatable",
+        edits: &[("crates/basal-host/src/routing.rs", "!unfenceable", "true")],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "operator_keyed_tools_retry_but_unfenceable_tools_do_not",
+    },
+    Control {
+        label: "hosts: consent hash changed",
+        edits: &[(
+            "crates/basal-host/src/core_consent.rs",
+            "\"args_digest\":hash",
+            "\"args_digest\":\"wrong\"",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "consent_hash_matches_shared_vectors_and_full_c2_envelope",
+    },
+    Control {
+        label: "hosts: exact manifest bytes trimmed",
+        edits: &[(
+            "crates/basal-host/src/core_consent.rs",
+            "\"manifest_json\":manifest",
+            "\"manifest_json\":manifest.trim()",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "install_card_is_byte_exact_and_session_comes_from_caller",
+    },
+    Control {
+        label: "hosts: authoring session replaced",
+        edits: &[(
+            "crates/basal-host/src/core_consent.rs",
+            "result[\"session_ref\"] = json!(session);",
+            "result[\"session_ref\"] = json!(\"forged\");",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "install_card_is_byte_exact_and_session_comes_from_caller",
+    },
+    Control {
+        label: "hosts: answer acknowledged despite failed decision commit",
+        edits: &[(
+            "crates/basal-host/src/core_consent.rs",
+            ".map_err(|e| ConsentError::Unavailable(e.to_string()))?;",
+            ".ok();",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "decisions_ack_only_after_sink_commit_and_survive_restart",
+    },
+    Control {
+        label: "hosts: approval decoded as rejection",
+        edits: &[(
+            "crates/basal-host/src/core_consent.rs",
+            "(Some(\"answered\"), Some(\"approve\")) => CardDecision::Approve",
+            "(Some(\"answered\"), Some(\"approve\")) => CardDecision::Reject",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "decisions_ack_only_after_sink_commit_and_survive_restart",
+    },
+    Control {
+        label: "hosts: reissue ignores journaled envelope",
+        edits: &[(
+            "crates/basal-core/src/runtime.rs",
+            "args: row.dispatch_args(),",
+            "args: row.args.clone(),",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "journaled_sink_intent_is_byte_identical_after_a_cut",
+    },
+    Control {
+        label: "hosts: core routing bypassed",
+        edits: &[(
+            "crates/basal-host/src/routing.rs",
+            ") => self.core.as_ref(),",
+            ") => self.model.as_ref(),",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "routing_host_runs_install_decision_facts_ops_and_sinks_end_to_end",
+    },
+];
