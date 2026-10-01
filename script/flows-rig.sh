@@ -421,7 +421,7 @@ place_one() {
   identifier="ckdev-$name"
   guard_path "$dest"
   if [ "$DRY" = 1 ]; then
-    say "+ cp $built $BIN/.place.XXXXXX"
+    say "+ cp $built $BIN/.place.XXXXXX; chmod 0755 $BIN/.place.XXXXXX"
     say "+ codesign --force --sign - -o runtime --identifier $identifier $BIN/.place.XXXXXX"
     say "+ codesign -dv $BIN/.place.XXXXXX  (Identifier must be exactly $identifier)"
     say "+ mv -f $BIN/.place.XXXXXX $dest"
@@ -431,6 +431,8 @@ place_one() {
   [ -f "$built" ] || die "$name: no built binary at $built"
   tmp=$(mktemp "$BIN/.place.XXXXXX")
   cp "$built" "$tmp"
+  # mktemp creates the file 0600 and cp keeps that mode on an existing file.
+  chmod 0755 "$tmp"
   # -o runtime: production modules are signed with the hardened runtime, and
   # basal's worker gate refuses a worker without it, so the rig matches both.
   codesign --force --sign - -o runtime --identifier "$identifier" "$tmp"
