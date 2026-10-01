@@ -11,7 +11,9 @@
 use std::sync::Mutex;
 
 use basal_core::Config;
-use basal_testkit::harness::{CutRun, Point, REPRESENTATIVE, Summary, World, run_with_cuts};
+use basal_testkit::harness::{
+    CutRun, Point, REPRESENTATIVE, Summary, World, is_repeat_prone, run_with_cuts,
+};
 use serde_json::json;
 
 const PARALLEL: usize = 6;
@@ -74,17 +76,19 @@ fn run_all(cases: Vec<Vec<Point>>) -> Vec<(Vec<Point>, Result<CutRun, String>)> 
     results.into_inner().unwrap_or_default()
 }
 
+/// Asserts every run ended equal to the uncut run, and returns the cut lists
+/// whose cuts all landed.
 fn assert_equivalent(
     expected: &Summary,
     results: &[(Vec<Point>, Result<CutRun, String>)],
-) -> usize {
-    let mut fired = 0;
+) -> Vec<Vec<Point>> {
+    let mut fired = Vec::new();
     let mut failures = Vec::new();
     for (cuts, result) in results {
         match result {
             Ok(run) => {
                 if run.fired.iter().all(|f| *f) {
-                    fired += 1;
+                    fired.push(cuts.clone());
                 }
                 if &run.summary != expected {
                     failures.push(format!(
@@ -124,15 +128,15 @@ fn every_cut_recovers_to_the_uncut_state() {
     let points = base.phases[0].clone();
     let results = run_all(points.iter().map(|p| vec![p.clone()]).collect());
     let fired = assert_equivalent(&base.summary, &results);
-    // Concurrency moves a few repeated boundaries (how many times the worker
-    // reports itself blocked) between runs, so a cut can miss; nearly all
-    // must land for the harness to mean anything.
-    assert!(
-        fired * 10 >= points.len() * 9,
-        "only {fired} of {} cuts fired",
-        points.len()
-    );
-    eprintln!("{fired} of {} first-level cuts fired", points.len());
+    // Every boundary must have been cut, except the few whose number of
+    // occurrences depends on when outcomes arrive.
+    let missed: Vec<String> = points
+        .iter()
+        .filter(|p| !is_repeat_prone(p) && !fired.contains(&vec![(*p).clone()]))
+        .map(Point::render)
+        .collect();
+    assert!(missed.is_empty(), "cuts that did not land: {missed:?}");
+    eprintln!("{} of {} first-level cuts fired", fired.len(), points.len());
 }
 
 #[test]
@@ -146,7 +150,7 @@ fn cuts_in_recovery_generated_suffixes_recover_too() {
     // unresolved call, and a cut inside the resumed activation.
     let chosen = [
         "CallCommitted { position: 0 }#1",
-        "OrderCommitted { position: 1, order: 0 }#1",
+        "OrderCommitted { position: 1 }#1",
         "SyncCommitted { position: 2 }#1",
         "LocalCommitted { position: 4 }#1",
         "CallCommitted { position: 5 }#1",
@@ -178,9 +182,29 @@ fn cuts_in_recovery_generated_suffixes_recover_too() {
     let total = cases.len();
     let results = run_all(cases);
     let fired = assert_equivalent(&base.summary, &results);
-    assert!(
-        fired * 10 >= total * 8,
-        "only {fired} of {total} second cuts fired"
-    );
-    eprintln!("{fired} of {total} second-level cuts fired");
+    // What a recovery does depends on which of the calls in flight at the
+    // first cut had their outcomes committed, so its later boundaries vary
+    // between runs. Its claim of the run never does: for every first cut,
+    // the cut at the recovery's claim must have landed, which proves the
+    // second cuts reach recovery at all.
+    let mut missed = Vec::new();
+    for (cuts, result) in &learned {
+        let Ok(run) = result else { continue };
+        if !run.fired[0] {
+            continue;
+        }
+        let claim = run
+            .phases
+            .get(1)
+            .and_then(|r| r.iter().find(|p| p.boundary.starts_with("Claimed")))
+            .cloned();
+        let landed = claim
+            .as_ref()
+            .is_some_and(|c| fired.contains(&vec![cuts[0].clone(), c.clone()]));
+        if !landed {
+            missed.push((cuts[0].render(), claim.map(|c| c.render())));
+        }
+    }
+    assert!(missed.is_empty(), "recovery claims not cut: {missed:?}");
+    eprintln!("{} of {total} second-level cuts fired", fired.len());
 }

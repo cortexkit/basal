@@ -14,7 +14,11 @@
 //! | `facts`, `classify`, any other op | query | fixed data, or `args` |
 //!
 //! Arguments may carry `delay_ms` (real time to wait before answering),
-//! `gate` (a name: the call waits until the test opens that gate) and, on a
+//! `gate` (a name: the call waits until the test opens that gate),
+//! `rendezvous` (`{name, count}`: the call waits until `count` calls naming
+//! the same rendezvous are inside the mock at once, or until
+//! [`RENDEZVOUS_TIMEOUT`] passes; the peak number seen together is kept, so
+//! a test can prove calls ran concurrently without timing them) and, on a
 //! long call, `complete_after_ms` (the mock completes it by itself after that
 //! long, fulfilling with `{done: args}`).
 //!
@@ -29,7 +33,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use basal_proto::{CallKind, JsonText, Primitive, Settlement};
 use serde_json::{Value, json};
@@ -93,12 +97,30 @@ impl Default for State {
     }
 }
 
+/// How long a call waits at a rendezvous for the others before answering
+/// anyway. Bounded, so calls that never meet (because they were sent one
+/// after another) still finish, with a peak below the count.
+pub const RENDEZVOUS_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// One named rendezvous.
+#[derive(Default)]
+struct Rendezvous {
+    /// Calls currently waiting at it.
+    inside: usize,
+    /// The most calls that were inside at once.
+    peak: usize,
+    /// Set once `count` calls were inside together; later arrivals pass
+    /// straight through.
+    met: bool,
+}
+
 /// Test controls that are not part of the simulated remote state.
 #[derive(Default)]
 struct Controls {
     faults: HashMap<(String, String), Vec<Fault>>,
     classes: HashMap<(String, String), CallClass>,
     open_gates: HashSet<String>,
+    rendezvous: HashMap<String, Rendezvous>,
 }
 
 struct Shared {
@@ -342,6 +364,46 @@ impl MockHost {
         }
     }
 
+    /// Waits at the named rendezvous until `count` calls are inside it at
+    /// once, or until [`RENDEZVOUS_TIMEOUT`] passes.
+    fn rendezvous(&self, name: &str, count: usize) {
+        let deadline = Instant::now() + RENDEZVOUS_TIMEOUT;
+        let mut controls = lock(&self.shared.controls);
+        {
+            let r = controls.rendezvous.entry(name.to_owned()).or_default();
+            r.inside += 1;
+            r.peak = r.peak.max(r.inside);
+            if r.inside >= count {
+                r.met = true;
+            }
+        }
+        self.shared.gates.notify_all();
+        loop {
+            let met = controls.rendezvous.get(name).is_some_and(|r| r.met);
+            let now = Instant::now();
+            if met || now >= deadline {
+                break;
+            }
+            controls = self
+                .shared
+                .gates
+                .wait_timeout(controls, deadline - now)
+                .map(|(guard, _)| guard)
+                .unwrap_or_else(|p| p.into_inner().0);
+        }
+        if let Some(r) = controls.rendezvous.get_mut(name) {
+            r.inside = r.inside.saturating_sub(1);
+        }
+    }
+
+    /// The most calls that were inside the named rendezvous at once.
+    pub fn peak_concurrency(&self, name: &str) -> usize {
+        lock(&self.shared.controls)
+            .rendezvous
+            .get(name)
+            .map_or(0, |r| r.peak)
+    }
+
     fn take_fault(&self, module: &str, op: &str) -> Option<Fault> {
         let mut controls = lock(&self.shared.controls);
         let queue = controls
@@ -419,6 +481,14 @@ impl Host for MockHost {
         }
         if let Some(gate) = args.get("gate").and_then(Value::as_str) {
             self.wait_gate(gate);
+        }
+        if let Some(r) = args.get("rendezvous")
+            && let (Some(name), Some(count)) = (
+                r.get("name").and_then(Value::as_str),
+                r.get("count").and_then(Value::as_u64),
+            )
+        {
+            self.rendezvous(name, usize::try_from(count).unwrap_or(usize::MAX));
         }
         let (module, op) = op_names(&request.kind);
         let class = self.classify(&request.kind);
@@ -704,6 +774,24 @@ mod tests {
             })
         ));
         assert_eq!(mock.effect_count("k"), 1);
+    }
+
+    #[test]
+    fn calls_meeting_at_a_rendezvous_are_counted_together() {
+        let mock = MockHost::new();
+        std::thread::scope(|s| {
+            for i in 0..3 {
+                let mock = mock.clone();
+                s.spawn(move || {
+                    let mut r = request("echo", &format!("k{i}"));
+                    r.args = JsonText::new("{\"rendezvous\":{\"name\":\"r\",\"count\":3}}")
+                        .unwrap_or_else(|_| JsonText::null());
+                    assert!(mock.dispatch(&r).is_ok());
+                });
+            }
+        });
+        assert_eq!(mock.peak_concurrency("r"), 3);
+        assert_eq!(mock.peak_concurrency("other"), 0);
     }
 
     #[test]

@@ -6,7 +6,7 @@ mod common;
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use basal_core::{ActivationEnd, Boundary, RunState, Step};
 use basal_host::HostOutcome;
@@ -37,7 +37,7 @@ fn race_cut_late_outcome_waits_for_the_barrier() {
         const next = await ops.call('mock', 'echo', { after: w.tag });
         return { winner: w.tag, next: next.after };
     "#;
-    let cut = Point::parse("OrderCommitted { position: 1, order: 0 }#1").expect("point");
+    let cut = Point::parse("OrderCommitted { position: 1 }#1").expect("point");
     let probe = Arc::new(Probe::crash_at(cut));
     let rt = runtime_with(&world, probe.clone());
     let run_id = admit(&rt, &world, script);
@@ -222,7 +222,7 @@ fn early_all_rejection_through_the_parent() {
         let seen = null;
         try {
             await Promise.all([
-                ops.call('mock', 'echo', { slow: true, delay_ms: 150 }),
+                ops.call('mock', 'long', { slow: true }),
                 ops.call('mock', 'fail', { message: 'early' }),
             ]);
         } catch (e) {
@@ -235,8 +235,10 @@ fn early_all_rejection_through_the_parent() {
     );
 }
 
-/// Several calls of one run are in flight at once: four calls that each
-/// take 500 ms finish in about 500 ms, not 2 s.
+/// Several calls of one run are in flight at once. The four calls meet at a
+/// rendezvous in the mock host: each waits until all four are inside the
+/// host together. Dispatched one after another, each would wait alone until
+/// the rendezvous timed out, and the peak seen together would be 1.
 #[test]
 fn calls_of_one_run_are_dispatched_concurrently() {
     let world = World::new("concurrent");
@@ -245,15 +247,14 @@ fn calls_of_one_run_are_dispatched_concurrently() {
         &rt,
         &world,
         r#"
-        const xs = await Promise.all([1, 2, 3, 4].map((n) => ops.call('mock', 'echo', { n, delay_ms: 500 })));
+        const meet = { name: 'four', count: 4 };
+        const xs = await Promise.all([1, 2, 3, 4].map((n) => ops.call('mock', 'echo', { n, rendezvous: meet })));
         return xs.map((x) => x.n);
         "#,
     );
-    let started = Instant::now();
     let run = finish(&rt, &world, &run_id);
-    let took = started.elapsed();
+    assert_eq!(world.mock.peak_concurrency("four"), 4, "{run:#?}");
     assert_eq!(result(&run), json!([1, 2, 3, 4]));
-    assert!(took < Duration::from_millis(1500), "took {took:?}");
 }
 
 /// A local effect committed behind an earlier unresolved call: the crash
@@ -347,7 +348,7 @@ fn concurrent_resumes_start_one_activation() {
     let run_id = admit(
         &rt,
         &world,
-        "const x = await ops.call('mock', 'echo', { n: 1, delay_ms: 400 }); return x.n;",
+        "const x = await ops.call('mock', 'echo', { n: 1, gate: 'resume' }); return x.n;",
     );
     let barrier = std::sync::Barrier::new(2);
     let ends: OnceLock<Vec<ActivationEnd>> = OnceLock::new();
@@ -362,6 +363,19 @@ fn concurrent_resumes_start_one_activation() {
                 }
             });
         }
+        // The activation that claims the run stays running until its call's
+        // gate opens, so the other resume always meets a running run. The
+        // gate opens once one resume has returned (with one claim, that is
+        // the one refused), or after a bounded wait if both claimed.
+        s.spawn(|| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while collected.lock().map(|c| c.is_empty()).unwrap_or(false)
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            world.mock.open_gate("resume");
+        });
     });
     let _ = ends.set(collected.into_inner().unwrap_or_default());
     let ends = ends.get().expect("ends");

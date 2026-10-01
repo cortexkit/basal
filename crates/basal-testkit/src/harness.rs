@@ -105,6 +105,28 @@ impl Point {
 /// Something a test does at a boundary instead of crashing.
 pub type Action = Box<dyn Fn(&str, &Boundary) + Send + Sync>;
 
+/// A boundary's name for cutting. The delivery order is left out of an
+/// order commit's name: which of two calls completing in parallel gets the
+/// lower order depends on timing, and the cut should still land at the
+/// same call's release.
+pub fn point_name(boundary: &Boundary) -> String {
+    match boundary {
+        Boundary::OrderCommitted { position, .. } => {
+            format!("OrderCommitted {{ position: {position} }}")
+        }
+        other => format!("{other:?}"),
+    }
+}
+
+/// Boundaries that can occur a different number of times in two runs of the
+/// same script: how often the worker reports itself blocked, and in how
+/// many replies the parent reports long-running calls, depend on when
+/// outcomes arrive. A cut named by one of these may not be reached in
+/// another run; every other boundary of a run is always reached again.
+pub fn is_repeat_prone(point: &Point) -> bool {
+    point.boundary == "BlockedReceived" || point.boundary == "LongRunningSent"
+}
+
 /// Records every boundary passed, and crashes (or runs an action) at one.
 #[derive(Default)]
 pub struct Probe {
@@ -147,7 +169,7 @@ impl Probe {
 
 impl Hooks for Probe {
     fn at(&self, _run_id: &str, boundary: &Boundary) -> Step {
-        let name = format!("{boundary:?}");
+        let name = point_name(boundary);
         let point = {
             let Ok(mut seen) = self.seen.lock() else {
                 return Step::Continue;
