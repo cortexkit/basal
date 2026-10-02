@@ -3,8 +3,13 @@
   "expires_in_ms": 60000,
   "flow_decision": {
     "decision": "reenable",
+    "disabled_at_ms": 1780409100000,
+    "disabled_reason": "run_limit_saturated",
     "flow_id": "flow-x",
-    "version": 1
+    "limit": 10,
+    "saturated_windows": 3,
+    "version": 3,
+    "window_ms": 60000
   },
   "kind": "flow_decision",
   "late_execution": "notify_only",
@@ -22,7 +27,7 @@
       "label": "Keep disabled"
     }
   ],
-  "prompt": "How should this flow proceed?",
+  "prompt": "flow-x was turned off because it kept hitting its run limit.",
   "scope": {
     "flow_id": "flow-x"
   },

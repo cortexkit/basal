@@ -2,11 +2,16 @@
   "default": "unresolved",
   "expires_in_ms": 60000,
   "flow_decision": {
+    "attempts": 2,
     "call_key": "call-x",
     "decision": "reconcile",
     "flow_id": "flow-x",
+    "op": "prefrontal-core.sink.digest",
+    "run_admitted_at_ms": 1780408800000,
     "run_id": "run-x",
-    "version": 1
+    "step": "writer/send",
+    "unknown_reason": "connection_lost",
+    "version": 3
   },
   "kind": "flow_decision",
   "late_execution": "notify_only",
@@ -34,7 +39,7 @@
       "label": "Leave it unresolved"
     }
   ],
-  "prompt": "How should this flow proceed?",
+  "prompt": "Run 14:00 of flow-x may not have finished: it reached writer/send and lost track of whether the send went out.",
   "scope": {
     "flow_id": "flow-x"
   },

@@ -265,7 +265,101 @@ const REQUEST_KEYS: &[&str] = &[
 ];
 
 /// Core's v1 `flow_decision` body keys; any other is refused.
-const BODY_KEYS: &[&str] = &["flow_id", "version", "decision", "run_id", "call_key"];
+/// The keys of core's `flow_decision` body, tagged by `decision`
+/// (prefrontal-core-store `FlowDecisionCard` at tag `flow-decision-card-v2`):
+/// every key but `step` is required, and any other key is refused, so a v1
+/// body, which lacks the typed context, is refused too.
+const RECONCILE_KEYS: &[&str] = &[
+    "decision",
+    "flow_id",
+    "version",
+    "run_id",
+    "run_admitted_at_ms",
+    "step",
+    "call_key",
+    "op",
+    "attempts",
+    "unknown_reason",
+];
+const REENABLE_KEYS: &[&str] = &[
+    "decision",
+    "flow_id",
+    "version",
+    "disabled_at_ms",
+    "disabled_reason",
+    "limit",
+    "window_ms",
+    "saturated_windows",
+];
+const UNKNOWN_REASONS: &[&str] = &[
+    "basal_restarted",
+    "connection_lost",
+    "reply_timeout",
+    "reply_unreadable",
+    "retries_exhausted",
+    "provider_lost_run",
+];
+const DISABLED_REASONS: &[&str] = &["run_limit_saturated", "dispatch_limit_saturated"];
+
+/// Core's decode and `FlowDecisionCard::valid` for a `flow_decision` body.
+fn check_body(body: &Value) -> Result<(), String> {
+    let id_ok = |name: &str| {
+        body[name]
+            .as_str()
+            .is_some_and(|v| !v.trim().is_empty() && v.len() <= 256)
+    };
+    let positive = |name: &str| body[name].as_u64().is_some_and(|n| n > 0);
+    let required = |keys: &[&str]| {
+        keys.iter()
+            .filter(|k| **k != "step")
+            .all(|k| body.get(*k).is_some_and(|v| !v.is_null()))
+    };
+    let (keys, valid) = match body["decision"].as_str() {
+        Some("reconcile") => {
+            let op = body["op"].as_str().unwrap_or("");
+            let segments: Vec<&str> = op.split('.').collect();
+            let op_ok = op.len() <= 128
+                && segments.len() >= 2
+                && segments.iter().all(|s| {
+                    !s.is_empty()
+                        && s.bytes().all(|b| {
+                            b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-'
+                        })
+                });
+            (
+                RECONCILE_KEYS,
+                id_ok("run_id")
+                    && id_ok("call_key")
+                    && op_ok
+                    && positive("attempts")
+                    && body["run_admitted_at_ms"].is_i64()
+                    && body.get("step").is_none_or(Value::is_string)
+                    && body["unknown_reason"]
+                        .as_str()
+                        .is_some_and(|r| UNKNOWN_REASONS.contains(&r)),
+            )
+        }
+        Some("reenable") => (
+            REENABLE_KEYS,
+            positive("limit")
+                && positive("window_ms")
+                && positive("saturated_windows")
+                && body["disabled_at_ms"].is_i64()
+                && body["disabled_reason"]
+                    .as_str()
+                    .is_some_and(|r| DISABLED_REASONS.contains(&r)),
+        ),
+        _ => return Err("flow_decision.decision is reconcile or reenable".into()),
+    };
+    keys_within(body, keys, "flow_decision")?;
+    if !required(keys) {
+        return Err("flow_decision: a required field is missing".into());
+    }
+    if !(valid && id_ok("flow_id") && body["version"].as_i64().is_some_and(|v| v > 0)) {
+        return Err("invalid flow_decision body".into());
+    }
+    Ok(())
+}
 
 fn keys_within(value: &Value, allowed: &[&str], what: &str) -> Result<(), String> {
     let object = value
@@ -347,22 +441,10 @@ fn check_flow_decision(params: &Value) -> Result<(), (&'static str, String)> {
         ));
     }
     let body = &params["flow_decision"];
-    if !body.is_null() {
-        keys_within(body, BODY_KEYS, "flow_decision").map_err(invalid)?;
-        let flow_id = text(body, "flow_id").map_err(invalid)?;
-        let version = body["version"].as_i64().unwrap_or(0);
-        let long = |name: &str| body[name].as_str().is_some_and(|v| v.len() > 256);
-        let decision = body["decision"].as_str();
-        if flow_id.trim().is_empty()
-            || flow_id.len() > 256
-            || version <= 0
-            || !matches!(decision, Some("reconcile" | "reenable"))
-            || long("run_id")
-            || long("call_key")
-        {
-            return Err(invalid("invalid flow_decision body".into()));
-        }
+    if body.is_null() {
+        return Err(invalid("flow_decision body is required".into()));
     }
+    check_body(body).map_err(invalid)?;
     if params["title"].as_str().unwrap_or("").trim().is_empty()
         || params["prompt"].as_str().unwrap_or("").trim().is_empty()
     {

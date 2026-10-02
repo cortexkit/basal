@@ -92,6 +92,10 @@ pub enum DecisionContext {
         run_id: String,
         /// When the run was admitted, in ms since the Unix epoch.
         run_admitted_at_ms: i64,
+        /// The step the script was in when it issued the call, when known.
+        /// basal's worker does not report steps to the parent, so basal's
+        /// own cards leave it out.
+        step: Option<String>,
         /// The call's journal key (its idempotency key).
         call_key: String,
         /// The op the call went to, as `module.op`.
@@ -140,9 +144,6 @@ pub struct DecisionCard {
     pub prompt: String,
     /// Lowercase hex digest of what is being decided.
     pub args_digest: Option<String>,
-    /// What the card shows besides the flow, version and decision (which
-    /// core adds to every decision card itself), as (label, value) pairs.
-    pub facts: Vec<(String, String)>,
     pub options: Vec<DecisionOption>,
     /// How long the card stays open before it expires to its default.
     pub expires_in_ms: u64,

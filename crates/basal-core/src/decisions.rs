@@ -179,6 +179,7 @@ impl DecisionRecord {
             DecisionKind::Reconcile => DecisionContext::Reconcile {
                 run_id: text("run_id")?,
                 run_admitted_at_ms: int("run_admitted_at_ms")?,
+                step: v["step"].as_str().map(str::to_owned),
                 call_key: text("call_key")?,
                 op: text("op")?,
                 attempts: small("attempts")?,
@@ -199,7 +200,8 @@ impl DecisionRecord {
     }
 
     /// The card to raise on the consent plane: the typed context, and the
-    /// title, prompt and facts written from it.
+    /// title and prompt written from it. Core writes the card's facts from
+    /// the context itself.
     pub fn to_card(&self) -> Result<DecisionCard> {
         let context = self.context()?;
         let args_digest = serde_json::from_str::<Value>(&self.card)
@@ -209,9 +211,8 @@ impl DecisionRecord {
             dedup_key: Some(self.dedup_key.clone()),
             flow_id: self.flow_id.clone(),
             version: self.version,
-            title: title(&self.flow_id, &context),
+            title: title(&self.flow_id),
             prompt: prompt(&self.flow_id, &context),
-            facts: facts(&context),
             context,
             args_digest,
             options: options(self.kind),
@@ -220,24 +221,32 @@ impl DecisionRecord {
     }
 }
 
-/// A stored context: the typed fields of the card's body, as JSON.
+/// A stored context: the typed fields of the card's body, as JSON. `step`
+/// is stored only when known.
 pub fn context_json(context: &DecisionContext) -> Value {
     match context {
         DecisionContext::Reconcile {
             run_id,
             run_admitted_at_ms,
+            step,
             call_key,
             op,
             attempts,
             unknown_reason,
-        } => json!({
-            "run_id": run_id,
-            "run_admitted_at_ms": run_admitted_at_ms,
-            "call_key": call_key,
-            "op": op,
-            "attempts": attempts,
-            "unknown_reason": unknown_reason.as_str(),
-        }),
+        } => {
+            let mut v = json!({
+                "run_id": run_id,
+                "run_admitted_at_ms": run_admitted_at_ms,
+                "call_key": call_key,
+                "op": op,
+                "attempts": attempts,
+                "unknown_reason": unknown_reason.as_str(),
+            });
+            if let Some(step) = step {
+                v["step"] = json!(step);
+            }
+            v
+        }
         DecisionContext::Reenable {
             disabled_at_ms,
             disabled_reason,
@@ -293,11 +302,9 @@ fn unit(reason: DisabledReason) -> &'static str {
     }
 }
 
-fn title(flow_id: &str, context: &DecisionContext) -> String {
-    match context {
-        DecisionContext::Reconcile { .. } => format!("A call of {flow_id} may not have finished"),
-        DecisionContext::Reenable { .. } => format!("{flow_id} was disabled"),
-    }
+/// The card's title, as core's test vectors write it.
+fn title(flow_id: &str) -> String {
+    format!("Decide about {flow_id}")
 }
 
 /// The card's prompt: one readable sentence written from its context.
@@ -326,53 +333,6 @@ pub fn prompt(flow_id: &str, context: &DecisionContext) -> String {
             unit(*disabled_reason),
             window(*window_ms)
         ),
-    }
-}
-
-/// The card's facts beside the flow, version and decision, which core
-/// adds to every decision card itself.
-fn facts(context: &DecisionContext) -> Vec<(String, String)> {
-    let fact = |label: &str, value: String| (label.to_owned(), value);
-    match context {
-        DecisionContext::Reconcile {
-            run_id,
-            run_admitted_at_ms,
-            op,
-            attempts,
-            unknown_reason,
-            ..
-        } => vec![
-            fact("Run", run_id.clone()),
-            fact(
-                "Run admitted",
-                clock(*run_admitted_at_ms, "%Y-%m-%d %H:%M:%S UTC"),
-            ),
-            fact("Call", op.clone()),
-            fact("Sends", attempts.to_string()),
-            fact("Why unknown", unknown_reason.as_str().to_owned()),
-        ],
-        DecisionContext::Reenable {
-            disabled_at_ms,
-            disabled_reason,
-            limit,
-            window_ms,
-            saturated_windows,
-        } => vec![
-            fact(
-                "Disabled at",
-                clock(*disabled_at_ms, "%Y-%m-%d %H:%M:%S UTC"),
-            ),
-            fact("Why disabled", disabled_reason.as_str().to_owned()),
-            fact(
-                "Limit",
-                format!(
-                    "{limit} {} per {} window",
-                    unit(*disabled_reason),
-                    window(*window_ms)
-                ),
-            ),
-            fact("Saturated windows in a row", saturated_windows.to_string()),
-        ],
     }
 }
 
@@ -494,6 +454,7 @@ pub fn refresh_run(tx: &Transaction, run_id: &str, now_ms: i64) -> Result<()> {
         let context = DecisionContext::Reconcile {
             run_id: run_id.to_owned(),
             run_admitted_at_ms: run.admitted_at,
+            step: None,
             call_key: row.idempotency_key.clone(),
             op: basal_host::op_label(&row.kind),
             attempts: row.attempts,

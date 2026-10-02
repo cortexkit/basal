@@ -11,9 +11,7 @@ use std::time::Duration;
 
 use basal_core::decisions::{self, CardState};
 use basal_core::{Clock, Config, Durability, Hooks, NoHooks, RateLimits, RunState};
-use basal_host::core_consent::{
-    CoreConsent, FLOW_DECISION_BODY, FlowDecisionBody, decision_request, flow_decision_body,
-};
+use basal_host::core_consent::{CoreConsent, decision_request};
 use basal_host::core_host::CoreHost;
 use basal_host::routing::{ModuleOpsHost, RoutingHost};
 use basal_host::subc_catalog::SubcCatalog;
@@ -237,12 +235,9 @@ impl Drop for Rig {
     }
 }
 
-fn fact<'a>(request: &'a Value, label: &str) -> &'a str {
-    request["facts"]
-        .as_array()
-        .and_then(|facts| facts.iter().find(|f| f["label"] == label))
-        .and_then(|f| f["value"].as_str())
-        .unwrap_or_else(|| panic!("no fact {label} in {request}"))
+/// A field of a request's typed `flow_decision` body.
+fn body<'a>(request: &'a Value, field: &str) -> &'a Value {
+    &request["flow_decision"][field]
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -272,10 +267,13 @@ fn a_run_in_needs_reconcile_raises_one_card_per_unknown_call_to_the_operator_onl
     assert_eq!(request["dedup_key"], key);
     assert_eq!(request["scope"], json!({"flow_id":FLOW}));
     assert_eq!(request["target"], json!({"kind":"flow","label":FLOW}));
-    // The v1 body core decodes today.
+    // The typed body core writes the card's facts from; basal sends no
+    // facts and no step of its own.
     assert_eq!(
         request["flow_decision"],
-        json!({"flow_id":FLOW,"version":1,"decision":"reconcile","run_id":run,"call_key":call.idempotency_key})
+        json!({"flow_id":FLOW,"version":1,"decision":"reconcile","run_id":run,
+            "run_admitted_at_ms":common::T0,"call_key":call.idempotency_key,"op":"mock.post",
+            "attempts":1,"unknown_reason":"connection_lost"})
     );
     for absent in [
         "session_ref",
@@ -283,6 +281,7 @@ fn a_run_in_needs_reconcile_raises_one_card_per_unknown_call_to_the_operator_onl
         "author",
         "subject",
         "preview",
+        "facts",
     ] {
         assert!(request.get(absent).is_none(), "{absent} in {request}");
     }
@@ -293,19 +292,15 @@ fn a_run_in_needs_reconcile_raises_one_card_per_unknown_call_to_the_operator_onl
              and then the connection closed before a reply came."
         )
     );
-    assert_eq!(fact(request, "Run"), run);
-    assert_eq!(fact(request, "Run admitted"), "2026-05-01 00:00:00 UTC");
-    assert_eq!(fact(request, "Call"), "mock.post");
-    assert_eq!(fact(request, "Sends"), "1");
-    assert_eq!(fact(request, "Why unknown"), "connection_lost");
     assert_eq!(request["args_digest"], hex(&call.args_digest.0));
-    // The typed context the card is built from, the v2 body to come.
+    // The typed context the card is built from, as stored.
     let record = rig.card(&key);
     assert_eq!(
         record.context().unwrap(),
         DecisionContext::Reconcile {
             run_id: run.clone(),
             run_admitted_at_ms: common::T0,
+            step: None,
             call_key: call.idempotency_key.clone(),
             op: "mock.post".into(),
             attempts: 1,
@@ -423,7 +418,7 @@ fn each_unknown_site_records_its_reason_and_the_card_shows_it() {
         assert_eq!(rig.m().rt.unknown_reason(&run, 0).unwrap(), Some(reason));
         let key = decisions::reconcile_key(FLOW, &run, 0);
         let request = &rig.fake.decision_cards(&key)[0].1[0];
-        assert_eq!(fact(request, "Why unknown"), reason.as_str());
+        assert_eq!(body(request, "unknown_reason"), reason.as_str());
     }
 
     // A digest write honours idempotency keys: it is sent again on every
@@ -449,7 +444,11 @@ fn each_unknown_site_records_its_reason_and_the_card_shows_it() {
         .fake
         .decision_cards(&decisions::reconcile_key(FLOW, &run, 0))[0]
         .1[0];
-    assert_eq!(fact(request, "Call"), "prefrontal-core.sink.digest");
+    assert_eq!(body(request, "op"), "prefrontal-core.sink.digest");
+    // `attempts` counts the journal's sends of the call (the first, and
+    // each resend after a restart or a not-applied reconcile); retries
+    // inside one send are not counted.
+    assert_eq!(body(request, "attempts"), 1);
 
     // basal stops after sending and before saving the reply: the restart
     // finds the call sent with nothing recorded.
@@ -609,8 +608,8 @@ fn a_changed_decision_updates_its_card_and_another_unknown_call_gets_its_own() {
     assert_eq!(cards.len(), 1, "one card, updated");
     let requests = &cards[0].1;
     assert_eq!(requests.len(), 2, "raised again under its key");
-    assert_eq!(fact(&requests[1], "Sends"), "2");
-    assert_eq!(fact(&requests[1], "Why unknown"), "reply_timeout");
+    assert_eq!(body(&requests[1], "attempts"), 2);
+    assert_eq!(body(&requests[1], "unknown_reason"), "reply_timeout");
     let card = rig.card(&key);
     assert_eq!((card.revision, card.raised_revision), (2, Some(2)));
     // The answer decides the call as it is now.
@@ -808,7 +807,9 @@ fn an_auto_disabled_flow_raises_one_reenable_card_and_each_option_applies() {
     assert_eq!(request["default"], "keep");
     assert_eq!(
         request["flow_decision"],
-        json!({"flow_id":FLOW,"version":1,"decision":"reenable"})
+        json!({"flow_id":FLOW,"version":1,"decision":"reenable","disabled_at_ms":common::T0,
+            "disabled_reason":"run_limit_saturated","limit":1,"window_ms":60_000,
+            "saturated_windows":1})
     );
     assert_eq!(
         request["prompt"],
@@ -817,10 +818,6 @@ fn an_auto_disabled_flow_raises_one_reenable_card_and_each_option_applies() {
              60-second window in 1 windows in a row."
         )
     );
-    assert_eq!(fact(request, "Disabled at"), "2026-05-01 00:00:00 UTC");
-    assert_eq!(fact(request, "Why disabled"), "run_limit_saturated");
-    assert_eq!(fact(request, "Limit"), "1 runs per 60-second window");
-    assert_eq!(fact(request, "Saturated windows in a row"), "1");
     // The rule's numbers as they were when it tripped, kept with the
     // disable.
     assert_eq!(
@@ -903,22 +900,25 @@ fn an_auto_disabled_flow_raises_one_reenable_card_and_each_option_applies() {
     );
 }
 
+/// The reconcile context of core's v2 reconcile vector.
 fn reconcile_context(run_id: &str, call_key: &str) -> DecisionContext {
     DecisionContext::Reconcile {
         run_id: run_id.into(),
-        run_admitted_at_ms: 1_000,
+        run_admitted_at_ms: 1_780_408_800_000,
+        step: Some("writer/send".into()),
         call_key: call_key.into(),
         op: "prefrontal-core.sink.digest".into(),
-        attempts: 1,
-        unknown_reason: UnknownReason::BasalRestarted,
+        attempts: 2,
+        unknown_reason: UnknownReason::ConnectionLost,
     }
 }
 
+/// The re-enable context of core's v2 re-enable vector.
 fn reenable_context() -> DecisionContext {
     DecisionContext::Reenable {
-        disabled_at_ms: 1_000,
-        disabled_reason: DisabledReason::DispatchLimitSaturated,
-        limit: 600,
+        disabled_at_ms: 1_780_409_100_000,
+        disabled_reason: DisabledReason::RunLimitSaturated,
+        limit: 10,
         window_ms: 60_000,
         saturated_windows: 3,
     }
@@ -934,30 +934,36 @@ fn options(list: &[(&str, &str, bool)]) -> Vec<DecisionOption> {
         .collect()
 }
 
-/// A card with the inputs of core's v1 test vectors: no dedup key, digest
-/// or facts, and core's test title, prompt, options and expiry.
+/// A card with the inputs of core's test vectors: no dedup key or digest,
+/// and core's test title, prompt, option ids and labels, and expiry.
 fn vector_card(context: DecisionContext) -> DecisionCard {
-    let list: &[(&str, &str, bool)] = match context.kind() {
-        DecisionKind::Reconcile => &[
-            ("send_again", "Send again", false),
-            ("continue", "Continue: it ran", false),
-            ("cancel", "Cancel the run", false),
-            ("unresolved", "Leave it unresolved", true),
-        ],
-        DecisionKind::Reenable => &[
-            ("reenable", "Re-enable", false),
-            ("disabled", "Keep disabled", true),
-        ],
+    let (list, prompt): (&[(&str, &str, bool)], &str) = match context.kind() {
+        DecisionKind::Reconcile => (
+            &[
+                ("send_again", "Send again", false),
+                ("continue", "Continue: it ran", false),
+                ("cancel", "Cancel the run", false),
+                ("unresolved", "Leave it unresolved", true),
+            ],
+            "Run 14:00 of flow-x may not have finished: it reached writer/send and lost \
+             track of whether the send went out.",
+        ),
+        DecisionKind::Reenable => (
+            &[
+                ("reenable", "Re-enable", false),
+                ("disabled", "Keep disabled", true),
+            ],
+            "flow-x was turned off because it kept hitting its run limit.",
+        ),
     };
     DecisionCard {
         dedup_key: None,
         flow_id: "flow-x".into(),
-        version: 1,
+        version: 3,
         context,
         title: "Decide about flow-x".into(),
-        prompt: "How should this flow proceed?".into(),
+        prompt: prompt.into(),
         args_digest: None,
-        facts: Vec::new(),
         options: options(list),
         expires_in_ms: 60_000,
     }
@@ -965,27 +971,28 @@ fn vector_card(context: DecisionContext) -> DecisionCard {
 
 const VECTORS: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/vectors/flow-decision-card-v1"
+    "/tests/vectors/flow-decision-card-v2"
 );
 
-/// Core's v1 request vectors, copied from prefrontal tag
-/// `flow-decision-card-v1` (commit 610b1463f) with the SHA-256 its owner
-/// published, and basal's builder producing each byte for byte from the
-/// vector's inputs. The vectors fix the shape; basal's own cards carry its
-/// own title, prompt, labels and expiry, plus `dedup_key`, `args_digest`
-/// and `facts`, which core's decoder accepts.
+/// Core's request vectors, copied from prefrontal tag
+/// `flow-decision-card-v2` (tag object 42071afba356, commit 1ea2a6225) and
+/// checked against the SHA-256 core's owner published; basal's builder
+/// produces each byte for byte from the vector's inputs. The vectors fix
+/// the shape; basal's own cards carry their own title, prompt, option ids,
+/// labels and expiry, plus `dedup_key` and `args_digest`, which core's
+/// decoder accepts.
 #[test]
-fn the_request_builder_reproduces_core_v1_vectors_byte_for_byte() {
+fn the_request_builder_reproduces_core_vectors_byte_for_byte() {
     use sha2::{Digest, Sha256};
     for (file, sha256, card) in [
         (
             "reconcile-request.json",
-            "7582f41e2a7264e04a1dc3faf7e974dbe05332e23d910585962f37623a9aab94",
+            "d03a4ee9e1154ec382acbb55470adff30b0517a9b1208725d4ac8ebd83b897c6",
             vector_card(reconcile_context("run-x", "call-x")),
         ),
         (
             "reenable-request.json",
-            "d3bde1ef76e580cbdbd55905bee63ad70c7aba6756ed08405a46d4ab4225124d",
+            "b98a31398e173a86b90e85d4a97b9c7bab10490c71cfb87f2f7285fa9a2fa0b7",
             vector_card(reenable_context()),
         ),
     ] {
@@ -998,7 +1005,7 @@ fn the_request_builder_reproduces_core_v1_vectors_byte_for_byte() {
         let built = decision_request(&card).unwrap();
         let text = serde_json::to_string_pretty(&built).unwrap() + "\n";
         assert_eq!(text, String::from_utf8(bytes).unwrap(), "{file}");
-        // And the fake core takes it, as core's own test does.
+        // The fake core accepts the built request.
         let fake = Fake::new();
         assert!(
             fake.management("prefrontal-core", "elicitation.request", built)
@@ -1008,45 +1015,15 @@ fn the_request_builder_reproduces_core_v1_vectors_byte_for_byte() {
     }
 }
 
-/// The v2 body, built now and sent once core publishes v2's vectors: the
-/// card's context, typed and required, field for field.
-#[test]
-fn the_v2_body_carries_the_typed_context_field_for_field() {
-    let reconcile = vector_card(reconcile_context("run-x", "call-x"));
-    assert_eq!(
-        flow_decision_body(&reconcile, FlowDecisionBody::V2),
-        json!({"flow_id":"flow-x","version":1,"decision":"reconcile","run_id":"run-x",
-            "run_admitted_at_ms":1000,"call_key":"call-x","op":"prefrontal-core.sink.digest",
-            "attempts":1,"unknown_reason":"basal_restarted"})
-    );
-    let reenable = vector_card(reenable_context());
-    assert_eq!(
-        flow_decision_body(&reenable, FlowDecisionBody::V2),
-        json!({"flow_id":"flow-x","version":1,"decision":"reenable","disabled_at_ms":1000,
-            "disabled_reason":"dispatch_limit_saturated","limit":600,"window_ms":60000,
-            "saturated_windows":3})
-    );
-    // v1 stays on the wire until core's v2 tag: today's core refuses the v2
-    // body's extra keys.
-    assert_eq!(FLOW_DECISION_BODY, FlowDecisionBody::V1);
-    let mut v2 = decision_request(&reconcile).unwrap();
-    v2["flow_decision"] = flow_decision_body(&reconcile, FlowDecisionBody::V2);
-    assert!(matches!(
-        Fake::new().management("prefrontal-core", "elicitation.request", v2),
-        Err(WireError::Refused { .. })
-    ));
-}
-
 #[test]
 fn decision_requests_follow_core_rules_and_the_fake_core_refuses_any_other() {
     let mut good = vector_card(reconcile_context("run-1", "key-1"));
     good.dedup_key = Some("flow_decision:test".into());
     good.args_digest = Some("00".repeat(32));
-    good.facts = vec![("Run".into(), "run-1".into())];
     let sent = decision_request(&good).unwrap();
     assert_eq!(sent["dedup_key"], "flow_decision:test");
     assert_eq!(sent["args_digest"], "00".repeat(32));
-    assert_eq!(sent["facts"], json!([{"label":"Run","value":"run-1"}]));
+    assert!(sent.get("facts").is_none(), "core writes the facts");
     // basal refuses to send a card that breaks core's rules.
     let with = |list: &[(&str, &str, bool)]| DecisionCard {
         options: options(list),
@@ -1077,6 +1054,40 @@ fn decision_requests_follow_core_rules_and_the_fake_core_refuses_any_other() {
             expires_in_ms: 86_400_001,
             ..good.clone()
         },
+        DecisionCard {
+            context: DecisionContext::Reconcile {
+                run_id: "run-1".into(),
+                run_admitted_at_ms: 0,
+                step: None,
+                call_key: "key-1".into(),
+                op: "Mock.Post".into(),
+                attempts: 1,
+                unknown_reason: UnknownReason::ConnectionLost,
+            },
+            ..good.clone()
+        },
+        DecisionCard {
+            context: DecisionContext::Reconcile {
+                run_id: "run-1".into(),
+                run_admitted_at_ms: 0,
+                step: None,
+                call_key: "key-1".into(),
+                op: "mock.post".into(),
+                attempts: 0,
+                unknown_reason: UnknownReason::ConnectionLost,
+            },
+            ..good.clone()
+        },
+        DecisionCard {
+            context: DecisionContext::Reenable {
+                disabled_at_ms: 0,
+                disabled_reason: DisabledReason::RunLimitSaturated,
+                limit: 0,
+                window_ms: 60_000,
+                saturated_windows: 1,
+            },
+            ..good.clone()
+        },
     ] {
         assert!(decision_request(&bad).is_err(), "{bad:?}");
     }
@@ -1103,8 +1114,34 @@ fn decision_requests_follow_core_rules_and_the_fake_core_refuses_any_other() {
         breach(&|v| v["parent_session_ref"] = Value::Null, invalid),
         breach(&|v| v["subject"] = json!({"label":"x"}), invalid),
         breach(&|v| v["flow_install"] = json!({}), invalid),
-        breach(&|v| v["flow_decision"]["attempts"] = json!(1), invalid),
+        // A v1 body, without the typed context, is refused.
+        breach(
+            &|v| {
+                v["flow_decision"] = json!({"flow_id":"flow-x","version":3,
+                    "decision":"reconcile","run_id":"run-1","call_key":"key-1"})
+            },
+            invalid,
+        ),
+        breach(&|v| v["flow_decision"]["unknown"] = json!(true), invalid),
+        breach(
+            &|v| v["flow_decision"]["unknown_reason"] = json!("lost"),
+            invalid,
+        ),
+        breach(&|v| v["flow_decision"]["op"] = json!("post"), invalid),
+        breach(&|v| v["flow_decision"]["attempts"] = json!(0), invalid),
+        breach(
+            &|v| {
+                v["flow_decision"]["decision"] = json!("reenable");
+            },
+            invalid,
+        ),
         breach(&|v| v["flow_decision"]["version"] = json!(0), invalid),
+        breach(
+            &|v| {
+                v.as_object_mut().unwrap().remove("flow_decision");
+            },
+            invalid,
+        ),
         breach(&|v| v["expires_in_ms"] = json!(86_400_001), invalid),
         breach(
             &|v| {

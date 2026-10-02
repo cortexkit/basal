@@ -2333,10 +2333,21 @@ const MODULE_CONTROLS: &[Control] = &[
         )],
         also_restore: NO_EXTRA,
         target: Target::Module("decisions"),
-        test: "the_request_builder_reproduces_core_v1_vectors_byte_for_byte",
+        test: "the_request_builder_reproduces_core_vectors_byte_for_byte",
     },
     Control {
-        label: "decision cards: the v1 request carries a field core's vectors do not",
+        label: "decision cards: basal sends an op core's body check refuses",
+        edits: &[(
+            M_CORE_CONSENT,
+            "op.len() <= 128 && op.split('.').count() >= 2 && op.split('.').all(segment_ok);",
+            "true || op.split('.').all(segment_ok);",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "decision_requests_follow_core_rules_and_the_fake_core_refuses_any_other",
+    },
+    Control {
+        label: "decision cards: the request carries a field core's vectors do not",
         edits: &[(
             M_CORE_CONSENT,
             "\"scope\":{\"flow_id\":card.flow_id},",
@@ -2344,10 +2355,10 @@ const MODULE_CONTROLS: &[Control] = &[
         )],
         also_restore: NO_EXTRA,
         target: Target::Module("decisions"),
-        test: "the_request_builder_reproduces_core_v1_vectors_byte_for_byte",
+        test: "the_request_builder_reproduces_core_vectors_byte_for_byte",
     },
     Control {
-        label: "decision cards: the v2 body leaves out the unknown reason",
+        label: "decision cards: the body leaves out the unknown reason",
         edits: &[(
             M_CORE_CONSENT,
             "            body[\"unknown_reason\"] = json!(unknown_reason.as_str());\n",
@@ -2355,18 +2366,7 @@ const MODULE_CONTROLS: &[Control] = &[
         )],
         also_restore: NO_EXTRA,
         target: Target::Module("decisions"),
-        test: "the_v2_body_carries_the_typed_context_field_for_field",
-    },
-    Control {
-        label: "decision cards: the v2 body goes on the wire before core accepts it",
-        edits: &[(
-            M_CORE_CONSENT,
-            "pub const FLOW_DECISION_BODY: FlowDecisionBody = FlowDecisionBody::V1;",
-            "pub const FLOW_DECISION_BODY: FlowDecisionBody = FlowDecisionBody::V2;",
-        )],
-        also_restore: NO_EXTRA,
-        target: Target::Module("decisions"),
-        test: "the_request_builder_reproduces_core_v1_vectors_byte_for_byte",
+        test: "the_request_builder_reproduces_core_vectors_byte_for_byte",
     },
     Control {
         label: "decision cards: an expiry naming an option is applied as that option",
