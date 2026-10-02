@@ -1350,6 +1350,50 @@ const CORE_OPS: &str = "crates/basal-core/src/ops.rs";
 /// figures) and runs the basal-module test named for it.
 const MODULE_CONTROLS: &[Control] = &[
     Control {
+        label: "flow.list agent sees another agent's flow",
+        edits: &[(
+            M_OPS,
+            "Caller::Agent { agent_id, .. } => Some(agent_id.as_str()),",
+            "Caller::Agent { .. } => None,",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("list_contract"),
+        test: "list_agent_cannot_see_another_agents_flow",
+    },
+    Control {
+        label: "flow.list local caller sees an agent's flow",
+        edits: &[(
+            M_OPS,
+            "Caller::Local => Some(LOCAL_AUTHOR),",
+            "Caller::Local => None,",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("list_contract"),
+        test: "list_local_cannot_see_an_agents_flow",
+    },
+    Control {
+        label: "flow.list invisible requested id appears",
+        edits: &[(
+            M_OPS,
+            "if !self.owns(owner, &f.flow_id)? {",
+            "if p.flow_ids.is_none() && !self.owns(owner, &f.flow_id)? {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("list_contract"),
+        test: "list_invisible_requested_ids_are_absent",
+    },
+    Control {
+        label: "flow.list state diverges from flow.health",
+        edits: &[(
+            M_OPS,
+            "\"state\": flow_state(f.approved_version, f.enabled),",
+            "\"state\": \"enabled\",",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("list_contract"),
+        test: "list_reply_decodes_against_documented_shape_and_health_state",
+    },
+    Control {
         label: "the manifest declares a capability subc-protocol's grammar refuses",
         edits: &[(
             M_MANIFEST,
@@ -1917,7 +1961,11 @@ const MODULE_CONTROLS: &[Control] = &[
     },
     Control {
         label: "health has no as_of",
-        edits: &[(M_OPS, "\"as_of\": as_of,", "\"as_of_ms\": now,")],
+        edits: &[(
+            M_OPS,
+            "\"as_of\": as_of,\n            \"flows\": entries,",
+            "\"as_of_ms\": now,\n            \"flows\": entries,",
+        )],
         also_restore: NO_EXTRA,
         target: Target::Module("health_contract"),
         test: "flow_health_decodes_as_core_decodes_it",
@@ -1966,8 +2014,8 @@ const MODULE_CONTROLS: &[Control] = &[
         label: "health's needs_reconcile is a list of runs, not a boolean",
         edits: &[(
             M_OPS,
-            "\"needs_reconcile\": !f.needs_reconcile.is_empty(),",
-            "\"needs_reconcile\": f.needs_reconcile.clone(),",
+            "\"consecutive_failures\": f.consecutive_failures,\n                \"needs_reconcile\": !f.needs_reconcile.is_empty(),",
+            "\"consecutive_failures\": f.consecutive_failures,\n                \"needs_reconcile\": f.needs_reconcile.clone(),",
         )],
         also_restore: NO_EXTRA,
         target: Target::Module("health_contract"),
