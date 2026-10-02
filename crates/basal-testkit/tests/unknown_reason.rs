@@ -70,7 +70,8 @@ fn a_call_marked_unknown_needs_a_reason_from_the_closed_set() {
         "a reason outside the set"
     );
     for reason in basal_host::UnknownReason::ALL {
-        set("unknown", Some(reason.as_str())).expect(reason.as_str());
+        set("unknown", Some(reason.as_str()))
+            .unwrap_or_else(|e| panic!("{}: {e}", reason.as_str()));
     }
     // Sent again after a not-applied reconcile, the call keeps its last
     // reason until a new one is recorded.
