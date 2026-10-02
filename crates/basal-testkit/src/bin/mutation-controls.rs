@@ -829,6 +829,50 @@ const JOURNAL_CONTROLS: &[Control] = &[
         target: Target::Testkit("journal_kill"),
         test: "killing_the_worker_at_every_boundary_recovers_to_the_uncut_state",
     },
+    Control {
+        label: "unknown reasons: a keyed call out of retries is recorded with its last send's reason",
+        edits: &[(
+            RUNTIME,
+            "                    UnknownReason::RetriesExhausted\n                } else {\n                    last\n",
+            "                    last\n                } else {\n                    last\n",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("journal_unknown"),
+        test: "a_keyed_call_ambiguous_through_its_retries_is_unknown_as_retries_exhausted",
+    },
+    Control {
+        label: "unknown reasons: a call found sent after a restart is recorded as a lost connection",
+        edits: &[(
+            DRIVER,
+            "journal::record_unknown(tx, &run_id, *p, UnknownReason::BasalRestarted)?;",
+            "journal::record_unknown(tx, &run_id, *p, UnknownReason::ConnectionLost)?;",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("journal_unknown"),
+        test: "unknown_unkeyed_mutation_needs_reconcile",
+    },
+    Control {
+        label: "unknown reasons: the migration accepts a store holding unknown calls without a reason",
+        edits: &[(
+            SCHEMA,
+            "    SELECT COUNT(*) FROM journal WHERE dispatch = 'unknown';",
+            "    SELECT 0;",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("unknown_reason"),
+        test: "the_migration_refuses_a_store_that_already_holds_an_unknown_call",
+    },
+    Control {
+        label: "unknown reasons: the schema lets a call be unknown without a reason",
+        edits: &[(
+            SCHEMA,
+            "    CHECK (dispatch <> 'unknown' OR unknown_reason IS NOT NULL);",
+            ";",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("unknown_reason"),
+        test: "a_call_marked_unknown_needs_a_reason_from_the_closed_set",
+    },
 ];
 
 const MANIFEST: &str = "crates/basal-core/src/manifest.rs";
@@ -2059,8 +2103,8 @@ const MODULE_CONTROLS: &[Control] = &[
         label: "the unconfigured host's refusal is not proven unsent",
         edits: &[(
             M_UNCONFIGURED,
-            "proven_unsent: true,",
-            "proven_unsent: false,",
+            "sent: Sent::Never,",
+            "sent: Sent::Maybe(basal_host::UnknownReason::ConnectionLost),",
         )],
         also_restore: NO_EXTRA,
         target: Target::Module("engine"),
@@ -2071,8 +2115,8 @@ const MODULE_CONTROLS: &[Control] = &[
         label: "decision cards: every raise goes out under a fresh dedup key, so a changed card is a second card",
         edits: &[(
             M_CORE_CONSENT,
-            "\"dedup_key\":card.dedup_key,",
-            "\"dedup_key\":format!(\"{}:{}\", card.dedup_key, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)),",
+            "request[\"dedup_key\"] = json!(key);",
+            "request[\"dedup_key\"] = json!(format!(\"{key}:{}\", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)));",
         )],
         also_restore: NO_EXTRA,
         target: Target::Module("decisions"),
@@ -2082,8 +2126,8 @@ const MODULE_CONTROLS: &[Control] = &[
         label: "decision cards: every raise goes out under a fresh dedup key, so a re-raise after a crash is a second card",
         edits: &[(
             M_CORE_CONSENT,
-            "\"dedup_key\":card.dedup_key,",
-            "\"dedup_key\":format!(\"{}:{}\", card.dedup_key, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)),",
+            "request[\"dedup_key\"] = json!(key);",
+            "request[\"dedup_key\"] = json!(format!(\"{key}:{}\", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)));",
         )],
         also_restore: NO_EXTRA,
         target: Target::Module("decisions"),
@@ -2242,6 +2286,105 @@ const MODULE_CONTROLS: &[Control] = &[
         also_restore: NO_EXTRA,
         target: Target::Module("decisions"),
         test: "decision_requests_follow_core_rules_and_the_fake_core_refuses_any_other",
+    },
+    Control {
+        label: "decision cards: the v1 request carries a field core's vectors do not",
+        edits: &[(
+            M_CORE_CONSENT,
+            "\"scope\":{\"flow_id\":card.flow_id},",
+            "\"scope\":{\"flow_id\":card.flow_id,\"version\":card.version},",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "the_request_builder_reproduces_core_v1_vectors_byte_for_byte",
+    },
+    Control {
+        label: "decision cards: the v2 body leaves out the unknown reason",
+        edits: &[(
+            M_CORE_CONSENT,
+            "            body[\"unknown_reason\"] = json!(unknown_reason.as_str());\n",
+            "            let _ = unknown_reason;\n",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "the_v2_body_carries_the_typed_context_field_for_field",
+    },
+    Control {
+        label: "decision cards: the v2 body goes on the wire before core accepts it",
+        edits: &[(
+            M_CORE_CONSENT,
+            "pub const FLOW_DECISION_BODY: FlowDecisionBody = FlowDecisionBody::V1;",
+            "pub const FLOW_DECISION_BODY: FlowDecisionBody = FlowDecisionBody::V2;",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "the_request_builder_reproduces_core_v1_vectors_byte_for_byte",
+    },
+    Control {
+        label: "decision cards: an expiry naming an option is applied as that option",
+        edits: &[(
+            M_CORE_CONSENT,
+            "(Some(\"expired\"), _) => None,",
+            "(Some(\"expired\"), choice) => choice.map(str::to_owned),",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "an_expiry_is_the_decline_whatever_choice_it_names",
+    },
+    Control {
+        label: "decision cards: a run-limit auto-disable is recorded as a dispatch-limit one",
+        edits: &[(
+            RATE,
+            "Kind::Run => basal_host::DisabledReason::RunLimitSaturated,",
+            "Kind::Run => basal_host::DisabledReason::DispatchLimitSaturated,",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "an_auto_disabled_flow_raises_one_reenable_card_and_each_option_applies",
+    },
+    Control {
+        label: "decision cards: the re-enable card records the other limit than the one that tripped",
+        edits: &[(
+            RATE,
+            "            limit: max,\n",
+            "            limit: limits.max_dispatches,\n",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "an_auto_disabled_flow_raises_one_reenable_card_and_each_option_applies",
+    },
+    Control {
+        label: "decision cards: the prompt misstates why the outcome is unknown",
+        edits: &[(
+            M_DECISIONS,
+            "UnknownReason::BasalRestarted => \"basal restarted before the reply was saved\",",
+            "UnknownReason::BasalRestarted => \"the connection closed before a reply came\",",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "each_unknown_site_records_its_reason_and_the_card_shows_it",
+    },
+    Control {
+        label: "unknown reasons: a timed-out reply is recorded as a lost connection",
+        edits: &[(
+            "crates/basal-host/src/transport.rs",
+            "Self::TimedOut(_) => Some(UnknownReason::ReplyTimeout),",
+            "Self::TimedOut(_) => Some(UnknownReason::ConnectionLost),",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "each_unknown_site_records_its_reason_and_the_card_shows_it",
+    },
+    Control {
+        label: "unknown reasons: an unreadable reply is recorded as a lost connection",
+        edits: &[(
+            "crates/basal-host/src/transport.rs",
+            "Self::Unreadable(_) => Some(UnknownReason::ReplyUnreadable),",
+            "Self::Unreadable(_) => Some(UnknownReason::ConnectionLost),",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "each_unknown_site_records_its_reason_and_the_card_shows_it",
     },
 ];
 
@@ -2948,6 +3091,28 @@ const BROCA_CONTROLS: &[Control] = &[
         also_restore: NO_EXTRA,
         target: Target::Module("e2e"),
         test: "a_broca_llm_suspends_survives_module_kill_and_settles_after_restart",
+    },
+    Control {
+        label: "unknown reasons: the host's reported reason is not recorded",
+        edits: &[(
+            JOURNAL,
+            "        params![run_id, p, reason.as_str()],",
+            "        params![run_id, p, { let _ = reason; \"connection_lost\" }],",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("broca_reservations"),
+        test: "an_unknown_broca_run_moves_the_run_to_needs_reconcile_naming_it",
+    },
+    Control {
+        label: "unknown reasons: Broca's unknown_run is reported as a lost connection",
+        edits: &[(
+            BROCA,
+            "reason: UnknownReason::ProviderLostRun,",
+            "reason: UnknownReason::ConnectionLost,",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("broca_reservations"),
+        test: "an_unknown_broca_run_moves_the_run_to_needs_reconcile_naming_it",
     },
 ];
 
@@ -4030,5 +4195,38 @@ const HOST_CONTROLS: &[Control] = &[
         also_restore: NO_EXTRA,
         target: Target::Module("hosts"),
         test: "routing_host_runs_install_decision_facts_ops_and_sinks_end_to_end",
+    },
+    Control {
+        label: "unknown reasons: a timeout is not told from a closed connection",
+        edits: &[(
+            "crates/basal-host/src/transport.rs",
+            "CallError::OutcomeUnknown(e) if e.to_string().contains(SUBC_REPLY_TIMEOUT) => {",
+            "CallError::OutcomeUnknown(e) if false && e.to_string().contains(SUBC_REPLY_TIMEOUT) => {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::HostLib,
+        test: "every_call_error_variant_maps_to_never_sent_or_one_unknown_reason",
+    },
+    Control {
+        label: "unknown reasons: capability resolver errors count as maybe sent",
+        edits: &[(
+            "crates/basal-host/src/transport.rs",
+            "| CallError::InvalidCapabilityIdentifier { .. }) => WireError::NeverSent(e.to_string()),",
+            "| CallError::InvalidCapabilityIdentifier { .. }) => WireError::Unknown(e.to_string()),",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::HostLib,
+        test: "every_call_error_variant_maps_to_never_sent_or_one_unknown_reason",
+    },
+    Control {
+        label: "unknown reasons: core's unrecognised reply is recorded as a lost connection",
+        edits: &[(
+            "crates/basal-host/src/core_host.rs",
+            "Err(WireError::Unreadable(\"unrecognised core reply\".into()))",
+            "Err(WireError::Unknown(\"unrecognised core reply\".into()))",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "closed_sink_dispositions_and_unknown_facts_survive",
     },
 ];
