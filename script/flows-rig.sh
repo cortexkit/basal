@@ -90,7 +90,7 @@ say() { printf '%s\n' "$*"; }
 die() { printf 'flows-rig: %s\n' "$*" >&2; exit 1; }
 
 usage() {
-  sed -n '12,26p' "$0" | sed 's/^# \{0,1\}//' >&2
+  awk '/^# Usage:/ { on = 1 } /^set -eu/ { exit } on' "$0" | sed 's/^# \{0,1\}//' >&2
   exit 2
 }
 
