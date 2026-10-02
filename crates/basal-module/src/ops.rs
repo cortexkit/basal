@@ -592,7 +592,16 @@ impl Module {
                 }),
                 None => Value::Null,
             };
-            let state = if f.enabled { "enabled" } else { "disabled" };
+            // The closed state set: `unapproved` while no version is
+            // approved (its card pending or declined), whatever the flow
+            // row's own switch says, since nothing can run; otherwise
+            // `enabled` or `disabled`. Core reads any state but `enabled`
+            // as unhealthy, so a flow nobody approved never looks healthy.
+            let state = match (f.approved_version, f.enabled) {
+                (None, _) => "unapproved",
+                (Some(_), true) => "enabled",
+                (Some(_), false) => "disabled",
+            };
             entries.push(json!({
                 "flow_id": f.flow_id,
                 "state": state,

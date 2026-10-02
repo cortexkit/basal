@@ -1995,12 +1995,23 @@ const MODULE_CONTROLS: &[Control] = &[
         label: "health's state is outside the contract's enum",
         edits: &[(
             M_OPS,
-            "let state = if f.enabled { \"enabled\" } else { \"disabled\" };",
-            "let state = if f.enabled { \"active\" } else { \"disabled\" };",
+            "(Some(_), true) => \"enabled\",",
+            "(Some(_), true) => \"active\",",
         )],
         also_restore: NO_EXTRA,
         target: Target::Module("health_contract"),
         test: "flow_health_decodes_as_core_decodes_it",
+    },
+    Control {
+        label: "health reports a flow nobody approved by its enabled switch",
+        edits: &[(
+            M_OPS,
+            "(None, _) => \"unapproved\",",
+            "(None, _) => if f.enabled { \"enabled\" } else { \"disabled\" },",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("ops"),
+        test: "health_lists_a_flow_with_no_approved_version_as_unapproved",
     },
     Control {
         label: "health does not say who disabled a flow",

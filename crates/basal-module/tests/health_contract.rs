@@ -11,7 +11,9 @@ mod common;
 use basal_core::Actor;
 use basal_host::mock::Fault;
 use basal_module::caller::Caller;
-use common::{Fixture, Options, T0, admit, agent, events_manifest, fixture, install_approved};
+use common::{
+    Fixture, Options, T0, admit, agent, events_manifest, fixture, install, install_approved,
+};
 use serde::{Deserialize, Deserializer};
 use serde_json::{Value, json};
 
@@ -42,6 +44,8 @@ struct Reply {
 enum State {
     Enabled,
     Disabled,
+    /// No version approved yet: the card is pending or was declined.
+    Unapproved,
     Shadow,
 }
 
@@ -112,6 +116,8 @@ fn flow_health_decodes_as_core_decodes_it() {
     let auto = install_approved(&f, &synapse, "return 1;", &events_manifest("flow-auto"));
     install_approved(&f, &synapse, "return 1;", &events_manifest("flow-quiet"));
     let waiting = install_approved(&f, &synapse, "return 1;", &events_manifest("flow-waiting"));
+    // Installed, its card still open: nothing approved.
+    install(&f, &synapse, "return 1;", &events_manifest("flow-pending"));
 
     admit(&f, &ok, "ok-1");
     admit(&f, &failing, "f-1");
@@ -140,7 +146,7 @@ fn flow_health_decodes_as_core_decodes_it() {
         let raw = health(&f, &Caller::Core, params);
         let reply = decode(&raw);
         assert_eq!(reply.as_of.0.as_millisecond(), T0 + 5_000);
-        assert_eq!(reply.flows.len(), 6);
+        assert_eq!(reply.flows.len(), 7);
 
         let e = entry(&reply, "flow-ok");
         assert_eq!(e.state, State::Enabled);
@@ -176,6 +182,9 @@ fn flow_health_decodes_as_core_decodes_it() {
 
         let e = entry(&reply, "flow-waiting");
         assert_eq!(e.oldest_overdue_age_ms, 5_000);
+
+        let e = entry(&reply, "flow-pending");
+        assert_eq!(e.state, State::Unapproved, "no version is approved");
 
         // Every contract field is present on every entry, nullable ones
         // included: removing one makes the reply undecodable.

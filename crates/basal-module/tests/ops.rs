@@ -526,6 +526,45 @@ fn health_reports_flows_runs_and_the_module() {
     assert_eq!(own["disabled"]["reason"], "disabled by request");
 }
 
+/// A flow no one approved is listed as `unapproved`, never `enabled`: core
+/// decides from `state` whether a flow may hold a claim.
+#[test]
+fn health_lists_a_flow_with_no_approved_version_as_unapproved() {
+    let f = fixture("ops-health-unapproved", Options::default());
+    let owner = agent(OWNER);
+    let state = |f: &Fixture| {
+        let h = call(f, &Caller::Operator, "flow.health", Value::Null).expect("health");
+        h["flows"]
+            .as_array()
+            .and_then(|a| a.iter().find(|x| x["flow_id"] == FLOW).cloned())
+            .expect("a flow whose card is open is still listed")
+    };
+    let reply = install(&f, &owner, SCRIPT, &events_manifest(FLOW));
+    let pending = state(&f);
+    assert_eq!(pending["state"], "unapproved", "card pending: {pending:#}");
+    assert!(pending["approved_version"].is_null());
+    assert!(pending["disabled"].is_null());
+
+    let card_id = reply["card_id"].as_str().expect("card").to_owned();
+    assert!(f.consent.decide(&card_id, CardDecision::Reject, "operator"));
+    let declined = state(&f);
+    assert_eq!(
+        declined["state"], "unapproved",
+        "card declined: {declined:#}"
+    );
+    assert!(declined["approved_version"].is_null());
+
+    let second = install(&f, &owner, SCRIPT, &v2());
+    let second_card = second["card_id"].as_str().expect("card").to_owned();
+    assert!(
+        f.consent
+            .decide(&second_card, CardDecision::Approve, "operator")
+    );
+    let approved = state(&f);
+    assert_eq!(approved["state"], "enabled");
+    assert_eq!(approved["approved_version"], 2);
+}
+
 #[test]
 fn reconcile_resolves_an_unknown_call_for_the_operator() {
     let f = fixture("ops-reconcile", Options::default());

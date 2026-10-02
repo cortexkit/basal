@@ -510,6 +510,37 @@ async fn register_agent(
         true,
         json!({ "scope_ref": scope_ref, "scope_epoch": epoch }),
     );
+    // Which caller basal sees on each kind of route, read from flow.health's
+    // refusal: a local caller is told the op needs the attested operator
+    // (`operator_attestation_required`), an agent that it is not permitted
+    // (`not_permitted`). A real harness never handles a scope ref, so the
+    // plain route bound with the head's own harness and session is the one
+    // production would use, if the daemon stamped it with the head's scope.
+    let plain = rig
+        .client
+        .call(BASAL, &identity, "flow.health", Value::Null)
+        .await;
+    println!(
+        "  plain route with the head's bind identity: {}",
+        evidence(&plain)
+    );
+    case.record("plain_route_with_head_identity", evidence(&plain));
+    let selector = ScopeSelector {
+        owner: Principal::Reserved {
+            module_id: CORE.into(),
+        },
+        scope_ref: scope_ref.clone(),
+        scope_epoch: Some(epoch),
+    };
+    let scoped = rig
+        .client
+        .call_scoped(BASAL, &identity, &selector, "flow.health", Value::Null)
+        .await;
+    case.check(
+        "basal sees the route opened under the head's scope as an agent",
+        code(&scoped) == Some("not_permitted"),
+        evidence(&scoped),
+    );
     // basal checks a manifest's agent names against core's `agent.list` at
     // install. The agent's entry is recorded so its shape can be compared
     // with the entry basal's fake core (`tests/wire/mod.rs`) answers.
@@ -533,13 +564,7 @@ async fn register_agent(
         id,
         session,
         identity,
-        scope: ScopeSelector {
-            owner: Principal::Reserved {
-                module_id: CORE.into(),
-            },
-            scope_ref,
-            scope_epoch: Some(epoch),
-        },
+        scope: selector,
     })
 }
 
@@ -566,6 +591,14 @@ async fn install_and_answer(
     };
     case.record("card", card.clone());
     check_rendered(case, &card, flow);
+    let pending = rig.health(&flow.id).await;
+    case.check(
+        "while its card is open, flow.health lists the flow as unapproved",
+        pending
+            .as_ref()
+            .is_some_and(|e| e["state"] == "unapproved" && e["approved_version"].is_null()),
+        pending.unwrap_or(Value::Null),
+    );
     let Some(choice_id) = option(&card, choice) else {
         case.check(
             &format!("the card offers '{choice}'"),
@@ -655,14 +688,11 @@ async fn declined_install(rig: &Rig, flow: &Flow) -> Case {
             json!(rig.basal.card_state(&flow.id, flow.version).ok()),
         );
         let entry = rig.health(&flow.id).await;
-        // basal's flow row reports `state: enabled` from the install on, with
-        // no approved version; what keeps it from running is that no version
-        // is approved, so that is what is checked here.
         case.check(
-            "basal has no approved version of the declined flow",
+            "flow.health lists the declined flow as unapproved, with no approved version",
             entry
                 .as_ref()
-                .is_none_or(|e| e["approved_version"].is_null()),
+                .is_some_and(|e| e["state"] == "unapproved" && e["approved_version"].is_null()),
             entry.clone().unwrap_or(Value::Null),
         );
         case.record("health_after_decline", entry.unwrap_or(Value::Null));
