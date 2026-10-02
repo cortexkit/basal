@@ -2281,11 +2281,11 @@ const MODULE_CONTROLS: &[Control] = &[
         edits: &[(
             M_CORE_CONSENT,
             "\"default\":default,",
-            "\"default\":card.options[card.options.len() - 1].id,",
+            "\"default\":card.options[0].id,",
         )],
         also_restore: NO_EXTRA,
         target: Target::Module("decisions"),
-        test: "decision_requests_follow_core_rules_and_the_fake_core_refuses_any_other",
+        test: "the_request_builder_reproduces_core_v1_vectors_byte_for_byte",
     },
     Control {
         label: "decision cards: the v1 request carries a field core's vectors do not",
@@ -4205,7 +4205,7 @@ const HOST_CONTROLS: &[Control] = &[
         )],
         also_restore: NO_EXTRA,
         target: Target::HostLib,
-        test: "every_call_error_variant_maps_to_never_sent_or_one_unknown_reason",
+        test: "transport::tests::every_call_error_variant_maps_to_never_sent_or_one_unknown_reason",
     },
     Control {
         label: "unknown reasons: capability resolver errors count as maybe sent",
@@ -4216,7 +4216,7 @@ const HOST_CONTROLS: &[Control] = &[
         )],
         also_restore: NO_EXTRA,
         target: Target::HostLib,
-        test: "every_call_error_variant_maps_to_never_sent_or_one_unknown_reason",
+        test: "transport::tests::every_call_error_variant_maps_to_never_sent_or_one_unknown_reason",
     },
     Control {
         label: "unknown reasons: core's unrecognised reply is recorded as a lost connection",
