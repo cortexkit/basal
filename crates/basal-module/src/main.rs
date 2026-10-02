@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! ck-basal --manifest        print the subc manifest as JSON and exit
+//! ck-basal --version         print the version and build revision and exit
 //! ck-basal --subc <file>     serve (how the supervisor starts it)
 //! ```
 //!
@@ -14,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use basal_core::{Config, Durability, NoHooks};
 use basal_module::dryrun::DryRunConfig;
 use basal_module::engine::EngineConfig;
-use basal_module::manifest::manifest;
+use basal_module::manifest::{manifest, version_line};
 use basal_module::module::{Hosts, ModuleConfig};
 use basal_module::pool::PoolConfig;
 use basal_module::serve::BasalHandler;
@@ -36,9 +37,15 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        [flag] if flag == "--version" => {
+            println!("{}", version_line());
+            ExitCode::SUCCESS
+        }
         _ if serving => serve(),
         _ => {
-            eprintln!("usage: ck-basal --manifest | ck-basal --subc <connection file>");
+            eprintln!(
+                "usage: ck-basal --manifest | ck-basal --version | ck-basal --subc <connection file>"
+            );
             ExitCode::from(64)
         }
     }

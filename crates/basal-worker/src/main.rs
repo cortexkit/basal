@@ -1,8 +1,9 @@
 //! Entry point for `ck-basal-worker`.
 //!
 //! Started by basal with no arguments, the worker confines itself and then
-//! serves frames on stdin and stdout. Logs go to stderr. The only other mode
-//! is `--confinement-probe`, which reports what the sandbox denies.
+//! serves frames on stdin and stdout. Logs go to stderr. The other modes are
+//! `--confinement-probe`, which reports what the sandbox denies, and
+//! `--version`, which prints the version and the build revision.
 
 use std::io::{self, BufWriter};
 use std::process::ExitCode;
@@ -14,6 +15,19 @@ fn main() -> ExitCode {
     match args.first().map(String::as_str) {
         None => {}
         Some("--confinement-probe") => return ExitCode::from(probe::run(&args[1..])),
+        Some("--version") if args.len() == 1 => {
+            println!(
+                "ck-basal-worker {} ({}{})",
+                env!("CARGO_PKG_VERSION"),
+                env!("BASAL_BUILD_GIT_SHA"),
+                if env!("BASAL_BUILD_GIT_DIRTY") == "true" {
+                    ", dirty"
+                } else {
+                    ""
+                }
+            );
+            return ExitCode::SUCCESS;
+        }
         Some(other) => {
             eprintln!("ck-basal-worker: unknown argument {other}");
             return ExitCode::from(64);

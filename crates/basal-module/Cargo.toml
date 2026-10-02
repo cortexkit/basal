@@ -42,6 +42,9 @@ subc-protocol.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
+[build-dependencies]
+sha2.workspace = true
+
 [dev-dependencies]
 basal-testkit.workspace = true
 sha2.workspace = true

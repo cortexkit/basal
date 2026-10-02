@@ -4,7 +4,8 @@
 use serde_json::json;
 use subc_protocol::PROTOCOL_VERSION;
 use subc_protocol::manifest::{
-    Concurrency, ManagementOperation, ManagementOperationKind, ModuleManifest, ProviderRole,
+    BuildGitShaSource, Concurrency, GitTreeState, ManagementOperation, ManagementOperationKind,
+    ManifestProvenance, ModuleManifest, ProviderRole, build_provenance_from_source,
 };
 
 /// The id the daemon serves basal under. subc stamps a reserved module's
@@ -86,8 +87,47 @@ pub fn manifest() -> ModuleManifest {
         // basal declares no self-signals: its effects are its flows', and
         // those are reported through flow.health.
         .self_signals(None)
-        // Build provenance waits for the release script to inject it; absent
-        // is the honest value until then.
-        .provenance(None)
+        .provenance(Some(build_provenance()))
         .build()
+}
+
+/// The commit this binary was built from, as `build.rs` embedded it.
+pub const BUILD_GIT_SHA: &str = env!("BASAL_BUILD_GIT_SHA");
+/// Whether that commit's tree had uncommitted changes. Anything but an
+/// explicit clean build counts as dirty.
+pub const BUILD_GIT_DIRTY: bool = matches!(env!("BASAL_BUILD_GIT_DIRTY").as_bytes(), b"true");
+
+/// The build's revision for the manifest. `script/stage.sh` builds from a
+/// clean tree with the commit set, so a staged binary declares it; any other
+/// build (cargo test, the rig without a revision) declares that it never
+/// derived one, and a dirty build declares none, which is subc-protocol's
+/// rule for a tree the commit does not describe.
+pub fn build_provenance() -> ManifestProvenance {
+    let source = if BUILD_GIT_SHA == "unknown" {
+        BuildGitShaSource::NeverDerived
+    } else {
+        BuildGitShaSource::Git {
+            revision: BUILD_GIT_SHA,
+            tree_state: if BUILD_GIT_DIRTY {
+                GitTreeState::Dirty
+            } else {
+                GitTreeState::Clean
+            },
+        }
+    };
+    let lock_digest = Some(env!("BASAL_BUILD_LOCK_DIGEST")).filter(|d| *d != "unknown");
+    // The launch nonce's source is left unset: subc-client-rs fills it in at
+    // HELLO, from the nonce it actually read.
+    build_provenance_from_source(source, lock_digest, None)
+        .expect("build.rs embeds only canonical hex digests or unknown")
+}
+
+/// `ck-basal --version`: the crate version and the embedded build revision.
+pub fn version_line() -> String {
+    format!(
+        "ck-basal {} ({}{})",
+        env!("CARGO_PKG_VERSION"),
+        BUILD_GIT_SHA,
+        if BUILD_GIT_DIRTY { ", dirty" } else { "" }
+    )
 }

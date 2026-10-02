@@ -7,7 +7,7 @@
 use std::collections::BTreeSet;
 use std::process::Command;
 
-use basal_module::manifest::{MODULE_ID, OPERATIONS};
+use basal_module::manifest::{BUILD_GIT_DIRTY, BUILD_GIT_SHA, MODULE_ID, OPERATIONS};
 use serde_json::Value;
 use subc_protocol::PROTOCOL_VERSION;
 use subc_protocol::manifest::{
@@ -90,8 +90,47 @@ fn the_built_binary_prints_a_manifest_subc_protocol_accepts() {
 }
 
 #[test]
-fn anything_but_the_manifest_flag_or_a_subc_connection_is_refused() {
-    for args in [vec![], vec!["--help"], vec!["serve"]] {
+fn the_manifest_and_version_declare_the_embedded_build_revision() {
+    let output = Command::new(env!("CARGO_BIN_EXE_ck-basal"))
+        .arg("--manifest")
+        .output()
+        .expect("run ck-basal --manifest");
+    let manifest: ModuleManifest = serde_json::from_slice(&output.stdout).expect("manifest");
+    let provenance = manifest
+        .provenance
+        .expect("the manifest declares build provenance");
+    // A revision is declared only for a clean build that was told its commit
+    // (script/stage.sh does both); every other build says it never derived one.
+    let declared = (BUILD_GIT_SHA != "unknown" && !BUILD_GIT_DIRTY).then_some(BUILD_GIT_SHA);
+    assert_eq!(provenance.build_git_sha.as_deref(), declared);
+    assert_eq!(
+        provenance.build_git_sha_absence_reason.is_some(),
+        declared.is_none()
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_ck-basal"))
+        .arg("--version")
+        .output()
+        .expect("run ck-basal --version");
+    assert!(output.status.success());
+    let line = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        line.starts_with(&format!(
+            "ck-basal {} ({BUILD_GIT_SHA}",
+            env!("CARGO_PKG_VERSION")
+        )),
+        "{line}"
+    );
+}
+
+#[test]
+fn anything_but_the_manifest_or_version_flag_or_a_subc_connection_is_refused() {
+    for args in [
+        vec![],
+        vec!["--help"],
+        vec!["serve"],
+        vec!["--version", "x"],
+    ] {
         let output = Command::new(env!("CARGO_BIN_EXE_ck-basal"))
             .args(&args)
             .output()
