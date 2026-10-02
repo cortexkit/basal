@@ -36,7 +36,9 @@ BINARIES="ck-basal ck-basal-worker"
 control_of() {
   case "$1" in
     ck-basal) printf '%s\n' 'flow.install' ;;
-    ck-basal-worker) printf '%s\n' '--confinement-probe' ;;
+    # Not a flag name: a short literal the binary only compares against can
+    # be compiled into integer comparisons and never appear in strings.
+    ck-basal-worker) printf '%s\n' 'refusing to run unconfined' ;;
   esac
 }
 # The rig's kill switch reads this variable; only a rig-kill-hook build
