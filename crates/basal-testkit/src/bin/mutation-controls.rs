@@ -1344,6 +1344,8 @@ const M_DRYRUN: &str = "crates/basal-module/src/dryrun.rs";
 const M_OPS: &str = "crates/basal-module/src/ops.rs";
 const M_UNCONFIGURED: &str = "crates/basal-module/src/unconfigured.rs";
 const CORE_OPS: &str = "crates/basal-core/src/ops.rs";
+const M_DECISIONS: &str = "crates/basal-core/src/decisions.rs";
+const M_RECONCILE: &str = "crates/basal-core/src/reconcile.rs";
 
 /// The module shell: each control disables one mechanism in basal-module
 /// (or in a basal-core function only the module calls, such as the health
@@ -2063,6 +2065,183 @@ const MODULE_CONTROLS: &[Control] = &[
         also_restore: NO_EXTRA,
         target: Target::Module("engine"),
         test: "the_unconfigured_host_refuses_every_dispatch_as_never_sent",
+    },
+    // Operator decision cards (`docs/findings/decision-cards.md`).
+    Control {
+        label: "decision cards: every raise goes out under a fresh dedup key, so a changed card is a second card",
+        edits: &[(
+            M_CORE_CONSENT,
+            "\"dedup_key\":card.dedup_key,",
+            "\"dedup_key\":format!(\"{}:{}\", card.dedup_key, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)),",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "a_changed_decision_updates_its_card_and_another_unknown_call_gets_its_own",
+    },
+    Control {
+        label: "decision cards: every raise goes out under a fresh dedup key, so a re-raise after a crash is a second card",
+        edits: &[(
+            M_CORE_CONSENT,
+            "\"dedup_key\":card.dedup_key,",
+            "\"dedup_key\":format!(\"{}:{}\", card.dedup_key, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)),",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "a_crash_between_the_intent_and_core_accepting_still_shows_exactly_one_card",
+    },
+    Control {
+        label: "decision cards: a decision already answered for this send of the call is written again",
+        edits: &[(
+            M_DECISIONS,
+            "        if decided {",
+            "        if decided && false {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "each_reconcile_option_and_the_default_on_expiry_apply_through_the_journaled_path",
+    },
+    Control {
+        label: "decision cards: a changed decision is not raised again under its key",
+        edits: &[(
+            M_DECISIONS,
+            "card = ?3, revision = revision + 1 \\",
+            "card = ?3, revision = revision \\",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "a_changed_decision_updates_its_card_and_another_unknown_call_gets_its_own",
+    },
+    Control {
+        label: "decision cards: an answer to a decision settled another way is applied instead of recorded stale",
+        edits: &[(
+            M_DECISIONS,
+            "Some(_) if !stands(tx, &card)? => {",
+            "Some(_) if false && !stands(tx, &card)? => {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "an_answer_after_the_decision_was_settled_another_way_is_stale",
+    },
+    Control {
+        label: "decision cards: an answer delivered twice is applied twice",
+        edits: &[(
+            M_DECISIONS,
+            "if card.state != CardState::Open {",
+            "if false && card.state != CardState::Open {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "a_duplicate_answer_changes_nothing",
+    },
+    Control {
+        label: "decision cards: the audit row of a resolution answered on a card omits the elicitation id",
+        edits: &[(
+            M_RECONCILE,
+            "            Some(position),\n            detail,\n            elicitation_id,\n        )",
+            "            Some(position),\n            detail,\n            elicitation_id.filter(|_| false),\n        )",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "each_reconcile_option_and_the_default_on_expiry_apply_through_the_journaled_path",
+    },
+    Control {
+        label: "decision cards: a card whose raise failed is recorded as raised, so the intent is lost",
+        edits: &[(
+            M_ENGINE,
+            "                Err(e) => {\n                    tracing::warn!(target: \"consent\", key = %record.dedup_key",
+            "                Err(e) => {\n                    inner.rt.decision_raised(record.seq, record.revision, \"lost\")?;\n                    tracing::warn!(target: \"consent\", key = %record.dedup_key",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "a_crash_between_the_intent_and_core_accepting_still_shows_exactly_one_card",
+    },
+    Control {
+        label: "decision cards: a page is acknowledged although applying its answer failed",
+        edits: &[(
+            M_CORE_CONSENT,
+            "if let Err(e) = sink.answer(&answer) {",
+            "if let Some(e) = sink.answer(&answer).err().filter(|_| false) {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "a_crash_between_receiving_an_answer_and_applying_it_applies_it_exactly_once",
+    },
+    Control {
+        label: "decision cards: 'It ran' releases an invented null result instead of reconciled_as_applied",
+        edits: &[(
+            M_DECISIONS,
+            "APPLIED => Resolution::ReconciledAsApplied,",
+            "APPLIED => Resolution::ObservedResult(basal_host::HostOutcome::fulfilled(basal_proto::JsonText::null())),",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "each_reconcile_option_and_the_default_on_expiry_apply_through_the_journaled_path",
+    },
+    Control {
+        label: "decision cards: the reconciled_as_applied rejection depends on when it was produced",
+        edits: &[(
+            M_RECONCILE,
+            "\"the operator reconciled this call as applied; its result was not observed\",",
+            "&format!(\"the operator reconciled this call as applied at {}\", crate::store::now_ms()),",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "reconciled_as_applied_is_journaled_and_replays_the_same_rejection",
+    },
+    Control {
+        label: "decision cards: an expired card applies an action instead of its default",
+        edits: &[(
+            M_DECISIONS,
+            "let state = match answer.choice.as_deref() {",
+            "let state = match answer.choice.as_deref().or(Some(APPLIED)) {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "each_reconcile_option_and_the_default_on_expiry_apply_through_the_journaled_path",
+    },
+    Control {
+        label: "decision cards: a re-enable answer does not enable the flow",
+        edits: &[(
+            M_DECISIONS,
+            "install::enable(tx, &card.flow_id, now_ms)",
+            "install::enable(tx, \"\", now_ms)",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "an_auto_disabled_flow_raises_one_reenable_card_and_each_option_applies",
+    },
+    Control {
+        label: "decision cards: an auto-disable writes no re-enable card intent",
+        edits: &[(
+            RATE,
+            "crate::decisions::record_auto_disable(tx, flow_id, &rule, now_ms)?;",
+            "let _ = (&rule, now_ms);",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "an_auto_disabled_flow_raises_one_reenable_card_and_each_option_applies",
+    },
+    Control {
+        label: "decision cards: action options carry an effect core does not take",
+        edits: &[(
+            M_CORE_CONSENT,
+            "pub const DECISION_ACTION_EFFECT: &str = \"choose\";",
+            "pub const DECISION_ACTION_EFFECT: &str = \"grant\";",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "a_run_in_needs_reconcile_raises_one_card_per_unknown_call_to_the_operator_only",
+    },
+    Control {
+        label: "decision cards: the default is an action rather than the declining option",
+        edits: &[(
+            M_CORE_CONSENT,
+            "\"default\":default,",
+            "\"default\":card.options[card.options.len() - 1].id,",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "decision_requests_follow_core_rules_and_the_fake_core_refuses_any_other",
     },
 ];
 
