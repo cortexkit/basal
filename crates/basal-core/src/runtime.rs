@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use basal_host::{
     CallRequest, Catalog, Completion, CompletionAck, CompletionSink, Dispatched, Host, HostOutcome,
-    SinkError, TransportError, UnknownOutcome,
+    Sent, SinkError, TransportError, UnknownOutcome, UnknownReason,
 };
 use basal_proto::{Budgets, CallKind, JsonText};
 use serde_json::json;
@@ -404,6 +404,13 @@ impl Runtime {
         self.shared.store.read(|c| journal::rows(c, run_id))
     }
 
+    /// Why a call was last recorded unknown, if it ever was.
+    pub fn unknown_reason(&self, run_id: &str, position: u64) -> Result<Option<UnknownReason>> {
+        self.shared
+            .store
+            .read(|c| journal::unknown_reason(c, run_id, position))
+    }
+
     pub fn activation_count(&self, run_id: &str) -> Result<u64> {
         self.shared
             .store
@@ -503,7 +510,7 @@ impl Runtime {
     /// was not recorded: the host must make it again later.
     pub fn unknown(&self, u: &UnknownOutcome) -> Result<Option<CompletionAck>> {
         let ack = self.shared.store.write(|tx| {
-            journal::record_host_unknown(tx, &u.run_id, u.position, &u.handle, &u.detail)
+            journal::record_host_unknown(tx, &u.run_id, u.position, &u.handle, u.reason, &u.detail)
         })?;
         self.shared.signal.bump();
         Ok(ack)
@@ -629,7 +636,9 @@ impl Runtime {
         let run_id = request.run_id.clone();
         let position = request.position;
         let mut retries = 0;
-        let mut maybe_sent = false;
+        // Why the latest send that may have reached the host ended without
+        // an answer; `None` while every failed send provably never left.
+        let mut maybe_sent: Option<UnknownReason> = None;
         let answer = loop {
             let expected_class = match class {
                 StoredClass::Query => basal_host::CallClass::Query,
@@ -643,11 +652,11 @@ impl Runtime {
                 .dispatch_classified(&request, expected_class)
             {
                 Ok(d) => break Ok(d),
-                Err(TransportError::Unavailable {
-                    proven_unsent,
-                    detail,
-                }) => {
-                    maybe_sent |= !proven_unsent;
+                Err(TransportError::Unavailable { sent, detail }) => {
+                    let proven_unsent = sent == Sent::Never;
+                    if let Sent::Maybe(reason) = sent {
+                        maybe_sent = Some(reason);
+                    }
                     // A transient failure is retried inside the call only
                     // when a second send cannot cause a second effect.
                     let may_retry = class.safe_to_resend() || proven_unsent;
@@ -662,19 +671,32 @@ impl Runtime {
             }
         };
         self.at(&run_id, Boundary::HostAnswered { position })?;
-        match answer {
-            Ok(Dispatched::Completed(outcome)) => {
+        match (answer, maybe_sent) {
+            (Ok(Dispatched::Completed(outcome)), _) => {
                 self.accept(&run_id, position, None, &outcome, Source::Host)?;
                 self.shared.host.dispatch_committed(&request);
             }
-            Ok(Dispatched::Accepted { handle }) => {
+            (Ok(Dispatched::Accepted { handle }), _) => {
                 self.shared
                     .store
                     .write(|tx| journal::record_accepted(tx, &run_id, position, &handle))?;
                 self.at(&run_id, Boundary::AcceptedCommitted { position })?;
                 self.shared.host.dispatch_committed(&request);
             }
-            Err(detail) if class == StoredClass::Query || !maybe_sent => {
+            (Err(_), Some(last)) if class != StoredClass::Query => {
+                // A call that honours idempotency keys was sent again and
+                // again; it is unknown because its retries ran out. Any
+                // other is sent once, and is unknown for that send's reason.
+                let reason = if class.safe_to_resend() {
+                    UnknownReason::RetriesExhausted
+                } else {
+                    last
+                };
+                self.shared
+                    .store
+                    .write(|tx| journal::record_unknown(tx, &run_id, position, reason))?;
+            }
+            (Err(detail), _) => {
                 // Nothing can have happened remotely: a query has no effect,
                 // and every failed send of this call provably never left.
                 self.accept(
@@ -684,11 +706,6 @@ impl Runtime {
                     &unavailable_rejection(&detail),
                     Source::Host,
                 )?;
-            }
-            Err(detail) => {
-                self.shared
-                    .store
-                    .write(|tx| journal::record_unknown(tx, &run_id, position, &detail))?;
             }
         }
         Ok(())

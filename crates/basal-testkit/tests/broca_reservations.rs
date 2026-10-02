@@ -231,6 +231,10 @@ fn an_unknown_broca_run_moves_the_run_to_needs_reconcile_naming_it() {
     let call = rt.calls(&id).unwrap()[0].clone();
     assert_eq!(call.dispatch, DispatchState::Unknown);
     assert!(call.outcome.is_none());
+    assert_eq!(
+        rt.unknown_reason(&id, 0).unwrap(),
+        Some(basal_host::UnknownReason::ProviderLostRun)
+    );
     // A crash before the host saved its acknowledgement redelivers the
     // report; the runtime recognises it and nothing changes.
     let mut saved = snapshots.load().unwrap()[0].clone();

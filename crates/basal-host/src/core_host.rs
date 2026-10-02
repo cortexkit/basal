@@ -3,6 +3,7 @@ use crate::subc_catalog::CORE;
 use crate::transport::{Transport, WireError};
 use crate::{
     CallClass, CallRequest, CompletionSink, Dispatched, Host, HostOutcome, TransportError,
+    UnknownReason,
 };
 use basal_proto::{CallKind, JsonText, Primitive};
 use serde_json::{Value, json};
@@ -48,24 +49,22 @@ pub fn intent(kind: Primitive, args: &Value, ctx: IntentContext<'_>) -> Value {
 }
 
 pub(crate) fn outcome(result: Result<Value, WireError>) -> Result<Dispatched, TransportError> {
+    // A reply too large for basal to hold is a reply it cannot read.
+    let unreadable = |e: basal_proto::ValueTooLarge| {
+        TransportError::maybe_sent(UnknownReason::ReplyUnreadable, e.to_string())
+    };
     match result {
         Ok(value) => JsonText::new(value.to_string())
             .map(|v| Dispatched::Completed(HostOutcome::fulfilled(v)))
-            .map_err(|e| TransportError::Unavailable {
-                proven_unsent: false,
-                detail: e.to_string(),
-            }),
+            .map_err(unreadable),
         Err(WireError::Refused { code, message }) => {
             JsonText::new(json!({"code":code,"message":message}).to_string())
                 .map(|v| Dispatched::Completed(HostOutcome::rejected(v)))
-                .map_err(|e| TransportError::Unavailable {
-                    proven_unsent: false,
-                    detail: e.to_string(),
-                })
+                .map_err(unreadable)
         }
-        Err(e) => Err(TransportError::Unavailable {
-            proven_unsent: matches!(e, WireError::NeverSent(_)),
-            detail: format!("{e:?}"),
+        Err(e) => Err(match e.unknown_reason() {
+            Some(reason) => TransportError::maybe_sent(reason, format!("{e:?}")),
+            None => TransportError::unsent(format!("{e:?}")),
         }),
     }
 }
@@ -121,7 +120,7 @@ pub fn validate_reply(kind: Primitive, value: Value) -> Result<Value, WireError>
     if valid {
         Ok(value)
     } else {
-        Err(WireError::Unknown("unrecognised core reply".into()))
+        Err(WireError::Unreadable("unrecognised core reply".into()))
     }
 }
 impl Host for CoreHost {

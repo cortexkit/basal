@@ -106,7 +106,7 @@ fn closed_sink_dispositions_and_unknown_facts_survive() {
                 p,
                 json!({"disposition":"new_value","fire_id":"wf_1","replayed":false,"accepted_revision":1,"segment":"flow:f","scope":"session:s"})
             ),
-            Err(WireError::Unknown(_))
+            Err(WireError::Unreadable(_))
         ));
         assert!(validate_reply(p, json!({})).is_err());
     }
@@ -889,13 +889,13 @@ fn sink_reply_missing_fields_and_wrong_types_are_unknown_outcomes() {
             let mut missing = v.clone();
             missing.as_object_mut().unwrap().remove(key);
             assert!(
-                matches!(validate_reply(p, missing), Err(WireError::Unknown(_))),
+                matches!(validate_reply(p, missing), Err(WireError::Unreadable(_))),
                 "missing {key}: {v}"
             );
             let mut wrong = v.clone();
             wrong[key] = json!({});
             assert!(
-                matches!(validate_reply(p, wrong), Err(WireError::Unknown(_))),
+                matches!(validate_reply(p, wrong), Err(WireError::Unreadable(_))),
                 "wrong {key}: {v}"
             );
         }
@@ -1111,13 +1111,13 @@ fn fact_identity_and_clock_fields_are_required_without_normalising_leaves() {
         missing.as_object_mut().unwrap().remove(key);
         assert!(matches!(
             validate_reply(Primitive::Facts, missing),
-            Err(WireError::Unknown(_))
+            Err(WireError::Unreadable(_))
         ));
         let mut wrong = reply.clone();
         wrong[key] = json!({});
         assert!(matches!(
             validate_reply(Primitive::Facts, wrong),
-            Err(WireError::Unknown(_))
+            Err(WireError::Unreadable(_))
         ));
     }
 }

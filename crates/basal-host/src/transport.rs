@@ -8,12 +8,46 @@ use subc_client_rs::consumer::{
 };
 use subc_protocol::{BindIdentity, RouteTarget};
 
+/// How a call over the daemon failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WireError {
+    /// Provably never reached the target.
     NeverSent(String),
+    /// Sent, and then the route closed or the connection failed before a
+    /// reply: its outcome is unknown (`connection_lost`).
     Unknown(String),
-    Refused { code: String, message: String },
+    /// Sent, and no reply came within the call's deadline: its outcome is
+    /// unknown (`reply_timeout`).
+    TimedOut(String),
+    /// A reply came that could not be decoded, or named a disposition basal
+    /// does not know: its outcome is unknown (`reply_unreadable`).
+    Unreadable(String),
+    Refused {
+        code: String,
+        message: String,
+    },
 }
+
+impl WireError {
+    /// Why the call's outcome is unknown, or `None` when it provably never
+    /// left or was answered with a refusal.
+    pub fn unknown_reason(&self) -> Option<crate::UnknownReason> {
+        use crate::UnknownReason;
+        match self {
+            Self::NeverSent(_) | Self::Refused { .. } => None,
+            Self::Unknown(_) => Some(UnknownReason::ConnectionLost),
+            Self::TimedOut(_) => Some(UnknownReason::ReplyTimeout),
+            Self::Unreadable(_) => Some(UnknownReason::ReplyUnreadable),
+        }
+    }
+}
+
+/// The message subc-client-rs 0.24 gives `CallError::OutcomeUnknown` when an
+/// accepted request reached its deadline without a reply (`consumer.rs`,
+/// `call`, the `timeout_at` arm: "request on channel {channel} timed out at
+/// its deadline"). The client has no typed timeout, so this text is the only
+/// thing that tells a timeout from a closed connection.
+const SUBC_REPLY_TIMEOUT: &str = "timed out at its deadline";
 
 /// Returns decoded provider payloads, not the management response envelope.
 pub trait Transport: Send + Sync {
@@ -28,6 +62,8 @@ pub trait Transport: Send + Sync {
     ) -> Result<Value, WireError>;
 }
 
+/// Maps a subc-client-rs 0.24 call error. Citations are to that release's
+/// `src/consumer.rs`.
 pub fn map_error(error: CallError) -> WireError {
     match error {
         CallError::NotSent(e) => WireError::NeverSent(e.to_string()),
@@ -36,6 +72,23 @@ pub fn map_error(error: CallError) -> WireError {
             code: e.code,
             message: e.message,
         },
+        // The capability resolver's errors are raised before any request
+        // frame for a call is written: `resolve_provider` (lines 1314-1325)
+        // after reading the catalog, and `validate_capability_for_resolution`
+        // (lines 5059-5066) before even that. The client itself classifies
+        // all three as not sent (lines 4311-4316).
+        e @ (CallError::CapabilityUnprovided { .. }
+        | CallError::CapabilityAmbiguous { .. }
+        | CallError::InvalidCapabilityIdentifier { .. }) => WireError::NeverSent(e.to_string()),
+        CallError::OutcomeUnknown(e) if e.to_string().contains(SUBC_REPLY_TIMEOUT) => {
+            WireError::TimedOut(e.to_string())
+        }
+        // Every other OutcomeUnknown is a request accepted by the writer
+        // whose route or connection closed before a reply (`classify_failure`,
+        // line 5129, from the writer, close and connection-failure paths);
+        // SubscriptionBackpressure ends a subscription whose request was
+        // already sent (line 3460), and the client counts it as outcome
+        // unknown (lines 4301-4305).
         other => WireError::Unknown(other.to_string()),
     }
 }
@@ -103,13 +156,13 @@ impl SubcTransport {
             ))
             .map_err(map_error)?;
         let value: Value =
-            serde_json::from_slice(&response).map_err(|e| WireError::Unknown(e.to_string()))?;
+            serde_json::from_slice(&response).map_err(|e| WireError::Unreadable(e.to_string()))?;
         if management {
             if let Some(error) = value.get("error") {
                 let code = error
                     .get("code")
                     .and_then(Value::as_str)
-                    .ok_or_else(|| WireError::Unknown("invalid error envelope".into()))?;
+                    .ok_or_else(|| WireError::Unreadable("invalid error envelope".into()))?;
                 return Err(WireError::Refused {
                     code: code.into(),
                     message: error
@@ -122,7 +175,7 @@ impl SubcTransport {
             value
                 .get("result")
                 .cloned()
-                .ok_or_else(|| WireError::Unknown("missing management result".into()))
+                .ok_or_else(|| WireError::Unreadable("missing management result".into()))
         } else {
             Ok(value)
         }
@@ -241,4 +294,84 @@ pub fn management_bytes(op: &str, params: &[u8]) -> Result<Vec<u8>, WireError> {
     body.extend(params);
     body.push(b'}');
     Ok(body)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::UnknownReason;
+
+    fn boxed(text: &str) -> Box<dyn std::error::Error + Send + Sync> {
+        Box::new(std::io::Error::other(text.to_owned()))
+    }
+
+    /// One case per subc-client-rs 0.24 `CallError` variant basal can build
+    /// (a `StaleRouteHandle` needs a route handle only the client can make;
+    /// it maps to never sent). Each names whether the call can have been
+    /// sent and, if so, the unknown reason recorded for it.
+    #[test]
+    fn every_call_error_variant_maps_to_never_sent_or_one_unknown_reason() {
+        let cases: Vec<(CallError, Option<UnknownReason>, bool)> = vec![
+            (CallError::NotSent(boxed("never wrote")), None, true),
+            (
+                CallError::OutcomeUnknown(boxed("request on channel 3 timed out at its deadline")),
+                Some(UnknownReason::ReplyTimeout),
+                false,
+            ),
+            (
+                CallError::OutcomeUnknown(boxed("consumer closed while request was pending")),
+                Some(UnknownReason::ConnectionLost),
+                false,
+            ),
+            (
+                CallError::OutcomeUnknown(boxed("writer task closed before accepting request")),
+                Some(UnknownReason::ConnectionLost),
+                false,
+            ),
+            (
+                CallError::SubscriptionBackpressure(boxed(
+                    "subscription event receiver closed before the stream ended",
+                )),
+                Some(UnknownReason::ConnectionLost),
+                false,
+            ),
+            (
+                CallError::CapabilityUnprovided {
+                    capability: "x/v1".into(),
+                },
+                None,
+                true,
+            ),
+            (
+                CallError::CapabilityAmbiguous {
+                    capability: "x/v1".into(),
+                    claimants: vec!["a".into(), "b".into()],
+                },
+                None,
+                true,
+            ),
+            (
+                CallError::InvalidCapabilityIdentifier {
+                    capability: "not a capability".into(),
+                },
+                None,
+                true,
+            ),
+        ];
+        for (error, reason, never_sent) in cases {
+            let label = format!("{error}");
+            let mapped = map_error(error);
+            assert_eq!(mapped.unknown_reason(), reason, "{label}");
+            assert_eq!(
+                matches!(mapped, WireError::NeverSent(_)),
+                never_sent,
+                "{label}"
+            );
+        }
+        let refused =
+            serde_json::from_value(json!({"code":"provider_denied","message":"no"})).unwrap();
+        let mapped = map_error(CallError::Module(refused));
+        assert_eq!(mapped.unknown_reason(), None);
+        assert!(matches!(mapped, WireError::Refused { .. }));
+    }
 }

@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::SinkError;
+use crate::{DisabledReason, SinkError, UnknownReason};
 
 /// One install card.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,35 +83,95 @@ pub struct DecisionOption {
     pub decline: bool,
 }
 
-/// One operator decision card: a question only the operator may answer,
-/// raised by basal itself (`docs/design.md` section 6, "Operator decisions
-/// are cards").
+/// What a decision card is about, typed: the facts the card's body carries
+/// and its prompt is written from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DecisionContext {
+    /// One call of a run whose outcome basal cannot prove.
+    Reconcile {
+        run_id: String,
+        /// When the run was admitted, in ms since the Unix epoch.
+        run_admitted_at_ms: i64,
+        /// The call's journal key (its idempotency key).
+        call_key: String,
+        /// The op the call went to, as `module.op`.
+        op: String,
+        /// How many times the call has been sent.
+        attempts: u32,
+        unknown_reason: UnknownReason,
+    },
+    /// One auto-disable of a flow, with the rule's numbers as they were when
+    /// it tripped.
+    Reenable {
+        disabled_at_ms: i64,
+        disabled_reason: DisabledReason,
+        /// The per-window limit that tripped: runs admitted for
+        /// `run_limit_saturated`, calls dispatched for
+        /// `dispatch_limit_saturated`.
+        limit: u32,
+        window_ms: u64,
+        /// How many saturated windows in a row tripped the rule.
+        saturated_windows: u32,
+    },
+}
+
+impl DecisionContext {
+    pub fn kind(&self) -> DecisionKind {
+        match self {
+            Self::Reconcile { .. } => DecisionKind::Reconcile,
+            Self::Reenable { .. } => DecisionKind::Reenable,
+        }
+    }
+}
+
+/// One operator decision card: a question only the operator may answer
+/// (what happened to an unknown call, or whether an auto-disabled flow runs
+/// again), raised by basal itself rather than by an agent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecisionCard {
     /// The consent plane's deduplication key: raising a card under a key
     /// whose card is still open updates that card instead of adding one.
-    pub dedup_key: String,
+    /// basal's own cards always carry one.
+    pub dedup_key: Option<String>,
     pub flow_id: String,
     pub version: u32,
-    pub decision: DecisionKind,
-    /// The run, for a reconcile card.
-    pub run_id: Option<String>,
-    /// The unknown call's journal key (its idempotency key), for a
-    /// reconcile card.
-    pub call_key: Option<String>,
+    pub context: DecisionContext,
     pub title: String,
     pub prompt: String,
     /// Lowercase hex digest of what is being decided.
-    pub args_digest: String,
-    /// What the card shows, as (label, value) pairs.
+    pub args_digest: Option<String>,
+    /// What the card shows besides the flow, version and decision, which
+    /// core shows itself, as (label, value) pairs.
     pub facts: Vec<(String, String)>,
     pub options: Vec<DecisionOption>,
+    /// How long the card stays open before it expires to its default.
+    pub expires_in_ms: u64,
 }
 
 impl DecisionCard {
     /// The option taken when nobody answers: the one that declines.
     pub fn default_option(&self) -> Option<&DecisionOption> {
         self.options.iter().find(|o| o.decline)
+    }
+
+    pub fn decision(&self) -> DecisionKind {
+        self.context.kind()
+    }
+
+    /// The run, for a reconcile card.
+    pub fn run_id(&self) -> Option<&str> {
+        match &self.context {
+            DecisionContext::Reconcile { run_id, .. } => Some(run_id),
+            DecisionContext::Reenable { .. } => None,
+        }
+    }
+
+    /// The unknown call's journal key, for a reconcile card.
+    pub fn call_key(&self) -> Option<&str> {
+        match &self.context {
+            DecisionContext::Reconcile { call_key, .. } => Some(call_key),
+            DecisionContext::Reenable { .. } => None,
+        }
     }
 }
 
@@ -288,12 +348,12 @@ impl MockConsent {
             state.undelivered_answers.push(DecisionAnswer {
                 elicitation_id,
                 choice: choice.map(str::to_owned),
-                dedup_key: Some(card.dedup_key.clone()),
+                dedup_key: card.dedup_key.clone(),
+                decision: card.decision(),
+                run_id: card.run_id().map(str::to_owned),
+                call_key: card.call_key().map(str::to_owned),
                 flow_id: card.flow_id,
                 version: card.version,
-                decision: card.decision,
-                run_id: card.run_id,
-                call_key: card.call_key,
             });
         }
         self.redeliver();
@@ -363,14 +423,12 @@ impl Consent for MockConsent {
                 "the mock is set unavailable".into(),
             ));
         }
-        *state
-            .decision_raises
-            .entry(card.dedup_key.clone())
-            .or_insert(0) += 1;
+        let key = card.dedup_key.clone().unwrap_or_default();
+        *state.decision_raises.entry(key.clone()).or_insert(0) += 1;
         let next = format!("mock-el-{}", state.decision_cards.len() + 1);
         let entry = state
             .decision_cards
-            .entry(card.dedup_key.clone())
+            .entry(key)
             .or_insert_with(|| (next, card.clone()));
         // A raise under an open key updates the card the operator sees.
         entry.1 = card.clone();

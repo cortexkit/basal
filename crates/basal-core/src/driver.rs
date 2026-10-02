@@ -13,6 +13,7 @@
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
+use basal_host::UnknownReason;
 use basal_proto::{
     ActivationRequest, ActivationResult, ArgsDigest, CallKind, CallSignature, Failure, HostCall,
     JsonText, Nondeterminism, Outcome, ParentMessage, Primitive, Profile, Settlement,
@@ -502,13 +503,9 @@ impl Activation<'_> {
         if !unknown.is_empty() {
             self.rt.store().write(|tx| {
                 for p in &unknown {
-                    journal::record_unknown(
-                        tx,
-                        &run_id,
-                        *p,
-                        "the call was sent before an earlier activation stopped, \
-                         and its outcome was never recorded",
-                    )?;
+                    // No thread of this process is sending it, so the
+                    // process that sent it stopped before recording a reply.
+                    journal::record_unknown(tx, &run_id, *p, UnknownReason::BasalRestarted)?;
                 }
                 runs::exit(
                     tx,

@@ -39,8 +39,8 @@ pub mod transport;
 
 pub use catalog::{Catalog, EventBody, EventDecl, EventOrigin, MockCatalog, OpDecl, OpKind};
 pub use consent::{
-    CardDecision, Consent, ConsentError, DecisionAnswer, DecisionCard, DecisionEvent, DecisionKind,
-    DecisionOption, DecisionSink, InstallCard, MockConsent,
+    CardDecision, Consent, ConsentError, DecisionAnswer, DecisionCard, DecisionContext,
+    DecisionEvent, DecisionKind, DecisionOption, DecisionSink, InstallCard, MockConsent,
 };
 
 /// The usage fields of a Broca outcome, in Broca's canonical names: fresh
@@ -155,33 +155,143 @@ pub enum Dispatched {
     Accepted { handle: String },
 }
 
+/// The op a call goes to, as `module.op`, for an operator to read. A flow's
+/// own ops name their module; primitives name the module and op they are
+/// carried by: core's sinks and facts, and Broca's `session.send` for model
+/// calls (under the module id `ck-basal` wires for Broca). Local primitives
+/// (clock, random, `kv`) never leave basal and keep their own name.
+pub fn op_label(kind: &CallKind) -> String {
+    use basal_proto::Primitive;
+    match kind {
+        CallKind::Op { module, op } => format!("{module}.{op}"),
+        CallKind::Primitive(p @ (Primitive::SinkDigest | Primitive::SinkStatus)) => {
+            format!("{}.{}", subc_catalog::CORE, p.name())
+        }
+        CallKind::Primitive(Primitive::Facts) => format!("{}.agent.facts", subc_catalog::CORE),
+        CallKind::Primitive(Primitive::Llm | Primitive::Classify) => "broca.session.send".into(),
+        CallKind::Primitive(p) => p.name().into(),
+    }
+}
+
+/// Why a call's outcome became unknown: a closed set, recorded with the
+/// call at the moment basal stops being able to prove what happened, and
+/// shown to the operator on the call's reconcile card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum UnknownReason {
+    /// basal stopped after sending the call and before recording its reply.
+    BasalRestarted,
+    /// The route closed, or the connection failed, after the call was sent.
+    ConnectionLost,
+    /// No reply came within the call's deadline.
+    ReplyTimeout,
+    /// A reply came that could not be decoded, or named a disposition basal
+    /// does not know.
+    ReplyUnreadable,
+    /// A call whose op honours idempotency keys stayed ambiguous through
+    /// every retry basal makes inside the call.
+    RetriesExhausted,
+    /// Broca answered `unknown_run` for a run it had accepted.
+    ProviderLostRun,
+}
+
+impl UnknownReason {
+    pub const ALL: [Self; 6] = [
+        Self::BasalRestarted,
+        Self::ConnectionLost,
+        Self::ReplyTimeout,
+        Self::ReplyUnreadable,
+        Self::RetriesExhausted,
+        Self::ProviderLostRun,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::BasalRestarted => "basal_restarted",
+            Self::ConnectionLost => "connection_lost",
+            Self::ReplyTimeout => "reply_timeout",
+            Self::ReplyUnreadable => "reply_unreadable",
+            Self::RetriesExhausted => "retries_exhausted",
+            Self::ProviderLostRun => "provider_lost_run",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|r| r.as_str() == text)
+    }
+}
+
+/// Why the runtime disabled a flow by itself: a closed set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DisabledReason {
+    /// The runs admitted per rate window hit their limit for K windows in a
+    /// row.
+    RunLimitSaturated,
+    /// The calls dispatched per rate window hit their limit for K windows
+    /// in a row.
+    DispatchLimitSaturated,
+}
+
+impl DisabledReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RunLimitSaturated => "run_limit_saturated",
+            Self::DispatchLimitSaturated => "dispatch_limit_saturated",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        [Self::RunLimitSaturated, Self::DispatchLimitSaturated]
+            .into_iter()
+            .find(|r| r.as_str() == text)
+    }
+}
+
+/// Whether a send that failed can have reached the host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sent {
+    /// The transport proves the request never reached the host (for
+    /// example the connection was refused before any byte was written).
+    Never,
+    /// It may have reached the host and taken effect there; the reason says
+    /// why its outcome is unknown.
+    Maybe(UnknownReason),
+}
+
 /// The transport could not carry the call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransportError {
-    Unavailable {
-        /// True only when the transport can prove the request never reached
-        /// the host (for example the connection was refused before any byte
-        /// was written). Anything else may have taken effect remotely.
-        proven_unsent: bool,
-        detail: String,
-    },
+    Unavailable { sent: Sent, detail: String },
+}
+
+impl TransportError {
+    /// A failure the transport proves happened before the request left.
+    pub fn unsent(detail: impl Into<String>) -> Self {
+        Self::Unavailable {
+            sent: Sent::Never,
+            detail: detail.into(),
+        }
+    }
+
+    /// A failure after which the request may have reached the host.
+    pub fn maybe_sent(reason: UnknownReason, detail: impl Into<String>) -> Self {
+        Self::Unavailable {
+            sent: Sent::Maybe(reason),
+            detail: detail.into(),
+        }
+    }
 }
 
 impl fmt::Display for TransportError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Unavailable {
-                proven_unsent,
-                detail,
-            } => write!(
-                f,
-                "host unavailable ({}): {detail}",
-                if *proven_unsent {
-                    "provably unsent"
-                } else {
-                    "may have been sent"
-                }
-            ),
+            Self::Unavailable { sent, detail } => match sent {
+                Sent::Never => write!(f, "host unavailable (provably unsent): {detail}"),
+                Sent::Maybe(reason) => write!(
+                    f,
+                    "host unavailable (may have been sent; {}): {detail}",
+                    reason.as_str()
+                ),
+            },
         }
     }
 }
@@ -238,6 +348,9 @@ pub struct UnknownOutcome {
     pub run_id: String,
     pub position: u64,
     pub handle: String,
+    /// Why the host can no longer establish the outcome, recorded with the
+    /// call.
+    pub reason: UnknownReason,
     pub detail: String,
 }
 

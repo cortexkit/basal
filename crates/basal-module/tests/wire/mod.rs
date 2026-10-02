@@ -13,6 +13,9 @@ pub struct Fake {
     pub scopes: Mutex<BTreeMap<String, CoreScope>>,
     /// Core's `flow_decision` cards.
     pub decisions: Mutex<DecisionCards>,
+    /// The principal the daemon attests for the caller. The real transport
+    /// carries it on the route; here a test sets it.
+    pub requester: Mutex<String>,
 }
 
 /// The `flow_decision` cards the fake's core holds, and the answers it
@@ -34,6 +37,7 @@ pub struct DecisionCards {
 impl Fake {
     pub fn new() -> Arc<Self> {
         let f = Arc::new(Self::default());
+        *f.requester.lock().unwrap() = BASAL.into();
         *f.catalog.lock().unwrap() = json!({"generation":1,"subc_ops":["catalog.list"],"modules":[{"module_id":"mock","roles":[
             {"role":"management_surface","operations":[{"name":"echo","kind":"query"},{"name":"post","kind":"mutate"}],"config_schema":{},"observability":[],"identity_scope":[],"concurrency":"serial"},
             {"role":"tool_provider","tools":[{"name":"send","execution_mode":"mutating","schema":{}},{"name":"read","execution_mode":"pure","schema":{}},{"name":"shell","execution_mode":"unfenceable","schema":{}}],"identity_scope":[],"concurrency":"serial","emits_push":false,"sub_supervises":false}
@@ -78,7 +82,19 @@ impl Fake {
             "elicitation.request" if params["kind"] == "flow_decision" => {
                 self.flow_decision_request(params)
             }
+            // Core takes `choose` only on flow_decision cards.
+            "elicitation.request"
+                if params["options"]
+                    .as_array()
+                    .is_some_and(|o| o.iter().any(|o| o["effect"] == "choose")) =>
+            {
+                Err(WireError::Refused {
+                    code: "elicitation_invalid_request".into(),
+                    message: "choose is only valid for flow_decision".into(),
+                })
+            }
             "elicitation.request" => flow_install_request(&self.scopes.lock().unwrap(), params),
+            "elicitation.report_execution" => self.report_execution(params),
             "elicitation.answers" => {
                 let decisions = self.decisions.lock().unwrap();
                 let records: Vec<Value> =
@@ -218,109 +234,232 @@ fn flow_install_request(
     }
 }
 
-/// Core's checks of a `flow_decision` request, written from core's rules
-/// rather than from basal's encoder: kind `flow_decision`; 2 to 4 options,
-/// each exactly an id, a label and an effect, with distinct ids; every
-/// action option's effect `choose` and exactly one option's `decline`,
-/// which is the default; expiry declines; a dedup key; no session, author
-/// or subject, since the card is the operator's alone; and the typed body
-/// with a run and call key on reconcile cards only. Anything else is
-/// refused with `elicitation_invalid_request`, the fake's choice of code.
-fn check_flow_decision(params: &Value) -> Result<(), String> {
-    let object = params.as_object().ok_or("the request is not an object")?;
-    for key in ["session_ref", "author", "subject", "agent", "flow_install"] {
-        if object.contains_key(key) {
-            return Err(format!("a flow_decision request carries no {key}"));
-        }
-    }
-    let options = params["options"]
-        .as_array()
-        .ok_or("options is not a list")?;
-    if !(2..=4).contains(&options.len()) {
-        return Err("a card has 2 to 4 options".into());
-    }
-    let mut ids = std::collections::BTreeSet::new();
-    let mut declines = Vec::new();
-    for option in options {
-        let fields = option.as_object().ok_or("an option is not an object")?;
-        if fields.len() != 3 {
-            return Err("an option is exactly an id, a label and an effect".into());
-        }
-        let id = option["id"].as_str().filter(|s| !s.is_empty());
-        let label = option["label"].as_str().filter(|s| !s.is_empty());
-        let (Some(id), Some(_)) = (id, label) else {
-            return Err("an option needs a non-empty id and label".into());
-        };
-        if !ids.insert(id) {
-            return Err(format!("option id {id} is repeated"));
-        }
-        match option["effect"].as_str() {
-            Some("choose") => {}
-            Some("decline") => declines.push(id),
-            other => return Err(format!("option effect {other:?} is not choose or decline")),
-        }
-    }
-    if declines.len() != 1 {
-        return Err("exactly one option declines".into());
-    }
-    if params["default"].as_str() != Some(declines[0]) {
-        return Err("the default is the declining option".into());
-    }
-    if params["on_expiry"] != "deny" {
-        return Err("expiry declines".into());
-    }
-    if !params["dedup_key"].as_str().is_some_and(|k| !k.is_empty()) {
-        return Err("a flow_decision card has a dedup key".into());
-    }
-    let body = params["flow_decision"]
+/// The only requester core lets raise `flow_decision` cards.
+pub const BASAL: &str = "reserved:basal";
+
+/// The keys core's `ConsentRequest` decodes (prefrontal-core-store
+/// `elicitation.rs` at tag `flow-decision-card-v1`); it refuses any other.
+const REQUEST_KEYS: &[&str] = &[
+    "flow_install",
+    "flow_decision",
+    "kind",
+    "title",
+    "prompt",
+    "options",
+    "default",
+    "urgency",
+    "dedup_key",
+    "on_expiry",
+    "material_damage",
+    "scope",
+    "duration",
+    "args_digest",
+    "late_execution",
+    "session_ref",
+    "parent_session_ref",
+    "target",
+    "facts",
+    "preview",
+    "expires_in_ms",
+    "requestedSchema",
+];
+
+/// Core's v1 `flow_decision` body keys; any other is refused.
+const BODY_KEYS: &[&str] = &["flow_id", "version", "decision", "run_id", "call_key"];
+
+fn keys_within(value: &Value, allowed: &[&str], what: &str) -> Result<(), String> {
+    let object = value
         .as_object()
-        .ok_or("flow_decision is not an object")?;
-    if !body
-        .keys()
-        .all(|k| ["flow_id", "version", "decision", "run_id", "call_key"].contains(&k.as_str()))
-    {
-        return Err("flow_decision has an unknown field".into());
-    }
-    if !body.get("flow_id").is_some_and(Value::is_string) {
-        return Err("flow_decision.flow_id: expected a string".into());
-    }
-    if !body.get("version").is_some_and(Value::is_u64) {
-        return Err("flow_decision.version: expected an integer".into());
-    }
-    let run = body.get("run_id").is_some_and(Value::is_string);
-    let call = body.get("call_key").is_some_and(Value::is_string);
-    match body.get("decision").and_then(Value::as_str) {
-        Some("reconcile") if run && call => Ok(()),
-        Some("reenable") if !body.contains_key("run_id") && !body.contains_key("call_key") => {
-            Ok(())
-        }
-        _ => Err("flow_decision.decision with its run and call key is invalid".into()),
+        .ok_or_else(|| format!("{what} is not an object"))?;
+    match object.keys().find(|k| !allowed.contains(&k.as_str())) {
+        Some(k) => Err(format!("{what}: unknown field {k}")),
+        None => Ok(()),
     }
 }
 
+fn text<'a>(value: &'a Value, name: &str) -> Result<&'a str, String> {
+    value[name]
+        .as_str()
+        .ok_or_else(|| format!("{name}: expected a string"))
+}
+
+/// Core's checks of a `flow_decision` request, written from core's rules
+/// (`ConsentRequest::decode` and `validate`) rather than from basal's
+/// encoder. A refusal is `(code, message)`.
+fn check_flow_decision(params: &Value) -> Result<(), (&'static str, String)> {
+    let invalid = |m: String| ("elicitation_invalid_request", m);
+    // Refused even as null: the card is the operator's alone.
+    for key in ["session_ref", "parent_session_ref"] {
+        if params.get(key).is_some() {
+            return Err(invalid(format!("flow_decision cannot carry {key}")));
+        }
+    }
+    keys_within(params, REQUEST_KEYS, "request").map_err(invalid)?;
+    if params.get("flow_install").is_some() {
+        return Err(invalid("flow_decision cannot carry flow_install".into()));
+    }
+    for name in [
+        "title",
+        "prompt",
+        "default",
+        "urgency",
+        "on_expiry",
+        "late_execution",
+    ] {
+        text(params, name).map_err(invalid)?;
+    }
+    if !params["material_damage"].is_boolean() || !params["expires_in_ms"].is_i64() {
+        return Err(invalid(
+            "material_damage and expires_in_ms are required".into(),
+        ));
+    }
+    let options = params["options"]
+        .as_array()
+        .ok_or_else(|| invalid("options is not a list".into()))?;
+    let mut ids = std::collections::BTreeSet::new();
+    let mut declines = 0;
+    for option in options {
+        keys_within(option, &["id", "label", "effect", "detail"], "option").map_err(invalid)?;
+        let (id, label, effect) = (
+            text(option, "id").map_err(invalid)?,
+            text(option, "label").map_err(invalid)?,
+            text(option, "effect").map_err(invalid)?,
+        );
+        if id.trim().is_empty() || label.trim().is_empty() || !ids.insert(id) {
+            return Err(invalid(
+                "option ids must be unique and nonempty; labels must be nonempty".into(),
+            ));
+        }
+        match effect {
+            "decline" => declines += 1,
+            "choose" => {}
+            _ => {
+                return Err(invalid(
+                    "flow_decision needs 2 to 4 options: exactly one decline and otherwise choose"
+                        .into(),
+                ));
+            }
+        }
+    }
+    if !(2..=4).contains(&options.len()) || declines != 1 {
+        return Err(invalid(
+            "flow_decision needs 2 to 4 options: exactly one decline and otherwise choose".into(),
+        ));
+    }
+    let body = &params["flow_decision"];
+    if !body.is_null() {
+        keys_within(body, BODY_KEYS, "flow_decision").map_err(invalid)?;
+        let flow_id = text(body, "flow_id").map_err(invalid)?;
+        let version = body["version"].as_i64().unwrap_or(0);
+        let long = |name: &str| body[name].as_str().is_some_and(|v| v.len() > 256);
+        let decision = body["decision"].as_str();
+        if flow_id.trim().is_empty()
+            || flow_id.len() > 256
+            || version <= 0
+            || !matches!(decision, Some("reconcile" | "reenable"))
+            || long("run_id")
+            || long("call_key")
+        {
+            return Err(invalid("invalid flow_decision body".into()));
+        }
+    }
+    if params["title"].as_str().unwrap_or("").trim().is_empty()
+        || params["prompt"].as_str().unwrap_or("").trim().is_empty()
+    {
+        return Err(invalid(
+            "title, prompt and nonempty options are required".into(),
+        ));
+    }
+    let default = options
+        .iter()
+        .find(|o| o["id"] == params["default"])
+        .ok_or_else(|| invalid("default must name an option".into()))?;
+    if default["effect"] != "decline" || params["on_expiry"] != "deny" {
+        return Err((
+            "elicitation_fail_closed_required",
+            "consent requires a decline default and on_expiry deny".into(),
+        ));
+    }
+    if !matches!(params["urgency"].as_str(), Some("low" | "normal" | "high"))
+        || !matches!(
+            params["late_execution"].as_str(),
+            Some("execute" | "notify_only")
+        )
+    {
+        return Err(invalid("invalid urgency or late_execution".into()));
+    }
+    let expires = params["expires_in_ms"].as_i64().unwrap_or(0);
+    if expires <= 0 || expires > 86_400_000 {
+        return Err(invalid(
+            "expires_in_ms must be positive and at most 24 hours".into(),
+        ));
+    }
+    if params["args_digest"]
+        .as_str()
+        .is_none_or(|d| d.trim().is_empty())
+        && params.get("scope").is_none()
+    {
+        return Err(invalid("provide args_digest or scope".into()));
+    }
+    keys_within(&params["target"], &["kind", "label"], "target").map_err(invalid)?;
+    if text(&params["target"], "kind")
+        .map_err(invalid)?
+        .trim()
+        .is_empty()
+        || text(&params["target"], "label")
+            .map_err(invalid)?
+            .trim()
+            .is_empty()
+    {
+        return Err(invalid("target kind and label must be nonempty".into()));
+    }
+    if let Some(facts) = params.get("facts") {
+        for fact in facts
+            .as_array()
+            .ok_or_else(|| invalid("facts is not a list".into()))?
+        {
+            keys_within(fact, &["label", "value"], "fact").map_err(invalid)?;
+            text(fact, "label").map_err(invalid)?;
+            text(fact, "value").map_err(invalid)?;
+        }
+    }
+    Ok(())
+}
+
 impl Fake {
-    /// Core taking a `flow_decision` request: refused unless it passes
-    /// core's checks; under the key of a card still open, that card is
-    /// updated and keeps its id; otherwise a new card is created.
+    /// Core taking a `flow_decision` request: refused unless the requester
+    /// is basal and the request passes core's checks; under the key of a
+    /// card still open, that card is updated and keeps its id; otherwise a
+    /// new card is created.
     fn flow_decision_request(&self, params: &Value) -> Result<Value, WireError> {
-        if let Err(message) = check_flow_decision(params) {
+        if *self.requester.lock().unwrap() != BASAL {
             return Err(WireError::Refused {
-                code: "elicitation_invalid_request".into(),
+                code: "elicitation_requester_refused".into(),
+                message: "only reserved:basal may raise flow_decision".into(),
+            });
+        }
+        if let Err((code, message)) = check_flow_decision(params) {
+            return Err(WireError::Refused {
+                code: code.into(),
                 message,
             });
         }
-        let key = params["dedup_key"].as_str().unwrap_or_default().to_owned();
+        let key = params["dedup_key"].as_str().map(str::to_owned);
         let mut d = self.decisions.lock().unwrap();
-        let index = match d.open.get(&key) {
-            Some(&i) => {
+        let open = key.as_ref().and_then(|k| d.open.get(k).copied());
+        let index = match open {
+            Some(i) => {
                 d.cards[i].2.push(params.clone());
                 i
             }
             None => {
                 let id = format!("el_decision_{}", d.cards.len() + 1);
-                d.cards.push((id, key.clone(), vec![params.clone()]));
+                d.cards
+                    .push((id, key.clone().unwrap_or_default(), vec![params.clone()]));
                 let i = d.cards.len() - 1;
-                d.open.insert(key, i);
+                if let Some(key) = key {
+                    d.open.insert(key, i);
+                }
                 i
             }
         };
@@ -329,6 +468,26 @@ impl Fake {
             return Err(WireError::Unknown("the reply was cut".into()));
         }
         Ok(json!({"elicitation_id": d.cards[index].0}))
+    }
+
+    /// Core refuses an execution report for a `flow_decision` card: core
+    /// executes nothing for these cards, so there is nothing to report.
+    fn report_execution(&self, params: &Value) -> Result<Value, WireError> {
+        let id = params["elicitation_id"].as_str().unwrap_or_default();
+        let decision = self
+            .decisions
+            .lock()
+            .unwrap()
+            .cards
+            .iter()
+            .any(|(card, _, _)| card == id);
+        if decision {
+            return Err(WireError::Refused {
+                code: "elicitation_invalid_execution".into(),
+                message: "flow_decision cards take no execution report".into(),
+            });
+        }
+        Ok(json!({"elicitation_id": id}))
     }
 
     /// Every flow_decision card core created under `key`.
@@ -349,19 +508,21 @@ impl Fake {
     }
 
     /// The operator answers the open card under `key` with `choice`, or the
-    /// card expires (`None`). The card closes and the answer waits for
-    /// basal. Returns the answer record.
+    /// card expires (`None`), and the card closes. As core does, an expiry
+    /// is written into the answer log with state `expired` and the card's
+    /// default (decline) option as its choice. The answer waits for basal;
+    /// it is returned.
     pub fn answer_decision(&self, key: &str, choice: Option<&str>) -> Value {
         let mut d = self.decisions.lock().unwrap();
         let i = d.open.remove(key).expect("an open card under the key");
         let (id, _, requests) = d.cards[i].clone();
         let last = requests.last().cloned().unwrap_or_default();
-        let record = match choice {
-            Some(choice) => json!({"elicitation_id":id,"state":"answered",
-                "answered_choice_id":choice,"flow_decision":last["flow_decision"]}),
-            None => json!({"elicitation_id":id,"state":"expired",
-                "flow_decision":last["flow_decision"]}),
+        let (state, choice) = match choice {
+            Some(choice) => ("answered", json!(choice)),
+            None => ("expired", last["default"].clone()),
         };
+        let record = json!({"elicitation_id":id,"state":state,"answered_choice_id":choice,
+            "dedup_key":key,"flow_decision":last["flow_decision"]});
         drop(d);
         self.deliver(record.clone());
         record

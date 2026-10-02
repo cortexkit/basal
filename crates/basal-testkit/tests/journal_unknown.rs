@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use basal_core::{ActivationEnd, CoreError, Resolution, RunState};
 use basal_host::mock::Fault;
-use basal_host::{Completion, CompletionAck, HostOutcome};
+use basal_host::{Completion, CompletionAck, HostOutcome, UnknownReason};
 use basal_proto::JsonText;
 use basal_testkit::harness::{Point, Probe, World};
 use common::{admit, finish, result, runtime, runtime_with};
@@ -52,6 +52,10 @@ fn unknown_unkeyed_mutation_needs_reconcile() {
     let health = rt.health().expect("health");
     assert_eq!(health.unknown_calls, vec![(run_id.clone(), 0)]);
     assert_eq!(world.mock.effects().len(), 1);
+    assert_eq!(
+        rt.unknown_reason(&run_id, 0).expect("reason"),
+        Some(UnknownReason::BasalRestarted)
+    );
 
     let state = rt
         .reconcile(
@@ -128,8 +132,43 @@ fn unavailable_is_retried_only_when_safe() {
                 1,
                 "{op}: retried an unsafe mutation"
             );
+            // The mock's ambiguous failure is a reply lost with its
+            // connection.
+            assert_eq!(
+                rt.unknown_reason(&run_id, 0).expect("reason"),
+                Some(UnknownReason::ConnectionLost)
+            );
         }
     }
+}
+
+/// A call whose op honours idempotency keys is sent again on every
+/// ambiguous failure; still ambiguous when the retries run out, it is
+/// unknown with the reason `retries_exhausted`.
+#[test]
+fn a_keyed_call_ambiguous_through_its_retries_is_unknown_as_retries_exhausted() {
+    let world = World::new("retries-exhausted");
+    let lost = Fault {
+        proven_unsent: false,
+        effect_applied: true,
+    };
+    world.mock.inject("mock", "send", &[lost; 8]);
+    let rt = runtime(&world);
+    let run_id = admit(
+        &rt,
+        &world,
+        "await ops.call('mock', 'send', { n: 1 }); return 1;",
+    );
+    let run = finish(&rt, &world, &run_id);
+    assert_eq!(run.state, RunState::NeedsReconcile, "{run:#?}");
+    let key = rt.calls(&run_id).expect("calls")[0].idempotency_key.clone();
+    let retries = rt.config().unavailable_retries as usize;
+    assert_eq!(world.mock.send_count(&key), retries + 1);
+    assert_eq!(world.mock.effect_count(&key), 1, "the key deduplicated");
+    assert_eq!(
+        rt.unknown_reason(&run_id, 0).expect("reason"),
+        Some(UnknownReason::RetriesExhausted)
+    );
 }
 
 /// An operator reconciles an unknown mutation as not applied: it is sent

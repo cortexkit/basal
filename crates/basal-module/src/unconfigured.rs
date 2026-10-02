@@ -15,7 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use basal_host::{
     CallClass, CallRequest, Catalog, Consent, ConsentError, DecisionCard, DecisionSink, Dispatched,
-    EventDecl, Host, InstallCard, OpDecl, TransportError,
+    EventDecl, Host, InstallCard, OpDecl, Sent, TransportError,
 };
 use basal_proto::CallKind;
 
@@ -49,7 +49,7 @@ impl Host for UnconfiguredHost {
 
     fn dispatch(&self, _request: &CallRequest) -> Result<Dispatched, TransportError> {
         Err(TransportError::Unavailable {
-            proven_unsent: true,
+            sent: Sent::Never,
             detail: NO_HOST.to_owned(),
         })
     }

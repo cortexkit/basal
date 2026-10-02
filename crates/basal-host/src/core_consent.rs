@@ -2,8 +2,8 @@
 use crate::subc_catalog::CORE;
 use crate::transport::{Transport, WireError};
 use crate::{
-    CardDecision, Consent, ConsentError, DecisionAnswer, DecisionCard, DecisionEvent, DecisionKind,
-    DecisionSink, InstallCard,
+    CardDecision, Consent, ConsentError, DecisionAnswer, DecisionCard, DecisionContext,
+    DecisionEvent, DecisionKind, DecisionSink, InstallCard,
 };
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
@@ -63,24 +63,30 @@ pub const DECISION_ACTION_EFFECT: &str = "choose";
 /// nothing and is the default.
 pub const DECISION_DECLINE_EFFECT: &str = "decline";
 /// How long core keeps a decision card open before it expires to its
-/// default.
+/// default: core's maximum, a day.
 pub const DECISION_EXPIRES_IN_MS: u64 = 86_400_000;
 
 /// The `elicitation.request` for an operator decision card, built only
-/// here so core's byte-exact test vectors pin a single function.
+/// here. Given the inputs of core's v1 test vectors
+/// (`test-vectors/flow-decision-card-v1/` at prefrontal tag
+/// `flow-decision-card-v1`) it produces their bytes exactly; basal's own
+/// cards differ only in values and in three optional fields core accepts:
+/// `dedup_key`, `args_digest` and `facts`.
 ///
-/// The card goes to the operator alone: no `session_ref`, no agent author
-/// or subject, nothing that would route it to a digest sink. The typed
-/// `flow_decision` body states what the card is about; core shows it as
-/// facts and never authorizes anything with it. A card that breaks core's
-/// rules (2 to 4 options with distinct ids, exactly one declining option,
-/// a run and call key on reconcile cards only) is refused here rather than
-/// sent.
+/// The card goes to the operator alone, so the request carries no
+/// `session_ref` or `parent_session_ref` key at all (core refuses either,
+/// even as null) and no author or subject. `scope` names the flow, which
+/// core requires when there is no `args_digest`. The typed `flow_decision`
+/// body (see [`flow_decision_body`]) states what the card is about; core
+/// shows it as facts and never authorizes anything with it. A card that
+/// breaks core's rules (2 to 4 options with distinct, non-empty ids and
+/// labels, exactly one declining option, a positive version, a positive
+/// expiry of at most a day) is refused here rather than sent.
 pub fn decision_request(card: &DecisionCard) -> Result<Value, ConsentError> {
     let refused = |why: &str| {
         Err(ConsentError::Refused(format!(
-            "decision card {}: {why}",
-            card.dedup_key
+            "decision card for flow {}: {why}",
+            card.flow_id
         )))
     };
     if !(2..=4).contains(&card.options.len()) {
@@ -89,8 +95,13 @@ pub fn decision_request(card: &DecisionCard) -> Result<Value, ConsentError> {
     let mut ids: Vec<&str> = card.options.iter().map(|o| o.id.as_str()).collect();
     ids.sort_unstable();
     ids.dedup();
-    if ids.len() != card.options.len() || ids.iter().any(|id| id.is_empty()) {
-        return refused("option ids are distinct and not empty");
+    if ids.len() != card.options.len()
+        || card
+            .options
+            .iter()
+            .any(|o| o.id.trim().is_empty() || o.label.trim().is_empty())
+    {
+        return refused("option ids are distinct and not empty, and labels not empty");
     }
     let declines: Vec<&str> = card
         .options
@@ -101,19 +112,11 @@ pub fn decision_request(card: &DecisionCard) -> Result<Value, ConsentError> {
     let [default] = declines.as_slice() else {
         return refused("exactly one option declines");
     };
-    let reconcile = card.decision == DecisionKind::Reconcile;
-    if reconcile != (card.run_id.is_some() && card.call_key.is_some())
-        || (!reconcile && (card.run_id.is_some() || card.call_key.is_some()))
-    {
-        return refused("a run and a call key belong to reconcile cards only");
+    if card.version == 0 || card.flow_id.trim().is_empty() {
+        return refused("a card names a flow and a version above 0");
     }
-    let mut body =
-        json!({"flow_id":card.flow_id,"version":card.version,"decision":card.decision.as_str()});
-    if let Some(run_id) = &card.run_id {
-        body["run_id"] = json!(run_id);
-    }
-    if let Some(call_key) = &card.call_key {
-        body["call_key"] = json!(call_key);
+    if card.expires_in_ms == 0 || card.expires_in_ms > DECISION_EXPIRES_IN_MS {
+        return refused("a card expires within a day");
     }
     let options: Vec<Value> = card
         .options
@@ -127,22 +130,103 @@ pub fn decision_request(card: &DecisionCard) -> Result<Value, ConsentError> {
             json!({"id":o.id,"label":o.label,"effect":effect})
         })
         .collect();
-    let facts: Vec<Value> = card
-        .facts
-        .iter()
-        .map(|(label, value)| json!({"label":label,"value":value}))
-        .collect();
-    Ok(
-        json!({"kind":"flow_decision","title":card.title,"prompt":card.prompt,"options":options,
-        "default":default,"urgency":"normal","on_expiry":"deny","material_damage":false,"late_execution":"notify_only",
-        "args_digest":card.args_digest,"dedup_key":card.dedup_key,
-        "target":{"kind":"flow","label":format!("{} v{}",card.flow_id,card.version)},"facts":facts,
-        "expires_in_ms":DECISION_EXPIRES_IN_MS,"flow_decision":body}),
-    )
+    let mut request = json!({"kind":"flow_decision","title":card.title,"prompt":card.prompt,
+        "options":options,"default":default,"urgency":"normal","on_expiry":"deny",
+        "material_damage":false,"late_execution":"notify_only",
+        "scope":{"flow_id":card.flow_id},"target":{"kind":"flow","label":card.flow_id},
+        "expires_in_ms":card.expires_in_ms,"flow_decision":flow_decision_body(card, FLOW_DECISION_BODY)});
+    if let Some(key) = &card.dedup_key {
+        request["dedup_key"] = json!(key);
+    }
+    if let Some(digest) = &card.args_digest {
+        request["args_digest"] = json!(digest);
+    }
+    if !card.facts.is_empty() {
+        let facts: Vec<Value> = card
+            .facts
+            .iter()
+            .map(|(label, value)| json!({"label":label,"value":value}))
+            .collect();
+        request["facts"] = json!(facts);
+    }
+    Ok(request)
 }
 
-/// Reads an answer record of a `flow_decision` card. An expired card
-/// answers with no choice, which basal treats as its default.
+/// The versions of core's typed `flow_decision` body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlowDecisionBody {
+    /// `{flow_id, version, decision, run_id?, call_key?}`, what core decodes
+    /// today (tag `flow-decision-card-v1`); it refuses any other key.
+    V1,
+    /// v1 plus the card's context, typed and required: for a reconcile card
+    /// `run_id`, `run_admitted_at_ms`, `call_key`, `op` (`module.op`),
+    /// `attempts` and `unknown_reason`; for a re-enable card
+    /// `disabled_at_ms`, `disabled_reason`, `limit`, `window_ms` and
+    /// `saturated_windows`. Not yet accepted by core.
+    V2,
+}
+
+/// The body basal sends. It moves to [`FlowDecisionBody::V2`] when core
+/// publishes v2's test vectors; until then core refuses v2's extra keys.
+pub const FLOW_DECISION_BODY: FlowDecisionBody = FlowDecisionBody::V1;
+
+/// The typed `flow_decision` body of a card, in either version.
+pub fn flow_decision_body(card: &DecisionCard, version: FlowDecisionBody) -> Value {
+    let mut body = json!({"flow_id":card.flow_id,"version":card.version,
+        "decision":card.decision().as_str()});
+    match (&card.context, version) {
+        (
+            DecisionContext::Reconcile {
+                run_id, call_key, ..
+            },
+            FlowDecisionBody::V1,
+        ) => {
+            body["run_id"] = json!(run_id);
+            body["call_key"] = json!(call_key);
+        }
+        (
+            DecisionContext::Reconcile {
+                run_id,
+                run_admitted_at_ms,
+                call_key,
+                op,
+                attempts,
+                unknown_reason,
+            },
+            FlowDecisionBody::V2,
+        ) => {
+            body["run_id"] = json!(run_id);
+            body["run_admitted_at_ms"] = json!(run_admitted_at_ms);
+            body["call_key"] = json!(call_key);
+            body["op"] = json!(op);
+            body["attempts"] = json!(attempts);
+            body["unknown_reason"] = json!(unknown_reason.as_str());
+        }
+        (DecisionContext::Reenable { .. }, FlowDecisionBody::V1) => {}
+        (
+            DecisionContext::Reenable {
+                disabled_at_ms,
+                disabled_reason,
+                limit,
+                window_ms,
+                saturated_windows,
+            },
+            FlowDecisionBody::V2,
+        ) => {
+            body["disabled_at_ms"] = json!(disabled_at_ms);
+            body["disabled_reason"] = json!(disabled_reason.as_str());
+            body["limit"] = json!(limit);
+            body["window_ms"] = json!(window_ms);
+            body["saturated_windows"] = json!(saturated_windows);
+        }
+    }
+    body
+}
+
+/// Reads an answer record of a `flow_decision` card. Core answers an
+/// expired card with state `expired` and the card's default (decline) id as
+/// its choice; basal reads every expiry as no choice at all, whatever id it
+/// names, so an expiry can never take an action.
 pub fn decision_answer(record: &Value) -> Result<DecisionAnswer, ConsentError> {
     let bad = |why: &str| ConsentError::Unavailable(format!("decision answer: {why}"));
     let elicitation_id = record["elicitation_id"]

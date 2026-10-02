@@ -25,7 +25,11 @@
 //! it expires. Nothing raises it again, and an answer that arrives later
 //! is recorded as stale and never applied.
 
-use basal_host::{DecisionAnswer, DecisionCard, DecisionKind, DecisionOption};
+use basal_host::core_consent::DECISION_EXPIRES_IN_MS;
+use basal_host::{
+    DecisionAnswer, DecisionCard, DecisionContext, DecisionKind, DecisionOption, DisabledReason,
+    UnknownReason,
+};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 
@@ -66,18 +70,20 @@ fn option(id: &str, label: &str, decline: bool) -> DecisionOption {
     }
 }
 
-/// The options of a card, the declining default first.
+/// The options of a card, each action labelled as the decision itself (a
+/// phone arms an action on its first tap and sends it on the second), and
+/// the declining default last, as in core's test vectors.
 pub fn options(kind: DecisionKind) -> Vec<DecisionOption> {
     match kind {
         DecisionKind::Reconcile => vec![
-            option(LEAVE, "Leave it unresolved", true),
-            option(NOT_APPLIED, "It never ran: send it again", false),
-            option(APPLIED, "It ran: continue", false),
+            option(NOT_APPLIED, "Send the call again", false),
+            option(APPLIED, "Continue as applied", false),
             option(CANCEL, "Cancel the run", false),
+            option(LEAVE, "Leave it unresolved", true),
         ],
         DecisionKind::Reenable => vec![
+            option(REENABLE, "Re-enable the flow", false),
             option(KEEP, "Keep disabled", true),
-            option(REENABLE, "Re-enable", false),
         ],
     }
 }
@@ -140,8 +146,8 @@ pub struct DecisionRecord {
     /// For a reconcile card, the call's send attempt that ended unknown;
     /// for a re-enable card, the auto-disable episode.
     pub instance: u64,
-    /// What the card shows, as JSON: `title`, `prompt`, `args_digest` and
-    /// `facts` (a list of [label, value] pairs).
+    /// What the card is about, as stored: the typed context (see
+    /// [`context_json`]), plus `args_digest` on a reconcile card.
     pub card: String,
     pub revision: u64,
     pub raised_revision: Option<u64>,
@@ -151,38 +157,221 @@ pub struct DecisionRecord {
 }
 
 impl DecisionRecord {
-    /// The card to raise on the consent plane.
+    /// The card's typed context, as stored.
+    pub fn context(&self) -> Result<DecisionContext> {
+        let corrupt = |why: &str| CoreError::Corrupt(format!("decision card {}: {why}", self.seq));
+        let v: Value = serde_json::from_str(&self.card).map_err(|e| corrupt(&e.to_string()))?;
+        let int = |name: &str| v[name].as_i64().ok_or_else(|| corrupt(name));
+        let small = |name: &str| {
+            v[name]
+                .as_u64()
+                .and_then(|n| u32::try_from(n).ok())
+                .ok_or_else(|| corrupt(name))
+        };
+        let text = |name: &str| {
+            v[name]
+                .as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| corrupt(name))
+        };
+        Ok(match self.kind {
+            DecisionKind::Reconcile => DecisionContext::Reconcile {
+                run_id: text("run_id")?,
+                run_admitted_at_ms: int("run_admitted_at_ms")?,
+                call_key: text("call_key")?,
+                op: text("op")?,
+                attempts: small("attempts")?,
+                unknown_reason: UnknownReason::parse(&text("unknown_reason")?)
+                    .ok_or_else(|| corrupt("unknown_reason"))?,
+            },
+            DecisionKind::Reenable => DecisionContext::Reenable {
+                disabled_at_ms: int("disabled_at_ms")?,
+                disabled_reason: DisabledReason::parse(&text("disabled_reason")?)
+                    .ok_or_else(|| corrupt("disabled_reason"))?,
+                limit: small("limit")?,
+                window_ms: v["window_ms"]
+                    .as_u64()
+                    .ok_or_else(|| corrupt("window_ms"))?,
+                saturated_windows: small("saturated_windows")?,
+            },
+        })
+    }
+
+    /// The card to raise on the consent plane: the typed context, and the
+    /// title, prompt and facts written from it.
     pub fn to_card(&self) -> Result<DecisionCard> {
-        let shown: Value = serde_json::from_str(&self.card)
-            .map_err(|e| CoreError::Corrupt(format!("decision card {}: {e}", self.seq)))?;
-        let text = |name: &str| shown[name].as_str().unwrap_or_default().to_owned();
-        let facts = shown["facts"]
-            .as_array()
-            .map(|facts| {
-                facts
-                    .iter()
-                    .map(|f| {
-                        (
-                            f[0].as_str().unwrap_or_default().to_owned(),
-                            f[1].as_str().unwrap_or_default().to_owned(),
-                        )
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        let context = self.context()?;
+        let args_digest = serde_json::from_str::<Value>(&self.card)
+            .ok()
+            .and_then(|v| v["args_digest"].as_str().map(str::to_owned));
         Ok(DecisionCard {
-            dedup_key: self.dedup_key.clone(),
+            dedup_key: Some(self.dedup_key.clone()),
             flow_id: self.flow_id.clone(),
             version: self.version,
-            decision: self.kind,
-            run_id: self.run_id.clone(),
-            call_key: self.call_key.clone(),
-            title: text("title"),
-            prompt: text("prompt"),
-            args_digest: text("args_digest"),
-            facts,
+            title: title(&self.flow_id, &context),
+            prompt: prompt(&self.flow_id, &context),
+            facts: facts(&context),
+            context,
+            args_digest,
             options: options(self.kind),
+            expires_in_ms: DECISION_EXPIRES_IN_MS,
         })
+    }
+}
+
+/// A stored context: the typed fields of the card's body, as JSON.
+pub fn context_json(context: &DecisionContext) -> Value {
+    match context {
+        DecisionContext::Reconcile {
+            run_id,
+            run_admitted_at_ms,
+            call_key,
+            op,
+            attempts,
+            unknown_reason,
+        } => json!({
+            "run_id": run_id,
+            "run_admitted_at_ms": run_admitted_at_ms,
+            "call_key": call_key,
+            "op": op,
+            "attempts": attempts,
+            "unknown_reason": unknown_reason.as_str(),
+        }),
+        DecisionContext::Reenable {
+            disabled_at_ms,
+            disabled_reason,
+            limit,
+            window_ms,
+            saturated_windows,
+        } => json!({
+            "disabled_at_ms": disabled_at_ms,
+            "disabled_reason": disabled_reason.as_str(),
+            "limit": limit,
+            "window_ms": window_ms,
+            "saturated_windows": saturated_windows,
+        }),
+    }
+}
+
+/// A time as the card shows it, in UTC.
+fn clock(ms: i64, pattern: &str) -> String {
+    jiff::Timestamp::from_millisecond(ms)
+        .map(|t| {
+            t.to_zoned(jiff::tz::TimeZone::UTC)
+                .strftime(pattern)
+                .to_string()
+        })
+        .unwrap_or_else(|_| format!("{ms} ms"))
+}
+
+fn window(ms: u64) -> String {
+    if ms % 1000 == 0 {
+        format!("{}-second", ms / 1000)
+    } else {
+        format!("{ms}-millisecond")
+    }
+}
+
+/// What follows "its call to <op> was sent and then" in a reconcile prompt.
+fn what_happened(reason: UnknownReason) -> &'static str {
+    match reason {
+        UnknownReason::BasalRestarted => "basal restarted before the reply was saved",
+        UnknownReason::ConnectionLost => "the connection closed before a reply came",
+        UnknownReason::ReplyTimeout => "no reply came within the call's deadline",
+        UnknownReason::ReplyUnreadable => "the reply that came could not be read",
+        UnknownReason::RetriesExhausted => "every retry ended without a clear answer",
+        UnknownReason::ProviderLostRun => "Broca lost track of the run it had accepted",
+    }
+}
+
+/// The unit of a per-window limit.
+fn unit(reason: DisabledReason) -> &'static str {
+    match reason {
+        DisabledReason::RunLimitSaturated => "runs",
+        DisabledReason::DispatchLimitSaturated => "calls",
+    }
+}
+
+fn title(flow_id: &str, context: &DecisionContext) -> String {
+    match context {
+        DecisionContext::Reconcile { .. } => format!("A call of {flow_id} may not have finished"),
+        DecisionContext::Reenable { .. } => format!("{flow_id} was disabled"),
+    }
+}
+
+/// The card's prompt: one readable sentence written from its context.
+pub fn prompt(flow_id: &str, context: &DecisionContext) -> String {
+    match context {
+        DecisionContext::Reconcile {
+            run_admitted_at_ms,
+            op,
+            unknown_reason,
+            ..
+        } => format!(
+            "Run {} of {flow_id} may not have finished: its call to {op} was sent and then {}.",
+            clock(*run_admitted_at_ms, "%H:%M UTC"),
+            what_happened(*unknown_reason)
+        ),
+        DecisionContext::Reenable {
+            disabled_at_ms,
+            disabled_reason,
+            limit,
+            window_ms,
+            saturated_windows,
+        } => format!(
+            "basal disabled {flow_id} at {}: it reached its limit of {limit} {} per {} window \
+             in {saturated_windows} windows in a row.",
+            clock(*disabled_at_ms, "%H:%M UTC"),
+            unit(*disabled_reason),
+            window(*window_ms)
+        ),
+    }
+}
+
+/// The card's facts beside the flow, version and decision, which core
+/// shows itself.
+fn facts(context: &DecisionContext) -> Vec<(String, String)> {
+    let fact = |label: &str, value: String| (label.to_owned(), value);
+    match context {
+        DecisionContext::Reconcile {
+            run_id,
+            run_admitted_at_ms,
+            op,
+            attempts,
+            unknown_reason,
+            ..
+        } => vec![
+            fact("Run", run_id.clone()),
+            fact(
+                "Run admitted",
+                clock(*run_admitted_at_ms, "%Y-%m-%d %H:%M:%S UTC"),
+            ),
+            fact("Call", op.clone()),
+            fact("Sends", attempts.to_string()),
+            fact("Why unknown", unknown_reason.as_str().to_owned()),
+        ],
+        DecisionContext::Reenable {
+            disabled_at_ms,
+            disabled_reason,
+            limit,
+            window_ms,
+            saturated_windows,
+        } => vec![
+            fact(
+                "Disabled at",
+                clock(*disabled_at_ms, "%Y-%m-%d %H:%M:%S UTC"),
+            ),
+            fact("Why disabled", disabled_reason.as_str().to_owned()),
+            fact(
+                "Limit",
+                format!(
+                    "{limit} {} per {} window",
+                    unit(*disabled_reason),
+                    window(*window_ms)
+                ),
+            ),
+            fact("Saturated windows in a row", saturated_windows.to_string()),
+        ],
     }
 }
 
@@ -260,24 +449,8 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn when(ms: i64) -> String {
-    jiff::Timestamp::from_millisecond(ms)
-        .map(|t| t.to_string())
-        .unwrap_or_else(|_| format!("{ms} ms"))
-}
-
 fn pos(p: u64) -> Result<i64> {
     i64::try_from(p).map_err(|_| CoreError::Invalid(format!("position {p}")))
-}
-
-fn shown(title: String, prompt: String, args_digest: String, facts: &[(&str, String)]) -> String {
-    json!({
-        "title": title,
-        "prompt": prompt,
-        "args_digest": args_digest,
-        "facts": facts.iter().map(|(l, v)| json!([l, v])).collect::<Vec<_>>(),
-    })
-    .to_string()
 }
 
 /// Writes or updates the reconcile card intent of every unknown call of
@@ -297,9 +470,9 @@ pub fn refresh(tx: &Transaction, now_ms: i64) -> Result<()> {
 }
 
 /// The reconcile card intents of one run: one per unknown call. A call's
-/// open card is updated when what it shows changed (another send of the
-/// call ended unknown, with its own error); a decision already made for
-/// this send of the call is never asked again.
+/// open card is updated when its context changed (another send of the call
+/// ended unknown, for its own reason); a decision already made for this
+/// send of the call is never asked again.
 pub fn refresh_run(tx: &Transaction, run_id: &str, now_ms: i64) -> Result<()> {
     let run = runs::load(tx, run_id)?;
     if run.state != RunState::NeedsReconcile {
@@ -310,37 +483,24 @@ pub fn refresh_run(tx: &Transaction, run_id: &str, now_ms: i64) -> Result<()> {
         let Some(row) = journal::row(tx, run_id, position)? else {
             continue;
         };
-        let (detail, op, sent_at): (Option<String>, Option<String>, Option<i64>) = tx.query_row(
-            "SELECT j.unknown_detail, a.op, a.at FROM journal j LEFT JOIN call_audit a \
-             ON a.run_id = j.run_id AND a.position = j.position \
-             WHERE j.run_id = ?1 AND j.position = ?2",
+        let reason: String = tx.query_row(
+            "SELECT unknown_reason FROM journal WHERE run_id = ?1 AND position = ?2",
             params![run_id, pos(position)?],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| r.get(0),
         )?;
-        let op = op.unwrap_or_else(|| row.kind.to_string());
-        let digest = hex(&row.args_digest.0);
-        let error = detail.unwrap_or_else(|| "the outcome could not be established".to_owned());
-        let card = shown(
-            format!("Reconcile {op} in flow {} v{version}", run.flow_id),
-            format!(
-                "A call of run {run_id} ended without a provable outcome. Did it take effect? \
-                 Until you decide, the run waits."
-            ),
-            digest.clone(),
-            &[
-                ("flow", run.flow_id.clone()),
-                ("version", version.to_string()),
-                ("run", run_id.to_owned()),
-                ("op", op),
-                ("arguments digest", digest),
-                (
-                    "sent at",
-                    sent_at.map(when).unwrap_or_else(|| "unknown".into()),
-                ),
-                ("attempt", row.attempts.to_string()),
-                ("error", error),
-            ],
-        );
+        let unknown_reason = UnknownReason::parse(&reason)
+            .ok_or_else(|| CoreError::Corrupt(format!("unknown reason {reason:?}")))?;
+        let context = DecisionContext::Reconcile {
+            run_id: run_id.to_owned(),
+            run_admitted_at_ms: run.admitted_at,
+            call_key: row.idempotency_key.clone(),
+            op: basal_host::op_label(&row.kind),
+            attempts: row.attempts,
+            unknown_reason,
+        };
+        let mut stored = context_json(&context);
+        stored["args_digest"] = json!(hex(&row.args_digest.0));
+        let card = stored.to_string();
         let key = reconcile_key(&run.flow_id, run_id, position);
         let instance = i64::from(row.attempts);
         let decided: bool = tx.query_row(
@@ -394,15 +554,20 @@ pub fn refresh_run(tx: &Transaction, run_id: &str, now_ms: i64) -> Result<()> {
 }
 
 /// Writes the re-enable card intent for a flow the runtime has just
-/// disabled, in the transaction that disabled it. `rule` names the rule
-/// that tripped and its numbers. Each auto-disable is a new episode with
-/// its own card.
+/// disabled, in the transaction that disabled it, so the rule's numbers as
+/// they were when it tripped are kept with the disable. Each auto-disable
+/// is a new episode with its own card.
 pub fn record_auto_disable(
     tx: &Transaction,
     flow_id: &str,
-    rule: &Value,
+    rule: &DecisionContext,
     now_ms: i64,
 ) -> Result<()> {
+    if rule.kind() != DecisionKind::Reenable {
+        return Err(CoreError::Invalid(
+            "an auto-disable records a re-enable context".into(),
+        ));
+    }
     let episode: i64 = tx.query_row(
         "SELECT COALESCE(MAX(instance), 0) + 1 FROM decision_cards \
          WHERE kind = 'reenable' AND flow_id = ?1",
@@ -416,34 +581,6 @@ pub fn record_auto_disable(
         |r| r.get(0),
     )?;
     let episode_u = crate::model::to_u64(episode, "episode")?;
-    let mut digest = blake3::Hasher::new();
-    digest.update(b"basal.flow_decision.reenable.v1\0");
-    digest.update(flow_id.as_bytes());
-    digest.update(&episode_u.to_be_bytes());
-    let number = |name: &str| rule[name].to_string();
-    let card = shown(
-        format!("Re-enable flow {flow_id}"),
-        format!(
-            "basal disabled flow {flow_id} after its rate limit saturated {} windows in a row. \
-             It stays disabled until you re-enable it.",
-            number("saturated_windows")
-        ),
-        digest.finalize().to_hex().to_string(),
-        &[
-            ("flow", flow_id.to_owned()),
-            ("version", version.to_string()),
-            ("rule", rule["rule"].as_str().unwrap_or_default().to_owned()),
-            (
-                "limit that refused",
-                rule["limit"].as_str().unwrap_or_default().to_owned(),
-            ),
-            ("consecutive saturated windows", number("saturated_windows")),
-            ("window", format!("{} ms", number("window_ms"))),
-            ("runs allowed per window", number("max_runs")),
-            ("dispatches allowed per window", number("max_dispatches")),
-            ("disabled at", when(now_ms)),
-        ],
-    );
     tx.execute(
         "INSERT INTO decision_cards (dedup_key, kind, flow_id, version, instance, card, state, \
          created_at) VALUES (?1, 'reenable', ?2, ?3, ?4, ?5, 'open', ?6)",
@@ -452,7 +589,7 @@ pub fn record_auto_disable(
             flow_id,
             version,
             episode,
-            card,
+            context_json(rule).to_string(),
             now_ms
         ],
     )?;

@@ -244,7 +244,37 @@ CREATE TABLE broca_calls (
         version: 6,
         statements: DECISIONS,
     },
+    Migration {
+        version: 7,
+        statements: UNKNOWN_REASON,
+    },
 ];
+
+/// Why each unknown call's outcome is unknown, from a closed set, recorded
+/// when the outcome becomes unknown and required from then on.
+///
+/// A reason cannot be derived afterwards, so this migration refuses a store
+/// that already holds an unknown call. No such store was ever deployed:
+/// basal had not shipped, and its test rig builds fresh stores. A dev or rig
+/// store that hits the refusal is replaced with a fresh one; there is no
+/// backfill and no path for a call without a reason.
+const UNKNOWN_REASON: &str = r#"
+-- The refusal: the guard's CHECK fails, naming the problem, if any call is
+-- already unknown, and the whole migration rolls back.
+CREATE TABLE migration_7_guard (
+    unknown_calls INTEGER NOT NULL
+        CONSTRAINT this_store_holds_unknown_calls_recorded_without_a_reason_replace_it_with_a_fresh_store
+        CHECK (unknown_calls = 0)
+);
+INSERT INTO migration_7_guard (unknown_calls)
+    SELECT COUNT(*) FROM journal WHERE dispatch = 'unknown';
+DROP TABLE migration_7_guard;
+
+ALTER TABLE journal ADD COLUMN unknown_reason TEXT
+    CHECK (unknown_reason IN ('basal_restarted', 'connection_lost', 'reply_timeout',
+        'reply_unreadable', 'retries_exhausted', 'provider_lost_run'))
+    CHECK (dispatch <> 'unknown' OR unknown_reason IS NOT NULL);
+"#;
 
 /// Operator decision cards: the questions only the operator may answer
 /// (what happened to a call whose outcome is unknown, whether an
@@ -253,9 +283,6 @@ CREATE TABLE broca_calls (
 /// asked, so a crash cannot lose a card, and core's deduplication key makes
 /// raising it again after a crash show the same card.
 const DECISIONS: &str = r#"
--- Why a call's outcome became unknown, shown on its reconcile card.
-ALTER TABLE journal ADD COLUMN unknown_detail TEXT;
-
 -- The decision card an operator's action came through, when it came
 -- through one.
 ALTER TABLE audit ADD COLUMN elicitation_id TEXT;

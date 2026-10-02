@@ -47,6 +47,9 @@ libc = "0.2.180"
 rquickjs = { version = "=0.14.0", default-features = false, features = ["std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Tests only: checks the SHA-256 of test vectors copied from other
+# repositories against the digests their owners published.
+sha2 = "0.10"
 # The module shell. subc-client-rs owns HELLO, route binding, health and the
 # frame lifecycle; subc-protocol is the manifest and route vocabulary it
 # speaks. Both are the latest published releases.
