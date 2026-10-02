@@ -264,7 +264,6 @@ const REQUEST_KEYS: &[&str] = &[
     "requestedSchema",
 ];
 
-/// Core's v1 `flow_decision` body keys; any other is refused.
 /// The keys of core's `flow_decision` body, tagged by `decision`
 /// (prefrontal-core-store `FlowDecisionCard` at tag `flow-decision-card-v2`):
 /// every key but `step` is required, and any other key is refused, so a v1
@@ -301,7 +300,8 @@ const UNKNOWN_REASONS: &[&str] = &[
 ];
 const DISABLED_REASONS: &[&str] = &["run_limit_saturated", "dispatch_limit_saturated"];
 
-/// Core's decode and `FlowDecisionCard::valid` for a `flow_decision` body.
+/// Checks a `flow_decision` body's keys, required fields and value limits
+/// as core's decoder and `FlowDecisionCard::valid` do.
 fn check_body(body: &Value) -> Result<(), String> {
     let id_ok = |name: &str| {
         body[name]
