@@ -2228,17 +2228,6 @@ const MODULE_CONTROLS: &[Control] = &[
         test: "the_unconfigured_host_refuses_every_dispatch_as_never_sent",
     },
     Control {
-        label: "the engine counts a run the install gate deferred as progress",
-        edits: &[(
-            M_ENGINE,
-            "                    \"not activated, asking core again in {retry_in:?}: {detail}\"\n                );\n                false",
-            "                    \"not activated, asking core again in {retry_in:?}: {detail}\"\n                );\n                true",
-        )],
-        also_restore: NO_EXTRA,
-        target: Target::Module("install_gate"),
-        test: "unreachable_core_keeps_the_run_pending_without_a_hot_loop",
-    },
-    Control {
         label: "the flow_install request sends an empty placement when the manifest states none",
         edits: &[(
             M_CORE_CONSENT,

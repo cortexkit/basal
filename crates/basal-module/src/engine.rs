@@ -242,8 +242,8 @@ impl Engine {
             }
             ActivationEnd::Waiting { .. } | ActivationEnd::NotRunnable { .. } => false,
             // Core gave the install gate no answer: the run is pending as it
-            // was and waits out a backoff, so this is not progress (a test's
-            // run-until-idle would otherwise spin on it).
+            // was and waits out a backoff, during which `Runtime::startable`
+            // does not offer it, so nothing changed.
             ActivationEnd::Deferred { detail, retry_in } => {
                 tracing::warn!(
                     target: "engine",
