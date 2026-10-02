@@ -325,6 +325,78 @@ fn install_card_is_byte_exact_and_session_comes_from_caller() {
         json!({"window":"1d","fresh_input":0,"cache_write":0,"output":0,"cache_read":0})
     );
 }
+#[test]
+fn card_author_is_operator_agent_or_local_and_nothing_else() {
+    use basal_host::core_consent::request;
+    use basal_host::{ConsentError, InstallCard};
+    let fake = Fake::new();
+    let consent = Arc::new(CoreConsent::new(fake.clone()));
+    let f = fixture(fake.clone(), consent, "card-local");
+    let script = "return 1;\n";
+
+    // A local caller's card reaches core as {"local": true} with no session,
+    // and core's fake accepts it because the flow declares a digest sink.
+    common::install(&f, &Caller::Local, script, &manifest());
+    let calls = fake.calls("elicitation.request");
+    assert_eq!(calls.len(), 1);
+    let local = &calls[0]["params"];
+    assert_eq!(local["flow_install"]["author"], json!({ "local": true }));
+    assert!(local.get("session_ref").is_none(), "{local:#}");
+
+    // Without a digest sink basal refuses it itself, before core sees it.
+    let mut bare = manifest();
+    bare["id"] = json!("bare-flow");
+    bare["sinks"] = json!([]);
+    let r = f.module.handle(
+        &Caller::Local,
+        "flow.install",
+        json!({ "script": script, "manifest": bare.to_string() }),
+    );
+    assert_eq!(
+        r.map_err(|e| e.code),
+        Err("local_install_needs_digest_sink".to_owned())
+    );
+    assert_eq!(fake.calls("elicitation.request").len(), 1, "nothing sent");
+
+    // The consent host sends only core's three forms. An agent needs its
+    // session; anything else is refused before it is sent.
+    let card = |author: Value, session: Option<&str>| {
+        let mut fields = json!({"purpose":"Purpose","wire_author":author,"code_hash":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","code":{"script":"return 1;","manifest":"{\"id\":\"f\",\"version\":1}"},"placement":"machine:local","warnings":[],"dry_run_summary":{},"token_cap":null,"token_window":null});
+        if let Some(s) = session {
+            fields["session_ref"] = json!(s);
+        }
+        InstallCard {
+            card_id: "card:f:v1:0123456789abcdef".into(),
+            flow_id: "f".into(),
+            version: 1,
+            fields,
+        }
+    };
+    let sent = request(&card(json!({ "local": true }), Some("ses-ignored"))).unwrap();
+    assert!(sent.get("session_ref").is_none(), "{sent:#}");
+    let sent = request(&card(json!({ "operator": true }), None)).unwrap();
+    assert!(sent.get("session_ref").is_none(), "{sent:#}");
+    let sent = request(&card(json!({ "agent": "SYNAPSE" }), Some("ses-author"))).unwrap();
+    assert_eq!(sent["session_ref"], "ses-author");
+    for (author, session) in [
+        (json!({ "agent": "SYNAPSE" }), None),
+        (json!({ "agent": "" }), Some("ses-author")),
+        (json!({ "local": false }), None),
+        (json!({ "local": "yes" }), None),
+        (json!({ "operator": false }), None),
+        (json!({ "operator": true, "local": true }), None),
+        (json!({ "unverified": true }), None),
+        (json!({}), None),
+        (json!("local"), None),
+    ] {
+        let r = request(&card(author.clone(), session));
+        assert!(
+            matches!(r, Err(ConsentError::Refused(_))),
+            "{author} with session {session:?}: {r:?}"
+        );
+    }
+}
+
 #[derive(Default)]
 struct Decisions {
     events: Mutex<Vec<DecisionEvent>>,

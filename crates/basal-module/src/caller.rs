@@ -2,15 +2,24 @@
 //! and never from the request's arguments.
 //!
 //! A route's principal is stamped by the daemon when the route is bound:
-//! `direct` for a key-holder with no consumer identity (the operator's `ck`
-//! faces), `reserved:<module>` for a daemon-spawned module that proved its
-//! launch nonce. An agent is identified by the scope its route was admitted
-//! under: prefrontal-core owns every agent's session scope and sets the
-//! scope's `agent_id`, and the daemon stamps the scope (with whether its
-//! owner is on the daemon's scope-authority list) on the route. The stamp
-//! reaches basal in `on_bind` as `RouteBindRequest::scope` (subc-client-rs
-//! 0.24 and later). Nothing the caller writes in a request body can change
-//! any of this.
+//! `reserved:<module>` for a daemon-spawned module that proved its launch
+//! nonce, `direct` for any process that holds the daemon's connection file
+//! and has no consumer identity. The operator is the attested
+//! `reserved:callosum` (the module that relays the operator's own actions),
+//! never `direct`: every local process can be `direct`, so treating it as the
+//! operator would hand any of them basal's operator powers. prefrontal-core
+//! draws the same line (only a bind attested as callosum is the operator).
+//! An unscoped `direct` caller is a [`Caller::Local`]: it may ask to install
+//! a flow, since the install card is what authorizes the install, and is
+//! refused everything else the operator alone may do.
+//!
+//! An agent is identified by the scope its route was admitted under:
+//! prefrontal-core owns every agent's session scope and sets the scope's
+//! `agent_id`, and the daemon stamps the scope (with whether its owner is on
+//! the daemon's scope-authority list) on the route. The stamp reaches basal
+//! in `on_bind` as `RouteBindRequest::scope` (subc-client-rs 0.24 and
+//! later). Nothing the caller writes in a request body can change any of
+//! this.
 //!
 //! Of the `ScopeStamp`, basal reads three fields:
 //!
@@ -22,11 +31,12 @@
 //! - `attributes.agent_id`: the agent itself.
 //!
 //! The rest is not identity. `scope_ref` (`ref` on the wire) is an opaque
-//! id core mints for the scope (not the agent's session), `scope_epoch`, `kind`, `parent` and
-//! `parent_state` describe the scope's lifetime and lineage, and
-//! `attributes.delegates` lets a provider act as the agent, which basal
-//! never does. The agent's session is the route's bind identity session,
-//! accepted only on a route admitted under that agent's vouched scope.
+//! id core mints for the scope (not the agent's session), `scope_epoch`,
+//! `kind`, `parent` and `parent_state` describe the scope's lifetime and
+//! lineage, and `attributes.delegates` lets a provider act as the agent,
+//! which basal never does. The agent's session is the route's bind identity
+//! session, accepted only on a route admitted under that agent's vouched
+//! scope.
 
 use subc_protocol::Principal;
 use subc_protocol::scope::ScopeStamp;
@@ -35,11 +45,20 @@ use subc_protocol::scope::ScopeStamp;
 /// on its own cadence to decide whether a flow's claim holds.
 pub const CORE_MODULE: &str = "prefrontal-core";
 
+/// The module the daemon attests for the operator's own actions. Only a
+/// route it stamps `reserved:callosum` is the operator.
+pub const OPERATOR_MODULE: &str = "callosum";
+
 /// Who called.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Caller {
-    /// The operator: a direct key-holder on a route with no scope.
+    /// The operator: the daemon-attested `reserved:callosum`, on a route
+    /// with no scope.
     Operator,
+    /// A local process the daemon cannot vouch for: a `direct` key-holder on
+    /// a route with no scope. It may install a flow (the install card is
+    /// what authorizes it) and nothing else the operator may do.
+    Local,
     /// Core itself, on its own route (not under an agent's scope).
     Core,
     /// An agent, by the `agent_id` its session scope carries.
@@ -55,6 +74,7 @@ impl Caller {
     pub fn label(&self) -> String {
         match self {
             Self::Operator => "operator".to_owned(),
+            Self::Local => "local".to_owned(),
             Self::Core => format!("reserved:{CORE_MODULE}"),
             Self::Agent { agent_id, .. } => format!("agent:{agent_id}"),
             Self::Other(o) => o.clone(),
@@ -77,8 +97,9 @@ fn principal_label(principal: Option<&Principal>) -> String {
 /// that owner may set authority-bearing attributes (`owner_authorized`);
 /// otherwise the `agent_id` is a claim nobody vouched for and is ignored. A
 /// route under an agent's scope is that agent's even when its principal is
-/// `direct` (an agent's harness is a direct key-holder too); only an
-/// unscoped direct route is the operator.
+/// `direct` (an agent's harness is a direct key-holder too). Without a
+/// scope, only the attested `reserved:callosum` is the operator; a `direct`
+/// route is a local caller.
 pub fn from_route(
     principal: Option<&Principal>,
     scope: Option<&ScopeStamp>,
@@ -104,7 +125,8 @@ pub fn from_route(
         };
     }
     match principal {
-        Some(Principal::Direct) => Caller::Operator,
+        Some(Principal::Reserved { module_id }) if module_id == OPERATOR_MODULE => Caller::Operator,
+        Some(Principal::Direct) => Caller::Local,
         Some(Principal::Reserved { module_id }) if module_id == CORE_MODULE => Caller::Core,
         other => Caller::Other(principal_label(other)),
     }
@@ -137,8 +159,19 @@ mod tests {
     #[test]
     fn identity_comes_only_from_the_stamp() {
         assert_eq!(
-            from_route(Some(&Principal::Direct), None, "ses-author"),
+            from_route(
+                Some(&Principal::Reserved {
+                    module_id: OPERATOR_MODULE.into()
+                }),
+                None,
+                "ses-author"
+            ),
             Caller::Operator
+        );
+        // Any local process can hold the connection file and be `direct`.
+        assert_eq!(
+            from_route(Some(&Principal::Direct), None, "ses-author"),
+            Caller::Local
         );
         assert_eq!(
             from_route(

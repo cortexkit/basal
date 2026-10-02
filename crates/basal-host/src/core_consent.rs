@@ -33,14 +33,57 @@ pub fn request(card: &InstallCard) -> Result<Value, ConsentError> {
         "preview":{"label":"Code","text":script},"expires_in_ms":86400000,
         "flow_install":{"flow_id":card.flow_id,"version":card.version,"code_hash":hash,"script":script,"manifest_json":manifest,
             "author":author,"placement":f["placement"],"warnings":f["warnings"].as_array().map(|warnings| warnings.iter().map(|w| json!({"code":w["kind"],"detail":w["text"]})).collect::<Vec<_>>()).unwrap_or_default(),"dry_run_summary":f["dry_run_summary"],"token_usage":{"window":f["token_cap"]["window"].as_str().unwrap_or("1d"),"fresh_input":f["token_window"]["input_tokens"].as_u64().unwrap_or(0),"cache_write":f["token_window"]["cache_write_tokens"].as_u64().unwrap_or(0),"output":f["token_window"]["output_tokens"].as_u64().unwrap_or(0),"cache_read":f["token_window"]["cached_input_tokens"].as_u64().unwrap_or(0)}}});
-    if author.get("operator").and_then(Value::as_bool) != Some(true) {
-        let session = field(f, "session_ref")?;
-        if session.is_empty() {
-            return Err(ConsentError::Refused("authoring session is empty".into()));
+    match author_kind(&author)? {
+        // Core resolves an agent's card to the session it was authored
+        // from, so the agent form carries one.
+        AuthorKind::Agent => {
+            let session = field(f, "session_ref")?;
+            if session.is_empty() {
+                return Err(ConsentError::Refused("authoring session is empty".into()));
+            }
+            result["session_ref"] = json!(session);
         }
-        result["session_ref"] = json!(session);
+        // The operator's card and a local caller's card name no session:
+        // core routes them itself (a local caller's through the first
+        // digest sink's agent).
+        AuthorKind::Operator | AuthorKind::Local => {}
     }
     Ok(result)
+}
+
+/// The three author forms core accepts on a `flow_install` request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthorKind {
+    /// `{"operator": true}`: the daemon-attested operator (callosum).
+    Operator,
+    /// `{"agent": "<id or name>"}`: an agent, with `session_ref`.
+    Agent,
+    /// `{"local": true}`: a local caller the daemon cannot vouch for, shown
+    /// by core as an unverified local caller.
+    Local,
+}
+
+/// Which of core's author forms `author` is: exactly one key, with the value
+/// core expects. Anything else is refused rather than sent, so a card never
+/// reaches core with an author it would read differently.
+pub fn author_kind(author: &Value) -> Result<AuthorKind, ConsentError> {
+    let refused = || {
+        ConsentError::Refused(format!(
+            "the card's author {author} is not {{\"operator\": true}}, {{\"agent\": <id>}} or {{\"local\": true}}"
+        ))
+    };
+    let object = author
+        .as_object()
+        .filter(|o| o.len() == 1)
+        .ok_or_else(refused)?;
+    match object.iter().next() {
+        Some((key, Value::Bool(true))) if key == "operator" => Ok(AuthorKind::Operator),
+        Some((key, Value::Bool(true))) if key == "local" => Ok(AuthorKind::Local),
+        Some((key, Value::String(agent))) if key == "agent" && !agent.is_empty() => {
+            Ok(AuthorKind::Agent)
+        }
+        _ => Err(refused()),
+    }
 }
 struct State {
     transport: Arc<dyn Transport>,

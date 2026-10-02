@@ -43,7 +43,7 @@ impl Fake {
                 json!({"selected":{"model":{"providerID":"registry-provider","modelID":"registry-model"}},"decisionID":format!("decision:{}",params["sendID"].as_str().unwrap_or("")),"runner":{"provider":"fake","model":"test"}}),
             ),
             "route.set_decision_outcome" => Ok(json!({"ok":true})),
-            "elicitation.request" => Ok(json!({"elicitation_id":"el_1"})),
+            "elicitation.request" => flow_install_request(params),
             "elicitation.answers" => Ok(json!({"records":[],"cursor":0})),
             "elicitation.ack" => Ok(json!({"ok":true})),
             "sink.digest" => Ok(json!({"disposition":"stored","fire_id":"wf_1","replayed":false})),
@@ -56,6 +56,51 @@ impl Fake {
             _ => Ok(params.clone()),
         }
     }
+}
+
+/// Core's checks of a `flow_install` request's author, written from core's
+/// rules rather than from basal's encoder: `{"operator": true}`, `{"agent":
+/// <id or name>}` with a non-empty `session_ref`, or `{"local": true}`,
+/// which needs no session but is routed through the first digest sink's
+/// agent, so its manifest must declare one. Every other form is refused.
+/// The refusal code is the fake's choice: core's own code for each case is
+/// not pinned here.
+fn flow_install_request(params: &Value) -> Result<Value, WireError> {
+    let invalid = |message: &str| {
+        Err(WireError::Refused {
+            code: "elicitation_invalid_request".into(),
+            message: message.into(),
+        })
+    };
+    let author = &params["flow_install"]["author"];
+    let session = params["session_ref"].as_str().unwrap_or("");
+    let sinks = params["flow_install"]["manifest_json"]
+        .as_str()
+        .and_then(|m| serde_json::from_str::<Value>(m).ok())
+        .and_then(|m| m["sinks"].as_array().map(Vec::len))
+        .unwrap_or(0);
+    let accepted = if *author == json!({ "operator": true }) {
+        true
+    } else if *author == json!({ "local": true }) {
+        if sinks == 0 {
+            return invalid("a local caller's flow has no digest sink to route its card through");
+        }
+        true
+    } else {
+        let agent = author
+            .as_object()
+            .filter(|o| o.len() == 1)
+            .and_then(|o| o.get("agent"))
+            .and_then(Value::as_str);
+        matches!(agent, Some(a) if !a.is_empty()) && !session.is_empty()
+    };
+    if !accepted {
+        return invalid("author is not operator, agent with a session, or local");
+    }
+    Ok(json!({"elicitation_id":"el_1"}))
+}
+
+impl Fake {
     pub fn calls(&self, op: &str) -> Vec<Value> {
         self.records
             .lock()

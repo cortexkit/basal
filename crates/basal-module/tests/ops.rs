@@ -1,16 +1,19 @@
-//! The `flow.*` ops: who may call each (the operator, the flow's owning
-//! agent, another agent, core, and any other module), and what each does.
+//! The `flow.*` ops: who may call each (the operator, a local caller, the
+//! flow's owning agent, another agent, core, and any other module), and
+//! what each does.
 
 mod common;
 
 use basal_core::{Actor, Admission, RunState};
 use basal_host::CardDecision;
 use basal_host::mock::Fault;
-use basal_module::caller::Caller;
+use basal_module::caller::{self, CORE_MODULE, Caller, OPERATOR_MODULE};
+use basal_module::ops::LOCAL_AUTHOR;
 use common::{
     Fixture, Options, T0, admit, agent, events_manifest, fixture, install, install_approved,
 };
 use serde_json::{Value, json};
+use subc_protocol::Principal;
 
 const SCRIPT: &str = "const r = await ops.call('mock', 'echo', { n: 1 }); return r.n;";
 const OWNER: &str = "SYNAPSE";
@@ -40,72 +43,106 @@ fn v2() -> Value {
     m
 }
 
+/// What an op did for one caller: ran (or failed for a reason other than
+/// who called), refused it, or refused it as needing the attested operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Seen {
+    Ran,
+    Refused,
+    NeedsOperator,
+}
+use Seen::{NeedsOperator as Attest, Ran as Yes, Refused as No};
+
+fn seen(r: &Result<Value, String>) -> Seen {
+    match r {
+        Err(e) if e.starts_with("not_permitted") => Seen::Refused,
+        Err(e) if e.starts_with("operator_attestation_required") => Seen::NeedsOperator,
+        _ => Seen::Ran,
+    }
+}
+
+/// The caller basal decides for a route stamped with this principal and no
+/// scope.
+fn unscoped(principal: Principal) -> Caller {
+    caller::from_route(Some(&principal), None, "ses-unscoped")
+}
+
+fn reserved(module_id: &str) -> Principal {
+    Principal::Reserved {
+        module_id: module_id.into(),
+    }
+}
+
 #[test]
 fn authorization_matrix() {
     let f = owned_flow("ops-matrix");
-    let operator = Caller::Operator;
+    // The operator and the local caller come from their routes' stamps: only
+    // the attested callosum is the operator, and a direct key-holder (any
+    // local process) is a local caller.
+    let operator = unscoped(reserved(OPERATOR_MODULE));
+    let local = unscoped(Principal::Direct);
+    assert_eq!(operator, Caller::Operator);
+    assert_eq!(local, Caller::Local);
     let owner = agent(OWNER);
     let other = agent("ALF");
-    let core = Caller::Core;
-    let module = Caller::Other("reserved:aft".into());
+    let core = unscoped(reserved(CORE_MODULE));
+    let module = unscoped(reserved("aft"));
 
-    // (op, params, [operator, owner, another agent, core, another module])
+    // Each row: op, params, and what happens for [operator, local, owner,
+    // another agent, core, another module]: Yes ran, No refused
+    // (not_permitted), Attest refused as needing the attested operator
+    // (operator_attestation_required).
     let install_v2 = json!({ "script": SCRIPT, "manifest": v2().to_string() });
-    let cases: Vec<(&str, Value, [bool; 5])> = vec![
-        (
-            "flow.install",
-            install_v2,
-            [true, true, false, false, false],
-        ),
+    let cases: Vec<(&str, Value, [Seen; 6])> = vec![
+        // A local caller may install, but not replace a flow someone else
+        // wrote: that is the operator's (see
+        // a_local_caller_installs_only_its_own_flows_with_a_digest_sink).
+        ("flow.install", install_v2, [Yes, Attest, Yes, No, No, No]),
         (
             "flow.dry_run",
             json!({ "flow_id": FLOW, "trigger": { "kind": "synthetic" } }),
-            [true, true, false, false, false],
+            [Yes, Attest, Yes, No, No, No],
         ),
         (
             "flow.dry_run",
             json!({ "flow_id": FLOW, "mode": "live", "trigger": { "kind": "synthetic" } }),
-            [true, false, false, false, false],
+            [Yes, Attest, No, No, No, No],
         ),
-        (
-            "flow.health",
-            Value::Null,
-            [true, false, false, true, false],
-        ),
+        ("flow.health", Value::Null, [Yes, Attest, No, No, Yes, No]),
         (
             "flow.reconcile",
             json!({ "run_id": "run-none", "position": 0, "resolution": "cancel" }),
-            [true, false, false, false, false],
+            [Yes, Attest, No, No, No, No],
         ),
         (
             "flow.drain",
             json!({ "resume": true }),
-            [true, false, false, false, false],
+            [Yes, Attest, No, No, No, No],
         ),
         (
             "flow.disable",
             json!({ "flow_id": FLOW }),
-            [true, true, false, false, false],
+            [Yes, Attest, Yes, No, No, No],
         ),
         (
             "flow.enable",
             json!({ "flow_id": FLOW }),
-            [true, true, false, false, false],
+            [Yes, Attest, Yes, No, No, No],
         ),
     ];
     for (method, params, expected) in cases {
-        for (caller, allowed) in [&operator, &owner, &other, &core, &module]
+        for (caller, want) in [&operator, &local, &owner, &other, &core, &module]
             .into_iter()
             .zip(expected)
         {
             let result = call(&f, caller, method, params.clone());
             assert_eq!(
-                !refused(&result),
-                allowed,
+                seen(&result),
+                want,
                 "{method} {params} as {}: {result:?}",
                 caller.label()
             );
-            if method == "flow.disable" && allowed {
+            if method == "flow.disable" && want == Yes {
                 // Put the flow back for the next caller.
                 call(&f, &operator, "flow.enable", json!({ "flow_id": FLOW })).expect("enable");
             }
@@ -122,6 +159,20 @@ fn authorization_matrix() {
         json!({ "flow_id": FLOW, "reason": "mine" }),
     )
     .expect("the owner disables");
+    // A local caller can neither disable the flow again over the owner's
+    // disable (an operator's disable would replace the owner's record) nor
+    // enable it.
+    let r = call(
+        &f,
+        &local,
+        "flow.disable",
+        json!({ "flow_id": FLOW, "reason": "local stop" }),
+    );
+    assert_eq!(seen(&r), Attest, "local over the owner's disable: {r:?}");
+    let r = call(&f, &local, "flow.enable", flow.clone());
+    assert_eq!(seen(&r), Attest, "local after the owner's disable: {r:?}");
+    let record = f.module.rt.flow(FLOW).expect("flow").expect("exists");
+    assert_eq!(record.disabled_reason.as_deref(), Some("mine"));
     let r = call(&f, &owner, "flow.enable", flow.clone());
     assert_eq!(
         r.as_ref().map(|v| v["changed"].clone()),
@@ -138,6 +189,8 @@ fn authorization_matrix() {
     .expect("the operator disables");
     let r = call(&f, &owner, "flow.enable", flow.clone());
     assert!(refused(&r), "owner after an operator disable: {r:?}");
+    let r = call(&f, &local, "flow.enable", flow.clone());
+    assert_eq!(seen(&r), Attest, "local after an operator disable: {r:?}");
     assert!(
         !f.module
             .rt
@@ -161,6 +214,8 @@ fn authorization_matrix() {
     assert_eq!(own["disabled"]["reason"], "saturated");
     let r = call(&f, &owner, "flow.enable", flow.clone());
     assert!(refused(&r), "owner after an auto-disable: {r:?}");
+    let r = call(&f, &local, "flow.enable", flow.clone());
+    assert_eq!(seen(&r), Attest, "local after an auto-disable: {r:?}");
     assert!(
         !f.module
             .rt
@@ -174,6 +229,82 @@ fn authorization_matrix() {
     assert!(record.enabled);
     assert_eq!(record.disabled_by, None, "enabling clears who disabled it");
     assert_eq!(record.disabled_reason, None);
+}
+
+#[test]
+fn a_local_caller_installs_only_its_own_flows_with_a_digest_sink() {
+    let f = owned_flow("ops-local-install");
+    let local = unscoped(Principal::Direct);
+    let install_as = |caller: &Caller, extra: Value, manifest: &Value| {
+        let mut params = json!({ "script": SCRIPT, "manifest": manifest.to_string() });
+        if let (Some(p), Some(e)) = (params.as_object_mut(), extra.as_object()) {
+            p.extend(e.clone());
+        }
+        call(&f, caller, "flow.install", params)
+    };
+
+    // Its own new flow installs under the local author. The card says so to
+    // core as {"local": true}, with no session: core shows it as from an
+    // unverified local caller and routes it through the first digest sink.
+    let reply = install_as(&local, json!({}), &events_manifest("flow-local")).expect("installs");
+    let card = f
+        .consent
+        .card(reply["card_id"].as_str().expect("card id"))
+        .expect("raised");
+    assert_eq!(card.fields["wire_author"], json!({ "local": true }));
+    assert!(
+        card.fields.get("session_ref").is_none(),
+        "{:#}",
+        card.fields
+    );
+    assert_eq!(card.fields["author"], LOCAL_AUTHOR);
+    let mut v2_local = events_manifest("flow-local");
+    v2_local["version"] = json!(2);
+    install_as(&local, json!({}), &v2_local).expect("a second version of its own flow");
+    // An agent cannot install a version of the local caller's flow.
+    let r = install_as(&agent(OWNER), json!({}), &v2_local);
+    assert_eq!(seen(&r), No, "an agent replacing the local flow: {r:?}");
+
+    // Installing in another author's name, with the loop override, or over a
+    // flow someone else wrote is the operator's alone.
+    for (what, extra, manifest) in [
+        (
+            "in another author's name",
+            json!({ "author": OWNER }),
+            events_manifest("flow-named"),
+        ),
+        (
+            "with the loop override",
+            json!({ "loop_override": true }),
+            events_manifest("flow-loop"),
+        ),
+        ("replacing SYNAPSE's flow", json!({}), v2()),
+    ] {
+        let r = install_as(&local, extra, &manifest);
+        assert_eq!(seen(&r), Attest, "local install {what}: {r:?}");
+    }
+    for flow in ["flow-named", "flow-loop"] {
+        assert!(f.module.rt.flow(flow).expect("flow").is_none(), "{flow}");
+    }
+
+    // Without a digest sink core has nowhere to show a local caller's card,
+    // so basal refuses before installing or raising anything.
+    let mut bare = events_manifest("flow-bare");
+    bare["sinks"] = json!([]);
+    let r = install_as(&local, json!({}), &bare);
+    assert!(
+        matches!(&r, Err(e) if e.starts_with("local_install_needs_digest_sink")),
+        "{r:?}"
+    );
+    assert!(f.module.rt.flow("flow-bare").expect("flow").is_none());
+    assert!(f.module.rt.cards("flow-bare").expect("cards").is_empty());
+    assert!(
+        f.consent.cards().iter().all(|c| c.flow_id != "flow-bare"),
+        "no card raised"
+    );
+    // The digest-sink requirement is for local callers only: core routes the
+    // operator's card without one.
+    install_as(&Caller::Operator, json!({}), &bare).expect("the operator installs it");
 }
 
 #[test]

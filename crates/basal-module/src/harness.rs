@@ -44,7 +44,7 @@ use subc_client_rs::{RouteBindRequest, RouteHandle};
 use subc_protocol::scope::{ScopeAttributes, ScopeKind, ScopeStamp};
 use subc_protocol::{BindIdentity, Principal, RouteTarget};
 
-use crate::caller::CORE_MODULE;
+use crate::caller::{CORE_MODULE, OPERATOR_MODULE};
 use crate::dryrun::DryRunConfig;
 use crate::engine::EngineConfig;
 use crate::fatal::EXIT_STORE_FAILURE;
@@ -171,7 +171,8 @@ fn write_clock(dir: &Path, ms: i64) -> std::io::Result<()> {
 }
 
 /// The route-bind request the daemon would send on `handle` for the caller
-/// an op command names in `who` (`"operator"`, `"core"`, `{"agent": ..}`,
+/// an op command names in `who` (`"operator"` for the attested callosum,
+/// `"local"` for an unscoped direct key-holder, `"core"`, `{"agent": ..}`,
 /// `{"module": ..}`, anything else unverified): its principal and, for an
 /// agent, a session scope owned by core and marked owner-authorized.
 fn bind_request(handle: RouteHandle, who: &Value) -> RouteBindRequest {
@@ -183,7 +184,10 @@ fn bind_request(handle: RouteHandle, who: &Value) -> RouteBindRequest {
         BindIdentity::new("/", "harness", "ses-harness"),
     );
     match who {
-        Value::String(s) if s == "operator" => request.with_principal(Principal::Direct),
+        Value::String(s) if s == "operator" => request.with_principal(Principal::Reserved {
+            module_id: OPERATOR_MODULE.into(),
+        }),
+        Value::String(s) if s == "local" => request.with_principal(Principal::Direct),
         Value::String(s) if s == "core" => request.with_principal(Principal::Reserved {
             module_id: CORE_MODULE.into(),
         }),

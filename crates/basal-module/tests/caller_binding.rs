@@ -6,7 +6,7 @@
 
 mod common;
 
-use basal_module::caller::{CORE_MODULE, Caller};
+use basal_module::caller::{CORE_MODULE, Caller, OPERATOR_MODULE};
 use basal_module::serve::BasalHandler;
 use common::{Fixture, Options, events_manifest, fixture, install, install_approved};
 use serde_json::{Value, json};
@@ -217,9 +217,20 @@ fn a_route_without_a_scope_is_never_an_agent() {
         )
     };
 
-    // A direct key-holder with no scope is the operator, whatever session
-    // its bind identity claims; core's own route is core.
-    assert_eq!(unscoped(1, Some(Principal::Direct)), Caller::Operator);
+    // Only the route the daemon attests as callosum is the operator. A
+    // direct key-holder with no scope is a local caller, whatever session
+    // its bind identity claims, and core's own route is core.
+    assert_eq!(
+        unscoped(
+            9,
+            Some(Principal::Reserved {
+                module_id: OPERATOR_MODULE.into()
+            })
+        ),
+        Caller::Operator
+    );
+    let local = unscoped(1, Some(Principal::Direct));
+    assert_eq!(local, Caller::Local);
     assert_eq!(
         unscoped(
             2,
@@ -258,6 +269,23 @@ fn a_route_without_a_scope_is_never_an_agent() {
         SCRIPT,
         &events_manifest(FLOW),
     );
+    // The local caller is not the flow's owner either: dry-running,
+    // disabling and enabling the flow are refused as needing the attested
+    // operator.
+    for (method, params) in [
+        (
+            "flow.dry_run",
+            json!({ "flow_id": FLOW, "trigger": { "kind": "synthetic" } }),
+        ),
+        ("flow.disable", json!({ "flow_id": FLOW })),
+        ("flow.enable", json!({ "flow_id": FLOW })),
+    ] {
+        let r = call(&f, &local, method, params);
+        assert!(
+            matches!(&r, Err(e) if e.starts_with("operator_attestation_required")),
+            "{method} as local: {r:?}"
+        );
+    }
     for caller in &others {
         assert!(matches!(caller, Caller::Other(_)), "{caller:?}");
         assert_refused_on_the_flow(&f, caller);

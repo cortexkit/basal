@@ -1335,6 +1335,7 @@ const DISPATCH_CONTROLS: &[Control] = &[
 const M_MANIFEST: &str = "crates/basal-module/src/manifest.rs";
 const M_CALLER: &str = "crates/basal-module/src/caller.rs";
 const M_SERVE: &str = "crates/basal-module/src/serve.rs";
+const M_CORE_CONSENT: &str = "crates/basal-host/src/core_consent.rs";
 const M_POOL: &str = "crates/basal-module/src/pool.rs";
 const M_ENGINE: &str = "crates/basal-module/src/engine.rs";
 const M_FATAL: &str = "crates/basal-module/src/fatal.rs";
@@ -1460,6 +1461,108 @@ const MODULE_CONTROLS: &[Control] = &[
         also_restore: NO_EXTRA,
         target: Target::Module("caller_binding"),
         test: "an_agent_cannot_act_on_a_flow_it_does_not_own",
+    },
+    Control {
+        label: "an unscoped direct key-holder is the operator",
+        edits: &[(
+            M_CALLER,
+            "Some(Principal::Direct) => Caller::Local,",
+            "Some(Principal::Direct) => Caller::Operator,",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("ops"),
+        test: "authorization_matrix",
+    },
+    Control {
+        label: "any reserved module is the operator, not only the attested callosum",
+        edits: &[(
+            M_CALLER,
+            "Some(Principal::Reserved { module_id }) if module_id == OPERATOR_MODULE => Caller::Operator,",
+            "Some(Principal::Reserved { .. }) => Caller::Operator,",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("ops"),
+        test: "authorization_matrix",
+    },
+    Control {
+        label: "a local caller refused an operator action is told not_permitted, not operator_attestation_required",
+        edits: &[(M_OPS, "if *caller == Caller::Local {", "if false {")],
+        also_restore: NO_EXTRA,
+        target: Target::Module("ops"),
+        test: "authorization_matrix",
+    },
+    Control {
+        label: "a local caller may replace a flow someone else wrote",
+        edits: &[(
+            M_OPS,
+            "if owners.iter().any(|o| o != LOCAL_AUTHOR) {",
+            "if false {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("ops"),
+        test: "a_local_caller_installs_only_its_own_flows_with_a_digest_sink",
+    },
+    Control {
+        label: "a local caller may install in another author's name",
+        edits: &[(
+            M_OPS,
+            "if p.author.as_ref().is_some_and(|a| a != LOCAL_AUTHOR) {",
+            "if false {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("ops"),
+        test: "a_local_caller_installs_only_its_own_flows_with_a_digest_sink",
+    },
+    Control {
+        label: "a local caller may override the loop install rule",
+        edits: &[(
+            M_OPS,
+            "if p.loop_override {\n                    return Err(OpError::operator_attestation_required(",
+            "if false {\n                    return Err(OpError::operator_attestation_required(",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("ops"),
+        test: "a_local_caller_installs_only_its_own_flows_with_a_digest_sink",
+    },
+    Control {
+        label: "a local caller's flow without a digest sink is installed and its card raised",
+        edits: &[(M_OPS, "if manifest.sinks.is_empty() {", "if false {")],
+        also_restore: NO_EXTRA,
+        target: Target::Module("ops"),
+        test: "a_local_caller_installs_only_its_own_flows_with_a_digest_sink",
+    },
+    Control {
+        label: "a local caller's card names the operator as its author",
+        edits: &[(
+            M_OPS,
+            "Caller::Local => Ok((json!({ \"local\": true }), None)),",
+            "Caller::Local => Ok((json!({ \"operator\": true }), None)),",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("ops"),
+        test: "a_local_caller_installs_only_its_own_flows_with_a_digest_sink",
+    },
+    Control {
+        label: "the consent host requires a session for a local caller's card",
+        edits: &[(
+            M_CORE_CONSENT,
+            "if key == \"local\" => Ok(AuthorKind::Local),",
+            "if key == \"local\" => Ok(AuthorKind::Agent),",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "card_author_is_operator_agent_or_local_and_nothing_else",
+    },
+    Control {
+        label: "the consent host sends an author that is not one of core's three forms",
+        edits: &[(
+            M_CORE_CONSENT,
+            "        _ => Err(refused()),",
+            "        _ => Ok(AuthorKind::Operator),",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "card_author_is_operator_agent_or_local_and_nothing_else",
     },
     Control {
         label: "an idle worker bound to any flow is reused for another",

@@ -1,15 +1,23 @@
 //! The `flow.*` ops and who may call each.
 //!
-//! | Op | Operator | Owning agent | Another agent | Core |
-//! |---|---|---|---|---|
-//! | `flow.install` | yes, for any author, with the loop override | for itself only, no override | no (a flow another agent wrote is not theirs to replace) | no |
-//! | `flow.dry_run` capture | yes | yes | no | no |
-//! | `flow.dry_run` live | yes | no | no | no |
-//! | `flow.health` | yes | no | no | yes |
-//! | `flow.reconcile` | yes | no | no | no |
-//! | `flow.drain` | yes | no | no | no |
-//! | `flow.disable` | yes | yes | no | no |
-//! | `flow.enable` | yes | only to undo a disable it made itself | no | no |
+//! | Op | Operator | Local | Owning agent | Another agent | Core |
+//! |---|---|---|---|---|---|
+//! | `flow.install` | yes, for any author, with the loop override | yes, as the local author, no override, only a flow nobody else wrote, with a digest sink | for itself only, no override | no (a flow another agent wrote is not theirs to replace) | no |
+//! | `flow.dry_run` capture | yes | no | yes | no | no |
+//! | `flow.dry_run` live | yes | no | no | no | no |
+//! | `flow.health` | yes | no | no | no | yes |
+//! | `flow.reconcile` | yes | no | no | no | no |
+//! | `flow.drain` | yes | no | no | no | no |
+//! | `flow.disable` | yes | no | yes | no | no |
+//! | `flow.enable` | yes | no | only to undo a disable it made itself | no | no |
+//!
+//! The operator is the daemon-attested `reserved:callosum`; a local caller
+//! is an unscoped `direct` key-holder, which any local process can be (see
+//! [`crate::caller`]). A local caller may ask to install because the install
+//! card, which only the operator decides, is what authorizes an install.
+//! Everything else the operator alone may do refuses it with
+//! `operator_attestation_required`, so it can tell that it reached an
+//! operator action without the daemon's attestation.
 //!
 //! The owning agent is the author of the flow's approved version (before any
 //! version is approved, the author of its installed versions). An owner
@@ -30,7 +38,7 @@ use rusqlite::OptionalExtension;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::caller::Caller;
+use crate::caller::{Caller, OPERATOR_MODULE};
 use crate::card::{self, CardInput, code_hash_hex};
 use crate::dryrun::{DryRunError, DryRunRequest, DryTrigger, Mode};
 use crate::fatal::{install_is_storage, is_storage};
@@ -51,10 +59,28 @@ impl OpError {
         }
     }
 
+    /// The refusal of `op` for `caller`. Every op is open to the operator,
+    /// so a local caller refused one has reached something only an attested
+    /// operator may do, and is told so by its code.
     fn not_permitted(op: &str, caller: &Caller) -> Self {
+        if *caller == Caller::Local {
+            return Self::operator_attestation_required(&format!("calling {op}"));
+        }
         Self::new(
             "not_permitted",
             format!("{} may not call {op}", caller.label()),
+        )
+    }
+
+    /// A local caller asked for something only the operator may do. The
+    /// operator is the route the daemon attests as `reserved:callosum`; a
+    /// `direct` route cannot be told apart from any other local process.
+    fn operator_attestation_required(what: &str) -> Self {
+        Self::new(
+            "operator_attestation_required",
+            format!(
+                "{what} is the operator's alone, and only a route the daemon attests as reserved:{OPERATOR_MODULE} is the operator"
+            ),
         )
     }
 }
@@ -206,6 +232,37 @@ impl Module {
                 }
                 agent.clone()
             }
+            Caller::Local => {
+                if p.author.as_ref().is_some_and(|a| a != LOCAL_AUTHOR) {
+                    return Err(OpError::operator_attestation_required(
+                        "installing a flow in another author's name",
+                    ));
+                }
+                if p.loop_override {
+                    return Err(OpError::operator_attestation_required(
+                        "overriding the loop install rule",
+                    ));
+                }
+                let owners = self.owners(&manifest.id)?;
+                if owners.iter().any(|o| o != LOCAL_AUTHOR) {
+                    return Err(OpError::operator_attestation_required(&format!(
+                        "replacing flow {}, which someone else wrote",
+                        manifest.id
+                    )));
+                }
+                // Core shows a local caller's install card in the session
+                // where the agent named by the manifest's first digest sink
+                // (`sinks[0].agent`) currently lives. With no digest sink
+                // there is no such session, so the install is refused here,
+                // before the version is recorded or a card raised.
+                if manifest.sinks.is_empty() {
+                    return Err(OpError::new(
+                        "local_install_needs_digest_sink",
+                        "a local caller's flow must declare at least one digest sink: core routes its install card through the first sink's agent",
+                    ));
+                }
+                LOCAL_AUTHOR.to_owned()
+            }
             Caller::Core | Caller::Other(_) => {
                 return Err(OpError::not_permitted("flow.install", caller));
             }
@@ -271,12 +328,10 @@ impl Module {
                     token_window,
                     dry_run,
                 });
-                match caller {
-                    Caller::Agent { agent_id, session } => {
-                        fields["wire_author"] = json!({"agent":agent_id});
-                        fields["session_ref"] = json!(session);
-                    }
-                    _ => fields["wire_author"] = json!({"operator":true}),
+                let (wire_author, session_ref) = card_author(caller)?;
+                fields["wire_author"] = wire_author;
+                if let Some(session) = session_ref {
+                    fields["session_ref"] = json!(session);
                 }
                 self.rt
                     .record_card(
@@ -698,6 +753,32 @@ impl Module {
             .enable_flow_as(&p.flow_id, &actor)
             .map_err(|e| self.install_error(e))?;
         Ok(json!({ "flow_id": p.flow_id, "state": "enabled", "changed": changed }))
+    }
+}
+
+/// The author basal records for a flow a local caller installs. Ownership
+/// compares recorded authors with agent ids, so this label is shaped like
+/// basal's actor labels (`operator:...`, `agent:...`) rather than like an
+/// agent's name, to keep it from being mistaken for one.
+pub const LOCAL_AUTHOR: &str = "local:unverified";
+
+/// The install card's author as core takes it, and the authoring session
+/// when there is one. The one place a caller becomes a card author:
+///
+/// - `{"operator": true}` only for the attested operator (callosum);
+/// - `{"agent": <id>}` for an agent, with the session of the route it
+///   installed from as `session_ref`;
+/// - `{"local": true}` for a local caller, with no session: core shows the
+///   card as from an unverified local caller, through the first digest
+///   sink's agent.
+fn card_author(caller: &Caller) -> Result<(Value, Option<String>), OpError> {
+    match caller {
+        Caller::Operator => Ok((json!({ "operator": true }), None)),
+        Caller::Agent { agent_id, session } => {
+            Ok((json!({ "agent": agent_id }), Some(session.clone())))
+        }
+        Caller::Local => Ok((json!({ "local": true }), None)),
+        Caller::Core | Caller::Other(_) => Err(OpError::not_permitted("flow.install", caller)),
     }
 }
 
