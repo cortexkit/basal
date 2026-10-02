@@ -54,6 +54,13 @@ pub enum ConsentError {
     Unavailable(String),
     /// It refused the card.
     Refused(String),
+    /// It refused the card's author: the agent scope the card names is not a
+    /// live agent session core knows. `code` is core's refusal code
+    /// (`flow_install_scope_unknown` or `flow_install_scope_ended`). The
+    /// card was received and answered, so this is not a lost reply, and
+    /// raising the same card again cannot succeed: the install has to come
+    /// from a route under a live scope.
+    AuthorScope { code: String, message: String },
 }
 
 impl fmt::Display for ConsentError {
@@ -61,6 +68,10 @@ impl fmt::Display for ConsentError {
         match self {
             Self::Unavailable(e) => write!(f, "consent plane unavailable: {e}"),
             Self::Refused(e) => write!(f, "consent plane refused the card: {e}"),
+            Self::AuthorScope { code, message } => write!(
+                f,
+                "consent plane refused the card's author ({code}): the agent scope it names is not a live agent session in core: {message}"
+            ),
         }
     }
 }

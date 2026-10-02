@@ -5,8 +5,17 @@ use crate::{CardDecision, Consent, ConsentError, DecisionEvent, DecisionSink, In
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 
+/// Core's refusal of a scope author whose scope it does not own, or that
+/// carries no agent.
+pub const SCOPE_UNKNOWN: &str = "flow_install_scope_unknown";
+/// Core's refusal of a scope author whose scope is no longer live.
+pub const SCOPE_ENDED: &str = "flow_install_scope_ended";
+
 fn error(e: WireError) -> ConsentError {
     match e {
+        WireError::Refused { code, message } if code == SCOPE_UNKNOWN || code == SCOPE_ENDED => {
+            ConsentError::AuthorScope { code, message }
+        }
         WireError::Refused { code, message } => ConsentError::Refused(format!("{code}: {message}")),
         other => ConsentError::Unavailable(format!("{other:?}")),
     }
@@ -25,7 +34,10 @@ pub fn request(card: &InstallCard) -> Result<Value, ConsentError> {
         .get("wire_author")
         .cloned()
         .ok_or_else(|| ConsentError::Refused("card is missing its attested author".into()))?;
-    let mut result = json!({"kind":"flow_install","title":format!("Install flow {} v{}",card.flow_id,card.version),
+    author_kind(&author)?;
+    // No form carries `session_ref`: core finds an agent's session in the
+    // scope the author names, and a scope author sent with one is refused.
+    let result = json!({"kind":"flow_install","title":format!("Install flow {} v{}",card.flow_id,card.version),
         "prompt":field(f,"purpose")?,"options":[{"id":"approve","label":"Approve","effect":"grant"},{"id":"decline","label":"Decline","effect":"decline"}],
         "default":"decline","urgency":"normal","on_expiry":"deny","material_damage":false,"late_execution":"notify_only",
         "args_digest":hash,"dedup_key":format!("flow_install:{}:{}",card.flow_id,card.version),
@@ -33,21 +45,6 @@ pub fn request(card: &InstallCard) -> Result<Value, ConsentError> {
         "preview":{"label":"Code","text":script},"expires_in_ms":86400000,
         "flow_install":{"flow_id":card.flow_id,"version":card.version,"code_hash":hash,"script":script,"manifest_json":manifest,
             "author":author,"placement":f["placement"],"warnings":f["warnings"].as_array().map(|warnings| warnings.iter().map(|w| json!({"code":w["kind"],"detail":w["text"]})).collect::<Vec<_>>()).unwrap_or_default(),"dry_run_summary":f["dry_run_summary"],"token_usage":{"window":f["token_cap"]["window"].as_str().unwrap_or("1d"),"fresh_input":f["token_window"]["input_tokens"].as_u64().unwrap_or(0),"cache_write":f["token_window"]["cache_write_tokens"].as_u64().unwrap_or(0),"output":f["token_window"]["output_tokens"].as_u64().unwrap_or(0),"cache_read":f["token_window"]["cached_input_tokens"].as_u64().unwrap_or(0)}}});
-    match author_kind(&author)? {
-        // Core resolves an agent's card to the session it was authored
-        // from, so the agent form carries one.
-        AuthorKind::Agent => {
-            let session = field(f, "session_ref")?;
-            if session.is_empty() {
-                return Err(ConsentError::Refused("authoring session is empty".into()));
-            }
-            result["session_ref"] = json!(session);
-        }
-        // The operator's card and a local caller's card name no session:
-        // core routes them itself (a local caller's through the first
-        // digest sink's agent).
-        AuthorKind::Operator | AuthorKind::Local => {}
-    }
     Ok(result)
 }
 
@@ -56,8 +53,10 @@ pub fn request(card: &InstallCard) -> Result<Value, ConsentError> {
 pub enum AuthorKind {
     /// `{"operator": true}`: the daemon-attested operator (callosum).
     Operator,
-    /// `{"agent": "<id or name>"}`: an agent, with `session_ref`.
-    Agent,
+    /// `{"scope": "<scope_ref>"}`: an agent, named by the `scope_ref` the
+    /// daemon stamped on the route it installed from. Core looks the scope up
+    /// in its own records and takes the agent and its session from there.
+    Scope,
     /// `{"local": true}`: a local caller the daemon cannot vouch for, shown
     /// by core as an unverified local caller.
     Local,
@@ -69,7 +68,7 @@ pub enum AuthorKind {
 pub fn author_kind(author: &Value) -> Result<AuthorKind, ConsentError> {
     let refused = || {
         ConsentError::Refused(format!(
-            "the card's author {author} is not {{\"operator\": true}}, {{\"agent\": <id>}} or {{\"local\": true}}"
+            "the card's author {author} is not {{\"operator\": true}}, {{\"scope\": <scope_ref>}} or {{\"local\": true}}"
         ))
     };
     let object = author
@@ -79,8 +78,8 @@ pub fn author_kind(author: &Value) -> Result<AuthorKind, ConsentError> {
     match object.iter().next() {
         Some((key, Value::Bool(true))) if key == "operator" => Ok(AuthorKind::Operator),
         Some((key, Value::Bool(true))) if key == "local" => Ok(AuthorKind::Local),
-        Some((key, Value::String(agent))) if key == "agent" && !agent.is_empty() => {
-            Ok(AuthorKind::Agent)
+        Some((key, Value::String(scope_ref))) if key == "scope" && !scope_ref.is_empty() => {
+            Ok(AuthorKind::Scope)
         }
         _ => Err(refused()),
     }

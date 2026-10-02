@@ -167,10 +167,11 @@ pub fn schedule_manifest(id: &str, schedule: Value) -> Value {
     m
 }
 
+/// An agent as basal decides it from a route under its core-owned scope.
 pub fn agent(name: &str) -> Caller {
     Caller::Agent {
         agent_id: name.to_owned(),
-        session: "ses-test-author".into(),
+        scope_ref: format!("scope-of-{name}"),
     }
 }
 

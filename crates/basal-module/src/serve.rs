@@ -42,15 +42,13 @@ enum Phase {
 
 type RouteKey = (u16, u32);
 
-/// What the daemon stamped on one route when it was bound.
+/// What the daemon stamped on one route when it was bound. The bind
+/// identity (project root, harness, session) is not kept: it is the opener's
+/// own declaration, and no caller is decided by it (see [`crate::caller`]).
 #[derive(Debug, Clone)]
 struct RouteStamp {
     principal: Option<Principal>,
     scope: Option<ScopeStamp>,
-    /// The bind identity's session: the opener's own claim, which names the
-    /// agent's session only when the route is under that agent's vouched
-    /// scope (see [`caller::from_route`]).
-    session: String,
 }
 
 /// The stamp of every bound route, and the caller each one names.
@@ -65,15 +63,13 @@ pub struct Routes {
 }
 
 impl Routes {
-    /// Records the principal, scope and session of a route the daemon has
-    /// just bound.
+    /// Records the principal and scope of a route the daemon has just bound.
     pub fn bind(&self, request: &RouteBindRequest) {
         lock(&self.stamps).insert(
             (request.handle.channel, request.handle.epoch),
             RouteStamp {
                 principal: request.principal.clone(),
                 scope: request.scope.clone(),
-                session: request.identity.session.clone(),
             },
         );
     }
@@ -90,8 +86,8 @@ impl Routes {
             .get(&(handle.channel, handle.epoch))
             .cloned();
         match stamp {
-            Some(s) => caller::from_route(s.principal.as_ref(), s.scope.as_ref(), &s.session),
-            None => caller::from_route(None, None, ""),
+            Some(s) => caller::from_route(s.principal.as_ref(), s.scope.as_ref()),
+            None => caller::from_route(None, None),
         }
     }
 }

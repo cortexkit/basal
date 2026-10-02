@@ -21,7 +21,7 @@
 //! later). Nothing the caller writes in a request body can change any of
 //! this.
 //!
-//! Of the `ScopeStamp`, basal reads three fields:
+//! Of the `ScopeStamp`, basal reads four fields:
 //!
 //! - `owner`: the scope must be core's (`reserved:prefrontal-core`), the
 //!   module that owns agents' session scopes. Anyone else's scope is their
@@ -29,14 +29,22 @@
 //! - `owner_authorized`: the daemon's word that the owner is on its
 //!   scope-authority list, so the attributes it set carry authority.
 //! - `attributes.agent_id`: the agent itself.
+//! - `scope_ref` (`ref` on the wire): the id core minted for the scope. An
+//!   agent's install card names its author by this ref alone, and core looks
+//!   the scope up in its own records to find the agent and its session, so
+//!   core relies on nothing basal says about either.
 //!
-//! The rest is not identity. `scope_ref` (`ref` on the wire) is an opaque
-//! id core mints for the scope (not the agent's session), `scope_epoch`,
-//! `kind`, `parent` and `parent_state` describe the scope's lifetime and
-//! lineage, and `attributes.delegates` lets a provider act as the agent,
-//! which basal never does. The agent's session is the route's bind identity
-//! session, accepted only on a route admitted under that agent's vouched
-//! scope.
+//! The rest is not identity: `scope_epoch`, `kind`, `parent` and
+//! `parent_state` describe the scope's lifetime and lineage, and
+//! `attributes.delegates` lets a provider act as the agent, which basal
+//! never does.
+//!
+//! The session in the route's bind identity is not used for anything. It is
+//! what the process that opened the route declared about itself; the daemon
+//! passes it on without checking it, and nothing in the stamp ties it to the
+//! agent's scope, so any process admitted under the scope could name any
+//! session there. Where an agent's session matters (the install card), core
+//! reads it from the scope it owns.
 
 use subc_protocol::Principal;
 use subc_protocol::scope::ScopeStamp;
@@ -61,8 +69,9 @@ pub enum Caller {
     Local,
     /// Core itself, on its own route (not under an agent's scope).
     Core,
-    /// An agent, by the `agent_id` its session scope carries.
-    Agent { agent_id: String, session: String },
+    /// An agent, by the `agent_id` its session scope carries, and that
+    /// scope's `scope_ref` exactly as the daemon stamped it.
+    Agent { agent_id: String, scope_ref: String },
     /// Anyone else: another module, an unverified route, or a route whose
     /// principal the daemon did not record. Refused by every op that names
     /// a caller.
@@ -100,11 +109,7 @@ fn principal_label(principal: Option<&Principal>) -> String {
 /// `direct` (an agent's harness is a direct key-holder too). Without a
 /// scope, only the attested `reserved:callosum` is the operator; a `direct`
 /// route is a local caller.
-pub fn from_route(
-    principal: Option<&Principal>,
-    scope: Option<&ScopeStamp>,
-    session: &str,
-) -> Caller {
+pub fn from_route(principal: Option<&Principal>, scope: Option<&ScopeStamp>) -> Caller {
     if let Some(scope) = scope {
         let core_owned = matches!(
             &scope.owner,
@@ -116,7 +121,7 @@ pub fn from_route(
         ) {
             (Some(agent), true) if !agent.is_empty() => Caller::Agent {
                 agent_id: agent.clone(),
-                session: session.to_owned(),
+                scope_ref: scope.scope_ref.clone(),
             },
             _ => Caller::Other(format!(
                 "a scope of {} without a vouched agent",
@@ -163,69 +168,57 @@ mod tests {
                 Some(&Principal::Reserved {
                     module_id: OPERATOR_MODULE.into()
                 }),
-                None,
-                "ses-author"
+                None
             ),
             Caller::Operator
         );
         // Any local process can hold the connection file and be `direct`.
-        assert_eq!(
-            from_route(Some(&Principal::Direct), None, "ses-author"),
-            Caller::Local
-        );
+        assert_eq!(from_route(Some(&Principal::Direct), None), Caller::Local);
         assert_eq!(
             from_route(
                 Some(&Principal::Reserved {
                     module_id: CORE_MODULE.into()
                 }),
-                None,
-                "ses-author"
+                None
             ),
             Caller::Core
         );
         assert_eq!(
             from_route(
                 Some(&Principal::Direct),
-                Some(&scope(CORE_MODULE, Some("SYNAPSE"), true)),
-                "ses-author"
+                Some(&scope(CORE_MODULE, Some("SYNAPSE"), true))
             ),
             Caller::Agent {
                 agent_id: "SYNAPSE".into(),
-                session: "ses-author".into()
+                scope_ref: "s-1".into()
             }
         );
         // An agent id nobody vouched for is not an identity.
         assert!(matches!(
             from_route(
                 Some(&Principal::Direct),
-                Some(&scope(CORE_MODULE, Some("SYNAPSE"), false)),
-                "ses-author"
+                Some(&scope(CORE_MODULE, Some("SYNAPSE"), false))
             ),
             Caller::Other(_)
         ));
         assert!(matches!(
             from_route(
                 Some(&Principal::Direct),
-                Some(&scope("aft", Some("SYNAPSE"), true)),
-                "ses-author"
+                Some(&scope("aft", Some("SYNAPSE"), true))
             ),
             Caller::Other(_)
         ));
         assert!(matches!(
-            from_route(Some(&Principal::Unverified), None, "ses-author"),
+            from_route(Some(&Principal::Unverified), None),
             Caller::Other(_)
         ));
-        assert!(matches!(
-            from_route(None, None, "ses-author"),
-            Caller::Other(_)
-        ));
+        assert!(matches!(from_route(None, None), Caller::Other(_)));
         assert!(matches!(
             from_route(
                 Some(&Principal::Reserved {
                     module_id: "aft".into()
                 }),
-                None,
-                "ses-author"
+                None
             ),
             Caller::Other(_)
         ));

@@ -17,6 +17,7 @@ use subc_protocol::{BindIdentity, Principal, RouteTarget};
 const SCRIPT: &str = "const r = await ops.call('mock', 'echo', { n: 1 }); return r.n;";
 const OWNER: &str = "SYNAPSE";
 const FLOW: &str = "flow-own";
+/// The bind identity's session, which basal must not use for anything.
 const SESSION: &str = "ses-synapse-1";
 
 /// A handler that never reaches HELLO_ACK: binding routes and deciding
@@ -47,13 +48,19 @@ fn bind_request(handle: RouteHandle, session: &str) -> RouteBindRequest {
     )
 }
 
+/// The `scope_ref` core would mint for the scope a route on `channel` is
+/// admitted under: a different ref for every route in these tests.
+fn scope_ref_of(channel: u16) -> String {
+    format!("0f3c9a7d2b1e4c6a8d5f7e9b1a3c{channel:04x}")
+}
+
 /// A session scope owned by `reserved:<owner>`, naming `agent`.
-fn scope(owner: &str, agent: &str, owner_authorized: bool) -> ScopeStamp {
+fn scope(owner: &str, agent: &str, owner_authorized: bool, scope_ref: String) -> ScopeStamp {
     ScopeStamp {
         owner: Principal::Reserved {
             module_id: owner.to_owned(),
         },
-        scope_ref: "0f3c9a7d2b1e4c6a8d5f7e9b1a3c5d7e".into(),
+        scope_ref,
         scope_epoch: 1,
         kind: ScopeKind::Head,
         parent: None,
@@ -75,13 +82,14 @@ fn caller_of(handler: &BasalHandler, request: RouteBindRequest) -> Caller {
 
 /// Binds a route the way an agent's harness gets one: principal `direct`
 /// (the harness holds a daemon key), under a session scope owned by core,
-/// marked owner-authorized by the daemon and naming `agent`.
+/// marked owner-authorized by the daemon and naming `agent`, whose ref is
+/// [`scope_ref_of`]`(channel)`. The bind identity names `session`.
 fn agent_route(handler: &BasalHandler, channel: u16, agent: &str, session: &str) -> Caller {
     caller_of(
         handler,
         bind_request(RouteHandle::detached(channel, 1), session)
             .with_principal(Principal::Direct)
-            .with_scope(scope(CORE_MODULE, agent, true)),
+            .with_scope(scope(CORE_MODULE, agent, true, scope_ref_of(channel))),
     )
 }
 
@@ -126,25 +134,40 @@ fn assert_refused_on_the_flow(f: &Fixture, caller: &Caller) {
 }
 
 #[test]
-fn an_owner_authorized_core_scope_names_the_agent_and_its_session() {
+fn an_owner_authorized_core_scope_names_the_agent_and_its_scope() {
     let handler = handler();
     let caller = agent_route(&handler, 1, OWNER, SESSION);
     assert_eq!(
         caller,
         Caller::Agent {
             agent_id: OWNER.into(),
-            session: SESSION.into(),
+            scope_ref: scope_ref_of(1),
         }
     );
 
-    // The agent installs as itself, and its card carries the session of the
-    // route it installed from.
+    // The agent installs as itself. Its card names it to core by the scope
+    // ref the daemon stamped on its route, and carries no session: the bind
+    // identity's session is the opener's own claim.
     let f = fixture("caller-agent", Options::default());
     let reply = install(&f, &caller, SCRIPT, &events_manifest(FLOW));
     let card_id = reply["card_id"].as_str().expect("card id");
     let card = f.consent.card(card_id).expect("raised");
-    assert_eq!(card.fields["session_ref"], SESSION, "{:#}", card.fields);
-    assert_eq!(card.fields["wire_author"], json!({ "agent": OWNER }));
+    assert_eq!(
+        card.fields["wire_author"],
+        json!({ "scope": scope_ref_of(1) }),
+        "{:#}",
+        card.fields
+    );
+    assert!(
+        card.fields.get("session_ref").is_none(),
+        "{:#}",
+        card.fields
+    );
+    assert!(
+        !card.fields.to_string().contains(SESSION),
+        "the bind session reaches the card: {:#}",
+        card.fields
+    );
 
     // Once approved, the flow is the agent's: it may disable and enable it.
     assert!(
@@ -165,7 +188,7 @@ fn a_scope_owned_by_another_module_names_no_agent() {
         &handler,
         bind_request(RouteHandle::detached(1, 1), SESSION)
             .with_principal(Principal::Direct)
-            .with_scope(scope("aft", OWNER, true)),
+            .with_scope(scope("aft", OWNER, true, scope_ref_of(1))),
     );
     assert!(matches!(caller, Caller::Other(_)), "{caller:?}");
 
@@ -189,7 +212,7 @@ fn a_scope_without_owner_authorization_names_no_agent() {
         &handler,
         bind_request(RouteHandle::detached(1, 1), SESSION)
             .with_principal(Principal::Direct)
-            .with_scope(scope(CORE_MODULE, OWNER, false)),
+            .with_scope(scope(CORE_MODULE, OWNER, false, scope_ref_of(1))),
     );
     assert!(matches!(caller, Caller::Other(_)), "{caller:?}");
 
@@ -303,7 +326,7 @@ fn an_agent_cannot_act_on_a_flow_it_does_not_own() {
         other,
         Caller::Agent {
             agent_id: "ALF".into(),
-            session: "ses-alf-1".into(),
+            scope_ref: scope_ref_of(2),
         }
     );
 

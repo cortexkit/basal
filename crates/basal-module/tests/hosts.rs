@@ -271,17 +271,38 @@ fn catalog_install_refuses_missing_ops_and_events_and_marks_mutations() {
     let fields: Value = serde_json::from_str(&cards[0].card).unwrap();
     assert_eq!(fields["ops"][1]["kind"], "mutate");
 }
+/// The caller basal decides for a route under core's owner-authorized
+/// session scope `scope_ref`, naming `agent`, as the daemon stamps it.
+fn agent_on_scope(agent: &str, scope_ref: &str) -> Caller {
+    use subc_protocol::Principal;
+    use subc_protocol::scope::{ScopeAttributes, ScopeKind, ScopeStamp};
+    let stamp = ScopeStamp {
+        owner: Principal::Reserved {
+            module_id: basal_module::caller::CORE_MODULE.into(),
+        },
+        scope_ref: scope_ref.into(),
+        scope_epoch: 1,
+        kind: ScopeKind::Head,
+        parent: None,
+        parent_state: None,
+        attributes: ScopeAttributes {
+            agent_id: Some(agent.into()),
+            delegates: false,
+        },
+        owner_authorized: true,
+    };
+    basal_module::caller::from_route(Some(&Principal::Direct), Some(&stamp))
+}
+
 #[test]
-fn install_card_is_byte_exact_and_session_comes_from_caller() {
+fn install_card_is_byte_exact_and_scope_comes_from_the_route_stamp() {
     let fake = Fake::new();
     let consent = Arc::new(CoreConsent::new(fake.clone()));
     let f = fixture(fake.clone(), consent, "card-real");
     let script = "return 1;\n";
     let m = format!("  {}\n", manifest());
-    let caller = Caller::Agent {
-        agent_id: "SYNAPSE".into(),
-        session: "ses-author".into(),
-    };
+    let stamped = "5e1f0c3a9b7d4e2f8a6c1b3d5f7e9a0c";
+    let caller = agent_on_scope("SYNAPSE", stamped);
     f.module
         .handle(
             &caller,
@@ -295,8 +316,11 @@ fn install_card_is_byte_exact_and_session_comes_from_caller() {
     assert_eq!(sent["flow_install"]["code_hash"], hash);
     assert_eq!(sent["flow_install"]["manifest_json"], m);
     assert_eq!(sent["flow_install"]["script"], script);
-    assert_eq!(sent["session_ref"], "ses-author");
-    assert_eq!(sent["flow_install"]["author"], json!({"agent":"SYNAPSE"}));
+    // The author is the scope ref the daemon stamped on the route, and the
+    // request names no session: core takes both agent and session from its
+    // own record of that scope.
+    assert_eq!(sent["flow_install"]["author"], json!({ "scope": stamped }));
+    assert!(sent.get("session_ref").is_none(), "{sent:#}");
     assert_eq!(sent["facts"], json!([]));
     assert_eq!(sent["dedup_key"], "flow_install:host-flow:1");
     assert_eq!(
@@ -325,8 +349,9 @@ fn install_card_is_byte_exact_and_session_comes_from_caller() {
         json!({"window":"1d","fresh_input":0,"cache_write":0,"output":0,"cache_read":0})
     );
 }
+
 #[test]
-fn card_author_is_operator_agent_or_local_and_nothing_else() {
+fn card_author_is_scope_operator_or_local_and_nothing_else() {
     use basal_host::core_consent::request;
     use basal_host::{ConsentError, InstallCard};
     let fake = Fake::new();
@@ -358,43 +383,101 @@ fn card_author_is_operator_agent_or_local_and_nothing_else() {
     );
     assert_eq!(fake.calls("elicitation.request").len(), 1, "nothing sent");
 
-    // The consent host sends only core's three forms. An agent needs its
-    // session; anything else is refused before it is sent.
-    let card = |author: Value, session: Option<&str>| {
-        let mut fields = json!({"purpose":"Purpose","wire_author":author,"code_hash":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","code":{"script":"return 1;","manifest":"{\"id\":\"f\",\"version\":1}"},"placement":"machine:local","warnings":[],"dry_run_summary":{},"token_cap":null,"token_window":null});
-        if let Some(s) = session {
-            fields["session_ref"] = json!(s);
-        }
-        InstallCard {
-            card_id: "card:f:v1:0123456789abcdef".into(),
-            flow_id: "f".into(),
-            version: 1,
-            fields,
-        }
+    // The consent host sends only the three author forms core accepts
+    // (operator, scope, local), and never a session_ref, even when the
+    // card's fields hold one. It refuses any other author form before
+    // sending anything.
+    let card = |author: Value| InstallCard {
+        card_id: "card:f:v1:0123456789abcdef".into(),
+        flow_id: "f".into(),
+        version: 1,
+        fields: json!({"purpose":"Purpose","wire_author":author,"session_ref":"ses-from-a-bind","code_hash":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","code":{"script":"return 1;","manifest":"{\"id\":\"f\",\"version\":1}"},"placement":"machine:local","warnings":[],"dry_run_summary":{},"token_cap":null,"token_window":null}),
     };
-    let sent = request(&card(json!({ "local": true }), Some("ses-ignored"))).unwrap();
-    assert!(sent.get("session_ref").is_none(), "{sent:#}");
-    let sent = request(&card(json!({ "operator": true }), None)).unwrap();
-    assert!(sent.get("session_ref").is_none(), "{sent:#}");
-    let sent = request(&card(json!({ "agent": "SYNAPSE" }), Some("ses-author"))).unwrap();
-    assert_eq!(sent["session_ref"], "ses-author");
-    for (author, session) in [
-        (json!({ "agent": "SYNAPSE" }), None),
-        (json!({ "agent": "" }), Some("ses-author")),
-        (json!({ "local": false }), None),
-        (json!({ "local": "yes" }), None),
-        (json!({ "operator": false }), None),
-        (json!({ "operator": true, "local": true }), None),
-        (json!({ "unverified": true }), None),
-        (json!({}), None),
-        (json!("local"), None),
+    for author in [
+        json!({ "local": true }),
+        json!({ "operator": true }),
+        json!({ "scope": "5e1f0c3a" }),
     ] {
-        let r = request(&card(author.clone(), session));
+        let sent = request(&card(author.clone())).unwrap();
+        assert_eq!(sent["flow_install"]["author"], author);
+        assert!(sent.get("session_ref").is_none(), "{sent:#}");
+    }
+    for author in [
+        // Core no longer accepts an agent named directly by its id, which it
+        // could only take on basal's word.
+        json!({ "agent": "SYNAPSE" }),
+        json!({ "scope": "" }),
+        json!({ "scope": 7 }),
+        json!({ "scope": "5e1f0c3a", "agent": "SYNAPSE" }),
+        json!({ "local": false }),
+        json!({ "local": "yes" }),
+        json!({ "operator": false }),
+        json!({ "operator": true, "local": true }),
+        json!({ "unverified": true }),
+        json!({}),
+        json!("local"),
+    ] {
+        let r = request(&card(author.clone()));
         assert!(
             matches!(r, Err(ConsentError::Refused(_))),
-            "{author} with session {session:?}: {r:?}"
+            "{author}: {r:?}"
         );
     }
+}
+
+#[test]
+fn core_refusing_the_author_scope_is_a_clear_install_error() {
+    let fake = Fake::new();
+    let consent = Arc::new(CoreConsent::new(fake.clone()));
+    let f = fixture(fake.clone(), consent, "card-scope-refused");
+    let script = "return 1;\n";
+    let install_as = |caller: &Caller| {
+        f.module.handle(
+            caller,
+            "flow.install",
+            json!({ "script": script, "manifest": manifest().to_string() }),
+        )
+    };
+
+    // Core's records: a scope that has ended, and one with no agent.
+    for (scope_ref, agent, live) in [
+        ("scope-gone", Some("ag_synapse"), false),
+        ("scope-agentless", None, true),
+    ] {
+        fake.scopes.lock().unwrap().insert(
+            scope_ref.into(),
+            wire::CoreScope {
+                agent: agent.map(str::to_owned),
+                live,
+            },
+        );
+    }
+    // Core answers with a refusal of the scope: the install fails with core's
+    // refusal code as its error code, not as a consent outage or a lost
+    // reply. The version stays installed.
+    for (scope_ref, code) in [
+        ("scope-gone", "flow_install_scope_ended"),
+        ("scope-nobody-minted", "flow_install_scope_unknown"),
+        ("scope-agentless", "flow_install_scope_unknown"),
+    ] {
+        let r = install_as(&agent_on_scope("SYNAPSE", scope_ref));
+        let e = r.expect_err("refused");
+        assert_eq!(e.code, code, "{scope_ref}: {e:?}");
+        assert!(e.message.contains("live agent session"), "{e:?}");
+    }
+    assert_eq!(f.module.rt.cards("host-flow").unwrap().len(), 1);
+
+    // Installing again from a route under a live scope sends the existing
+    // card with that live scope as its author, rather than the ended scope
+    // recorded when the card was first created.
+    let reply = install_as(&agent_on_scope("SYNAPSE", "scope-live")).expect("raised");
+    assert_eq!(reply["state"], "pending");
+    let calls = fake.calls("elicitation.request");
+    let last = &calls.last().expect("sent")["params"];
+    assert_eq!(
+        last["flow_install"]["author"],
+        json!({ "scope": "scope-live" })
+    );
 }
 
 #[derive(Default)]
@@ -685,12 +768,12 @@ fn consent_hash_matches_shared_vectors_and_full_c2_envelope() {
             card_id: "local-card".into(),
             flow_id: "flow-x".into(),
             version: 3,
-            fields: json!({"purpose":"Purpose","wire_author":{"agent":"SYNAPSE"},"session_ref":"ses-author","placement":"machine:ufuk-mbp","warnings":[{"kind":"private_text_with_outbound_op","text":"Private text can leave"}],"dry_run_summary":summary,"code_hash":actual,"code":{"script":script,"manifest":manifest},"token_cap":{"window":"1d"},"token_window":{"input_tokens":11,"cache_write_tokens":12,"output_tokens":13,"cached_input_tokens":14}}),
+            fields: json!({"purpose":"Purpose","wire_author":{"scope":"5e1f0c3a9b7d4e2f8a6c1b3d5f7e9a0c"},"placement":"machine:ufuk-mbp","warnings":[{"kind":"private_text_with_outbound_op","text":"Private text can leave"}],"dry_run_summary":summary,"code_hash":actual,"code":{"script":script,"manifest":manifest},"token_cap":{"window":"1d"},"token_window":{"input_tokens":11,"cache_write_tokens":12,"output_tokens":13,"cached_input_tokens":14}}),
         };
         let sent = request(&card).unwrap();
         assert_eq!(
             sent,
-            json!({"kind":"flow_install","title":"Install flow flow-x v3","prompt":"Purpose","options":[{"id":"approve","label":"Approve","effect":"grant"},{"id":"decline","label":"Decline","effect":"decline"}],"default":"decline","urgency":"normal","on_expiry":"deny","material_damage":false,"late_execution":"notify_only","args_digest":hash,"dedup_key":"flow_install:flow-x:3","session_ref":"ses-author","target":{"kind":"flow","label":"flow-x v3"},"facts":[],"preview":{"label":"Code","text":script},"expires_in_ms":86400000,"flow_install":{"flow_id":"flow-x","version":3,"code_hash":hash,"script":script,"manifest_json":manifest,"author":{"agent":"SYNAPSE"},"placement":"machine:ufuk-mbp","warnings":[{"code":"private_text_with_outbound_op","detail":"Private text can leave"}],"dry_run_summary":summary,"token_usage":{"window":"1d","fresh_input":11,"cache_write":12,"output":13,"cache_read":14}}})
+            json!({"kind":"flow_install","title":"Install flow flow-x v3","prompt":"Purpose","options":[{"id":"approve","label":"Approve","effect":"grant"},{"id":"decline","label":"Decline","effect":"decline"}],"default":"decline","urgency":"normal","on_expiry":"deny","material_damage":false,"late_execution":"notify_only","args_digest":hash,"dedup_key":"flow_install:flow-x:3","target":{"kind":"flow","label":"flow-x v3"},"facts":[],"preview":{"label":"Code","text":script},"expires_in_ms":86400000,"flow_install":{"flow_id":"flow-x","version":3,"code_hash":hash,"script":script,"manifest_json":manifest,"author":{"scope":"5e1f0c3a9b7d4e2f8a6c1b3d5f7e9a0c"},"placement":"machine:ufuk-mbp","warnings":[{"code":"private_text_with_outbound_op","detail":"Private text can leave"}],"dry_run_summary":summary,"token_usage":{"window":"1d","fresh_input":11,"cache_write":12,"output":13,"cache_read":14}}})
         );
     }
 }

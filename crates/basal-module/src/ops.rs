@@ -328,11 +328,7 @@ impl Module {
                     token_window,
                     dry_run,
                 });
-                let (wire_author, session_ref) = card_author(caller)?;
-                fields["wire_author"] = wire_author;
-                if let Some(session) = session_ref {
-                    fields["session_ref"] = json!(session);
-                }
+                fields["wire_author"] = card_author(caller)?;
                 self.rt
                     .record_card(
                         &installed.flow_id,
@@ -349,16 +345,36 @@ impl Module {
             // Raised every time the version is installed while undecided: a
             // raise that was lost (the consent plane was down) is retried by
             // installing again, and the card id makes it one card.
+            //
+            // The card is raised in the name of whoever installs now, not of
+            // whoever installed first: an agent's author is the scope of its
+            // current route, and the scope a stored card names may have
+            // ended since, which core would refuse on every retry.
+            let mut raised_fields = fields.clone();
+            raised_fields["wire_author"] = card_author(caller)?;
             let raised = self.consent.raise(&InstallCard {
                 card_id: record.card_id.clone(),
                 flow_id: record.flow_id.clone(),
                 version: record.version,
-                fields: fields.clone(),
+                fields: raised_fields,
             });
             if let Err(e) = raised {
-                let code = match e {
+                let code = match &e {
                     ConsentError::Unavailable(_) => "consent_unavailable",
                     ConsentError::Refused(_) => "consent_refused",
+                    // Core answered and refused the author, so this is not a
+                    // lost reply: the agent's route is under a scope core
+                    // does not hold as a live agent session. Retrying
+                    // needs a route under a live scope.
+                    ConsentError::AuthorScope { code, .. } => {
+                        return Err(OpError::new(
+                            code,
+                            format!(
+                                "version {} of {} is installed and its card {} recorded, but core refused the card's author: {e}; install again from a live agent session",
+                                record.version, record.flow_id, record.card_id
+                            ),
+                        ));
+                    }
                 };
                 return Err(OpError::new(
                     code,
@@ -762,22 +778,24 @@ impl Module {
 /// agent's name, to keep it from being mistaken for one.
 pub const LOCAL_AUTHOR: &str = "local:unverified";
 
-/// The install card's author as core takes it, and the authoring session
-/// when there is one. The one place a caller becomes a card author:
+/// The install card's author as core takes it. The one place a caller
+/// becomes a card author:
 ///
 /// - `{"operator": true}` only for the attested operator (callosum);
-/// - `{"agent": <id>}` for an agent, with the session of the route it
-///   installed from as `session_ref`;
-/// - `{"local": true}` for a local caller, with no session: core shows the
-///   card as from an unverified local caller, through the first digest
-///   sink's agent.
-fn card_author(caller: &Caller) -> Result<(Value, Option<String>), OpError> {
+/// - `{"scope": <scope_ref>}` for an agent, the ref the daemon stamped on
+///   the route it installs from. Core looks the scope up in its own records
+///   and takes the agent id and its session from there, so it trusts
+///   nothing basal says about either;
+/// - `{"local": true}` for a local caller: core shows the card as from an
+///   unverified local caller, through the first digest sink's agent.
+///
+/// None of them carries a session (see [`crate::caller`] on why the route's
+/// bind session is not trusted).
+fn card_author(caller: &Caller) -> Result<Value, OpError> {
     match caller {
-        Caller::Operator => Ok((json!({ "operator": true }), None)),
-        Caller::Agent { agent_id, session } => {
-            Ok((json!({ "agent": agent_id }), Some(session.clone())))
-        }
-        Caller::Local => Ok((json!({ "local": true }), None)),
+        Caller::Operator => Ok(json!({ "operator": true })),
+        Caller::Agent { scope_ref, .. } => Ok(json!({ "scope": scope_ref })),
+        Caller::Local => Ok(json!({ "local": true })),
         Caller::Core | Caller::Other(_) => Err(OpError::not_permitted("flow.install", caller)),
     }
 }

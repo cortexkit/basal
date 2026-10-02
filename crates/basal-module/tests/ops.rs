@@ -64,7 +64,7 @@ fn seen(r: &Result<Value, String>) -> Seen {
 /// The caller basal decides for a route stamped with this principal and no
 /// scope.
 fn unscoped(principal: Principal) -> Caller {
-    caller::from_route(Some(&principal), None, "ses-unscoped")
+    caller::from_route(Some(&principal), None)
 }
 
 fn reserved(module_id: &str) -> Principal {
