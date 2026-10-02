@@ -1573,8 +1573,8 @@ const MODULE_CONTROLS: &[Control] = &[
         label: "pool startup boundary precedes nonce consumption",
         edits: &[(
             "crates/basal-module/src/main.rs",
-            "let _startup_transport =",
-            "let pool = PoolConfig::beside_current_exe(); drop(pool); // NON-VACUITY BREAK\n    let _startup_transport =",
+            "let transport =\n        match basal_host::transport::SubcTransport::connect",
+            "let pool = PoolConfig::beside_current_exe(); drop(pool); // NON-VACUITY BREAK\n    let transport =\n        match basal_host::transport::SubcTransport::connect",
         )],
         also_restore: NO_EXTRA,
         target: Target::Module("startup_order"),

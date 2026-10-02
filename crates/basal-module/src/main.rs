@@ -19,7 +19,6 @@ use basal_module::manifest::{manifest, version_line};
 use basal_module::module::{Hosts, ModuleConfig};
 use basal_module::pool::PoolConfig;
 use basal_module::serve::BasalHandler;
-use basal_module::unconfigured::{EmptyCatalog, UnconfiguredConsent, UnconfiguredHost};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -62,9 +61,9 @@ fn serve() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    // Connecting consumes and closes subc's launch-nonce pipe. Do this before
-    // constructing the handler that can start the pool, including warm spares.
-    let _startup_transport =
+    // The hosts' connection consumes and closes subc's launch-nonce pipe.
+    // Establish it before the handler can start the pool, including warm spares.
+    let transport =
         match basal_host::transport::SubcTransport::connect(std::time::Duration::from_secs(30)) {
             Ok(transport) => transport,
             Err(error) => {
@@ -123,55 +122,41 @@ fn serve() -> ExitCode {
                 core_host::CoreHost,
                 routing::{ModuleOpsHost, RoutingHost},
                 subc_catalog::SubcCatalog,
-                transport::SubcTransport,
             };
-            match SubcTransport::connect(std::time::Duration::from_secs(30)) {
-                Ok(transport) => {
-                    let catalog = Arc::new(SubcCatalog::new(transport.clone()));
-                    let selector = Arc::new(basal_host::selector::RoutingSelector::new(
-                        transport.clone(),
-                    ));
-                    let store = Arc::new(basal_core::broca::BrocaStore::default());
-                    let wake = basal_host::broca::subc::PollWake::new();
-                    let broca_transport = basal_host::broca::subc::SubcBrocaTransport::new(
-                        transport.clone(),
-                        "broca".into(),
-                        wake.callback(),
-                    );
-                    let model_host = Arc::new(basal_host::broca::BrocaHost::new(
-                        broca_transport,
-                        store.clone(),
-                        "/".into(),
-                        "basal".into(),
-                        selector.clone(),
-                    ));
-                    *built_models.lock().unwrap_or_else(|p| p.into_inner()) = Some(Models {
-                        store,
-                        host: model_host.clone(),
-                        wake,
-                        selector,
-                    });
-                    Hosts {
-                        host: Arc::new(RoutingHost::new(
-                            Arc::new(ModuleOpsHost::new(transport.clone(), catalog.clone())),
-                            Arc::new(CoreHost::new(transport.clone())),
-                            model_host,
-                        )),
-                        catalog,
-                        consent: Arc::new(CoreConsent::new(transport).with_polling()),
-                        hooks: runtime_hooks(&store_path_cell),
-                    }
-                }
-                Err(error) => {
-                    tracing::error!("consumer unavailable: {error:?}");
-                    *built_models.lock().unwrap_or_else(|p| p.into_inner()) = None;
-                    Hosts {
-                        host: Arc::new(UnconfiguredHost::new()),
-                        catalog: Arc::new(EmptyCatalog),
-                        consent: Arc::new(UnconfiguredConsent),
-                        hooks: Arc::new(NoHooks),
-                    }
-                }
+            let transport = transport.clone();
+            let catalog = Arc::new(SubcCatalog::new(transport.clone()));
+            let selector = Arc::new(basal_host::selector::RoutingSelector::new(
+                transport.clone(),
+            ));
+            let store = Arc::new(basal_core::broca::BrocaStore::default());
+            let wake = basal_host::broca::subc::PollWake::new();
+            let broca_transport = basal_host::broca::subc::SubcBrocaTransport::new(
+                transport.clone(),
+                "broca".into(),
+                wake.callback(),
+            );
+            let model_host = Arc::new(basal_host::broca::BrocaHost::new(
+                broca_transport,
+                store.clone(),
+                "/".into(),
+                "basal".into(),
+                selector.clone(),
+            ));
+            *built_models.lock().unwrap_or_else(|p| p.into_inner()) = Some(Models {
+                store,
+                host: model_host.clone(),
+                wake,
+                selector,
+            });
+            Hosts {
+                host: Arc::new(RoutingHost::new(
+                    Arc::new(ModuleOpsHost::new(transport.clone(), catalog.clone())),
+                    Arc::new(CoreHost::new(transport.clone())),
+                    model_host,
+                )),
+                catalog,
+                consent: Arc::new(CoreConsent::new(transport).with_polling()),
+                hooks: runtime_hooks(&store_path_cell),
             }
         }),
     )

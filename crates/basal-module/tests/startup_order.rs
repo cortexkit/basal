@@ -7,6 +7,11 @@ fn serve_connects_before_constructing_worker_pool() {
         .split("fn serve() -> ExitCode {")
         .nth(1)
         .expect("serve");
+    assert_eq!(
+        serve.matches("SubcTransport::connect(").count(),
+        1,
+        "startup must establish only the connection used by the hosts"
+    );
     let connect = serve
         .find("basal_host::transport::SubcTransport::connect")
         .expect("startup connect");
@@ -19,6 +24,10 @@ fn serve_connects_before_constructing_worker_pool() {
     assert!(
         connect < pool && pool < handler,
         "connect must consume the nonce before pool startup"
+    );
+    assert!(
+        serve[handler..].contains("let transport = transport.clone();"),
+        "the hosts must reuse the connection established before pool startup"
     );
     let before_connect = &serve[..connect];
     for spawn in [
