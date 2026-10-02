@@ -15,7 +15,7 @@
 #                             [--broca-rev <rev>] [--credentials-rev <rev>]
 #                             [--commons-rev <rev>] [--entorhinal-rev <rev>]
 #                             [--dry-run]
-#   script/flows-rig.sh place    [--dry-run]
+#   script/flows-rig.sh place    [--from-stage <dir>] [--dry-run]
 #   script/flows-rig.sh config   [--dry-run]
 #   script/flows-rig.sh start    [--dry-run]
 #   script/flows-rig.sh status   [--dry-run]
@@ -25,9 +25,17 @@
 #
 # --dry-run prints every command the subcommand would run and every file it
 # would write, with the file's content, and changes nothing.
+#
+# place --from-stage <dir> places ck-basal and ck-basal-worker from a stage
+# directory script/stage.sh wrote, byte for byte and under their production
+# identifiers, instead of the rig's own build of them; every other binary is
+# the rig's build. The stage must be of the commit the rig built basal at.
 set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
+# The signing policy stage.sh signs production binaries with.
+# shellcheck source=script/signing.sh
+. "$ROOT/script/signing.sh"
 WORKSPACE=${CORTEXKIT_WORKSPACE:-$HOME/Work/Projects/CortexKit}
 CK_SHARE="$HOME/.local/share/cortexkit"
 CK_CONFIG="$HOME/.config/cortexkit"
@@ -37,6 +45,10 @@ BIN="$RIG/bin"
 SRC="$RIG/src"
 TARGETS="$RIG/build/target"
 STACK="$RIG/build/stack.tsv"
+# Where the placed ck-basal and ck-basal-worker came from: the rig's build
+# (with the kill switch) or a stage. `place` writes it; `test`, `status` and
+# the manifest read it.
+BASAL_SOURCE="$RIG/build/basal-source.tsv"
 LOGS="$RIG/logs"
 RESULTS="$RIG/results"
 CONFIG_HOME="$RIG/config"
@@ -119,7 +131,7 @@ guard_all_paths() {
     "$CK_SHARE_PHYSICAL"/ckdev-flows) ;;
     *) die "refusing: the rig root $RIG resolves to $RIG_PHYSICAL" ;;
   esac
-  for path in "$BIN" "$SRC" "$TARGETS" "$STACK" "$LOGS" "$RESULTS" \
+  for path in "$BIN" "$SRC" "$TARGETS" "$STACK" "$BASAL_SOURCE" "$LOGS" "$RESULTS" \
       "$CONFIG_HOME" "$DATA_HOME" "$RUNTIME_DIR" "$CONN" "$PIDFILE" \
       "$SUBC_CONFIG" "$VAULT_DIR" "$VAULT_KEY" "$RIG_HOME" "$CORE_STORE" \
       "$BASAL_STORE" "$MACHINE_ID" "$KILL_FILE" "$CONTRACT" "$PROJECTS"; do
@@ -246,7 +258,26 @@ conn_pid() {
 }
 
 identifier_of() {
-  codesign -dv "$1" 2>&1 | sed -n 's/^Identifier=//p'
+  codesign_identifier "$1"
+}
+
+# The placement mode `place` recorded: "rig-build" or "staged".
+basal_mode() {
+  if [ -f "$BASAL_SOURCE" ]; then
+    cut -f1 "$BASAL_SOURCE"
+  else
+    printf 'rig-build\n'
+  fi
+}
+
+# The identifier a placed basal binary must carry: its production one when
+# it came from a stage, the rig's ckdev- one otherwise.
+basal_identifier() {
+  if [ "$(basal_mode)" = staged ]; then
+    printf '%s\n' "$1"
+  else
+    printf 'ckdev-%s\n' "${1#ck-}"
+  fi
 }
 
 # The repositories the rig builds from: name, source checkout, Cargo-built.
@@ -377,8 +408,11 @@ cmd_build() {
     -p prefrontal-routing-module --bin ck-prefrontal-routing
   # The rig's ck-basal carries the one-shot kill switch the contract suite's
   # crash case arms; a production build never enables this feature.
-  cargo_build basal "" -p basal-module --features rig-kill-hook --bin ck-basal
-  cargo_build basal "" -p basal-worker --bin ck-basal-worker
+  # basal's binaries embed their revision too, as script/stage.sh builds them.
+  basal_sha=$(printf '%s' "$stack" | awk -F'\t' '$1=="basal"{print $4}')
+  basal_env="CK_BUILD_GIT_SHA=$basal_sha CK_BUILD_GIT_DIRTY=false"
+  cargo_build basal "$basal_env" -p basal-module --features rig-kill-hook --bin ck-basal
+  cargo_build basal "$basal_env" -p basal-worker --bin ck-basal-worker
   cargo_build basal "" -p basal-rig --bin ck-callosum-stub --bin basal-rig-contract
 
   # A build that rewrote a tracked file (a Cargo.lock refreshed against a
@@ -434,17 +468,53 @@ cargo_build() {
 # ---------------------------------------------------------------- place
 
 cmd_place() {
-  [ $# -eq 0 ] || usage
+  stage=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --from-stage) [ $# -ge 2 ] || usage; stage=$2; shift 2 ;;
+      *) usage ;;
+    esac
+  done
   [ -z "$(daemon_pid)" ] || die "refusing: the rig daemon is running; stop it first"
   [ "$DRY" = 1 ] || [ -f "$STACK" ] || die "nothing built yet; run build first"
+  revision=""
+  if [ -n "$stage" ]; then
+    stage=$(cd "$stage" 2>/dev/null && pwd -P) || die "no stage directory at $stage"
+    # stage.sh's own check of a stage: both sidecars and both signatures,
+    # under the production identifiers SUBC would place.
+    verified=$(sh "$ROOT/script/stage.sh" --verify "$stage") \
+      || die "the stage at $stage fails stage.sh --verify"
+    revision=$(printf '%s\n' "$verified" | sed -n 's/^revision //p')
+    if [ "$DRY" = 0 ]; then
+      built=$(awk -F'\t' '$1=="basal"{print $4}' "$STACK")
+      # The callosum stub, the contract suite and the worker's gate script
+      # come from the rig's build, so it must be of the staged commit.
+      [ "$revision" = "$built" ] \
+        || die "the stage is of $revision but the rig built basal at $built; build the rig at the staged commit first"
+    fi
+  fi
   run mkdir -p "$BIN"
   for line in $(binaries | tr '\t' '|'); do
     name=$(printf '%s' "$line" | cut -d'|' -f1)
     repo=$(printf '%s' "$line" | cut -d'|' -f2)
     cargo_bin=$(printf '%s' "$line" | cut -d'|' -f3)
     file=$(printf '%s' "$line" | cut -d'|' -f4)
+    case "$name" in
+      basal | basal-worker)
+        if [ -n "$stage" ]; then
+          place_staged "$name" "$stage/$cargo_bin" "$BIN/$file" "$cargo_bin"
+          continue
+        fi ;;
+    esac
     place_one "$name" "$TARGETS/$repo/release/$cargo_bin" "$BIN/$file"
   done
+  if [ -n "$stage" ]; then
+    printf 'staged\t%s\t%s\n' "$stage" "$revision" | write_file "$BASAL_SOURCE"
+    worker_identifier=ck-basal-worker
+  else
+    printf 'rig-build\n' | write_file "$BASAL_SOURCE"
+    worker_identifier=ckdev-basal-worker
+  fi
   # The worker runs flow code, so it must also pass basal's own gate at its
   # final path: hardened runtime, no entitlements, the checked-in Seatbelt
   # profile embedded, and a live probe that confinement denies a file read,
@@ -452,8 +522,8 @@ cmd_place() {
   # basal clone, so it checks against the profile of the commit that was built.
   worker="$BIN/ck-basal-worker"
   if [ "$DRY" = 1 ]; then
-    say "+ BASAL_WORKER_IDENTIFIER=ckdev-basal-worker sh $SRC/basal/script/sign-worker.sh verify $worker"
-  elif ! BASAL_WORKER_IDENTIFIER=ckdev-basal-worker sh "$SRC/basal/script/sign-worker.sh" verify "$worker"; then
+    say "+ BASAL_WORKER_IDENTIFIER=$worker_identifier sh $SRC/basal/script/sign-worker.sh verify $worker"
+  elif ! BASAL_WORKER_IDENTIFIER=$worker_identifier sh "$SRC/basal/script/sign-worker.sh" verify "$worker"; then
     rm -f "$worker"
     die "the placed worker failed basal's confinement gate and was removed"
   fi
@@ -471,10 +541,10 @@ place_one() {
   guard_path "$dest"
   if [ "$DRY" = 1 ]; then
     say "+ cp $built $BIN/.place.XXXXXX; chmod 0755 $BIN/.place.XXXXXX"
-    say "+ codesign --force --sign - -o runtime --identifier $identifier $BIN/.place.XXXXXX"
-    say "+ codesign -dv $BIN/.place.XXXXXX  (Identifier must be exactly $identifier)"
+    say "+ sign_hardened $BIN/.place.XXXXXX $identifier   (script/signing.sh)"
+    say "+ verify_hardened $BIN/.place.XXXXXX $identifier"
     say "+ mv -f $BIN/.place.XXXXXX $dest"
-    say "+ codesign --verify --strict $dest; codesign -dv $dest  (Identifier=$identifier)"
+    say "+ verify_hardened $dest $identifier"
     return
   fi
   [ -f "$built" ] || die "$name: no built binary at $built"
@@ -482,19 +552,43 @@ place_one() {
   cp "$built" "$tmp"
   # mktemp creates the file 0600 and cp keeps that mode on an existing file.
   chmod 0755 "$tmp"
-  # -o runtime: production modules are signed with the hardened runtime, and
-  # basal's worker gate refuses a worker without it, so the rig matches both.
-  codesign --force --sign - -o runtime --identifier "$identifier" "$tmp"
-  got=$(identifier_of "$tmp")
-  if [ "$got" != "$identifier" ]; then
+  # The production signing policy: production modules run with the hardened
+  # runtime, and basal's worker gate refuses a worker without it, so the rig
+  # matches both.
+  sign_hardened "$tmp" "$identifier" 2>/dev/null
+  if ! verify_hardened "$tmp" "$identifier"; then
     rm -f "$tmp"
-    die "$name: signed identifier is '$got', not $identifier"
+    die "$name: the signed copy fails the signing policy"
   fi
   mv -f "$tmp" "$dest"
-  codesign --verify --strict "$dest" || die "$name: $dest does not verify"
-  got=$(identifier_of "$dest")
-  [ "$got" = "$identifier" ] || die "$name: placed identifier is '$got', not $identifier"
+  verify_hardened "$dest" "$identifier" || die "$name: $dest fails the signing policy"
   say "placed $dest ($identifier)"
+}
+
+# place_staged <name> <staged file> <dest> <identifier>: copy a staged binary
+# into the rig unchanged (never re-signed: the rig runs the bytes SUBC would
+# place), and check at the final path that the bytes match the stage's
+# sidecar and that the signature passes under its production identifier.
+place_staged() {
+  name=$1
+  staged=$2
+  dest=$3
+  identifier=$4
+  guard_path "$dest"
+  if [ "$DRY" = 1 ]; then
+    say "+ cp $staged $BIN/.place.XXXXXX; chmod 0755 $BIN/.place.XXXXXX; mv -f $BIN/.place.XXXXXX $dest"
+    say "+ sha256 of $dest must equal $staged.sha256; verify_hardened $dest $identifier"
+    return
+  fi
+  tmp=$(mktemp "$BIN/.place.XXXXXX")
+  cp "$staged" "$tmp"
+  chmod 0755 "$tmp"
+  mv -f "$tmp" "$dest"
+  want=$(awk '{ print $1 }' "$staged.sha256")
+  got=$(shasum -a 256 "$dest" | awk '{ print $1 }')
+  [ "$got" = "$want" ] || die "$name: $dest is $got, but the stage's sidecar says $want"
+  verify_hardened "$dest" "$identifier" || die "$name: $dest fails the signing policy"
+  say "placed $dest from the stage ($identifier, sha256 $got)"
 }
 
 # ---------------------------------------------------------------- config
@@ -693,7 +787,9 @@ cmd_status() {
     file=${line#*|}
     child=$(printf '%s\n' "$processes" | awk -v parent="$pid" -v prog="$BIN/$file" \
       '$2 == parent && $3 == prog { print $1; exit }')
-    (report_process "$id" "$BIN/$file" "$child" "ckdev-${file#ckdev-}") || failed=1
+    want="ckdev-${file#ckdev-}"
+    [ "$id" != basal ] || want=$(basal_identifier ck-basal)
+    (report_process "$id" "$BIN/$file" "$child" "$want") || failed=1
   done
   basal=$(printf '%s\n' "$processes" | awk -v parent="$pid" -v prog="$BIN/ckdev-basal" \
     '$2 == parent && $3 == prog { print $1; exit }')
@@ -706,7 +802,7 @@ cmd_status() {
     say "basal-worker: none running"
   fi
   for worker in $workers; do
-    (report_process basal-worker "$BIN/ck-basal-worker" "$worker" ckdev-basal-worker) || failed=1
+    (report_process basal-worker "$BIN/ck-basal-worker" "$worker" "$(basal_identifier ck-basal-worker)") || failed=1
   done
   report_credentials
   [ "$failed" = 0 ] || die "status found a module outside the rig (see above)"
@@ -861,7 +957,7 @@ write_manifest() {
     say "+ shasum -a 256 and codesign -dv each binary in $BIN"
     say "+ write $dest (rig, root, port, repositories[name, source, requested, commit],"
     say "  binaries[name, repository, path, sha256, identifier], basal_features,"
-    say "  contract_suite[path, sha256])"
+    say "  basal_placement[mode, stage, revision], contract_suite[path, sha256])"
     return
   fi
   [ -f "$STACK" ] || die "nothing built yet; run build first"
@@ -891,11 +987,15 @@ write_manifest() {
   if [ -f "$CONTRACT" ]; then
     contract_sum=$(shasum -a 256 "$CONTRACT" | awk '{ print $1 }')
   fi
+  source_tsv="rig-build"
+  [ ! -f "$BASAL_SOURCE" ] || source_tsv=$(cat "$BASAL_SOURCE")
   json=$(REPOS="$repos_tsv" BINS="$bins_tsv" python3 - "$stamp" "$RIG" "$PORT" \
-      "$CONTRACT" "$contract_sum" <<'PY'
+      "$CONTRACT" "$contract_sum" "$source_tsv" <<'PY'
 import json, os, sys
 stamp, rig, port = sys.argv[1], sys.argv[2], int(sys.argv[3])
 contract, contract_sum = sys.argv[4], sys.argv[5]
+source = (sys.argv[6].split("\t") + ["", ""])[:3]
+staged = source[0] == "staged"
 rows = lambda name: [l.split("\t") for l in os.environ[name].splitlines() if l]
 print(json.dumps({
     "rig": "ckdev-flows",
@@ -910,8 +1010,17 @@ print(json.dumps({
         for n, r, p, h, i in rows("BINS")
     ],
     # cmd_build compiles the rig's ck-basal with this feature (the crash
-    # case's kill switch); production builds never do.
-    "basal_features": ["rig-kill-hook"],
+    # case's kill switch); production builds never do, so a staged ck-basal
+    # has none.
+    "basal_features": [] if staged else ["rig-kill-hook"],
+    # Where ck-basal and ck-basal-worker came from: a stage from
+    # script/stage.sh (the production bytes, so the crash case is not run),
+    # or the rig's own build with the kill switch.
+    "basal_placement": (
+        {"mode": "staged", "stage": source[1], "revision": source[2]}
+        if staged
+        else {"mode": "rig-build-with-kill-hook"}
+    ),
     "contract_suite": {"path": contract, "sha256": contract_sum or None},
 }, indent=2))
 PY
@@ -937,6 +1046,7 @@ cmd_test() {
     say "+ rig_env $CONTRACT --core-store $CORE_STORE --basal-store $BASAL_STORE"
     say "    --machine-id $MACHINE_ID --kill-file $KILL_FILE --project-id <the project>"
     say "    --results $dir/contract.json"
+    say "    [--no-kill-hook, only when place --from-stage placed a staged ck-basal]"
     say "  (output into $dir/contract.log)"
     return
   fi
@@ -953,11 +1063,20 @@ cmd_test() {
   write_manifest "$stamp"
   guard_path "$dir/contract.log"
   guard_path "$dir/contract.json"
+  # A staged ck-basal is a production build with no kill switch, so the
+  # crash case cannot run; the suite then reports it as not run. This is the
+  # only way the flag is ever passed: a rig build always runs the case.
+  if [ "$(basal_mode)" = staged ]; then
+    set -- --no-kill-hook
+    say "ck-basal is a staged production build without the kill switch; the crash case will be reported as not run"
+  else
+    set --
+  fi
   say "running the contract suite (output: $dir/contract.log)"
   set +e
   rig_env "$CONTRACT" --core-store "$CORE_STORE" --basal-store "$BASAL_STORE" \
     --machine-id "$MACHINE_ID" --kill-file "$KILL_FILE" --project-id "$project_id" \
-    --results "$dir/contract.json" > "$dir/contract.log" 2>&1
+    --results "$dir/contract.json" "$@" > "$dir/contract.log" 2>&1
   status=$?
   set -e
   cat "$dir/contract.log"

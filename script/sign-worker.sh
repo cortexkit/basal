@@ -18,9 +18,11 @@
 set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PROFILE="$ROOT/crates/basal-worker/sandbox/worker.sb"
-# Always pass an explicit identifier: codesign otherwise derives one from the
-# file name, and a renamed or temporary copy would change the identity that
-# privacy grants and, later, a team signature are tied to.
+# The signing itself, and the signature half of the gate, are the policy every
+# basal binary shares (script/signing.sh); this script adds the worker's own
+# checks on top: the embedded profile and the live confinement probe.
+# shellcheck source=script/signing.sh
+. "$ROOT/script/signing.sh"
 # BASAL_WORKER_IDENTIFIER exists for isolated rigs (script/flows-rig.sh), which
 # sign their copies under their own ckdev- identifiers so a rig binary can never
 # be mistaken for a production one; every other check is unchanged.
@@ -32,7 +34,7 @@ usage() {
 }
 
 sign() {
-  codesign -f -s - -o runtime --identifier "$IDENTIFIER" "$1"
+  sign_hardened "$1" "$IDENTIFIER"
 }
 
 refuse() {
@@ -42,14 +44,9 @@ refuse() {
 
 verify() {
   binary=$1
-  codesign --verify --strict "$binary" || refuse "signature does not verify"
-  info=$(codesign -dv "$binary" 2>&1)
-  printf '%s\n' "$info" | grep -qx "Identifier=$IDENTIFIER" \
-    || refuse "identifier is not $IDENTIFIER"
-  printf '%s\n' "$info" | grep -Eq 'flags=0x[0-9a-fA-F]+\([^)]*runtime' \
-    || refuse "hardened runtime flag missing"
-  entitlements=$(codesign -d --entitlements - --xml "$binary" 2>/dev/null || true)
-  [ -z "$entitlements" ] || refuse "the worker must carry no entitlements"
+  # Strict verification, the exact identifier, runtime in the flags and no
+  # entitlements; it prints its own refusal.
+  verify_hardened "$binary" "$IDENTIFIER" || exit 1
   # The sandbox profile compiled into the binary must be the checked-in one.
   python3 - "$binary" "$PROFILE" <<'PY' || refuse "embedded sandbox profile differs from $PROFILE"
 import sys
