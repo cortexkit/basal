@@ -502,7 +502,13 @@ impl Activation<'_> {
         if !unknown.is_empty() {
             self.rt.store().write(|tx| {
                 for p in &unknown {
-                    journal::record_unknown(tx, &run_id, *p)?;
+                    journal::record_unknown(
+                        tx,
+                        &run_id,
+                        *p,
+                        "the call was sent before an earlier activation stopped, \
+                         and its outcome was never recorded",
+                    )?;
                 }
                 runs::exit(
                     tx,

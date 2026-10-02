@@ -7,7 +7,9 @@
 //! 1. ticks the scheduler, which plans due fires and admits them as runs;
 //! 2. fails runs past their wall-clock deadline;
 //! 3. lets the pool retire idle workers and top up its spares;
-//! 4. starts an activation, each on its own thread, for every run that can
+//! 4. raises the operator decision cards not yet accepted by the consent
+//!    plane;
+//! 5. starts an activation, each on its own thread, for every run that can
 //!    start now (at most one per flow, since a flow's runs hold its slot one
 //!    at a time), up to the configured number of activations at once.
 //!
@@ -22,6 +24,7 @@ use std::time::{Duration, Instant};
 
 use basal_core::schedule::Scheduler;
 use basal_core::{ActivationEnd, CoreError, Runtime};
+use basal_host::Consent;
 
 use crate::fatal::Fatal;
 use crate::metrics::Metrics;
@@ -53,6 +56,8 @@ pub struct PassReport {
     pub expired: Vec<String>,
     /// Runs an activation was started for.
     pub started: Vec<String>,
+    /// Decision cards the consent plane accepted in this pass, by key.
+    pub raised: Vec<String>,
 }
 
 #[derive(Default)]
@@ -64,6 +69,7 @@ struct Active {
 struct Inner {
     rt: Runtime,
     pool: Pool,
+    consent: Arc<dyn Consent>,
     scheduler: Scheduler,
     config: EngineConfig,
     metrics: Arc<Metrics>,
@@ -86,6 +92,7 @@ impl Engine {
     pub fn new(
         rt: Runtime,
         pool: Pool,
+        consent: Arc<dyn Consent>,
         config: EngineConfig,
         metrics: Arc<Metrics>,
         fatal: Fatal,
@@ -95,6 +102,7 @@ impl Engine {
             inner: Arc::new(Inner {
                 rt,
                 pool,
+                consent,
                 scheduler,
                 config,
                 metrics,
@@ -134,6 +142,7 @@ impl Engine {
         let admitted: Vec<String> = tick.new_runs().into_iter().map(str::to_owned).collect();
         let expired = inner.rt.enforce_deadlines().map_err(fatal)?;
         inner.pool.maintain();
+        let raised = self.raise_decisions().map_err(fatal)?;
         let mut started = Vec::new();
         for (run_id, flow_id) in inner.rt.startable().map_err(fatal)? {
             {
@@ -156,7 +165,34 @@ impl Engine {
             admitted,
             expired,
             started,
+            raised,
         })
+    }
+
+    /// Raises every decision card whose latest revision the consent plane
+    /// has not accepted. The card's row was committed before this, so a
+    /// crash or an unreachable consent plane only delays it: the next pass
+    /// raises it again under the same deduplication key, which core shows
+    /// as one card. Returns the keys accepted now; a store error is
+    /// returned, a consent error is logged and retried next pass.
+    fn raise_decisions(&self) -> Result<Vec<String>, CoreError> {
+        let inner = &self.inner;
+        let mut raised = Vec::new();
+        for record in inner.rt.decisions_due()? {
+            let card = record.to_card()?;
+            match inner.consent.raise_decision(&card) {
+                Ok(elicitation_id) => {
+                    inner
+                        .rt
+                        .decision_raised(record.seq, record.revision, &elicitation_id)?;
+                    raised.push(record.dedup_key);
+                }
+                Err(e) => {
+                    tracing::warn!(target: "consent", key = %record.dedup_key, "raising a decision card: {e}");
+                }
+            }
+        }
+        Ok(raised)
     }
 
     /// One activation of `run_id`, on its own thread.

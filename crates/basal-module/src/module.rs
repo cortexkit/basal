@@ -7,8 +7,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use basal_core::cards::{Decided, Decision};
+use basal_core::decisions::Answered;
 use basal_core::{Config, Durability, Hooks, InstallError, Runtime, Store};
-use basal_host::{CardDecision, Catalog, Consent, DecisionEvent, DecisionSink, Host, SinkError};
+use basal_host::{
+    CardDecision, Catalog, Consent, DecisionAnswer, DecisionEvent, DecisionSink, Host, SinkError,
+};
 
 use crate::dryrun::{DryRunConfig, DryRunner};
 use crate::engine::{Engine, EngineConfig};
@@ -102,6 +105,7 @@ impl Module {
         let engine = Engine::new(
             rt.clone(),
             pool.clone(),
+            hosts.consent.clone(),
             config.engine.clone(),
             metrics.clone(),
             fatal.clone(),
@@ -188,6 +192,39 @@ impl DecisionSink for DecisionApplier {
                 // version can no longer be approved: delivering it again
                 // would change nothing.
                 tracing::warn!(target: "consent", card = %event.card_id, "card decision refused: {e}");
+                Ok(())
+            }
+        }
+    }
+
+    fn answer(&self, answer: &DecisionAnswer) -> Result<(), SinkError> {
+        match self.rt.answer_decision(answer) {
+            Ok(answered) => {
+                let what = match &answered {
+                    Answered::Now(state) => state.as_str(),
+                    Answered::AlreadyAnswered(_) => "already answered, ignored",
+                    Answered::Superseded => "from a replaced card, ignored",
+                    Answered::NoSuchCard => "for no card basal raised, ignored",
+                };
+                tracing::info!(
+                    target: "consent",
+                    elicitation = %answer.elicitation_id,
+                    choice = ?answer.choice,
+                    "decision card answer: {what}"
+                );
+                Ok(())
+            }
+            Err(e) if is_storage(&e) => {
+                // Not recorded: core keeps the answer and delivers it
+                // again after the restart.
+                self.fatal
+                    .raise(format!("recording a decision answer: {e}"));
+                Err(SinkError(e.to_string()))
+            }
+            Err(e) => {
+                // The answer cannot be applied (an option the card does not
+                // have): delivering it again would change nothing.
+                tracing::warn!(target: "consent", elicitation = %answer.elicitation_id, "decision answer refused: {e}");
                 Ok(())
             }
         }

@@ -240,7 +240,63 @@ CREATE TABLE broca_calls (
 );
 "#,
     },
+    Migration {
+        version: 6,
+        statements: DECISIONS,
+    },
 ];
+
+/// Operator decision cards: the questions only the operator may answer
+/// (what happened to a call whose outcome is unknown, whether an
+/// auto-disabled flow runs again), raised by basal on core's consent plane.
+/// A row is the durable intent to raise its card, written before core is
+/// asked, so a crash cannot lose a card, and core's deduplication key makes
+/// raising it again after a crash show the same card.
+const DECISIONS: &str = r#"
+-- Why a call's outcome became unknown, shown on its reconcile card.
+ALTER TABLE journal ADD COLUMN unknown_detail TEXT;
+
+-- The decision card an operator's action came through, when it came
+-- through one.
+ALTER TABLE audit ADD COLUMN elicitation_id TEXT;
+
+-- One row per card. `instance` tells two occurrences of one decision
+-- apart: for a reconcile card, the call's send attempt that ended unknown
+-- (a call reconciled as not applied, sent again and lost again needs a new
+-- decision); for a re-enable card, the auto-disable episode. `revision`
+-- counts changes to what the card shows and `raised_revision` the last
+-- one core accepted, so a changed card is raised again under its key.
+-- `open` until an answer arrives; then `applied` (an action was taken),
+-- `declined` (the do-nothing option), `expired` (nobody answered) or
+-- `stale` (the decision had been settled another way, so nothing was
+-- done).
+CREATE TABLE decision_cards (
+    seq             INTEGER PRIMARY KEY AUTOINCREMENT,
+    dedup_key       TEXT NOT NULL,
+    kind            TEXT NOT NULL CHECK (kind IN ('reconcile', 'reenable')),
+    flow_id         TEXT NOT NULL,
+    version         INTEGER NOT NULL CHECK (version >= 0),
+    run_id          TEXT,
+    position        INTEGER CHECK (position >= 0),
+    call_key        TEXT,
+    instance        INTEGER NOT NULL CHECK (instance >= 0),
+    card            TEXT NOT NULL,
+    revision        INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+    raised_revision INTEGER,
+    elicitation_id  TEXT,
+    state           TEXT NOT NULL CHECK (state IN ('open', 'applied', 'declined', 'expired', 'stale')),
+    choice          TEXT,
+    created_at      INTEGER NOT NULL,
+    answered_at     INTEGER,
+    UNIQUE (dedup_key, instance),
+    CHECK ((kind = 'reconcile') = (run_id IS NOT NULL)),
+    CHECK ((run_id IS NULL) = (position IS NULL)),
+    CHECK ((run_id IS NULL) = (call_key IS NULL)),
+    CHECK ((state = 'open') = (answered_at IS NULL))
+);
+CREATE UNIQUE INDEX decision_cards_one_open ON decision_cards (dedup_key) WHERE state = 'open';
+CREATE INDEX decision_cards_elicitation ON decision_cards (elicitation_id);
+"#;
 
 /// Install cards: one consent card per installed version, raised before
 /// approval. The card's decision arrives later, possibly after a restart, so

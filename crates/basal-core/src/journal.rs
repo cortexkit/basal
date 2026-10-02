@@ -515,15 +515,17 @@ pub fn record_accepted(tx: &Transaction, run_id: &str, position: u64, handle: &s
     Ok(())
 }
 
-/// Records that a send ended without a provable outcome. A run not driven
-/// by an activation goes straight to `needs_reconcile`; a running one is
-/// moved there by its activation, under its fence.
-pub fn record_unknown(tx: &Transaction, run_id: &str, position: u64) -> Result<()> {
+/// Records that a send ended without a provable outcome, with `detail`, the
+/// error that left it unknown. A run not driven by an activation goes
+/// straight to `needs_reconcile`; a running one is moved there by its
+/// activation, under its fence.
+pub fn record_unknown(tx: &Transaction, run_id: &str, position: u64, detail: &str) -> Result<()> {
     tx.execute(
-        "UPDATE journal SET dispatch = 'unknown' WHERE run_id = ?1 AND position = ?2 \
+        "UPDATE journal SET dispatch = 'unknown', unknown_detail = ?3 \
+         WHERE run_id = ?1 AND position = ?2 \
          AND settlement IS NULL AND NOT EXISTS \
          (SELECT 1 FROM mailbox WHERE run_id = ?1 AND position = ?2)",
-        params![run_id, pos(position)?],
+        params![run_id, pos(position)?, detail],
     )?;
     tx.execute(
         "UPDATE runs SET state = 'needs_reconcile', awaited = NULL, \
@@ -591,8 +593,9 @@ pub fn record_host_unknown(
         _ => {}
     }
     tx.execute(
-        "UPDATE journal SET dispatch = 'unknown' WHERE run_id = ?1 AND position = ?2",
-        params![run_id, p],
+        "UPDATE journal SET dispatch = 'unknown', unknown_detail = ?3 \
+         WHERE run_id = ?1 AND position = ?2",
+        params![run_id, p, detail],
     )?;
     tx.execute(
         "UPDATE runs SET state = 'needs_reconcile', awaited = NULL, \

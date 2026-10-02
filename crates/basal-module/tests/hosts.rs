@@ -493,6 +493,9 @@ impl DecisionSink for Decisions {
         self.events.lock().unwrap().push(d.clone());
         Ok(())
     }
+    fn answer(&self, _: &basal_host::DecisionAnswer) -> Result<(), SinkError> {
+        Err(SinkError("this sink takes install decisions only".into()))
+    }
 }
 #[test]
 fn decisions_ack_only_after_sink_commit_and_survive_restart() {

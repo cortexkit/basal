@@ -177,5 +177,19 @@ pub fn check(
             install::InstallError::Store(e) => e,
             other => CoreError::Invalid(other.to_string()),
         })?;
+    if disabled {
+        // The operator decides whether the flow runs again, on a card
+        // raised from this row; it commits with the disable it is about.
+        let rule = serde_json::json!({
+            "rule": "rate_saturation",
+            "limit": column,
+            "used": used,
+            "saturated_windows": k,
+            "window_ms": window_ms,
+            "max_runs": limits.max_runs,
+            "max_dispatches": limits.max_dispatches,
+        });
+        crate::decisions::record_auto_disable(tx, flow_id, &rule, now_ms)?;
+    }
     Ok(Take::Refused { disabled })
 }

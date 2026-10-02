@@ -685,10 +685,10 @@ impl Runtime {
                     Source::Host,
                 )?;
             }
-            Err(_) => {
+            Err(detail) => {
                 self.shared
                     .store
-                    .write(|tx| journal::record_unknown(tx, &run_id, position))?;
+                    .write(|tx| journal::record_unknown(tx, &run_id, position, &detail))?;
             }
         }
         Ok(())

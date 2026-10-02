@@ -39,7 +39,8 @@ pub mod transport;
 
 pub use catalog::{Catalog, EventBody, EventDecl, EventOrigin, MockCatalog, OpDecl, OpKind};
 pub use consent::{
-    CardDecision, Consent, ConsentError, DecisionEvent, DecisionSink, InstallCard, MockConsent,
+    CardDecision, Consent, ConsentError, DecisionAnswer, DecisionCard, DecisionEvent, DecisionKind,
+    DecisionOption, DecisionSink, InstallCard, MockConsent,
 };
 
 /// The usage fields of a Broca outcome, in Broca's canonical names: fresh

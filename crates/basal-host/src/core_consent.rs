@@ -1,7 +1,10 @@
 //! Core retains answers until basal has durably applied every decision in a page.
 use crate::subc_catalog::CORE;
 use crate::transport::{Transport, WireError};
-use crate::{CardDecision, Consent, ConsentError, DecisionEvent, DecisionSink, InstallCard};
+use crate::{
+    CardDecision, Consent, ConsentError, DecisionAnswer, DecisionCard, DecisionEvent, DecisionKind,
+    DecisionSink, InstallCard,
+};
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 
@@ -50,6 +53,133 @@ pub fn request(card: &InstallCard) -> Result<Value, ConsentError> {
         "flow_install":{"flow_id":card.flow_id,"version":card.version,"code_hash":hash,"script":script,"manifest_json":manifest,
             "author":author,"placement":placement,"warnings":f["warnings"].as_array().map(|warnings| warnings.iter().map(|w| json!({"code":w["kind"],"detail":w["text"]})).collect::<Vec<_>>()).unwrap_or_default(),"dry_run_summary":f["dry_run_summary"],"token_usage":{"window":f["token_cap"]["window"].as_str().unwrap_or("1d"),"fresh_input":f["token_window"]["input_tokens"].as_u64().unwrap_or(0),"cache_write":f["token_window"]["cache_write_tokens"].as_u64().unwrap_or(0),"output":f["token_window"]["output_tokens"].as_u64().unwrap_or(0),"cache_read":f["token_window"]["cached_input_tokens"].as_u64().unwrap_or(0)}}});
     Ok(result)
+}
+
+/// The effect core gives every action option of a `flow_decision` card.
+/// Core's owner may rename it to `grant`, so it is held in this one place.
+pub const DECISION_ACTION_EFFECT: &str = "choose";
+/// The effect of the one option of a card that does nothing.
+pub const DECISION_DECLINE_EFFECT: &str = "decline";
+/// How long core keeps a decision card open before it expires to its
+/// default.
+pub const DECISION_EXPIRES_IN_MS: u64 = 86_400_000;
+
+/// The `elicitation.request` for an operator decision card, built only
+/// here so core's byte-exact test vectors pin a single function.
+///
+/// The card goes to the operator alone: no `session_ref`, no agent author
+/// or subject, nothing that would route it to a digest sink. The typed
+/// `flow_decision` body states what the card is about; core shows it as
+/// facts and never authorizes anything with it. A card that breaks core's
+/// rules (2 to 4 options with distinct ids, exactly one declining option,
+/// a run and call key on reconcile cards only) is refused here rather than
+/// sent.
+pub fn decision_request(card: &DecisionCard) -> Result<Value, ConsentError> {
+    let refused = |why: &str| {
+        Err(ConsentError::Refused(format!(
+            "decision card {}: {why}",
+            card.dedup_key
+        )))
+    };
+    if !(2..=4).contains(&card.options.len()) {
+        return refused("a card has 2 to 4 options");
+    }
+    let mut ids: Vec<&str> = card.options.iter().map(|o| o.id.as_str()).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    if ids.len() != card.options.len() || ids.iter().any(|id| id.is_empty()) {
+        return refused("option ids are distinct and not empty");
+    }
+    let declines: Vec<&str> = card
+        .options
+        .iter()
+        .filter(|o| o.decline)
+        .map(|o| o.id.as_str())
+        .collect();
+    let [default] = declines.as_slice() else {
+        return refused("exactly one option declines");
+    };
+    let reconcile = card.decision == DecisionKind::Reconcile;
+    if reconcile != (card.run_id.is_some() && card.call_key.is_some())
+        || (!reconcile && (card.run_id.is_some() || card.call_key.is_some()))
+    {
+        return refused("a run and a call key belong to reconcile cards only");
+    }
+    let mut body =
+        json!({"flow_id":card.flow_id,"version":card.version,"decision":card.decision.as_str()});
+    if let Some(run_id) = &card.run_id {
+        body["run_id"] = json!(run_id);
+    }
+    if let Some(call_key) = &card.call_key {
+        body["call_key"] = json!(call_key);
+    }
+    let options: Vec<Value> = card
+        .options
+        .iter()
+        .map(|o| {
+            let effect = if o.decline {
+                DECISION_DECLINE_EFFECT
+            } else {
+                DECISION_ACTION_EFFECT
+            };
+            json!({"id":o.id,"label":o.label,"effect":effect})
+        })
+        .collect();
+    let facts: Vec<Value> = card
+        .facts
+        .iter()
+        .map(|(label, value)| json!({"label":label,"value":value}))
+        .collect();
+    Ok(
+        json!({"kind":"flow_decision","title":card.title,"prompt":card.prompt,"options":options,
+        "default":default,"urgency":"normal","on_expiry":"deny","material_damage":false,"late_execution":"notify_only",
+        "args_digest":card.args_digest,"dedup_key":card.dedup_key,
+        "target":{"kind":"flow","label":format!("{} v{}",card.flow_id,card.version)},"facts":facts,
+        "expires_in_ms":DECISION_EXPIRES_IN_MS,"flow_decision":body}),
+    )
+}
+
+/// Reads an answer record of a `flow_decision` card. An expired card
+/// answers with no choice, which basal treats as its default.
+pub fn decision_answer(record: &Value) -> Result<DecisionAnswer, ConsentError> {
+    let bad = |why: &str| ConsentError::Unavailable(format!("decision answer: {why}"));
+    let elicitation_id = record["elicitation_id"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| bad("no elicitation id"))?;
+    let choice = match (
+        record["state"].as_str(),
+        record["answered_choice_id"].as_str(),
+    ) {
+        (Some("answered"), Some(choice)) if !choice.is_empty() => Some(choice.to_owned()),
+        (Some("expired"), _) => None,
+        _ => return Err(bad("unrecognised state")),
+    };
+    let body = &record["flow_decision"];
+    let flow_id = body["flow_id"].as_str().ok_or_else(|| bad("no flow id"))?;
+    let version = body["version"]
+        .as_u64()
+        .and_then(|v| u32::try_from(v).ok())
+        .ok_or_else(|| bad("version is invalid"))?;
+    let decision = body["decision"]
+        .as_str()
+        .and_then(DecisionKind::parse)
+        .ok_or_else(|| bad("decision is not reconcile or reenable"))?;
+    let text = |name: &str| body[name].as_str().map(str::to_owned);
+    let (run_id, call_key) = (text("run_id"), text("call_key"));
+    if decision == DecisionKind::Reconcile && (run_id.is_none() || call_key.is_none()) {
+        return Err(bad("a reconcile answer names no run or call"));
+    }
+    Ok(DecisionAnswer {
+        elicitation_id: elicitation_id.to_owned(),
+        choice,
+        dedup_key: record["dedup_key"].as_str().map(str::to_owned),
+        flow_id: flow_id.to_owned(),
+        version,
+        decision,
+        run_id,
+        call_key,
+    })
 }
 
 /// The three author forms core accepts on a `flow_install` request.
@@ -139,20 +269,33 @@ fn poll(state: &State) -> Result<(), ConsentError> {
         // Old expired answers omit the install payload. Fetch the owned full
         // record before deciding so the decision keeps its flow identity.
         let full;
-        let record = if record.get("flow_install").is_none() {
-            let id = field(record, "elicitation_id")?;
-            full = state
-                .transport
-                .management(
-                    CORE,
-                    "elicitation.await",
-                    json!({"elicitation_id":id,"timeout_ms":0}),
-                )
-                .map_err(error)?;
-            &full
-        } else {
-            record
-        };
+        let record =
+            if record.get("flow_install").is_none() && record.get("flow_decision").is_none() {
+                let id = field(record, "elicitation_id")?;
+                full = state
+                    .transport
+                    .management(
+                        CORE,
+                        "elicitation.await",
+                        json!({"elicitation_id":id,"timeout_ms":0}),
+                    )
+                    .map_err(error)?;
+                &full
+            } else {
+                record
+            };
+        if record.get("flow_decision").is_some() {
+            // A decision card's answer. The page stays unacknowledged until
+            // the sink has applied it, like an install decision.
+            let answer = decision_answer(record)?;
+            if let Err(e) = sink.answer(&answer) {
+                return Err(ConsentError::Unavailable(format!(
+                    "applying the answer to {}: {e}",
+                    answer.elicitation_id
+                )));
+            }
+            continue;
+        }
         let decision = match (
             record["state"].as_str(),
             record["answered_choice_id"].as_str(),
@@ -210,6 +353,18 @@ impl Consent for CoreConsent {
             return Err(ConsentError::Unavailable("missing elicitation id".into()));
         }
         Ok(())
+    }
+    fn raise_decision(&self, card: &DecisionCard) -> Result<String, ConsentError> {
+        let reply = self
+            .state
+            .transport
+            .management(CORE, "elicitation.request", decision_request(card)?)
+            .map_err(error)?;
+        reply["elicitation_id"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| ConsentError::Unavailable("missing elicitation id".into()))
     }
     fn attach(&self, sink: Arc<dyn DecisionSink>) {
         *self.state.sink.lock().unwrap_or_else(|p| p.into_inner()) = Some(sink);
