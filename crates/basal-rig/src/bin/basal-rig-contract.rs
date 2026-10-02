@@ -508,6 +508,23 @@ async fn register_agent(
         true,
         json!({ "scope_ref": scope_ref, "scope_epoch": epoch }),
     );
+    // The registry entry basal's install validation reads, kept to compare
+    // with the shape basal's fake core answers.
+    let listed = rig
+        .client
+        .call(CORE, &suite_identity(), "agent.list", json!({}))
+        .await;
+    case.record(
+        "agent_list_entry",
+        match &listed {
+            Ok(list) => list["agents"]
+                .as_array()
+                .and_then(|agents| agents.iter().find(|a| a["agent_id"] == id.as_str()))
+                .cloned()
+                .unwrap_or(Value::Null),
+            Err(_) => evidence(&listed),
+        },
+    );
     Ok(Agent {
         name,
         id,
