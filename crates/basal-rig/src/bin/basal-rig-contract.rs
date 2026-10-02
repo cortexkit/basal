@@ -7,8 +7,13 @@
 //! ```text
 //! basal-rig-contract --core-store <file> --basal-store <file>
 //!     --machine-id <file> --kill-file <file> --results <file>
-//!     --project-id <pj-…>
+//!     --project-id <pj-…> [--no-kill-hook]
 //! ```
+//!
+//! `--no-kill-hook` is for a rig running a staged production ck-basal
+//! (`flows-rig.sh place --from-stage`), which is built without the rig kill
+//! switch: the crash case cannot run there, so it is reported as not run,
+//! by name and with the reason, and never counted as passed.
 //!
 //! The rig runs core's projects registry as production does, against the
 //! rig's entorhinal, so the test agent is a head of the project
@@ -36,6 +41,10 @@ const BASAL: &str = "basal";
 /// How long a flow approved now may take to finish its first run: up to a
 /// minute to its cron boundary, plus the run itself.
 const RUN_WAIT: Duration = Duration::from_secs(150);
+/// The crash case's name, shared by the case and its not-run record.
+const CRASH_CASE: &str = "exactly once across a kill -9 of ck-basal";
+const NO_KILL_HOOK_REASON: &str =
+    "the staged ck-basal is a production build without the rig kill hook";
 
 struct Args {
     connection_file: PathBuf,
@@ -45,12 +54,19 @@ struct Args {
     kill_file: PathBuf,
     results: PathBuf,
     project_id: String,
+    /// ck-basal has no kill switch, so the crash case is not run.
+    no_kill_hook: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut values = std::collections::HashMap::new();
+    let mut no_kill_hook = false;
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
+        if flag == "--no-kill-hook" {
+            no_kill_hook = true;
+            continue;
+        }
         let value = it.next().ok_or_else(|| format!("{flag} needs a value"))?;
         values.insert(flag, PathBuf::from(value));
     }
@@ -69,6 +85,7 @@ fn parse_args() -> Result<Args, String> {
         kill_file: take("--kill-file")?,
         results: take("--results")?,
         project_id: take("--project-id")?.to_string_lossy().into_owned(),
+        no_kill_hook,
     };
     match values.keys().next() {
         Some(unknown) => Err(format!("unknown argument {unknown}")),
@@ -90,6 +107,8 @@ struct Case {
     name: String,
     checks: Vec<Value>,
     evidence: Map<String, Value>,
+    /// Why the case was not run, for a case the rig cannot exercise.
+    not_run: Option<String>,
 }
 
 impl Case {
@@ -99,6 +118,17 @@ impl Case {
             name: name.into(),
             checks: Vec::new(),
             evidence: Map::new(),
+            not_run: None,
+        }
+    }
+
+    fn skipped(name: &str, reason: &str) -> Self {
+        println!("== {name}\n  NOT RUN: {reason}");
+        Self {
+            name: name.into(),
+            checks: Vec::new(),
+            evidence: Map::new(),
+            not_run: Some(reason.into()),
         }
     }
 
@@ -121,12 +151,22 @@ impl Case {
     }
 
     fn to_json(&self) -> Value {
-        json!({
-            "case": self.name,
-            "passed": self.passed(),
-            "checks": self.checks,
-            "evidence": self.evidence,
-        })
+        match &self.not_run {
+            // `passed` is null, not false and not true: nothing was checked.
+            Some(reason) => json!({
+                "case": self.name,
+                "passed": Value::Null,
+                "not_run": reason,
+                "checks": self.checks,
+                "evidence": self.evidence,
+            }),
+            None => json!({
+                "case": self.name,
+                "passed": self.passed(),
+                "checks": self.checks,
+                "evidence": self.evidence,
+            }),
+        }
     }
 }
 
@@ -1269,7 +1309,7 @@ fn basal_pid() -> Option<String> {
 }
 
 async fn crash(rig: &Rig, flow: &Flow, agent: &Agent, since: i64) -> Case {
-    let mut case = Case::new("exactly once across a kill -9 of ck-basal");
+    let mut case = Case::new(CRASH_CASE);
     // Arm the kill switch before approving, so the flow's first run cannot
     // start unarmed. The switch names this flow, so no other flow's run can
     // trip it; its only remote call is the digest, at position 0 (the journal
@@ -1491,7 +1531,15 @@ async fn suite(
     );
     cases.push(never);
 
-    cases.push(crash(&rig, &crash_flow, &agent, started).await);
+    // Without the kill switch the crash flow is never installed, so it is
+    // not among the other callers' flows the operator's list must show.
+    let mut others = vec![sinks_flow.id.as_str(), declined_flow.id.as_str()];
+    if args.no_kill_hook {
+        cases.push(Case::skipped(CRASH_CASE, NO_KILL_HOOK_REASON));
+    } else {
+        cases.push(crash(&rig, &crash_flow, &agent, started).await);
+        others.push(crash_flow.id.as_str());
+    }
 
     cases.push(
         relayed_actions(
@@ -1499,11 +1547,7 @@ async fn suite(
             &relayed_flow,
             &agent,
             &[scope_flow.id.as_str(), relayed_flow.id.as_str()],
-            &[
-                sinks_flow.id.as_str(),
-                declined_flow.id.as_str(),
-                crash_flow.id.as_str(),
-            ],
+            &others,
         )
         .await,
     );
@@ -1563,7 +1607,12 @@ fn main() -> std::process::ExitCode {
     if let Err(e) = &outcome {
         println!("ABORTED: {e}");
     }
-    let passed = outcome.is_ok() && cases.iter().all(Case::passed);
+    let not_run: Vec<&Case> = cases.iter().filter(|c| c.not_run.is_some()).collect();
+    let passed = outcome.is_ok()
+        && cases
+            .iter()
+            .filter(|c| c.not_run.is_none())
+            .all(Case::passed);
     let checks: usize = cases.iter().map(|c| c.checks.len()).sum();
     let failed: usize = cases
         .iter()
@@ -1578,6 +1627,10 @@ fn main() -> std::process::ExitCode {
         "aborted": outcome.err(),
         "checks": checks,
         "failed_checks": failed,
+        "not_run": not_run
+            .iter()
+            .map(|c| json!({ "case": c.name, "reason": c.not_run }))
+            .collect::<Vec<_>>(),
         "summary": summary,
         "cases": cases.iter().map(Case::to_json).collect::<Vec<_>>(),
     });
@@ -1589,8 +1642,25 @@ fn main() -> std::process::ExitCode {
         );
         return std::process::ExitCode::FAILURE;
     }
+    let skipped = match not_run.as_slice() {
+        [] => String::new(),
+        cases => format!(
+            ", {} case{} not run: {}",
+            cases.len(),
+            if cases.len() == 1 { "" } else { "s" },
+            cases
+                .iter()
+                .map(|c| format!(
+                    "\"{}\" ({})",
+                    c.name,
+                    c.not_run.as_deref().unwrap_or_default()
+                ))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
     println!(
-        "{} checks, {failed} failed; results in {}",
+        "{} checks, {failed} failed{skipped}; results in {}",
         checks,
         args.results.display()
     );
