@@ -402,9 +402,9 @@ impl BrocaHost {
             return watched;
         }
         // Usage and the provider's finish reason come only from run.status.
-        // In short: if run.status has not yet caught up with an ended run,
-        // wait for it so the reported usage is recorded, but only for a
-        // bounded number of polls. Why it can happen: the two reads disagree in one direction only, and only
+        // If run.status has not yet caught up with an ended run, wait for it
+        // so the reported usage is recorded, but only for a bounded number
+        // of polls. The two reads disagree in one direction only, and only
         // briefly. Per Broca's serve.rs `run_result`, the run task makes its
         // terminal or pause durable in the WAL first, and only then does the
         // session's live actor mark the run ended; run.result starts from
