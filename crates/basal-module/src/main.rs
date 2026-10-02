@@ -72,9 +72,13 @@ fn serve() -> ExitCode {
     let configured_models = models.clone();
     let built_models = models.clone();
     let initialized_models = models.clone();
+    // Only the rig's kill switch reads this: the store path, once known.
+    let store_path_cell = Arc::new(std::sync::OnceLock::<std::path::PathBuf>::new());
+    let configured_store = store_path_cell.clone();
     tracing::info!("basal module starting");
     let handler = BasalHandler::new(
         Box::new(move |store_path| {
+            let _ = configured_store.set(store_path.clone());
             let scratch = store_path
                 .parent()
                 .map(|d| d.join("dry-run"))
@@ -138,7 +142,7 @@ fn serve() -> ExitCode {
                         )),
                         catalog,
                         consent: Arc::new(CoreConsent::new(transport).with_polling()),
-                        hooks: runtime_hooks(),
+                        hooks: runtime_hooks(&store_path_cell),
                     }
                 }
                 Err(error) => {
@@ -177,11 +181,15 @@ fn serve() -> ExitCode {
 /// The runtime's hooks: none in production. Only the isolated test rig's own
 /// build (feature `rig-kill-hook`, see `rig_kill`) adds a kill switch, which
 /// its crash test uses to end the process at a chosen runtime boundary.
-fn runtime_hooks() -> Arc<dyn basal_core::Hooks> {
+fn runtime_hooks(
+    store: &Arc<std::sync::OnceLock<std::path::PathBuf>>,
+) -> Arc<dyn basal_core::Hooks> {
     #[cfg(feature = "rig-kill-hook")]
-    if let Some(hook) = basal_module::rig_kill::RigKillHook::from_env() {
+    if let Some(hook) = basal_module::rig_kill::RigKillHook::from_env(store.clone()) {
         return Arc::new(hook);
     }
+    #[cfg(not(feature = "rig-kill-hook"))]
+    let _ = store;
     Arc::new(NoHooks)
 }
 

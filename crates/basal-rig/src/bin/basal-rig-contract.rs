@@ -993,11 +993,12 @@ fn basal_pid() -> Option<String> {
 async fn crash(rig: &Rig, flow: &Flow, agent: &Agent, since: i64) -> Case {
     let mut case = Case::new("exactly once across a kill -9 of ck-basal");
     // Arm the kill switch before approving, so the flow's first run cannot
-    // start unarmed. Its only remote call is the digest, at position 0 (the
-    // journal counts from 0); every other flow of this suite is disabled by
-    // now.
+    // start unarmed. The switch names this flow, so no other flow's run can
+    // trip it; its only remote call is the digest, at position 0 (the journal
+    // counts from 0).
     let point = "HostAnswered { position: 0 }";
-    if let Err(e) = std::fs::write(&rig.kill_file, point) {
+    let armed = json!({ "flow_id": flow.id, "boundary": point });
+    if let Err(e) = std::fs::write(&rig.kill_file, armed.to_string()) {
         case.check("the kill switch is armed", false, json!(e.to_string()));
         return case;
     }
