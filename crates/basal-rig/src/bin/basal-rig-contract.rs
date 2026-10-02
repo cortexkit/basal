@@ -7,15 +7,12 @@
 //! ```text
 //! basal-rig-contract --core-store <file> --basal-store <file>
 //!     --machine-id <file> --kill-file <file> --results <file>
-//!     --mode registry|registry-disabled [--project-id <pj-…>]
+//!     --project-id <pj-…>
 //! ```
 //!
-//! `--mode` says how the rig configured core's projects registry, and is
-//! written into the results. With the registry on, as production runs, the
-//! test agent is a head of the project `--project-id` names (flows-rig.sh
-//! registers it in the rig's entorhinal). With the registry-disabled fallback
-//! core cannot resolve a head's project, so the agent is an assistant, which
-//! passes the same self-registration gate and gets the same head scope.
+//! The rig runs core's projects registry as production does, against the
+//! rig's entorhinal, so the test agent is a head of the project
+//! `--project-id` names (flows-rig.sh registers it there).
 //!
 //! The connection file comes from `SUBC_CONNECTION_FILE`, which the rig sets.
 //! Every check is printed as it runs and written, with the replies core and
@@ -47,8 +44,7 @@ struct Args {
     machine_id: PathBuf,
     kill_file: PathBuf,
     results: PathBuf,
-    mode: String,
-    project_id: Option<String>,
+    project_id: String,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -72,19 +68,8 @@ fn parse_args() -> Result<Args, String> {
         machine_id: take("--machine-id")?,
         kill_file: take("--kill-file")?,
         results: take("--results")?,
-        mode: take("--mode")?.to_string_lossy().into_owned(),
-        project_id: values
-            .remove("--project-id")
-            .map(|v| v.to_string_lossy().into_owned()),
+        project_id: take("--project-id")?.to_string_lossy().into_owned(),
     };
-    match (args.mode.as_str(), &args.project_id) {
-        ("registry", Some(_)) | ("registry-disabled", None) => {}
-        ("registry", None) => return Err("--mode registry needs --project-id".into()),
-        ("registry-disabled", Some(_)) => {
-            return Err("--project-id is for --mode registry only".into());
-        }
-        (other, _) => return Err(format!("unknown mode {other}")),
-    }
     match values.keys().next() {
         Some(unknown) => Err(format!("unknown argument {unknown}")),
         None => Ok(args),
@@ -412,7 +397,7 @@ async fn register_agent(
     case: &mut Case,
     tag: &str,
     machine_id: &str,
-    project_id: Option<&str>,
+    project_id: &str,
 ) -> Result<Agent, String> {
     let name = format!("RigAgent{tag}");
     let session = format!("ses_rig_{tag}");
@@ -448,38 +433,16 @@ async fn register_agent(
 
     // Register a head, as a real one registers itself. Core accepts a head
     // only when its projects registry resolves the head's project to a
-    // workspace. In the rig's registry-disabled fallback core cannot do that,
-    // so the suite records core's refusal and registers an assistant instead:
-    // core admits it through the same self-registration check and gives it a
-    // head scope just like a head's.
+    // workspace, which the rig's entorhinal does for `project_id`.
     let head = json!({
         "role": "head",
         "name": name,
         "tag": "basal rig contract",
-        "project_id": project_id.map(str::to_owned).unwrap_or_else(|| format!("pj-rig{tag}")),
+        "project_id": project_id,
         "residence": residence(&session),
     });
-    let mut created = rig.client.call(CORE, &identity, "agent.create", head).await;
+    let created = rig.client.call(CORE, &identity, "agent.create", head).await;
     case.record("agent_create", evidence(&created));
-    if project_id.is_none() && created.is_err() {
-        println!("  head agent.create answered: {}", evidence(&created));
-        case.record("head_refused_without_registry", evidence(&created));
-        created = rig
-            .client
-            .call(
-                CORE,
-                &identity,
-                "agent.create",
-                json!({
-                    "role": "assistant",
-                    "name": name,
-                    "tag": "basal rig contract",
-                    "residence": residence(&session),
-                }),
-            )
-            .await;
-        case.record("agent_create", evidence(&created));
-    }
     let id = created
         .as_ref()
         .ok()
@@ -492,6 +455,29 @@ async fn register_agent(
     ) {
         return Err("no test agent".into());
     }
+    // Core allows one head per project and refuses a second as a permanent
+    // conflict, not a transient storage failure a caller would retry.
+    let second_session = format!("{session}_second");
+    let second = rig
+        .client
+        .call(
+            CORE,
+            &BindIdentity::new("/", "opencode", &second_session),
+            "agent.create",
+            json!({
+                "role": "head",
+                "name": format!("RigSecondHead{tag}"),
+                "tag": "basal rig contract",
+                "project_id": project_id,
+                "residence": residence(&second_session),
+            }),
+        )
+        .await;
+    case.check(
+        "agent.create refuses a second head for the project with agent_project_taken",
+        code(&second) == Some("agent_project_taken"),
+        evidence(&second),
+    );
 
     let scope = poll(Duration::from_secs(30), || async {
         rig.core.head_scope(&id).ok().flatten()
@@ -963,42 +949,56 @@ async fn sinks_and_facts(rig: &Rig, flow: &Flow, agent: &Agent, since: i64) -> V
     vec![sinks, facts]
 }
 
+/// The operator revoked the flow in core right after approving it. basal
+/// asks core before every activation, so the flow's next scheduled run is
+/// cancelled before it is activated, and basal stops listing the flow as
+/// enabled.
 async fn revoked(rig: &Rig, flow: &Flow) -> Case {
-    let mut case =
-        Case::new("revoked: core itself refuses a flow version it holds no approved install for");
+    let mut case = Case::new(
+        "revoked: basal asks core before activating, never runs the revoked flow, and stops listing it as enabled",
+    );
     let Some(run) = rig.first_run(flow).await else {
-        case.check("the flow ran", false, Value::Null);
+        case.check(
+            "the flow's next scheduled run ended",
+            false,
+            json!(rig.basal.runs(&flow.id).ok().map(|r| r.len())),
+        );
         return case;
     };
-    case.record("disable", evidence(&rig.disable(&flow.id).await));
-    let result = run.result.clone().unwrap_or(Value::Null);
     case.record(
         "run",
-        json!({ "run_id": run.run_id, "state": run.state, "result": result }),
+        json!({ "run_id": run.run_id, "state": run.state, "result": run.result, "error": run.error }),
     );
-    for write in ["digest", "status"] {
-        let reply = &result[write];
-        case.check(
-            &format!("core refuses the revoked flow's sink.{write} with sink_flow_not_installed"),
-            reply["refused"]["data"]["code"] == "sink_flow_not_installed",
-            reply.clone(),
-        );
-    }
+    case.check(
+        "the next scheduled run is cancelled because core revoked the version",
+        run.state == "cancelled"
+            && run.error.as_ref().is_some_and(|e| {
+                e["detail"]
+                    .as_str()
+                    .is_some_and(|d| d.contains("core revoked"))
+            }),
+        json!({ "state": run.state, "error": run.error }),
+    );
+    let activations = rig.basal.activations(&run.run_id);
+    let calls = rig.basal.calls(&flow.id).unwrap_or_default();
+    case.check(
+        "the run was never activated: no activation recorded and no call journaled",
+        activations == Ok(0) && calls.is_empty(),
+        json!({ "activations": activations, "calls": calls.len() }),
+    );
     let receipts = rig.core.receipts(&flow.id).unwrap_or_default();
     case.check(
         "core recorded no receipt for the revoked flow",
         receipts.is_empty(),
         json!(receipts.iter().map(|r| r.key.clone()).collect::<Vec<_>>()),
     );
-    let calls = rig.basal.calls(&flow.id).unwrap_or_default();
+    let entry = rig.health(&flow.id).await.unwrap_or(Value::Null);
     case.check(
-        "basal sent both writes and journaled core's refusals",
-        calls
-            .iter()
-            .filter(|c| matches!(c.kind_code, KIND_SINK_DIGEST | KIND_SINK_STATUS))
-            .all(|c| c.settlement.as_deref() == Some("rejected") && c.dispatch != "none")
-            && calls.iter().any(|c| c.kind_code == KIND_SINK_DIGEST),
-        json!(calls.iter().map(|c| json!({"position": c.position, "kind": c.kind_code, "dispatch": c.dispatch, "settlement": c.settlement, "value": c.value})).collect::<Vec<_>>()),
+        "flow.health lists the flow as unapproved, with no approved version, disabled by core",
+        entry["state"] == "unapproved"
+            && entry["approved_version"].is_null()
+            && entry["disabled"]["by"] == "core",
+        entry,
     );
     case
 }
@@ -1149,7 +1149,6 @@ async fn suite(
     let started = now_ms();
     let tag = format!("{:08x}", started & 0xffff_ffff);
     summary.insert("tag".into(), json!(tag));
-    summary.insert("core_projects_registry".into(), json!(args.mode));
     summary.insert("project_id".into(), json!(args.project_id));
     let machine_id = std::fs::read_to_string(&args.machine_id)
         .map_err(|e| format!("read {}: {e}", args.machine_id.display()))?
@@ -1168,14 +1167,7 @@ async fn suite(
 
     let mut setup = Case::new("setup: reset and register the test agent");
     reset(&rig, &mut setup).await;
-    let agent = register_agent(
-        &rig,
-        &mut setup,
-        &tag,
-        &machine_id,
-        args.project_id.as_deref(),
-    )
-    .await;
+    let agent = register_agent(&rig, &mut setup, &tag, &machine_id, &args.project_id).await;
     cases.push(setup);
     let agent = agent?;
     summary.insert(
@@ -1199,8 +1191,9 @@ async fn suite(
 
     cases.push(local_install(&rig, &sinks_flow).await);
     let mut scope_case = scope_install(&rig, &scope_flow, &agent).await;
-    // Revoke the agent's flow in core at once: basal keeps it enabled (core
-    // tells it nothing), so its first run shows what core does by itself.
+    // Revoke the agent's flow in core at once, before its first scheduled
+    // run: basal hears of it only by asking core before that run activates
+    // (the `revoked` case below).
     let revoke = rig
         .client
         .operator(
@@ -1252,6 +1245,24 @@ async fn suite(
             entry.unwrap_or(Value::Null),
         );
     }
+    // Minutes of cron boundaries have passed since the revoked flow's one
+    // run was cancelled; core's disable stopped its schedule, so there is no
+    // other.
+    let revoked_runs = rig.basal.runs(&scope_flow.id);
+    cleanup.check(
+        &format!(
+            "{} was admitted no run after its cancelled one",
+            scope_flow.id
+        ),
+        revoked_runs
+            .as_ref()
+            .is_ok_and(|r| r.len() == 1 && r[0].state == "cancelled"),
+        json!(revoked_runs.map(|r| {
+            r.iter()
+                .map(|r| json!({"run_id": r.run_id, "state": r.state}))
+                .collect::<Vec<_>>()
+        })),
+    );
     cases.push(cleanup);
     rig.client.close().await;
     Ok(())
@@ -1272,7 +1283,6 @@ fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
-    println!("core projects registry: {}", args.mode);
     let started = now_ms();
     let mut cases = Vec::new();
     let mut summary = Map::new();
@@ -1289,7 +1299,6 @@ fn main() -> std::process::ExitCode {
         .count();
     let report = json!({
         "suite": "basal I1b live contract",
-        "core_projects_registry": args.mode,
         "started_at_ms": started,
         "finished_at_ms": now_ms(),
         "passed": passed,

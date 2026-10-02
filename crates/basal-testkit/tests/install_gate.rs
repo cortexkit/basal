@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use basal_core::InstallRequest;
 use basal_core::admission::Admission;
 use basal_core::ids::hex;
 use basal_core::{
@@ -15,7 +16,6 @@ use basal_core::{
 };
 use basal_host::InstallStatus;
 use basal_proto::JsonText;
-use basal_core::InstallRequest;
 use basal_testkit::harness::{World, test_manifest};
 use common::{admit, config};
 
@@ -284,7 +284,11 @@ fn a_resume_after_suspension_is_gated() {
         ),
         "{end:?}"
     );
-    assert_eq!(world.mock.install_queries().len(), 2, "each activation asks");
+    assert_eq!(
+        world.mock.install_queries().len(),
+        2,
+        "each activation asks"
+    );
     assert_eq!(run(&rt, &run_id).state, RunState::Cancelled);
     assert_eq!(activations_sent(&world), 1, "only the first activation ran");
     rt.quiesce();

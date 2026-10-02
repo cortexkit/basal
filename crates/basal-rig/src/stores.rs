@@ -175,6 +175,18 @@ impl BasalStore {
         Ok(calls)
     }
 
+    /// How many activations of a run basal recorded. A claim that basal's
+    /// install gate turned back before the run reached a worker is not one.
+    pub fn activations(&self, run_id: &str) -> Result<i64, String> {
+        let c = open(&self.path)?;
+        c.query_row(
+            "SELECT COUNT(*) FROM activations WHERE run_id = ?1",
+            params![run_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())
+    }
+
     /// The runs of one flow, oldest first: id, state, the script's return
     /// value and the error, if any.
     pub fn runs(&self, flow_id: &str) -> Result<Vec<Run>, String> {
