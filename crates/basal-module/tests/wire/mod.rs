@@ -238,7 +238,7 @@ fn flow_install_request(
 pub const BASAL: &str = "reserved:basal";
 
 /// The keys core's `ConsentRequest` decodes (prefrontal-core-store
-/// `elicitation.rs` at tag `flow-decision-card-v1`); it refuses any other.
+/// `elicitation.rs` at tag `flow-decision-card-v2`); it refuses any other.
 const REQUEST_KEYS: &[&str] = &[
     "flow_install",
     "flow_decision",
