@@ -1,469 +1,469 @@
 [
   {
     "applied_evidence": "crates/basal-host/src/selector.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test an_unconfigured_selector_has_no_default_model ... FAILED\nthread 'an_unconfigured_selector_has_no_default_model' (215045868) panicked at crates/basal-module/tests/hosts.rs:1502:5:\n  left: None\n right: Some(\"\\\"route_not_configured\\\"\")\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 0.20s",
+    "captured_output": "test an_unconfigured_selector_has_no_default_model ... FAILED\nthread 'an_unconfigured_selector_has_no_default_model' (7117899) panicked at crates/basal-module/tests/hosts.rs:1663:5:\n  left: None\n right: Some(\"\\\"route_not_configured\\\"\")\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.21s",
     "control": "selector: unconfigured selector chooses a default",
     "expected_red": "an_unconfigured_selector_has_no_default_model",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/selector.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test selector_refusals_are_journaled_with_each_code_and_never_send_broca ... FAILED\nthread 'selector_refusals_are_journaled_with_each_code_and_never_send_broca' (215050658) panicked at crates/basal-module/tests/hosts.rs:1234:9:\n  left: Some(\"\\\"wrong\\\"\")\n right: Some(\"\\\"no_available_model\\\"\")\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 0.24s",
+    "captured_output": "test selector_refusals_are_journaled_with_each_code_and_never_send_broca ... FAILED\nthread 'selector_refusals_are_journaled_with_each_code_and_never_send_broca' (7118673) panicked at crates/basal-module/tests/hosts.rs:1395:9:\n  left: Some(\"\\\"wrong\\\"\")\n right: Some(\"\\\"no_available_model\\\"\")\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.19s",
     "control": "selector: no_available_model code lost",
     "expected_red": "selector_refusals_are_journaled_with_each_code_and_never_send_broca",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/selector.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test selector_refusals_are_journaled_with_each_code_and_never_send_broca ... FAILED\nthread 'selector_refusals_are_journaled_with_each_code_and_never_send_broca' (215056767) panicked at crates/basal-module/tests/hosts.rs:1234:9:\n  left: Some(\"\\\"wrong\\\"\")\n right: Some(\"\\\"quota_or_cooldown_exhausted\\\"\")\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 0.40s",
+    "captured_output": "test selector_refusals_are_journaled_with_each_code_and_never_send_broca ... FAILED\nthread 'selector_refusals_are_journaled_with_each_code_and_never_send_broca' (7119399) panicked at crates/basal-module/tests/hosts.rs:1395:9:\n  left: Some(\"\\\"wrong\\\"\")\n right: Some(\"\\\"quota_or_cooldown_exhausted\\\"\")\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.29s",
     "control": "selector: quota_or_cooldown_exhausted code lost",
     "expected_red": "selector_refusals_are_journaled_with_each_code_and_never_send_broca",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/selector.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test selector_refusals_are_journaled_with_each_code_and_never_send_broca ... FAILED\nthread 'selector_refusals_are_journaled_with_each_code_and_never_send_broca' (215061527) panicked at crates/basal-module/tests/hosts.rs:1234:9:\n  left: Some(\"\\\"wrong\\\"\")\n right: Some(\"\\\"all_routes_inadequate\\\"\")\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 0.53s",
+    "captured_output": "test selector_refusals_are_journaled_with_each_code_and_never_send_broca ... FAILED\nthread 'selector_refusals_are_journaled_with_each_code_and_never_send_broca' (7120608) panicked at crates/basal-module/tests/hosts.rs:1395:9:\n  left: Some(\"\\\"wrong\\\"\")\n right: Some(\"\\\"all_routes_inadequate\\\"\")\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.46s",
     "control": "selector: all_routes_inadequate code lost",
     "expected_red": "selector_refusals_are_journaled_with_each_code_and_never_send_broca",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/selector.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test selector_refusals_are_journaled_with_each_code_and_never_send_broca ... FAILED\nthread 'selector_refusals_are_journaled_with_each_code_and_never_send_broca' (215066125) panicked at crates/basal-module/tests/hosts.rs:1234:9:\n  left: Some(\"\\\"wrong\\\"\")\n right: Some(\"\\\"no_adequate_route\\\"\")\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 0.67s",
+    "captured_output": "test selector_refusals_are_journaled_with_each_code_and_never_send_broca ... FAILED\nthread 'selector_refusals_are_journaled_with_each_code_and_never_send_broca' (7121800) panicked at crates/basal-module/tests/hosts.rs:1395:9:\n  left: Some(\"\\\"wrong\\\"\")\n right: Some(\"\\\"no_adequate_route\\\"\")\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.56s",
     "control": "selector: no_adequate_route code lost",
     "expected_red": "selector_refusals_are_journaled_with_each_code_and_never_send_broca",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/selector.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test selector_refusals_are_journaled_with_each_code_and_never_send_broca ... FAILED\nthread 'selector_refusals_are_journaled_with_each_code_and_never_send_broca' (215070491) panicked at crates/basal-module/tests/hosts.rs:1234:9:\n  left: Some(\"\\\"wrong\\\"\")\n right: Some(\"\\\"missing_required_capability\\\"\")\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 0.66s",
+    "captured_output": "test selector_refusals_are_journaled_with_each_code_and_never_send_broca ... FAILED\nthread 'selector_refusals_are_journaled_with_each_code_and_never_send_broca' (7122868) panicked at crates/basal-module/tests/hosts.rs:1395:9:\n  left: Some(\"\\\"wrong\\\"\")\n right: Some(\"\\\"missing_required_capability\\\"\")\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.67s",
     "control": "selector: missing_required_capability code lost",
     "expected_red": "selector_refusals_are_journaled_with_each_code_and_never_send_broca",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/selector.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test selector_refusals_are_journaled_with_each_code_and_never_send_broca ... FAILED\nthread 'selector_refusals_are_journaled_with_each_code_and_never_send_broca' (215076754) panicked at crates/basal-module/tests/hosts.rs:1234:9:\n  left: Some(\"\\\"wrong\\\"\")\n right: Some(\"\\\"context_too_small\\\"\")\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 1.00s",
+    "captured_output": "test selector_refusals_are_journaled_with_each_code_and_never_send_broca ... FAILED\nthread 'selector_refusals_are_journaled_with_each_code_and_never_send_broca' (7124143) panicked at crates/basal-module/tests/hosts.rs:1395:9:\n  left: Some(\"\\\"wrong\\\"\")\n right: Some(\"\\\"context_too_small\\\"\")\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.75s",
     "control": "selector: context_too_small code lost",
     "expected_red": "selector_refusals_are_journaled_with_each_code_and_never_send_broca",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/selector.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test selector_refusals_are_journaled_with_each_code_and_never_send_broca ... FAILED\nthread 'selector_refusals_are_journaled_with_each_code_and_never_send_broca' (215083258) panicked at crates/basal-module/tests/hosts.rs:1234:9:\n  left: Some(\"\\\"wrong\\\"\")\n right: Some(\"\\\"invalid_requirements\\\"\")\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 1.95s",
+    "captured_output": "test selector_refusals_are_journaled_with_each_code_and_never_send_broca ... FAILED\nthread 'selector_refusals_are_journaled_with_each_code_and_never_send_broca' (7125346) panicked at crates/basal-module/tests/hosts.rs:1395:9:\n  left: Some(\"\\\"wrong\\\"\")\n right: Some(\"\\\"invalid_requirements\\\"\")\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.93s",
     "control": "selector: invalid_requirements code lost",
     "expected_red": "selector_refusals_are_journaled_with_each_code_and_never_send_broca",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/selector.rs; during:  1 file changed, 3 insertions(+), 4 deletions(-); after restore: empty git diff --stat",
-    "captured_output": "test routing_selection_reply_shapes_require_runner_and_preserve_both_identities ... FAILED\nthread 'routing_selection_reply_shapes_require_runner_and_preserve_both_identities' (215091350) panicked at crates/basal-module/tests/hosts.rs:1168:9:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 0.00s",
+    "captured_output": "test routing_selection_reply_shapes_require_runner_and_preserve_both_identities ... FAILED\nthread 'routing_selection_reply_shapes_require_runner_and_preserve_both_identities' (7126577) panicked at crates/basal-module/tests/hosts.rs:1329:9:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.00s",
     "control": "selector: missing runner falls back to selected ids",
     "expected_red": "routing_selection_reply_shapes_require_runner_and_preserve_both_identities",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/driver.rs; during:  1 file changed, 3 insertions(+), 9 deletions(-); after restore: empty git diff --stat",
-    "captured_output": "test selections_freeze_at_intent_commit_and_only_uncommitted_calls_reselect ... FAILED\nthread 'selections_freeze_at_intent_commit_and_only_uncommitted_calls_reselect' (215097469) panicked at crates/basal-module/tests/hosts.rs:1440:9:\n  left: 1\n right: 0\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 0.32s",
+    "captured_output": "test selections_freeze_at_intent_commit_and_only_uncommitted_calls_reselect ... FAILED\nthread 'selections_freeze_at_intent_commit_and_only_uncommitted_calls_reselect' (7127261) panicked at crates/basal-module/tests/hosts.rs:1601:9:\n  left: 1\n right: 0\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.19s",
     "control": "selector: selection checkpoint moved after intent",
     "expected_red": "selections_freeze_at_intent_commit_and_only_uncommitted_calls_reselect",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-testkit/src/bin/mutation-controls.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test unknown_control_flags_refuse_without_running_any_set ... FAILED\nthread 'unknown_control_flags_refuse_without_running_any_set' (215099085) panicked at crates/basal-testkit/tests/mutation_cli.rs:14:9:\n  left: Some(1)\n right: Some(2)\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.38s",
+    "captured_output": "test unknown_control_flags_refuse_without_running_any_set ... FAILED\nthread 'unknown_control_flags_refuse_without_running_any_set' (7127813) panicked at crates/basal-testkit/tests/mutation_cli.rs:14:9:\n  left: Some(1)\n right: Some(2)\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.23s",
     "control": "integration: unknown flags become filters",
     "expected_red": "unknown_control_flags_refuse_without_running_any_set",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/module.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test routing_host_model_selection_and_digest_sink_share_the_journal_store ... FAILED\nthread 'routing_host_model_selection_and_digest_sink_share_the_journal_store' (215101377) panicked at crates/basal-module/tests/hosts.rs:1040:5:\n  left: NeedsReconcile\n right: Suspended\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 0.22s",
+    "captured_output": "test routing_host_model_selection_and_digest_sink_share_the_journal_store ... FAILED\nthread 'routing_host_model_selection_and_digest_sink_share_the_journal_store' (7128445) panicked at crates/basal-module/tests/hosts.rs:1201:5:\n  left: NeedsReconcile\n right: Suspended\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.21s",
     "control": "integration: model store initialization omitted",
     "expected_red": "routing_host_model_selection_and_digest_sink_share_the_journal_store",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/routing.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test routing_host_model_selection_and_digest_sink_share_the_journal_store ... FAILED\nthread 'routing_host_model_selection_and_digest_sink_share_the_journal_store' (215109077) panicked at crates/basal-module/tests/hosts.rs:1055:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 0.19s",
+    "captured_output": "test routing_host_model_selection_and_digest_sink_share_the_journal_store ... FAILED\nthread 'routing_host_model_selection_and_digest_sink_share_the_journal_store' (7129250) panicked at crates/basal-module/tests/hosts.rs:1216:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.22s",
     "control": "integration: accepted model subscription wake omitted",
     "expected_red": "routing_host_model_selection_and_digest_sink_share_the_journal_store",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/broca/subc.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test broca::subc::tests::stream_and_reconnect_wakeups_are_coalesced_without_a_clock ... FAILED\nthread 'broca::subc::tests::stream_and_reconnect_wakeups_are_coalesced_without_a_clock' (215110260) panicked at crates/basal-host/src/broca/subc.rs:334:9:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s",
+    "captured_output": "test broca::subc::tests::stream_and_reconnect_wakeups_are_coalesced_without_a_clock ... FAILED\nthread 'broca::subc::tests::stream_and_reconnect_wakeups_are_coalesced_without_a_clock' (7129787) panicked at crates/basal-host/src/broca/subc.rs:334:9:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s",
     "control": "integration: stream wake omitted",
     "expected_red": "broca::subc::tests::stream_and_reconnect_wakeups_are_coalesced_without_a_clock",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/broca/subc.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test broca::subc::tests::stream_and_reconnect_wakeups_are_coalesced_without_a_clock ... FAILED\nthread 'broca::subc::tests::stream_and_reconnect_wakeups_are_coalesced_without_a_clock' (215111097) panicked at crates/basal-host/src/broca/subc.rs:342:9:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s",
+    "captured_output": "test broca::subc::tests::stream_and_reconnect_wakeups_are_coalesced_without_a_clock ... FAILED\nthread 'broca::subc::tests::stream_and_reconnect_wakeups_are_coalesced_without_a_clock' (7130361) panicked at crates/basal-host/src/broca/subc.rs:342:9:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s",
     "control": "integration: reconnect wake omitted",
     "expected_red": "broca::subc::tests::stream_and_reconnect_wakeups_are_coalesced_without_a_clock",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/broca/subc.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test broca::subc::tests::stream_batches_replay_until_a_durable_cursor_and_keep_error_order ... FAILED\nthread 'broca::subc::tests::stream_batches_replay_until_a_durable_cursor_and_keep_error_order' (215111964) panicked at crates/basal-host/src/broca/subc.rs:310:40:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s",
+    "captured_output": "test broca::subc::tests::stream_batches_replay_until_a_durable_cursor_and_keep_error_order ... FAILED\nthread 'broca::subc::tests::stream_batches_replay_until_a_durable_cursor_and_keep_error_order' (7130750) panicked at crates/basal-host/src/broca/subc.rs:310:40:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s",
     "control": "integration: buffered events drained before commit",
     "expected_red": "broca::subc::tests::stream_batches_replay_until_a_durable_cursor_and_keep_error_order",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/transport.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test management_envelopes_preserve_frozen_parameter_bytes ... FAILED\nthread 'management_envelopes_preserve_frozen_parameter_bytes' (215116173) panicked at crates/basal-module/tests/hosts.rs:1512:5:\n  left: [123, 34, 109, 101, 116, 104, 111, 100, 34, 58, 34, 115, 101, 115, 115, 105, 111, 110, 46, 115, 101, 110, 100, 34, 44, 34, 112, 97, 114, 97, 109, 115, 34, 58, 123, 34, 112, 114, 111, 109, 112, 1",
+    "captured_output": "test management_envelopes_preserve_frozen_parameter_bytes ... FAILED\nthread 'management_envelopes_preserve_frozen_parameter_bytes' (7131315) panicked at crates/basal-module/tests/hosts.rs:1673:5:\n  left: [123, 34, 109, 101, 116, 104, 111, 100, 34, 58, 34, 115, 101, 115, 115, 105, 111, 110, 46, 115, 101, 110, 100, 34, 44, 34, 112, 97, 114, 97, 109, 115, 34, 58, 123, 34, 112, 114, 111, 109, 112, 116",
     "control": "integration: frozen management parameters reserialized",
     "expected_red": "management_envelopes_preserve_frozen_parameter_bytes",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/driver.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test omitted_digest_action_uses_each_recipient_approved_cap ... FAILED\nthread 'omitted_digest_action_uses_each_recipient_approved_cap' (215119838) panicked at crates/basal-module/tests/hosts.rs:1324:9:\n  left: String(\"silent\")\n right: \"piggyback\"\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 0.35s",
+    "captured_output": "test omitted_digest_action_uses_each_recipient_approved_cap ... FAILED\nthread 'omitted_digest_action_uses_each_recipient_approved_cap' (7131890) panicked at crates/basal-module/tests/hosts.rs:1485:9:\n  left: String(\"silent\")\n right: \"piggyback\"\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.30s",
     "control": "integration: omitted digest sends silent",
     "expected_red": "omitted_digest_action_uses_each_recipient_approved_cap",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/dryrun.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test omitted_digest_action_in_dry_runs_is_the_recipient_digest_max ... FAILED\nthread 'omitted_digest_action_in_dry_runs_is_the_recipient_digest_max' (215122156) panicked at crates/basal-module/tests/dry_run.rs:267:9:\n  left: String(\"wake\")\n right: \"silent\"\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.20s",
+    "captured_output": "test omitted_digest_action_in_dry_runs_is_the_recipient_digest_max ... FAILED\nthread 'omitted_digest_action_in_dry_runs_is_the_recipient_digest_max' (7132534) panicked at crates/basal-module/tests/dry_run.rs:267:9:\n  left: String(\"wake\")\n right: \"silent\"\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.19s",
     "control": "integration: dry run defaults digest to wake",
     "expected_red": "omitted_digest_action_in_dry_runs_is_the_recipient_digest_max",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/manifest.rs; during:  1 file changed, 3 insertions(+); after restore: empty git diff --stat",
-    "captured_output": "test llm_demands_are_required_bounded_and_default_eq_is_zero ... FAILED\nthread 'llm_demands_are_required_bounded_and_default_eq_is_zero' (215125265) panicked at crates/basal-testkit/tests/dispatch_manifest.rs:400:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s",
+    "captured_output": "test llm_demands_are_required_bounded_and_default_eq_is_zero ... FAILED\nthread 'llm_demands_are_required_bounded_and_default_eq_is_zero' (7133299) panicked at crates/basal-testkit/tests/dispatch_manifest.rs:400:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s",
     "control": "selector: iq becomes optional",
     "expected_red": "llm_demands_are_required_bounded_and_default_eq_is_zero",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/manifest.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test llm_demands_are_required_bounded_and_default_eq_is_zero ... FAILED\nthread 'llm_demands_are_required_bounded_and_default_eq_is_zero' (215127542) panicked at crates/basal-testkit/tests/dispatch_manifest.rs:411:13:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s",
+    "captured_output": "test llm_demands_are_required_bounded_and_default_eq_is_zero ... FAILED\nthread 'llm_demands_are_required_bounded_and_default_eq_is_zero' (7134201) panicked at crates/basal-testkit/tests/dispatch_manifest.rs:411:13:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s",
     "control": "selector: iq upper bound omitted",
     "expected_red": "llm_demands_are_required_bounded_and_default_eq_is_zero",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/manifest.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test llm_demands_are_required_bounded_and_default_eq_is_zero ... FAILED\nthread 'llm_demands_are_required_bounded_and_default_eq_is_zero' (215129670) panicked at crates/basal-testkit/tests/dispatch_manifest.rs:411:13:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s",
+    "captured_output": "test llm_demands_are_required_bounded_and_default_eq_is_zero ... FAILED\nthread 'llm_demands_are_required_bounded_and_default_eq_is_zero' (7134812) panicked at crates/basal-testkit/tests/dispatch_manifest.rs:411:13:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s",
     "control": "selector: eq upper bound omitted",
     "expected_red": "llm_demands_are_required_bounded_and_default_eq_is_zero",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/driver.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test script_model_or_provider_is_rejected_before_selection_even_if_it_matches ... FAILED\nthread 'script_model_or_provider_is_rejected_before_selection_even_if_it_matches' (215132695) panicked at crates/basal-module/tests/hosts.rs:1303:9:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 0.31s",
+    "captured_output": "test script_model_or_provider_is_rejected_before_selection_even_if_it_matches ... FAILED\nthread 'script_model_or_provider_is_rejected_before_selection_even_if_it_matches' (7135631) panicked at crates/basal-module/tests/hosts.rs:1464:9:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.25s",
     "control": "selector: script model guard omitted before routing",
     "expected_red": "script_model_or_provider_is_rejected_before_selection_even_if_it_matches",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/broca/mod.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test broker_rejects_script_model_choices_even_with_a_valid_journaled_selection ... FAILED\nthread 'broker_rejects_script_model_choices_even_with_a_valid_journaled_selection' (215134690) panicked at crates/basal-host/tests/broca.rs:625:13:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 15 filtered out; finished in 0.00s",
+    "captured_output": "test broker_rejects_script_model_choices_even_with_a_valid_journaled_selection ... FAILED\nthread 'broker_rejects_script_model_choices_even_with_a_valid_journaled_selection' (7136181) panicked at crates/basal-host/tests/broca.rs:625:13:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.00s",
     "control": "selector: broker script model guard omitted",
     "expected_red": "broker_rejects_script_model_choices_even_with_a_valid_journaled_selection",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/selector.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test routing_select_request_bytes_are_exact_without_available_models ... FAILED\nthread 'routing_select_request_bytes_are_exact_without_available_models' (215138432) panicked at crates/basal-module/tests/hosts.rs:1124:5:\n  left: [123, 34, 109, 101, 116, 104, 111, 100, 34, 58, 34, 114, 111, 117, 116, 101, 46, 115, 101, 108, 101, 99, 116, 34, 44, 34, 112, 97, 114, 97, 109, 115, 34, 58, 123, 34, 101, ",
+    "captured_output": "test routing_select_request_bytes_are_exact_without_available_models ... FAILED\nthread 'routing_select_request_bytes_are_exact_without_available_models' (7136902) panicked at crates/basal-module/tests/hosts.rs:1285:5:\n  left: [123, 34, 109, 101, 116, 104, 111, 100, 34, 58, 34, 114, 111, 117, 116, 101, 46, 115, 101, 108, 101, 99, 116, 34, 44, 34, 112, 97, 114, 97, 109, 115, 34, 58, 123, 34, 101, 12",
     "control": "selector: flow target changed",
     "expected_red": "routing_select_request_bytes_are_exact_without_available_models",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/selector.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test routing_select_request_bytes_are_exact_without_available_models ... FAILED\nthread 'routing_select_request_bytes_are_exact_without_available_models' (215142403) panicked at crates/basal-module/tests/hosts.rs:1124:5:\n  left: [123, 34, 109, 101, 116, 104, 111, 100, 34, 58, 34, 114, 111, 117, 116, 101, 46, 115, 101, 108, 101, 99, 116, 34, 44, 34, 112, 97, 114, 97, 109, 115, 34, 58, 123, 34, 101, ",
+    "captured_output": "test routing_select_request_bytes_are_exact_without_available_models ... FAILED\nthread 'routing_select_request_bytes_are_exact_without_available_models' (7137889) panicked at crates/basal-module/tests/hosts.rs:1285:5:\n  left: [123, 34, 109, 101, 116, 104, 111, 100, 34, 58, 34, 114, 111, 117, 116, 101, 46, 115, 101, 108, 101, 99, 116, 34, 44, 34, 112, 97, 114, 97, 109, 115, 34, 58, 123, 34, 101, 12",
     "control": "selector: demands swapped",
     "expected_red": "routing_select_request_bytes_are_exact_without_available_models",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/selector.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test routing_select_request_bytes_are_exact_without_available_models ... FAILED\nthread 'routing_select_request_bytes_are_exact_without_available_models' (215146433) panicked at crates/basal-module/tests/hosts.rs:1124:5:\n  left: [123, 34, 109, 101, 116, 104, 111, 100, 34, 58, 34, 114, 111, 117, 116, 101, 46, 115, 101, 108, 101, 99, 116, 34, 44, 34, 112, 97, 114, 97, 109, 115, 34, 58, 123, 34, 97, 1",
+    "captured_output": "test routing_select_request_bytes_are_exact_without_available_models ... FAILED\nthread 'routing_select_request_bytes_are_exact_without_available_models' (7139183) panicked at crates/basal-module/tests/hosts.rs:1285:5:\n  left: [123, 34, 109, 101, 116, 104, 111, 100, 34, 58, 34, 114, 111, 117, 116, 101, 46, 115, 101, 108, 101, 99, 116, 34, 44, 34, 112, 97, 114, 97, 109, 115, 34, 58, 123, 34, 97, 118",
     "control": "selector: availableModels added",
     "expected_red": "routing_select_request_bytes_are_exact_without_available_models",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/selector.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test routing_selection_reply_shapes_require_runner_and_preserve_both_identities ... FAILED\nthread 'routing_selection_reply_shapes_require_runner_and_preserve_both_identities' (215150506) panicked at crates/basal-module/tests/hosts.rs:1162:9:\n  left: Object {\"model\": String(\"registry-model\"), \"provider\": String(\"registry-provider\")}\n right: Object {\"model\": String(\"runner-model\"), \"provider\": Strin",
+    "captured_output": "test routing_selection_reply_shapes_require_runner_and_preserve_both_identities ... FAILED\nthread 'routing_selection_reply_shapes_require_runner_and_preserve_both_identities' (7140510) panicked at crates/basal-module/tests/hosts.rs:1323:9:\n  left: Object {\"model\": String(\"registry-model\"), \"provider\": String(\"registry-provider\")}\n right: Object {\"model\": String(\"runner-model\"), \"provider\": String(",
     "control": "selector: runner mapped from registry identities",
     "expected_red": "routing_selection_reply_shapes_require_runner_and_preserve_both_identities",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/selector.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test routing_selection_reply_shapes_require_runner_and_preserve_both_identities ... FAILED\nthread 'routing_selection_reply_shapes_require_runner_and_preserve_both_identities' (215154567) panicked at crates/basal-module/tests/hosts.rs:1160:9:\n  left: None\n right: Some(\"thinking\")\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 0.00s",
+    "captured_output": "test routing_selection_reply_shapes_require_runner_and_preserve_both_identities ... FAILED\nthread 'routing_selection_reply_shapes_require_runner_and_preserve_both_identities' (7141948) panicked at crates/basal-module/tests/hosts.rs:1321:9:\n  left: None\n right: Some(\"thinking\")\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.00s",
     "control": "selector: registry variant not journaled",
     "expected_red": "routing_selection_reply_shapes_require_runner_and_preserve_both_identities",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/driver.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test unreachable_selector_retries_boundedly_then_journals_route_unavailable ... FAILED\nthread 'unreachable_selector_retries_boundedly_then_journals_route_unavailable' (215157837) panicked at crates/basal-module/tests/hosts.rs:1264:5:\n  left: None\n right: Some(\"\\\"route_unavailable\\\"\")\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 0.33s",
+    "captured_output": "test unreachable_selector_retries_boundedly_then_journals_route_unavailable ... FAILED\nthread 'unreachable_selector_retries_boundedly_then_journals_route_unavailable' (7142504) panicked at crates/basal-module/tests/hosts.rs:1425:5:\n  left: None\n right: Some(\"\\\"route_unavailable\\\"\")\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.27s",
     "control": "selector: unreachable retry bound omitted",
     "expected_red": "unreachable_selector_retries_boundedly_then_journals_route_unavailable",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/driver.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test selector_refusals_are_journaled_with_each_code_and_never_send_broca ... FAILED\nthread 'selector_refusals_are_journaled_with_each_code_and_never_send_broca' (215161612) panicked at crates/basal-module/tests/hosts.rs:1234:9:\n  left: Some(\"\\\"route_unavailable\\\"\")\n right: Some(\"\\\"no_available_model\\\"\")\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 0.",
+    "captured_output": "test selector_refusals_are_journaled_with_each_code_and_never_send_broca ... FAILED\nthread 'selector_refusals_are_journaled_with_each_code_and_never_send_broca' (7143099) panicked at crates/basal-module/tests/hosts.rs:1395:9:\n  left: Some(\"\\\"route_unavailable\\\"\")\n right: Some(\"\\\"no_available_model\\\"\")\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.19",
     "control": "selector: provider refusal code lost in journal",
     "expected_red": "selector_refusals_are_journaled_with_each_code_and_never_send_broca",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/runtime.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test selections_freeze_at_intent_commit_and_only_uncommitted_calls_reselect ... FAILED\nthread 'selections_freeze_at_intent_commit_and_only_uncommitted_calls_reselect' (215164796) panicked at crates/basal-module/tests/hosts.rs:1461:9:\n  left: Object {\"model\": String(\"wrong\"), \"provider\": String(\"provider-first\"), \"variant\": String(\"runner-variant\")}\n right: Object {\"model\": String(\"runner-first\"), ",
+    "captured_output": "test selections_freeze_at_intent_commit_and_only_uncommitted_calls_reselect ... FAILED\nthread 'selections_freeze_at_intent_commit_and_only_uncommitted_calls_reselect' (7144006) panicked at crates/basal-module/tests/hosts.rs:1622:9:\n  left: Object {\"model\": String(\"wrong\"), \"provider\": String(\"provider-first\"), \"variant\": String(\"runner-variant\")}\n right: Object {\"model\": String(\"runner-first\"), \"p",
     "control": "selector: reissue changes selected runner",
     "expected_red": "selections_freeze_at_intent_commit_and_only_uncommitted_calls_reselect",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/broca/mod.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test model_outcomes_report_the_selected_decision_best_effort ... FAILED\nthread 'model_outcomes_report_the_selected_decision_best_effort' (215166973) panicked at crates/basal-host/tests/broca.rs:600:9:\n  left: (\"wrong-decision\", Completed)\n right: (\"decision:key:0\", Completed)\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 15 filtered out; finished in 0.00s",
+    "captured_output": "test model_outcomes_report_the_selected_decision_best_effort ... FAILED\nthread 'model_outcomes_report_the_selected_decision_best_effort' (7144513) panicked at crates/basal-host/tests/broca.rs:600:9:\n  left: (\"wrong-decision\", Completed)\n right: (\"decision:key:0\", Completed)\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.00s",
     "control": "selector: outcome report omitted",
     "expected_red": "model_outcomes_report_the_selected_decision_best_effort",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/broca/mod.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test model_outcomes_report_the_selected_decision_best_effort ... FAILED\nthread 'model_outcomes_report_the_selected_decision_best_effort' (215169141) panicked at crates/basal-host/tests/broca.rs:594:18:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 15 filtered out; finished in 0.00s",
+    "captured_output": "test model_outcomes_report_the_selected_decision_best_effort ... FAILED\nthread 'model_outcomes_report_the_selected_decision_best_effort' (7144716) panicked at crates/basal-host/tests/broca.rs:594:18:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.00s",
     "control": "selector: outcome failure blocks completion",
     "expected_red": "model_outcomes_report_the_selected_decision_best_effort",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/broca/mod.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test model_outcomes_report_the_selected_decision_best_effort ... FAILED\nthread 'model_outcomes_report_the_selected_decision_best_effort' (215170870) panicked at crates/basal-host/tests/broca.rs:600:9:\n  left: (\"decision:key:2\", Completed)\n right: (\"decision:key:2\", Cancelled)\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 15 filtered out; finished in 0.00s",
+    "captured_output": "test model_outcomes_report_the_selected_decision_best_effort ... FAILED\nthread 'model_outcomes_report_the_selected_decision_best_effort' (7145199) panicked at crates/basal-host/tests/broca.rs:600:9:\n  left: (\"decision:key:2\", Completed)\n right: (\"decision:key:2\", Cancelled)\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.00s",
     "control": "selector: cancelled outcome marked completed",
     "expected_red": "model_outcomes_report_the_selected_decision_best_effort",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/selector.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test routing_select_request_bytes_are_exact_without_available_models ... FAILED\nthread 'routing_select_request_bytes_are_exact_without_available_models' (215174372) panicked at crates/basal-module/tests/hosts.rs:1139:9:\n  left: \"{\\\"method\\\":\\\"route.set_decision_outcome\\\",\\\"params\\\":{\\\"decisionID\\\":\\\"wrong\\\",\\\"outcome\\\":\\\"completed\\\"}}\"\n right: \"{\\\"method\\\":\\\"route.set_decision_outcome\\\",\\\"params\\\"",
+    "captured_output": "test routing_select_request_bytes_are_exact_without_available_models ... FAILED\nthread 'routing_select_request_bytes_are_exact_without_available_models' (7145630) panicked at crates/basal-module/tests/hosts.rs:1300:9:\n  left: \"{\\\"method\\\":\\\"route.set_decision_outcome\\\",\\\"params\\\":{\\\"decisionID\\\":\\\"wrong\\\",\\\"outcome\\\":\\\"completed\\\"}}\"\n right: \"{\\\"method\\\":\\\"route.set_decision_outcome\\\",\\\"params\\\":{",
     "control": "selector: decision outcome key changed",
     "expected_red": "routing_select_request_bytes_are_exact_without_available_models",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/core_host.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test core_requests_match_c3_c4_field_for_field ... FAILED\nthread 'core_requests_match_c3_c4_field_for_field' (215178530) panicked at crates/basal-module/tests/hosts.rs:80:5:\n  left: Object {\"agent\": String(\"BASAL\"), \"fields\": Array [], \"flow_id\": String(\"dark-wake-basal\"), \"flow_version\": Number(1), \"include\": Array [], \"max_age_ms\": Null}\n right: Object {\"agent\": String(\"BASAL\"), \"fields\": Array ",
+    "captured_output": "test core_requests_match_c3_c4_field_for_field ... FAILED\nthread 'core_requests_match_c3_c4_field_for_field' (7146258) panicked at crates/basal-module/tests/hosts.rs:86:5:\n  left: Object {\"agent\": String(\"BASAL\"), \"fields\": Array [], \"flow_id\": String(\"dark-wake-basal\"), \"flow_version\": Number(1), \"include\": Array [], \"max_age_ms\": Null}\n right: Object {\"agent\": String(\"BASAL\"), \"fields\": Array [S",
     "control": "hosts: facts request groups discarded",
     "expected_red": "core_requests_match_c3_c4_field_for_field",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/core_host.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test fact_identity_and_clock_fields_are_required_without_normalising_leaves ... FAILED\nthread 'fact_identity_and_clock_fields_are_required_without_normalising_leaves' (215182002) panicked at crates/basal-module/tests/hosts.rs:948:9:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 0.00s",
+    "captured_output": "test fact_identity_and_clock_fields_are_required_without_normalising_leaves ... FAILED\nthread 'fact_identity_and_clock_fields_are_required_without_normalising_leaves' (7146875) panicked at crates/basal-module/tests/hosts.rs:1109:9:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.00s",
     "control": "hosts: facts identity validation bypassed",
     "expected_red": "fact_identity_and_clock_fields_are_required_without_normalising_leaves",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/core_host.rs; during:  1 file changed, 3 insertions(+); after restore: empty git diff --stat",
-    "captured_output": "test fact_identity_and_clock_fields_are_required_without_normalising_leaves ... FAILED\nthread 'fact_identity_and_clock_fields_are_required_without_normalising_leaves' (215185620) panicked at crates/basal-module/tests/hosts.rs:941:5:\n  left: Object {\"activity\": Object {\"state\": Object {\"observed_at\": Null, \"privacy\": String(\"public\"), \"source\": Object {\"kind\": String(\"memory\"), \"ref\": String(\"sessi",
+    "captured_output": "test fact_identity_and_clock_fields_are_required_without_normalising_leaves ... FAILED\nthread 'fact_identity_and_clock_fields_are_required_without_normalising_leaves' (7147653) panicked at crates/basal-module/tests/hosts.rs:1102:5:\n  left: Object {\"activity\": Object {\"state\": Object {\"observed_at\": Null, \"privacy\": String(\"public\"), \"source\": Object {\"kind\": String(\"memory\"), \"ref\": String(\"sessio",
     "control": "hosts: facts unknown activity normalised to idle",
     "expected_red": "fact_identity_and_clock_fields_are_required_without_normalising_leaves",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/runtime.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test catalog_changes_cannot_execute_mutations_under_a_query_retry_policy ... FAILED\nthread 'catalog_changes_cannot_execute_mutations_under_a_query_retry_policy' (215188646) panicked at crates/basal-module/tests/hosts.rs:920:5:\n  left: Some(\"\\\"sent\\\"\")\n right: Some(\"\\\"op_kind_changed\\\"\")\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 0.25s",
+    "captured_output": "test catalog_changes_cannot_execute_mutations_under_a_query_retry_policy ... FAILED\nthread 'catalog_changes_cannot_execute_mutations_under_a_query_retry_policy' (7148126) panicked at crates/basal-module/tests/hosts.rs:1081:5:\n  left: Some(\"\\\"sent\\\"\")\n right: Some(\"\\\"op_kind_changed\\\"\")\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.20s",
     "control": "hosts: journaled class not passed to transport host",
     "expected_red": "catalog_changes_cannot_execute_mutations_under_a_query_retry_policy",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/routing.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test catalog_changes_cannot_execute_mutations_under_a_query_retry_policy ... FAILED\nthread 'catalog_changes_cannot_execute_mutations_under_a_query_retry_policy' (215192549) panicked at crates/basal-module/tests/hosts.rs:920:5:\n  left: Some(\"\\\"sent\\\"\")\n right: Some(\"\\\"op_kind_changed\\\"\")\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 0.23s",
+    "captured_output": "test catalog_changes_cannot_execute_mutations_under_a_query_retry_policy ... FAILED\nthread 'catalog_changes_cannot_execute_mutations_under_a_query_retry_policy' (7148684) panicked at crates/basal-module/tests/hosts.rs:1081:5:\n  left: Some(\"\\\"sent\\\"\")\n right: Some(\"\\\"op_kind_changed\\\"\")\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.20s",
     "control": "hosts: routing loses journaled class",
     "expected_red": "catalog_changes_cannot_execute_mutations_under_a_query_retry_policy",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/routing.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test catalog_changes_cannot_execute_mutations_under_a_query_retry_policy ... FAILED\nthread 'catalog_changes_cannot_execute_mutations_under_a_query_retry_policy' (215196652) panicked at crates/basal-module/tests/hosts.rs:920:5:\n  left: Some(\"\\\"sent\\\"\")\n right: Some(\"\\\"op_kind_changed\\\"\")\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 0.25s",
+    "captured_output": "test catalog_changes_cannot_execute_mutations_under_a_query_retry_policy ... FAILED\nthread 'catalog_changes_cannot_execute_mutations_under_a_query_retry_policy' (7149846) panicked at crates/basal-module/tests/hosts.rs:1081:5:\n  left: Some(\"\\\"sent\\\"\")\n right: Some(\"\\\"op_kind_changed\\\"\")\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.29s",
     "control": "hosts: changed operation kind accepted",
     "expected_red": "catalog_changes_cannot_execute_mutations_under_a_query_retry_policy",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/core_consent.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test consent_refusal_codes_and_unknown_transport_are_typed ... FAILED\nthread 'consent_refusal_codes_and_unknown_transport_are_typed' (215201285) panicked at crates/basal-module/tests/hosts.rs:871:9:\n  left: Err(Unavailable(\"elicitation_requester_refused: reason\"))\n right: Err(Refused(\"elicitation_requester_refused: reason\"))\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filter",
+    "captured_output": "test consent_refusal_codes_and_unknown_transport_are_typed ... FAILED\nthread 'consent_refusal_codes_and_unknown_transport_are_typed' (7151689) panicked at crates/basal-module/tests/hosts.rs:1032:9:\n  left: Err(Unavailable(\"elicitation_requester_refused: reason\"))\n right: Err(Refused(\"elicitation_requester_refused: reason\"))\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtere",
     "control": "hosts: consent provider refusal treated as outage",
     "expected_red": "consent_refusal_codes_and_unknown_transport_are_typed",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/core_consent.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test expired_answer_tombstones_read_the_owned_record_before_ack ... FAILED\nthread 'expired_answer_tombstones_read_the_owned_record_before_ack' (215205519) panicked at crates/basal-module/tests/hosts.rs:829:25:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 0.00s",
+    "captured_output": "test expired_answer_tombstones_read_the_owned_record_before_ack ... FAILED\nthread 'expired_answer_tombstones_read_the_owned_record_before_ack' (7152578) panicked at crates/basal-module/tests/hosts.rs:990:25:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.00s",
     "control": "hosts: expiry tombstone identity is not retrieved",
     "expected_red": "expired_answer_tombstones_read_the_owned_record_before_ack",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/routing.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test operator_keyed_tools_retry_but_unfenceable_tools_do_not ... FAILED\nthread 'operator_keyed_tools_retry_but_unfenceable_tools_do_not' (215209631) panicked at crates/basal-module/tests/hosts.rs:767:5:\n  left: Mutation { honours_idempotency_keys: false }\n right: Mutation { honours_idempotency_keys: true }\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in",
+    "captured_output": "test operator_keyed_tools_retry_but_unfenceable_tools_do_not ... FAILED\nthread 'operator_keyed_tools_retry_but_unfenceable_tools_do_not' (7153150) panicked at crates/basal-module/tests/hosts.rs:928:5:\n  left: Mutation { honours_idempotency_keys: false }\n right: Mutation { honours_idempotency_keys: true }\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0",
     "control": "hosts: keyed tool contract ignored",
     "expected_red": "operator_keyed_tools_retry_but_unfenceable_tools_do_not",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/core_host.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test core_requests_match_c3_c4_field_for_field ... FAILED\nthread 'core_requests_match_c3_c4_field_for_field' (215213626) panicked at crates/basal-module/tests/hosts.rs:65:5:\n  left: Object {\"agent\": String(\"SYNAPSE\"), \"flow_id\": String(\"synapse-xcom-inference-news\"), \"flow_version\": Number(3), \"revision\": Number(0), \"text\": String(\"x.com: 2 new\"), \"ttl_ms\": Number(1800000)}\n right: Object {\"agent\"",
+    "captured_output": "test core_requests_match_c3_c4_field_for_field ... FAILED\nthread 'core_requests_match_c3_c4_field_for_field' (7153736) panicked at crates/basal-module/tests/hosts.rs:69:5:\n  left: Object {\"agent\": String(\"SYNAPSE\"), \"flow_id\": String(\"synapse-xcom-inference-news\"), \"flow_version\": Number(3), \"revision\": Number(0), \"text\": String(\"x.com: 2 new\"), \"ttl_ms\": Number(1800000)}\n right: Object {\"agent\": ",
     "control": "hosts: status revision substituted",
     "expected_red": "core_requests_match_c3_c4_field_for_field",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/core_host.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test sink_reply_missing_fields_and_wrong_types_are_unknown_outcomes ... FAILED\nthread 'sink_reply_missing_fields_and_wrong_types_are_unknown_outcomes' (215218443) panicked at crates/basal-module/tests/hosts.rs:727:13:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 0.00s",
+    "captured_output": "test sink_reply_missing_fields_and_wrong_types_are_unknown_outcomes ... FAILED\nthread 'sink_reply_missing_fields_and_wrong_types_are_unknown_outcomes' (7154373) panicked at crates/basal-module/tests/hosts.rs:888:13:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.00s",
     "control": "hosts: status replay marker ignored",
     "expected_red": "sink_reply_missing_fields_and_wrong_types_are_unknown_outcomes",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/subc_catalog.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test catalog_install_refuses_missing_ops_and_events_and_marks_mutations ... FAILED\nthread 'catalog_install_refuses_missing_ops_and_events_and_marks_mutations' (215222416) panicked at crates/basal-module/tests/hosts.rs:241:10:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 0.19s",
+    "captured_output": "test catalog_install_refuses_missing_ops_and_events_and_marks_mutations ... FAILED\nthread 'catalog_install_refuses_missing_ops_and_events_and_marks_mutations' (7154837) panicked at crates/basal-module/tests/hosts.rs:247:10:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.20s",
     "control": "hosts: missing management op accepted",
     "expected_red": "catalog_install_refuses_missing_ops_and_events_and_marks_mutations",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/subc_catalog.rs; during:  1 file changed, 3 insertions(+), 3 deletions(-); after restore: empty git diff --stat",
-    "captured_output": "test catalog_install_refuses_missing_ops_and_events_and_marks_mutations ... FAILED\nthread 'catalog_install_refuses_missing_ops_and_events_and_marks_mutations' (215226201) panicked at crates/basal-module/tests/hosts.rs:253:5:\n  left: \"install_refused\"\n right: \"event_not_declared\"\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 0.04s",
+    "captured_output": "test catalog_install_refuses_missing_ops_and_events_and_marks_mutations ... FAILED\nthread 'catalog_install_refuses_missing_ops_and_events_and_marks_mutations' (7155361) panicked at crates/basal-module/tests/hosts.rs:259:5:\n  left: \"install_refused\"\n right: \"event_not_declared\"\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.04s",
     "control": "hosts: undeclared events fabricated",
     "expected_red": "catalog_install_refuses_missing_ops_and_events_and_marks_mutations",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/subc_catalog.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test denylist_and_paged_agent_registry_fail_closed ... FAILED\nthread 'denylist_and_paged_agent_registry_fail_closed' (215229919) panicked at crates/basal-module/tests/hosts.rs:652:33:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 0.00s",
+    "captured_output": "test denylist_and_paged_agent_registry_fail_closed ... FAILED\nthread 'denylist_and_paged_agent_registry_fail_closed' (7156247) panicked at crates/basal-module/tests/hosts.rs:813:33:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.00s",
     "control": "hosts: registry admission bypassed",
     "expected_red": "denylist_and_paged_agent_registry_fail_closed",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/subc_catalog.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test denylist_and_paged_agent_registry_fail_closed ... FAILED\nthread 'denylist_and_paged_agent_registry_fail_closed' (215234000) panicked at crates/basal-module/tests/hosts.rs:629:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 0.00s",
+    "captured_output": "test denylist_and_paged_agent_registry_fail_closed ... FAILED\nthread 'denylist_and_paged_agent_registry_fail_closed' (7156858) panicked at crates/basal-module/tests/hosts.rs:790:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.00s",
     "control": "hosts: shell denylist disabled",
     "expected_red": "denylist_and_paged_agent_registry_fail_closed",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/core_consent.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test decline_and_expiry_are_rejections_and_unrecognised_answers_are_not_acked ... FAILED\nthread 'decline_and_expiry_are_rejections_and_unrecognised_answers_are_not_acked' (215237930) panicked at crates/basal-module/tests/hosts.rs:680:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 0.00s",
+    "captured_output": "test decline_and_expiry_are_rejections_and_unrecognised_answers_are_not_acked ... FAILED\nthread 'decline_and_expiry_are_rejections_and_unrecognised_answers_are_not_acked' (7157373) panicked at crates/basal-module/tests/hosts.rs:841:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.00s",
     "control": "hosts: declining answer approves",
     "expected_red": "decline_and_expiry_are_rejections_and_unrecognised_answers_are_not_acked",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/transport.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test transport_certainty_and_tool_key_are_explicit ... FAILED\nthread 'transport_certainty_and_tool_key_are_explicit' (215242148) panicked at crates/basal-module/tests/hosts.rs:172:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 0.00s",
+    "captured_output": "test transport_certainty_and_tool_key_are_explicit ... FAILED\nthread 'transport_certainty_and_tool_key_are_explicit' (7157777) panicked at crates/basal-module/tests/hosts.rs:178:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.00s",
     "control": "hosts: proven unsent becomes unknown",
     "expected_red": "transport_certainty_and_tool_key_are_explicit",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/transport.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test transport_certainty_and_tool_key_are_explicit ... FAILED\nthread 'transport_certainty_and_tool_key_are_explicit' (215246352) panicked at crates/basal-module/tests/hosts.rs:178:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 0.00s",
+    "captured_output": "test transport_certainty_and_tool_key_are_explicit ... FAILED\nthread 'transport_certainty_and_tool_key_are_explicit' (7158644) panicked at crates/basal-module/tests/hosts.rs:184:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.00s",
     "control": "hosts: unknown becomes provably unsent",
     "expected_red": "transport_certainty_and_tool_key_are_explicit",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/transport.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test transport_certainty_and_tool_key_are_explicit ... FAILED\nthread 'transport_certainty_and_tool_key_are_explicit' (215250522) panicked at crates/basal-module/tests/hosts.rs:192:5:\n  left: Object {\"arguments\": Object {\"n\": Number(1)}, \"name\": String(\"send\")}\n right: Object {\"arguments\": Object {\"n\": Number(1)}, \"call_key\": String(\"key-7\"), \"name\": String(\"send\")}\ntest result: FAILED. 0 passed; 1",
+    "captured_output": "test transport_certainty_and_tool_key_are_explicit ... FAILED\nthread 'transport_certainty_and_tool_key_are_explicit' (7159385) panicked at crates/basal-module/tests/hosts.rs:198:5:\n  left: Object {\"arguments\": Object {\"n\": Number(1)}, \"name\": String(\"send\")}\n right: Object {\"arguments\": Object {\"n\": Number(1)}, \"call_key\": String(\"key-7\"), \"name\": String(\"send\")}\ntest result: FAILED. 0 passed; 1 f",
     "control": "hosts: tool key omitted",
     "expected_red": "transport_certainty_and_tool_key_are_explicit",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/core_host.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test every_core_refusal_retains_its_code ... FAILED\nthread 'every_core_refusal_retains_its_code' (215254744) panicked at crates/basal-module/tests/hosts.rs:163:13:\n  left: Fulfilled\n right: Rejected\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 0.00s",
+    "captured_output": "test every_core_refusal_retains_its_code ... FAILED\nthread 'every_core_refusal_retains_its_code' (7159859) panicked at crates/basal-module/tests/hosts.rs:169:13:\n  left: Fulfilled\n right: Rejected\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.00s",
     "control": "hosts: provider refusal fulfilled",
     "expected_red": "every_core_refusal_retains_its_code",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/core_host.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test closed_sink_dispositions_and_unknown_facts_survive ... FAILED\nthread 'closed_sink_dispositions_and_unknown_facts_survive' (215259115) panicked at crates/basal-module/tests/hosts.rs:98:9:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 0.00s",
+    "captured_output": "test closed_sink_dispositions_and_unknown_facts_survive ... FAILED\nthread 'closed_sink_dispositions_and_unknown_facts_survive' (7160431) panicked at crates/basal-module/tests/hosts.rs:104:9:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.00s",
     "control": "hosts: closed sink decoder bypassed",
     "expected_red": "closed_sink_dispositions_and_unknown_facts_survive",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/core_host.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test transport_failures_reach_journal_with_safe_retries_only ... FAILED\nthread 'transport_failures_reach_journal_with_safe_retries_only' (215262950) panicked at crates/basal-module/tests/hosts.rs:455:5:\n  left: NeedsReconcile\n right: Succeeded\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 0.58s",
+    "captured_output": "test transport_failures_reach_journal_with_safe_retries_only ... FAILED\nthread 'transport_failures_reach_journal_with_safe_retries_only' (7161003) panicked at crates/basal-module/tests/hosts.rs:616:5:\n  left: NeedsReconcile\n right: Succeeded\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.59s",
     "control": "hosts: sink idempotency disabled",
     "expected_red": "transport_failures_reach_journal_with_safe_retries_only",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/subc_catalog.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test catalog_install_refuses_missing_ops_and_events_and_marks_mutations ... FAILED\nthread 'catalog_install_refuses_missing_ops_and_events_and_marks_mutations' (215267388) panicked at crates/basal-module/tests/hosts.rs:257:5:\n  left: Some(Query)\n right: Some(Mutate)\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 0.05s",
+    "captured_output": "test catalog_install_refuses_missing_ops_and_events_and_marks_mutations ... FAILED\nthread 'catalog_install_refuses_missing_ops_and_events_and_marks_mutations' (7161878) panicked at crates/basal-module/tests/hosts.rs:263:5:\n  left: Some(Query)\n right: Some(Mutate)\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.05s",
     "control": "hosts: management mutation marked query",
     "expected_red": "catalog_install_refuses_missing_ops_and_events_and_marks_mutations",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/routing.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test operator_keyed_tools_retry_but_unfenceable_tools_do_not ... FAILED\nthread 'operator_keyed_tools_retry_but_unfenceable_tools_do_not' (215271187) panicked at crates/basal-module/tests/hosts.rs:773:5:\n  left: Mutation { honours_idempotency_keys: true }\n right: Mutation { honours_idempotency_keys: false }\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in",
+    "captured_output": "test operator_keyed_tools_retry_but_unfenceable_tools_do_not ... FAILED\nthread 'operator_keyed_tools_retry_but_unfenceable_tools_do_not' (7162398) panicked at crates/basal-module/tests/hosts.rs:934:5:\n  left: Mutation { honours_idempotency_keys: true }\n right: Mutation { honours_idempotency_keys: false }\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0",
     "control": "hosts: unfenceable tool becomes repeatable",
     "expected_red": "operator_keyed_tools_retry_but_unfenceable_tools_do_not",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/core_consent.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test consent_hash_matches_shared_vectors_and_full_c2_envelope ... FAILED\nthread 'consent_hash_matches_shared_vectors_and_full_c2_envelope' (215274904) panicked at crates/basal-module/tests/hosts.rs:613:9:\n  left: Object {\"args_digest\": String(\"wrong\"), \"dedup_key\": String(\"flow_install:flow-x:3\"), \"default\": String(\"decline\"), \"expires_in_ms\": Number(86400000), \"facts\": Array [], \"flow_install\": O",
+    "captured_output": "test consent_hash_matches_shared_vectors_and_full_c2_envelope ... FAILED\nthread 'consent_hash_matches_shared_vectors_and_full_c2_envelope' (7162801) panicked at crates/basal-module/tests/hosts.rs:774:9:\n  left: Object {\"args_digest\": String(\"wrong\"), \"dedup_key\": String(\"flow_install:flow-x:3\"), \"default\": String(\"decline\"), \"expires_in_ms\": Number(86400000), \"facts\": Array [], \"flow_install\": Obj",
     "control": "hosts: consent hash changed",
     "expected_red": "consent_hash_matches_shared_vectors_and_full_c2_envelope",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/core_consent.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test install_card_is_byte_exact_and_session_comes_from_caller ... FAILED\nthread 'install_card_is_byte_exact_and_session_comes_from_caller' (215279475) panicked at crates/basal-module/tests/hosts.rs:290:5:\n  left: String(\"{\\\"facts\\\":{\\\"targets\\\":[\\\"SYNAPSE\\\"],\\\"text\\\":false},\\\"id\\\":\\\"host-flow\\\",\\\"ops\\\":[{\\\"module\\\":\\\"mock\\\",\\\"op\\\":\\\"echo\\\"},{\\\"module\\\":\\\"mock\\\",\\\"op\\\":\\\"post\\\"},{\\\"module\\\":\\\"mock\\",
+    "captured_output": "test install_card_is_byte_exact_and_scope_comes_from_the_route_stamp ... FAILED\nthread 'install_card_is_byte_exact_and_scope_comes_from_the_route_stamp' (7163262) panicked at crates/basal-module/tests/hosts.rs:317:5:\n  left: String(\"{\\\"facts\\\":{\\\"targets\\\":[\\\"SYNAPSE\\\"],\\\"text\\\":false},\\\"id\\\":\\\"host-flow\\\",\\\"ops\\\":[{\\\"module\\\":\\\"mock\\\",\\\"op\\\":\\\"echo\\\"},{\\\"module\\\":\\\"mock\\\",\\\"op\\\":\\\"post\\\"},{\\\"modu",
     "control": "hosts: exact manifest bytes trimmed",
-    "expected_red": "install_card_is_byte_exact_and_session_comes_from_caller",
+    "expected_red": "install_card_is_byte_exact_and_scope_comes_from_the_route_stamp",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-host/src/core_consent.rs; during:  1 file changed, 4 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test install_card_is_byte_exact_and_scope_comes_from_the_route_stamp ... FAILED\nthread 'install_card_is_byte_exact_and_scope_comes_from_the_route_stamp' (7163916) panicked at crates/basal-module/tests/hosts.rs:312:10:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.19s",
+    "control": "hosts: the consent request sends a session_ref with a scope author",
+    "expected_red": "install_card_is_byte_exact_and_scope_comes_from_the_route_stamp",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/core_consent.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test install_card_is_byte_exact_and_session_comes_from_caller ... FAILED\nthread 'install_card_is_byte_exact_and_session_comes_from_caller' (215283665) panicked at crates/basal-module/tests/hosts.rs:292:5:\n  left: String(\"forged\")\n right: \"ses-author\"\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 0.19s",
-    "control": "hosts: authoring session replaced",
-    "expected_red": "install_card_is_byte_exact_and_session_comes_from_caller",
-    "outcome": "reddened"
-  },
-  {
-    "applied_evidence": "crates/basal-host/src/core_consent.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test decisions_ack_only_after_sink_commit_and_survive_restart ... FAILED\nthread 'decisions_ack_only_after_sink_commit_and_survive_restart' (215287598) panicked at crates/basal-module/tests/hosts.rs:346:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 0.00s",
+    "captured_output": "test decisions_ack_only_after_sink_commit_and_survive_restart ... FAILED\nthread 'decisions_ack_only_after_sink_commit_and_survive_restart' (7164999) panicked at crates/basal-module/tests/hosts.rs:507:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.00s",
     "control": "hosts: answer acknowledged despite failed decision commit",
     "expected_red": "decisions_ack_only_after_sink_commit_and_survive_restart",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/core_consent.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test decisions_ack_only_after_sink_commit_and_survive_restart ... FAILED\nthread 'decisions_ack_only_after_sink_commit_and_survive_restart' (215291724) panicked at crates/basal-module/tests/hosts.rs:353:5:\n  left: DecisionEvent { card_id: \"card:f:v1:0123456789abcdef\", decision: Reject, decided_by: \"core:elicitation\" }\n right: DecisionEvent { card_id: \"card:f:v1:0123456789abcdef\", decision: Approve,",
+    "captured_output": "test decisions_ack_only_after_sink_commit_and_survive_restart ... FAILED\nthread 'decisions_ack_only_after_sink_commit_and_survive_restart' (7165602) panicked at crates/basal-module/tests/hosts.rs:514:5:\n  left: DecisionEvent { card_id: \"card:f:v1:0123456789abcdef\", decision: Reject, decided_by: \"core:elicitation\" }\n right: DecisionEvent { card_id: \"card:f:v1:0123456789abcdef\", decision: Approve, d",
     "control": "hosts: approval decoded as rejection",
     "expected_red": "decisions_ack_only_after_sink_commit_and_survive_restart",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/runtime.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test journaled_sink_intent_is_byte_identical_after_a_cut ... FAILED\nthread 'journaled_sink_intent_is_byte_identical_after_a_cut' (215294959) panicked at crates/basal-module/tests/hosts.rs:561:9:\n  left: [123, 34, 109, 101, 116, 104, 111, 100, 34, 58, 34, 115, 105, 110, 107, 46, 100, 105, 103, 101, 115, 116, 34, 44, 34, 112, 97, 114, 97, 109, 115, 34, 58, 123, 34, 97, 99, 116, 105, 111, 110, 34, 58",
+    "captured_output": "test journaled_sink_intent_is_byte_identical_after_a_cut ... FAILED\nthread 'journaled_sink_intent_is_byte_identical_after_a_cut' (7166164) panicked at crates/basal-module/tests/hosts.rs:722:9:\n  left: [123, 34, 109, 101, 116, 104, 111, 100, 34, 58, 34, 115, 105, 110, 107, 46, 100, 105, 103, 101, 115, 116, 34, 44, 34, 112, 97, 114, 97, 109, 115, 34, 58, 123, 34, 97, 99, 116, 105, 111, 110, 34, 58, ",
     "control": "hosts: reissue ignores journaled envelope",
     "expected_red": "journaled_sink_intent_is_byte_identical_after_a_cut",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/routing.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test routing_host_runs_install_decision_facts_ops_and_sinks_end_to_end ... FAILED\nthread 'routing_host_runs_install_decision_facts_ops_and_sinks_end_to_end' (215299360) panicked at crates/basal-module/tests/hosts.rs:381:5:\n  left: Failed\n right: Succeeded\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 0.33s",
+    "captured_output": "test routing_host_runs_install_decision_facts_ops_and_sinks_end_to_end ... FAILED\nthread 'routing_host_runs_install_decision_facts_ops_and_sinks_end_to_end' (7166848) panicked at crates/basal-module/tests/hosts.rs:542:5:\n  left: Failed\n right: Succeeded\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.22s",
     "control": "hosts: core routing bypassed",
     "expected_red": "routing_host_runs_install_decision_facts_ops_and_sinks_end_to_end",
     "outcome": "reddened"
