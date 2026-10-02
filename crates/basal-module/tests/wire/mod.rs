@@ -47,8 +47,10 @@ impl Fake {
             return r;
         }
         match op {
+            // A head's entry as core lists it: its project and workspace, and a
+            // residence whose address is an object and whose state is `live`.
             "agent.list" => Ok(
-                json!({"agents":[{"agent_id":"ag_synapse","name":"SYNAPSE","name_version":1,"tag":"synapse","labels":[],"role":"head","sleep":false,"wake_policy_version":1,"reachability":{"state":"unknown"},"created_at":0,"residence":{"machine_id":"local","harness":"opencode","address_json":"{\"session\":\"ses-author\"}","residence_epoch":1,"residence_state":"active"}}]}),
+                json!({"agents":[{"agent_id":"ag_synapse","name":"SYNAPSE","name_version":1,"tag":"synapse","labels":[],"role":"head","project_id":"pj-synapse","workspace_id":"synapse","sleep":false,"wake_policy_version":1,"reachability":{"state":"unknown"},"created_at":0,"residence":{"machine_id":"local","harness":"opencode","address_json":{"version":1,"server":"local","session":"ses-author"},"residence_epoch":1,"residence_state":"live"}}]}),
             ),
             "route.select" => Ok(
                 json!({"selected":{"model":{"providerID":"registry-provider","modelID":"registry-model"}},"decisionID":format!("decision:{}",params["sendID"].as_str().unwrap_or("")),"runner":{"provider":"fake","model":"test"}}),
