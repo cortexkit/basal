@@ -3,14 +3,15 @@
 //! which only `script/flows-rig.sh build` turns on for the rig's own
 //! `ckdev-basal`; the production `ck-basal` never contains it.
 //!
-//! The rig's contract suite uses it to SIGKILL `ck-basal` at an exact runtime
-//! boundary, for example after core has answered a journaled `sink.digest`
-//! and before basal commits that answer, and then checks that the restarted
-//! module re-sends the write and core applies it once. The boundary is named
-//! by the file at `$BASAL_RIG_KILL_FILE`: while the file holds the boundary's
-//! `Debug` text (`HostAnswered { position: 1 }`), the first runtime thread to
-//! reach that boundary deletes the file and kills the process. Without the
-//! variable, or without the file, the hook does nothing.
+//! The rig's contract suite uses it to SIGKILL `ck-basal` at one exact point:
+//! after core has applied a `sink.digest` write and answered it, but before
+//! basal has saved that answer in its journal. It then checks that the
+//! restarted module sends the write again and that core applies it only
+//! once. The point is one of the runtime's [`Boundary`] values, named by the
+//! file at `$BASAL_RIG_KILL_FILE`: while the file holds the boundary's `Debug`
+//! text (`HostAnswered { position: 0 }` for a run's first call), the first
+//! runtime thread to reach that boundary deletes the file and kills the
+//! process. Without the variable, or without the file, the hook does nothing.
 
 use std::path::PathBuf;
 

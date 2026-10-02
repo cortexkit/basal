@@ -54,8 +54,9 @@ SUBC_CONFIG="$CONFIG_HOME/cortexkit/subc.jsonc"
 # vault refuses a key beside its own store), so it sits in the config home.
 VAULT_DIR="$DATA_HOME/cortexkit/claustrum"
 VAULT_KEY="$CONFIG_HOME/claustrum/master.key"
-# The stores the contract suite reads (read-only), and the file that arms the
-# rig build's one-shot kill switch in ck-basal (crates/basal-module/src/rig_kill.rs).
+# The stores the contract suite reads (read-only), and the file whose content
+# names the runtime boundary at which the rig build of ck-basal kills itself
+# once (crates/basal-module/src/rig_kill.rs); the suite writes it.
 CORE_STORE="$DATA_HOME/cortexkit/prefrontal-core/store.db"
 BASAL_STORE="$DATA_HOME/cortexkit/basal/store.db"
 MACHINE_ID="$DATA_HOME/cortexkit/machine-id"
@@ -63,7 +64,8 @@ KILL_FILE="$RUNTIME_DIR/basal-kill-at"
 # The contract suite: a client of the rig, not a module, so it is run from
 # the build output rather than placed in bin/.
 CONTRACT="$TARGETS/basal/release/basal-rig-contract"
-# Which mode config wrote core's entry in: registry or registry-disabled.
+# Whether config ran core's projects registry consumer ("registry") or turned
+# it off ("registry-disabled"); see cmd_config.
 MODE_FILE="$CONFIG_HOME/flows-rig-mode"
 # Where the contract suite's projects live: one git repository per run, which
 # the rig creates under its own home and registers in its entorhinal (see
@@ -870,7 +872,8 @@ cmd_manifest() {
   write_manifest "$(date -u +%Y%m%dT%H%M%SZ)"
 }
 
-# write_manifest <stamp>: results/<stamp>/stack.json.
+# write_manifest <stamp>: write results/<stamp>/stack.json, the record of
+# which commit of each repository and which binaries a rig result tested.
 write_manifest() {
   stamp=$1
   dest="$RESULTS/$stamp/stack.json"
@@ -995,10 +998,10 @@ cmd_test() {
   say "the contract suite passed; results in $dir"
 }
 
-# ensure_project <stamp>: the run's project in the rig's entorhinal, so a
-# fresh rig needs no manual step. Core keeps at most one head agent per
-# project, and every run registers a new head, so every run gets its own
-# project: a git repository under the rig's home, registered as
+# ensure_project <stamp>: create the run's project in the rig's entorhinal,
+# so a fresh rig needs no manual step. The suite registers a new head agent
+# on every run, and core refuses a second head for a project (the agent
+# table's project_id is unique), so every run gets its own project: a git repository under the rig's home, registered as
 # basal-rig-<stamp> and assigned to the workspace basal-rig, which is what
 # core needs to resolve a head's project to a workspace. Prints the project
 # id. Every call goes through the rig's ck, against the rig's connection

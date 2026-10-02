@@ -174,8 +174,9 @@ fn serve() -> ExitCode {
     }
 }
 
-/// The runtime's hooks: none in production. The ckdev-flows rig's own build
-/// (feature `rig-kill-hook`) adds the kill switch its crash test arms.
+/// The runtime's hooks: none in production. Only the isolated test rig's own
+/// build (feature `rig-kill-hook`, see `rig_kill`) adds a kill switch, which
+/// its crash test uses to end the process at a chosen runtime boundary.
 fn runtime_hooks() -> Arc<dyn basal_core::Hooks> {
     #[cfg(feature = "rig-kill-hook")]
     if let Some(hook) = basal_module::rig_kill::RigKillHook::from_env() {

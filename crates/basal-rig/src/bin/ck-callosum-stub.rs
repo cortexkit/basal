@@ -35,7 +35,8 @@ use subc_protocol::manifest::{
 use subc_protocol::{BindIdentity, PROTOCOL_VERSION, RouteTarget};
 use tokio::sync::OnceCell;
 
-/// The reserved id prefrontal-core and basal both read as the operator.
+/// The reserved module id whose routes prefrontal-core and basal both treat
+/// as the operator's.
 const MODULE_ID: &str = "callosum";
 const CORE: &str = "prefrontal-core";
 const BASAL: &str = "basal";
@@ -184,8 +185,8 @@ impl ModuleHandler for Stub {
                 self.relay(CORE, "elicitation.list_pending_for_user", json!({}))
                     .await
             }
-            // The operator's spelling: camelCase `elicitationId` and
-            // `choiceId`, passed on as given.
+            // Core's operator-facing card ops take camelCase `elicitationId`
+            // and `choiceId`; the suite sends them so and they pass unchanged.
             "elicitation.get" | "elicitation.answer" | "flow.revoke" => {
                 self.relay(CORE, method, params).await
             }

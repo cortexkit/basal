@@ -20,7 +20,8 @@ impl Flow {
     }
 }
 
-/// Every minute, so a flow approved now runs within a minute.
+/// The cron pattern every suite flow is scheduled on: every minute, so a
+/// flow approved now runs within a minute.
 const EVERY_MINUTE: &str = "* * * * *";
 
 fn manifest(id: &str, purpose: &str, agent: &str, facts: bool) -> String {

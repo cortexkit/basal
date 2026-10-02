@@ -2,11 +2,11 @@
 //!
 //! Both stores are SQLite in WAL mode with a live writer (core and basal), so
 //! each read opens the file with SQLite's read-only flag and never writes,
-//! checkpoints or migrates anything. Core's store is read for what core keeps
-//! no op for: the `flow_sink_receipt` rows, its `flow_install` records, and
-//! the `session_scope` row (ref and epoch) it registered for the suite's
-//! agent, which a head needs to open its routes under its scope. Basal's
-//! store is read for its journal and install cards.
+//! checkpoints or migrates anything. Core's store is read for records no core
+//! management op returns: the `flow_sink_receipt` rows, its `flow_install`
+//! records, and the `session_scope` row (ref and epoch) it registered for the
+//! suite's agent, which a head needs to open its routes under its scope.
+//! Basal's store is read for its journal, runs and install cards.
 
 use std::path::{Path, PathBuf};
 
@@ -53,8 +53,8 @@ impl CoreStore {
     }
 
     /// Every sink receipt of one flow. Core keys a digest receipt
-    /// `["sink.digest", flow, run, position]` and a status receipt
-    /// `["sink.status", flow, agent, revision]`.
+    /// `["sink.digest", flow id, run id, call position]` and a status receipt
+    /// `["sink.status", flow id, agent name, status revision]`.
     pub fn receipts(&self, flow_id: &str) -> Result<Vec<Receipt>, String> {
         let c = open(&self.path)?;
         let mut statement = c

@@ -379,7 +379,7 @@ fn option(card: &Value, id: &str) -> Option<String> {
         .map(|_| id.to_owned())
 }
 
-// ------------------------------------------------------------------ cases
+// ------------------------------------------------------------------ the contract cases
 
 async fn reset(rig: &Rig, case: &mut Case) {
     // Flows a previous run of the suite left enabled would keep running on
@@ -446,10 +446,12 @@ async fn register_agent(
         evidence(&other),
     );
 
-    // A head, as a real one registers itself, when core can resolve its
-    // project to a workspace. Without the registry it cannot, so the fallback
-    // records core's refusal of a head and registers an assistant, which the
-    // same gate admits and core gives the same head scope.
+    // Register a head, as a real one registers itself. Core accepts a head
+    // only when its projects registry resolves the head's project to a
+    // workspace. In the rig's registry-disabled fallback core cannot do that,
+    // so the suite records core's refusal and registers an assistant instead:
+    // core admits it through the same self-registration check and gives it a
+    // head scope just like a head's.
     let head = json!({
         "role": "head",
         "name": name,
@@ -508,8 +510,9 @@ async fn register_agent(
         true,
         json!({ "scope_ref": scope_ref, "scope_epoch": epoch }),
     );
-    // The registry entry basal's install validation reads, kept to compare
-    // with the shape basal's fake core answers.
+    // basal checks a manifest's agent names against core's `agent.list` at
+    // install. The agent's entry is recorded so its shape can be compared
+    // with the entry basal's fake core (`tests/wire/mod.rs`) answers.
     let listed = rig
         .client
         .call(CORE, &suite_identity(), "agent.list", json!({}))
@@ -771,7 +774,7 @@ async fn sinks_and_facts(rig: &Rig, flow: &Flow, agent: &Agent, since: i64) -> V
         json!({ "state": run.state, "error": run.error }),
     );
 
-    // Digest.
+    // The digest write: stored with a fire id, and one wake fire per write.
     let digest = &result["digest"];
     sinks.check(
         "sink.digest is stored, with a fire id, not replayed",
@@ -799,7 +802,8 @@ async fn sinks_and_facts(rig: &Rig, flow: &Flow, agent: &Agent, since: i64) -> V
         json!({ "fires": flow_fires, "digest_writes": digests.len() }),
     );
 
-    // Status.
+    // The status write: published to the agent's session scope and shown by
+    // status.line, or the documented no_live_session answer.
     let status = &result["status"];
     match status["disposition"].as_str() {
         Some("published") => {
@@ -860,7 +864,8 @@ async fn sinks_and_facts(rig: &Rig, flow: &Flow, agent: &Agent, since: i64) -> V
     );
     check_receipts(&mut sinks, flow, &calls, &receipts);
 
-    // Facts.
+    // The facts read: identity and clock, every field's envelope, and the
+    // refusals for what the manifest does not grant.
     let granted = &result["facts"];
     facts.record("granted_reply", granted.clone());
     facts.check(
@@ -1103,7 +1108,7 @@ async fn crash(rig: &Rig, flow: &Flow, agent: &Agent, since: i64) -> Case {
     case
 }
 
-// ------------------------------------------------------------------ main
+// ------------------------------------------------------------------ running the suite
 
 async fn suite(
     args: &Args,
