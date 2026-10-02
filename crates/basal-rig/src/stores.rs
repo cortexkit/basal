@@ -3,10 +3,8 @@
 //! Both stores are SQLite in WAL mode with a live writer (core and basal), so
 //! each read opens the file with SQLite's read-only flag and never writes,
 //! checkpoints or migrates anything. Core's store is read for records no core
-//! management op returns: the `flow_sink_receipt` rows, its `flow_install`
-//! records, and the `session_scope` row (ref and epoch) it registered for the
-//! suite's agent, which a head needs to open its routes under its scope.
-//! Basal's store is read for its journal, runs and install cards.
+//! management op returns: the `flow_sink_receipt` rows and its `flow_install`
+//! records. Basal's store is read for its journal, runs and install cards.
 
 use std::path::{Path, PathBuf};
 
@@ -38,20 +36,6 @@ pub struct Receipt {
 }
 
 impl CoreStore {
-    /// The live head scope core registered for `agent_id`: its ref and epoch.
-    pub fn head_scope(&self, agent_id: &str) -> Result<Option<(String, u64)>, String> {
-        let c = open(&self.path)?;
-        c.query_row(
-            "SELECT scope_ref, scope_epoch FROM session_scope
-              WHERE agent_id = ?1 AND kind = 'head' AND removed_at IS NULL",
-            params![agent_id],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
-        )
-        .optional()
-        .map(|row| row.map(|(scope, epoch)| (scope, u64::try_from(epoch).unwrap_or(0))))
-        .map_err(|e| e.to_string())
-    }
-
     /// Every sink receipt of one flow. Core keys a digest receipt
     /// `["sink.digest", flow id, run id, call position]` and a status receipt
     /// `["sink.status", flow id, agent name, status revision]`.

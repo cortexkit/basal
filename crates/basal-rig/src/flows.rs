@@ -24,13 +24,22 @@ impl Flow {
 /// flow approved now runs within a minute.
 const EVERY_MINUTE: &str = "* * * * *";
 
+/// Once a year, at midnight UTC on 1 January: a flow scheduled on it is
+/// approved and enabled like any other but does not run while the suite does,
+/// unless the suite happens to run across New Year.
+const NEW_YEAR: &str = "0 0 1 1 *";
+
 fn manifest(id: &str, purpose: &str, agent: &str, facts: bool) -> String {
+    manifest_on(id, purpose, agent, facts, EVERY_MINUTE)
+}
+
+fn manifest_on(id: &str, purpose: &str, agent: &str, facts: bool, cron: &str) -> String {
     let mut m = json!({
         "format": 1,
         "id": id,
         "version": 1,
         "purpose": purpose,
-        "trigger": { "schedule": { "cron": EVERY_MINUTE } },
+        "trigger": { "schedule": { "cron": cron } },
         "sinks": [ { "agent": agent, "digest_max": "piggyback" } ],
         "status": [ agent ],
     });
@@ -97,6 +106,15 @@ return out;",
         version: 1,
         manifest: manifest(id, purpose, agent, false),
         script,
+    }
+}
+
+/// A writer flow scheduled once a year, for the cases that only manage a
+/// flow (dry run, disable, enable, list) and must not see it run.
+pub fn quiet(id: &str, agent: &str, purpose: &str) -> Flow {
+    Flow {
+        manifest: manifest_on(id, purpose, agent, false, NEW_YEAR),
+        ..writer(id, agent, purpose)
     }
 }
 

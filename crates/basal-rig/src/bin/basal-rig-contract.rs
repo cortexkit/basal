@@ -12,7 +12,8 @@
 //!
 //! The rig runs core's projects registry as production does, against the
 //! rig's entorhinal, so the test agent is a head of the project
-//! `--project-id` names (flows-rig.sh registers it there).
+//! `--project-id` names (flows-rig.sh registers it there). Everything the
+//! agent does goes through core's `flow.relay`, as a head's `flow` tool does.
 //!
 //! The connection file comes from `SUBC_CONNECTION_FILE`, which the rig sets.
 //! Every check is printed as it runs and written, with the replies core and
@@ -22,14 +23,13 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use basal_rig::client::{Client, Reply, evidence, suite_identity};
+use basal_rig::client::{Client, Relayed, Reply, evidence, suite_identity};
 use basal_rig::flows::{self, Flow};
 use basal_rig::stores::{
     BasalStore, Call, CoreStore, KIND_SINK_DIGEST, KIND_SINK_STATUS, Receipt, Run,
 };
 use serde_json::{Map, Value, json};
-use subc_protocol::scope::ScopeSelector;
-use subc_protocol::{BindIdentity, Principal};
+use subc_protocol::BindIdentity;
 
 const CORE: &str = "prefrontal-core";
 const BASAL: &str = "basal";
@@ -159,13 +159,13 @@ struct Rig {
 }
 
 /// The suite's agent: its registry name and id, the residence session it
-/// registered, and the core scope its routes are opened under.
+/// registered, and the bind identity (harness and session) its routes to
+/// core carry, which is how core's flow relay knows the caller.
 struct Agent {
     name: String,
     id: String,
     session: String,
     identity: BindIdentity,
-    scope: ScopeSelector,
 }
 
 /// The first string at `key` anywhere in `value`.
@@ -185,22 +185,30 @@ fn code(reply: &Reply) -> Option<&str> {
     reply.as_ref().err().map(|r| r.code.as_str())
 }
 
+fn install_params(flow: &Flow) -> Value {
+    json!({ "script": flow.script, "manifest": flow.manifest })
+}
+
 impl Rig {
-    /// Installs `flow` on `route` and returns basal's reply.
-    async fn install(&self, flow: &Flow, agent: Option<&Agent>) -> Reply {
-        let params = json!({ "script": flow.script, "manifest": flow.manifest });
-        match agent {
-            Some(agent) => {
-                self.client
-                    .call_scoped(BASAL, &agent.identity, &agent.scope, "flow.install", params)
-                    .await
-            }
-            None => {
-                self.client
-                    .call(BASAL, &suite_identity(), "flow.install", params)
-                    .await
-            }
-        }
+    /// One of the agent's `flow` tool calls, through core's relay.
+    async fn relay(&self, agent: &Agent, action: &str, arguments: Value) -> Relayed {
+        self.client.relay(&agent.identity, action, arguments).await
+    }
+
+    /// The agent's view of one flow through the relay: its `flow.list`
+    /// entry, if basal lists it.
+    async fn listed(&self, agent: &Agent, flow_id: &str) -> (Relayed, Option<Value>) {
+        let listed = self
+            .relay(agent, "list", json!({ "flow_ids": [flow_id] }))
+            .await;
+        let entry = listed.reply().and_then(|r| {
+            r["flows"]
+                .as_array()?
+                .iter()
+                .find(|f| f["flow_id"] == flow_id)
+                .cloned()
+        });
+        (listed, entry)
     }
 
     /// Core's pending card for one flow version, as the operator sees it.
@@ -491,53 +499,43 @@ async fn register_agent(
         evidence(&second),
     );
 
-    let scope = poll(Duration::from_secs(30), || async {
-        rig.core.head_scope(&id).ok().flatten()
-    })
-    .await;
-    let Some((scope_ref, epoch)) = scope else {
-        case.check(
-            "core registered a head scope for the agent",
-            false,
-            json!({ "agent_id": id }),
-        );
-        return Err("no scope".into());
+    // Core admits the head to its flow relay once it has registered the
+    // head's scope and the daemon holds it. Until then the relay refuses
+    // (`flow_caller_no_scope`) or cannot open its route to basal, so the
+    // first list is retried, and every distinct refusal seen is recorded.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut refusals: Vec<Value> = Vec::new();
+    let listed = loop {
+        let listed = rig.client.relay(&identity, "list", json!({})).await;
+        if listed.reply().is_some() || Instant::now() >= deadline {
+            break listed;
+        }
+        if refusals.last() != Some(&listed.evidence()) {
+            refusals.push(listed.evidence());
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
     };
+    case.record("relay_refusals_before_admission", Value::Array(refusals));
+    case.record("relay_first_list", listed.evidence());
     case.check(
-        "core registered a head scope for the agent",
-        true,
-        json!({ "scope_ref": scope_ref, "scope_epoch": epoch }),
+        "core's flow relay admits the new head and relays its list to basal, which lists no flows for it",
+        listed
+            .reply()
+            .is_some_and(|r| r["flows"] == json!([]) && r["as_of"].is_i64()),
+        listed.evidence(),
     );
-    // Which caller basal sees on each kind of route, read from flow.health's
-    // refusal: a local caller is told the op needs the attested operator
-    // (`operator_attestation_required`), an agent that it is not permitted
-    // (`not_permitted`). A real harness never handles a scope ref, so the
-    // plain route bound with the head's own harness and session is the one
-    // production would use, if the daemon stamped it with the head's scope.
+    // A plain route to basal bound with the head's harness and session is
+    // not stamped with the head's scope, so basal sees a local caller there,
+    // whom flow.health tells it needs the attested operator. Only core's
+    // relay carries the head's scope to basal.
     let plain = rig
         .client
         .call(BASAL, &identity, "flow.health", Value::Null)
         .await;
-    println!(
-        "  plain route with the head's bind identity: {}",
-        evidence(&plain)
-    );
-    case.record("plain_route_with_head_identity", evidence(&plain));
-    let selector = ScopeSelector {
-        owner: Principal::Reserved {
-            module_id: CORE.into(),
-        },
-        scope_ref: scope_ref.clone(),
-        scope_epoch: Some(epoch),
-    };
-    let scoped = rig
-        .client
-        .call_scoped(BASAL, &identity, &selector, "flow.health", Value::Null)
-        .await;
     case.check(
-        "basal sees the route opened under the head's scope as an agent",
-        code(&scoped) == Some("not_permitted"),
-        evidence(&scoped),
+        "basal sees a plain route bound with the head's identity as a local caller, not as the agent",
+        code(&plain) == Some("operator_attestation_required"),
+        evidence(&plain),
     );
     // basal checks a manifest's agent names against core's `agent.list` at
     // install. The agent's entry is recorded so its shape can be compared
@@ -562,12 +560,11 @@ async fn register_agent(
         id,
         session,
         identity,
-        scope: selector,
     })
 }
 
-/// Installs `flow`, reads its card, checks the author and the rendered rows,
-/// answers it and returns the card.
+/// Installs `flow`, as a local caller or as `agent` through core's relay,
+/// reads its card, checks the rendered rows, answers it and returns the card.
 async fn install_and_answer(
     rig: &Rig,
     case: &mut Case,
@@ -575,7 +572,27 @@ async fn install_and_answer(
     agent: Option<&Agent>,
     choice: &str,
 ) -> Option<Value> {
-    let installed = rig.install(flow, agent).await;
+    let installed = match agent {
+        Some(agent) => {
+            let relayed = rig.relay(agent, "install", install_params(flow)).await;
+            case.check(
+                "core relays the install to basal and passes basal's reply back as outcome: reply",
+                relayed.reply().is_some(),
+                relayed.evidence(),
+            );
+            relayed.into_reply()
+        }
+        None => {
+            rig.client
+                .call(
+                    BASAL,
+                    &suite_identity(),
+                    "flow.install",
+                    install_params(flow),
+                )
+                .await
+        }
+    };
     case.record("install_reply", evidence(&installed));
     case.check(
         "basal accepts the install and holds it pending consent",
@@ -639,29 +656,35 @@ async fn local_install(rig: &Rig, flow: &Flow) -> Case {
     case
 }
 
+/// Checks that basal sent the card as the agent's: basal names an agent
+/// author by the scope the daemon stamped on its route, and core resolves
+/// that scope back to the agent and its session.
+fn check_agent_author(case: &mut Case, card: &Value, agent: &Agent) {
+    let author = &card["flowInstall"]["author"];
+    case.check(
+        "the card's author is {scope: <the relay route's scope ref>} and nothing else",
+        author
+            .as_object()
+            .is_some_and(|a| a.len() == 1 && a["scope"].as_str().is_some_and(|s| !s.is_empty())),
+        author.clone(),
+    );
+    let verified = format!("{} (verified)", agent.name);
+    case.check(
+        "core renders the Author row as '<agent name> (verified)'",
+        fact(card, "Author") == Some(verified.as_str()),
+        json!(fact(card, "Author")),
+    );
+    case.check(
+        "core resolved the card's session from the scope, as the agent's own",
+        card["sessionRef"] == agent.session.as_str(),
+        card.get("sessionRef").cloned().unwrap_or(Value::Null),
+    );
+}
+
 async fn scope_install(rig: &Rig, flow: &Flow, agent: &Agent) -> Case {
-    let mut case = Case::new("install through the card: agent on its core scope");
+    let mut case = Case::new("install through the card: agent through core's flow relay");
     if let Some(card) = install_and_answer(rig, &mut case, flow, Some(agent), "approve").await {
-        case.check(
-            "the card's author is {scope: <the route's scope_ref>} and nothing else",
-            card["flowInstall"]["author"] == json!({ "scope": agent.scope.scope_ref }),
-            card["flowInstall"]["author"].clone(),
-        );
-        let verified = format!("{} (verified)", agent.name);
-        case.check(
-            "core renders the Author row as '<agent name> (verified)'",
-            fact(&card, "Author") == Some(verified.as_str()),
-            json!(fact(&card, "Author")),
-        );
-        case.record(
-            "core_resolved_session_ref",
-            card.get("sessionRef").cloned().unwrap_or(Value::Null),
-        );
-        case.check(
-            "core resolved the card's session from the scope, as the agent's own",
-            card["sessionRef"] == agent.session.as_str(),
-            card.get("sessionRef").cloned().unwrap_or(Value::Null),
-        );
+        check_agent_author(&mut case, &card, agent);
         let enabled = rig.wait_enabled(flow).await;
         case.check(
             "basal enables the flow at the approved version",
@@ -1015,6 +1038,219 @@ async fn revoked(rig: &Rig, flow: &Flow) -> Case {
     case
 }
 
+/// The agent manages its own flow through core's relay: re-install, dry run,
+/// disable, enable and list, each checked for what shows basal took the
+/// caller for the agent. `owned` is every flow the agent installed this run,
+/// `flow` included; `others` are flows installed by other callers, which the
+/// agent's list must leave out.
+async fn relayed_actions(
+    rig: &Rig,
+    flow: &Flow,
+    agent: &Agent,
+    owned: &[&str],
+    others: &[&str],
+) -> Case {
+    let mut case = Case::new("the agent's flow actions through core's flow relay");
+    let Some(card) = install_and_answer(rig, &mut case, flow, Some(agent), "approve").await else {
+        return case;
+    };
+    check_agent_author(&mut case, &card, agent);
+    let enabled = rig.wait_enabled(flow).await;
+    if !case.check(
+        "basal enables the flow at the approved version",
+        enabled.is_some(),
+        enabled.unwrap_or(Value::Null),
+    ) {
+        return case;
+    }
+
+    // Installing the same script and manifest again finds the version basal
+    // already holds.
+    let first_hash = case.evidence["install_reply"]["ok"]["code_hash"].clone();
+    let again = rig.relay(agent, "install", install_params(flow)).await;
+    case.record("reinstall", again.evidence());
+    case.check(
+        "a re-install through the relay returns the approved version with new: false",
+        again.reply().is_some_and(|r| {
+            r["flow_id"] == flow.id.as_str()
+                && r["version"] == flow.version
+                && r["new"] == false
+                && r["state"] == "approved"
+                && r["code_hash"] == first_hash
+                && first_hash.is_string()
+        }),
+        json!({ "reinstall": again.evidence(), "first_code_hash": first_hash }),
+    );
+
+    // A capture dry run is for the operator and the owning agent; basal
+    // refuses a local caller the same request.
+    let trigger = json!({ "rig": "synthetic trigger", "flow": flow.id });
+    let request = json!({ "flow_id": flow.id, "trigger": trigger });
+    let dry = rig.relay(agent, "dry_run", request.clone()).await;
+    case.record("dry_run", dry.evidence());
+    case.check(
+        "the agent's capture dry run with a synthetic trigger runs once, on that trigger, with its writes captured",
+        dry.reply().is_some_and(|r| {
+            let runs = r["summary"]["runs"].as_array();
+            r["flow_id"] == flow.id.as_str()
+                && r["version"] == flow.version
+                && r["summary"]["mode"] == "capture"
+                && r["summary"]["window"] == json!({ "kind": "synthetic" })
+                && runs.is_some_and(|runs| {
+                    runs.len() == 1
+                        && runs[0]["trigger_id"] == "dry-run:synthetic"
+                        && runs[0]["trigger"] == trigger
+                        && runs[0]["calls"].as_array().is_some_and(|calls| {
+                            calls.iter().any(|c| c["action"] == "captured")
+                        })
+                })
+        }),
+        dry.evidence(),
+    );
+    let local = rig
+        .client
+        .call(BASAL, &suite_identity(), "flow.dry_run", request)
+        .await;
+    case.check(
+        "basal refuses the same dry run to a local caller",
+        code(&local) == Some("operator_attestation_required"),
+        evidence(&local),
+    );
+
+    // The owner disables its flow and undoes its own disable.
+    let disabled = rig
+        .relay(
+            agent,
+            "disable",
+            json!({ "flow_id": flow.id, "reason": "basal rig contract: the owner disables" }),
+        )
+        .await;
+    case.check(
+        "the agent disables its flow through the relay",
+        disabled
+            .reply()
+            .is_some_and(|r| r["state"] == "disabled" && r["changed"] == true),
+        disabled.evidence(),
+    );
+    let (listed, entry) = rig.listed(agent, &flow.id).await;
+    case.check(
+        "the agent's flow.list shows the disable as the owner's",
+        entry
+            .as_ref()
+            .is_some_and(|e| e["state"] == "disabled" && e["disabled"]["by"] == "owner"),
+        listed.evidence(),
+    );
+    let enabled = rig
+        .relay(agent, "enable", json!({ "flow_id": flow.id }))
+        .await;
+    case.check(
+        "the agent undoes its own disable through the relay",
+        enabled
+            .reply()
+            .is_some_and(|r| r["state"] == "enabled" && r["changed"] == true),
+        enabled.evidence(),
+    );
+    let (listed, entry) = rig.listed(agent, &flow.id).await;
+    case.check(
+        "the agent's flow.list shows the flow enabled, with no disable",
+        entry
+            .as_ref()
+            .is_some_and(|e| e["state"] == "enabled" && e["disabled"].is_null()),
+        listed.evidence(),
+    );
+
+    // An owner may not undo the operator's disable: basal refuses, and core
+    // passes the refusal back as an outcome, not as an error of its own.
+    let operator = rig.disable(&flow.id).await;
+    case.check(
+        "the operator disables the agent's flow",
+        operator.as_ref().is_ok_and(|r| r["changed"] == true),
+        evidence(&operator),
+    );
+    let refused = rig
+        .relay(agent, "enable", json!({ "flow_id": flow.id }))
+        .await;
+    case.check(
+        "basal's refusal of the owner's enable arrives as outcome: refused, code not_permitted",
+        matches!(&refused, Relayed::Refused(r) if r.code == "not_permitted"),
+        refused.evidence(),
+    );
+    let (listed, entry) = rig.listed(agent, &flow.id).await;
+    case.check(
+        "the flow stays disabled by the operator",
+        entry
+            .as_ref()
+            .is_some_and(|e| e["state"] == "disabled" && e["disabled"]["by"] == "operator"),
+        listed.evidence(),
+    );
+
+    // The agent's list holds exactly its own flows, while the operator's
+    // shows the other callers' flows are there to be left out.
+    let all = rig.relay(agent, "list", json!({})).await;
+    case.record("agent_list", all.evidence());
+    let ids = |reply: &Value| -> Vec<String> {
+        reply["flows"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|f| f["flow_id"].as_str().map(str::to_owned))
+            .collect()
+    };
+    let mut expected: Vec<String> = owned.iter().map(|id| (*id).to_owned()).collect();
+    expected.sort();
+    case.check(
+        "the agent's flow.list returns exactly the flows it installed",
+        all.reply().is_some_and(|r| ids(r) == expected),
+        json!({ "listed": all.reply().map(ids), "expected": expected }),
+    );
+    let everything = rig.client.basal_as_operator("flow.list", json!({})).await;
+    let everything = everything.as_ref().map(ids).unwrap_or_default();
+    case.check(
+        "the operator's flow.list holds the other callers' flows the agent's leaves out",
+        others.iter().all(|id| everything.iter().any(|f| f == id)),
+        json!({ "operator_listed": everything, "others": others }),
+    );
+    let receipts = rig.core.receipts(&flow.id);
+    case.check(
+        "core holds no receipt for the flow: the dry run captured its writes and the flow never ran",
+        receipts.as_ref().is_ok_and(Vec::is_empty) && rig.basal.runs(&flow.id).is_ok_and(|r| r.is_empty()),
+        json!({
+            "receipts": receipts.map(|r| r.len()),
+            "runs": rig.basal.runs(&flow.id).ok().map(|r| r.len()),
+        }),
+    );
+    case
+}
+
+/// The relay's own refusals, which never reach basal. `flow` is one the suite
+/// never installs otherwise, so basal holding no card for it shows the
+/// refused install was not sent.
+async fn relay_refusals(rig: &Rig, flow: &Flow, agent: &Agent) -> Case {
+    let mut case = Case::new("core's flow relay refuses before reaching basal");
+    let stranger = BindIdentity::new("/", "opencode", format!("{}_unregistered", agent.session));
+    let unregistered = rig.client.relay(&stranger, "list", json!({})).await;
+    case.check(
+        "a session that is no registered agent's residence is refused flow_caller_not_registered",
+        matches!(&unregistered, Relayed::NotRelayed(r) if r.code == "flow_caller_not_registered"),
+        unregistered.evidence(),
+    );
+    let mut arguments = install_params(flow);
+    arguments["author"] = json!(agent.id);
+    let authored = rig.relay(agent, "install", arguments).await;
+    case.check(
+        "an install naming an author is refused invalid_request by core",
+        matches!(&authored, Relayed::NotRelayed(r) if r.code == "invalid_request"),
+        authored.evidence(),
+    );
+    let card = rig.basal.card_state(&flow.id, flow.version);
+    case.check(
+        "basal never received the refused install: it holds no card for the flow",
+        card == Ok(None),
+        json!(card),
+    );
+    case
+}
+
 fn basal_pid() -> Option<String> {
     let out = std::process::Command::new("ps")
         .args(["-axo", "pid=,command="])
@@ -1184,15 +1420,24 @@ async fn suite(
     let agent = agent?;
     summary.insert(
         "agent".into(),
-        json!({ "name": agent.name, "agent_id": agent.id, "session": agent.session,
-                "scope_ref": agent.scope.scope_ref, "scope_epoch": agent.scope.scope_epoch }),
+        json!({ "name": agent.name, "agent_id": agent.id, "session": agent.session }),
     );
 
     let sinks_flow = flows::sinks(&format!("rig-sinks-{tag}"), &agent.name, "NoSuchAgent");
     let scope_flow = flows::writer(
         &format!("rig-scope-{tag}"),
         &agent.name,
-        "Basal rig contract: installed by an agent on its core scope, then revoked in core.",
+        "Basal rig contract: installed by an agent through core's flow relay, then revoked in core.",
+    );
+    let relayed_flow = flows::quiet(
+        &format!("rig-relayed-{tag}"),
+        &agent.name,
+        "Basal rig contract: managed by its agent through core's flow relay; never runs.",
+    );
+    let refused_flow = flows::quiet(
+        &format!("rig-refused-{tag}"),
+        &agent.name,
+        "Basal rig contract: an install core refuses before it reaches basal.",
     );
     let declined_flow = flows::writer(
         &format!("rig-declined-{tag}"),
@@ -1248,8 +1493,24 @@ async fn suite(
 
     cases.push(crash(&rig, &crash_flow, &agent, started).await);
 
+    cases.push(
+        relayed_actions(
+            &rig,
+            &relayed_flow,
+            &agent,
+            &[scope_flow.id.as_str(), relayed_flow.id.as_str()],
+            &[
+                sinks_flow.id.as_str(),
+                declined_flow.id.as_str(),
+                crash_flow.id.as_str(),
+            ],
+        )
+        .await,
+    );
+    cases.push(relay_refusals(&rig, &refused_flow, &agent).await);
+
     let mut cleanup = Case::new("cleanup");
-    for flow in [&sinks_flow, &scope_flow, &crash_flow] {
+    for flow in [&sinks_flow, &scope_flow, &crash_flow, &relayed_flow] {
         let entry = rig.health(&flow.id).await;
         cleanup.check(
             &format!("{} is left disabled", flow.id),
