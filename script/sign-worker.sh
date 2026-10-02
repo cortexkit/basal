@@ -21,7 +21,10 @@ PROFILE="$ROOT/crates/basal-worker/sandbox/worker.sb"
 # Always pass an explicit identifier: codesign otherwise derives one from the
 # file name, and a renamed or temporary copy would change the identity that
 # privacy grants and, later, a team signature are tied to.
-IDENTIFIER="ck-basal-worker"
+# BASAL_WORKER_IDENTIFIER exists for isolated rigs (script/flows-rig.sh), which
+# sign their copies under their own ckdev- identifiers so a rig binary can never
+# be mistaken for a production one; every other check is unchanged.
+IDENTIFIER="${BASAL_WORKER_IDENTIFIER:-ck-basal-worker}"
 
 usage() {
   echo "usage: $0 sign|verify BINARY | place BINARY DESTINATION" >&2
