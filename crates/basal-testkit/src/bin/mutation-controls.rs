@@ -4276,12 +4276,23 @@ const HOST_CONTROLS: &[Control] = &[
         label: "hosts: unknown becomes provably unsent",
         edits: &[(
             "crates/basal-host/src/transport.rs",
-            "other => WireError::Unknown(other.to_string())",
-            "other => WireError::NeverSent(other.to_string())",
+            "None => WireError::Unknown(message),",
+            "None => WireError::NeverSent(message),",
         )],
         also_restore: NO_EXTRA,
         target: Target::Module("hosts"),
         test: "transport_certainty_and_tool_key_are_explicit",
+    },
+    Control {
+        label: "hosts: subscription backpressure becomes provably unsent",
+        edits: &[(
+            "crates/basal-host/src/transport.rs",
+            "other => WireError::Unknown(other.to_string())",
+            "other => WireError::NeverSent(other.to_string())",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::HostLib,
+        test: "transport::tests::every_call_error_variant_maps_to_never_sent_or_one_unknown_reason",
     },
     Control {
         label: "hosts: tool key omitted",
