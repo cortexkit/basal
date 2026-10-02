@@ -3,8 +3,8 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::Duration;
 use subc_client_rs::consumer::{
-    CallError, CallOptions, ConnectionState, ConsumerOptions, SubcConsumer, SubscribeOptions,
-    Subscription,
+    CallError, CallOptions, ConnectionState, ConsumerOptions, OutcomeUnknownCause, SubcConsumer,
+    SubscribeOptions, Subscription,
 };
 use subc_protocol::{BindIdentity, RouteTarget};
 
@@ -42,13 +42,6 @@ impl WireError {
     }
 }
 
-/// The message subc-client-rs 0.24 gives `CallError::OutcomeUnknown` when an
-/// accepted request reached its deadline without a reply (`consumer.rs`,
-/// `call`, the `timeout_at` arm: "request on channel {channel} timed out at
-/// its deadline"). The client has no typed timeout, so this text is the only
-/// thing that tells a timeout from a closed connection.
-const SUBC_REPLY_TIMEOUT: &str = "timed out at its deadline";
-
 /// Returns decoded provider payloads, not the management response envelope.
 pub trait Transport: Send + Sync {
     fn catalog(&self) -> Result<Value, WireError>;
@@ -62,9 +55,12 @@ pub trait Transport: Send + Sync {
     ) -> Result<Value, WireError>;
 }
 
-/// Maps a subc-client-rs 0.24 call error. Citations are to that release's
+/// Maps a subc-client-rs 0.25.1 call error. Citations are to that release's
 /// `src/consumer.rs`.
 pub fn map_error(error: CallError) -> WireError {
+    // Read before the match moves the error apart; `None` for every variant
+    // other than OutcomeUnknown.
+    let cause = error.outcome_cause();
     match error {
         CallError::NotSent(e) => WireError::NeverSent(e.to_string()),
         CallError::StaleRouteHandle(_) => WireError::NeverSent("stale local route handle".into()),
@@ -73,23 +69,46 @@ pub fn map_error(error: CallError) -> WireError {
             message: e.message,
         },
         // The capability resolver's errors are raised before any request
-        // frame for a call is written: `resolve_provider` (lines 1314-1325)
+        // frame for a call is written: `resolve_provider` (lines 1351-1363)
         // after reading the catalog, and `validate_capability_for_resolution`
-        // (lines 5059-5066) before even that. The client itself classifies
-        // all three as not sent (lines 4311-4316).
+        // (lines 5351-5359) before even that. The client itself classifies
+        // all three as not sent (lines 4566-4572).
         e @ (CallError::CapabilityUnprovided { .. }
         | CallError::CapabilityAmbiguous { .. }
         | CallError::InvalidCapabilityIdentifier { .. }) => WireError::NeverSent(e.to_string()),
-        CallError::OutcomeUnknown(e) if e.to_string().contains(SUBC_REPLY_TIMEOUT) => {
-            WireError::TimedOut(e.to_string())
-        }
-        // Every other OutcomeUnknown is a request accepted by the writer
-        // whose route or connection closed before a reply (`classify_failure`,
-        // line 5129, from the writer, close and connection-failure paths);
+        // A request the writer accepted and that got no reply; the client
+        // names why (`OutcomeUnknownCause`, line 1926).
+        CallError::OutcomeUnknown(e) => outcome_unknown(cause, e.to_string()),
         // SubscriptionBackpressure ends a subscription whose request was
-        // already sent (line 3460), and the client counts it as outcome
-        // unknown (lines 4301-4305).
+        // already sent (line 3634), and the client counts it as outcome
+        // unknown (lines 4552-4560).
         other => WireError::Unknown(other.to_string()),
+    }
+}
+
+/// Records why a sent call's outcome is unknown, from the cause the client
+/// attached to `CallError::OutcomeUnknown`.
+fn outcome_unknown(cause: Option<OutcomeUnknownCause>, message: String) -> WireError {
+    match cause {
+        Some(OutcomeUnknownCause::Deadline) => WireError::TimedOut(message),
+        Some(
+            OutcomeUnknownCause::WriterClosed
+            | OutcomeUnknownCause::ConsumerClosed
+            | OutcomeUnknownCause::ConnectionFailed
+            | OutcomeUnknownCause::RouteEnded,
+        ) => WireError::Unknown(message),
+        // A completion inside the client was dropped or did not match its
+        // request, so basal never received a usable reply.
+        Some(OutcomeUnknownCause::CompletionFailed) => WireError::Unreadable(message),
+        // The client attaches a cause to every OutcomeUnknown it builds, so
+        // `None` is an error built elsewhere. It and any cause added in a
+        // later release are recorded as a lost connection: the request may
+        // have been sent, and nothing more is known.
+        None => WireError::Unknown(message),
+        Some(other) => {
+            tracing::warn!(cause = ?other, %message, "unrecognised subc outcome-unknown cause; recording a lost connection");
+            WireError::Unknown(message)
+        }
     }
 }
 
@@ -305,26 +324,19 @@ mod tests {
         Box::new(std::io::Error::other(text.to_owned()))
     }
 
-    /// One case per subc-client-rs 0.24 `CallError` variant basal can build
+    /// One case per subc-client-rs 0.25.1 `CallError` variant basal can build
     /// (a `StaleRouteHandle` needs a route handle only the client can make;
     /// it maps to never sent). Each names whether the call can have been
-    /// sent and, if so, the unknown reason recorded for it.
+    /// sent and, if so, the unknown reason recorded for it. An
+    /// `OutcomeUnknown` built here carries no cause; the client offers no
+    /// public way to attach one, so the tests below check each cause on
+    /// `outcome_unknown` directly.
     #[test]
     fn every_call_error_variant_maps_to_never_sent_or_one_unknown_reason() {
         let cases: Vec<(CallError, Option<UnknownReason>, bool)> = vec![
             (CallError::NotSent(boxed("never wrote")), None, true),
             (
-                CallError::OutcomeUnknown(boxed("request on channel 3 timed out at its deadline")),
-                Some(UnknownReason::ReplyTimeout),
-                false,
-            ),
-            (
-                CallError::OutcomeUnknown(boxed("consumer closed while request was pending")),
-                Some(UnknownReason::ConnectionLost),
-                false,
-            ),
-            (
-                CallError::OutcomeUnknown(boxed("writer task closed before accepting request")),
+                CallError::OutcomeUnknown(boxed("no cause attached")),
                 Some(UnknownReason::ConnectionLost),
                 false,
             ),
@@ -373,5 +385,71 @@ mod tests {
         let mapped = map_error(CallError::Module(refused));
         assert_eq!(mapped.unknown_reason(), None);
         assert!(matches!(mapped, WireError::Refused { .. }));
+    }
+
+    /// The reason recorded for an unknown outcome with this cause; the
+    /// client's message is kept as the error's text.
+    fn reason_for(cause: Option<OutcomeUnknownCause>) -> Option<UnknownReason> {
+        let mapped = outcome_unknown(cause, "the client's message".into());
+        match &mapped {
+            WireError::TimedOut(m) | WireError::Unknown(m) | WireError::Unreadable(m) => {
+                assert_eq!(m, "the client's message")
+            }
+            other => panic!("an unknown outcome mapped to {other:?}"),
+        }
+        mapped.unknown_reason()
+    }
+
+    #[test]
+    fn deadline_is_a_reply_timeout() {
+        assert_eq!(
+            reason_for(Some(OutcomeUnknownCause::Deadline)),
+            Some(UnknownReason::ReplyTimeout)
+        );
+    }
+
+    #[test]
+    fn writer_closed_is_a_lost_connection() {
+        assert_eq!(
+            reason_for(Some(OutcomeUnknownCause::WriterClosed)),
+            Some(UnknownReason::ConnectionLost)
+        );
+    }
+
+    #[test]
+    fn consumer_closed_is_a_lost_connection() {
+        assert_eq!(
+            reason_for(Some(OutcomeUnknownCause::ConsumerClosed)),
+            Some(UnknownReason::ConnectionLost)
+        );
+    }
+
+    #[test]
+    fn connection_failed_is_a_lost_connection() {
+        assert_eq!(
+            reason_for(Some(OutcomeUnknownCause::ConnectionFailed)),
+            Some(UnknownReason::ConnectionLost)
+        );
+    }
+
+    #[test]
+    fn route_ended_is_a_lost_connection() {
+        assert_eq!(
+            reason_for(Some(OutcomeUnknownCause::RouteEnded)),
+            Some(UnknownReason::ConnectionLost)
+        );
+    }
+
+    #[test]
+    fn completion_failed_is_an_unreadable_reply() {
+        assert_eq!(
+            reason_for(Some(OutcomeUnknownCause::CompletionFailed)),
+            Some(UnknownReason::ReplyUnreadable)
+        );
+    }
+
+    #[test]
+    fn no_cause_is_a_lost_connection() {
+        assert_eq!(reason_for(None), Some(UnknownReason::ConnectionLost));
     }
 }
