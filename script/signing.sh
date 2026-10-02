@@ -11,7 +11,9 @@
 # allowed: it reopens debugger attach whatever the runtime flag says.
 #
 # Functions return non-zero with a message on stderr instead of exiting,
-# because they run inside the caller's shell.
+# because they run inside the caller's shell. For the same reason every
+# variable they set starts with sig_: sh has no local variables, and a
+# plain name would overwrite one of the caller's.
 
 # sign_hardened FILE IDENTIFIER
 # Always pass the identifier: codesign otherwise derives one from the file
@@ -39,20 +41,20 @@ verify_hardened() {
     printf 'REFUSED: %s: the signature does not verify\n' "$1" >&2
     return 1
   }
-  got=$(codesign_identifier "$1")
-  [ "$got" = "$2" ] || {
-    printf "REFUSED: %s: identifier is '%s', not %s\n" "$1" "$got" "$2" >&2
+  sig_identifier=$(codesign_identifier "$1")
+  [ "$sig_identifier" = "$2" ] || {
+    printf "REFUSED: %s: identifier is '%s', not %s\n" "$1" "$sig_identifier" "$2" >&2
     return 1
   }
-  flags=$(codesign_flags "$1")
-  case "$flags" in
+  sig_flags=$(codesign_flags "$1")
+  case "$sig_flags" in
     *\(*runtime*\)) ;;
     *)
-      printf 'REFUSED: %s: flags=%s lacks runtime (the hardened runtime)\n' "$1" "${flags:-<none>}" >&2
+      printf 'REFUSED: %s: flags=%s lacks runtime (the hardened runtime)\n' "$1" "${sig_flags:-<none>}" >&2
       return 1 ;;
   esac
-  entitlements=$(codesign -d --entitlements - --xml "$1" 2>/dev/null || true)
-  [ -z "$entitlements" ] || {
+  sig_entitlements=$(codesign -d --entitlements - --xml "$1" 2>/dev/null || true)
+  [ -z "$sig_entitlements" ] || {
     printf 'REFUSED: %s: carries entitlements; basal signs with none\n' "$1" >&2
     return 1
   }
