@@ -331,10 +331,11 @@ impl Activation<'_> {
         // has reached the worker or the host yet, not even a resend of a
         // call an earlier activation left open. A revoke that lands after
         // this check is deliberately not looked for again during this
-        // activation: core refuses the revoked version's sink writes itself,
-        // and the next activation asks again, so the window is one
-        // activation at most. The worker was handed nothing, so it stays
-        // reusable.
+        // activation. Core itself refuses a revoked version's sink writes
+        // (digest items and status lines, the only way a flow reaches an
+        // agent), and the next activation asks again, so what a revoked
+        // version can still do is bounded by this one activation. The
+        // worker was handed nothing, so it stays reusable.
         if let Gate::Closed(end) = self.rt.check_install(&self.lease, &self.run)? {
             return Ok(done(end, true));
         }

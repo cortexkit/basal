@@ -19,7 +19,7 @@ use basal_proto::JsonText;
 use basal_testkit::harness::{World, test_manifest};
 use common::{admit, config};
 
-/// 2026-05-01T00:00:00Z.
+/// The manual clock's start in the backoff test: 2026-05-01T00:00:00Z.
 const T0: i64 = 1_777_593_600_000;
 
 /// A runtime that asks core before every activation, on `clock`.
@@ -40,7 +40,7 @@ fn run(rt: &Runtime, run_id: &str) -> Run {
     rt.run(run_id).expect("run")
 }
 
-/// What core answers for a run's code when it stands behind it.
+/// Core's `active` answer carrying the run's own code hash.
 fn active(run: &Run) -> Option<InstallStatus> {
     Some(InstallStatus::Active {
         code_hash: hex(&run.code_hash),
@@ -51,9 +51,11 @@ fn activations_sent(world: &World) -> usize {
     world.source.counts.activate.load(Ordering::SeqCst)
 }
 
-/// Asserts what every refusal leaves behind: the run cancelled before any
-/// activation, the version recorded as revoked, and the flow left with no
-/// approved version, disabled by core, its owner told.
+/// Asserts what the gate leaves behind when core does not stand behind the
+/// run's version (revoked, unknown, or another code hash): the run cancelled
+/// before any activation, the version recorded as revoked, and the flow left
+/// with no approved version and disabled by core, with a `flow.disabled`
+/// notification for its owner naming the reason.
 fn assert_refused(rt: &Runtime, world: &World, run_id: &str, end: &ActivationEnd) -> String {
     let ActivationEnd::Revoked {
         version, detail, ..
@@ -332,8 +334,8 @@ fn other_runs_of_a_revoked_version_are_cancelled_without_asking() {
     assert_eq!(run(&rt, &second).state, RunState::Cancelled);
 }
 
-/// A new version approved after core's revoke runs again: core's disable
-/// only said core stood behind no version.
+/// A new version approved after core revoked the previous one runs again:
+/// the disable core's revoke caused is lifted by the new approval.
 #[test]
 fn approving_a_new_version_lifts_cores_disable() {
     let world = World::new("gate-reapprove");
@@ -379,7 +381,7 @@ fn approving_a_new_version_lifts_cores_disable() {
     assert!(matches!(end, ActivationEnd::Succeeded { .. }), "{end:?}");
 }
 
-/// A revoked version can never be approved again.
+/// A version basal recorded as revoked by core cannot be approved again.
 #[test]
 fn a_revoked_version_cannot_be_approved_again() {
     let world = World::new("gate-no-reapproval");

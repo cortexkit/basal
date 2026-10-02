@@ -388,10 +388,11 @@ pub fn approve(
         params![flow_id, version_i64(version), author],
     )?;
     let approval = schedule_approved(tx, flow_id, version, now_ms, schedule)?;
-    // A disable by core said only that core no longer stood behind the
-    // version approved then. This approval came through core's consent
-    // plane, so core stands behind a version again and the flow runs. Any
-    // other disable (the operator's, the owner's, the runtime's) stays.
+    // A disable by core (see `revoke`) said only that core no longer stood
+    // behind the version approved then. In production an approval is the
+    // operator's answer to a card on core's consent plane, so core stands
+    // behind a version again and the flow may run. Any other disable (the
+    // operator's, the owner's, the runtime's) stays.
     if flow(tx, flow_id)?.and_then(|f| f.disabled_by).as_deref() == Some(CORE_ACTOR) {
         enable(tx, flow_id, now_ms)?;
     }

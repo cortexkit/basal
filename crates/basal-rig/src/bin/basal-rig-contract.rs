@@ -318,7 +318,6 @@ fn check_rendered(case: &mut Case, card: &Value, flow: &Flow) {
         ("Status targets", "status"),
         ("Claims", "claims"),
         ("Facts access", "facts"),
-        ("Placement", "placement"),
     ] {
         let rendered = fact(card, label).and_then(|v| serde_json::from_str::<Value>(v).ok());
         let expected = manifest.get(key).cloned().unwrap_or(Value::Null);
@@ -328,6 +327,19 @@ fn check_rendered(case: &mut Case, card: &Value, flow: &Flow) {
             json!({ "rendered": fact(card, label), "manifest": expected }),
         );
     }
+    // basal leaves `placement` out of the request when the manifest states
+    // none, and core then renders the row as "not stated".
+    let placement = match manifest.get("placement") {
+        Some(stated) => fact(card, "Placement")
+            .and_then(|v| serde_json::from_str::<Value>(v).ok())
+            .is_some_and(|v| v == *stated),
+        None => fact(card, "Placement") == Some("not stated"),
+    };
+    case.check(
+        "card row 'Placement' renders the manifest's placement, or 'not stated' when it has none",
+        placement,
+        json!({ "rendered": fact(card, "Placement"), "manifest": manifest.get("placement") }),
+    );
     // Core fills the schedule's defaults into the trigger row.
     let mut trigger = manifest["trigger"].clone();
     if let Some(schedule) = trigger.get_mut("schedule").and_then(Value::as_object_mut) {
@@ -1245,9 +1257,9 @@ async fn suite(
             entry.unwrap_or(Value::Null),
         );
     }
-    // Minutes of cron boundaries have passed since the revoked flow's one
-    // run was cancelled; core's disable stopped its schedule, so there is no
-    // other.
+    // The revoked flow is scheduled every minute, and the later cases took
+    // minutes; the disable that came with the revoke stopped its schedule,
+    // so its one cancelled run is still its only run.
     let revoked_runs = rig.basal.runs(&scope_flow.id);
     cleanup.check(
         &format!(

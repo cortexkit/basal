@@ -33,9 +33,9 @@ impl Fake {
         }
         f
     }
-    /// Records the install core writes when the operator approves the card
-    /// basal raised for `flow_id` `version`, with the code hash that card
-    /// carried.
+    /// Records core's install row for `flow_id` `version`, as core writes it
+    /// when the operator approves the `flow_install` card basal raised for
+    /// that version, with the code hash the card carried.
     pub fn approve_install(&self, flow_id: &str, version: i64) {
         let hash = self
             .calls("elicitation.request")

@@ -24,10 +24,11 @@
 //!   turns into a loop of questions.
 //!
 //! The check runs after the activation's lease is taken and before the
-//! worker is handed anything. A revoke that lands between the check and the
-//! activation is not seen here; core's own refusal of the version's sink
-//! writes covers that window, which lasts at most one activation, since the
-//! next activation asks again.
+//! worker is handed anything. A revoke that lands after the check is not
+//! seen until the next activation asks again; until then core's own refusal
+//! of the revoked version's sink writes (digest items and status lines, the
+//! only way a flow reaches an agent) still holds, so the window is
+//! deliberately bounded by one activation.
 
 use std::time::Duration;
 
@@ -43,11 +44,12 @@ use crate::runtime::{ActivationEnd, Runtime};
 /// Whether activations ask core first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstallGate {
-    /// Ask core before every activation. What production runs.
+    /// Ask core before every activation. Production always runs with this.
     Core,
-    /// Never ask. Only for a runtime whose runs no core approved and that
-    /// can write no sink: the dry run's scratch runtime (its host captures
-    /// every sink write and sends none), and tests of other mechanisms.
+    /// Never ask. Only for a runtime whose flows were not approved through
+    /// core and that can write no sink: the dry run's runtime over its own
+    /// throwaway store (its host captures every sink write and sends none),
+    /// and tests whose subject is not the gate.
     Off,
 }
 
@@ -68,7 +70,7 @@ pub enum RevokeCause {
 /// A run whose gate got no answer, and when it may be checked again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Backoff {
-    /// On the runtime's clock.
+    /// On the runtime's clock (`Config::clock`), which tests set by hand.
     retry_at_ms: i64,
     /// Consecutive unanswered checks.
     failures: u32,

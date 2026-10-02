@@ -1,7 +1,8 @@
 //! The install gate end to end over the wire: the module asks core's
 //! `flow.install_status` (here the wire fake, written from core's handler)
 //! before every activation, through the same `RoutingHost` and `CoreHost`
-//! production uses. Also the `flow_install` request's optional placement.
+//! production uses. Also that the `flow_install` request carries `placement`
+//! only when the manifest states one.
 
 mod common;
 mod wire;
@@ -228,7 +229,9 @@ fn an_undecodable_reply_defers_the_run() {
     assert_eq!(health_entry(&f)["state"], "enabled");
 }
 
-/// Core's reply decodes only as core writes it.
+/// Core's reply decodes only as `{state, code_hash}` with `state` one of
+/// `active`, `revoked` (each with a 64-digit lowercase hex hash) or
+/// `unknown` (with a null hash); a refusal is no answer.
 #[test]
 fn install_status_replies_decode_strictly() {
     let hash = "0123456789abcdef".repeat(4);

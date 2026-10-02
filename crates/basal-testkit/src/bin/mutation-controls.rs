@@ -829,7 +829,126 @@ const JOURNAL_CONTROLS: &[Control] = &[
         target: Target::Testkit("journal_kill"),
         test: "killing_the_worker_at_every_boundary_recovers_to_the_uncut_state",
     },
+    Control {
+        label: "install gate: an activation does not ask core first",
+        edits: &[(
+            DRIVER,
+            "if let Gate::Closed(end) = self.rt.check_install(&self.lease, &self.run)? {",
+            "if let Some(end) = None::<ActivationEnd> {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("install_gate"),
+        test: "a_resume_after_suspension_is_gated",
+    },
+    Control {
+        label: "install gate: core's code hash is not compared with the run's",
+        edits: &[(
+            GATE,
+            "Ok(InstallStatus::Active { code_hash }) if code_hash == run_hash => {",
+            "Ok(InstallStatus::Active { code_hash: _ }) => {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("install_gate"),
+        test: "active_with_another_code_hash_is_revoked",
+    },
+    Control {
+        label: "install gate: a revoked version activates",
+        edits: &[(
+            GATE,
+            "Ok(InstallStatus::Revoked { .. }) => (",
+            "Ok(InstallStatus::Revoked { .. }) => return Ok(Gate::Open),\n            _ if false => (",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("install_gate"),
+        test: "revoked_cancels_the_run_and_disables_the_flow",
+    },
+    Control {
+        label: "install gate: a version core does not know activates",
+        edits: &[(
+            GATE,
+            "Ok(InstallStatus::Unknown) => (",
+            "Ok(InstallStatus::Unknown) => return Ok(Gate::Open),\n            _ if false => (",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("install_gate"),
+        test: "unknown_cancels_the_run_and_disables_the_flow",
+    },
+    Control {
+        label: "install gate: no answer from core fails open",
+        edits: &[(
+            GATE,
+            "            Err(e) => {\n                return self.defer(",
+            "            Err(e) => {\n                if !e.to_string().is_empty() {\n                    return Ok(Gate::Open);\n                }\n                return self.defer(",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("install_gate"),
+        test: "unreachable_core_defers_the_run_with_a_doubling_backoff",
+    },
+    Control {
+        label: "install gate: a run with no answer is offered and asked about again at once",
+        edits: &[
+            (
+                RUNTIME,
+                "runs.retain(|(run_id, _)| self.gate_wait(run_id).is_none());",
+                "runs.retain(|_| true);",
+            ),
+            (
+                DRIVER,
+                "if let Some(retry_in) = self.gate_wait(run_id) {",
+                "if let Some(retry_in) = self.gate_wait(run_id).filter(|_| false) {",
+            ),
+        ],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("install_gate"),
+        test: "unreachable_core_defers_the_run_with_a_doubling_backoff",
+    },
+    Control {
+        label: "install gate: the backoff does not grow while core stays unreachable",
+        edits: &[(
+            GATE,
+            ".saturating_mul(1u32 << (failures - 1).min(16))",
+            ".saturating_mul(1)",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("install_gate"),
+        test: "unreachable_core_defers_the_run_with_a_doubling_backoff",
+    },
+    Control {
+        label: "install gate: a deferred run keeps the deadline its claim started",
+        edits: &[(
+            RUNS,
+            "deadline_at = CASE WHEN fingerprint IS NULL THEN NULL ELSE deadline_at END",
+            "deadline_at = deadline_at",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("install_gate"),
+        test: "unreachable_core_defers_the_run_with_a_doubling_backoff",
+    },
+    Control {
+        label: "install gate: a deferred claim is counted as an activation",
+        edits: &[(
+            RUNS,
+            "            forget_claim(tx, lease)?;\n            (n, RunState::Pending)",
+            "            (n, RunState::Pending)",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("install_gate"),
+        test: "unreachable_core_defers_the_run_with_a_doubling_backoff",
+    },
+    Control {
+        label: "install gate: a version basal holds as revoked is asked about again",
+        edits: &[(
+            GATE,
+            ".read(|c| install::revocation(c, flow_id, version))?",
+            ".read(|c| install::revocation(c, flow_id, version).map(|_| None::<String>))?",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("install_gate"),
+        test: "other_runs_of_a_revoked_version_are_cancelled_without_asking",
+    },
 ];
+
+const GATE: &str = "crates/basal-core/src/gate.rs";
 
 const MANIFEST: &str = "crates/basal-core/src/manifest.rs";
 const INSTALL: &str = "crates/basal-core/src/install.rs";
@@ -1329,6 +1448,50 @@ const DISPATCH_CONTROLS: &[Control] = &[
         also_restore: NO_EXTRA,
         target: Target::Testkit("dispatch_manifest"),
         test: "schedule_triggers_are_typed_and_validated_by_the_scheduler",
+    },
+    Control {
+        label: "core's revoke of the approved version does not disable the flow",
+        edits: &[(
+            INSTALL,
+            "match disable(tx, flow_id, &Actor::Core, reason, now_ms) {",
+            "match Ok::<bool, InstallError>(false) {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("install_gate"),
+        test: "revoked_cancels_the_run_and_disables_the_flow",
+    },
+    Control {
+        label: "core's revoke of the approved version leaves it approved",
+        edits: &[(
+            INSTALL,
+            "\"UPDATE flows SET approved_version = NULL WHERE flow_id = ?1\",",
+            "\"UPDATE flows SET approved_version = approved_version WHERE flow_id = ?1\",",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("install_gate"),
+        test: "revoked_cancels_the_run_and_disables_the_flow",
+    },
+    Control {
+        label: "a version core revoked can be approved again",
+        edits: &[(
+            INSTALL,
+            "if revoked_at.is_some() {\n        return Err(InstallError::Revoked {",
+            "if false {\n        return Err(InstallError::Revoked {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("install_gate"),
+        test: "a_revoked_version_cannot_be_approved_again",
+    },
+    Control {
+        label: "approving a new version through core does not lift core's disable",
+        edits: &[(
+            INSTALL,
+            "if flow(tx, flow_id)?.and_then(|f| f.disabled_by).as_deref() == Some(CORE_ACTOR) {",
+            "if false {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("install_gate"),
+        test: "approving_a_new_version_lifts_cores_disable",
     },
 ];
 
@@ -2063,6 +2226,28 @@ const MODULE_CONTROLS: &[Control] = &[
         also_restore: NO_EXTRA,
         target: Target::Module("engine"),
         test: "the_unconfigured_host_refuses_every_dispatch_as_never_sent",
+    },
+    Control {
+        label: "the engine counts a run the install gate deferred as progress",
+        edits: &[(
+            M_ENGINE,
+            "                    \"not activated, asking core again in {retry_in:?}: {detail}\"\n                );\n                false",
+            "                    \"not activated, asking core again in {retry_in:?}: {detail}\"\n                );\n                true",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("install_gate"),
+        test: "unreachable_core_keeps_the_run_pending_without_a_hot_loop",
+    },
+    Control {
+        label: "the flow_install request sends an empty placement when the manifest states none",
+        edits: &[(
+            M_CORE_CONSENT,
+            "let placement = f[\"placement\"].as_str().filter(|p| !p.is_empty());",
+            "let placement = Some(f[\"placement\"].as_str().unwrap_or(\"\"));",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("install_gate"),
+        test: "placement_is_sent_only_when_the_manifest_states_one",
     },
 ];
 
@@ -3851,5 +4036,38 @@ const HOST_CONTROLS: &[Control] = &[
         also_restore: NO_EXTRA,
         target: Target::Module("hosts"),
         test: "routing_host_runs_install_decision_facts_ops_and_sinks_end_to_end",
+    },
+    Control {
+        label: "hosts: an install status code hash is accepted in any form",
+        edits: &[(
+            "crates/basal-host/src/core_host.rs",
+            "Some(h) if is_code_hash(h) => Ok(h.to_owned()),",
+            "Some(h) => Ok(h.to_owned()),",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("install_gate"),
+        test: "install_status_replies_decode_strictly",
+    },
+    Control {
+        label: "hosts: an unknown install status carrying a hash is accepted",
+        edits: &[(
+            "crates/basal-host/src/core_host.rs",
+            "Some(\"unknown\") if hash.is_none_or(Value::is_null) => Ok(InstallStatus::Unknown),",
+            "Some(\"unknown\") => Ok(InstallStatus::Unknown),",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("install_gate"),
+        test: "install_status_replies_decode_strictly",
+    },
+    Control {
+        label: "hosts: the routing host does not send the install status question to core",
+        edits: &[(
+            "crates/basal-host/src/routing.rs",
+            "self.core.install_status(flow_id, version)",
+            "self.ops.install_status(flow_id, version)",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("install_gate"),
+        test: "active_with_the_runs_code_hash_activates",
     },
 ];
