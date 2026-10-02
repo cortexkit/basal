@@ -663,6 +663,7 @@ fn journaled_sink_intent_is_byte_identical_after_a_cut() {
             durability: Durability { fullfsync: false },
             runtime: Config {
                 clock: clock.clone(),
+                install_gate: basal_core::InstallGate::Off,
                 ..Default::default()
             },
             pool: pool.clone(),
@@ -1536,6 +1537,7 @@ fn selections_freeze_at_intent_commit_and_only_uncommitted_calls_reselect() {
                 clock: Clock::manual(common::T0),
                 selector: selector.clone(),
                 retry_backoff: std::time::Duration::ZERO,
+                install_gate: basal_core::InstallGate::Off,
                 ..Default::default()
             },
             pool: pool.clone(),

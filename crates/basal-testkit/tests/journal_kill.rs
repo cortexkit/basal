@@ -108,9 +108,16 @@ fn killing_the_parent_at_every_boundary_recovers_to_the_uncut_state() {
 #[test]
 fn killing_the_worker_at_every_boundary_recovers_to_the_uncut_state() {
     let base_world = World::new("worker-kill-uncut");
-    let base =
-        basal_testkit::harness::run_with_cuts(&base_world, REPRESENTATIVE, &[], &Config::default())
-            .expect("uncut");
+    let base = basal_testkit::harness::run_with_cuts(
+        &base_world,
+        REPRESENTATIVE,
+        &[],
+        &Config {
+            install_gate: basal_core::InstallGate::Off,
+            ..Config::default()
+        },
+    )
+    .expect("uncut");
     let expected = base.summary.clone();
     let points = base.phases[0].clone();
     let queue = Mutex::new(points.clone());
@@ -135,7 +142,13 @@ fn killing_the_worker_at_every_boundary_recovers_to_the_uncut_state() {
                         }
                     }));
                     let rt = world
-                        .runtime(probe.clone(), Config::default())
+                        .runtime(
+                            probe.clone(),
+                            Config {
+                                install_gate: basal_core::InstallGate::Off,
+                                ..Config::default()
+                            },
+                        )
                         .expect("runtime");
                     let run_id = rt
                         .admit(&world.spec(&rt, REPRESENTATIVE).expect("approve"))

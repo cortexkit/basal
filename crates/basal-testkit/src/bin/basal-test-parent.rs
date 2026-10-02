@@ -87,6 +87,7 @@ fn run(args: Args) -> Result<serde_json::Value, String> {
     let config = Config {
         selector: Arc::new(basal_host::selector::FakeSelector::default()),
         activation_deadline: Duration::from_secs(30),
+        install_gate: basal_core::InstallGate::Off,
         ..Config::default()
     };
     let rt = Runtime::new(

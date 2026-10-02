@@ -25,6 +25,7 @@ use crate::audit;
 use crate::authorize::{self, Refusal, codes};
 use crate::channel::{ChannelError, WorkerChannel};
 use crate::error::{CoreError, Result};
+use crate::gate::Gate;
 use crate::hooks::Boundary;
 use crate::ids::{Fingerprint, code_hash, idempotency_key};
 use crate::install;
@@ -132,6 +133,14 @@ impl Runtime {
     /// is not pending (a pending run already past its deadline is failed
     /// here instead), or an earlier run of its flow holds the slot.
     fn claim(&self, run_id: &str) -> Result<std::result::Result<Lease, ActivationEnd>> {
+        if let Some(retry_in) = self.gate_wait(run_id) {
+            // Core gave this run's install gate no answer a moment ago; it
+            // is not asked again until the backoff passes.
+            return Ok(Err(ActivationEnd::Deferred {
+                detail: "waiting to ask core for the install status again".into(),
+                retry_in,
+            }));
+        }
         let owner = self.config.owner.clone();
         let now = self.config.clock.now_ms();
         let claimed = self.shared.store.write(|tx| {
@@ -224,6 +233,7 @@ impl Runtime {
                     ActivationEnd::Succeeded { .. }
                         | ActivationEnd::Failed { .. }
                         | ActivationEnd::EngineMismatch { .. }
+                        | ActivationEnd::Revoked { .. }
                 ) && let Ok(run) = self.run(&run_id)
                 {
                     self.wake_flow(&run.flow_id);
@@ -317,6 +327,17 @@ impl Activation<'_> {
     }
 
     fn run(&mut self) -> Result<Flow> {
+        // The install gate (`crate::gate`): the lease is held and nothing
+        // has reached the worker or the host yet, not even a resend of a
+        // call an earlier activation left open. A revoke that lands after
+        // this check is deliberately not looked for again during this
+        // activation: core refuses the revoked version's sink writes itself,
+        // and the next activation asks again, so the window is one
+        // activation at most. The worker was handed nothing, so it stays
+        // reusable.
+        if let Gate::Closed(end) = self.rt.check_install(&self.lease, &self.run)? {
+            return Ok(done(end, true));
+        }
         if let Flow::Done { end, idle } = self.check_identity()? {
             return Ok(done(end, idle));
         }

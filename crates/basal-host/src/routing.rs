@@ -166,4 +166,11 @@ impl Host for RoutingHost {
         self.core.attach(sink.clone());
         self.model.attach(sink);
     }
+    fn install_status(
+        &self,
+        flow_id: &str,
+        version: u32,
+    ) -> Result<crate::InstallStatus, TransportError> {
+        self.core.install_status(flow_id, version)
+    }
 }

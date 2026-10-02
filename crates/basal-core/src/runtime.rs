@@ -11,7 +11,7 @@
 //! an async runtime: SQLite and the worker pipes are blocking, and a module
 //! that embeds this next to an async client calls it from blocking threads.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -99,6 +99,14 @@ pub struct Config {
     /// The scheduler's settings, used when an approval plans the fires a
     /// replaced schedule owed, and by [`Runtime::scheduler`].
     pub schedule: crate::schedule::SchedulerConfig,
+    /// Whether every activation first asks core whether it still stands
+    /// behind the run's flow version (see [`crate::gate`]).
+    pub install_gate: crate::gate::InstallGate,
+    /// How long a run waits to be checked again after core gave its gate no
+    /// answer. Each further unanswered check doubles it, up to
+    /// `install_gate_retry_max`.
+    pub install_gate_retry: Duration,
+    pub install_gate_retry_max: Duration,
 }
 
 impl Default for Config {
@@ -118,6 +126,9 @@ impl Default for Config {
             kv: KvLimits::default(),
             rate: RateLimits::default(),
             schedule: crate::schedule::SchedulerConfig::default(),
+            install_gate: crate::gate::InstallGate::Core,
+            install_gate_retry: Duration::from_secs(1),
+            install_gate_retry_max: Duration::from_secs(60),
         }
     }
 }
@@ -157,6 +168,20 @@ pub enum ActivationEnd {
     /// waits until that run reaches a terminal state.
     Waiting {
         holder: String,
+    },
+    /// The install gate got no answer from core (unreachable, timed out, or
+    /// a reply basal cannot read), so nothing was activated. The run stays
+    /// pending and is not offered again for `retry_in`.
+    Deferred {
+        detail: String,
+        retry_in: Duration,
+    },
+    /// Core no longer stands behind the run's flow version: the version is
+    /// recorded as revoked and the run was cancelled before activating.
+    Revoked {
+        version: u32,
+        cause: crate::gate::RevokeCause,
+        detail: String,
     },
 }
 
@@ -201,6 +226,9 @@ pub(crate) struct Shared {
     /// activation never sends these again: their thread will record the
     /// outcome.
     pub(crate) inflight: Mutex<HashSet<(String, u64)>>,
+    /// Runs whose install gate got no answer from core, with when they may
+    /// be checked again. In memory: a restart checks every run at once.
+    pub(crate) gate_backoff: Mutex<HashMap<String, crate::gate::Backoff>>,
     pub(crate) signal: Signal,
     threads: Mutex<Vec<JoinHandle<()>>>,
 }
@@ -286,6 +314,7 @@ impl Runtime {
             hooks,
             source,
             inflight: Mutex::new(HashSet::new()),
+            gate_backoff: Mutex::new(HashMap::new()),
             signal: Signal {
                 epoch: Mutex::new(0),
                 cond: Condvar::new(),
@@ -578,9 +607,13 @@ impl Runtime {
             }
             match run.state {
                 RunState::Pending => {
-                    if let ActivationEnd::Waiting { .. } = self.resume(run_id)? {
-                        // An earlier run of the flow holds the slot. The
-                        // signal is bumped when that run ends.
+                    if let ActivationEnd::Waiting { .. } | ActivationEnd::Deferred { .. } =
+                        self.resume(run_id)?
+                    {
+                        // An earlier run of the flow holds the slot (the
+                        // signal is bumped when that run ends), or core gave
+                        // the install gate no answer and the run waits to
+                        // ask again.
                         self.shared
                             .signal
                             .wait(seen, (deadline - now).min(Duration::from_millis(50)));
@@ -763,7 +796,11 @@ impl Runtime {
     /// Pending runs no earlier run of their flow holds back, as (run,
     /// flow), in admission order: what can start now.
     pub fn startable(&self) -> Result<Vec<(String, String)>> {
-        self.shared.store.read(runs::startable)
+        let mut runs = self.shared.store.read(runs::startable)?;
+        // A run waiting to ask core again is not offered, so a pass loop
+        // cannot ask about it on every pass while core is unreachable.
+        runs.retain(|(run_id, _)| self.gate_wait(run_id).is_none());
+        Ok(runs)
     }
 
     pub fn catalog(&self) -> &dyn Catalog {

@@ -100,6 +100,12 @@ pub enum InstallError {
         flow_id: String,
         version: u32,
     },
+    /// Core no longer stands behind this version (see [`revoke`]); it can
+    /// never be approved again. Any edit is a new version.
+    Revoked {
+        flow_id: String,
+        version: u32,
+    },
     /// An agent tried to enable a flow whose current disable it did not
     /// make itself (the operator's, or the runtime's auto-disable).
     NotYourDisable {
@@ -323,14 +329,15 @@ pub fn approve(
     now_ms: i64,
     schedule: &SchedulerConfig,
 ) -> std::result::Result<Option<Approval>, InstallError> {
-    let row: Option<(Vec<u8>, String, String)> = tx
+    let row: Option<(Vec<u8>, String, String, Option<i64>)> = tx
         .query_row(
-            "SELECT code_hash, state, author FROM installs WHERE flow_id = ?1 AND version = ?2",
+            "SELECT code_hash, state, author, revoked_at FROM installs \
+             WHERE flow_id = ?1 AND version = ?2",
             params![flow_id, version_i64(version)],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .optional()?;
-    let Some((hash, state, author)) = row else {
+    let Some((hash, state, author, revoked_at)) = row else {
         return Err(InstallError::NoSuchVersion {
             flow_id: flow_id.to_owned(),
             version,
@@ -338,6 +345,12 @@ pub fn approve(
     };
     if hash.as_slice() != code_hash.as_slice() {
         return Err(InstallError::HashMismatch {
+            flow_id: flow_id.to_owned(),
+            version,
+        });
+    }
+    if revoked_at.is_some() {
+        return Err(InstallError::Revoked {
             flow_id: flow_id.to_owned(),
             version,
         });
@@ -374,7 +387,15 @@ pub fn approve(
         "UPDATE flows SET approved_version = ?2, owner = ?3 WHERE flow_id = ?1",
         params![flow_id, version_i64(version), author],
     )?;
-    schedule_approved(tx, flow_id, version, now_ms, schedule)
+    let approval = schedule_approved(tx, flow_id, version, now_ms, schedule)?;
+    // A disable by core said only that core no longer stood behind the
+    // version approved then. This approval came through core's consent
+    // plane, so core stands behind a version again and the flow runs. Any
+    // other disable (the operator's, the owner's, the runtime's) stays.
+    if flow(tx, flow_id)?.and_then(|f| f.disabled_by).as_deref() == Some(CORE_ACTOR) {
+        enable(tx, flow_id, now_ms)?;
+    }
+    Ok(approval)
 }
 
 /// Brings the flow's schedule in line with the version just approved, in
@@ -448,6 +469,72 @@ pub fn approved(conn: &Connection, flow_id: &str) -> Result<Option<Approved>> {
     .transpose()
 }
 
+/// Why core no longer stands behind `version` of `flow_id`, if basal has
+/// recorded that it does not (see [`revoke`]).
+pub fn revocation(conn: &Connection, flow_id: &str, version: u32) -> Result<Option<String>> {
+    let reason: Option<Option<String>> = conn
+        .query_row(
+            "SELECT revoked_reason FROM installs WHERE flow_id = ?1 AND version = ?2 \
+             AND revoked_at IS NOT NULL",
+            params![flow_id, version_i64(version)],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(reason.map(Option::unwrap_or_default))
+}
+
+/// Records that core no longer stands behind `version` of `flow_id`: the
+/// operator revoked it in core, core holds no install of it, or core
+/// approved other code under it. The version is never activated or
+/// approved again. If it is the flow's approved version, the flow is left
+/// with no approved version (so `flow.health` lists it as `unapproved`),
+/// and is disabled by core with `reason`, which stops its schedule and
+/// tells its owner as every disable does. Returns false when the version
+/// was already recorded as revoked (nothing is written then).
+pub fn revoke(
+    tx: &Transaction,
+    flow_id: &str,
+    version: u32,
+    reason: &str,
+    now_ms: i64,
+) -> Result<bool> {
+    let row: Option<(String, Option<i64>)> = tx
+        .query_row(
+            "SELECT state, revoked_at FROM installs WHERE flow_id = ?1 AND version = ?2",
+            params![flow_id, version_i64(version)],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let Some((state, revoked_at)) = row else {
+        return Err(CoreError::Corrupt(format!(
+            "no install of {flow_id} v{version} to revoke"
+        )));
+    };
+    if revoked_at.is_some() {
+        return Ok(false);
+    }
+    // A revoked approved version is no longer the approved one; `revoked_at`
+    // is what tells it apart from a version a newer approval replaced.
+    tx.execute(
+        "UPDATE installs SET revoked_at = ?3, revoked_reason = ?4, \
+         state = CASE state WHEN 'approved' THEN 'superseded' ELSE state END \
+         WHERE flow_id = ?1 AND version = ?2",
+        params![flow_id, version_i64(version), now_ms, reason],
+    )?;
+    if state == "approved" {
+        tx.execute(
+            "UPDATE flows SET approved_version = NULL WHERE flow_id = ?1",
+            [flow_id],
+        )?;
+        match disable(tx, flow_id, &Actor::Core, reason, now_ms) {
+            Ok(_) => {}
+            Err(InstallError::Store(e)) => return Err(e),
+            Err(e) => return Err(CoreError::Invalid(e.to_string())),
+        }
+    }
+    Ok(true)
+}
+
 /// A flow's enablement and ownership.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FlowRecord {
@@ -511,6 +598,10 @@ pub fn is_disabled(conn: &Connection, flow_id: &str) -> Result<bool> {
 /// saturation) is recorded in `flows.disabled_by`.
 pub const RUNTIME_ACTOR: &str = "runtime";
 
+/// How a disable by core is recorded in `flows.disabled_by`: core no longer
+/// stands behind the flow's approved version (see [`revoke`]).
+pub const CORE_ACTOR: &str = "core";
+
 /// How every operator disable begins in `flows.disabled_by`
 /// (`operator:<who>`).
 pub const OPERATOR_ACTOR_PREFIX: &str = "operator:";
@@ -524,6 +615,8 @@ pub enum Actor {
     Agent(String),
     /// The runtime itself, for sustained saturation.
     Runtime,
+    /// Core, which no longer stands behind the flow's approved version.
+    Core,
 }
 
 impl Actor {
@@ -532,6 +625,7 @@ impl Actor {
             Self::Operator(who) => format!("{OPERATOR_ACTOR_PREFIX}{who}"),
             Self::Agent(who) => format!("agent:{who}"),
             Self::Runtime => RUNTIME_ACTOR.to_owned(),
+            Self::Core => CORE_ACTOR.to_owned(),
         }
     }
 }
@@ -788,7 +882,7 @@ pub fn enable_as(
     };
     match actor {
         Actor::Operator(_) => {}
-        Actor::Runtime => {
+        Actor::Runtime | Actor::Core => {
             return Err(InstallError::NotYourDisable {
                 flow_id: flow_id.to_owned(),
                 disabled_by: record.disabled_by.unwrap_or_default(),

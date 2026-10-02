@@ -334,6 +334,11 @@ impl DryRunner {
             clock: clock.clone(),
             auto_resume: false,
             selector: Arc::new(CapturedSelector),
+            // No install gate: core has approved nothing for a dry run, and
+            // its capture host never reaches core. Only module ops the
+            // catalog marks as queries go out, in live mode; every sink
+            // write, facts read and model call is captured (`runs_live`).
+            install_gate: basal_core::InstallGate::Off,
             ..self.base.clone()
         };
         let rt = Runtime::new(

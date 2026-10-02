@@ -11,6 +11,9 @@ pub struct Fake {
     pub catalog: Mutex<Value>,
     /// Core's own records of agent session scopes, by scope ref.
     pub scopes: Mutex<BTreeMap<String, CoreScope>>,
+    /// Core's `flow_install` rows by (flow, version): the approved code
+    /// hash and whether the operator revoked it.
+    pub installs: Mutex<BTreeMap<(String, i64), (String, bool)>>,
 }
 impl Fake {
     pub fn new() -> Arc<Self> {
@@ -30,6 +33,34 @@ impl Fake {
         }
         f
     }
+    /// Records the install core writes when the operator approves the card
+    /// basal raised for `flow_id` `version`, with the code hash that card
+    /// carried.
+    pub fn approve_install(&self, flow_id: &str, version: i64) {
+        let hash = self
+            .calls("elicitation.request")
+            .iter()
+            .rev()
+            .map(|c| &c["params"]["flow_install"])
+            .find(|i| i["flow_id"] == flow_id && i["version"] == version)
+            .and_then(|i| i["code_hash"].as_str().map(str::to_owned))
+            .expect("basal raised a card for this version");
+        self.installs
+            .lock()
+            .unwrap()
+            .insert((flow_id.into(), version), (hash, false));
+    }
+
+    /// Revokes an install, as the operator's `flow.revoke` does in core.
+    pub fn revoke_install(&self, flow_id: &str, version: i64) {
+        self.installs
+            .lock()
+            .unwrap()
+            .get_mut(&(flow_id.to_owned(), version))
+            .expect("core holds the install")
+            .1 = true;
+    }
+
     pub fn enqueue(&self, op: &str, replies: Vec<Result<Value, WireError>>) {
         self.replies
             .lock()
@@ -58,6 +89,7 @@ impl Fake {
             "route.set_decision_outcome" => Ok(json!({"ok":true})),
             "elicitation.request" => flow_install_request(&self.scopes.lock().unwrap(), params),
             "elicitation.answers" => Ok(json!({"records":[],"cursor":0})),
+            "flow.install_status" => install_status(&self.installs.lock().unwrap(), params),
             "elicitation.ack" => Ok(json!({"ok":true})),
             "sink.digest" => Ok(json!({"disposition":"stored","fire_id":"wf_1","replayed":false})),
             "sink.status" => Ok(
@@ -70,6 +102,35 @@ impl Fake {
             _ => Ok(params.clone()),
         }
     }
+}
+
+/// Core's `flow.install_status`, written from core's handler: `flow_id` a
+/// non-empty string and `version` a positive integer, or the request is
+/// refused; a version core never approved is `unknown` with a null hash,
+/// and every approved version is `active` until it is revoked.
+fn install_status(
+    installs: &BTreeMap<(String, i64), (String, bool)>,
+    params: &Value,
+) -> Result<Value, WireError> {
+    let invalid = |message: &str| {
+        Err(WireError::Refused {
+            code: "elicitation_invalid_request".into(),
+            message: message.into(),
+        })
+    };
+    let Some(flow_id) = params["flow_id"].as_str().filter(|s| !s.is_empty()) else {
+        return invalid("missing flow_id");
+    };
+    let Some(version) = params["version"].as_i64().filter(|v| *v > 0) else {
+        return invalid("invalid version");
+    };
+    Ok(match installs.get(&(flow_id.to_owned(), version)) {
+        Some((hash, revoked)) => json!({
+            "state": if *revoked { "revoked" } else { "active" },
+            "code_hash": hash,
+        }),
+        None => json!({"state": "unknown", "code_hash": null}),
+    })
 }
 
 /// A session scope as core records it: the agent it carries, if any, and
@@ -113,20 +174,28 @@ fn flow_install_request(
     };
     let invalid = "elicitation_invalid_request";
     // Core decodes the nested payload strictly (prefrontal-core-store
-    // `FlowInstallCard`): these fields must be strings, `placement` included
-    // even when the manifest names none, and the version an integer.
+    // `FlowInstallCard`): these fields must be strings and the version an
+    // integer. `placement` is optional: absent (or null) is "not stated",
+    // and an empty string is refused.
     let install = &params["flow_install"];
-    for field in [
-        "flow_id",
-        "code_hash",
-        "script",
-        "manifest_json",
-        "placement",
-    ] {
+    for field in ["flow_id", "code_hash", "script", "manifest_json"] {
         if !install[field].is_string() {
             return refuse(
                 invalid,
                 &format!("flow_install.{field}: invalid type, expected a string"),
+            );
+        }
+    }
+    match install.get("placement") {
+        None | Some(Value::Null) => {}
+        Some(Value::String(p)) if !p.is_empty() => {}
+        Some(Value::String(_)) => {
+            return refuse(invalid, "flow_install.placement must not be empty");
+        }
+        Some(_) => {
+            return refuse(
+                invalid,
+                "flow_install.placement: invalid type, expected a string",
             );
         }
     }

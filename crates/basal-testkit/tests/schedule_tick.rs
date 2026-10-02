@@ -85,6 +85,7 @@ fn open(
         Config {
             clock: clock.clone(),
             schedule,
+            install_gate: basal_core::InstallGate::Off,
             ..Config::default()
         },
     );

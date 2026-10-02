@@ -8,7 +8,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
-use basal_core::{Clock, Config, Durability, Hooks, NoHooks};
+use basal_core::{Clock, Config, Durability, Hooks, InstallGate, NoHooks};
 use basal_host::mock::MockHost;
 use basal_host::{CardDecision, MockCatalog, MockConsent};
 use basal_module::caller::Caller;
@@ -59,6 +59,9 @@ pub struct Options {
     pub default_deadline: Duration,
     pub max_activations: u32,
     pub idle_retire: Duration,
+    /// Off unless a test is about the install gate: the mock consent plane
+    /// is not core, so no core approved these tests' flows.
+    pub install_gate: InstallGate,
 }
 
 impl Default for Options {
@@ -73,6 +76,7 @@ impl Default for Options {
             default_deadline: Duration::from_secs(600),
             max_activations: 256,
             idle_retire: Duration::from_secs(600),
+            install_gate: InstallGate::Off,
         }
     }
 }
@@ -108,6 +112,7 @@ pub fn fixture_with_store(
         selector: o.selector.clone(),
         clock: clock.clone(),
         activation_deadline: Duration::from_secs(60),
+        install_gate: o.install_gate,
         ..Config::default()
     };
     runtime.limits.default_deadline = o.default_deadline;

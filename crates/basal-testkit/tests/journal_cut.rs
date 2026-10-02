@@ -20,7 +20,16 @@ const PARALLEL: usize = 6;
 
 fn uncut() -> CutRun {
     let world = World::new("uncut");
-    run_with_cuts(&world, REPRESENTATIVE, &[], &Config::default()).expect("uncut run")
+    run_with_cuts(
+        &world,
+        REPRESENTATIVE,
+        &[],
+        &Config {
+            install_gate: basal_core::InstallGate::Off,
+            ..Config::default()
+        },
+    )
+    .expect("uncut run")
 }
 
 fn check_uncut(summary: &Summary) {
@@ -82,7 +91,15 @@ fn run_all(cases: Vec<Vec<Point>>) -> Vec<(Vec<Point>, Result<CutRun, String>)> 
                         return;
                     };
                     let world = World::new("cut");
-                    let result = run_with_cuts(&world, REPRESENTATIVE, &cuts, &Config::default());
+                    let result = run_with_cuts(
+                        &world,
+                        REPRESENTATIVE,
+                        &cuts,
+                        &Config {
+                            install_gate: basal_core::InstallGate::Off,
+                            ..Config::default()
+                        },
+                    );
                     if let Ok(mut r) = results.lock() {
                         r.push((cuts, result));
                     }

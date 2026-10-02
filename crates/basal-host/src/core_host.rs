@@ -2,7 +2,8 @@
 use crate::subc_catalog::CORE;
 use crate::transport::{Transport, WireError};
 use crate::{
-    CallClass, CallRequest, CompletionSink, Dispatched, Host, HostOutcome, TransportError,
+    CallClass, CallRequest, CompletionSink, Dispatched, Host, HostOutcome, InstallStatus,
+    TransportError,
 };
 use basal_proto::{CallKind, JsonText, Primitive};
 use serde_json::{Value, json};
@@ -124,6 +125,38 @@ pub fn validate_reply(kind: Primitive, value: Value) -> Result<Value, WireError>
         Err(WireError::Unknown("unrecognised core reply".into()))
     }
 }
+/// Whether `value` is a code hash as core writes it: 64 lowercase hex digits.
+fn is_code_hash(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// Decodes core's `flow.install_status` reply, `{state, code_hash}`: an
+/// `active` or `revoked` version carries the hash core approved, an
+/// `unknown` one a null hash. Anything else is refused, so a reply basal
+/// cannot read never counts as core standing behind a version.
+pub fn decode_install_status(value: &Value) -> Result<InstallStatus, String> {
+    let hash = value.get("code_hash");
+    let approved_hash = || match hash.and_then(Value::as_str) {
+        Some(h) if is_code_hash(h) => Ok(h.to_owned()),
+        _ => Err(format!(
+            "install status carries no valid code hash: {value}"
+        )),
+    };
+    match value.get("state").and_then(Value::as_str) {
+        Some("active") => Ok(InstallStatus::Active {
+            code_hash: approved_hash()?,
+        }),
+        Some("revoked") => Ok(InstallStatus::Revoked {
+            code_hash: approved_hash()?,
+        }),
+        Some("unknown") if hash.is_none_or(Value::is_null) => Ok(InstallStatus::Unknown),
+        _ => Err(format!("unrecognised install status: {value}")),
+    }
+}
+
 impl Host for CoreHost {
     fn classify(&self, kind: &CallKind) -> CallClass {
         match kind {
@@ -160,6 +193,26 @@ impl Host for CoreHost {
         sample()
     }
     fn attach(&self, _: Arc<dyn CompletionSink>) {}
+    fn install_status(&self, flow_id: &str, version: u32) -> Result<InstallStatus, TransportError> {
+        // A refusal is no answer either: whatever core refused (a route
+        // that is not `reserved:basal`, a malformed request), it did not say
+        // it stands behind the version.
+        let reply = self
+            .transport
+            .management(
+                CORE,
+                "flow.install_status",
+                json!({"flow_id": flow_id, "version": version}),
+            )
+            .map_err(|e| TransportError::Unavailable {
+                proven_unsent: matches!(e, WireError::NeverSent(_)),
+                detail: format!("flow.install_status: {e:?}"),
+            })?;
+        decode_install_status(&reply).map_err(|detail| TransportError::Unavailable {
+            proven_unsent: false,
+            detail,
+        })
+    }
 }
 pub(crate) fn system_now() -> f64 {
     std::time::SystemTime::now()

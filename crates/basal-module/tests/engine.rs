@@ -120,6 +120,7 @@ fn the_unconfigured_host_refuses_every_dispatch_as_never_sent() {
             durability: Durability { fullfsync: false },
             runtime: Config {
                 clock,
+                install_gate: basal_core::InstallGate::Off,
                 ..Config::default()
             },
             pool: pool.clone(),

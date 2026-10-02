@@ -240,6 +240,17 @@ CREATE TABLE broca_calls (
 );
 "#,
     },
+    Migration {
+        version: 6,
+        statements: r#"
+-- A version core no longer stands behind (the operator revoked it in core,
+-- core holds no install of it, or core approved other code under it), with
+-- why. It is never activated or approved again. A revoked version that was
+-- approved is moved to 'superseded'; revoked_at is what tells the two apart.
+ALTER TABLE installs ADD COLUMN revoked_at INTEGER;
+ALTER TABLE installs ADD COLUMN revoked_reason TEXT;
+"#,
+    },
 ];
 
 /// Install cards: one consent card per installed version, raised before

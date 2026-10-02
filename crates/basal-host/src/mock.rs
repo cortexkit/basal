@@ -50,7 +50,7 @@ use serde_json::{Value, json};
 
 use crate::{
     CallClass, CallRequest, Completion, CompletionSink, Dispatched, Host, HostOutcome,
-    TransportError,
+    InstallStatus, TransportError,
 };
 
 /// One effect the mock applied.
@@ -136,6 +136,11 @@ struct Controls {
     classes: HashMap<(String, String), CallClass>,
     open_gates: HashSet<String>,
     rendezvous: HashMap<String, Rendezvous>,
+    /// What core answers about each flow version; `None` is no answer (core
+    /// unreachable). A version the test never set is unreachable too.
+    installs: HashMap<(String, u32), Option<InstallStatus>>,
+    /// Every install status question asked, in order.
+    install_queries: Vec<(String, u32)>,
 }
 
 struct Shared {
@@ -241,6 +246,19 @@ impl MockHost {
             .entry((module.to_owned(), op.to_owned()))
             .or_default()
             .extend_from_slice(faults);
+    }
+
+    /// Sets what core answers about `version` of `flow_id` from now on;
+    /// `None` makes core unreachable for it.
+    pub fn set_install_status(&self, flow_id: &str, version: u32, status: Option<InstallStatus>) {
+        lock(&self.shared.controls)
+            .installs
+            .insert((flow_id.to_owned(), version), status);
+    }
+
+    /// Every install status question the runtime asked, in order.
+    pub fn install_queries(&self) -> Vec<(String, u32)> {
+        lock(&self.shared.controls).install_queries.clone()
     }
 
     pub fn open_gate(&self, gate: &str) {
@@ -513,6 +531,18 @@ impl MockHost {
 }
 
 impl Host for MockHost {
+    fn install_status(&self, flow_id: &str, version: u32) -> Result<InstallStatus, TransportError> {
+        let mut controls = lock(&self.shared.controls);
+        controls.install_queries.push((flow_id.to_owned(), version));
+        match controls.installs.get(&(flow_id.to_owned(), version)) {
+            Some(Some(status)) => Ok(status.clone()),
+            _ => Err(TransportError::Unavailable {
+                proven_unsent: true,
+                detail: format!("the mock's core is unreachable for {flow_id} v{version}"),
+            }),
+        }
+    }
+
     fn classify(&self, kind: &CallKind) -> CallClass {
         let names = op_names(kind);
         if let Some(class) = lock(&self.shared.controls).classes.get(&names) {

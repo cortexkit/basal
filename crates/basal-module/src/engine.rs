@@ -21,7 +21,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use basal_core::schedule::Scheduler;
-use basal_core::{ActivationEnd, CoreError, Runtime};
+use basal_core::{ActivationEnd, CoreError, RevokeCause, Runtime};
 
 use crate::fatal::Fatal;
 use crate::metrics::Metrics;
@@ -177,7 +177,10 @@ impl Engine {
                 let micros = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
                 if !matches!(
                     end,
-                    ActivationEnd::Waiting { .. } | ActivationEnd::NotRunnable { .. }
+                    ActivationEnd::Waiting { .. }
+                        | ActivationEnd::NotRunnable { .. }
+                        | ActivationEnd::Deferred { .. }
+                        | ActivationEnd::Revoked { .. }
                 ) {
                     inner.metrics.activation(replayed, micros);
                 }
@@ -238,6 +241,40 @@ impl Engine {
                 false
             }
             ActivationEnd::Waiting { .. } | ActivationEnd::NotRunnable { .. } => false,
+            // Core gave the install gate no answer: the run is pending as it
+            // was and waits out a backoff, so this is not progress (a test's
+            // run-until-idle would otherwise spin on it).
+            ActivationEnd::Deferred { detail, retry_in } => {
+                tracing::warn!(
+                    target: "engine",
+                    run = %run_id,
+                    "not activated, asking core again in {retry_in:?}: {detail}"
+                );
+                false
+            }
+            ActivationEnd::Revoked {
+                version,
+                cause: RevokeCause::HashMismatch { core, run },
+                detail,
+            } => {
+                // basal and core disagree about what was approved: never
+                // expected, so it is reported as loudly as the engine can.
+                tracing::error!(
+                    target: "engine",
+                    run = %run_id,
+                    version,
+                    core_code_hash = %core,
+                    run_code_hash = %run,
+                    "core approved other code for this version; the version is revoked and the run cancelled: {detail}"
+                );
+                true
+            }
+            ActivationEnd::Revoked {
+                version, detail, ..
+            } => {
+                tracing::warn!(target: "engine", run = %run_id, version, "{detail}");
+                true
+            }
             ActivationEnd::Failed { kind, detail } => {
                 tracing::info!(target: "engine", run = %run_id, kind = %kind, "run failed: {detail}");
                 true

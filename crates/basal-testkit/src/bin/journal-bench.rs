@@ -108,6 +108,7 @@ fn runtime(
             max_dispatches: u32::MAX,
             ..basal_core::RateLimits::default()
         },
+        install_gate: basal_core::InstallGate::Off,
         ..Config::default()
     };
     Ok(Runtime::new(

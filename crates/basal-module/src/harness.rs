@@ -311,6 +311,9 @@ pub fn main() -> std::process::ExitCode {
             clock: clock.clone(),
             selector: selector.clone(),
             activation_deadline: Duration::from_secs(60),
+            // The harness's consent plane is a mock, so no core approved its
+            // flows and no core could be asked about them.
+            install_gate: basal_core::InstallGate::Off,
             ..Config::default()
         },
         pool: pool.clone(),

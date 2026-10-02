@@ -9,6 +9,8 @@
 //! - [`driver`] and [`runtime`]: an activation driven on a worker channel,
 //!   calls dispatched concurrently to a [`basal_host::Host`], completions
 //!   accepted from anywhere.
+//! - [`gate`]: before every activation, core is asked whether it still
+//!   stands behind the run's flow version.
 //! - [`reconcile`], [`retention`] and [`ops`]: the operator's side.
 //! - [`manifest`] and [`install`]: what a flow may do, validated against
 //!   the catalog, approved by code hash, disabled at once.
@@ -34,6 +36,7 @@ pub mod channel;
 pub mod clock;
 pub mod driver;
 pub mod error;
+pub mod gate;
 pub mod hooks;
 pub mod ids;
 pub mod install;
@@ -57,6 +60,7 @@ pub use authorize::ShellDenylist;
 pub use channel::{ChannelError, WorkerChannel, WorkerSource};
 pub use clock::Clock;
 pub use error::{CoreError, Result};
+pub use gate::{InstallGate, RevokeCause};
 pub use hooks::{Boundary, Hooks, NoHooks, Step};
 pub use install::{Actor, InstallError, InstallRequest, Installed, Warning};
 pub use kv::KvLimits;

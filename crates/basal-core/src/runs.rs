@@ -300,6 +300,12 @@ pub enum Exit {
     Requeue {
         broken: bool,
     },
+    /// Back to `pending` before anything was handed to a worker, because
+    /// the install gate got no answer from core. The claim is undone as far
+    /// as it can be: it is not counted as an activation, and a run never
+    /// handed to a worker before (no fingerprint recorded yet) gets its
+    /// deadline back unset, so waiting for core does not count against it.
+    Deferred,
 }
 
 /// Moves the run out of `running`, fenced by the activation's lease.
@@ -370,11 +376,33 @@ pub fn exit(tx: &Transaction, lease: &Lease, exit: &Exit) -> Result<RunState> {
             )?,
             RunState::Pending,
         ),
+        Exit::Deferred => {
+            let n = tx.execute(
+                &format!(
+                    "UPDATE runs SET state = 'pending', owner = NULL, \
+                     deadline_at = CASE WHEN fingerprint IS NULL THEN NULL ELSE deadline_at END \
+                     WHERE run_id = ?1 AND {FENCE}"
+                ),
+                params![lease.run_id, lease.owner, g],
+            )?;
+            forget_claim(tx, lease)?;
+            (n, RunState::Pending)
+        }
     };
     if changed == 0 {
         return Err(lease.lost());
     }
     Ok(state)
+}
+
+/// Removes the activation row a claim wrote, for a claim the install gate
+/// turned back before the run reached a worker: no activation started.
+pub fn forget_claim(tx: &Transaction, lease: &Lease) -> Result<()> {
+    tx.execute(
+        "DELETE FROM activations WHERE run_id = ?1 AND generation = ?2",
+        params![lease.run_id, lease.generation_i64()?],
+    )?;
+    Ok(())
 }
 
 /// What a `Suspended` ending turned into.

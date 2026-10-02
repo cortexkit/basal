@@ -187,6 +187,22 @@ impl fmt::Display for TransportError {
 
 impl std::error::Error for TransportError {}
 
+/// What core says about one flow version, from its `flow.install_status`
+/// op. Core keeps every version it approved active until the operator
+/// revokes it there; it has no notion of a superseded version, so the older
+/// approved version a run started on still reads active.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InstallStatus {
+    /// Core stands behind the version. `code_hash` is the code hash core
+    /// approved, as 64 lowercase hex digits.
+    Active { code_hash: String },
+    /// The operator revoked the version in core, which now refuses its sink
+    /// writes.
+    Revoked { code_hash: String },
+    /// Core holds no install of the version.
+    Unknown,
+}
+
 /// A long-running call's outcome, delivered after dispatch returned.
 ///
 /// A completion names the call it settles by run, position and the handle
@@ -285,4 +301,15 @@ pub trait Host: Send + Sync {
     /// completions not yet acknowledged delivers them again to the new sink,
     /// which is how a restarted runtime learns outcomes it missed.
     fn attach(&self, sink: Arc<dyn CompletionSink>);
+
+    /// Asks core whether it still stands behind `version` of `flow_id`. The
+    /// runtime asks before every activation and activates nothing on an
+    /// error, so this default (no answer) keeps every run of a host that
+    /// cannot reach core from activating rather than letting it through.
+    fn install_status(&self, flow_id: &str, version: u32) -> Result<InstallStatus, TransportError> {
+        Err(TransportError::Unavailable {
+            proven_unsent: true,
+            detail: format!("this host cannot ask core about {flow_id} v{version}"),
+        })
+    }
 }

@@ -11,6 +11,7 @@ use basal_testkit::harness::{World, drive, test_manifest};
 pub fn config() -> Config {
     Config {
         activation_deadline: Duration::from_secs(20),
+        install_gate: basal_core::InstallGate::Off,
         ..Config::default()
     }
 }

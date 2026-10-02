@@ -11,7 +11,8 @@ use crate::schema::JOURNAL_FORMAT;
 /// every recorded call look divergent.
 pub const ARGS_DIGEST_FORMAT: &str = "blake3-exact-bytes-v1";
 
-fn hex(bytes: &[u8]) -> String {
+/// Lowercase hex, as core writes a code hash.
+pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
