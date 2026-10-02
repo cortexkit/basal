@@ -18,7 +18,7 @@
 //! send ending in an unknown state) are not fenced: they are accepted from
 //! any activation, identified by the call itself.
 
-use basal_host::{CompletionAck, HostOutcome};
+use basal_host::{CompletionAck, HostOutcome, UnknownReason};
 use basal_proto::{ArgsDigest, CallKind, JsonText, Outcome, RecordedCall, Settlement};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
@@ -515,15 +515,21 @@ pub fn record_accepted(tx: &Transaction, run_id: &str, position: u64, handle: &s
     Ok(())
 }
 
-/// Records that a send ended without a provable outcome. A run not driven
-/// by an activation goes straight to `needs_reconcile`; a running one is
-/// moved there by its activation, under its fence.
-pub fn record_unknown(tx: &Transaction, run_id: &str, position: u64) -> Result<()> {
+/// Records that a send ended without a provable outcome, and `reason`, why.
+/// A run not driven by an activation goes straight to `needs_reconcile`; a
+/// running one is moved there by its activation, under its fence.
+pub fn record_unknown(
+    tx: &Transaction,
+    run_id: &str,
+    position: u64,
+    reason: UnknownReason,
+) -> Result<()> {
     tx.execute(
-        "UPDATE journal SET dispatch = 'unknown' WHERE run_id = ?1 AND position = ?2 \
+        "UPDATE journal SET dispatch = 'unknown', unknown_reason = ?3 \
+         WHERE run_id = ?1 AND position = ?2 \
          AND settlement IS NULL AND NOT EXISTS \
          (SELECT 1 FROM mailbox WHERE run_id = ?1 AND position = ?2)",
-        params![run_id, pos(position)?],
+        params![run_id, pos(position)?, reason.as_str()],
     )?;
     tx.execute(
         "UPDATE runs SET state = 'needs_reconcile', awaited = NULL, \
@@ -557,6 +563,7 @@ pub fn record_host_unknown(
     run_id: &str,
     position: u64,
     handle: &str,
+    reason: UnknownReason,
     detail: &str,
 ) -> Result<Option<CompletionAck>> {
     let p = pos(position)?;
@@ -591,8 +598,9 @@ pub fn record_host_unknown(
         _ => {}
     }
     tx.execute(
-        "UPDATE journal SET dispatch = 'unknown' WHERE run_id = ?1 AND position = ?2",
-        params![run_id, p],
+        "UPDATE journal SET dispatch = 'unknown', unknown_reason = ?3 \
+         WHERE run_id = ?1 AND position = ?2",
+        params![run_id, p, reason.as_str()],
     )?;
     tx.execute(
         "UPDATE runs SET state = 'needs_reconcile', awaited = NULL, \
@@ -614,6 +622,29 @@ pub fn record_host_unknown(
         [run_id],
     )?;
     Ok(Some(CompletionAck::Accepted))
+}
+
+/// Why the call at (run, position) was last recorded unknown, if it ever
+/// was.
+pub fn unknown_reason(
+    conn: &Connection,
+    run_id: &str,
+    position: u64,
+) -> Result<Option<UnknownReason>> {
+    let reason: Option<String> = conn
+        .query_row(
+            "SELECT unknown_reason FROM journal WHERE run_id = ?1 AND position = ?2",
+            params![run_id, pos(position)?],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten();
+    reason
+        .map(|r| {
+            UnknownReason::parse(&r)
+                .ok_or_else(|| CoreError::Corrupt(format!("unknown reason {r:?}")))
+        })
+        .transpose()
 }
 
 /// Positions whose send ended in an unknown state and that have no outcome.

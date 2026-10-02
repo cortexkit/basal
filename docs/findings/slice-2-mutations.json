@@ -1,310 +1,268 @@
 [
   {
     "applied_evidence": "crates/basal-core/src/journal.rs; during:  1 file changed, 12 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test race_cut_late_outcome_waits_for_the_barrier ... FAILED\nthread 'race_cut_late_outcome_waits_for_the_barrier' (17261237) panicked at crates/basal-testkit/tests/journal_races.rs:73:5:\n  left: Failed\n right: Succeeded\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.62s",
+    "captured_output": "test race_cut_late_outcome_waits_for_the_barrier ... FAILED\nthread 'race_cut_late_outcome_waits_for_the_barrier' (17839727) panicked at crates/basal-testkit/tests/journal_races.rs:73:5:\n  left: Failed\n right: Succeeded\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.73s",
     "control": "late outcome shipped in the prefix with a higher order (replay barrier removed)",
     "expected_red": "race_cut_late_outcome_waits_for_the_barrier",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/runs.rs; during:  1 file changed, 3 insertions(+), 3 deletions(-); after restore: empty git diff --stat",
-    "captured_output": "test completion_after_suspended_report_is_not_lost ... FAILED\nthread 'completion_after_suspended_report_is_not_lost' (17262427) panicked at crates/basal-testkit/tests/journal_races.rs:113:5:\n  left: Suspended { awaited: [0] }\n right: Requeued\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.11s",
+    "captured_output": "test completion_after_suspended_report_is_not_lost ... FAILED\nthread 'completion_after_suspended_report_is_not_lost' (17842107) panicked at crates/basal-testkit/tests/journal_races.rs:113:5:\n  left: Suspended { awaited: [0] }\n right: Requeued\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.30s",
     "control": "suspend transition does not re-read arrivals (lost wakeup)",
     "expected_red": "completion_after_suspended_report_is_not_lost",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/runs.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test concurrent_resumes_start_one_activation ... FAILED\nthread 'concurrent_resumes_start_one_activation' (17262983) panicked at crates/basal-testkit/tests/journal_races.rs:391:5:\n  left: 2\n right: 1\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.12s",
+    "captured_output": "test concurrent_resumes_start_one_activation ... FAILED\nthread 'concurrent_resumes_start_one_activation' (17843970) panicked at crates/basal-testkit/tests/journal_races.rs:391:5:\n  left: 2\n right: 1\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.14s",
     "control": "claim is not a compare-and-set from pending",
     "expected_red": "concurrent_resumes_start_one_activation",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/journal.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test completion_during_replay_is_released_after_the_prefix ... FAILED\nthread 'completion_during_replay_is_released_after_the_prefix' (17263897) panicked at crates/basal-testkit/tests/journal_races.rs:150:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 20.11s",
+    "captured_output": "test completion_during_replay_is_released_after_the_prefix ... FAILED\nthread 'completion_during_replay_is_released_after_the_prefix' (17846161) panicked at crates/basal-testkit/tests/journal_races.rs:150:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 20.12s",
     "control": "outcomes arriving during an activation are never released by it",
     "expected_red": "completion_during_replay_is_released_after_the_prefix",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/journal.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test caught_rejection_through_the_parent ... FAILED\nthread 'caught_rejection_through_the_parent' (17274131) panicked at crates/basal-testkit/tests/journal_races.rs:179:5:\n  left: Failed\n right: Succeeded\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.13s",
+    "captured_output": "test caught_rejection_through_the_parent ... FAILED\nthread 'caught_rejection_through_the_parent' (17856999) panicked at crates/basal-testkit/tests/journal_races.rs:179:5:\n  left: Failed\n right: Succeeded\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.15s",
     "control": "rejections journaled as fulfilments (caught rejection)",
     "expected_red": "caught_rejection_through_the_parent",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/journal.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test all_rejected_any_through_the_parent ... FAILED\nthread 'all_rejected_any_through_the_parent' (17275938) panicked at crates/basal-testkit/tests/journal_races.rs:180:5:\n  left: Null\n right: Array [String(\"first\"), String(\"second\")]\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.17s",
+    "captured_output": "test all_rejected_any_through_the_parent ... FAILED\nthread 'all_rejected_any_through_the_parent' (17863738) panicked at crates/basal-testkit/tests/journal_races.rs:180:5:\n  left: Null\n right: Array [String(\"first\"), String(\"second\")]\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.32s",
     "control": "rejections journaled as fulfilments (all-rejected any)",
     "expected_red": "all_rejected_any_through_the_parent",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/journal.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test early_all_rejection_through_the_parent ... FAILED\nthread 'early_all_rejection_through_the_parent' (17277331) panicked at crates/basal-testkit/tests/journal_races.rs:179:5:\n  left: Failed\n right: Succeeded\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.12s",
+    "captured_output": "test early_all_rejection_through_the_parent ... FAILED\nthread 'early_all_rejection_through_the_parent' (17888713) panicked at crates/basal-testkit/tests/journal_races.rs:179:5:\n  left: Failed\n right: Succeeded\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.23s",
     "control": "rejections journaled as fulfilments (early all rejection)",
     "expected_red": "early_all_rejection_through_the_parent",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/runtime.rs; during:  1 file changed, 4 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test calls_of_one_run_are_dispatched_concurrently ... FAILED\nthread 'calls_of_one_run_are_dispatched_concurrently' (17278007) panicked at crates/basal-testkit/tests/journal_races.rs:256:5:\n  left: 1\n right: 4\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 20.13s",
+    "captured_output": "test calls_of_one_run_are_dispatched_concurrently ... FAILED\nthread 'calls_of_one_run_are_dispatched_concurrently' (17892884) panicked at crates/basal-testkit/tests/journal_races.rs:256:5:\n  left: 1\n right: 4\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 20.19s",
     "control": "calls of one run dispatched serially on the activation's thread",
     "expected_red": "calls_of_one_run_are_dispatched_concurrently",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/driver.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test local_effect_behind_unresolved_call_applies_once ... FAILED\nthread 'local_effect_behind_unresolved_call_applies_once' (17282261) panicked at crates/basal-testkit/tests/journal_races.rs:280:5:\n  left: Some(\"7@2\")\n right: Some(\"7@1\")\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.14s",
+    "captured_output": "test local_effect_behind_unresolved_call_applies_once ... FAILED\nthread 'local_effect_behind_unresolved_call_applies_once' (17911729) panicked at crates/basal-testkit/tests/journal_races.rs:280:5:\n  left: Some(\"7@2\")\n right: Some(\"7@1\")\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.22s",
     "control": "recovery applies a committed local effect again",
     "expected_red": "local_effect_behind_unresolved_call_applies_once",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/driver.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test sync_call_journaled_without_value_is_answered_again ... FAILED\nthread 'sync_call_journaled_without_value_is_answered_again' (17283694) panicked at crates/basal-testkit/tests/journal_races.rs:313:5:\n  left: Failed\n right: Succeeded\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.16s",
+    "captured_output": "test sync_call_journaled_without_value_is_answered_again ... FAILED\nthread 'sync_call_journaled_without_value_is_answered_again' (17915866) panicked at crates/basal-testkit/tests/journal_races.rs:313:5:\n  left: Failed\n right: Succeeded\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.19s",
     "control": "a synchronous call journaled without its value is not answered again",
     "expected_red": "sync_call_journaled_without_value_is_answered_again",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/driver.rs; during:  1 file changed, 4 insertions(+), 2 deletions(-); after restore: empty git diff --stat",
-    "captured_output": "test clock_stays_monotonic_across_activations ... FAILED\nthread 'clock_stays_monotonic_across_activations' (17284447) panicked at crates/basal-testkit/tests/journal_races.rs:345:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.15s",
+    "captured_output": "test clock_stays_monotonic_across_activations ... FAILED\nthread 'clock_stays_monotonic_across_activations' (17920087) panicked at crates/basal-testkit/tests/journal_races.rs:345:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.25s",
     "control": "clock reads not kept monotonic within a run",
     "expected_red": "clock_stays_monotonic_across_activations",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/journal.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test owner_loss_before_call_commit_dispatches_nothing ... FAILED\nthread 'owner_loss_before_call_commit_dispatches_nothing' (17284930) panicked at crates/basal-testkit/tests/journal_ownership.rs:81:5:\n  left: 1\n right: 0\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.11s",
+    "captured_output": "test owner_loss_before_call_commit_dispatches_nothing ... FAILED\nthread 'owner_loss_before_call_commit_dispatches_nothing' (17923482) panicked at crates/basal-testkit/tests/journal_ownership.rs:81:5:\n  left: 1\n right: 0\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.22s",
     "control": "the activation's call insert is not fenced",
     "expected_red": "owner_loss_before_call_commit_dispatches_nothing",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/driver.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test owner_loss_after_call_commit_dispatches_once ... FAILED\nthread 'owner_loss_after_call_commit_dispatches_once' (17285459) panicked at crates/basal-testkit/tests/journal_ownership.rs:141:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.24s",
+    "captured_output": "test owner_loss_after_call_commit_dispatches_once ... FAILED\nthread 'owner_loss_after_call_commit_dispatches_once' (17925926) panicked at crates/basal-testkit/tests/journal_ownership.rs:141:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.30s",
     "control": "recovery resends a call this process is still dispatching",
     "expected_red": "owner_loss_after_call_commit_dispatches_once",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/journal.rs; during:  1 file changed, 3 insertions(+), 4 deletions(-); after restore: empty git diff --stat",
-    "captured_output": "test owner_loss_around_order_commit_delivers_nothing_more ... FAILED\nthread 'owner_loss_around_order_commit_delivers_nothing_more' (17287022) panicked at crates/basal-testkit/tests/journal_ownership.rs:170:5:\n  left: 1\n right: 0\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.16s",
+    "captured_output": "test owner_loss_around_order_commit_delivers_nothing_more ... FAILED\nthread 'owner_loss_around_order_commit_delivers_nothing_more' (17927339) panicked at crates/basal-testkit/tests/journal_ownership.rs:170:5:\n  left: 1\n right: 0\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.23s",
     "control": "delivery-order allocation is not fenced",
     "expected_red": "owner_loss_around_order_commit_delivers_nothing_more",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/driver.rs; during:  1 file changed, 3 insertions(+); after restore: empty git diff --stat",
-    "captured_output": "test storage_failure_before_commit_dispatches_nothing ... FAILED\nthread 'storage_failure_before_commit_dispatches_nothing' (17288386) panicked at crates/basal-testkit/tests/journal_ownership.rs:250:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.16s",
+    "captured_output": "test storage_failure_before_commit_dispatches_nothing ... FAILED\nthread 'storage_failure_before_commit_dispatches_nothing' (17929301) panicked at crates/basal-testkit/tests/journal_ownership.rs:250:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.17s",
     "control": "a call is dispatched before its row commits",
     "expected_red": "storage_failure_before_commit_dispatches_nothing",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/driver.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test unknown_unkeyed_mutation_needs_reconcile ... FAILED\nthread 'unknown_unkeyed_mutation_needs_reconcile' (17290438) panicked at crates/basal-testkit/tests/journal_unknown.rs:47:5:\n  left: Succeeded\n right: NeedsReconcile\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.21s",
+    "captured_output": "test unknown_unkeyed_mutation_needs_reconcile ... FAILED\nthread 'unknown_unkeyed_mutation_needs_reconcile' (17930675) panicked at crates/basal-testkit/tests/journal_unknown.rs:47:5:\n  left: Succeeded\n right: NeedsReconcile\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.24s",
     "control": "recovery resends a mutation that ignores idempotency keys",
     "expected_red": "unknown_unkeyed_mutation_needs_reconcile",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/runtime.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test unknown_keyed_mutation_is_reissued_with_the_same_key ... FAILED\nthread 'unknown_keyed_mutation_is_reissued_with_the_same_key' (17291596) panicked at crates/basal-testkit/tests/journal_unknown.rs:83:5:\n  left: 1\n right: 2\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.11s",
+    "captured_output": "test unknown_keyed_mutation_is_reissued_with_the_same_key ... FAILED\nthread 'unknown_keyed_mutation_is_reissued_with_the_same_key' (17932620) panicked at crates/basal-testkit/tests/journal_unknown.rs:87:5:\n  left: 1\n right: 2\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.45s",
     "control": "a resend mints a new idempotency key",
     "expected_red": "unknown_keyed_mutation_is_reissued_with_the_same_key",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/runtime.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test unavailable_is_retried_only_when_safe ... FAILED\nthread 'unavailable_is_retried_only_when_safe' (17292039) panicked at crates/basal-testkit/tests/journal_unknown.rs:122:9:\n  left: Succeeded\n right: NeedsReconcile\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.22s",
+    "captured_output": "test unavailable_is_retried_only_when_safe ... FAILED\nthread 'unavailable_is_retried_only_when_safe' (17934365) panicked at crates/basal-testkit/tests/journal_unknown.rs:126:9:\n  left: Succeeded\n right: NeedsReconcile\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.42s",
     "control": "Unavailable retried for every mutation",
     "expected_red": "unavailable_is_retried_only_when_safe",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/driver.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test reconcile_not_applied_reissues_with_the_same_key ... FAILED\nthread 'reconcile_not_applied_reissues_with_the_same_key' (17292469) panicked at crates/basal-testkit/tests/journal_unknown.rs:163:5:\n  left: NeedsReconcile\n right: Succeeded\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.11s",
+    "captured_output": "test reconcile_not_applied_reissues_with_the_same_key ... FAILED\nthread 'reconcile_not_applied_reissues_with_the_same_key' (17936336) panicked at crates/basal-testkit/tests/journal_unknown.rs:202:5:\n  left: NeedsReconcile\n right: Succeeded\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.14s",
     "control": "a call reconciled as not applied is not sent again",
     "expected_red": "reconcile_not_applied_reissues_with_the_same_key",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/journal.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test reconcile_cancel_ends_the_run_and_refuses_later_completions ... FAILED\nthread 'reconcile_cancel_ends_the_run_and_refuses_later_completions' (17293117) panicked at crates/basal-testkit/tests/journal_unknown.rs:214:5:\n  left: Accepted\n right: Refused\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.10s",
+    "captured_output": "test reconcile_cancel_ends_the_run_and_refuses_later_completions ... FAILED\nthread 'reconcile_cancel_ends_the_run_and_refuses_later_completions' (17938425) panicked at crates/basal-testkit/tests/journal_unknown.rs:253:5:\n  left: Accepted\n right: Refused\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.15s",
     "control": "completions for a cancelled run are accepted",
     "expected_red": "reconcile_cancel_ends_the_run_and_refuses_later_completions",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/journal.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test redelivered_completion_is_a_noop_and_contradictory_one_is_quarantined ... FAILED\nthread 'redelivered_completion_is_a_noop_and_contradictory_one_is_quarantined' (17294685) panicked at crates/basal-testkit/tests/journal_unknown.rs:257:5:\n  left: Duplicate\n right: Quarantined\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.11s",
+    "captured_output": "test redelivered_completion_is_a_noop_and_contradictory_one_is_quarantined ... FAILED\nthread 'redelivered_completion_is_a_noop_and_contradictory_one_is_quarantined' (17940571) panicked at crates/basal-testkit/tests/journal_unknown.rs:296:5:\n  left: Duplicate\n right: Quarantined\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.23s",
     "control": "a contradictory completion is taken for a redelivery",
     "expected_red": "redelivered_completion_is_a_noop_and_contradictory_one_is_quarantined",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/driver.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test divergence_fails_the_run_as_nondeterminism ... FAILED\nthread 'divergence_fails_the_run_as_nondeterminism' (17296057) panicked at crates/basal-testkit/tests/journal_identity.rs:48:5:\n  left: Some(\"script\")\n right: Some(\"nondeterminism\")\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 2.59s",
+    "captured_output": "test divergence_fails_the_run_as_nondeterminism ... FAILED\nthread 'divergence_fails_the_run_as_nondeterminism' (17953926) panicked at crates/basal-testkit/tests/journal_identity.rs:48:5:\n  left: Some(\"script\")\n right: Some(\"nondeterminism\")\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.24s",
     "control": "divergence reported as a script error",
     "expected_red": "divergence_fails_the_run_as_nondeterminism",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/driver.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test code_hash_mismatch_is_engine_mismatch_without_replay ... FAILED\nthread 'code_hash_mismatch_is_engine_mismatch_without_replay' (17297758) panicked at crates/basal-testkit/tests/journal_identity.rs:74:5:\n  left: Succeeded\n right: EngineMismatch\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.21s",
+    "captured_output": "test code_hash_mismatch_is_engine_mismatch_without_replay ... FAILED\nthread 'code_hash_mismatch_is_engine_mismatch_without_replay' (17959957) panicked at crates/basal-testkit/tests/journal_identity.rs:74:5:\n  left: Succeeded\n right: EngineMismatch\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.20s",
     "control": "code hash not checked before replay",
     "expected_red": "code_hash_mismatch_is_engine_mismatch_without_replay",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/driver.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test fingerprint_mismatch_is_engine_mismatch_without_replay ... FAILED\nthread 'fingerprint_mismatch_is_engine_mismatch_without_replay' (17299819) panicked at crates/basal-testkit/tests/journal_identity.rs:105:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.16s",
+    "captured_output": "test fingerprint_mismatch_is_engine_mismatch_without_replay ... FAILED\nthread 'fingerprint_mismatch_is_engine_mismatch_without_replay' (17961285) panicked at crates/basal-testkit/tests/journal_identity.rs:105:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.18s",
     "control": "runtime fingerprint not checked before replay",
     "expected_red": "fingerprint_mismatch_is_engine_mismatch_without_replay",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/admission.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test admission_deduplicates_and_tombstones_refuse_after_pruning ... FAILED\nthread 'admission_deduplicates_and_tombstones_refuse_after_pruning' (17301724) panicked at crates/basal-testkit/tests/journal_admin.rs:36:5:\n  left: Admitted { run_id: \"run-fa4270b4a748d954-2\" }\n right: Tombstoned { run_id: \"run-fa4270b4a748d954-1\" }\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered",
+    "captured_output": "test admission_deduplicates_and_tombstones_refuse_after_pruning ... FAILED\nthread 'admission_deduplicates_and_tombstones_refuse_after_pruning' (17965283) panicked at crates/basal-testkit/tests/journal_admin.rs:36:5:\n  left: Admitted { run_id: \"run-5b6dacf01136e856-2\" }\n right: Tombstoned { run_id: \"run-5b6dacf01136e856-1\" }\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered",
     "control": "admission does not consult tombstones",
     "expected_red": "admission_deduplicates_and_tombstones_refuse_after_pruning",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/admission.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test admission_deduplicates_and_tombstones_refuse_after_pruning ... FAILED\nthread 'admission_deduplicates_and_tombstones_refuse_after_pruning' (17305095) panicked at crates/basal-testkit/tests/journal_admin.rs:26:25:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.05s",
+    "captured_output": "test admission_deduplicates_and_tombstones_refuse_after_pruning ... FAILED\nthread 'admission_deduplicates_and_tombstones_refuse_after_pruning' (17967310) panicked at crates/basal-testkit/tests/journal_admin.rs:26:25:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.06s",
     "control": "admission does not deduplicate",
     "expected_red": "admission_deduplicates_and_tombstones_refuse_after_pruning",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/retention.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test pruning_spares_unfinished_runs_and_open_obligations ... FAILED\nthread 'pruning_spares_unfinished_runs_and_open_obligations' (17306647) panicked at crates/basal-testkit/tests/journal_admin.rs:96:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.14s",
+    "captured_output": "test pruning_spares_unfinished_runs_and_open_obligations ... FAILED\nthread 'pruning_spares_unfinished_runs_and_open_obligations' (17968273) panicked at crates/basal-testkit/tests/journal_admin.rs:96:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.19s",
     "control": "pruning ignores open obligations",
     "expected_red": "pruning_spares_unfinished_runs_and_open_obligations",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/retention.rs; during:  1 file changed, 4 insertions(+), 2 deletions(-); after restore: empty git diff --stat",
-    "captured_output": "test pruning_spares_unfinished_runs_and_open_obligations ... FAILED\nthread 'pruning_spares_unfinished_runs_and_open_obligations' (17308093) panicked at crates/basal-testkit/tests/journal_admin.rs:96:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.12s",
+    "captured_output": "test pruning_spares_unfinished_runs_and_open_obligations ... FAILED\nthread 'pruning_spares_unfinished_runs_and_open_obligations' (17969491) panicked at crates/basal-testkit/tests/journal_admin.rs:96:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.16s",
     "control": "pruning touches runs that have not ended",
     "expected_red": "pruning_spares_unfinished_runs_and_open_obligations",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/store.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test store_runs_synchronous_full_and_the_chosen_fullfsync ... FAILED\nthread 'store_runs_synchronous_full_and_the_chosen_fullfsync' (17308644) panicked at crates/basal-testkit/tests/journal_admin.rs:146:9:\n  left: 1\n right: 2\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.02s",
+    "captured_output": "test store_runs_synchronous_full_and_the_chosen_fullfsync ... FAILED\nthread 'store_runs_synchronous_full_and_the_chosen_fullfsync' (17970388) panicked at crates/basal-testkit/tests/journal_admin.rs:146:9:\n  left: 1\n right: 2\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.04s",
     "control": "store runs synchronous = NORMAL",
     "expected_red": "store_runs_synchronous_full_and_the_chosen_fullfsync",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/store.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test store_runs_synchronous_full_and_the_chosen_fullfsync ... FAILED\nthread 'store_runs_synchronous_full_and_the_chosen_fullfsync' (17309055) panicked at crates/basal-testkit/tests/journal_admin.rs:147:9:\n  left: false\n right: true\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.03s",
+    "captured_output": "test store_runs_synchronous_full_and_the_chosen_fullfsync ... FAILED\nthread 'store_runs_synchronous_full_and_the_chosen_fullfsync' (17971424) panicked at crates/basal-testkit/tests/journal_admin.rs:147:9:\n  left: false\n right: true\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.04s",
     "control": "fullfsync choice not applied",
     "expected_red": "store_runs_synchronous_full_and_the_chosen_fullfsync",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/driver.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test every_cut_recovers_to_the_uncut_state ... FAILED\nthread 'every_cut_recovers_to_the_uncut_state' (17309768) panicked at crates/basal-testkit/tests/journal_cut.rs:146:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 1.73s",
+    "captured_output": "test every_cut_recovers_to_the_uncut_state ... FAILED\nthread 'every_cut_recovers_to_the_uncut_state' (17972321) panicked at crates/basal-testkit/tests/journal_cut.rs:129:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 2.10s",
     "control": "recovery does not resend queries (cut harness)",
     "expected_red": "every_cut_recovers_to_the_uncut_state",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/driver.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test cuts_in_recovery_generated_suffixes_recover_too ... FAILED\nthread 'cuts_in_recovery_generated_suffixes_recover_too' (17311542) panicked at crates/basal-testkit/tests/journal_cut.rs:146:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 9.98s",
+    "captured_output": "test cuts_in_recovery_generated_suffixes_recover_too ... FAILED\nthread 'cuts_in_recovery_generated_suffixes_recover_too' (17974722) panicked at crates/basal-testkit/tests/journal_cut.rs:129:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 13.16s",
     "control": "recovery does not resend queries (cuts in recovery suffixes)",
     "expected_red": "cuts_in_recovery_generated_suffixes_recover_too",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/driver.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test killing_the_parent_at_every_boundary_recovers_to_the_uncut_state ... FAILED\nthread 'killing_the_parent_at_every_boundary_recovers_to_the_uncut_state' (17325320) panicked at crates/basal-testkit/tests/journal_kill.rs:93:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 5.02s",
+    "captured_output": "test killing_the_parent_at_every_boundary_recovers_to_the_uncut_state ... FAILED\nthread 'killing_the_parent_at_every_boundary_recovers_to_the_uncut_state' (17985536) panicked at crates/basal-testkit/tests/journal_kill.rs:93:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 4.86s",
     "control": "recovery does not resend keyed mutations (parent kill -9)",
     "expected_red": "killing_the_parent_at_every_boundary_recovers_to_the_uncut_state",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/driver.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test killing_the_worker_at_every_boundary_recovers_to_the_uncut_state ... FAILED\nthread 'killing_the_worker_at_every_boundary_recovers_to_the_uncut_state' (17327849) panicked at crates/basal-testkit/tests/journal_kill.rs:184:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 1.32s",
+    "captured_output": "test killing_the_worker_at_every_boundary_recovers_to_the_uncut_state ... FAILED\nthread 'killing_the_worker_at_every_boundary_recovers_to_the_uncut_state' (17988617) panicked at crates/basal-testkit/tests/journal_kill.rs:171:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 1.41s",
     "control": "a broken worker fails the run instead of replaying it on another (worker kill -9)",
     "expected_red": "killing_the_worker_at_every_boundary_recovers_to_the_uncut_state",
     "outcome": "reddened"
   },
   {
+    "applied_evidence": "crates/basal-core/src/runtime.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test a_keyed_call_ambiguous_through_its_retries_is_unknown_as_retries_exhausted ... FAILED\nthread 'a_keyed_call_ambiguous_through_its_retries_is_unknown_as_retries_exhausted' (17990220) panicked at crates/basal-testkit/tests/journal_unknown.rs:168:5:\n  left: Some(ConnectionLost)\n right: Some(RetriesExhausted)\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished ",
+    "control": "unknown reasons: a keyed call out of retries is recorded with its last send's reason",
+    "expected_red": "a_keyed_call_ambiguous_through_its_retries_is_unknown_as_retries_exhausted",
+    "outcome": "reddened"
+  },
+  {
     "applied_evidence": "crates/basal-core/src/driver.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test a_resume_after_suspension_is_gated ... FAILED\nthread 'a_resume_after_suspension_is_gated' (17329542) panicked at crates/basal-testkit/tests/install_gate.rs:279:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.15s",
-    "control": "install gate: an activation does not ask core first",
-    "expected_red": "a_resume_after_suspension_is_gated",
+    "captured_output": "test unknown_unkeyed_mutation_needs_reconcile ... FAILED\nthread 'unknown_unkeyed_mutation_needs_reconcile' (17991235) panicked at crates/basal-testkit/tests/journal_unknown.rs:55:5:\n  left: Some(ConnectionLost)\n right: Some(BasalRestarted)\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.14s",
+    "control": "unknown reasons: a call found sent after a restart is recorded as a lost connection",
+    "expected_red": "unknown_unkeyed_mutation_needs_reconcile",
     "outcome": "reddened"
   },
   {
-    "applied_evidence": "crates/basal-core/src/gate.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test active_with_another_code_hash_is_revoked ... FAILED\nthread 'active_with_another_code_hash_is_revoked' (17330075) panicked at crates/basal-testkit/tests/install_gate.rs:137:9:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.11s",
-    "control": "install gate: core's code hash is not compared with the run's",
-    "expected_red": "active_with_another_code_hash_is_revoked",
+    "applied_evidence": "crates/basal-core/src/schema.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test the_migration_refuses_a_store_that_already_holds_an_unknown_call ... FAILED\nthread 'the_migration_refuses_a_store_that_already_holds_an_unknown_call' (17992043) panicked at crates/basal-testkit/tests/unknown_reason.rs:47:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s",
+    "control": "unknown reasons: the migration accepts a store holding unknown calls without a reason",
+    "expected_red": "the_migration_refuses_a_store_that_already_holds_an_unknown_call",
     "outcome": "reddened"
   },
   {
-    "applied_evidence": "crates/basal-core/src/gate.rs; during:  1 file changed, 4 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test revoked_cancels_the_run_and_disables_the_flow ... FAILED\nthread 'revoked_cancels_the_run_and_disables_the_flow' (17331984) panicked at crates/basal-testkit/tests/install_gate.rs:163:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.12s",
-    "control": "install gate: a revoked version activates",
-    "expected_red": "revoked_cancels_the_run_and_disables_the_flow",
-    "outcome": "reddened"
-  },
-  {
-    "applied_evidence": "crates/basal-core/src/gate.rs; during:  1 file changed, 4 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test unknown_cancels_the_run_and_disables_the_flow ... FAILED\nthread 'unknown_cancels_the_run_and_disables_the_flow' (17334778) panicked at crates/basal-testkit/tests/install_gate.rs:188:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.12s",
-    "control": "install gate: a version core does not know activates",
-    "expected_red": "unknown_cancels_the_run_and_disables_the_flow",
-    "outcome": "reddened"
-  },
-  {
-    "applied_evidence": "crates/basal-core/src/gate.rs; during:  1 file changed, 5 insertions(+); after restore: empty git diff --stat",
-    "captured_output": "test unreachable_core_defers_the_run_with_a_doubling_backoff ... FAILED\nthread 'unreachable_core_defers_the_run_with_a_doubling_backoff' (17337763) panicked at crates/basal-testkit/tests/install_gate.rs:216:9:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.13s",
-    "control": "install gate: no answer from core fails open",
-    "expected_red": "unreachable_core_defers_the_run_with_a_doubling_backoff",
-    "outcome": "reddened"
-  },
-  {
-    "applied_evidence": "crates/basal-core/src/runtime.rs, crates/basal-core/src/driver.rs; during:  2 files changed, 6 insertions(+), 2 deletions(-); after restore: empty git diff --stat",
-    "captured_output": "test unreachable_core_defers_the_run_with_a_doubling_backoff ... FAILED\nthread 'unreachable_core_defers_the_run_with_a_doubling_backoff' (17343784) panicked at crates/basal-testkit/tests/install_gate.rs:227:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.20s",
-    "control": "install gate: a run with no answer is offered and asked about again at once",
-    "expected_red": "unreachable_core_defers_the_run_with_a_doubling_backoff",
-    "outcome": "reddened"
-  },
-  {
-    "applied_evidence": "crates/basal-core/src/gate.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test unreachable_core_defers_the_run_with_a_doubling_backoff ... FAILED\nthread 'unreachable_core_defers_the_run_with_a_doubling_backoff' (17349264) panicked at crates/basal-testkit/tests/install_gate.rs:238:5:\n  left: 1s\n right: 2s\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.24s",
-    "control": "install gate: the backoff does not grow while core stays unreachable",
-    "expected_red": "unreachable_core_defers_the_run_with_a_doubling_backoff",
-    "outcome": "reddened"
-  },
-  {
-    "applied_evidence": "crates/basal-core/src/runs.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test unreachable_core_defers_the_run_with_a_doubling_backoff ... FAILED\nthread 'unreachable_core_defers_the_run_with_a_doubling_backoff' (17351708) panicked at crates/basal-testkit/tests/install_gate.rs:221:5:\n  left: Some(1777594200000)\n right: None\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.19s",
-    "control": "install gate: a deferred run keeps the deadline its claim started",
-    "expected_red": "unreachable_core_defers_the_run_with_a_doubling_backoff",
-    "outcome": "reddened"
-  },
-  {
-    "applied_evidence": "crates/basal-core/src/runs.rs; during:  1 file changed, 2 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test unreachable_core_defers_the_run_with_a_doubling_backoff ... FAILED\nthread 'unreachable_core_defers_the_run_with_a_doubling_backoff' (17353617) panicked at crates/basal-testkit/tests/install_gate.rs:223:5:\n  left: 1\n right: 0\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.22s",
-    "control": "install gate: a deferred claim is counted as an activation",
-    "expected_red": "unreachable_core_defers_the_run_with_a_doubling_backoff",
-    "outcome": "reddened"
-  },
-  {
-    "applied_evidence": "crates/basal-core/src/gate.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test other_runs_of_a_revoked_version_are_cancelled_without_asking ... FAILED\nthread 'other_runs_of_a_revoked_version_are_cancelled_without_asking' (17355913) panicked at crates/basal-testkit/tests/install_gate.rs:323:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.19s",
-    "control": "install gate: a version basal holds as revoked is asked about again",
-    "expected_red": "other_runs_of_a_revoked_version_are_cancelled_without_asking",
+    "applied_evidence": "crates/basal-core/src/schema.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test a_call_marked_unknown_needs_a_reason_from_the_closed_set ... FAILED\nthread 'a_call_marked_unknown_needs_a_reason_from_the_closed_set' (17992717) panicked at crates/basal-testkit/tests/unknown_reason.rs:67:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s",
+    "control": "unknown reasons: the schema lets a call be unknown without a reason",
+    "expected_red": "a_call_marked_unknown_needs_a_reason_from_the_closed_set",
     "outcome": "reddened"
   }
 ]

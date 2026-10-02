@@ -70,6 +70,7 @@ fn the_built_binary_prints_a_manifest_subc_protocol_accepts() {
         "flow.install",
         "flow.dry_run",
         "flow.health",
+        "flow.list",
         "flow.reconcile",
         "flow.drain",
         "flow.disable",
@@ -81,6 +82,11 @@ fn the_built_binary_prints_a_manifest_subc_protocol_accepts() {
         );
     }
     assert!(operations.iter().all(|o| o.description.is_some()));
+    assert!(
+        operations
+            .iter()
+            .any(|o| o.name == "flow.list" && o.kind == ManagementOperationKind::Query)
+    );
 }
 
 #[test]

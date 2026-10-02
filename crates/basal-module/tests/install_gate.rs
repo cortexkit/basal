@@ -98,6 +98,20 @@ fn assert_cancelled_and_unapproved(f: &common::Fixture, run_id: &str) {
     assert_eq!(entry["state"], "unapproved", "{entry:#}");
     assert!(entry["approved_version"].is_null(), "{entry:#}");
     assert_eq!(entry["disabled"]["by"], "core", "{entry:#}");
+    let listed = list_entry(f);
+    assert_eq!(listed["state"], "unapproved", "{listed:#}");
+    assert_eq!(listed["disabled"]["by"], "core", "{listed:#}");
+}
+
+fn list_entry(f: &common::Fixture) -> Value {
+    let listed = f
+        .module
+        .handle(&Caller::Operator, "flow.list", json!({}))
+        .expect("list");
+    listed["flows"]
+        .as_array()
+        .and_then(|a| a.iter().find(|e| e["flow_id"] == FLOW).cloned())
+        .expect("the flow is listed")
 }
 
 #[test]
@@ -159,6 +173,54 @@ fn revoked_in_core_the_next_scheduled_run_never_activates() {
     f.clock.advance(common::HOUR);
     f.module.engine.run_until_idle(20).expect("idle");
     assert_eq!(status_calls(&fake).len(), 1);
+}
+
+/// A core revoke raises no re-enable card (only the runtime's auto-disable
+/// does); the flow comes back when the operator approves a newer version
+/// through core's card.
+#[test]
+fn a_core_revoke_raises_no_reenable_card_and_a_new_approval_brings_the_flow_back() {
+    let fake = Fake::new();
+    let (f, consent) = gated(&fake, "gate-wire-back");
+    install_approved(&f, &fake, &consent, true);
+    fake.revoke_install(FLOW, 1);
+    let run_id = common::admit(&f, FLOW, "one");
+    for _ in 0..3 {
+        f.module.engine.run_until_idle(20).expect("idle");
+    }
+    assert_cancelled_and_unapproved(&f, &run_id);
+    assert!(
+        f.module.rt.decision_cards().expect("cards").is_empty(),
+        "basal recorded no decision card"
+    );
+    assert!(
+        fake.all_decision_cards().is_empty(),
+        "core was sent no decision card"
+    );
+
+    let mut v2 = manifest();
+    v2["version"] = json!(2);
+    common::install(&f, &Caller::Operator, "return 2;", &v2);
+    let card = fake.calls("elicitation.request")[1]["params"]["flow_install"].clone();
+    assert_eq!(card["version"], 2);
+    fake.enqueue(
+        "elicitation.answers",
+        vec![Ok(
+            json!({"records":[{"state":"answered","answered_choice_id":"approve","flow_install":card}],"cursor":2}),
+        )],
+    );
+    consent.poll_once().expect("decision applied");
+    fake.approve_install(FLOW, 2);
+    let listed = list_entry(&f);
+    assert_eq!(listed["state"], "enabled", "{listed:#}");
+    assert_eq!(listed["approved_version"], 2);
+    assert!(listed["disabled"].is_null(), "{listed:#}");
+    let next = common::admit(&f, FLOW, "two");
+    f.module.engine.run_until_idle(20).expect("idle");
+    assert_eq!(
+        f.module.rt.run(&next).expect("run").state,
+        RunState::Succeeded
+    );
 }
 
 #[test]

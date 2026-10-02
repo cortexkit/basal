@@ -13,6 +13,7 @@
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
+use basal_host::UnknownReason;
 use basal_proto::{
     ActivationRequest, ActivationResult, ArgsDigest, CallKind, CallSignature, Failure, HostCall,
     JsonText, Nondeterminism, Outcome, ParentMessage, Primitive, Profile, Settlement,
@@ -524,7 +525,10 @@ impl Activation<'_> {
         if !unknown.is_empty() {
             self.rt.store().write(|tx| {
                 for p in &unknown {
-                    journal::record_unknown(tx, &run_id, *p)?;
+                    // No thread of this process is sending the call, so
+                    // the process that sent it stopped before recording a
+                    // reply.
+                    journal::record_unknown(tx, &run_id, *p, UnknownReason::BasalRestarted)?;
                 }
                 runs::exit(
                     tx,

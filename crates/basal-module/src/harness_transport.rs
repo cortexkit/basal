@@ -22,25 +22,21 @@ impl HarnessTransport {
         match self.0.dispatch(&request) {
             Ok(Dispatched::Completed(outcome)) if outcome.settlement == Settlement::Fulfilled => {
                 serde_json::from_str(outcome.value.as_str())
-                    .map_err(|e| WireError::Unknown(e.to_string()))
+                    .map_err(|e| WireError::Unreadable(e.to_string()))
             }
             Ok(Dispatched::Completed(outcome)) => Err(WireError::Refused {
                 code: "mock_refused".into(),
                 message: outcome.value.as_str().to_owned(),
             }),
-            Ok(Dispatched::Accepted { .. }) => Err(WireError::Unknown(
+            Ok(Dispatched::Accepted { .. }) => Err(WireError::Unreadable(
                 "harness provider accepted a long-running call".into(),
             )),
-            Err(basal_host::TransportError::Unavailable {
-                proven_unsent,
-                detail,
-            }) => {
-                if proven_unsent {
-                    Err(WireError::NeverSent(detail))
-                } else {
-                    Err(WireError::Unknown(detail))
-                }
-            }
+            // The mock host's ambiguous failures stand for a reply lost with
+            // its connection.
+            Err(basal_host::TransportError::Unavailable { sent, detail }) => match sent {
+                basal_host::Sent::Never => Err(WireError::NeverSent(detail)),
+                basal_host::Sent::Maybe(_) => Err(WireError::Unknown(detail)),
+            },
         }
     }
 }

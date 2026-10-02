@@ -21,7 +21,9 @@ fn error(e: WireError) -> BrocaError {
             proven_unsent: true,
             detail,
         },
-        WireError::Unknown(detail) => BrocaError::Unavailable {
+        WireError::Unknown(detail)
+        | WireError::TimedOut(detail)
+        | WireError::Unreadable(detail) => BrocaError::Unavailable {
             proven_unsent: false,
             detail,
         },

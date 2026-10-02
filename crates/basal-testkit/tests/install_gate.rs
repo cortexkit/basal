@@ -85,6 +85,13 @@ fn assert_refused(rt: &Runtime, world: &World, run_id: &str, end: &ActivationEnd
             && n.body.contains(&reason)),
         "{told:#?}"
     );
+    // Core's disable is not the runtime's auto-disable: it raises no
+    // re-enable card. A newer approved version is how the flow comes back.
+    assert!(
+        rt.decision_cards().expect("cards").is_empty(),
+        "{:#?}",
+        rt.decision_cards()
+    );
     // No new trigger is admitted under the revoked version.
     let again = rt
         .admit_trigger(&r.flow_id, "after", JsonText::null())

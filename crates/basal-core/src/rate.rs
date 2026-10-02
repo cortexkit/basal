@@ -177,5 +177,23 @@ pub fn check(
             install::InstallError::Store(e) => e,
             other => CoreError::Invalid(other.to_string()),
         })?;
+    if disabled {
+        // The operator decides whether the flow runs again, on a re-enable
+        // card. The card's row, holding the limit that tripped, the window
+        // and the saturated-window count as they are now, is written in
+        // this transaction, so the disable and the intent to ask about it
+        // commit together or not at all.
+        let rule = basal_host::DecisionContext::Reenable {
+            disabled_at_ms: now_ms,
+            disabled_reason: match kind {
+                Kind::Run => basal_host::DisabledReason::RunLimitSaturated,
+                Kind::Dispatch => basal_host::DisabledReason::DispatchLimitSaturated,
+            },
+            limit: max,
+            window_ms: window_ms.unsigned_abs(),
+            saturated_windows: limits.saturated_windows_to_disable.max(1),
+        };
+        crate::decisions::record_auto_disable(tx, flow_id, &rule, now_ms)?;
+    }
     Ok(Take::Refused { disabled })
 }

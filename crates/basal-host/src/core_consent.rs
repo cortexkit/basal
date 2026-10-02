@@ -1,7 +1,10 @@
 //! Core retains answers until basal has durably applied every decision in a page.
 use crate::subc_catalog::CORE;
 use crate::transport::{Transport, WireError};
-use crate::{CardDecision, Consent, ConsentError, DecisionEvent, DecisionSink, InstallCard};
+use crate::{
+    CardDecision, Consent, ConsentError, DecisionAnswer, DecisionCard, DecisionContext,
+    DecisionEvent, DecisionKind, DecisionSink, InstallCard,
+};
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 
@@ -54,6 +57,234 @@ pub fn request(card: &InstallCard) -> Result<Value, ConsentError> {
         result["flow_install"]["placement"] = json!(placement);
     }
     Ok(result)
+}
+
+/// The `effect` value basal sends on every action option of a
+/// `flow_decision` card, as core's contract names it. The contract may
+/// rename it to `grant`, so the name is held in this one constant.
+pub const DECISION_ACTION_EFFECT: &str = "choose";
+/// The `effect` value of a card's declining option, the one that does
+/// nothing and is the default.
+pub const DECISION_DECLINE_EFFECT: &str = "decline";
+/// How long core keeps a decision card open before it expires to its
+/// default: core's maximum, a day.
+pub const DECISION_EXPIRES_IN_MS: u64 = 86_400_000;
+
+/// The `elicitation.request` for an operator decision card, built only
+/// here. Given the inputs of core's test vectors
+/// (`test-vectors/flow-decision-card-v2/` at prefrontal tag
+/// `flow-decision-card-v2`) it produces their bytes exactly; basal's own
+/// cards differ only in values and in two optional fields core accepts,
+/// `dedup_key` and `args_digest`.
+///
+/// The card goes to the operator alone, so the request carries no
+/// `session_ref` or `parent_session_ref` key at all (core refuses either,
+/// even as null) and no author or subject. `scope` names the flow, which
+/// core requires when there is no `args_digest`. The typed `flow_decision`
+/// body (see [`flow_decision_body`]) states what the card is about; core
+/// writes the card's facts from it and never authorizes anything with it,
+/// so basal sends no facts of its own. A card that breaks core's rules is
+/// refused here rather than sent: 2 to 4 options with distinct, non-empty
+/// ids and labels, exactly one declining option, a positive expiry of at
+/// most a day, and a valid body (see [`body_problem`]).
+pub fn decision_request(card: &DecisionCard) -> Result<Value, ConsentError> {
+    let refused = |why: &str| {
+        Err(ConsentError::Refused(format!(
+            "decision card for flow {}: {why}",
+            card.flow_id
+        )))
+    };
+    if !(2..=4).contains(&card.options.len()) {
+        return refused("a card has 2 to 4 options");
+    }
+    let mut ids: Vec<&str> = card.options.iter().map(|o| o.id.as_str()).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    if ids.len() != card.options.len()
+        || card
+            .options
+            .iter()
+            .any(|o| o.id.trim().is_empty() || o.label.trim().is_empty())
+    {
+        return refused("option ids are distinct and not empty, and labels not empty");
+    }
+    let declines: Vec<&str> = card
+        .options
+        .iter()
+        .filter(|o| o.decline)
+        .map(|o| o.id.as_str())
+        .collect();
+    let [default] = declines.as_slice() else {
+        return refused("exactly one option declines");
+    };
+    if let Some(problem) = body_problem(card) {
+        return refused(problem);
+    }
+    if card.expires_in_ms == 0 || card.expires_in_ms > DECISION_EXPIRES_IN_MS {
+        return refused("a card expires within a day");
+    }
+    let options: Vec<Value> = card
+        .options
+        .iter()
+        .map(|o| {
+            let effect = if o.decline {
+                DECISION_DECLINE_EFFECT
+            } else {
+                DECISION_ACTION_EFFECT
+            };
+            json!({"id":o.id,"label":o.label,"effect":effect})
+        })
+        .collect();
+    let mut request = json!({"kind":"flow_decision","title":card.title,"prompt":card.prompt,
+        "options":options,"default":default,"urgency":"normal","on_expiry":"deny",
+        "material_damage":false,"late_execution":"notify_only",
+        "scope":{"flow_id":card.flow_id},"target":{"kind":"flow","label":card.flow_id},
+        "expires_in_ms":card.expires_in_ms,"flow_decision":flow_decision_body(card)});
+    if let Some(key) = &card.dedup_key {
+        request["dedup_key"] = json!(key);
+    }
+    if let Some(digest) = &card.args_digest {
+        request["args_digest"] = json!(digest);
+    }
+    Ok(request)
+}
+
+/// What core would refuse in a card's body, if anything: a blank flow id or
+/// one over 256 bytes, a version of 0; on a reconcile card a blank or
+/// overlong run id or call key, no attempts, or an op that is not two or
+/// more dot-separated segments of lowercase letters, digits, `_` and `-`,
+/// at most 128 bytes; on a re-enable card a zero limit, window or
+/// saturated-window count.
+pub fn body_problem(card: &DecisionCard) -> Option<&'static str> {
+    let id_ok = |id: &str| !id.trim().is_empty() && id.len() <= 256;
+    if !id_ok(&card.flow_id) || card.version == 0 {
+        return Some("a card names a flow and a version above 0");
+    }
+    match &card.context {
+        DecisionContext::Reconcile {
+            run_id,
+            call_key,
+            op,
+            attempts,
+            ..
+        } => {
+            let segment_ok = |s: &str| {
+                !s.is_empty()
+                    && s.bytes().all(|b| {
+                        b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-'
+                    })
+            };
+            let op_ok =
+                op.len() <= 128 && op.split('.').count() >= 2 && op.split('.').all(segment_ok);
+            if !id_ok(run_id) || !id_ok(call_key) {
+                Some("a reconcile card names its run and call")
+            } else if !op_ok {
+                Some("a reconcile card's op is `module.op` in lowercase segments")
+            } else if *attempts == 0 {
+                Some("a reconcile card's call was sent at least once")
+            } else {
+                None
+            }
+        }
+        DecisionContext::Reenable {
+            limit,
+            window_ms,
+            saturated_windows,
+            ..
+        } => (*limit == 0 || *window_ms == 0 || *saturated_windows == 0)
+            .then_some("a re-enable card's limit, window and saturated windows are above 0"),
+    }
+}
+
+/// The typed `flow_decision` body of a card, tagged by `decision`: for a
+/// reconcile card `run_id`, `run_admitted_at_ms`, `step` (only when known),
+/// `call_key`, `op` (`module.op`), `attempts` and `unknown_reason`; for a
+/// re-enable card `disabled_at_ms`, `disabled_reason`, `limit`, `window_ms`
+/// and `saturated_windows`. Core refuses any other key and any reason
+/// outside its closed sets.
+pub fn flow_decision_body(card: &DecisionCard) -> Value {
+    let mut body = json!({"flow_id":card.flow_id,"version":card.version,
+        "decision":card.decision().as_str()});
+    match &card.context {
+        DecisionContext::Reconcile {
+            run_id,
+            run_admitted_at_ms,
+            step,
+            call_key,
+            op,
+            attempts,
+            unknown_reason,
+        } => {
+            body["run_id"] = json!(run_id);
+            body["run_admitted_at_ms"] = json!(run_admitted_at_ms);
+            if let Some(step) = step {
+                body["step"] = json!(step);
+            }
+            body["call_key"] = json!(call_key);
+            body["op"] = json!(op);
+            body["attempts"] = json!(attempts);
+            body["unknown_reason"] = json!(unknown_reason.as_str());
+        }
+        DecisionContext::Reenable {
+            disabled_at_ms,
+            disabled_reason,
+            limit,
+            window_ms,
+            saturated_windows,
+        } => {
+            body["disabled_at_ms"] = json!(disabled_at_ms);
+            body["disabled_reason"] = json!(disabled_reason.as_str());
+            body["limit"] = json!(limit);
+            body["window_ms"] = json!(window_ms);
+            body["saturated_windows"] = json!(saturated_windows);
+        }
+    }
+    body
+}
+
+/// Reads an answer record of a `flow_decision` card. Core answers an
+/// expired card with state `expired` and the card's default (decline) id as
+/// its choice; basal reads every expiry as no choice at all, whatever id it
+/// names, so an expiry can never take an action.
+pub fn decision_answer(record: &Value) -> Result<DecisionAnswer, ConsentError> {
+    let bad = |why: &str| ConsentError::Unavailable(format!("decision answer: {why}"));
+    let elicitation_id = record["elicitation_id"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| bad("no elicitation id"))?;
+    let choice = match (
+        record["state"].as_str(),
+        record["answered_choice_id"].as_str(),
+    ) {
+        (Some("answered"), Some(choice)) if !choice.is_empty() => Some(choice.to_owned()),
+        (Some("expired"), _) => None,
+        _ => return Err(bad("unrecognised state")),
+    };
+    let body = &record["flow_decision"];
+    let flow_id = body["flow_id"].as_str().ok_or_else(|| bad("no flow id"))?;
+    let version = body["version"]
+        .as_u64()
+        .and_then(|v| u32::try_from(v).ok())
+        .ok_or_else(|| bad("version is invalid"))?;
+    let decision = body["decision"]
+        .as_str()
+        .and_then(DecisionKind::parse)
+        .ok_or_else(|| bad("decision is not reconcile or reenable"))?;
+    let text = |name: &str| body[name].as_str().map(str::to_owned);
+    let (run_id, call_key) = (text("run_id"), text("call_key"));
+    if decision == DecisionKind::Reconcile && (run_id.is_none() || call_key.is_none()) {
+        return Err(bad("a reconcile answer names no run or call"));
+    }
+    Ok(DecisionAnswer {
+        elicitation_id: elicitation_id.to_owned(),
+        choice,
+        dedup_key: record["dedup_key"].as_str().map(str::to_owned),
+        flow_id: flow_id.to_owned(),
+        version,
+        decision,
+        run_id,
+        call_key,
+    })
 }
 
 /// The three author forms core accepts on a `flow_install` request.
@@ -143,20 +374,33 @@ fn poll(state: &State) -> Result<(), ConsentError> {
         // Old expired answers omit the install payload. Fetch the owned full
         // record before deciding so the decision keeps its flow identity.
         let full;
-        let record = if record.get("flow_install").is_none() {
-            let id = field(record, "elicitation_id")?;
-            full = state
-                .transport
-                .management(
-                    CORE,
-                    "elicitation.await",
-                    json!({"elicitation_id":id,"timeout_ms":0}),
-                )
-                .map_err(error)?;
-            &full
-        } else {
-            record
-        };
+        let record =
+            if record.get("flow_install").is_none() && record.get("flow_decision").is_none() {
+                let id = field(record, "elicitation_id")?;
+                full = state
+                    .transport
+                    .management(
+                        CORE,
+                        "elicitation.await",
+                        json!({"elicitation_id":id,"timeout_ms":0}),
+                    )
+                    .map_err(error)?;
+                &full
+            } else {
+                record
+            };
+        if record.get("flow_decision").is_some() {
+            // A decision card's answer. The page stays unacknowledged until
+            // the sink has applied it, like an install decision.
+            let answer = decision_answer(record)?;
+            if let Err(e) = sink.answer(&answer) {
+                return Err(ConsentError::Unavailable(format!(
+                    "applying the answer to {}: {e}",
+                    answer.elicitation_id
+                )));
+            }
+            continue;
+        }
         let decision = match (
             record["state"].as_str(),
             record["answered_choice_id"].as_str(),
@@ -214,6 +458,18 @@ impl Consent for CoreConsent {
             return Err(ConsentError::Unavailable("missing elicitation id".into()));
         }
         Ok(())
+    }
+    fn raise_decision(&self, card: &DecisionCard) -> Result<String, ConsentError> {
+        let reply = self
+            .state
+            .transport
+            .management(CORE, "elicitation.request", decision_request(card)?)
+            .map_err(error)?;
+        reply["elicitation_id"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| ConsentError::Unavailable("missing elicitation id".into()))
     }
     fn attach(&self, sink: Arc<dyn DecisionSink>) {
         *self.state.sink.lock().unwrap_or_else(|p| p.into_inner()) = Some(sink);

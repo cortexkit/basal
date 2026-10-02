@@ -242,6 +242,14 @@ CREATE TABLE broca_calls (
     },
     Migration {
         version: 6,
+        statements: DECISIONS,
+    },
+    Migration {
+        version: 7,
+        statements: UNKNOWN_REASON,
+    },
+    Migration {
+        version: 8,
         statements: r#"
 -- A version core no longer stands behind (the operator revoked it in core,
 -- core holds no install of it, or core approved other code under it), with
@@ -252,6 +260,81 @@ ALTER TABLE installs ADD COLUMN revoked_reason TEXT;
 "#,
     },
 ];
+
+/// Why each unknown call's outcome is unknown, from a closed set, recorded
+/// when the outcome becomes unknown and required from then on.
+///
+/// A reason cannot be derived afterwards, so this migration refuses a store
+/// that already holds an unknown call. No such store was ever deployed:
+/// basal had not shipped, and its test rig builds fresh stores. A dev or rig
+/// store that hits the refusal is replaced with a fresh one; there is no
+/// backfill and no path for a call without a reason.
+const UNKNOWN_REASON: &str = r#"
+-- The refusal: the guard's CHECK fails, naming the problem, if any call is
+-- already unknown, and the whole migration rolls back.
+CREATE TABLE migration_7_guard (
+    unknown_calls INTEGER NOT NULL
+        CONSTRAINT this_store_holds_unknown_calls_recorded_without_a_reason_replace_it_with_a_fresh_store
+        CHECK (unknown_calls = 0)
+);
+INSERT INTO migration_7_guard (unknown_calls)
+    SELECT COUNT(*) FROM journal WHERE dispatch = 'unknown';
+DROP TABLE migration_7_guard;
+
+ALTER TABLE journal ADD COLUMN unknown_reason TEXT
+    CHECK (unknown_reason IN ('basal_restarted', 'connection_lost', 'reply_timeout',
+        'reply_unreadable', 'retries_exhausted', 'provider_lost_run'))
+    CHECK (dispatch <> 'unknown' OR unknown_reason IS NOT NULL);
+"#;
+
+/// Operator decision cards: the questions only the operator may answer
+/// (what happened to a call whose outcome is unknown, whether an
+/// auto-disabled flow runs again), raised by basal on core's consent plane.
+/// A row is the durable intent to raise its card, written before core is
+/// asked, so a crash cannot lose a card, and core's deduplication key makes
+/// raising it again after a crash show the same card.
+const DECISIONS: &str = r#"
+-- The decision card an operator's action came through, when it came
+-- through one.
+ALTER TABLE audit ADD COLUMN elicitation_id TEXT;
+
+-- One row per card. `instance` tells two occurrences of one decision
+-- apart: for a reconcile card, the call's send attempt that ended unknown
+-- (a call reconciled as not applied, sent again and lost again needs a new
+-- decision); for a re-enable card, the auto-disable episode. `revision`
+-- counts changes to what the card shows and `raised_revision` the last
+-- one core accepted, so a changed card is raised again under its key.
+-- `open` until an answer arrives; then `applied` (an action was taken),
+-- `declined` (the do-nothing option), `expired` (nobody answered) or
+-- `stale` (the decision had been settled another way, so nothing was
+-- done).
+CREATE TABLE decision_cards (
+    seq             INTEGER PRIMARY KEY AUTOINCREMENT,
+    dedup_key       TEXT NOT NULL,
+    kind            TEXT NOT NULL CHECK (kind IN ('reconcile', 'reenable')),
+    flow_id         TEXT NOT NULL,
+    version         INTEGER NOT NULL CHECK (version >= 0),
+    run_id          TEXT,
+    position        INTEGER CHECK (position >= 0),
+    call_key        TEXT,
+    instance        INTEGER NOT NULL CHECK (instance >= 0),
+    card            TEXT NOT NULL,
+    revision        INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+    raised_revision INTEGER,
+    elicitation_id  TEXT,
+    state           TEXT NOT NULL CHECK (state IN ('open', 'applied', 'declined', 'expired', 'stale')),
+    choice          TEXT,
+    created_at      INTEGER NOT NULL,
+    answered_at     INTEGER,
+    UNIQUE (dedup_key, instance),
+    CHECK ((kind = 'reconcile') = (run_id IS NOT NULL)),
+    CHECK ((run_id IS NULL) = (position IS NULL)),
+    CHECK ((run_id IS NULL) = (call_key IS NULL)),
+    CHECK ((state = 'open') = (answered_at IS NULL))
+);
+CREATE UNIQUE INDEX decision_cards_one_open ON decision_cards (dedup_key) WHERE state = 'open';
+CREATE INDEX decision_cards_elicitation ON decision_cards (elicitation_id);
+"#;
 
 /// Install cards: one consent card per installed version, raised before
 /// approval. The card's decision arrives later, possibly after a restart, so

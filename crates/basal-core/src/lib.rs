@@ -20,6 +20,8 @@
 //! - [`clock`]: the time those limits read, settable in tests.
 //! - [`cards`]: the consent card between installing a version and
 //!   approving it.
+//! - [`decisions`]: the operator decision cards basal raises itself, for
+//!   reconciling an unknown call and re-enabling an auto-disabled flow.
 //! - [`schedule`]: schedule triggers, due times in a named zone, missed
 //!   fires, and their admission.
 //!
@@ -34,6 +36,7 @@ pub mod broca;
 pub mod cards;
 pub mod channel;
 pub mod clock;
+pub mod decisions;
 pub mod driver;
 pub mod error;
 pub mod gate;

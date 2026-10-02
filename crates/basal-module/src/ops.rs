@@ -6,6 +6,7 @@
 //! | `flow.dry_run` capture | yes | no | yes | no | no |
 //! | `flow.dry_run` live | yes | no | no | no | no |
 //! | `flow.health` | yes | no | no | no | yes |
+//! | `flow.list` | all flows | locally authored flows | own flows | own flows only | no |
 //! | `flow.reconcile` | yes | no | no | no | no |
 //! | `flow.drain` | yes | no | no | no | no |
 //! | `flow.disable` | yes | no | yes | no | no |
@@ -145,6 +146,7 @@ impl Module {
             "flow.install" => self.op_install(caller, params),
             "flow.dry_run" => self.op_dry_run(caller, params),
             "flow.health" => self.op_health(caller, params),
+            "flow.list" => self.op_list(caller, params),
             "flow.reconcile" => self.op_reconcile(caller, params),
             "flow.drain" => self.op_drain(caller, params),
             "flow.disable" => self.op_disable(caller, params),
@@ -518,6 +520,75 @@ impl Module {
         })
     }
 
+    // ---- flow.list -----------------------------------------------------
+
+    fn op_list(&self, caller: &Caller, params: Value) -> OpResult {
+        let owner = match caller {
+            Caller::Operator => None,
+            Caller::Agent { agent_id, .. } => Some(agent_id.as_str()),
+            Caller::Local => Some(LOCAL_AUTHOR),
+            Caller::Core | Caller::Other(_) => {
+                return Err(OpError::not_permitted("flow.list", caller));
+            }
+        };
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Params {
+            flow_ids: Option<Vec<String>>,
+        }
+        let p: Params = serde_json::from_value(params).map_err(invalid_params)?;
+        let as_of = self.rt.config().clock.now_ms();
+        let mut entries = Vec::new();
+        for f in self.rt.flow_health().map_err(|e| self.core_error(e))? {
+            // Apply visibility even when the caller explicitly requests an id:
+            // absent and invisible flows must be indistinguishable.
+            if let Some(owner) = owner {
+                if !self.owns(owner, &f.flow_id)? {
+                    continue;
+                }
+            }
+            if p.flow_ids
+                .as_ref()
+                .is_some_and(|ids| !ids.contains(&f.flow_id))
+            {
+                continue;
+            }
+            let pending_version = self
+                .rt
+                .cards(&f.flow_id)
+                .map_err(|e| self.core_error(e))?
+                .into_iter()
+                .filter(|c| c.state == CardState::Pending)
+                .map(|c| c.version)
+                .max();
+            let disabled_at: Option<i64> = self
+                .rt
+                .store()
+                .read(|c| {
+                    Ok(c.query_row(
+                        "SELECT disabled_at FROM flows WHERE flow_id = ?1",
+                        [&f.flow_id],
+                        |r| r.get(0),
+                    )?)
+                })
+                .map_err(|e| self.core_error(e))?;
+            entries.push(json!({
+                "flow_id": f.flow_id,
+                "state": flow_state(f.approved_version, f.enabled),
+                "approved_version": f.approved_version,
+                "pending_version": pending_version,
+                "disabled": f.disabled_by.as_deref().map(|by| json!({
+                    "by": match disabled_kind(by) { "operator" => "operator", "auto" => "auto", "core" => "core", _ => "owner" },
+                    "reason": f.disabled_reason,
+                    "at": disabled_at,
+                })),
+                "last_run": f.last_run.map(|r| json!({"run_id": r.run_id, "state": r.state, "ended_at": r.ended_at})),
+                "needs_reconcile": !f.needs_reconcile.is_empty(),
+            }));
+        }
+        Ok(json!({"as_of": as_of, "flows": entries}))
+    }
+
     // ---- flow.health ---------------------------------------------------
 
     /// `flow.health`. prefrontal-core polls it on its own route to decide
@@ -597,11 +668,7 @@ impl Module {
             // row's own switch says, since nothing can run; otherwise
             // `enabled` or `disabled`. Core reads any state but `enabled`
             // as unhealthy, so a flow nobody approved never looks healthy.
-            let state = match (f.approved_version, f.enabled) {
-                (None, _) => "unapproved",
-                (Some(_), true) => "enabled",
-                (Some(_), false) => "disabled",
-            };
+            let state = flow_state(f.approved_version, f.enabled);
             entries.push(json!({
                 "flow_id": f.flow_id,
                 "state": state,
@@ -809,6 +876,15 @@ fn card_author(caller: &Caller) -> Result<Value, OpError> {
     }
 }
 
+/// Approval takes precedence over the enablement switch: an unapproved flow cannot run.
+fn flow_state(approved_version: Option<u32>, enabled: bool) -> &'static str {
+    match (approved_version, enabled) {
+        (None, _) => "unapproved",
+        (Some(_), true) => "enabled",
+        (Some(_), false) => "disabled",
+    }
+}
+
 /// Milliseconds since the epoch as RFC 3339 in UTC (`2026-05-01T00:00:00Z`).
 fn rfc3339(ms: i64) -> Result<String, OpError> {
     jiff::Timestamp::from_millisecond(ms)
@@ -817,12 +893,16 @@ fn rfc3339(ms: i64) -> Result<String, OpError> {
 }
 
 /// The kind of actor a recorded `disabled_by` names: `operator`, `auto`
-/// for the runtime's own disable, or the agent label as recorded.
+/// for the runtime's own disable, `core` when core no longer stands behind
+/// the flow's approved version (`basal_core::install::revoke`), or the
+/// agent label as recorded.
 fn disabled_kind(by: &str) -> &str {
     if by.starts_with(basal_core::install::OPERATOR_ACTOR_PREFIX) {
         "operator"
     } else if by == basal_core::install::RUNTIME_ACTOR {
         "auto"
+    } else if by == basal_core::install::CORE_ACTOR {
+        "core"
     } else {
         by
     }

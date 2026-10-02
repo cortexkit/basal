@@ -24,7 +24,7 @@ use serde_json::{Value, json};
 use crate::selector::{ModelOutcome, ModelSelection, ModelSelector};
 use crate::{
     CallClass, CallRequest, Completion, CompletionSink, Dispatched, Host, HostOutcome, TokenUsage,
-    TransportError, UnknownOutcome,
+    TransportError, UnknownOutcome, UnknownReason,
 };
 use wire::*;
 
@@ -565,6 +565,9 @@ impl BrocaHost {
                 run_id: call.basal_run_id.clone(),
                 position: call.position,
                 handle: handle.clone(),
+                // `call.unknown` is set only when Broca answers
+                // `unknown_run` for a run it accepted.
+                reason: UnknownReason::ProviderLostRun,
                 detail: detail.clone(),
             })
             .map_err(|e| BrocaError::Sink(e.to_string()))?;
@@ -635,15 +638,23 @@ impl Host for BrocaHost {
         }
     }
     fn dispatch(&self, request: &CallRequest) -> Result<Dispatched, TransportError> {
+        // Every Broca call honours idempotency keys (`classify` above), so
+        // the runtime retries an ambiguous one and, when its retries run
+        // out, records it as `retries_exhausted` whatever the last attempt's
+        // cause was. So each ambiguous attempt reports `retries_exhausted`
+        // as its reason.
+        let ambiguous =
+            |detail| TransportError::maybe_sent(UnknownReason::RetriesExhausted, detail);
         match self.dispatch_model(request) {
             Ok(result) => Ok(result),
             Err(BrocaError::Unavailable {
-                proven_unsent,
+                proven_unsent: true,
                 detail,
-            }) => Err(TransportError::Unavailable {
-                proven_unsent,
+            }) => Err(TransportError::unsent(detail)),
+            Err(BrocaError::Unavailable {
+                proven_unsent: false,
                 detail,
-            }),
+            }) => Err(ambiguous(detail)),
             Err(BrocaError::Invalid(detail)) => Ok(Dispatched::Completed(HostOutcome::rejected(
                 json_text(json!({"code": "invalid_arguments", "message": detail})),
             ))),
@@ -653,10 +664,7 @@ impl Host for BrocaHost {
             Err(BrocaError::UnsupportedKind) => Ok(Dispatched::Completed(HostOutcome::rejected(
                 json_text(json!({"code": "unsupported_kind"})),
             ))),
-            Err(error) => Err(TransportError::Unavailable {
-                proven_unsent: false,
-                detail: error.to_string(),
-            }),
+            Err(error) => Err(ambiguous(error.to_string())),
         }
     }
     fn dispatch_committed(&self, _: &CallRequest) {

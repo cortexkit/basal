@@ -946,6 +946,50 @@ const JOURNAL_CONTROLS: &[Control] = &[
         target: Target::Testkit("install_gate"),
         test: "other_runs_of_a_revoked_version_are_cancelled_without_asking",
     },
+    Control {
+        label: "unknown reasons: a keyed call out of retries is recorded with its last send's reason",
+        edits: &[(
+            RUNTIME,
+            "                    UnknownReason::RetriesExhausted\n                } else {\n                    last\n",
+            "                    last\n                } else {\n                    last\n",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("journal_unknown"),
+        test: "a_keyed_call_ambiguous_through_its_retries_is_unknown_as_retries_exhausted",
+    },
+    Control {
+        label: "unknown reasons: a call found sent after a restart is recorded as a lost connection",
+        edits: &[(
+            DRIVER,
+            "journal::record_unknown(tx, &run_id, *p, UnknownReason::BasalRestarted)?;",
+            "journal::record_unknown(tx, &run_id, *p, UnknownReason::ConnectionLost)?;",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("journal_unknown"),
+        test: "unknown_unkeyed_mutation_needs_reconcile",
+    },
+    Control {
+        label: "unknown reasons: the migration accepts a store holding unknown calls without a reason",
+        edits: &[(
+            SCHEMA,
+            "    SELECT COUNT(*) FROM journal WHERE dispatch = 'unknown';",
+            "    SELECT 0;",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("unknown_reason"),
+        test: "the_migration_refuses_a_store_that_already_holds_an_unknown_call",
+    },
+    Control {
+        label: "unknown reasons: the schema lets a call be unknown without a reason",
+        edits: &[(
+            SCHEMA,
+            "    CHECK (dispatch <> 'unknown' OR unknown_reason IS NOT NULL);",
+            ";",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("unknown_reason"),
+        test: "a_call_marked_unknown_needs_a_reason_from_the_closed_set",
+    },
 ];
 
 const GATE: &str = "crates/basal-core/src/gate.rs";
@@ -1507,11 +1551,57 @@ const M_DRYRUN: &str = "crates/basal-module/src/dryrun.rs";
 const M_OPS: &str = "crates/basal-module/src/ops.rs";
 const M_UNCONFIGURED: &str = "crates/basal-module/src/unconfigured.rs";
 const CORE_OPS: &str = "crates/basal-core/src/ops.rs";
+const M_DECISIONS: &str = "crates/basal-core/src/decisions.rs";
+const M_RECONCILE: &str = "crates/basal-core/src/reconcile.rs";
 
 /// The module shell: each control disables one mechanism in basal-module
 /// (or in a basal-core function only the module calls, such as the health
 /// figures) and runs the basal-module test named for it.
 const MODULE_CONTROLS: &[Control] = &[
+    Control {
+        label: "flow.list agent sees another agent's flow",
+        edits: &[(
+            M_OPS,
+            "Caller::Agent { agent_id, .. } => Some(agent_id.as_str()),",
+            "Caller::Agent { .. } => None,",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("list_contract"),
+        test: "list_agent_cannot_see_another_agents_flow",
+    },
+    Control {
+        label: "flow.list local caller sees an agent's flow",
+        edits: &[(
+            M_OPS,
+            "Caller::Local => Some(LOCAL_AUTHOR),",
+            "Caller::Local => None,",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("list_contract"),
+        test: "list_local_cannot_see_an_agents_flow",
+    },
+    Control {
+        label: "flow.list invisible requested id appears",
+        edits: &[(
+            M_OPS,
+            "if !self.owns(owner, &f.flow_id)? {",
+            "if p.flow_ids.is_none() && !self.owns(owner, &f.flow_id)? {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("list_contract"),
+        test: "list_invisible_requested_ids_are_absent",
+    },
+    Control {
+        label: "flow.list state diverges from flow.health",
+        edits: &[(
+            M_OPS,
+            "\"state\": flow_state(f.approved_version, f.enabled),",
+            "\"state\": \"enabled\",",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("list_contract"),
+        test: "list_reply_decodes_against_documented_shape_and_health_state",
+    },
     Control {
         label: "the manifest declares a capability subc-protocol's grammar refuses",
         edits: &[(
@@ -2080,7 +2170,11 @@ const MODULE_CONTROLS: &[Control] = &[
     },
     Control {
         label: "health has no as_of",
-        edits: &[(M_OPS, "\"as_of\": as_of,", "\"as_of_ms\": now,")],
+        edits: &[(
+            M_OPS,
+            "\"as_of\": as_of,\n            \"flows\": entries,",
+            "\"as_of_ms\": now,\n            \"flows\": entries,",
+        )],
         also_restore: NO_EXTRA,
         target: Target::Module("health_contract"),
         test: "flow_health_decodes_as_core_decodes_it",
@@ -2129,8 +2223,8 @@ const MODULE_CONTROLS: &[Control] = &[
         label: "health's needs_reconcile is a list of runs, not a boolean",
         edits: &[(
             M_OPS,
-            "\"needs_reconcile\": !f.needs_reconcile.is_empty(),",
-            "\"needs_reconcile\": f.needs_reconcile.clone(),",
+            "\"consecutive_failures\": f.consecutive_failures,\n                \"needs_reconcile\": !f.needs_reconcile.is_empty(),",
+            "\"consecutive_failures\": f.consecutive_failures,\n                \"needs_reconcile\": f.needs_reconcile.clone(),",
         )],
         also_restore: NO_EXTRA,
         target: Target::Module("health_contract"),
@@ -2170,7 +2264,7 @@ const MODULE_CONTROLS: &[Control] = &[
         edits: &[(
             M_OPS,
             "(None, _) => \"unapproved\",",
-            "(None, _) => if f.enabled { \"enabled\" } else { \"disabled\" },",
+            "(None, _) => if enabled { \"enabled\" } else { \"disabled\" },",
         )],
         also_restore: NO_EXTRA,
         target: Target::Module("ops"),
@@ -2220,12 +2314,23 @@ const MODULE_CONTROLS: &[Control] = &[
         label: "the unconfigured host's refusal is not proven unsent",
         edits: &[(
             M_UNCONFIGURED,
-            "proven_unsent: true,",
-            "proven_unsent: false,",
+            "sent: Sent::Never,",
+            "sent: Sent::Maybe(basal_host::UnknownReason::ConnectionLost),",
         )],
         also_restore: NO_EXTRA,
         target: Target::Module("engine"),
         test: "the_unconfigured_host_refuses_every_dispatch_as_never_sent",
+    },
+    Control {
+        label: "flow.list reports a disable by core as the owner's",
+        edits: &[(
+            M_OPS,
+            "\"auto\" => \"auto\", \"core\" => \"core\", _ => \"owner\" },",
+            "\"auto\" => \"auto\", _ => \"owner\" },",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("list_contract"),
+        test: "list_reply_decodes_against_documented_shape_and_health_state",
     },
     Control {
         label: "the flow_install request sends an empty placement when the manifest states none",
@@ -2237,6 +2342,282 @@ const MODULE_CONTROLS: &[Control] = &[
         also_restore: NO_EXTRA,
         target: Target::Module("install_gate"),
         test: "placement_is_sent_only_when_the_manifest_states_one",
+    },
+    // Operator decision cards (`docs/findings/decision-cards.md`).
+    Control {
+        label: "decision cards: every raise goes out under a fresh dedup key, so a changed card is a second card",
+        edits: &[(
+            M_CORE_CONSENT,
+            "request[\"dedup_key\"] = json!(key);",
+            "request[\"dedup_key\"] = json!(format!(\"{key}:{}\", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)));",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "a_changed_decision_updates_its_card_and_another_unknown_call_gets_its_own",
+    },
+    Control {
+        label: "decision cards: every raise goes out under a fresh dedup key, so a re-raise after a crash is a second card",
+        edits: &[(
+            M_CORE_CONSENT,
+            "request[\"dedup_key\"] = json!(key);",
+            "request[\"dedup_key\"] = json!(format!(\"{key}:{}\", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)));",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "a_crash_between_the_intent_and_core_accepting_still_shows_exactly_one_card",
+    },
+    Control {
+        label: "decision cards: a decision already answered for this send of the call is written again",
+        edits: &[(
+            M_DECISIONS,
+            "        if decided {",
+            "        if decided && false {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "each_reconcile_option_and_the_default_on_expiry_apply_through_the_journaled_path",
+    },
+    Control {
+        label: "decision cards: a changed decision is not raised again under its key",
+        edits: &[(
+            M_DECISIONS,
+            "card = ?3, revision = revision + 1 \\",
+            "card = ?3, revision = revision \\",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "a_changed_decision_updates_its_card_and_another_unknown_call_gets_its_own",
+    },
+    Control {
+        label: "decision cards: an answer to a decision settled another way is applied instead of recorded stale",
+        edits: &[(
+            M_DECISIONS,
+            "Some(_) if !stands(tx, &card)? => {",
+            "Some(_) if false && !stands(tx, &card)? => {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "an_answer_after_the_decision_was_settled_another_way_is_stale",
+    },
+    Control {
+        label: "decision cards: an answer delivered twice is applied twice",
+        edits: &[(
+            M_DECISIONS,
+            "if card.state != CardState::Open {",
+            "if false && card.state != CardState::Open {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "a_duplicate_answer_changes_nothing",
+    },
+    Control {
+        label: "decision cards: the audit row of a resolution answered on a card omits the elicitation id",
+        edits: &[(
+            M_RECONCILE,
+            "            Some(position),\n            detail,\n            elicitation_id,\n        )",
+            "            Some(position),\n            detail,\n            elicitation_id.filter(|_| false),\n        )",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "each_reconcile_option_and_the_default_on_expiry_apply_through_the_journaled_path",
+    },
+    Control {
+        label: "decision cards: a card whose raise failed is recorded as raised, so the intent is lost",
+        edits: &[(
+            M_ENGINE,
+            "                Err(e) => {\n                    tracing::warn!(target: \"consent\", key = %record.dedup_key",
+            "                Err(e) => {\n                    inner.rt.decision_raised(record.seq, record.revision, \"lost\")?;\n                    tracing::warn!(target: \"consent\", key = %record.dedup_key",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "a_crash_between_the_intent_and_core_accepting_still_shows_exactly_one_card",
+    },
+    Control {
+        label: "decision cards: a page is acknowledged although applying its answer failed",
+        edits: &[(
+            M_CORE_CONSENT,
+            "if let Err(e) = sink.answer(&answer) {",
+            "if let Some(e) = sink.answer(&answer).err().filter(|_| false) {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "a_crash_between_receiving_an_answer_and_applying_it_applies_it_exactly_once",
+    },
+    Control {
+        label: "decision cards: 'It ran' releases an invented null result instead of reconciled_as_applied",
+        edits: &[(
+            M_DECISIONS,
+            "APPLIED => Resolution::ReconciledAsApplied,",
+            "APPLIED => Resolution::ObservedResult(basal_host::HostOutcome::fulfilled(basal_proto::JsonText::null())),",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "each_reconcile_option_and_the_default_on_expiry_apply_through_the_journaled_path",
+    },
+    Control {
+        label: "decision cards: the reconciled_as_applied rejection depends on when it was produced",
+        edits: &[(
+            M_RECONCILE,
+            "\"the operator reconciled this call as applied; its result was not observed\",",
+            "&format!(\"the operator reconciled this call as applied at {}\", crate::store::now_ms()),",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "reconciled_as_applied_is_journaled_and_replays_the_same_rejection",
+    },
+    Control {
+        label: "decision cards: an expired card applies an action instead of its default",
+        edits: &[(
+            M_DECISIONS,
+            "let state = match answer.choice.as_deref() {",
+            "let state = match answer.choice.as_deref().or(Some(APPLIED)) {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "each_reconcile_option_and_the_default_on_expiry_apply_through_the_journaled_path",
+    },
+    Control {
+        label: "decision cards: a re-enable answer does not enable the flow",
+        edits: &[(
+            M_DECISIONS,
+            "install::enable(tx, &card.flow_id, now_ms)",
+            "install::enable(tx, \"\", now_ms)",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "an_auto_disabled_flow_raises_one_reenable_card_and_each_option_applies",
+    },
+    Control {
+        label: "decision cards: an auto-disable writes no re-enable card intent",
+        edits: &[(
+            RATE,
+            "crate::decisions::record_auto_disable(tx, flow_id, &rule, now_ms)?;",
+            "let _ = (&rule, now_ms);",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "an_auto_disabled_flow_raises_one_reenable_card_and_each_option_applies",
+    },
+    Control {
+        label: "decision cards: action options carry an effect core does not take",
+        edits: &[(
+            M_CORE_CONSENT,
+            "pub const DECISION_ACTION_EFFECT: &str = \"choose\";",
+            "pub const DECISION_ACTION_EFFECT: &str = \"grant\";",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "a_run_in_needs_reconcile_raises_one_card_per_unknown_call_to_the_operator_only",
+    },
+    Control {
+        label: "decision cards: the default is an action rather than the declining option",
+        edits: &[(
+            M_CORE_CONSENT,
+            "\"default\":default,",
+            "\"default\":card.options[0].id,",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "the_request_builder_reproduces_core_vectors_byte_for_byte",
+    },
+    Control {
+        label: "decision cards: basal sends an op core's body check refuses",
+        edits: &[(
+            M_CORE_CONSENT,
+            "op.len() <= 128 && op.split('.').count() >= 2 && op.split('.').all(segment_ok);",
+            "true || op.split('.').all(segment_ok);",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "decision_requests_follow_core_rules_and_the_fake_core_refuses_any_other",
+    },
+    Control {
+        label: "decision cards: the request carries a field core's vectors do not",
+        edits: &[(
+            M_CORE_CONSENT,
+            "\"scope\":{\"flow_id\":card.flow_id},",
+            "\"scope\":{\"flow_id\":card.flow_id,\"version\":card.version},",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "the_request_builder_reproduces_core_vectors_byte_for_byte",
+    },
+    Control {
+        label: "decision cards: the body leaves out the unknown reason",
+        edits: &[(
+            M_CORE_CONSENT,
+            "            body[\"unknown_reason\"] = json!(unknown_reason.as_str());\n",
+            "            let _ = unknown_reason;\n",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "the_request_builder_reproduces_core_vectors_byte_for_byte",
+    },
+    Control {
+        label: "decision cards: an expiry naming an option is applied as that option",
+        edits: &[(
+            M_CORE_CONSENT,
+            "(Some(\"expired\"), _) => None,",
+            "(Some(\"expired\"), choice) => choice.map(str::to_owned),",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "an_expiry_is_the_decline_whatever_choice_it_names",
+    },
+    Control {
+        label: "decision cards: a run-limit auto-disable is recorded as a dispatch-limit one",
+        edits: &[(
+            RATE,
+            "Kind::Run => basal_host::DisabledReason::RunLimitSaturated,",
+            "Kind::Run => basal_host::DisabledReason::DispatchLimitSaturated,",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "an_auto_disabled_flow_raises_one_reenable_card_and_each_option_applies",
+    },
+    Control {
+        label: "decision cards: the re-enable card records the other limit than the one that tripped",
+        edits: &[(
+            RATE,
+            "            limit: max,\n",
+            "            limit: limits.max_dispatches,\n",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "an_auto_disabled_flow_raises_one_reenable_card_and_each_option_applies",
+    },
+    Control {
+        label: "decision cards: the prompt misstates why the outcome is unknown",
+        edits: &[(
+            M_DECISIONS,
+            "UnknownReason::BasalRestarted => \"basal restarted before the reply was saved\",",
+            "UnknownReason::BasalRestarted => \"the connection closed before a reply came\",",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "each_unknown_site_records_its_reason_and_the_card_shows_it",
+    },
+    Control {
+        label: "unknown reasons: a timed-out reply is recorded as a lost connection",
+        edits: &[(
+            "crates/basal-host/src/transport.rs",
+            "Self::TimedOut(_) => Some(UnknownReason::ReplyTimeout),",
+            "Self::TimedOut(_) => Some(UnknownReason::ConnectionLost),",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "each_unknown_site_records_its_reason_and_the_card_shows_it",
+    },
+    Control {
+        label: "unknown reasons: an unreadable reply is recorded as a lost connection",
+        edits: &[(
+            "crates/basal-host/src/transport.rs",
+            "Self::Unreadable(_) => Some(UnknownReason::ReplyUnreadable),",
+            "Self::Unreadable(_) => Some(UnknownReason::ConnectionLost),",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("decisions"),
+        test: "each_unknown_site_records_its_reason_and_the_card_shows_it",
     },
 ];
 
@@ -2943,6 +3324,28 @@ const BROCA_CONTROLS: &[Control] = &[
         also_restore: NO_EXTRA,
         target: Target::Module("e2e"),
         test: "a_broca_llm_suspends_survives_module_kill_and_settles_after_restart",
+    },
+    Control {
+        label: "unknown reasons: the host's reported reason is not recorded",
+        edits: &[(
+            JOURNAL,
+            "        params![run_id, p, reason.as_str()],",
+            "        params![run_id, p, { let _ = reason; \"connection_lost\" }],",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("broca_reservations"),
+        test: "an_unknown_broca_run_moves_the_run_to_needs_reconcile_naming_it",
+    },
+    Control {
+        label: "unknown reasons: Broca's unknown_run is reported as a lost connection",
+        edits: &[(
+            BROCA,
+            "reason: UnknownReason::ProviderLostRun,",
+            "reason: UnknownReason::ConnectionLost,",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("broca_reservations"),
+        test: "an_unknown_broca_run_moves_the_run_to_needs_reconcile_naming_it",
     },
 ];
 
@@ -4058,5 +4461,38 @@ const HOST_CONTROLS: &[Control] = &[
         also_restore: NO_EXTRA,
         target: Target::Module("install_gate"),
         test: "active_with_the_runs_code_hash_activates",
+    },
+    Control {
+        label: "unknown reasons: a timeout is not told from a closed connection",
+        edits: &[(
+            "crates/basal-host/src/transport.rs",
+            "CallError::OutcomeUnknown(e) if e.to_string().contains(SUBC_REPLY_TIMEOUT) => {",
+            "CallError::OutcomeUnknown(e) if false && e.to_string().contains(SUBC_REPLY_TIMEOUT) => {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::HostLib,
+        test: "transport::tests::every_call_error_variant_maps_to_never_sent_or_one_unknown_reason",
+    },
+    Control {
+        label: "unknown reasons: capability resolver errors count as maybe sent",
+        edits: &[(
+            "crates/basal-host/src/transport.rs",
+            "| CallError::InvalidCapabilityIdentifier { .. }) => WireError::NeverSent(e.to_string()),",
+            "| CallError::InvalidCapabilityIdentifier { .. }) => WireError::Unknown(e.to_string()),",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::HostLib,
+        test: "transport::tests::every_call_error_variant_maps_to_never_sent_or_one_unknown_reason",
+    },
+    Control {
+        label: "unknown reasons: core's unrecognised reply is recorded as a lost connection",
+        edits: &[(
+            "crates/basal-host/src/core_host.rs",
+            "Err(WireError::Unreadable(\"unrecognised core reply\".into()))",
+            "Err(WireError::Unknown(\"unrecognised core reply\".into()))",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("hosts"),
+        test: "closed_sink_dispositions_and_unknown_facts_survive",
     },
 ];

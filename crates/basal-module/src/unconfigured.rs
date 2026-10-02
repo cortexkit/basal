@@ -14,8 +14,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use basal_host::{
-    CallClass, CallRequest, Catalog, Consent, ConsentError, DecisionSink, Dispatched, EventDecl,
-    Host, InstallCard, OpDecl, TransportError,
+    CallClass, CallRequest, Catalog, Consent, ConsentError, DecisionCard, DecisionSink, Dispatched,
+    EventDecl, Host, InstallCard, OpDecl, Sent, TransportError,
 };
 use basal_proto::CallKind;
 
@@ -49,7 +49,7 @@ impl Host for UnconfiguredHost {
 
     fn dispatch(&self, _request: &CallRequest) -> Result<Dispatched, TransportError> {
         Err(TransportError::Unavailable {
-            proven_unsent: true,
+            sent: Sent::Never,
             detail: NO_HOST.to_owned(),
         })
     }
@@ -100,6 +100,12 @@ pub struct UnconfiguredConsent;
 
 impl Consent for UnconfiguredConsent {
     fn raise(&self, _card: &InstallCard) -> Result<(), ConsentError> {
+        Err(ConsentError::Unavailable(
+            "no consent adapter is configured in this build of ck-basal".to_owned(),
+        ))
+    }
+
+    fn raise_decision(&self, _card: &DecisionCard) -> Result<String, ConsentError> {
         Err(ConsentError::Unavailable(
             "no consent adapter is configured in this build of ck-basal".to_owned(),
         ))

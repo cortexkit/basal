@@ -50,7 +50,7 @@ use serde_json::{Value, json};
 
 use crate::{
     CallClass, CallRequest, Completion, CompletionSink, Dispatched, Host, HostOutcome,
-    InstallStatus, TransportError,
+    InstallStatus, TransportError, UnknownReason,
 };
 
 /// One effect the mock applied.
@@ -536,10 +536,9 @@ impl Host for MockHost {
         controls.install_queries.push((flow_id.to_owned(), version));
         match controls.installs.get(&(flow_id.to_owned(), version)) {
             Some(Some(status)) => Ok(status.clone()),
-            _ => Err(TransportError::Unavailable {
-                proven_unsent: true,
-                detail: format!("the mock's core is unreachable for {flow_id} v{version}"),
-            }),
+            _ => Err(TransportError::unsent(format!(
+                "the mock's core is unreachable for {flow_id} v{version}"
+            ))),
         }
     }
 
@@ -583,9 +582,12 @@ impl Host for MockHost {
         if let Some(f) = fault
             && !f.effect_applied
         {
-            return Err(TransportError::Unavailable {
-                proven_unsent: f.proven_unsent,
-                detail: "injected".into(),
+            // The mock's ambiguous failure is a reply lost with its
+            // connection.
+            return Err(if f.proven_unsent {
+                TransportError::unsent("injected")
+            } else {
+                TransportError::maybe_sent(UnknownReason::ConnectionLost, "injected")
             });
         }
 
@@ -698,10 +700,10 @@ impl Host for MockHost {
         self.save(&state);
         drop(state);
         if fault.is_some() {
-            return Err(TransportError::Unavailable {
-                proven_unsent: false,
-                detail: "injected after the effect".into(),
-            });
+            return Err(TransportError::maybe_sent(
+                UnknownReason::ConnectionLost,
+                "injected after the effect",
+            ));
         }
         Ok(result)
     }
@@ -887,7 +889,7 @@ mod tests {
         assert!(matches!(
             mock.dispatch(&request("post", "k")),
             Err(TransportError::Unavailable {
-                proven_unsent: false,
+                sent: crate::Sent::Maybe(UnknownReason::ConnectionLost),
                 ..
             })
         ));
