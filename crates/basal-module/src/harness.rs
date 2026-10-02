@@ -13,8 +13,8 @@
 //! the standard mock catalog, the mock consent plane, and a manual clock
 //! kept in `<dir>/clock`. The harness stands in for the daemon too: each op
 //! command names who calls it, and the harness turns that into the route
-//! stamp the daemon would have made, which goes through the same
-//! [`crate::caller::from_route`] as a real route.
+//! bind the daemon would have sent (principal and scope stamp), which goes
+//! through the same [`crate::serve::Routes`] as a real route's bind.
 //!
 //! A point is a boundary as its debug form, then `#` and which occurrence
 //! in this process: `HostAnswered { position: 2 }#1`. At it the harness
@@ -40,15 +40,17 @@ use basal_host::broca::{BrocaHost, fake::FakeBroca};
 use basal_host::mock::MockHost;
 use basal_host::{CardDecision, MockCatalog, MockConsent};
 use serde_json::{Value, json};
-use subc_protocol::Principal;
+use subc_client_rs::{RouteBindRequest, RouteHandle};
 use subc_protocol::scope::{ScopeAttributes, ScopeKind, ScopeStamp};
+use subc_protocol::{BindIdentity, Principal, RouteTarget};
 
-use crate::caller::{self, CORE_MODULE};
+use crate::caller::CORE_MODULE;
 use crate::dryrun::DryRunConfig;
 use crate::engine::EngineConfig;
 use crate::fatal::EXIT_STORE_FAILURE;
 use crate::module::{Hosts, Module, ModuleConfig};
 use crate::pool::{Pool, PoolConfig, ProcessSpawner};
+use crate::serve::Routes;
 
 /// The clock's start when the directory has none: 2026-05-01T00:00:00Z.
 const DEFAULT_CLOCK_MS: i64 = 1_777_593_600_000;
@@ -168,21 +170,28 @@ fn write_clock(dir: &Path, ms: i64) -> std::io::Result<()> {
     std::fs::rename(tmp, dir.join("clock"))
 }
 
-/// The route stamp the daemon would make for a named caller.
-fn stamp(who: &Value) -> (Option<Principal>, Option<ScopeStamp>) {
+/// The route-bind request the daemon would send on `handle` for the caller
+/// an op command names in `who` (`"operator"`, `"core"`, `{"agent": ..}`,
+/// `{"module": ..}`, anything else unverified): its principal and, for an
+/// agent, a session scope owned by core and marked owner-authorized.
+fn bind_request(handle: RouteHandle, who: &Value) -> RouteBindRequest {
+    let request = RouteBindRequest::new(
+        handle,
+        RouteTarget::ManagementSurface {
+            module_id: crate::manifest::MODULE_ID.to_owned(),
+        },
+        BindIdentity::new("/", "harness", "ses-harness"),
+    );
     match who {
-        Value::String(s) if s == "operator" => (Some(Principal::Direct), None),
-        Value::String(s) if s == "core" => (
-            Some(Principal::Reserved {
-                module_id: CORE_MODULE.into(),
-            }),
-            None,
-        ),
+        Value::String(s) if s == "operator" => request.with_principal(Principal::Direct),
+        Value::String(s) if s == "core" => request.with_principal(Principal::Reserved {
+            module_id: CORE_MODULE.into(),
+        }),
         Value::Object(o) if o.contains_key("agent") => {
             let agent = o.get("agent").and_then(Value::as_str).map(str::to_owned);
-            (
-                Some(Principal::Direct),
-                Some(ScopeStamp {
+            request
+                .with_principal(Principal::Direct)
+                .with_scope(ScopeStamp {
                     owner: Principal::Reserved {
                         module_id: CORE_MODULE.into(),
                     },
@@ -196,20 +205,18 @@ fn stamp(who: &Value) -> (Option<Principal>, Option<ScopeStamp>) {
                         delegates: false,
                     },
                     owner_authorized: true,
-                }),
-            )
+                })
         }
-        Value::Object(o) if o.contains_key("module") => (
-            Some(Principal::Reserved {
+        Value::Object(o) if o.contains_key("module") => {
+            request.with_principal(Principal::Reserved {
                 module_id: o
                     .get("module")
                     .and_then(Value::as_str)
                     .unwrap_or("unknown")
                     .to_owned(),
-            }),
-            None,
-        ),
-        _ => (Some(Principal::Unverified), None),
+            })
+        }
+        _ => request.with_principal(Principal::Unverified),
     }
 }
 
@@ -440,8 +447,16 @@ fn command_reply(
     let err = |e: String| json!({ "ok": false, "error": e });
     match command.get("cmd").and_then(Value::as_str) {
         Some("op") => {
-            let (principal, scope) = stamp(command.get("as").unwrap_or(&Value::Null));
-            let caller = caller::from_route(principal.as_ref(), scope.as_ref(), "ses-harness");
+            // Each op is decided on a route bound for it alone, so one
+            // command's caller can never carry over to the next.
+            let handle = RouteHandle::detached(1, 1);
+            let routes = Routes::default();
+            routes.bind(&bind_request(
+                handle,
+                command.get("as").unwrap_or(&Value::Null),
+            ));
+            let caller = routes.caller(&handle);
+            routes.forget(&handle);
             let method = command.get("method").and_then(Value::as_str).unwrap_or("");
             let params = command.get("params").cloned().unwrap_or(Value::Null);
             match module.handle(&caller, method, params) {

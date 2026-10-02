@@ -7,8 +7,26 @@
 //! launch nonce. An agent is identified by the scope its route was admitted
 //! under: prefrontal-core owns every agent's session scope and sets the
 //! scope's `agent_id`, and the daemon stamps the scope (with whether its
-//! owner is on the daemon's scope-authority list) on the route. Nothing the
-//! caller writes in a request body can change any of this.
+//! owner is on the daemon's scope-authority list) on the route. The stamp
+//! reaches basal in `on_bind` as `RouteBindRequest::scope` (subc-client-rs
+//! 0.24 and later). Nothing the caller writes in a request body can change
+//! any of this.
+//!
+//! Of the `ScopeStamp`, basal reads three fields:
+//!
+//! - `owner`: the scope must be core's (`reserved:prefrontal-core`), the
+//!   module that owns agents' session scopes. Anyone else's scope is their
+//!   own business and names no agent here.
+//! - `owner_authorized`: the daemon's word that the owner is on its
+//!   scope-authority list, so the attributes it set carry authority.
+//! - `attributes.agent_id`: the agent itself.
+//!
+//! The rest is not identity. `scope_ref` (`ref` on the wire) is an opaque
+//! id core mints for the scope (not the agent's session), `scope_epoch`, `kind`, `parent` and
+//! `parent_state` describe the scope's lifetime and lineage, and
+//! `attributes.delegates` lets a provider act as the agent, which basal
+//! never does. The agent's session is the route's bind identity session,
+//! accepted only on a route admitted under that agent's vouched scope.
 
 use subc_protocol::Principal;
 use subc_protocol::scope::ScopeStamp;

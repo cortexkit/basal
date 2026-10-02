@@ -957,9 +957,9 @@ dependencies = [
 
 [[package]]
 name = "subc-client-rs"
-version = "0.23.5"
+version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c6af8030ac882fc533d203303a382b9aaed6b57b80cda1adb5d3fff321c9445f"
+checksum = "0e3e20f4bdb296bb0f7bb807bf837412bee28f9de8fe52a8dc4e97e3e758b192"
 dependencies = [
  "async-trait",
  "serde",
@@ -975,9 +975,9 @@ dependencies = [
 
 [[package]]
 name = "subc-control"
-version = "0.25.0"
+version = "0.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d4ccb0c743aacc1be4245bdc6b25f1c3f5da6f1efc96a80e789f16dc8d04e51"
+checksum = "af9e68839bbdad86c7c3c6ba4477b32d76a9bd1ba565ae7661ef99b87ed522ba"
 dependencies = [
  "serde",
  "serde_json",
@@ -996,9 +996,9 @@ dependencies = [
 
 [[package]]
 name = "subc-protocol"
-version = "0.27.0"
+version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa3bfc2ae876e88b0bab4ce6cf803fb2175ba03bc8a079f9cf2d4b45cf970955"
+checksum = "6e543313883f0155add4063a1469d791eb8b0ed03d26a42eeae58c59add4a4f7"
 dependencies = [
  "serde",
  "serde_json",
@@ -1006,9 +1006,9 @@ dependencies = [
 
 [[package]]
 name = "subc-transport"
-version = "0.8.1"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39aa7f389c25fbebc593a2fb4c7bcecf834f887c18c00fe3afd0f1947b073c04"
+checksum = "cf6824508ab1c68ae04bc563e2ef84ab90c910f7b1b31bccb9dfb211c0707bb4"
 dependencies = [
  "getrandom",
  "hmac",

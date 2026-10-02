@@ -1334,6 +1334,7 @@ const DISPATCH_CONTROLS: &[Control] = &[
 
 const M_MANIFEST: &str = "crates/basal-module/src/manifest.rs";
 const M_CALLER: &str = "crates/basal-module/src/caller.rs";
+const M_SERVE: &str = "crates/basal-module/src/serve.rs";
 const M_POOL: &str = "crates/basal-module/src/pool.rs";
 const M_ENGINE: &str = "crates/basal-module/src/engine.rs";
 const M_FATAL: &str = "crates/basal-module/src/fatal.rs";
@@ -1379,6 +1380,86 @@ const MODULE_CONTROLS: &[Control] = &[
         also_restore: NO_EXTRA,
         target: Target::ModuleLib,
         test: "caller::tests::identity_comes_only_from_the_stamp",
+    },
+    Control {
+        label: "the scope stamp on a route's bind is dropped",
+        edits: &[(M_SERVE, "scope: request.scope.clone(),", "scope: None,")],
+        also_restore: NO_EXTRA,
+        target: Target::Module("caller_binding"),
+        test: "an_owner_authorized_core_scope_names_the_agent_and_its_session",
+    },
+    Control {
+        label: "a scope owned by any module names its agent",
+        edits: &[(
+            M_CALLER,
+            "Principal::Reserved { module_id } if module_id == CORE_MODULE\n        );",
+            "Principal::Reserved { .. }\n        );",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("caller_binding"),
+        test: "a_scope_owned_by_another_module_names_no_agent",
+    },
+    Control {
+        label: "an agent id in a core scope the daemon does not vouch for names the agent",
+        edits: &[(
+            M_CALLER,
+            "core_owned && scope.owner_authorized",
+            "core_owned",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("caller_binding"),
+        test: "a_scope_without_owner_authorization_names_no_agent",
+    },
+    Control {
+        label: "an unscoped route that is neither direct nor core's is taken as the operator",
+        edits: &[(
+            M_CALLER,
+            "other => Caller::Other(principal_label(other)),",
+            "_ => Caller::Operator,",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("caller_binding"),
+        test: "a_route_without_a_scope_is_never_an_agent",
+    },
+    Control {
+        label: "a route that has gone keeps the caller it was bound with",
+        edits: &[(
+            M_SERVE,
+            "lock(&self.stamps).remove(&(handle.channel, handle.epoch));",
+            "let _ = handle;",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("caller_binding"),
+        test: "a_route_without_a_scope_is_never_an_agent",
+    },
+    Control {
+        label: "a vouched agent may run a capture dry run of a flow it does not own",
+        edits: &[(
+            M_OPS,
+            "(\n                Caller::Agent {\n                    agent_id: agent, ..\n                },\n                Mode::Capture,\n            ) if self.owns(agent, &p.flow_id)? => {}",
+            "(Caller::Agent { .. }, Mode::Capture) => {}",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("caller_binding"),
+        test: "an_agent_cannot_act_on_a_flow_it_does_not_own",
+    },
+    Control {
+        label: "a vouched agent may enable a flow it does not own (the module's ownership check and the core's both removed)",
+        edits: &[
+            (
+                M_OPS,
+                "Caller::Agent {\n                agent_id: agent, ..\n            } if self.owns(agent, &p.flow_id)? => Actor::Agent(agent.to_owned()),",
+                "Caller::Agent { agent_id: agent, .. } => Actor::Agent(agent.to_owned()),",
+            ),
+            (
+                INSTALL,
+                "            if record.owner.as_deref() != Some(agent.as_str()) {",
+                "            if false && record.owner.as_deref() != Some(agent.as_str()) {",
+            ),
+        ],
+        also_restore: NO_EXTRA,
+        target: Target::Module("caller_binding"),
+        test: "an_agent_cannot_act_on_a_flow_it_does_not_own",
     },
     Control {
         label: "an idle worker bound to any flow is reused for another",

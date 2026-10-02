@@ -1,10 +1,11 @@
 //! basal on subc: the handler `subc_client_rs::serve` drives.
 //!
 //! subc-client-rs owns HELLO, route binding, health and the frame lifecycle.
-//! This handler records the principal the daemon stamps on each route when
-//! it is bound, opens the store the daemon names in HELLO_ACK, starts the
-//! module (recovery first) and its loop, and runs each op on a blocking
-//! thread, because the core and the pool are blocking code.
+//! This handler records the principal and the scope the daemon stamps on
+//! each route when it is bound ([`Routes`]), opens the store the daemon
+//! names in HELLO_ACK, starts the module (recovery first) and its loop, and
+//! runs each op on a blocking thread, because the core and the pool are
+//! blocking code.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -19,9 +20,10 @@ use subc_client_rs::{
     BindDecision, HandlerOutcome, HealthReport, HealthStatus, ModuleHandler, RequestCtx,
     RouteBindRequest, RouteHandle,
 };
+use subc_protocol::scope::ScopeStamp;
 use subc_protocol::{ModuleHelloAckBody, Principal};
 
-use crate::caller;
+use crate::caller::{self, Caller};
 use crate::manifest::MODULE_ID;
 use crate::module::{Hosts, Module, ModuleConfig};
 use crate::pool::{ProcessSpawner, Spawn};
@@ -40,11 +42,63 @@ enum Phase {
 
 type RouteKey = (u16, u32);
 
+/// What the daemon stamped on one route when it was bound.
+#[derive(Debug, Clone)]
+struct RouteStamp {
+    principal: Option<Principal>,
+    scope: Option<ScopeStamp>,
+    /// The bind identity's session: the opener's own claim, which names the
+    /// agent's session only when the route is under that agent's vouched
+    /// scope (see [`caller::from_route`]).
+    session: String,
+}
+
+/// The stamp of every bound route, and the caller each one names.
+///
+/// The daemon stamps a route once, at `route.bind`, never per request, and
+/// a scope's stamp is fixed for the route's life (a change that revokes
+/// authority closes the route), so the stamp kept here is what every
+/// request on the route is decided by.
+#[derive(Debug, Default)]
+pub struct Routes {
+    stamps: Mutex<HashMap<RouteKey, RouteStamp>>,
+}
+
+impl Routes {
+    /// Records the principal, scope and session of a route the daemon has
+    /// just bound.
+    pub fn bind(&self, request: &RouteBindRequest) {
+        lock(&self.stamps).insert(
+            (request.handle.channel, request.handle.epoch),
+            RouteStamp {
+                principal: request.principal.clone(),
+                scope: request.scope.clone(),
+                session: request.identity.session.clone(),
+            },
+        );
+    }
+
+    /// Forgets a route that has gone.
+    pub fn forget(&self, handle: &RouteHandle) {
+        lock(&self.stamps).remove(&(handle.channel, handle.epoch));
+    }
+
+    /// Who calls on a route, from its stamp. A route with no recorded stamp
+    /// has no principal and no scope, so it is refused by every op.
+    pub fn caller(&self, handle: &RouteHandle) -> Caller {
+        let stamp = lock(&self.stamps)
+            .get(&(handle.channel, handle.epoch))
+            .cloned();
+        match stamp {
+            Some(s) => caller::from_route(s.principal.as_ref(), s.scope.as_ref(), &s.session),
+            None => caller::from_route(None, None, ""),
+        }
+    }
+}
+
 pub struct BasalHandler {
     phase: Arc<Mutex<Phase>>,
-    /// The principal the daemon stamped on each route at bind. The daemon
-    /// stamps it once, at `route.bind`, never per request.
-    routes: Mutex<HashMap<RouteKey, (Option<Principal>, String)>>,
+    routes: Routes,
     configure: Arc<Configure>,
     hosts: Arc<MakeHosts>,
     initialize: Arc<InitializeHosts>,
@@ -58,7 +112,7 @@ impl BasalHandler {
     pub fn new(configure: Configure, hosts: MakeHosts) -> Self {
         Self {
             phase: Arc::new(Mutex::new(Phase::Starting)),
-            routes: Mutex::new(HashMap::new()),
+            routes: Routes::default(),
             configure: Arc::new(configure),
             hosts: Arc::new(hosts),
             initialize: Arc::new(Box::new(|_| Ok(()))),
@@ -67,6 +121,12 @@ impl BasalHandler {
     pub fn with_store_initializer(mut self, initialize: InitializeHosts) -> Self {
         self.initialize = Arc::new(initialize);
         self
+    }
+
+    /// Who calls on a route this handler has seen bound: what `handle`
+    /// decides each request by.
+    pub fn caller(&self, handle: &RouteHandle) -> Caller {
+        self.routes.caller(handle)
     }
 }
 
@@ -175,16 +235,7 @@ impl ModuleHandler for BasalHandler {
                 };
             }
         };
-        let handle = ctx.route_handle();
-        let principal = lock(&self.routes)
-            .get(&(handle.channel, handle.epoch))
-            .cloned()
-            .unwrap_or((None, String::new()));
-        let (principal, session) = principal;
-        // subc-client-rs 0.23.5 does not hand the route's scope stamp to
-        // the module, so no route can name an agent yet: agent callers are
-        // refused until it does.
-        let caller = caller::from_route(principal.as_ref(), None, &session);
+        let caller = self.caller(&ctx.route_handle());
         let module = match &*lock(&self.phase) {
             Phase::Ready(m) => m.clone(),
             Phase::Starting => {
@@ -224,15 +275,12 @@ impl ModuleHandler for BasalHandler {
     }
 
     async fn on_bind(&self, request: &RouteBindRequest) -> BindDecision {
-        lock(&self.routes).insert(
-            (request.handle.channel, request.handle.epoch),
-            (request.principal.clone(), request.identity.session.clone()),
-        );
+        self.routes.bind(request);
         BindDecision::accept()
     }
 
     async fn on_route_gone(&self, handle: &RouteHandle) {
-        lock(&self.routes).remove(&(handle.channel, handle.epoch));
+        self.routes.forget(handle);
     }
 
     async fn on_hello_ack(&self, ack: &ModuleHelloAckBody) {
