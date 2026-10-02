@@ -62,6 +62,16 @@ fn serve() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // Connecting consumes and closes subc's launch-nonce pipe. Do this before
+    // constructing the handler that can start the pool, including warm spares.
+    let _startup_transport =
+        match basal_host::transport::SubcTransport::connect(std::time::Duration::from_secs(30)) {
+            Ok(transport) => transport,
+            Err(error) => {
+                tracing::error!("cannot consume launch nonce before worker startup: {error:?}");
+                return ExitCode::FAILURE;
+            }
+        };
     let pool = match PoolConfig::beside_current_exe() {
         Ok(p) => p,
         Err(e) => {

@@ -89,6 +89,17 @@ const NO_EXTRA: &[&str] = &[];
 
 const CONTROLS: &[Control] = &[
     Control {
+        label: "worker leaves inherited descriptors open",
+        edits: &[(
+            CONFINEMENT,
+            "for fd in macos::open_descriptors().map_err(ConfinementError::Descriptors)? {",
+            "for fd in Vec::<i32>::new() { // NON-VACUITY BREAK",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Integration("inherited_descriptors"),
+        test: "worker_closes_extra_inherited_descriptors_at_startup",
+    },
+    Control {
         label: "lockdown: forbidden globals are not removed",
         edits: &[(
             PRELUDE,
@@ -1558,6 +1569,17 @@ const M_RECONCILE: &str = "crates/basal-core/src/reconcile.rs";
 /// (or in a basal-core function only the module calls, such as the health
 /// figures) and runs the basal-module test named for it.
 const MODULE_CONTROLS: &[Control] = &[
+    Control {
+        label: "pool startup boundary precedes nonce consumption",
+        edits: &[(
+            "crates/basal-module/src/main.rs",
+            "let _startup_transport =",
+            "let pool = PoolConfig::beside_current_exe(); drop(pool); // NON-VACUITY BREAK\n    let _startup_transport =",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("startup_order"),
+        test: "serve_connects_before_constructing_worker_pool",
+    },
     Control {
         label: "flow.list agent sees another agent's flow",
         edits: &[(

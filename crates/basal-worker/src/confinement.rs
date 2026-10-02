@@ -143,14 +143,21 @@ fn apply_seatbelt() -> Result<(), ConfinementError> {
 
 /// The worker should inherit nothing but stdio, and the parent spawns it
 /// that way; this closes anything else regardless, so a parent bug cannot
-/// hand the engine a descriptor to a store or a socket.
+/// hand the engine a descriptor to a store, socket, or daemon launch nonce.
+/// A failed close refuses startup: the sandbox denies new opens, but does not
+/// revoke access through an inherited descriptor.
 #[cfg(target_os = "macos")]
 pub fn close_inherited_descriptors() -> Result<(), ConfinementError> {
     for fd in macos::open_descriptors().map_err(ConfinementError::Descriptors)? {
         if fd > 2 {
             // SAFETY: closing a descriptor this process owns. Nothing in the
             // worker holds descriptors above 2 at this point in startup.
-            unsafe { libc::close(fd) };
+            if unsafe { libc::close(fd) } != 0 {
+                return Err(ConfinementError::Descriptors(format!(
+                    "descriptor {fd}: {}",
+                    std::io::Error::last_os_error()
+                )));
+            }
         }
     }
     Ok(())
