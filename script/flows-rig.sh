@@ -4,15 +4,17 @@
 # The rig is a private subc daemon with its own port, its own XDG homes under
 # ~/.local/share/cortexkit/ckdev-flows/ and its own ckdev-* binaries, every
 # one built here from a named revision. It runs the credentials vault (empty),
-# Broca, prefrontal-core, prefrontal-routing, ck-basal and a rig-only callosum
-# stub that answers consent cards as the operator. It never reads, writes or
+# Broca, entorhinal, prefrontal-core, prefrontal-routing, ck-basal and a
+# rig-only callosum stub that answers consent cards as the operator. It never
+# reads, writes or
 # starts anything belonging to the production daemon or to another rig.
 # docs/rig.md describes it.
 #
 # Usage:
 #   script/flows-rig.sh build --prefrontal-rev <rev> [--subc-rev <rev>]
 #                             [--broca-rev <rev>] [--credentials-rev <rev>]
-#                             [--commons-rev <rev>] [--dry-run]
+#                             [--commons-rev <rev>] [--entorhinal-rev <rev>]
+#                             [--dry-run]
 #   script/flows-rig.sh place    [--dry-run]
 #   script/flows-rig.sh config   [--dry-run]
 #   script/flows-rig.sh start    [--dry-run]
@@ -71,7 +73,7 @@ say() { printf '%s\n' "$*"; }
 die() { printf 'flows-rig: %s\n' "$*" >&2; exit 1; }
 
 usage() {
-  sed -n '12,25p' "$0" | sed 's/^# \{0,1\}//' >&2
+  sed -n '12,26p' "$0" | sed 's/^# \{0,1\}//' >&2
   exit 2
 }
 
@@ -251,6 +253,7 @@ subconscious	$WORKSPACE/subconscious
 commons	$WORKSPACE/commons
 broca	$WORKSPACE/broca
 claustrum	$WORKSPACE/claustrum
+entorhinal	$WORKSPACE/entorhinal
 prefrontal	$WORKSPACE/prefrontal
 basal	$ROOT
 EOF
@@ -266,6 +269,7 @@ ck	subconscious	ck	ckdev-ck
 broca	broca	ck-broca	ckdev-broca
 claustrum	claustrum	ck-claustrum	ckdev-claustrum
 auth	claustrum	ck-auth	ckdev-auth
+entorhinal	entorhinal	ck-entorhinal	ckdev-entorhinal
 prefrontal-core	prefrontal	ck-prefrontal-core	ckdev-prefrontal-core
 prefrontal-routing	prefrontal	ck-prefrontal-routing	ckdev-prefrontal-routing
 basal	basal	ck-basal	ckdev-basal
@@ -279,6 +283,7 @@ modules() {
   cat <<'EOF'
 claustrum	ckdev-claustrum
 broca	ckdev-broca
+entorhinal	ckdev-entorhinal
 prefrontal-core	ckdev-prefrontal-core
 prefrontal-routing	ckdev-prefrontal-routing
 basal	ckdev-basal
@@ -308,6 +313,7 @@ cmd_build() {
   broca_rev=HEAD
   credentials_rev=HEAD
   commons_rev=HEAD
+  entorhinal_rev=HEAD
   while [ $# -gt 0 ]; do
     case "$1" in
       --prefrontal-rev) [ $# -ge 2 ] || usage; prefrontal_rev=$2; shift 2 ;;
@@ -315,6 +321,7 @@ cmd_build() {
       --broca-rev) [ $# -ge 2 ] || usage; broca_rev=$2; shift 2 ;;
       --credentials-rev) [ $# -ge 2 ] || usage; credentials_rev=$2; shift 2 ;;
       --commons-rev) [ $# -ge 2 ] || usage; commons_rev=$2; shift 2 ;;
+      --entorhinal-rev) [ $# -ge 2 ] || usage; entorhinal_rev=$2; shift 2 ;;
       *) usage ;;
     esac
   done
@@ -339,6 +346,7 @@ cmd_build() {
       commons) rev=$commons_rev ;;
       broca) rev=$broca_rev ;;
       claustrum) rev=$credentials_rev ;;
+      entorhinal) rev=$entorhinal_rev ;;
       prefrontal) rev=$prefrontal_rev ;;
       basal) rev=HEAD ;;
     esac
@@ -354,6 +362,7 @@ cmd_build() {
   cargo_build subconscious "" -p subc-core --bin ck-subc --bin ck
   cargo_build broca "" -p broca-module-serve --bin ck-broca
   cargo_build claustrum "" -p credentials-module --bin ck-claustrum --bin ck-auth
+  cargo_build entorhinal "" -p entorhinal-module --bin ck-entorhinal
   prefrontal_sha=$(printf '%s' "$stack" | awk -F'\t' '$1=="prefrontal"{print $4}')
   # prefrontal's build scripts embed the revision they were told; the clone
   # is at that exact commit with no local changes, so it is not dirty.
@@ -521,8 +530,17 @@ cmd_config() {
       "env": { "BROCA_STATE_ROOT": "$DATA_HOME/cortexkit/broca" },
       "enabled": true
     },
-    // The projects registry is off: this rig runs no entorhinal, and core's
-    // registry consumer would otherwise dial for it on every route bind.
+    // The project-identity/v1 provider. prefrontal-core declares that
+    // capability required, and the daemon refuses every route to core until
+    // a provider has registered. Its store is data/cortexkit/entorhinal/.
+    "entorhinal": {
+      "program": "$BIN/ckdev-entorhinal",
+      "args": [],
+      "env": {},
+      "enabled": true
+    },
+    // Core's projects registry consumer stays off: entorhinal runs only to
+    // provide the capability, and no project is registered on this rig.
     // Never set PREFRONTAL_CORE_DIAGNOSTICS here: it opens core's test seams,
     // which exist for prefrontal's end-to-end harness only.
     "prefrontal-core": {
