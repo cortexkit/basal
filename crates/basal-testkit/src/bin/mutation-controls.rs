@@ -2055,7 +2055,7 @@ const MODULE_CONTROLS: &[Control] = &[
         edits: &[(
             M_OPS,
             "(None, _) => \"unapproved\",",
-            "(None, _) => if f.enabled { \"enabled\" } else { \"disabled\" },",
+            "(None, _) => if enabled { \"enabled\" } else { \"disabled\" },",
         )],
         also_restore: NO_EXTRA,
         target: Target::Module("ops"),
