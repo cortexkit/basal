@@ -1,0 +1,30 @@
+[package]
+name = "basal-rig"
+version = "0.1.0"
+description = "Test support for basal's isolated ckdev-flows rig only: the callosum stub that answers consent cards there, and the live contract suite run against real prefrontal-core. Never deployed."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+# Placed on the rig as `ckdev-callosum` by script/flows-rig.sh and configured
+# only in the rig's daemon config, never in a production one.
+[[bin]]
+name = "ck-callosum-stub"
+path = "src/bin/ck-callosum-stub.rs"
+test = false
+
+# Run by `script/flows-rig.sh test` against a started rig. `cargo test` builds
+# it but never runs it.
+[[bin]]
+name = "basal-rig-contract"
+path = "src/bin/basal-rig-contract.rs"
+test = false
+
+[dependencies]
+async-trait.workspace = true
+rusqlite.workspace = true
+serde_json.workspace = true
+subc-client-rs.workspace = true
+subc-protocol.workspace = true
+tokio = { workspace = true, features = ["sync", "time"] }

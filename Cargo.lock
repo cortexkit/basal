@@ -111,6 +111,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "basal-rig"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "rusqlite",
+ "serde_json",
+ "subc-client-rs",
+ "subc-protocol",
+ "tokio",
+]
+
+[[package]]
 name = "basal-testkit"
 version = "0.1.0"
 dependencies = [

@@ -138,7 +138,7 @@ fn serve() -> ExitCode {
                         )),
                         catalog,
                         consent: Arc::new(CoreConsent::new(transport).with_polling()),
-                        hooks: Arc::new(NoHooks),
+                        hooks: runtime_hooks(),
                     }
                 }
                 Err(error) => {
@@ -172,6 +172,16 @@ fn serve() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// The runtime's hooks: none in production. The ckdev-flows rig's own build
+/// (feature `rig-kill-hook`) adds the kill switch its crash test arms.
+fn runtime_hooks() -> Arc<dyn basal_core::Hooks> {
+    #[cfg(feature = "rig-kill-hook")]
+    if let Some(hook) = basal_module::rig_kill::RigKillHook::from_env() {
+        return Arc::new(hook);
+    }
+    Arc::new(NoHooks)
 }
 
 #[tokio::main]

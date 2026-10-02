@@ -4,9 +4,10 @@
 # The rig is a private subc daemon with its own port, its own XDG homes under
 # ~/.local/share/cortexkit/ckdev-flows/ and its own ckdev-* binaries, every
 # one built here from a named revision. It runs the credentials vault (empty),
-# Broca, prefrontal-core, prefrontal-routing and ck-basal. It never reads,
-# writes or starts anything belonging to the production daemon or to another
-# rig. docs/rig.md describes it.
+# Broca, prefrontal-core, prefrontal-routing, ck-basal and a rig-only callosum
+# stub that answers consent cards as the operator. It never reads, writes or
+# starts anything belonging to the production daemon or to another rig.
+# docs/rig.md describes it.
 #
 # Usage:
 #   script/flows-rig.sh build --prefrontal-rev <rev> [--subc-rev <rev>]
@@ -18,6 +19,7 @@
 #   script/flows-rig.sh status   [--dry-run]
 #   script/flows-rig.sh stop     [--dry-run]
 #   script/flows-rig.sh manifest [--dry-run]
+#   script/flows-rig.sh test     [--dry-run]
 #
 # --dry-run prints every command the subcommand would run and every file it
 # would write, with the file's content, and changes nothing.
@@ -50,6 +52,15 @@ SUBC_CONFIG="$CONFIG_HOME/cortexkit/subc.jsonc"
 # vault refuses a key beside its own store), so it sits in the config home.
 VAULT_DIR="$DATA_HOME/cortexkit/claustrum"
 VAULT_KEY="$CONFIG_HOME/claustrum/master.key"
+# The stores the contract suite reads (read-only), and the file that arms the
+# rig build's one-shot kill switch in ck-basal (crates/basal-module/src/rig_kill.rs).
+CORE_STORE="$DATA_HOME/cortexkit/prefrontal-core/store.db"
+BASAL_STORE="$DATA_HOME/cortexkit/basal/store.db"
+MACHINE_ID="$DATA_HOME/cortexkit/machine-id"
+KILL_FILE="$RUNTIME_DIR/basal-kill-at"
+# The contract suite: a client of the rig, not a module, so it is run from
+# the build output rather than placed in bin/.
+CONTRACT="$TARGETS/basal/release/basal-rig-contract"
 # Clear of production's daemon (8757) and of the older isolation rig under
 # ckdev-rig/ (8799, plus 8377 and 8378 for one of its modules).
 PORT=8791
@@ -60,7 +71,7 @@ say() { printf '%s\n' "$*"; }
 die() { printf 'flows-rig: %s\n' "$*" >&2; exit 1; }
 
 usage() {
-  sed -n '12,23p' "$0" | sed 's/^# \{0,1\}//' >&2
+  sed -n '12,25p' "$0" | sed 's/^# \{0,1\}//' >&2
   exit 2
 }
 
@@ -103,7 +114,8 @@ guard_all_paths() {
   esac
   for path in "$BIN" "$SRC" "$TARGETS" "$STACK" "$LOGS" "$RESULTS" \
       "$CONFIG_HOME" "$DATA_HOME" "$RUNTIME_DIR" "$CONN" "$PIDFILE" \
-      "$SUBC_CONFIG" "$VAULT_DIR" "$VAULT_KEY" "$RIG_HOME"; do
+      "$SUBC_CONFIG" "$VAULT_DIR" "$VAULT_KEY" "$RIG_HOME" "$CORE_STORE" \
+      "$BASAL_STORE" "$MACHINE_ID" "$KILL_FILE" "$CONTRACT"; do
     guard_path "$path"
   done
 }
@@ -258,6 +270,7 @@ prefrontal-core	prefrontal	ck-prefrontal-core	ckdev-prefrontal-core
 prefrontal-routing	prefrontal	ck-prefrontal-routing	ckdev-prefrontal-routing
 basal	basal	ck-basal	ckdev-basal
 basal-worker	basal	ck-basal-worker	ck-basal-worker
+callosum	basal	ck-callosum-stub	ckdev-callosum
 EOF
 }
 
@@ -269,6 +282,7 @@ broca	ckdev-broca
 prefrontal-core	ckdev-prefrontal-core
 prefrontal-routing	ckdev-prefrontal-routing
 basal	ckdev-basal
+callosum	ckdev-callosum
 EOF
 }
 
@@ -347,8 +361,11 @@ cmd_build() {
     -p prefrontal-core-module --bin ck-prefrontal-core
   cargo_build prefrontal "CK_BUILD_GIT_SHA=$prefrontal_sha CK_BUILD_GIT_DIRTY=false" \
     -p prefrontal-routing-module --bin ck-prefrontal-routing
-  cargo_build basal "" -p basal-module --bin ck-basal
+  # The rig's ck-basal carries the one-shot kill switch the contract suite's
+  # crash case arms; a production build never enables this feature.
+  cargo_build basal "" -p basal-module --features rig-kill-hook --bin ck-basal
   cargo_build basal "" -p basal-worker --bin ck-basal-worker
+  cargo_build basal "" -p basal-rig --bin ck-callosum-stub --bin basal-rig-contract
 
   # A build that rewrote a tracked file (a Cargo.lock refreshed against a
   # sibling at another revision) did not build exactly the named commit.
@@ -523,9 +540,21 @@ cmd_config() {
       "enabled": true,
       "launch_nonce_env": false
     },
-    // Reserved, so its routes carry the principal reserved:basal.
+    // Reserved, so its routes carry the principal reserved:basal. The rig's
+    // build reads BASAL_RIG_KILL_FILE for the contract suite's crash case; a
+    // production ck-basal has no such switch and ignores the variable.
     "basal": {
       "program": "$BIN/ckdev-basal",
+      "args": [],
+      "env": { "BASAL_RIG_KILL_FILE": "$KILL_FILE" },
+      "enabled": true,
+      "reserved": true
+    },
+    // Rig only, never in a production config: a stub under the reserved id
+    // callosum, which core and basal both treat as the operator. It answers
+    // the contract suite's consent cards (crates/basal-rig).
+    "callosum": {
+      "program": "$BIN/ckdev-callosum",
       "args": [],
       "env": {},
       "enabled": true,
@@ -796,13 +825,19 @@ cmd_stop() {
 
 cmd_manifest() {
   [ $# -eq 0 ] || usage
-  stamp=$(date -u +%Y%m%dT%H%M%SZ)
+  write_manifest "$(date -u +%Y%m%dT%H%M%SZ)"
+}
+
+# write_manifest <stamp>: results/<stamp>/stack.json.
+write_manifest() {
+  stamp=$1
   dest="$RESULTS/$stamp/stack.json"
   if [ "$DRY" = 1 ] && { [ ! -f "$STACK" ] || ! all_placed; }; then
     say "+ read the built commits from $STACK and check each clone in $SRC is still at its commit"
     say "+ shasum -a 256 and codesign -dv each binary in $BIN"
     say "+ write $dest (rig, root, port, repositories[name, source, requested, commit],"
-    say "  binaries[name, repository, path, sha256, identifier])"
+    say "  binaries[name, repository, path, sha256, identifier], basal_features,"
+    say "  contract_suite[path, sha256])"
     return
   fi
   [ -f "$STACK" ] || die "nothing built yet; run build first"
@@ -828,9 +863,15 @@ cmd_manifest() {
     bins_tsv="$bins_tsv$name	$repo	$path	$sum	$(identifier_of "$path")
 "
   done
-  json=$(REPOS="$repos_tsv" BINS="$bins_tsv" python3 - "$stamp" "$RIG" "$PORT" <<'PY'
+  contract_sum=""
+  if [ -f "$CONTRACT" ]; then
+    contract_sum=$(shasum -a 256 "$CONTRACT" | awk '{ print $1 }')
+  fi
+  json=$(REPOS="$repos_tsv" BINS="$bins_tsv" python3 - "$stamp" "$RIG" "$PORT" \
+      "$CONTRACT" "$contract_sum" <<'PY'
 import json, os, sys
 stamp, rig, port = sys.argv[1], sys.argv[2], int(sys.argv[3])
+contract, contract_sum = sys.argv[4], sys.argv[5]
 rows = lambda name: [l.split("\t") for l in os.environ[name].splitlines() if l]
 print(json.dumps({
     "rig": "ckdev-flows",
@@ -844,11 +885,61 @@ print(json.dumps({
         {"name": n, "repository": r, "path": p, "sha256": h, "identifier": i}
         for n, r, p, h, i in rows("BINS")
     ],
+    # cmd_build compiles the rig's ck-basal with this feature (the crash
+    # case's kill switch); production builds never do.
+    "basal_features": ["rig-kill-hook"],
+    "contract_suite": {"path": contract, "sha256": contract_sum or None},
 }, indent=2))
 PY
 )
   printf '%s\n' "$json" | write_file "$dest"
   [ "$DRY" = 1 ] || say "wrote $dest"
+}
+
+# ---------------------------------------------------------------- test
+
+# Run the live contract suite (crates/basal-rig) against the rig: start it if
+# it is not running, write results/<stamp>/stack.json, run the suite with its
+# output in contract.log and its results in contract.json beside it, and stop
+# the rig again only if this command started it.
+cmd_test() {
+  [ $# -eq 0 ] || usage
+  stamp=$(date -u +%Y%m%dT%H%M%SZ)
+  dir="$RESULTS/$stamp"
+  if [ "$DRY" = 1 ]; then
+    say "+ if the rig daemon is not running: $0 start, and $0 stop after the suite"
+    say "+ write $dir/stack.json, as manifest does"
+    say "+ rig_env $CONTRACT --core-store $CORE_STORE --basal-store $BASAL_STORE"
+    say "    --machine-id $MACHINE_ID --kill-file $KILL_FILE --results $dir/contract.json"
+    say "  (output into $dir/contract.log)"
+    return
+  fi
+  [ -x "$CONTRACT" ] || die "no contract suite at $CONTRACT; run build first"
+  started=0
+  pid=$(daemon_pid)
+  if [ -z "$pid" ]; then
+    cmd_start
+    started=1
+  else
+    check_daemon_identity "$pid"
+  fi
+  write_manifest "$stamp"
+  guard_path "$dir/contract.log"
+  guard_path "$dir/contract.json"
+  say "running the contract suite (output: $dir/contract.log)"
+  set +e
+  rig_env "$CONTRACT" --core-store "$CORE_STORE" --basal-store "$BASAL_STORE" \
+    --machine-id "$MACHINE_ID" --kill-file "$KILL_FILE" \
+    --results "$dir/contract.json" > "$dir/contract.log" 2>&1
+  status=$?
+  set -e
+  cat "$dir/contract.log"
+  rm -f "$KILL_FILE"
+  if [ "$started" = 1 ]; then
+    cmd_stop
+  fi
+  [ "$status" = 0 ] || die "the contract suite failed (exit $status); results in $dir"
+  say "the contract suite passed; results in $dir"
 }
 
 # ---------------------------------------------------------------- main
@@ -871,5 +962,6 @@ case "$command" in
   status) cmd_status "$@" ;;
   stop) cmd_stop "$@" ;;
   manifest) cmd_manifest "$@" ;;
+  test) cmd_test "$@" ;;
   *) usage ;;
 esac

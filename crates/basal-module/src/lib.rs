@@ -16,6 +16,8 @@
 //! - [`unconfigured`]: the hosts the production binary runs with until real
 //!   adapters exist; [`harness`]: the same module against the mocks, driven
 //!   over stdio for tests.
+//! - `rig_kill` (only with the `rig-kill-hook` feature): the one-shot kill
+//!   switch the ckdev-flows rig's contract suite uses for its crash case.
 
 pub mod caller;
 pub mod card;
@@ -29,5 +31,7 @@ pub mod module;
 pub mod ops;
 pub mod pool;
 pub mod process;
+#[cfg(feature = "rig-kill-hook")]
+pub mod rig_kill;
 pub mod serve;
 pub mod unconfigured;
