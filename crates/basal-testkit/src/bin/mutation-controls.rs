@@ -4463,15 +4463,26 @@ const HOST_CONTROLS: &[Control] = &[
         test: "active_with_the_runs_code_hash_activates",
     },
     Control {
-        label: "unknown reasons: a timeout is not told from a closed connection",
+        label: "unknown reasons: a reply deadline is recorded as a lost connection",
         edits: &[(
             "crates/basal-host/src/transport.rs",
-            "CallError::OutcomeUnknown(e) if e.to_string().contains(SUBC_REPLY_TIMEOUT) => {",
-            "CallError::OutcomeUnknown(e) if false && e.to_string().contains(SUBC_REPLY_TIMEOUT) => {",
+            "Some(OutcomeUnknownCause::Deadline) => WireError::TimedOut(message),",
+            "Some(OutcomeUnknownCause::Deadline) => WireError::Unknown(message),",
         )],
         also_restore: NO_EXTRA,
         target: Target::HostLib,
-        test: "transport::tests::every_call_error_variant_maps_to_never_sent_or_one_unknown_reason",
+        test: "transport::tests::deadline_is_a_reply_timeout",
+    },
+    Control {
+        label: "unknown reasons: a failed completion inside the client is recorded as a lost connection",
+        edits: &[(
+            "crates/basal-host/src/transport.rs",
+            "Some(OutcomeUnknownCause::CompletionFailed) => WireError::Unreadable(message),",
+            "Some(OutcomeUnknownCause::CompletionFailed) => WireError::Unknown(message),",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::HostLib,
+        test: "transport::tests::completion_failed_is_an_unreadable_reply",
     },
     Control {
         label: "unknown reasons: capability resolver errors count as maybe sent",
