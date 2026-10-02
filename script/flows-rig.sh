@@ -65,10 +65,10 @@ KILL_FILE="$RUNTIME_DIR/basal-kill-at"
 CONTRACT="$TARGETS/basal/release/basal-rig-contract"
 # Which mode config wrote core's entry in: registry or registry-disabled.
 MODE_FILE="$CONFIG_HOME/flows-rig-mode"
-# The project the suite's test agent belongs to: a git repository the rig
-# creates under its own home and registers in the rig's entorhinal.
-PROJECT_NAME="basal-rig-contract"
-PROJECT_ROOT="$RIG_HOME/projects/$PROJECT_NAME"
+# Where the contract suite's projects live: one git repository per run, which
+# the rig creates under its own home and registers in its entorhinal (see
+# ensure_project).
+PROJECTS="$RIG_HOME/projects"
 # Clear of production's daemon (8757) and of the older isolation rig under
 # ckdev-rig/ (8799, plus 8377 and 8378 for one of its modules).
 PORT=8791
@@ -124,7 +124,7 @@ guard_all_paths() {
       "$CONFIG_HOME" "$DATA_HOME" "$RUNTIME_DIR" "$CONN" "$PIDFILE" \
       "$SUBC_CONFIG" "$VAULT_DIR" "$VAULT_KEY" "$RIG_HOME" "$CORE_STORE" \
       "$BASAL_STORE" "$MACHINE_ID" "$KILL_FILE" "$CONTRACT" "$MODE_FILE" \
-      "$PROJECT_ROOT"; do
+      "$PROJECTS"; do
     guard_path "$path"
   done
 }
@@ -973,7 +973,7 @@ cmd_test() {
   [ -n "$mode" ] || die "no mode in $MODE_FILE; run config again"
   project_args=""
   if [ "$mode" = registry ]; then
-    project_args="--project-id $(ensure_project)"
+    project_args="--project-id $(ensure_project "$stamp")"
   fi
   write_manifest "$stamp"
   guard_path "$dir/contract.log"
@@ -995,29 +995,33 @@ cmd_test() {
   say "the contract suite passed; results in $dir"
 }
 
-# The suite's project in the rig's entorhinal, created on first use so a
-# fresh rig needs no manual step: a git repository under the rig's home,
-# registered as $PROJECT_NAME and assigned to the workspace basal-rig, which
-# is what core needs to resolve a head agent's project to a workspace. Prints
-# the project id. Every call goes through the rig's ck, against the rig's
-# connection file; ck finds its `projects` and `workspaces` domains as
-# ck-projects and ck-workspaces on PATH, which are entorhinal's binary under
-# those names, so they are linked into a directory of the rig's own.
+# ensure_project <stamp>: the run's project in the rig's entorhinal, so a
+# fresh rig needs no manual step. Core keeps at most one head agent per
+# project, and every run registers a new head, so every run gets its own
+# project: a git repository under the rig's home, registered as
+# basal-rig-<stamp> and assigned to the workspace basal-rig, which is what
+# core needs to resolve a head's project to a workspace. Prints the project
+# id. Every call goes through the rig's ck, against the rig's connection
+# file; ck finds its `projects` and `workspaces` domains as ck-projects and
+# ck-workspaces on PATH, which are entorhinal's binary under those names, so
+# they are linked into a directory of the rig's own.
 ensure_project() {
+  project_name="basal-rig-$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  project_root="$PROJECTS/$project_name"
   faces="$RIG/build/faces"
   guard_path "$faces"
-  guard_path "$PROJECT_ROOT"
-  mkdir -p "$faces" "$PROJECT_ROOT"
+  guard_path "$project_root"
+  mkdir -p "$faces" "$project_root"
   ln -sf "$BIN/ckdev-entorhinal" "$faces/ck-projects"
   ln -sf "$BIN/ckdev-entorhinal" "$faces/ck-workspaces"
-  [ -d "$PROJECT_ROOT/.git" ] || git -C "$PROJECT_ROOT" init --quiet
-  project_id=$(rig_projects projects resolve "$PROJECT_ROOT" --json | project_field registered)
+  [ -d "$project_root/.git" ] || git -C "$project_root" init --quiet
+  project_id=$(rig_projects projects resolve "$project_root" --json | project_field registered)
   if [ -z "$project_id" ]; then
-    rig_projects projects register "$PROJECT_NAME" "$PROJECT_ROOT" >&2
-    project_id=$(rig_projects projects resolve "$PROJECT_ROOT" --json | project_field registered)
-    [ -n "$project_id" ] || die "entorhinal did not register $PROJECT_ROOT"
+    rig_projects projects register "$project_name" "$project_root" >&2
+    project_id=$(rig_projects projects resolve "$project_root" --json | project_field registered)
+    [ -n "$project_id" ] || die "entorhinal did not register $project_root"
   fi
-  workspace=$(rig_projects projects resolve "$PROJECT_ROOT" --json | project_field workspace)
+  workspace=$(rig_projects projects resolve "$project_root" --json | project_field workspace)
   if [ "$workspace" != basal-rig ]; then
     rig_projects workspaces assign "$project_id" basal-rig >&2
   fi
