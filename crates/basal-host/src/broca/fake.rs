@@ -1,6 +1,13 @@
 //! A deterministic Broca with the service's request and response JSON formats.
-//! Admitted runs, text and usage can be synced to a file, preserving the
+//! Admitted runs, results and usage can be synced to a file, preserving the
 //! simulated remote service's state when the caller process is killed.
+//!
+//! `run.result` follows Broca's contract: `final_message` only on a completed
+//! run, its text the final message's text parts joined with nothing between
+//! them (`""` when it has none), `error` only on an `error` run, `reason`
+//! only on a paused one, and `unknown_run` for a run the session does not
+//! have. It answers for archived sessions too, which can no longer be
+//! watched.
 
 use super::*;
 use serde::{Deserialize, Serialize};
@@ -15,21 +22,28 @@ struct Run {
     run_id: String,
     submission_id: String,
     pending: bool,
+    /// What `run.status` answers. Token usage is reported only here, never
+    /// by `run.result`.
     status: RunStatusResponse,
-    events: Vec<SubscribeEvent>,
-    messages: Vec<SessionReadMessage>,
+    /// What `run.result` answers.
+    result: RunResultResponse,
+    /// `run.result` refuses the run as `unknown_run`.
+    forgotten: bool,
+    /// `session.subscribe` is refused, as for an archived session.
     archived: bool,
-    read_refusal: Option<String>,
+    /// The finish is not delivered to the session's subscription.
     drop_finish: bool,
-    redeliver: bool,
+    /// A subscription is open on the session.
+    watched: bool,
 }
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct State {
     runs: BTreeMap<String, Run>,
     sends: Vec<(Route, Vec<u8>)>,
-    subscriptions: Vec<(Route, SubscribeParams)>,
+    watches: Vec<Route>,
+    wakes: usize,
     status_calls: usize,
-    read_calls: usize,
+    result_calls: usize,
     pending_next: bool,
     cut_next_reply: bool,
 }
@@ -44,6 +58,16 @@ impl Default for FakeBroca {
             state: Arc::new(Mutex::new(State::default())),
             path: None,
         }
+    }
+}
+fn state_name(reason: RunFinishReason) -> &'static str {
+    match reason {
+        RunFinishReason::Completed => "completed",
+        RunFinishReason::MaxSteps => "max_steps",
+        RunFinishReason::Cancelled => "cancelled",
+        RunFinishReason::Interrupted => "interrupted",
+        RunFinishReason::Error => "error",
+        RunFinishReason::TransformUnavailable => "transform_unavailable",
     }
 }
 impl FakeBroca {
@@ -75,6 +99,15 @@ impl FakeBroca {
         }
         Ok(())
     }
+    fn with_run(&self, send_id: &str, f: impl FnOnce(&mut Run)) -> Result<(), BrocaError> {
+        let mut s = lock(&self.state);
+        let run = s
+            .runs
+            .get_mut(send_id)
+            .ok_or_else(|| BrocaError::Invalid("unknown send id".into()))?;
+        f(run);
+        self.save(&s)
+    }
     pub fn pending_next(&self) {
         lock(&self.state).pending_next = true;
     }
@@ -84,63 +117,45 @@ impl FakeBroca {
     pub fn sends(&self) -> Vec<(Route, Vec<u8>)> {
         lock(&self.state).sends.clone()
     }
-    pub fn subscriptions(&self) -> Vec<(Route, SubscribeParams)> {
-        lock(&self.state).subscriptions.clone()
+    /// The session route of every subscription opened, in opening order.
+    pub fn watches(&self) -> Vec<Route> {
+        lock(&self.state).watches.clone()
     }
+    /// How many run finishes reached an open subscription, each of which
+    /// would have woken the host.
+    pub fn wakes(&self) -> usize {
+        lock(&self.state).wakes
+    }
+    /// How many times `run.status` and `run.result` were called, in that
+    /// order.
     pub fn calls(&self) -> (usize, usize) {
         let s = lock(&self.state);
-        (s.status_calls, s.read_calls)
+        (s.status_calls, s.result_calls)
     }
     pub fn keys(&self) -> Vec<String> {
         lock(&self.state).runs.keys().cloned().collect()
     }
-    pub fn configure(
-        &self,
-        send_id: &str,
-        archived: bool,
-        drop_finish: bool,
-        redeliver: bool,
-        read_refusal: Option<String>,
-    ) -> Result<(), BrocaError> {
-        let mut s = lock(&self.state);
-        let r = s
-            .runs
-            .get_mut(send_id)
-            .ok_or_else(|| BrocaError::Invalid("unknown send id".into()))?;
-        r.archived = archived;
-        r.drop_finish = drop_finish;
-        r.redeliver = redeliver;
-        r.read_refusal = read_refusal;
-        self.save(&s)
+    /// The session is archived: it can no longer be subscribed to, while
+    /// `run.result` and `run.status` still answer.
+    pub fn archive(&self, send_id: &str) -> Result<(), BrocaError> {
+        self.with_run(send_id, |r| {
+            r.archived = true;
+            r.watched = false;
+        })
     }
-    pub fn assistant(&self, send_id: &str, content: Vec<ContentBlock>) -> Result<(), BrocaError> {
-        let mut s = lock(&self.state);
-        let r = s
-            .runs
-            .get_mut(send_id)
-            .ok_or_else(|| BrocaError::Invalid("unknown send id".into()))?;
-        let ordinal = r.messages.len() as u64;
-        r.messages.push(SessionReadMessage {
-            ordinal,
-            mid: format!("m:{ordinal}"),
-            message: Message {
-                role: "assistant".into(),
-                content: content.clone(),
-                cache_prefix_blocks: None,
-                origin: None,
-            },
-        });
-        push(
-            r,
-            ControlUnit::AssistantMessage {
-                message: AssistantMessage {
-                    message_id: format!("m:{ordinal}"),
-                    content,
-                },
-            },
-        );
-        self.save(&s)
+    /// The run's finish never reaches the subscription, as when the
+    /// connection drops at that moment.
+    pub fn drop_finish(&self, send_id: &str) -> Result<(), BrocaError> {
+        self.with_run(send_id, |r| r.drop_finish = true)
     }
+    /// `run.result` refuses the run as `unknown_run`, which Broca should
+    /// never do for a run it accepted.
+    pub fn forget(&self, send_id: &str) -> Result<(), BrocaError> {
+        self.with_run(send_id, |r| r.forgotten = true)
+    }
+    /// Ends the run. A completed run's final message is `text`; an `error`
+    /// run carries a permanent provider error. Usage is reported only
+    /// through `run.status`, as Broca does.
     pub fn finish(
         &self,
         send_id: &str,
@@ -148,82 +163,69 @@ impl FakeBroca {
         reason: RunFinishReason,
         usage: Option<Usage>,
     ) -> Result<(), BrocaError> {
-        self.assistant(
-            send_id,
-            vec![
-                ContentBlock::Reasoning {
-                    text: "private reasoning".into(),
-                    signature: None,
-                },
-                ContentBlock::Text { text: text.into() },
-            ],
-        )?;
-        let mut s = lock(&self.state);
-        let r = s
-            .runs
-            .get_mut(send_id)
-            .ok_or_else(|| BrocaError::Invalid("unknown send id".into()))?;
         let metadata = Terminal {
             usage,
             ..Terminal::default()
         };
-        r.status = match reason {
-            RunFinishReason::Completed => RunStatusResponse::Completed {
-                metadata: metadata.clone(),
-            },
-            RunFinishReason::MaxSteps => RunStatusResponse::MaxSteps {
-                metadata: metadata.clone(),
-            },
-            RunFinishReason::Cancelled => RunStatusResponse::Cancelled {
-                metadata: metadata.clone(),
-            },
-            RunFinishReason::Interrupted => RunStatusResponse::Interrupted {
-                metadata: metadata.clone(),
-            },
-            RunFinishReason::Error => RunStatusResponse::Error {
-                metadata: metadata.clone(),
-            },
-            RunFinishReason::TransformUnavailable => RunStatusResponse::TransformUnavailable {
-                metadata: metadata.clone(),
-            },
+        let status = match reason {
+            RunFinishReason::Completed => RunStatusResponse::Completed { metadata },
+            RunFinishReason::MaxSteps => RunStatusResponse::MaxSteps { metadata },
+            RunFinishReason::Cancelled => RunStatusResponse::Cancelled { metadata },
+            RunFinishReason::Interrupted => RunStatusResponse::Interrupted { metadata },
+            RunFinishReason::Error => RunStatusResponse::Error { metadata },
+            RunFinishReason::TransformUnavailable => {
+                RunStatusResponse::TransformUnavailable { metadata }
+            }
         };
-        push(
-            r,
-            ControlUnit::RunFinished {
-                run_id: Some(r.run_id.clone()),
-                reason,
-                metadata,
-            },
-        );
+        let error = (reason == RunFinishReason::Error).then(|| ProviderError {
+            class: "permanent".into(),
+            message: "fake provider refused the request".into(),
+            rest: serde_json::Map::from_iter([("status".to_owned(), json!(400))]),
+        });
+        self.set(send_id, state_name(reason), text, error, None, status)
+    }
+    /// Sets both answers at once: `run.result` reports `state` (with
+    /// `text` as the final message when completed, and the given error and
+    /// pause reason), `run.status` reports `status`. A terminal state
+    /// delivers a finish to the session's subscription.
+    pub fn set(
+        &self,
+        send_id: &str,
+        state: &str,
+        text: &str,
+        error: Option<ProviderError>,
+        reason: Option<String>,
+        status: RunStatusResponse,
+    ) -> Result<(), BrocaError> {
+        let mut s = lock(&self.state);
+        let run = s
+            .runs
+            .get_mut(send_id)
+            .ok_or_else(|| BrocaError::Invalid("unknown send id".into()))?;
+        let completed = state == "completed";
+        run.result = RunResultResponse {
+            run_id: run.run_id.clone(),
+            state: state.into(),
+            reason: (state == "paused").then_some(reason).flatten(),
+            error: (state == "error").then_some(error).flatten(),
+            final_message: completed.then(|| FinalMessage {
+                ordinal: 1,
+                mid: "m1".into(),
+                text: text.into(),
+            }),
+        };
+        run.status = status;
+        let wakes = run.watched && !run.drop_finish && !["active", "paused"].contains(&state);
+        if wakes {
+            run.watched = false;
+            s.wakes += 1;
+        }
         self.save(&s)
     }
+    /// Changes only what `run.status` answers, leaving `run.result` alone.
     pub fn set_status(&self, send_id: &str, status: RunStatusResponse) -> Result<(), BrocaError> {
-        let mut s = lock(&self.state);
-        s.runs
-            .get_mut(send_id)
-            .ok_or_else(|| BrocaError::Invalid("unknown send id".into()))?
-            .status = status;
-        self.save(&s)
+        self.with_run(send_id, |r| r.status = status)
     }
-    pub fn forget_stream(&self, send_id: &str) -> Result<(), BrocaError> {
-        let mut s = lock(&self.state);
-        s.runs
-            .get_mut(send_id)
-            .ok_or_else(|| BrocaError::Invalid("unknown send id".into()))?
-            .events
-            .clear();
-        self.save(&s)
-    }
-}
-fn push(run: &mut Run, unit: ControlUnit) {
-    let cursor = Cursor {
-        wal_seq: run.events.len() as u64 / 2 + 1,
-        sub_index: run.events.len() as u32 % 2,
-    };
-    run.events.push(SubscribeEvent::Control {
-        cursor,
-        unit: Box::new(unit),
-    });
 }
 fn refused(code: &str) -> BrocaError {
     BrocaError::Refused {
@@ -247,27 +249,26 @@ impl Transport for FakeBroca {
         } else {
             let pending = s.pending_next;
             s.pending_next = false;
-            let mut run = Run {
+            let run_id = format!("run:{key}");
+            let run = Run {
                 route: route.clone(),
                 bytes: params.to_vec(),
-                run_id: format!("run:{key}"),
+                run_id: run_id.clone(),
                 submission_id: format!("submission:{key}"),
                 pending,
                 status: RunStatusResponse::Active,
-                events: vec![],
-                messages: vec![],
-                archived: false,
-                read_refusal: None,
-                drop_finish: false,
-                redeliver: false,
-            };
-            push(
-                &mut run,
-                ControlUnit::RunStarted {
-                    run_id: format!("run:{key}"),
-                    submission_id: Some(format!("submission:{key}")),
+                result: RunResultResponse {
+                    run_id,
+                    state: "active".into(),
+                    reason: None,
+                    error: None,
+                    final_message: None,
                 },
-            );
+                forgotten: false,
+                archived: false,
+                drop_finish: false,
+                watched: false,
+            };
             s.runs.insert(key.clone(), run);
         }
         let r = s
@@ -299,39 +300,36 @@ impl Transport for FakeBroca {
         }
         Ok(result)
     }
-    fn subscribe(
-        &self,
-        route: &Route,
-        params: &SubscribeParams,
-    ) -> Result<Vec<SubscribeEvent>, BrocaError> {
+    fn watch(&self, route: &Route) -> Result<(), BrocaError> {
         let mut s = lock(&self.state);
-        s.subscriptions.push((route.clone(), params.clone()));
-        let r = s
+        let run = s
             .runs
-            .values()
+            .values_mut()
             .find(|r| &r.route == route)
             .ok_or_else(|| refused("not_found"))?;
-        if r.archived {
-            return Err(refused("cursor_expired"));
+        if run.archived {
+            return Err(refused("session_archived"));
         }
-        let from = match &params.from {
-            Some(FromWire::Cursor(c)) => Some(*c),
-            _ => None,
-        };
-        let result = r
-            .events
-            .iter()
-            .filter(|e| match e {
-                SubscribeEvent::Control { cursor, unit } => {
-                    (r.redeliver || from.is_none_or(|c| *cursor > c))
-                        && !(r.drop_finish && matches!(&**unit, ControlUnit::RunFinished { .. }))
-                }
-                _ => true,
-            })
-            .cloned()
-            .collect();
+        if !run.watched {
+            run.watched = true;
+            s.watches.push(route.clone());
+        }
+        self.save(&s)
+    }
+    fn result(
+        &self,
+        route: &Route,
+        params: &RunResultParams,
+    ) -> Result<RunResultResponse, BrocaError> {
+        let mut s = lock(&self.state);
+        s.result_calls += 1;
+        let result = s
+            .runs
+            .values()
+            .find(|r| &r.route == route && r.run_id == params.run_id && !r.forgotten)
+            .map(|r| r.result.clone());
         self.save(&s)?;
-        Ok(result)
+        result.ok_or_else(|| refused(UNKNOWN_RUN))
     }
     fn status(
         &self,
@@ -349,43 +347,12 @@ impl Transport for FakeBroca {
         self.save(&s)?;
         Ok(status)
     }
-    fn read(&self, route: &Route, _: &ReadParams) -> Result<SessionReadResponse, BrocaError> {
+    fn release(&self, route: &Route) {
         let mut s = lock(&self.state);
-        s.read_calls += 1;
-        let r = s
-            .runs
-            .values()
-            .find(|r| &r.route == route)
-            .ok_or_else(|| refused("not_found"))?;
-        if let Some(code) = &r.read_refusal {
-            return Err(refused(code));
+        if let Some(run) = s.runs.values_mut().find(|r| &r.route == route) {
+            run.watched = false;
         }
-        let usage = r.status.terminal().and_then(|(_, t)| t.usage.clone());
-        let result = SessionReadResponse {
-            messages: r.messages.iter().rev().take(1).cloned().collect(),
-            next_from_ordinal: None,
-            head: r.events.last().and_then(|e| match e {
-                SubscribeEvent::Control { cursor, .. } => Some(*cursor),
-                _ => None,
-            }),
-            lineage_id: Some(r.run_id.clone()),
-            lineage_state: SessionReadLineageState {
-                last_run_id: Some(r.run_id.clone()),
-                state: if r.status.terminal().is_some() {
-                    "completed"
-                } else {
-                    "active"
-                }
-                .into(),
-                reason: None,
-                error: None,
-                usage,
-            },
-            tools: None,
-            tools_run_id: None,
-        };
-        self.save(&s)?;
-        Ok(result)
+        let _ = self.save(&s);
     }
 }
 

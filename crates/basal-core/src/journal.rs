@@ -538,6 +538,84 @@ pub fn record_unknown(tx: &Transaction, run_id: &str, position: u64) -> Result<(
     Ok(())
 }
 
+/// Records a host's report that an accepted call's outcome cannot be
+/// established, with the host's `detail` as the run's error.
+///
+/// The call is identified like a completion, by run, position and handle.
+/// A report for a call basal does not know, under another handle, or for a
+/// call that already has an outcome is not applied (`Quarantined`); a
+/// repeated report is `Duplicate`, and a report for a cancelled run is
+/// `Refused`. Otherwise the call is marked unknown and a pending or
+/// suspended run goes to `needs_reconcile` naming the detail; a run already
+/// there gets the detail appended to its error. A run that has ended keeps
+/// its state, with the call left visible as an unknown obligation.
+///
+/// Returns `None` while the run is `running`: an activation owns its state
+/// then, so the host must report again later.
+pub fn record_host_unknown(
+    tx: &Transaction,
+    run_id: &str,
+    position: u64,
+    handle: &str,
+    detail: &str,
+) -> Result<Option<CompletionAck>> {
+    let p = pos(position)?;
+    let state: Option<String> = tx
+        .query_row("SELECT state FROM runs WHERE run_id = ?1", [run_id], |r| {
+            r.get(0)
+        })
+        .optional()?;
+    let row: Option<(Option<String>, String, Option<String>, bool)> = tx
+        .query_row(
+            "SELECT handle, dispatch, settlement, EXISTS \
+             (SELECT 1 FROM mailbox m WHERE m.run_id = journal.run_id AND m.position = journal.position) \
+             FROM journal WHERE run_id = ?1 AND position = ?2",
+            params![run_id, p],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()?;
+    let (Some(state), Some((row_handle, dispatch, settlement, waiting))) = (state, row) else {
+        return Ok(Some(CompletionAck::Quarantined));
+    };
+    if row_handle.as_deref().is_some_and(|h| h != handle) || settlement.is_some() || waiting {
+        return Ok(Some(CompletionAck::Quarantined));
+    }
+    match dispatch.as_str() {
+        "unknown" => return Ok(Some(CompletionAck::Duplicate)),
+        "sent" | "accepted" => {}
+        _ => return Ok(Some(CompletionAck::Quarantined)),
+    }
+    match state.as_str() {
+        "running" => return Ok(None),
+        "cancelled" => return Ok(Some(CompletionAck::Refused)),
+        _ => {}
+    }
+    tx.execute(
+        "UPDATE journal SET dispatch = 'unknown' WHERE run_id = ?1 AND position = ?2",
+        params![run_id, p],
+    )?;
+    tx.execute(
+        "UPDATE runs SET state = 'needs_reconcile', awaited = NULL, \
+         error_kind = 'unknown_outcome', error_detail = ?2 \
+         WHERE run_id = ?1 AND state IN ('pending', 'suspended')",
+        params![run_id, detail],
+    )?;
+    // Another call of the run may already have put it in needs_reconcile;
+    // keep that call's detail too.
+    tx.execute(
+        "UPDATE runs SET error_detail = CASE WHEN error_detail IS NULL THEN ?2 \
+         ELSE error_detail || '; ' || ?2 END, error_kind = 'unknown_outcome' \
+         WHERE run_id = ?1 AND state = 'needs_reconcile' \
+         AND (error_detail IS NULL OR instr(error_detail, ?2) = 0)",
+        params![run_id, detail],
+    )?;
+    tx.execute(
+        "UPDATE runs SET readiness = readiness + 1 WHERE run_id = ?1",
+        [run_id],
+    )?;
+    Ok(Some(CompletionAck::Accepted))
+}
+
 /// Positions whose send ended in an unknown state and that have no outcome.
 pub fn unknown_positions(conn: &Connection, run_id: &str) -> Result<Vec<u64>> {
     let mut stmt = conn.prepare(

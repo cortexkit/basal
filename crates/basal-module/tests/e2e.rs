@@ -311,6 +311,10 @@ fn a_broca_llm_suspends_survives_module_kill_and_settles_after_restart() {
         .unwrap();
     let snapshot: Value = serde_json::from_str(&snapshot).unwrap();
     assert_eq!(snapshot["acknowledged"], true);
-    assert!(snapshot["cursor"].is_object());
-    assert_eq!(snapshot["text"], "after restart");
+    assert_eq!(snapshot["state"], "completed");
+    assert!(snapshot.get("cursor").is_none() && snapshot.get("text").is_none());
+    // The restarted module read the outcome with run.result.
+    let fake: Value =
+        serde_json::from_slice(&std::fs::read(dir.join("broca.json")).unwrap()).unwrap();
+    assert!(fake["result_calls"].as_u64().unwrap() >= 1, "{fake:#}");
 }

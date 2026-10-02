@@ -5,7 +5,8 @@ use basal_host::broca::{
 };
 use basal_host::selector::{FakeSelector, ModelSelector, SelectionRequest};
 use basal_host::{
-    CallRequest, Completion, CompletionAck, CompletionSink, Dispatched, Host, SinkError, TokenUsage,
+    CallRequest, Completion, CompletionAck, CompletionSink, Dispatched, Host, SinkError,
+    TokenUsage, UnknownOutcome,
 };
 use basal_proto::{CallKind, JsonText, Primitive, Settlement};
 use serde_json::{Value, json};
@@ -45,6 +46,7 @@ fn host(fake: Arc<FakeBroca>, store: Arc<dyn StateStore>) -> BrocaHost {
 #[derive(Default)]
 struct Sink {
     completions: Mutex<Vec<Completion>>,
+    unknowns: Mutex<Vec<UnknownOutcome>>,
     fail: Mutex<bool>,
     attempts: Mutex<usize>,
 }
@@ -59,6 +61,14 @@ impl CompletionSink for Sink {
             return Ok(CompletionAck::Duplicate);
         }
         completions.push(c.clone());
+        Ok(CompletionAck::Accepted)
+    }
+    fn unknown(&self, u: &UnknownOutcome) -> Result<CompletionAck, SinkError> {
+        let mut unknowns = self.unknowns.lock().unwrap();
+        if unknowns.iter().any(|old| old == u) {
+            return Ok(CompletionAck::Duplicate);
+        }
+        unknowns.push(u.clone());
         Ok(CompletionAck::Accepted)
     }
 }
@@ -218,186 +228,21 @@ fn usage_absent_empty_and_zero_remain_distinct() {
     }
 }
 
-#[test]
-fn durable_cursor_resumes_text_without_loss_or_duplicate() {
-    let fake = Arc::new(FakeBroca::default());
-    let store = Arc::new(MemoryStore::default());
-    let sink = Arc::new(Sink::default());
-    let h = host(fake.clone(), store.clone());
-    h.attach(sink.clone());
-    h.dispatch_model(&llm(0)).unwrap();
-    fake.assistant(
-        "key:0",
-        vec![ContentBlock::Text {
-            text: "buffered".into(),
-        }],
-    )
-    .unwrap();
-    h.poll().unwrap();
-    let saved = store.load().unwrap()[0].clone();
-    assert_eq!(saved.text.as_deref(), Some("buffered"));
-    assert!(saved.cursor.is_some());
-    drop(h);
-    let h = host(fake.clone(), store.clone());
-    h.attach(sink.clone());
-    assert_eq!(
-        fake.subscriptions().last().unwrap().1.from,
-        saved.cursor.map(FromWire::Cursor)
-    );
-    fake.finish("key:0", "final", RunFinishReason::Completed, None)
-        .unwrap();
-    fake.configure("key:0", false, false, true, None).unwrap();
-    h.poll().unwrap();
-    h.poll().unwrap();
-    assert_eq!(sink.completions.lock().unwrap().len(), 1);
-    assert_eq!(
-        value(&sink.completions.lock().unwrap()[0]),
-        json!({"text":"final"})
-    );
-    drop(h);
-    host(fake, store).attach(sink.clone());
-    assert_eq!(sink.completions.lock().unwrap().len(), 1);
-    assert_eq!(*sink.attempts.lock().unwrap(), 1);
-}
-
-struct CutStore {
-    inner: MemoryStore,
-    cut: Mutex<bool>,
-}
-impl StateStore for CutStore {
-    fn load(&self) -> Result<Vec<basal_host::broca::StoredCall>, BrocaError> {
-        self.inner.load()
-    }
-    fn save(&self, call: &basal_host::broca::StoredCall) -> Result<(), BrocaError> {
-        if call.text.is_some() && *self.cut.lock().unwrap() {
-            return Err(BrocaError::Store("cut between buffering and save".into()));
-        }
-        self.inner.save(call)
-    }
-}
-#[test]
-fn cursor_and_text_commit_together_at_a_cut() {
-    let fake = Arc::new(FakeBroca::default());
-    let store = Arc::new(CutStore {
-        inner: MemoryStore::default(),
-        cut: Mutex::new(true),
-    });
-    let h = host(fake.clone(), store.clone());
-    h.dispatch_model(&llm(0)).unwrap();
-    fake.assistant(
-        "key:0",
-        vec![ContentBlock::Text {
-            text: "held".into(),
-        }],
-    )
-    .unwrap();
-    assert!(matches!(h.poll(), Err(BrocaError::Store(_))));
-    let saved = store.load().unwrap()[0].clone();
-    assert_eq!(saved.text, None);
-    assert_eq!(
-        saved.cursor,
-        Some(Cursor {
-            wal_seq: 1,
-            sub_index: 0
-        })
-    );
-    *store.cut.lock().unwrap() = false;
-    drop(h);
-    let h = host(fake.clone(), store.clone());
-    h.poll().unwrap();
-    let saved = store.load().unwrap()[0].clone();
-    assert_eq!(saved.text.as_deref(), Some("held"));
-    assert_eq!(
-        saved.cursor,
-        Some(Cursor {
-            wal_seq: 1,
-            sub_index: 1
-        })
-    );
-    fake.finish("key:0", "held", RunFinishReason::Completed, None)
-        .unwrap();
-    let sink = Arc::new(Sink::default());
-    h.attach(sink.clone());
-    assert_eq!(
-        value(&sink.completions.lock().unwrap()[0]),
-        json!({"text":"held"})
-    );
+fn status(state: &str) -> RunStatusResponse {
+    serde_json::from_value(json!({"state": state, "usage": {"input_tokens":0,"output_tokens":0,"cache_write_tokens":0,"cached_input_tokens":0}})).unwrap()
 }
 
 #[test]
-fn status_recovers_missed_finish_and_archived_read_recovers_text() {
-    for archived in [false, true] {
-        let fake = Arc::new(FakeBroca::default());
-        let store = Arc::new(MemoryStore::default());
-        let h = host(fake.clone(), store.clone());
-        h.dispatch_model(&llm(0)).unwrap();
-        h.poll().unwrap();
-        drop(h);
-        fake.finish(
-            "key:0",
-            "from history",
-            RunFinishReason::Completed,
-            Some(usage()),
-        )
-        .unwrap();
-        fake.configure("key:0", archived, true, false, None)
-            .unwrap();
-        fake.forget_stream("key:0").unwrap();
-        let sink = Arc::new(Sink::default());
-        let h = host(fake.clone(), store);
-        h.attach(sink.clone());
-        assert_eq!(
-            value(&sink.completions.lock().unwrap()[0]),
-            json!({"text":"from history"})
-        );
-        assert_eq!(
-            sink.completions.lock().unwrap()[0]
-                .outcome
-                .usage
-                .unwrap()
-                .input_tokens,
-            Some(7)
-        );
-        assert!(fake.calls().0 > 0);
-        assert!(fake.calls().1 > 0);
-    }
-}
-
-#[test]
-fn read_refusal_is_journalable_with_status_usage() {
-    let fake = Arc::new(FakeBroca::default());
-    let store = Arc::new(MemoryStore::default());
-    let h = host(fake.clone(), store.clone());
-    h.dispatch_model(&llm(0)).unwrap();
-    fake.finish(
-        "key:0",
-        "not readable",
-        RunFinishReason::Completed,
-        Some(usage()),
-    )
-    .unwrap();
-    fake.configure("key:0", true, true, false, Some("access_denied".into()))
-        .unwrap();
-    let sink = Arc::new(Sink::default());
-    h.attach(sink.clone());
-    let c = sink.completions.lock().unwrap();
-    assert_eq!(c[0].outcome.settlement, Settlement::Rejected);
-    assert_eq!(value(&c[0])["code"], "access_denied");
-    assert_eq!(c[0].outcome.usage.unwrap().output_tokens, Some(5));
-}
-
-#[test]
-fn every_status_terminal_rejects_or_completes_and_nonterminals_wait() {
+fn every_run_result_state_maps_to_its_outcome_and_nonterminals_wait() {
     for state in [
         "completed",
-        "cancelled",
         "error",
+        "cancelled",
+        "interrupted",
         "max_steps",
         "transform_unavailable",
-        "interrupted",
         "active",
         "paused",
-        "unknown",
     ] {
         let fake = Arc::new(FakeBroca::default());
         let h = host(fake.clone(), Arc::new(MemoryStore::default()));
@@ -405,30 +250,273 @@ fn every_status_terminal_rejects_or_completes_and_nonterminals_wait() {
         h.attach(sink.clone());
         h.dispatch_model(&llm(0)).unwrap();
         h.poll().unwrap();
-        fake.assistant(
+        let error = ProviderError {
+            class: "auth_required".into(),
+            message: "provider login expired".into(),
+            rest: Default::default(),
+        };
+        // run.status reports a terminal state (with zero usage) even for the
+        // active and paused cases, so a call that keeps waiting proves the
+        // decision is taken from run.result alone.
+        fake.set(
             "key:0",
-            vec![ContentBlock::Text {
-                text: "last".into(),
-            }],
+            state,
+            "last",
+            Some(error),
+            Some("auth_required".into()),
+            status(if ["active", "paused"].contains(&state) {
+                "completed"
+            } else {
+                state
+            }),
         )
         .unwrap();
-        let status: RunStatusResponse = serde_json::from_value(json!({"state": state, "usage": {"input_tokens":0,"output_tokens":0,"cache_write_tokens":0,"cached_input_tokens":0}})).unwrap();
-        fake.set_status("key:0", status).unwrap();
         h.poll().unwrap();
         let c = sink.completions.lock().unwrap();
-        if ["active", "paused", "unknown"].contains(&state) {
+        if ["active", "paused"].contains(&state) {
             assert!(c.is_empty(), "{state}");
-        } else {
-            assert_eq!(c.len(), 1);
-            assert_eq!(c[0].outcome.usage.unwrap().input_tokens, Some(0));
-            if state == "completed" {
+            assert!(sink.unknowns.lock().unwrap().is_empty());
+            continue;
+        }
+        assert_eq!(c.len(), 1, "{state}");
+        assert_eq!(c[0].outcome.usage.unwrap().input_tokens, Some(0));
+        match state {
+            "completed" => {
+                assert_eq!(c[0].outcome.settlement, Settlement::Fulfilled);
                 assert_eq!(value(&c[0]), json!({"text":"last"}));
-            } else {
+            }
+            "error" => {
+                assert_eq!(c[0].outcome.settlement, Settlement::Rejected);
+                assert_eq!(
+                    value(&c[0]),
+                    json!({"code":"error","class":"auth_required","message":"provider login expired"})
+                );
+            }
+            _ => {
                 assert_eq!(c[0].outcome.settlement, Settlement::Rejected);
                 assert_eq!(value(&c[0])["code"], state);
             }
         }
     }
+}
+
+#[test]
+fn a_completed_run_without_text_fulfils_with_empty_text() {
+    let fake = Arc::new(FakeBroca::default());
+    let h = host(fake.clone(), Arc::new(MemoryStore::default()));
+    let sink = Arc::new(Sink::default());
+    h.attach(sink.clone());
+    h.dispatch_model(&llm(0)).unwrap();
+    fake.finish("key:0", "", RunFinishReason::Completed, Some(usage()))
+        .unwrap();
+    h.poll().unwrap();
+    let c = sink.completions.lock().unwrap();
+    assert_eq!(c[0].outcome.settlement, Settlement::Fulfilled);
+    assert_eq!(value(&c[0]), json!({"text":""}));
+}
+
+#[test]
+fn unknown_run_for_an_accepted_call_is_reported_as_unknown_not_rejected() {
+    let fake = Arc::new(FakeBroca::default());
+    let store = Arc::new(MemoryStore::default());
+    let h = host(fake.clone(), store.clone());
+    let sink = Arc::new(Sink::default());
+    h.attach(sink.clone());
+    h.dispatch_model(&llm(0)).unwrap();
+    fake.forget("key:0").unwrap();
+    h.poll().unwrap();
+    assert!(sink.completions.lock().unwrap().is_empty());
+    let unknowns = sink.unknowns.lock().unwrap().clone();
+    assert_eq!(unknowns.len(), 1);
+    assert_eq!(unknowns[0].handle, "run:key:0");
+    assert_eq!(
+        (unknowns[0].run_id.as_str(), unknowns[0].position),
+        ("r", 0)
+    );
+    assert!(
+        unknowns[0].detail.contains("run:key:0") && unknowns[0].detail.contains("unknown_run"),
+        "{}",
+        unknowns[0].detail
+    );
+    let saved = store.load().unwrap()[0].clone();
+    assert!(saved.acknowledged && saved.outcome.is_none());
+    // Settled: neither a later poll nor a restart asks Broca again.
+    let calls = fake.calls();
+    h.poll().unwrap();
+    drop(h);
+    host(fake.clone(), store).attach(sink.clone());
+    assert_eq!(fake.calls(), calls);
+    assert_eq!(sink.unknowns.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn a_missed_run_finished_is_recovered_on_reconnect_even_when_archived() {
+    for archived in [false, true] {
+        let fake = Arc::new(FakeBroca::default());
+        let store = Arc::new(MemoryStore::default());
+        let h = host(fake.clone(), store.clone());
+        let sink = Arc::new(Sink::default());
+        h.attach(sink.clone());
+        h.dispatch_model(&llm(0)).unwrap();
+        h.poll().unwrap();
+        assert_eq!(fake.watches().len(), 1);
+        fake.drop_finish("key:0").unwrap();
+        fake.finish(
+            "key:0",
+            "from run.result",
+            RunFinishReason::Completed,
+            Some(usage()),
+        )
+        .unwrap();
+        if archived {
+            fake.archive("key:0").unwrap();
+        }
+        // The finish never reached the subscription, so nothing woke the
+        // host and nothing was delivered.
+        assert_eq!(fake.wakes(), 0);
+        assert!(sink.completions.lock().unwrap().is_empty());
+        // A reconnect polls, which reads run.result for the pending call.
+        h.poll().unwrap();
+        let c = sink.completions.lock().unwrap();
+        assert_eq!(c.len(), 1, "archived: {archived}");
+        assert_eq!(value(&c[0]), json!({"text":"from run.result"}));
+        assert_eq!(c[0].outcome.usage.unwrap().input_tokens, Some(7));
+    }
+}
+
+#[test]
+fn a_finished_run_wakes_through_the_watch_opened_at_the_live_head() {
+    let fake = Arc::new(FakeBroca::default());
+    let h = host(fake.clone(), Arc::new(MemoryStore::default()));
+    let sink = Arc::new(Sink::default());
+    h.attach(sink.clone());
+    h.dispatch_model(&llm(0)).unwrap();
+    h.poll().unwrap();
+    assert_eq!(fake.watches().len(), 1);
+    fake.finish("key:0", "woken", RunFinishReason::Completed, None)
+        .unwrap();
+    assert_eq!(fake.wakes(), 1);
+    h.poll().unwrap();
+    assert_eq!(
+        value(&sink.completions.lock().unwrap()[0]),
+        json!({"text":"woken"})
+    );
+}
+
+#[test]
+fn a_module_restart_with_calls_in_flight_delivers_each_exactly_once() {
+    let fake = Arc::new(FakeBroca::default());
+    let store = Arc::new(MemoryStore::default());
+    let sink = Arc::new(Sink::default());
+    let h = host(fake.clone(), store.clone());
+    h.attach(sink.clone());
+    for position in 0..3 {
+        h.dispatch_model(&llm(position)).unwrap();
+    }
+    h.poll().unwrap();
+    drop(h);
+    // Two calls end while no process watches them.
+    fake.finish("key:0", "zero", RunFinishReason::Completed, None)
+        .unwrap();
+    fake.finish("key:2", "two", RunFinishReason::Cancelled, None)
+        .unwrap();
+    let h = host(fake.clone(), store.clone());
+    h.attach(sink.clone());
+    {
+        let c = sink.completions.lock().unwrap();
+        assert_eq!(c.iter().map(|c| c.position).collect::<Vec<_>>(), vec![0, 2]);
+        assert_eq!(value(&c[0]), json!({"text":"zero"}));
+        assert_eq!(value(&c[1])["code"], "cancelled");
+    }
+    fake.finish("key:1", "one", RunFinishReason::Completed, None)
+        .unwrap();
+    h.poll().unwrap();
+    drop(h);
+    host(fake, store).attach(sink.clone());
+    assert_eq!(sink.completions.lock().unwrap().len(), 3);
+    assert_eq!(*sink.attempts.lock().unwrap(), 3);
+}
+
+#[test]
+fn a_status_that_never_catches_up_charges_the_reservation_after_a_bounded_wait() {
+    use basal_host::broca::STATUS_LAG_POLLS;
+    let fake = Arc::new(FakeBroca::default());
+    let store = Arc::new(MemoryStore::default());
+    let sink = Arc::new(Sink::default());
+    let h = host(fake.clone(), store.clone());
+    h.dispatch_model(&llm(0)).unwrap();
+    fake.finish("key:0", "stuck", RunFinishReason::Completed, Some(usage()))
+        .unwrap();
+    fake.set_status("key:0", RunStatusResponse::Active).unwrap();
+    // The count lives in memory: a restart part-way starts it again.
+    for _ in 1..STATUS_LAG_POLLS {
+        assert!(matches!(h.poll(), Err(BrocaError::Unavailable { .. })));
+    }
+    drop(h);
+    let h = host(fake.clone(), store.clone());
+    for _ in 1..STATUS_LAG_POLLS {
+        assert!(matches!(h.poll(), Err(BrocaError::Unavailable { .. })));
+    }
+    assert!(store.load().unwrap()[0].outcome.is_none());
+    h.attach(sink.clone());
+    let c = sink.completions.lock().unwrap();
+    assert_eq!(c.len(), 1, "the bounded wait ends at the last poll");
+    assert_eq!(value(&c[0]), json!({"text":"stuck"}));
+    // No usage reaches the ledger, so it charges the whole reservation.
+    assert_eq!(c[0].outcome.usage, None);
+}
+
+#[test]
+fn usage_comes_from_run_status_once_and_waits_while_status_lags() {
+    let fake = Arc::new(FakeBroca::default());
+    let store = Arc::new(MemoryStore::default());
+    let h = host(fake.clone(), store.clone());
+    let sink = Arc::new(Sink::default());
+    h.attach(sink.clone());
+    h.dispatch_model(&llm(0)).unwrap();
+    fake.finish(
+        "key:0",
+        "lagging",
+        RunFinishReason::Completed,
+        Some(usage()),
+    )
+    .unwrap();
+    // run.result already reads the durable end while the live actor still
+    // calls the run active: the outcome waits for the usage.
+    fake.set_status("key:0", RunStatusResponse::Active).unwrap();
+    assert!(matches!(h.poll(), Err(BrocaError::Unavailable { .. })));
+    assert!(sink.completions.lock().unwrap().is_empty());
+    assert!(store.load().unwrap()[0].outcome.is_none());
+    fake.set_status(
+        "key:0",
+        RunStatusResponse::Completed {
+            metadata: Terminal {
+                usage: Some(usage()),
+                final_step_finish_reason: Some("stop".into()),
+                ..Terminal::default()
+            },
+        },
+    )
+    .unwrap();
+    h.poll().unwrap();
+    let calls = fake.calls();
+    h.poll().unwrap();
+    assert_eq!(fake.calls(), calls, "a settled call is not read again");
+    let c = sink.completions.lock().unwrap();
+    assert_eq!(c.len(), 1);
+    assert_eq!(
+        value(&c[0]),
+        json!({"text":"lagging","finish_reason":"stop"})
+    );
+    assert_eq!(
+        c[0].outcome.usage,
+        Some(TokenUsage {
+            input_tokens: Some(7),
+            cache_write_tokens: Some(2),
+            output_tokens: Some(5),
+            cached_input_tokens: Some(100)
+        })
+    );
 }
 
 #[test]
@@ -527,13 +615,26 @@ fn malformed_inputs_and_unknown_kinds_are_typed_errors() {
 }
 
 #[test]
-fn wire_fixtures_pin_control_read_and_status_shapes() {
-    let fixture = json!({"kind":"control","cursor":{"wal_seq":8,"sub_index":2},"unit":{"type":"run_finished","run_id":"x","reason":"completed","usage":{"input_tokens":0,"reasoning_tokens":3,"output_tokens":5},"retries_used":0}});
-    let event: SubscribeEvent = serde_json::from_value(fixture.clone()).unwrap();
-    assert_eq!(serde_json::to_value(event).unwrap(), fixture);
-    let page = json!({"messages":[{"ordinal":1,"mid":"m","message":{"role":"assistant","content":[{"type":"text","text":"answer"},{"type":"reasoning","text":"hidden"}]}}],"head":{"wal_seq":8,"sub_index":1},"lineage_state":{"last_run_id":"x","state":"completed","usage":{}}});
-    let decoded: SessionReadResponse = serde_json::from_value(page.clone()).unwrap();
-    assert_eq!(serde_json::to_value(decoded).unwrap(), page);
+fn wire_fixtures_pin_run_result_status_and_stream_shapes() {
+    // run.result replies and params, in the JSON Broca's broca-wire crate
+    // (role.rs) produces.
+    let completed = json!({"run_id":"x","state":"completed","final_message":{"ordinal":3,"mid":"m3","text":""}});
+    let decoded: RunResultResponse = serde_json::from_value(completed.clone()).unwrap();
+    assert_eq!(decoded.final_message.as_ref().unwrap().text, "");
+    assert_eq!(serde_json::to_value(decoded).unwrap(), completed);
+    let error = json!({"run_id":"x","state":"error","error":{"class":"auth_required","message":"log in","status":401,"provider_code":"expired"}});
+    let decoded: RunResultResponse = serde_json::from_value(error.clone()).unwrap();
+    assert_eq!(decoded.error.as_ref().unwrap().class, "auth_required");
+    assert!(decoded.final_message.is_none());
+    assert_eq!(serde_json::to_value(decoded).unwrap(), error);
+    let paused = json!({"run_id":"x","state":"paused","reason":"auth_required"});
+    let decoded: RunResultResponse = serde_json::from_value(paused.clone()).unwrap();
+    assert_eq!(serde_json::to_value(decoded).unwrap(), paused);
+    assert_eq!(
+        serde_json::to_value(RunResultParams { run_id: "x".into() }).unwrap(),
+        json!({"run_id":"x"})
+    );
+    assert!(serde_json::from_value::<RunResultParams>(json!({"run_id":"x","extra":1})).is_err());
     assert_eq!(
         serde_json::to_value(StatusParams {
             run_id: Some("x".into())
@@ -542,21 +643,18 @@ fn wire_fixtures_pin_control_read_and_status_shapes() {
         json!({"run_id":"x"})
     );
     assert_eq!(
-        serde_json::to_value(SubscribeParams {
-            from: Some(FromWire::Named("start".into()))
-        })
-        .unwrap(),
-        json!({"from":"start"})
+        serde_json::to_value(SubscribeParams::live()).unwrap(),
+        json!({"from":"live"})
     );
-    assert_eq!(
-        serde_json::to_value(SubscribeParams {
-            from: Some(FromWire::Cursor(Cursor {
-                wal_seq: 8,
-                sub_index: 2
-            }))
-        })
-        .unwrap(),
-        json!({"from":{"wal_seq":8,"sub_index":2}})
+    // A run_finished control event decodes (its cursor is ignored); an
+    // assistant message decodes as an ignored unit, never as text.
+    let finished: SubscribeEvent = serde_json::from_value(json!({"kind":"control","cursor":{"wal_seq":8,"sub_index":2},"unit":{"type":"run_finished","run_id":"x","reason":"completed","usage":{"output_tokens":5},"retries_used":0}})).unwrap();
+    assert!(
+        matches!(finished, SubscribeEvent::Control { unit } if matches!(*unit, ControlUnit::RunFinished { run_id: Some(ref id) } if id == "x"))
+    );
+    let message: SubscribeEvent = serde_json::from_value(json!({"kind":"control","cursor":{"wal_seq":8,"sub_index":1},"unit":{"type":"assistant_message","message":{"message_id":"m","content":[]}}})).unwrap();
+    assert!(
+        matches!(message, SubscribeEvent::Control { unit } if matches!(*unit, ControlUnit::Other))
     );
 }
 
@@ -631,30 +729,4 @@ fn broker_rejects_script_model_choices_even_with_a_valid_journaled_selection() {
         );
     }
     assert!(fake.sends().is_empty());
-}
-
-#[test]
-fn expired_stream_history_commits_its_head_with_the_recovered_text() {
-    let fake = Arc::new(FakeBroca::default());
-    let store = Arc::new(MemoryStore::default());
-    let h = host(fake.clone(), store.clone());
-    h.dispatch_model(&llm(0)).unwrap();
-    fake.assistant(
-        "key:0",
-        vec![ContentBlock::Text {
-            text: "head-only".into(),
-        }],
-    )
-    .unwrap();
-    fake.configure("key:0", false, false, true, None).unwrap();
-    h.poll().unwrap();
-    let saved = store.load().unwrap()[0].clone();
-    assert_eq!(saved.text.as_deref(), Some("head-only"));
-    assert_eq!(
-        saved.cursor,
-        Some(Cursor {
-            wal_seq: 1,
-            sub_index: 1
-        })
-    );
 }

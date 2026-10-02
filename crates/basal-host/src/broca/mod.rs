@@ -1,11 +1,19 @@
 //! Model calls through Broca. The transport opens an authenticated module
 //! route for the project, harness and session, and owns the stream lifetime.
-//! The host records call identity, buffers final text and delivers outcomes.
+//! The host records call identity, reads each accepted call's outcome with
+//! `run.result` and delivers it.
+//!
+//! The session stream is only a wake signal. Whenever it reports a finished
+//! run, and on every reconnect or module start, `BrocaHost::poll` asks
+//! `run.result` about each accepted call that has no outcome yet, so a missed
+//! stream event costs latency, never correctness. `run.result` reads through
+//! Broca's archive, so it answers for archived sessions too.
 
 pub mod fake;
 pub mod subc;
 pub mod wire;
 
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
@@ -16,7 +24,7 @@ use serde_json::{Value, json};
 use crate::selector::{ModelOutcome, ModelSelection, ModelSelector};
 use crate::{
     CallClass, CallRequest, Completion, CompletionSink, Dispatched, Host, HostOutcome, TokenUsage,
-    TransportError,
+    TransportError, UnknownOutcome,
 };
 use wire::*;
 
@@ -45,25 +53,30 @@ impl fmt::Display for BrocaError {
 }
 impl std::error::Error for BrocaError {}
 
-/// Adapters bind `route` before each op. `subscribe` returns ordered durable
-/// events available at the current head, not display deltas as result text.
-/// A live adapter may wake `BrocaHost::poll` when its subscription receives data.
+/// Adapters bind `route` before each op.
 pub trait Transport: Send + Sync {
     fn send(&self, route: &Route, params: &[u8]) -> Result<SendResult, BrocaError>;
-    fn subscribe(
+    /// Makes sure a subscription attached at the session's live head is
+    /// open, and that it wakes `BrocaHost::poll` when the session's run
+    /// finishes. Called before each `run.result` read, so a run that
+    /// finishes after the read still wakes the host.
+    fn watch(&self, route: &Route) -> Result<(), BrocaError>;
+    fn result(
         &self,
         route: &Route,
-        params: &SubscribeParams,
-    ) -> Result<Vec<SubscribeEvent>, BrocaError>;
+        params: &RunResultParams,
+    ) -> Result<RunResultResponse, BrocaError>;
+    /// Only for token usage and the final step's finish reason, which
+    /// `run.result` does not carry.
     fn status(&self, route: &Route, params: &StatusParams)
     -> Result<RunStatusResponse, BrocaError>;
-    fn read(&self, route: &Route, params: &ReadParams) -> Result<SessionReadResponse, BrocaError>;
+    /// Closes the session's subscription once its call is settled.
     fn release(&self, _route: &Route) {}
 }
 
-/// A save replaces one call's entire snapshot atomically. In particular text,
-/// finish metadata and cursor must commit together. Core supplies the SQLite
-/// implementation so this crate never opens a second writer to its database.
+/// A save replaces one call's entire snapshot atomically. Core supplies the
+/// SQLite implementation so this crate never opens a second writer to its
+/// database.
 pub trait StateStore: Send + Sync {
     fn load(&self) -> Result<Vec<StoredCall>, BrocaError>;
     fn save(&self, call: &StoredCall) -> Result<(), BrocaError>;
@@ -101,11 +114,19 @@ pub struct StoredCall {
     pub labels: Option<Vec<String>>,
     pub handle: Option<String>,
     pub broca_run_id: Option<String>,
-    pub cursor: Option<Cursor>,
-    /// The final assembled assistant message, not reasoning or display deltas.
-    pub text: Option<String>,
-    pub finish: Option<(RunFinishReason, Terminal)>,
+    /// The terminal `run.result` state the outcome was read from. It decides
+    /// the outcome reported to the model selector for the routing decision.
+    #[serde(default)]
+    pub state: Option<String>,
     pub outcome: Option<StoredOutcome>,
+    /// Set instead of `outcome` when Broca refuses `run.result` with
+    /// `unknown_run` for the run it accepted the call as: the detail the
+    /// run is moved to `needs_reconcile` with.
+    #[serde(default)]
+    pub unknown: Option<String>,
+    /// The runtime has recorded `outcome` (or, when there is none, the
+    /// `unknown` report) through the completion sink, so neither is
+    /// delivered again.
     pub acknowledged: bool,
     pub selection: ModelSelection,
     #[serde(default)]
@@ -119,6 +140,11 @@ pub struct BrocaHost {
     harness: String,
     selector: Arc<dyn ModelSelector>,
     gate: Mutex<()>,
+    /// Per send id, how many consecutive polls found the run terminal in
+    /// `run.result` while `run.status` still said active or paused (the
+    /// brief window described in `resolve`). Kept in memory only: a restart
+    /// starts the count again, which keeps it bounded.
+    status_lag: Mutex<HashMap<String, u32>>,
     sink: Mutex<Option<Arc<dyn CompletionSink>>>,
 }
 
@@ -141,6 +167,7 @@ impl BrocaHost {
             harness,
             selector,
             gate: Mutex::new(()),
+            status_lag: Mutex::new(HashMap::new()),
             sink: Mutex::new(None),
         }
     }
@@ -280,16 +307,19 @@ impl BrocaHost {
             envelope: request.args.as_str().to_owned(),
             handle: None,
             broca_run_id: None,
-            cursor: None,
-            text: None,
-            finish: None,
+            state: None,
             outcome: None,
+            unknown: None,
             acknowledged: false,
             selection: e.selection,
             report_attempted: false,
         })
     }
 
+    /// Sends the frozen request. A first send records the handle; a repeat
+    /// with the same bytes is idempotent under the send id, and is how a
+    /// queued submission learns the run id it started as. Returns whether
+    /// Broca answered that the run already finished.
     fn issue(&self, call: &mut StoredCall) -> Result<bool, BrocaError> {
         let result = match self.transport.send(&call.route, &call.params) {
             Ok(result) => result,
@@ -307,11 +337,11 @@ impl BrocaHost {
             Err(e) => return Err(e),
         };
         let finished = matches!(result, SendResult::Finished { .. });
-        if let SendResult::Finished { reason, .. } = &result {
-            call.finish = Some((*reason, Terminal::default()));
-        }
         let handle = match result {
             SendResult::Active { run_id } | SendResult::Finished { run_id, .. } => {
+                if call.broca_run_id.as_ref().is_some_and(|id| id != &run_id) {
+                    return Err(BrocaError::Wire("send returned another run".into()));
+                }
                 call.broca_run_id = Some(run_id.clone());
                 run_id
             }
@@ -320,8 +350,8 @@ impl BrocaHost {
         if handle.is_empty() {
             return Err(BrocaError::Wire("empty Broca handle".into()));
         }
-        // A pending submission remains the completion handle even after RunStarted
-        // assigns its run id, since core journals the handle returned at acceptance.
+        // A pending submission remains the completion handle after its run
+        // starts, since core journals the handle returned at acceptance.
         if call.handle.is_none() {
             call.handle = Some(handle);
         }
@@ -329,198 +359,147 @@ impl BrocaHost {
         Ok(finished)
     }
 
-    fn read_text(&self, call: &mut StoredCall) -> Result<(), BrocaError> {
-        let page = self.transport.read(
+    /// Reads the call's run with `run.result` and records its outcome once
+    /// the run has ended. A run that has not ended leaves the call pending.
+    fn resolve(&self, call: &mut StoredCall) -> Result<(), BrocaError> {
+        let Some(run_id) = call.broca_run_id.clone() else {
+            return Ok(());
+        };
+        // Watch before reading, so a run that ends after the read still
+        // wakes the host. A session that can no longer be watched (archived,
+        // say) matters only if its run has not ended yet.
+        let watched = self.transport.watch(&call.route);
+        let result = match self.transport.result(
             &call.route,
-            &ReadParams {
-                from_ordinal: None,
-                limit: Some(1),
-                include_tools: false,
+            &RunResultParams {
+                run_id: run_id.clone(),
+            },
+        ) {
+            Ok(result) => result,
+            Err(BrocaError::Refused { code, detail }) if code == UNKNOWN_RUN => {
+                // Broca accepted this call as this run, so it cannot have
+                // forgotten it: an anomaly for its operator, not lost text.
+                // The outcome is unknowable, so the run waits for basal's
+                // operator instead of being given an invented rejection.
+                tracing::error!(send_id = %call.send_id, broca_run_id = %run_id, %detail, "Broca does not know a run it accepted");
+                call.unknown = Some(format!(
+                    "Broca answered unknown_run for run {run_id}, which it accepted for send id {}: {detail}",
+                    call.send_id
+                ));
+                self.store.save(call)?;
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
+        if result.run_id != run_id {
+            return Err(BrocaError::Wire("run.result answered another run".into()));
+        }
+        let state = result.state.as_str();
+        if !TERMINAL_STATES.contains(&state) {
+            if !NONTERMINAL_STATES.contains(&state) {
+                tracing::warn!(broca_run_id = %run_id, state, "unrecognised Broca run state; waiting");
+            }
+            return watched;
+        }
+        // Usage and the provider's finish reason come only from run.status.
+        // If run.status has not yet caught up with an ended run, wait for it
+        // so the reported usage is recorded, but only for a bounded number
+        // of polls. The two reads disagree in one direction only, and only
+        // briefly. Per Broca's serve.rs `run_result`, the run task makes its
+        // terminal or pause durable in the WAL first, and only then does the
+        // session's live actor mark the run ended; run.result starts from
+        // run.status and upgrades it from the durable WAL, while run.status
+        // deliberately does not. So run.result can be terminal while
+        // run.status still says active or paused. That window is normally
+        // milliseconds but unbounded in principle, because the actor handles
+        // one command at a time. (A session with no live actor cannot
+        // disagree, from Broca v0.3.167.) The outcome waits for run.status
+        // rather than settle the reservation without the usage the run did
+        // report, but for at most STATUS_LAG_POLLS polls, the safety net
+        // that keeps a window that never closes from holding the call, and
+        // its run, forever.
+        let status = self.transport.status(
+            &call.route,
+            &StatusParams {
+                run_id: Some(run_id.clone()),
             },
         )?;
-        if let Some(id) = &page.lineage_state.last_run_id {
-            if call
-                .broca_run_id
-                .as_ref()
-                .is_some_and(|expected| expected != id)
-            {
-                return Err(BrocaError::Wire("read returned another run".into()));
+        let metadata = match &status {
+            RunStatusResponse::Active | RunStatusResponse::Paused { .. } => {
+                let lagged = {
+                    let mut lag = lock(&self.status_lag);
+                    let polls = lag.entry(call.send_id.clone()).or_insert(0);
+                    *polls += 1;
+                    *polls
+                };
+                if lagged < STATUS_LAG_POLLS {
+                    return Err(BrocaError::Unavailable {
+                        proven_unsent: false,
+                        detail: format!(
+                            "run.status still reports run {run_id} as active or paused although run.result reports it ended"
+                        ),
+                    });
+                }
+                // Usage that is never reported is charged at the reservation.
+                tracing::warn!(broca_run_id = %run_id, send_id = %call.send_id, polls = lagged, "run.status still reports a Broca run as active or paused although run.result reports it ended; recording its outcome with usage unreported, so the whole token reservation is charged");
+                None
             }
-            call.broca_run_id = Some(id.clone());
-        }
-        // The session is private to one call. The newest assistant message is
-        // therefore its final answer, even after the session has been archived.
-        if let Some(message) = page
-            .messages
-            .iter()
-            .rev()
-            .find(|m| m.message.role == "assistant")
-        {
-            call.text = Some(text_parts(&message.message.content));
-        }
-        if let Some(head) = page.head {
-            call.cursor = Some(call.cursor.map_or(head, |cursor| cursor.max(head)));
-        }
-        Ok(())
-    }
-
-    fn collect(&self, call: &mut StoredCall) -> Result<(), BrocaError> {
-        let missing_cursor = call.cursor.is_none();
-        let params = SubscribeParams {
-            from: Some(
-                call.cursor
-                    .map(FromWire::Cursor)
-                    .unwrap_or_else(|| FromWire::Named("start".into())),
-            ),
+            // A run.status that cannot place the run leaves usage unreported,
+            // which charges the whole reservation.
+            RunStatusResponse::Unknown => None,
+            other => other.terminal().map(|(_, metadata)| metadata),
         };
-        let expired = match self.transport.subscribe(&call.route, &params) {
-            Ok(events) => {
-                for event in events {
-                    let SubscribeEvent::Control { cursor, unit } = event else {
-                        continue;
-                    };
-                    if call.cursor.is_some_and(|previous| cursor <= previous) {
-                        continue;
-                    }
-                    match *unit {
-                        ControlUnit::RunStarted {
-                            run_id,
-                            submission_id,
-                        } => {
-                            if call.broca_run_id.as_ref().is_some_and(|id| id != &run_id) {
-                                return Err(BrocaError::Wire("stream returned another run".into()));
-                            }
-                            if call.broca_run_id.is_none()
-                                && submission_id.as_ref() != call.handle.as_ref()
-                            {
-                                return Err(BrocaError::Wire(
-                                    "stream returned another submission".into(),
-                                ));
-                            }
-                            call.broca_run_id = Some(run_id);
-                        }
-                        ControlUnit::AssistantMessage { message } => {
-                            call.text = Some(text_parts(&message.content))
-                        }
-                        ControlUnit::RunFinished {
-                            run_id,
-                            reason,
-                            metadata,
-                        } => {
-                            if let Some(id) = run_id {
-                                if call
-                                    .broca_run_id
-                                    .as_ref()
-                                    .is_some_and(|expected| expected != &id)
-                                {
-                                    return Err(BrocaError::Wire(
-                                        "finish returned another run".into(),
-                                    ));
-                                }
-                                call.broca_run_id = Some(id);
-                            }
-                            call.finish = Some((reason, metadata));
-                        }
-                        ControlUnit::Other => {}
-                    }
-                    call.cursor = Some(cursor);
-                    // No cursor is acknowledged independently of the text and
-                    // terminal metadata it passed. A failed save replays the event.
-                    self.store.save(call)?;
-                }
-                false
-            }
-            Err(BrocaError::Refused { code, .. }) if code == "cursor_expired" => true,
-            Err(e) => return Err(e),
-        };
-        if let Some(run_id) = &call.broca_run_id {
-            let status = self.transport.status(
-                &call.route,
-                &StatusParams {
-                    run_id: Some(run_id.clone()),
-                },
-            )?;
-            if let Some((reason, metadata)) = status.terminal() {
-                if call.finish.as_ref().is_none_or(|(_, t)| t.usage.is_none()) {
-                    call.finish = Some((reason, metadata.clone()));
-                }
-            }
-        }
-        if missing_cursor || expired || (call.finish.is_some() && call.text.is_none()) {
-            if let Err(error) = self.read_text(call) {
-                match error {
-                    BrocaError::Refused { code, detail } if call.finish.is_some() => {
-                        let usage = call
-                            .finish
-                            .as_ref()
-                            .and_then(|(_, t)| t.usage.as_ref())
-                            .map(ledger_usage);
-                        call.outcome = Some(rejection(&code, &detail, usage));
-                    }
-                    other => return Err(other),
-                }
-            }
-        }
-        // A queued call may first learn its run id from archived history.
-        // Status must then be requested with that id, not the submission id.
-        if call.finish.is_none() {
-            if let Some(run_id) = &call.broca_run_id {
-                let status = self.transport.status(
-                    &call.route,
-                    &StatusParams {
-                        run_id: Some(run_id.clone()),
-                    },
-                )?;
-                if let Some((reason, metadata)) = status.terminal() {
-                    call.finish = Some((reason, metadata.clone()));
-                }
-            }
-        }
-        if call.outcome.is_none() {
-            if let Some((reason, metadata)) = &call.finish {
-                let usage = metadata.usage.as_ref().map(ledger_usage);
-                call.outcome = Some(if *reason != RunFinishReason::Completed {
-                    rejection(
-                        reason_code(*reason),
-                        "Broca run did not complete successfully",
-                        usage,
-                    )
-                } else if let Some(text) = &call.text {
-                    if let Some(labels) = &call.labels {
-                        if labels.contains(text) {
-                            fulfilled(json!(text), usage)
-                        } else {
-                            rejection(
-                                "classify_invalid",
-                                "model did not return an exact label",
-                                usage,
-                            )
-                        }
+        let usage = metadata.and_then(|m| m.usage.as_ref()).map(ledger_usage);
+        call.outcome = Some(match state {
+            "completed" => {
+                let Some(message) = &result.final_message else {
+                    return Err(BrocaError::Wire(
+                        "run.result reported a completed run without its final message".into(),
+                    ));
+                };
+                let text = &message.text;
+                if let Some(labels) = &call.labels {
+                    if labels.contains(text) {
+                        fulfilled(json!(text), usage)
                     } else {
-                        let mut value = json!({"text": text});
-                        if let Some(reason) = &metadata.final_step_finish_reason {
-                            value["finish_reason"] = json!(reason);
-                        }
-                        fulfilled(value, usage)
+                        rejection(
+                            "classify_invalid",
+                            "model did not return an exact label",
+                            usage,
+                        )
                     }
                 } else {
-                    return Err(BrocaError::Wire(
-                        "completed run has no assistant message in durable history".into(),
-                    ));
-                });
+                    let mut value = json!({"text": text});
+                    if let Some(reason) = metadata.and_then(|m| m.final_step_finish_reason.as_ref())
+                    {
+                        value["finish_reason"] = json!(reason);
+                    }
+                    fulfilled(value, usage)
+                }
             }
-        }
-        self.store.save(call)?;
-        self.report_terminal(call)
+            "error" => match &result.error {
+                Some(error) => StoredOutcome {
+                    rejected: true,
+                    value: json!({"code": "error", "class": error.class, "message": error.message})
+                        .to_string(),
+                    usage,
+                },
+                None => rejection("error", "Broca run ended in error", usage),
+            },
+            other => rejection(other, "Broca run did not complete", usage),
+        });
+        lock(&self.status_lag).remove(&call.send_id);
+        call.state = Some(result.state);
+        self.store.save(call)
     }
 
     fn report_terminal(&self, call: &mut StoredCall) -> Result<(), BrocaError> {
         if !call.report_attempted {
-            if let Some((reason, _)) = &call.finish {
-                let outcome = match reason {
-                    RunFinishReason::Completed => ModelOutcome::Completed,
-                    RunFinishReason::Cancelled => ModelOutcome::Cancelled,
-                    RunFinishReason::Interrupted => ModelOutcome::Interrupted,
+            if let Some(state) = &call.state {
+                let outcome = match state.as_str() {
+                    "completed" => ModelOutcome::Completed,
+                    "cancelled" => ModelOutcome::Cancelled,
+                    "interrupted" => ModelOutcome::Interrupted,
                     _ => ModelOutcome::Error,
                 };
                 if let Err(error) = self
@@ -536,36 +515,65 @@ impl BrocaHost {
         Ok(())
     }
 
-    /// Run on stream wakeups and after reconnect. Errors leave durable work
-    /// pending for the next invocation, including sink failures after a finish.
+    /// Run on stream wakeups, after reconnect and at module start: asks
+    /// `run.result` about every accepted call without an outcome and
+    /// delivers what is known. Errors leave durable work pending for the
+    /// next invocation, including sink failures after an outcome is saved.
     pub fn poll(&self) -> Result<(), BrocaError> {
         let _guard = lock(&self.gate);
         let sink = lock(&self.sink).clone();
+        let mut first_error = None;
         for mut call in self.store.load()? {
             if call.acknowledged {
                 continue;
             }
-            if call.handle.is_none() && call.outcome.is_none() {
-                self.issue(&mut call)?;
-            }
-            if call.outcome.is_none() {
-                self.collect(&mut call)?;
-            }
-            self.report_terminal(&mut call)?;
-            if let (Some(outcome), Some(handle), Some(sink)) = (&call.outcome, &call.handle, &sink)
-            {
-                sink.complete(&Completion {
-                    run_id: call.basal_run_id.clone(),
-                    position: call.position,
-                    handle: handle.clone(),
-                    outcome: outcome.host()?,
-                })
-                .map_err(|e| BrocaError::Sink(e.to_string()))?;
-                call.acknowledged = true;
-                self.store.save(&call)?;
-                self.transport.release(&call.route);
+            // One call's failure must not hold back the others.
+            if let Err(error) = self.advance(&mut call, sink.as_deref()) {
+                first_error.get_or_insert(error);
             }
         }
+        first_error.map_or(Ok(()), Err)
+    }
+
+    fn advance(
+        &self,
+        call: &mut StoredCall,
+        sink: Option<&dyn CompletionSink>,
+    ) -> Result<(), BrocaError> {
+        if call.outcome.is_none() && call.unknown.is_none() {
+            if call.handle.is_none() || call.broca_run_id.is_none() {
+                self.issue(call)?;
+            }
+            if call.outcome.is_none() {
+                self.resolve(call)?;
+            }
+        }
+        self.report_terminal(call)?;
+        let (Some(handle), Some(sink)) = (&call.handle, sink) else {
+            return Ok(());
+        };
+        if let Some(outcome) = &call.outcome {
+            sink.complete(&Completion {
+                run_id: call.basal_run_id.clone(),
+                position: call.position,
+                handle: handle.clone(),
+                outcome: outcome.host()?,
+            })
+            .map_err(|e| BrocaError::Sink(e.to_string()))?;
+        } else if let Some(detail) = &call.unknown {
+            sink.unknown(&UnknownOutcome {
+                run_id: call.basal_run_id.clone(),
+                position: call.position,
+                handle: handle.clone(),
+                detail: detail.clone(),
+            })
+            .map_err(|e| BrocaError::Sink(e.to_string()))?;
+        } else {
+            return Ok(());
+        }
+        call.acknowledged = true;
+        self.store.save(call)?;
+        self.transport.release(&call.route);
         Ok(())
     }
 
@@ -599,14 +607,18 @@ impl BrocaHost {
             self.transport.release(&call.route);
             return Ok(Dispatched::Completed(outcome.host()?));
         }
-        let finished = self.issue(&mut call)?;
-        if finished && call.outcome.is_none() {
-            self.collect(&mut call)?;
+        if call.unknown.is_none() {
+            let finished = self.issue(&mut call)?;
+            if finished && call.outcome.is_none() {
+                self.resolve(&mut call)?;
+            }
         }
         if let Some(outcome) = &call.outcome {
             self.transport.release(&call.route);
             return Ok(Dispatched::Completed(outcome.host()?));
         }
+        // An unknown run is reported through the sink once the acceptance
+        // is journaled, like any later outcome.
         Ok(Dispatched::Accepted {
             handle: call
                 .handle
@@ -666,31 +678,34 @@ impl Host for BrocaHost {
     }
 }
 
-fn text_parts(content: &[ContentBlock]) -> String {
-    content
-        .iter()
-        .filter_map(|b| match b {
-            ContentBlock::Text { text } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect()
-}
+/// `run.result` states after which a run never changes again, so the call's
+/// outcome can be recorded: `completed` carries its final message, `error`
+/// its cause, and the others only their state.
+const TERMINAL_STATES: [&str; 6] = [
+    "completed",
+    "error",
+    "cancelled",
+    "interrupted",
+    "max_steps",
+    "transform_unavailable",
+];
+/// How many consecutive polls an ended run's outcome waits for `run.status`
+/// to stop saying active or paused before it is recorded with usage
+/// unreported (which charges the whole token reservation). Broca's window
+/// is brief but unbounded in principle (explained in `resolve`), so this is
+/// the safety net. Each waiting poll fails, and the module retries a failed
+/// poll after 5 s, so 12 polls take about a minute.
+pub const STATUS_LAG_POLLS: u32 = 12;
+
+/// States of a run that has not ended. A paused run can still resume.
+const NONTERMINAL_STATES: [&str; 2] = ["active", "paused"];
+
 fn ledger_usage(u: &Usage) -> TokenUsage {
     TokenUsage {
         input_tokens: u.input_tokens,
         cache_write_tokens: u.cache_write_tokens,
         output_tokens: u.output_tokens,
         cached_input_tokens: u.cached_input_tokens,
-    }
-}
-fn reason_code(reason: RunFinishReason) -> &'static str {
-    match reason {
-        RunFinishReason::Completed => "completed",
-        RunFinishReason::MaxSteps => "max_steps",
-        RunFinishReason::Cancelled => "cancelled",
-        RunFinishReason::Interrupted => "interrupted",
-        RunFinishReason::Error => "error",
-        RunFinishReason::TransformUnavailable => "transform_unavailable",
     }
 }
 fn fulfilled(value: Value, usage: Option<TokenUsage>) -> StoredOutcome {

@@ -1,6 +1,6 @@
 use basal_core::broca::BrocaStore;
 use basal_core::tokens::Usage as LedgerUsage;
-use basal_core::{ActivationEnd, Config, NoHooks, Runtime, Store};
+use basal_core::{ActivationEnd, Config, DispatchState, NoHooks, RunState, Runtime, Store};
 use basal_host::broca::{
     BrocaHost, StateStore,
     fake::FakeBroca,
@@ -208,8 +208,8 @@ fn script_value_cannot_supply_usage_and_absent_ledger_fields_are_nullable() {
 }
 
 #[test]
-fn sqlite_snapshot_cut_never_persists_a_cursor_without_its_text() {
-    let world = World::new("broca-snapshot-cut");
+fn an_unknown_broca_run_moves_the_run_to_needs_reconcile_naming_it() {
+    let world = World::new("broca-unknown-run");
     let (rt, host, fake, snapshots) = setup(&world);
     let id = admit(&rt, &world, "return await llm({prompt:'hi'});");
     assert!(matches!(
@@ -217,34 +217,116 @@ fn sqlite_snapshot_cut_never_persists_a_cursor_without_its_text() {
         ActivationEnd::Suspended { .. }
     ));
     rt.quiesce();
+    let key = fake.keys()[0].clone();
+    fake.forget(&key).unwrap();
     host.poll().unwrap();
-    let before = snapshots.load().unwrap()[0].clone();
-    fake.assistant(
-        &fake.keys()[0],
-        vec![basal_host::broca::wire::ContentBlock::Text {
-            text: "buffered".into(),
-        }],
-    )
-    .unwrap();
-    rt.store().cut();
-    assert!(host.poll().is_err());
+    let run = rt.run(&id).unwrap();
+    assert_eq!(run.state, RunState::NeedsReconcile);
+    assert_eq!(run.error_kind.as_deref(), Some("unknown_outcome"));
+    let detail = run.error_detail.unwrap();
+    assert!(
+        detail.contains(&format!("run:{key}")) && detail.contains("unknown_run"),
+        "{detail}"
+    );
+    let call = rt.calls(&id).unwrap()[0].clone();
+    assert_eq!(call.dispatch, DispatchState::Unknown);
+    assert!(call.outcome.is_none());
+    // A crash before the host saved its acknowledgement redelivers the
+    // report; the runtime recognises it and nothing changes.
+    let mut saved = snapshots.load().unwrap()[0].clone();
+    assert!(saved.acknowledged && saved.outcome.is_none());
+    saved.acknowledged = false;
+    snapshots.save(&saved).unwrap();
+    host.poll().unwrap();
+    assert!(snapshots.load().unwrap()[0].acknowledged);
+    assert_eq!(rt.run(&id).unwrap().error_detail.unwrap(), detail);
+}
+
+#[test]
+fn usage_settles_once_when_an_outcome_is_redelivered_after_a_restart() {
+    let world = World::new("broca-usage-once");
+    let (rt, host, fake, snapshots) = setup(&world);
+    let id = admit(&rt, &world, "return await llm({prompt:'hi'});");
+    assert!(matches!(
+        rt.resume(&id).unwrap(),
+        ActivationEnd::Suspended { .. }
+    ));
+    rt.quiesce();
+    let key = fake.keys()[0].clone();
+    let usage = Usage {
+        input_tokens: Some(7),
+        cache_write_tokens: Some(2),
+        output_tokens: Some(5),
+        cached_input_tokens: Some(100),
+        reasoning_tokens: Some(3),
+    };
+    fake.finish(&key, "once", RunFinishReason::Completed, Some(usage))
+        .unwrap();
+    host.poll().unwrap();
+    let totals = |rt: &Runtime| {
+        rt.store()
+            .read(|c| {
+                Ok(c.query_row(
+                    "SELECT reserved, input_tokens, cache_write_tokens, output_tokens, \
+                     cached_input_tokens, unreported_tokens FROM token_windows",
+                    [],
+                    |r| {
+                        Ok((
+                            r.get::<_, i64>(0)?,
+                            r.get::<_, i64>(1)?,
+                            r.get::<_, i64>(2)?,
+                            r.get::<_, i64>(3)?,
+                            r.get::<_, i64>(4)?,
+                            r.get::<_, i64>(5)?,
+                        ))
+                    },
+                )?)
+            })
+            .unwrap()
+    };
+    assert_eq!(totals(&rt), (0, 7, 2, 5, 100, 0));
+    // Simulate a crash after the runtime recorded the outcome and before
+    // the host saved its acknowledgement, then restart both.
+    let mut saved = snapshots.load().unwrap()[0].clone();
+    saved.acknowledged = false;
+    snapshots.save(&saved).unwrap();
+    let calls = fake.calls();
     drop(host);
     drop(snapshots);
     drop(rt);
-    let store = Arc::new(Store::open(world.store_path(), world.durability).unwrap());
-    let snapshots = Arc::new(BrocaStore::new(store));
-    let saved = snapshots.load().unwrap()[0].clone();
-    assert_eq!(saved.cursor, before.cursor);
-    assert_eq!(saved.text, None);
-    let host = BrocaHost::new(
-        fake,
-        snapshots.clone(),
-        "/project".into(),
-        "basal".into(),
-        world.selector.clone(),
-    );
-    host.poll().unwrap();
-    let after = snapshots.load().unwrap()[0].clone();
-    assert_eq!(after.text.as_deref(), Some("buffered"));
-    assert!(after.cursor > before.cursor);
+    let (rt, _host, _fake, snapshots) = {
+        let store = Arc::new(Store::open(world.store_path(), world.durability).unwrap());
+        let snapshots = Arc::new(BrocaStore::new(store.clone()));
+        let host = Arc::new(BrocaHost::new(
+            fake.clone(),
+            snapshots.clone(),
+            "/project".into(),
+            "basal".into(),
+            world.selector.clone(),
+        ));
+        let rt = Runtime::new(
+            store,
+            host.clone(),
+            Arc::new(world.catalog.clone()),
+            Arc::new(NoHooks),
+            Some(world.source.clone()),
+            Config {
+                selector: world.selector.clone(),
+                auto_resume: false,
+                activation_deadline: Duration::from_secs(60),
+                ..Config::default()
+            },
+        );
+        (rt, host, fake.clone(), snapshots)
+    };
+    assert!(snapshots.load().unwrap()[0].acknowledged);
+    // The saved outcome was redelivered without asking Broca again.
+    assert_eq!(fake.calls(), calls);
+    assert_eq!(totals(&rt), (0, 7, 2, 5, 100, 0));
+    assert!(matches!(
+        rt.resume(&id).unwrap(),
+        ActivationEnd::Succeeded { .. }
+    ));
+    rt.quiesce();
+    assert_eq!(totals(&rt), (0, 7, 2, 5, 100, 0));
 }

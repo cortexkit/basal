@@ -227,8 +227,9 @@ CREATE TABLE schedule_dropped (
     Migration {
         version: 5,
         statements: r#"
--- Text, terminal metadata and stream cursor are one atomic snapshot. Keeping
--- it beside the journal prevents a cursor from skipping unrecorded text.
+-- One snapshot per Broca model call: its frozen send, its Broca run id, its
+-- outcome once Broca reports one, and whether the runtime has recorded it.
+-- Kept beside the journal so the snapshot is deleted with its call.
 CREATE TABLE broca_calls (
     send_id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL,

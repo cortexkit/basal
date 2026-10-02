@@ -1,10 +1,14 @@
 //! Broca's session-aware calls share the module's subc consumer connection.
-//! Control events remain buffered until the host supplies a cursor saved in
-//! SQLite, so a failed snapshot write cannot lose an already received event.
+//! A call's outcome is read with `run.result`; the session subscription only
+//! wakes the host. It attaches at the live head and keeps no cursor, because
+//! every wake re-reads each pending call in full: an event lost to a dropped
+//! connection costs latency, never an outcome.
 use super::{BrocaError, BrocaHost, Route, Transport, wire::*};
 use crate::transport::{SubcTransport, WireError, map_error};
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
+use std::time::Duration;
 use subc_client_rs::consumer::ConnectionState;
 use subc_protocol::BindIdentity;
 
@@ -40,6 +44,13 @@ fn key(route: &Route) -> Key {
 }
 type Wake = Arc<dyn Fn() + Send + Sync>;
 
+/// How long a failed poll waits before trying again. A failure can leave a
+/// call that no event will wake again (Broca unreachable, a run whose
+/// `run.status` still says active or paused in the brief window after
+/// `run.result` reports it ended, a run still owned by an activation), so a
+/// failure is retried on its own rather than waiting for the next event.
+const RETRY_AFTER_FAILURE: Duration = Duration::from_secs(5);
+
 /// Coalesce stream/reconnect notifications and poll on a blocking thread.
 /// Polling from a Tokio callback would nest the consumer's blocking runtime.
 pub struct PollWake {
@@ -65,81 +76,72 @@ impl PollWake {
             }
         })
     }
-    pub fn start(&self, host: &Arc<BrocaHost>) {
+    /// Starts the polling thread and polls once at once, which is how a
+    /// module start reads every call left in flight by the last process.
+    pub fn start(self: &Arc<Self>, host: &Arc<BrocaHost>) {
         let Some(receiver) = lock(&self.receiver).take() else {
             return;
         };
         let weak = Arc::downgrade(host);
+        let retry = self.callback();
         std::thread::spawn(move || {
             while receiver.recv().is_ok() {
                 let Some(host) = weak.upgrade() else { break };
                 if let Err(error) = host.poll() {
-                    tracing::error!(%error,"Broca stream recovery remains pending");
+                    tracing::warn!(%error, "Broca calls remain pending; polling again shortly");
+                    drop(host);
+                    std::thread::sleep(RETRY_AFTER_FAILURE);
+                    retry();
                 }
             }
         });
+        self.notify();
     }
 }
+
+/// One session's subscription. It wakes the host when the session's run
+/// finishes, and closes itself then or when the stream fails, so the next
+/// `watch` opens a fresh one if the call is still pending.
 #[derive(Default)]
-struct BufferState {
-    events: VecDeque<SubscribeEvent>,
-    failure: Option<BrocaError>,
-    closed: bool,
-}
-#[derive(Default)]
-struct Buffer {
-    state: Mutex<BufferState>,
+struct Stream {
+    closed: AtomicBool,
     task: Mutex<Option<tokio::task::AbortHandle>>,
 }
-impl Drop for Buffer {
+impl Drop for Stream {
     fn drop(&mut self) {
         if let Some(task) = lock(&self.task).take() {
             task.abort();
         }
     }
 }
-impl Buffer {
-    fn push(&self, bytes: &[u8]) -> Result<bool, BrocaError> {
-        let event: SubscribeEvent =
-            serde_json::from_slice(bytes).map_err(|e| BrocaError::Wire(e.to_string()))?;
-        let terminal = matches!(&event,SubscribeEvent::Control {unit,..} if matches!(unit.as_ref(),ControlUnit::RunFinished {..}));
-        // Display events are transient UI updates, not stored assistant
-        // messages. Only control events may advance the saved cursor.
-        if matches!(event, SubscribeEvent::Control { .. }) {
-            lock(&self.state).events.push_back(event);
+impl Stream {
+    /// Handles one subscribe event. Only a finished run wakes the host;
+    /// assistant messages and display events carry nothing basal reads.
+    /// Returns whether the stream is done.
+    fn deliver(&self, bytes: &[u8], wake: &Wake) -> bool {
+        let finished = match serde_json::from_slice::<SubscribeEvent>(bytes) {
+            Ok(SubscribeEvent::Control { unit }) => {
+                matches!(*unit, ControlUnit::RunFinished { .. })
+            }
+            Ok(SubscribeEvent::Display { .. }) => false,
+            Err(error) => {
+                // An event basal cannot read may be the finish it waits for.
+                tracing::warn!(%error, "undecodable Broca stream event");
+                true
+            }
+        };
+        if finished {
+            self.close(wake);
         }
-        Ok(terminal)
+        finished
     }
-    fn deliver(&self, bytes: &[u8], wake: &Wake) -> Result<bool, BrocaError> {
-        let terminal = self.push(bytes)?;
+    fn close(&self, wake: &Wake) {
+        self.closed.store(true, Ordering::SeqCst);
         (wake)();
-        Ok(terminal)
-    }
-    fn close(&self, failure: Option<BrocaError>) {
-        let mut state = lock(&self.state);
-        state.closed = true;
-        state.failure = failure;
-    }
-    fn batch(&self, from: &Option<FromWire>) -> Result<Vec<SubscribeEvent>, BrocaError> {
-        let mut state = lock(&self.state);
-        if let Some(FromWire::Cursor(cursor)) = from {
-            state
-                .events
-                .retain(|event| matches!(event,SubscribeEvent::Control {cursor:c,..} if c>cursor));
-        }
-        // Do not drain on delivery: a failed snapshot commit must receive the
-        // same events again. Only a subsequent durable cursor releases them.
-        if !state.events.is_empty() {
-            return Ok(state.events.iter().cloned().collect());
-        }
-        if let Some(error) = state.failure.take() {
-            return Err(error);
-        }
-        Ok(vec![])
     }
 }
 
-fn reconnect(streams: &Mutex<HashMap<Key, Arc<Buffer>>>, wake: &Wake) {
+fn reconnect(streams: &Mutex<HashMap<Key, Arc<Stream>>>, wake: &Wake) {
     lock(streams).clear();
     (wake)();
 }
@@ -147,7 +149,7 @@ fn reconnect(streams: &Mutex<HashMap<Key, Arc<Buffer>>>, wake: &Wake) {
 pub struct SubcBrocaTransport {
     connection: Arc<SubcTransport>,
     module: String,
-    streams: Mutex<HashMap<Key, Arc<Buffer>>>,
+    streams: Mutex<HashMap<Key, Arc<Stream>>>,
     wake: Wake,
 }
 impl SubcBrocaTransport {
@@ -169,8 +171,8 @@ impl SubcBrocaTransport {
         transport
     }
     fn reconnected(&self) {
-        // Subscriptions belong to the old daemon connection. Replace them on
-        // reconnect and resume from SQLite, not an in-memory receive position.
+        // Subscriptions belong to the old daemon connection. Drop them and
+        // poll: each pending call is re-read and re-watched.
         reconnect(&self.streams, &self.wake);
     }
     fn call<T: serde::de::DeserializeOwned>(
@@ -185,87 +187,60 @@ impl SubcBrocaTransport {
             .map_err(error)?;
         serde_json::from_value(value).map_err(|e| BrocaError::Wire(e.to_string()))
     }
-    fn open(&self, route: &Route, params: &SubscribeParams) -> Result<Arc<Buffer>, BrocaError> {
-        let bytes = serde_json::to_vec(params).map_err(|e| BrocaError::Invalid(e.to_string()))?;
+    fn open(&self, route: &Route) -> Result<Arc<Stream>, BrocaError> {
+        let bytes = serde_json::to_vec(&SubscribeParams::live())
+            .map_err(|e| BrocaError::Invalid(e.to_string()))?;
         let mut subscription = self
             .connection
             .subscribe_as(identity(route), &self.module, "session.subscribe", &bytes)
             .map_err(error)?;
-        let buffer = Arc::new(Buffer::default());
-        let weak = Arc::downgrade(&buffer);
+        let stream = Arc::new(Stream::default());
+        let weak = Arc::downgrade(&stream);
         let wake = self.wake.clone();
         let task = self.connection.spawn(async move {
             while let Some(bytes) = subscription.events().recv().await {
-                let Some(buffer) = weak.upgrade() else { return };
-                match buffer.deliver(&bytes, &wake) {
-                    Ok(terminal) => {
-                        if terminal {
-                            buffer.close(None);
-                            return;
-                        }
-                    }
-                    Err(error) => {
-                        buffer.close(Some(error));
-                        wake();
-                        return;
-                    }
+                let Some(stream) = weak.upgrade() else { return };
+                if stream.deliver(&bytes, &wake) {
+                    return;
                 }
             }
-            let failure = match subscription.closed().await {
-                Ok(()) => BrocaError::Unavailable {
-                    proven_unsent: false,
-                    detail: "Broca stream ended before a terminal event".into(),
-                },
-                Err(e) => error(map_error(e)),
-            };
-            if let Some(buffer) = weak.upgrade() {
-                buffer.close(Some(failure));
-                wake();
+            if let Err(e) = subscription.closed().await {
+                let error = error(map_error(e));
+                tracing::warn!(%error, "Broca stream closed with an error");
+            }
+            if let Some(stream) = weak.upgrade() {
+                stream.close(&wake);
             }
         });
-        *lock(&buffer.task) = Some(task.abort_handle());
-        Ok(buffer)
+        *lock(&stream.task) = Some(task.abort_handle());
+        Ok(stream)
     }
 }
 impl Transport for SubcBrocaTransport {
     fn send(&self, route: &Route, params: &[u8]) -> Result<SendResult, BrocaError> {
         self.call(route, "session.send", params)
     }
-    fn subscribe(
+    fn watch(&self, route: &Route) -> Result<(), BrocaError> {
+        let k = key(route);
+        let open = lock(&self.streams)
+            .get(&k)
+            .is_some_and(|stream| !stream.closed.load(Ordering::SeqCst));
+        if !open {
+            let stream = self.open(route)?;
+            lock(&self.streams).insert(k, stream);
+        }
+        Ok(())
+    }
+    fn result(
         &self,
         route: &Route,
-        params: &SubscribeParams,
-    ) -> Result<Vec<SubscribeEvent>, BrocaError> {
-        let k = key(route);
-        let cached = lock(&self.streams).get(&k).cloned();
-        let buffer = match cached {
-            Some(buffer) => buffer,
-            None => {
-                let buffer = self.open(route, params)?;
-                lock(&self.streams).insert(k.clone(), buffer.clone());
-                buffer
-            }
-        };
-        let result = buffer.batch(&params.from);
-        if result.is_err() {
-            let mut streams = lock(&self.streams);
-            if streams
-                .get(&k)
-                .is_some_and(|current| Arc::ptr_eq(current, &buffer))
-            {
-                streams.remove(&k);
-            }
-            drop(streams);
-            let recoverable = match &result {
-                Err(BrocaError::Unavailable { .. }) => true,
-                Err(BrocaError::Refused { code, .. }) => code == "cursor_expired",
-                _ => false,
-            };
-            if recoverable {
-                (self.wake)();
-            }
-        }
-        result
+        params: &RunResultParams,
+    ) -> Result<RunResultResponse, BrocaError> {
+        self.call(
+            route,
+            OP_RUN_RESULT,
+            &serde_json::to_vec(params).map_err(|e| BrocaError::Invalid(e.to_string()))?,
+        )
     }
     fn status(
         &self,
@@ -278,13 +253,6 @@ impl Transport for SubcBrocaTransport {
             &serde_json::to_vec(params).map_err(|e| BrocaError::Invalid(e.to_string()))?,
         )
     }
-    fn read(&self, route: &Route, params: &ReadParams) -> Result<SessionReadResponse, BrocaError> {
-        self.call(
-            route,
-            "session.read",
-            &serde_json::to_vec(params).map_err(|e| BrocaError::Invalid(e.to_string()))?,
-        )
-    }
     fn release(&self, route: &Route) {
         lock(&self.streams).remove(&key(route));
     }
@@ -293,49 +261,53 @@ impl Transport for SubcBrocaTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
-    #[test]
-    fn stream_batches_replay_until_a_durable_cursor_and_keep_error_order() {
-        let buffer = Buffer::default();
-        let first = json!({"kind":"control","cursor":{"wal_seq":1,"sub_index":0},"unit":{"type":"assistant_message","message":{"message_id":"m","content":[{"type":"text","text":"answer"}]}}});
-        let second = json!({"kind":"control","cursor":{"wal_seq":2,"sub_index":0},"unit":{"type":"run_finished","run_id":"run","reason":"completed"}});
-        assert!(!buffer.push(first.to_string().as_bytes()).unwrap());
-        assert!(buffer.push(second.to_string().as_bytes()).unwrap());
-        buffer.close(Some(BrocaError::Refused {
-            code: "cursor_expired".into(),
-            detail: "gone".into(),
-        }));
-        let initial = buffer.batch(&None).unwrap();
-        assert_eq!(initial.len(), 2);
-        assert_eq!(buffer.batch(&None).unwrap(), initial);
-        let after = buffer
-            .batch(&Some(FromWire::Cursor(Cursor {
-                wal_seq: 1,
-                sub_index: 0,
-            })))
-            .unwrap();
-        assert_eq!(after.len(), 1);
-        assert_eq!(after[0], initial[1]);
-        assert!(
-            matches!(buffer.batch(&Some(FromWire::Cursor(Cursor {wal_seq:2,sub_index:0}))),Err(BrocaError::Refused {code,..}) if code=="cursor_expired")
-        );
-        assert!(buffer.push(b"not json").is_err());
+    use std::sync::atomic::AtomicUsize;
+
+    fn counter() -> (Arc<AtomicUsize>, Wake) {
+        let count = Arc::new(AtomicUsize::new(0));
+        let seen = count.clone();
+        (
+            count,
+            Arc::new(move || {
+                seen.fetch_add(1, Ordering::SeqCst);
+            }),
+        )
     }
+
+    #[test]
+    fn only_a_finished_run_wakes_the_host_and_closes_the_stream() {
+        let (wakes, wake) = counter();
+        let stream = Stream::default();
+        let message = br#"{"kind":"control","cursor":{"wal_seq":1,"sub_index":0},"unit":{"type":"assistant_message","message":{"message_id":"m","content":[{"type":"text","text":"answer"}]}}}"#;
+        let display = br#"{"kind":"display","event":{"type":"text_delta","text":"a"}}"#;
+        let finished = br#"{"kind":"control","cursor":{"wal_seq":2,"sub_index":0},"unit":{"type":"run_finished","run_id":"run","reason":"completed","usage":{"output_tokens":5}}}"#;
+        assert!(!stream.deliver(message, &wake));
+        assert!(!stream.deliver(display, &wake));
+        assert_eq!(wakes.load(Ordering::SeqCst), 0);
+        assert!(!stream.closed.load(Ordering::SeqCst));
+        assert!(stream.deliver(finished, &wake));
+        assert_eq!(wakes.load(Ordering::SeqCst), 1);
+        assert!(stream.closed.load(Ordering::SeqCst));
+        // An event basal cannot decode might have been the finish: wake.
+        let stream = Stream::default();
+        assert!(stream.deliver(b"not json", &wake));
+        assert_eq!(wakes.load(Ordering::SeqCst), 2);
+    }
+
     #[test]
     fn stream_and_reconnect_wakeups_are_coalesced_without_a_clock() {
         let wake = PollWake::new();
         let callback = wake.callback();
-        let buffer = Buffer::default();
-        let event=br#"{"kind":"control","cursor":{"wal_seq":1,"sub_index":0},"unit":{"type":"future_control"}}"#;
-        buffer.deliver(event, &callback).unwrap();
-        buffer.deliver(event, &callback).unwrap();
+        let finished = br#"{"kind":"control","cursor":{"wal_seq":1,"sub_index":0},"unit":{"type":"run_finished","reason":"cancelled"}}"#;
+        Stream::default().deliver(finished, &callback);
+        Stream::default().deliver(finished, &callback);
         let receiver = lock(&wake.receiver);
         let receiver = receiver.as_ref().unwrap();
         assert!(receiver.try_recv().is_ok());
         assert!(receiver.try_recv().is_err());
         let streams = Mutex::new(HashMap::from([(
             ("/".into(), "basal".into(), "call".into()),
-            Arc::new(Buffer::default()),
+            Arc::new(Stream::default()),
         )]));
         reconnect(&streams, &callback);
         assert!(lock(&streams).is_empty());
