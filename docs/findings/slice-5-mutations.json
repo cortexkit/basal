@@ -1,457 +1,632 @@
 [
   {
     "applied_evidence": "crates/basal-module/src/manifest.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test the_built_binary_prints_a_manifest_subc_protocol_accepts ... FAILED\nthread 'the_built_binary_prints_a_manifest_subc_protocol_accepts' (14307704) panicked at crates/basal-module/tests/manifest_gate.rs:34:48:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.44s",
+    "captured_output": "test the_built_binary_prints_a_manifest_subc_protocol_accepts ... FAILED\nthread 'the_built_binary_prints_a_manifest_subc_protocol_accepts' (18091126) panicked at crates/basal-module/tests/manifest_gate.rs:34:48:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.59s",
     "control": "the manifest declares a capability subc-protocol's grammar refuses",
     "expected_red": "the_built_binary_prints_a_manifest_subc_protocol_accepts",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/manifest.rs; during:  1 file changed, 3 insertions(+); after restore: empty git diff --stat",
-    "captured_output": "test the_built_binary_prints_a_manifest_subc_protocol_accepts ... FAILED\nthread 'the_built_binary_prints_a_manifest_subc_protocol_accepts' (14307997) panicked at crates/basal-module/tests/manifest_gate.rs:68:5:\n  left: {(\"flow.disable\", false), (\"flow.drain\", false), (\"flow.dry_run\", true), (\"flow.enable\", false), (\"flow.health\", true), (\"flow.reconcile\", false)}\n right: {(\"flow.disable\", false), ",
+    "captured_output": "test the_built_binary_prints_a_manifest_subc_protocol_accepts ... FAILED\nthread 'the_built_binary_prints_a_manifest_subc_protocol_accepts' (18096934) panicked at crates/basal-module/tests/manifest_gate.rs:68:5:\n  left: {(\"flow.disable\", false), (\"flow.drain\", false), (\"flow.dry_run\", true), (\"flow.enable\", false), (\"flow.health\", true), (\"flow.reconcile\", false)}\n right: {(\"flow.disable\", false), ",
     "control": "the manifest leaves out an op the module serves",
     "expected_red": "the_built_binary_prints_a_manifest_subc_protocol_accepts",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/caller.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test caller::tests::identity_comes_only_from_the_stamp ... FAILED\nthread 'caller::tests::identity_comes_only_from_the_stamp' (14308372) panicked at crates/basal-module/src/caller.rs:197:9:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+    "captured_output": "test caller::tests::identity_comes_only_from_the_stamp ... FAILED\nthread 'caller::tests::identity_comes_only_from_the_stamp' (18099463) panicked at crates/basal-module/src/caller.rs:197:9:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
     "control": "an agent id in a scope nobody vouched for is taken as the caller",
     "expected_red": "caller::tests::identity_comes_only_from_the_stamp",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/serve.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test an_owner_authorized_core_scope_names_the_agent_and_its_scope ... FAILED\nthread 'an_owner_authorized_core_scope_names_the_agent_and_its_scope' (14308917) panicked at crates/basal-module/tests/caller_binding.rs:140:5:\n  left: Local\n right: Agent { agent_id: \"SYNAPSE\", scope_ref: \"0f3c9a7d2b1e4c6a8d5f7e9b1a3c0001\" }\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; ",
+    "captured_output": "test an_owner_authorized_core_scope_names_the_agent_and_its_scope ... FAILED\nthread 'an_owner_authorized_core_scope_names_the_agent_and_its_scope' (18101222) panicked at crates/basal-module/tests/caller_binding.rs:140:5:\n  left: Local\n right: Agent { agent_id: \"SYNAPSE\", scope_ref: \"0f3c9a7d2b1e4c6a8d5f7e9b1a3c0001\" }\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; ",
     "control": "the scope stamp on a route's bind is dropped",
     "expected_red": "an_owner_authorized_core_scope_names_the_agent_and_its_scope",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/caller.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test a_scope_owned_by_another_module_names_no_agent ... FAILED\nthread 'a_scope_owned_by_another_module_names_no_agent' (14309185) panicked at crates/basal-module/tests/caller_binding.rs:193:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s",
+    "captured_output": "test a_scope_owned_by_another_module_names_no_agent ... FAILED\nthread 'a_scope_owned_by_another_module_names_no_agent' (18105654) panicked at crates/basal-module/tests/caller_binding.rs:193:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.01s",
     "control": "a scope owned by any module names its agent",
     "expected_red": "a_scope_owned_by_another_module_names_no_agent",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/caller.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test a_scope_without_owner_authorization_names_no_agent ... FAILED\nthread 'a_scope_without_owner_authorization_names_no_agent' (14309500) panicked at crates/basal-module/tests/caller_binding.rs:217:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s",
+    "captured_output": "test a_scope_without_owner_authorization_names_no_agent ... FAILED\nthread 'a_scope_without_owner_authorization_names_no_agent' (18110319) panicked at crates/basal-module/tests/caller_binding.rs:217:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s",
     "control": "an agent id in a core scope the daemon does not vouch for names the agent",
     "expected_red": "a_scope_without_owner_authorization_names_no_agent",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/caller.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test a_route_without_a_scope_is_never_an_agent ... FAILED\nthread 'a_route_without_a_scope_is_never_an_agent' (14310133) panicked at crates/basal-module/tests/caller_binding.rs:313:9:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.05s",
+    "captured_output": "test a_route_without_a_scope_is_never_an_agent ... FAILED\nthread 'a_route_without_a_scope_is_never_an_agent' (18112653) panicked at crates/basal-module/tests/caller_binding.rs:313:9:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.14s",
     "control": "an unscoped route that is neither direct nor core's is taken as the operator",
     "expected_red": "a_route_without_a_scope_is_never_an_agent",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/serve.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test a_route_without_a_scope_is_never_an_agent ... FAILED\nthread 'a_route_without_a_scope_is_never_an_agent' (14310998) panicked at crates/basal-module/tests/caller_binding.rs:313:9:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.10s",
+    "captured_output": "test a_route_without_a_scope_is_never_an_agent ... FAILED\nthread 'a_route_without_a_scope_is_never_an_agent' (18113724) panicked at crates/basal-module/tests/caller_binding.rs:313:9:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.09s",
     "control": "a route that has gone keeps the caller it was bound with",
     "expected_red": "a_route_without_a_scope_is_never_an_agent",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/ops.rs; during:  1 file changed, 3 insertions(+), 6 deletions(-); after restore: empty git diff --stat",
-    "captured_output": "test an_agent_cannot_act_on_a_flow_it_does_not_own ... FAILED\nthread 'an_agent_cannot_act_on_a_flow_it_does_not_own' (14311570) panicked at crates/basal-module/tests/caller_binding.rs:128:9:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.11s",
+    "captured_output": "test an_agent_cannot_act_on_a_flow_it_does_not_own ... FAILED\nthread 'an_agent_cannot_act_on_a_flow_it_does_not_own' (18114513) panicked at crates/basal-module/tests/caller_binding.rs:128:9:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.31s",
     "control": "a vouched agent may run a capture dry run of a flow it does not own",
     "expected_red": "an_agent_cannot_act_on_a_flow_it_does_not_own",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/ops.rs, crates/basal-core/src/install.rs; during:  2 files changed, 6 insertions(+), 4 deletions(-); after restore: empty git diff --stat",
-    "captured_output": "test an_agent_cannot_act_on_a_flow_it_does_not_own ... FAILED\nthread 'an_agent_cannot_act_on_a_flow_it_does_not_own' (14312611) panicked at crates/basal-module/tests/caller_binding.rs:128:9:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.05s",
+    "captured_output": "test an_agent_cannot_act_on_a_flow_it_does_not_own ... FAILED\nthread 'an_agent_cannot_act_on_a_flow_it_does_not_own' (18116504) panicked at crates/basal-module/tests/caller_binding.rs:128:9:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.15s",
     "control": "a vouched agent may enable a flow it does not own (the module's ownership check and the core's both removed)",
     "expected_red": "an_agent_cannot_act_on_a_flow_it_does_not_own",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/caller.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test authorization_matrix ... FAILED\nthread 'authorization_matrix' (14313099) panicked at crates/basal-module/tests/ops.rs:85:5:\n  left: Operator\n right: Local\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.06s",
+    "captured_output": "test authorization_matrix ... FAILED\nthread 'authorization_matrix' (18118672) panicked at crates/basal-module/tests/ops.rs:85:5:\n  left: Operator\n right: Local\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.11s",
     "control": "an unscoped direct key-holder is the operator",
     "expected_red": "authorization_matrix",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/caller.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test authorization_matrix ... FAILED\nthread 'authorization_matrix' (14313338) panicked at crates/basal-module/tests/ops.rs:139:13:\n  left: Ran\n right: Refused\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.05s",
+    "captured_output": "test authorization_matrix ... FAILED\nthread 'authorization_matrix' (18119576) panicked at crates/basal-module/tests/ops.rs:139:13:\n  left: Ran\n right: Refused\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.08s",
     "control": "any reserved module is the operator, not only the attested callosum",
     "expected_red": "authorization_matrix",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/ops.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test authorization_matrix ... FAILED\nthread 'authorization_matrix' (14313900) panicked at crates/basal-module/tests/ops.rs:139:13:\n  left: Refused\n right: NeedsOperator\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.19s",
+    "captured_output": "test authorization_matrix ... FAILED\nthread 'authorization_matrix' (18122277) panicked at crates/basal-module/tests/ops.rs:139:13:\n  left: Refused\n right: NeedsOperator\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.23s",
     "control": "a local caller refused an operator action is told not_permitted, not operator_attestation_required",
     "expected_red": "authorization_matrix",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/ops.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test a_local_caller_installs_only_its_own_flows_with_a_digest_sink ... FAILED\nthread 'a_local_caller_installs_only_its_own_flows_with_a_digest_sink' (14314912) panicked at crates/basal-module/tests/ops.rs:284:9:\n  left: Ran\n right: NeedsOperator\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.07s",
+    "captured_output": "test a_local_caller_installs_only_its_own_flows_with_a_digest_sink ... FAILED\nthread 'a_local_caller_installs_only_its_own_flows_with_a_digest_sink' (18123869) panicked at crates/basal-module/tests/ops.rs:284:9:\n  left: Ran\n right: NeedsOperator\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.22s",
     "control": "a local caller may replace a flow someone else wrote",
     "expected_red": "a_local_caller_installs_only_its_own_flows_with_a_digest_sink",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/ops.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test a_local_caller_installs_only_its_own_flows_with_a_digest_sink ... FAILED\nthread 'a_local_caller_installs_only_its_own_flows_with_a_digest_sink' (14315742) panicked at crates/basal-module/tests/ops.rs:284:9:\n  left: Ran\n right: NeedsOperator\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.06s",
+    "captured_output": "test a_local_caller_installs_only_its_own_flows_with_a_digest_sink ... FAILED\nthread 'a_local_caller_installs_only_its_own_flows_with_a_digest_sink' (18127943) panicked at crates/basal-module/tests/ops.rs:284:9:\n  left: Ran\n right: NeedsOperator\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.15s",
     "control": "a local caller may install in another author's name",
     "expected_red": "a_local_caller_installs_only_its_own_flows_with_a_digest_sink",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/ops.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test a_local_caller_installs_only_its_own_flows_with_a_digest_sink ... FAILED\nthread 'a_local_caller_installs_only_its_own_flows_with_a_digest_sink' (14316069) panicked at crates/basal-module/tests/ops.rs:284:9:\n  left: Ran\n right: NeedsOperator\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.07s",
+    "captured_output": "test a_local_caller_installs_only_its_own_flows_with_a_digest_sink ... FAILED\nthread 'a_local_caller_installs_only_its_own_flows_with_a_digest_sink' (18132105) panicked at crates/basal-module/tests/ops.rs:284:9:\n  left: Ran\n right: NeedsOperator\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.19s",
     "control": "a local caller may override the loop install rule",
     "expected_red": "a_local_caller_installs_only_its_own_flows_with_a_digest_sink",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/ops.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test a_local_caller_installs_only_its_own_flows_with_a_digest_sink ... FAILED\nthread 'a_local_caller_installs_only_its_own_flows_with_a_digest_sink' (14318651) panicked at crates/basal-module/tests/ops.rs:295:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.12s",
+    "captured_output": "test a_local_caller_installs_only_its_own_flows_with_a_digest_sink ... FAILED\nthread 'a_local_caller_installs_only_its_own_flows_with_a_digest_sink' (18137726) panicked at crates/basal-module/tests/ops.rs:295:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.12s",
     "control": "a local caller's flow without a digest sink is installed and its card raised",
     "expected_red": "a_local_caller_installs_only_its_own_flows_with_a_digest_sink",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/ops.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test a_local_caller_installs_only_its_own_flows_with_a_digest_sink ... FAILED\nthread 'a_local_caller_installs_only_its_own_flows_with_a_digest_sink' (14326287) panicked at crates/basal-module/tests/ops.rs:254:5:\n  left: Object {\"operator\": Bool(true)}\n right: Object {\"local\": Bool(true)}\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.09s",
+    "captured_output": "test a_local_caller_installs_only_its_own_flows_with_a_digest_sink ... FAILED\nthread 'a_local_caller_installs_only_its_own_flows_with_a_digest_sink' (18139203) panicked at crates/basal-module/tests/ops.rs:254:5:\n  left: Object {\"operator\": Bool(true)}\n right: Object {\"local\": Bool(true)}\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.13s",
     "control": "a local caller's card names the operator as its author",
     "expected_red": "a_local_caller_installs_only_its_own_flows_with_a_digest_sink",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/core_consent.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test card_author_is_scope_operator_or_local_and_nothing_else ... FAILED\nthread 'card_author_is_scope_operator_or_local_and_nothing_else' (14342775) panicked at crates/basal-module/tests/hosts.rs:421:9:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.29s",
+    "captured_output": "test card_author_is_scope_operator_or_local_and_nothing_else ... FAILED\nthread 'card_author_is_scope_operator_or_local_and_nothing_else' (18142924) panicked at crates/basal-module/tests/hosts.rs:421:9:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.28s",
     "control": "the consent host accepts the retired agent author core no longer takes",
     "expected_red": "card_author_is_scope_operator_or_local_and_nothing_else",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/core_consent.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test card_author_is_scope_operator_or_local_and_nothing_else ... FAILED\nthread 'card_author_is_scope_operator_or_local_and_nothing_else' (14370603) panicked at crates/basal-module/tests/hosts.rs:421:9:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.37s",
+    "captured_output": "test card_author_is_scope_operator_or_local_and_nothing_else ... FAILED\nthread 'card_author_is_scope_operator_or_local_and_nothing_else' (18152897) panicked at crates/basal-module/tests/hosts.rs:421:9:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.25s",
     "control": "the consent host sends an author that is not one of core's three forms",
     "expected_red": "card_author_is_scope_operator_or_local_and_nothing_else",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/caller.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test an_owner_authorized_core_scope_names_the_agent_and_its_scope ... FAILED\nthread 'an_owner_authorized_core_scope_names_the_agent_and_its_scope' (14388956) panicked at crates/basal-module/tests/caller_binding.rs:140:5:\n  left: Agent { agent_id: \"SYNAPSE\", scope_ref: \"SYNAPSE\" }\n right: Agent { agent_id: \"SYNAPSE\", scope_ref: \"0f3c9a7d2b1e4c6a8d5f7e9b1a3c0001\" }\ntest result: FAILED. 0 passed; 1 f",
+    "captured_output": "test an_owner_authorized_core_scope_names_the_agent_and_its_scope ... FAILED\nthread 'an_owner_authorized_core_scope_names_the_agent_and_its_scope' (18162821) panicked at crates/basal-module/tests/caller_binding.rs:140:5:\n  left: Agent { agent_id: \"SYNAPSE\", scope_ref: \"SYNAPSE\" }\n right: Agent { agent_id: \"SYNAPSE\", scope_ref: \"0f3c9a7d2b1e4c6a8d5f7e9b1a3c0001\" }\ntest result: FAILED. 0 passed; 1 f",
     "control": "an agent's scope_ref is taken from its agent id instead of the route's stamp",
     "expected_red": "an_owner_authorized_core_scope_names_the_agent_and_its_scope",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/ops.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test install_card_is_byte_exact_and_scope_comes_from_the_route_stamp ... FAILED\nthread 'install_card_is_byte_exact_and_scope_comes_from_the_route_stamp' (14410654) panicked at crates/basal-module/tests/hosts.rs:312:10:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.40s",
+    "captured_output": "test install_card_is_byte_exact_and_scope_comes_from_the_route_stamp ... FAILED\nthread 'install_card_is_byte_exact_and_scope_comes_from_the_route_stamp' (18169823) panicked at crates/basal-module/tests/hosts.rs:312:10:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.63s",
     "control": "an agent's card author names its agent id instead of the scope_ref it was stamped with",
     "expected_red": "install_card_is_byte_exact_and_scope_comes_from_the_route_stamp",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-host/src/core_consent.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test core_refusing_the_author_scope_is_a_clear_install_error ... FAILED\nthread 'core_refusing_the_author_scope_is_a_clear_install_error' (14433756) panicked at crates/basal-module/tests/hosts.rs:465:9:\n  left: \"consent_refused\"\n right: \"flow_install_scope_ended\"\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.40s",
+    "captured_output": "test core_refusing_the_author_scope_is_a_clear_install_error ... FAILED\nthread 'core_refusing_the_author_scope_is_a_clear_install_error' (18194567) panicked at crates/basal-module/tests/hosts.rs:465:9:\n  left: \"consent_refused\"\n right: \"flow_install_scope_ended\"\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 1.58s",
     "control": "core's refusal of the author scope is treated as an ordinary consent refusal",
     "expected_red": "core_refusing_the_author_scope_is_a_clear_install_error",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/ops.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test core_refusing_the_author_scope_is_a_clear_install_error ... FAILED\nthread 'core_refusing_the_author_scope_is_a_clear_install_error' (14466163) panicked at crates/basal-module/tests/hosts.rs:465:9:\n  left: \"flow_install_scope_ended\"\n right: \"flow_install_scope_unknown\"\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 0.26s",
+    "captured_output": "test core_refusing_the_author_scope_is_a_clear_install_error ... FAILED\nthread 'core_refusing_the_author_scope_is_a_clear_install_error' (18198010) panicked at crates/basal-module/tests/hosts.rs:465:9:\n  left: \"flow_install_scope_ended\"\n right: \"flow_install_scope_unknown\"\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 30 filtered out; finished in 2.21s",
     "control": "a pending card is raised again in the name of whoever first installed it",
     "expected_red": "core_refusing_the_author_scope_is_a_clear_install_error",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/pool.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test a_worker_is_never_reused_across_flows ... FAILED\nthread 'a_worker_is_never_reused_across_flows' (14483465) panicked at crates/basal-module/tests/pool.rs:46:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.19s",
+    "captured_output": "test a_worker_is_never_reused_across_flows ... FAILED\nthread 'a_worker_is_never_reused_across_flows' (18199913) panicked at crates/basal-module/tests/pool.rs:46:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 1.40s",
     "control": "an idle worker bound to any flow is reused for another",
     "expected_red": "a_worker_is_never_reused_across_flows",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/pool.rs; during:  1 file changed, 4 insertions(+), 2 deletions(-); after restore: empty git diff --stat",
-    "captured_output": "test a_killed_worker_is_replaced_and_the_run_continues ... FAILED\nthread 'a_killed_worker_is_replaced_and_the_run_continues' (14499731) panicked at crates/basal-module/tests/pool.rs:110:5:\n  left: 0\n right: 1\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.16s",
+    "captured_output": "test a_killed_worker_is_replaced_and_the_run_continues ... FAILED\nthread 'a_killed_worker_is_replaced_and_the_run_continues' (18201406) panicked at crates/basal-module/tests/pool.rs:110:5:\n  left: 0\n right: 1\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.98s",
     "control": "a killed worker goes back to its flow's idle list and is handed out again",
     "expected_red": "a_killed_worker_is_replaced_and_the_run_continues",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/pool.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test a_killed_worker_is_replaced_and_the_run_continues ... FAILED\nthread 'a_killed_worker_is_replaced_and_the_run_continues' (14518435) panicked at crates/basal-module/tests/pool.rs:112:5:\n  left: 0\n right: 1\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.19s",
+    "captured_output": "test a_killed_worker_is_replaced_and_the_run_continues ... FAILED\nthread 'a_killed_worker_is_replaced_and_the_run_continues' (18203696) panicked at crates/basal-module/tests/pool.rs:112:5:\n  left: 0\n right: 1\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.35s",
     "control": "a killed worker is not owed a replacement",
     "expected_red": "a_killed_worker_is_replaced_and_the_run_continues",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/pool.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test an_activation_uses_a_warm_spare ... FAILED\nthread 'an_activation_uses_a_warm_spare' (14530931) panicked at crates/basal-module/tests/pool.rs:146:5:\n  left: Spawned\n right: Spare\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.19s",
+    "captured_output": "test an_activation_uses_a_warm_spare ... FAILED\nthread 'an_activation_uses_a_warm_spare' (18206356) panicked at crates/basal-module/tests/pool.rs:146:5:\n  left: Spawned\n right: Spare\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 1.20s",
     "control": "warm spares are never handed out",
     "expected_red": "an_activation_uses_a_warm_spare",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/pool.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test a_bound_worker_is_retired_after_its_activation_count_and_its_idle_period ... FAILED\nthread 'a_bound_worker_is_retired_after_its_activation_count_and_its_idle_period' (14545275) panicked at crates/basal-module/tests/pool.rs:179:5:\n  left: 1\n right: 1\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.29s",
+    "captured_output": "test a_bound_worker_is_retired_after_its_activation_count_and_its_idle_period ... FAILED\nthread 'a_bound_worker_is_retired_after_its_activation_count_and_its_idle_period' (18208515) panicked at crates/basal-module/tests/pool.rs:179:5:\n  left: 1\n right: 1\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 2.79s",
     "control": "a worker is never retired for its activation count",
     "expected_red": "a_bound_worker_is_retired_after_its_activation_count_and_its_idle_period",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/pool.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test a_bound_worker_is_retired_after_its_activation_count_and_its_idle_period ... FAILED\nthread 'a_bound_worker_is_retired_after_its_activation_count_and_its_idle_period' (14558721) panicked at crates/basal-module/tests/pool.rs:185:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.18s",
+    "captured_output": "test a_bound_worker_is_retired_after_its_activation_count_and_its_idle_period ... FAILED\nthread 'a_bound_worker_is_retired_after_its_activation_count_and_its_idle_period' (18215479) panicked at crates/basal-module/tests/pool.rs:185:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 1.04s",
     "control": "a bound worker is never retired for idling",
     "expected_red": "a_bound_worker_is_retired_after_its_activation_count_and_its_idle_period",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/engine.rs; during:  1 file changed, 4 insertions(+), 9 deletions(-); after restore: empty git diff --stat",
-    "captured_output": "test the_run_deadline_starts_after_the_worker_answers_its_handshake ... FAILED\nthread 'the_run_deadline_starts_after_the_worker_answers_its_handshake' (14568700) panicked at crates/basal-module/tests/pool.rs:219:5:\n  left: Failed\n right: Succeeded\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.17s",
+    "captured_output": "test the_run_deadline_starts_after_the_worker_answers_its_handshake ... FAILED\nthread 'the_run_deadline_starts_after_the_worker_answers_its_handshake' (18220128) panicked at crates/basal-module/tests/pool.rs:219:5:\n  left: Failed\n right: Succeeded\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.27s",
     "control": "the run is claimed before its worker is spawned and greeted",
     "expected_red": "the_run_deadline_starts_after_the_worker_answers_its_handshake",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/engine.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test activations_are_bounded_across_flows ... FAILED\nthread 'activations_are_bounded_across_flows' (14575565) panicked at crates/basal-module/tests/engine.rs:47:5:\n  left: [\"run-cbc85200f7b95500-1\", \"run-cbc85200f7b95500-2\"]\n right: [\"run-cbc85200f7b95500-1\"]\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.10s",
+    "captured_output": "test activations_are_bounded_across_flows ... FAILED\nthread 'activations_are_bounded_across_flows' (18223649) panicked at crates/basal-module/tests/engine.rs:47:5:\n  left: [\"run-2b031181be3d6e36-1\", \"run-2b031181be3d6e36-2\"]\n right: [\"run-2b031181be3d6e36-1\"]\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.12s",
     "control": "activations are not bounded",
     "expected_red": "activations_are_bounded_across_flows",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/fatal.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test a_storage_error_stops_the_engine_and_raises_the_fatal_latch ... FAILED\nthread 'a_storage_error_stops_the_engine_and_raises_the_fatal_latch' (14580734) panicked at crates/basal-module/tests/engine.rs:104:10:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.15s",
+    "captured_output": "test a_storage_error_stops_the_engine_and_raises_the_fatal_latch ... FAILED\nthread 'a_storage_error_stops_the_engine_and_raises_the_fatal_latch' (18225143) panicked at crates/basal-module/tests/engine.rs:104:10:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 3.54s",
     "control": "a storage error does not raise the fatal latch (in process)",
     "expected_red": "a_storage_error_stops_the_engine_and_raises_the_fatal_latch",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/fatal.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test a_store_error_ends_the_process_non_zero_and_the_restart_recovers ... FAILED\nthread 'a_store_error_ends_the_process_non_zero_and_the_restart_recovers' (14595385) panicked at crates/basal-module/tests/e2e.rs:251:5:\n  left: Some(0)\n right: Some(75)\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.61s",
+    "captured_output": "test a_store_error_ends_the_process_non_zero_and_the_restart_recovers ... FAILED\nthread 'a_store_error_ends_the_process_non_zero_and_the_restart_recovers' (18227599) panicked at crates/basal-module/tests/e2e.rs:251:5:\n  left: Some(0)\n right: Some(75)\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 1.57s",
     "control": "a storage error does not end the process",
     "expected_red": "a_store_error_ends_the_process_non_zero_and_the_restart_recovers",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/module.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test a_schedule_flow_survives_a_catch_up_a_worker_kill_and_a_module_kill_with_each_write_once ... FAILED\nthread 'a_schedule_flow_survives_a_catch_up_a_worker_kill_and_a_module_kill_with_each_write_once' (14607075) panicked at crates/basal-module/tests/e2e.rs:180:5:\n  left: String(\"running\")\n right: \"pending\"\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished i",
+    "captured_output": "test a_schedule_flow_survives_a_catch_up_a_worker_kill_and_a_module_kill_with_each_write_once ... FAILED\nthread 'a_schedule_flow_survives_a_catch_up_a_worker_kill_and_a_module_kill_with_each_write_once' (18231054) panicked at crates/basal-module/tests/e2e.rs:180:5:\n  left: String(\"running\")\n right: \"pending\"\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished i",
     "control": "the module starts without recovering runs left running",
     "expected_red": "a_schedule_flow_survives_a_catch_up_a_worker_kill_and_a_module_kill_with_each_write_once",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/module.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test install_raises_one_card_per_version_and_its_decision_approves_or_rejects ... FAILED\nthread 'install_raises_one_card_per_version_and_its_decision_approves_or_rejects' (14613336) panicked at crates/basal-module/tests/ops.rs:354:5:\n  left: None\n right: Some(1)\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.06s",
+    "captured_output": "test install_raises_one_card_per_version_and_its_decision_approves_or_rejects ... FAILED\nthread 'install_raises_one_card_per_version_and_its_decision_approves_or_rejects' (18234178) panicked at crates/basal-module/tests/ops.rs:354:5:\n  left: None\n right: Some(1)\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.43s",
     "control": "a card's approval is applied as a rejection",
     "expected_red": "install_raises_one_card_per_version_and_its_decision_approves_or_rejects",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/dryrun.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test capture_mode_executes_no_host_call_and_replays_the_schedule_window ... FAILED\nthread 'capture_mode_executes_no_host_call_and_replays_the_schedule_window' (14616309) panicked at crates/basal-module/tests/dry_run.rs:53:9:\n  left: Object {\"due\": String(\"2026-04-30T15:00:00Z\")}\n right: \"captured\"\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.21s",
+    "captured_output": "test capture_mode_executes_no_host_call_and_replays_the_schedule_window ... FAILED\nthread 'capture_mode_executes_no_host_call_and_replays_the_schedule_window' (18235489) panicked at crates/basal-module/tests/dry_run.rs:53:9:\n  left: Object {\"due\": String(\"2026-04-30T15:00:00Z\")}\n right: \"captured\"\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 4.08s",
     "control": "capture mode sends calls to the host",
     "expected_red": "capture_mode_executes_no_host_call_and_replays_the_schedule_window",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/dryrun.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test a_captured_call_the_script_uses_marks_the_trace_partial ... FAILED\nthread 'a_captured_call_the_script_uses_marks_the_trace_partial' (14621374) panicked at crates/basal-module/tests/dry_run.rs:103:5:\n  left: Bool(false)\n right: true\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.19s",
+    "captured_output": "test a_captured_call_the_script_uses_marks_the_trace_partial ... FAILED\nthread 'a_captured_call_the_script_uses_marks_the_trace_partial' (18236874) panicked at crates/basal-module/tests/dry_run.rs:103:5:\n  left: Bool(false)\n right: true\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 2.23s",
     "control": "a delivered captured rejection does not taint what follows",
     "expected_red": "a_captured_call_the_script_uses_marks_the_trace_partial",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/dryrun.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test live_mode_runs_only_query_ops_and_only_for_the_operator ... FAILED\nthread 'live_mode_runs_only_query_ops_and_only_for_the_operator' (14625192) panicked at crates/basal-module/tests/dry_run.rs:165:5:\n  left: Object {\"a\": Number(1), \"b\": Object {\"applied\": Object {\"n\": Number(2)}, \"op\": String(\"send\")}, \"s\": String(\"captured\")}\n right: Object {\"a\": Number(1), \"b\": String(\"captured\"), \"s\": Strin",
+    "captured_output": "test live_mode_runs_only_query_ops_and_only_for_the_operator ... FAILED\nthread 'live_mode_runs_only_query_ops_and_only_for_the_operator' (18238859) panicked at crates/basal-module/tests/dry_run.rs:165:5:\n  left: Object {\"a\": Number(1), \"b\": Object {\"applied\": Object {\"n\": Number(2)}, \"op\": String(\"send\")}, \"s\": String(\"captured\")}\n right: Object {\"a\": Number(1), \"b\": String(\"captured\"), \"s\": Strin",
     "control": "live mode runs ops that are not marked query",
     "expected_red": "live_mode_runs_only_query_ops_and_only_for_the_operator",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/ops.rs; during:  1 file changed, 3 insertions(+), 6 deletions(-); after restore: empty git diff --stat",
-    "captured_output": "test live_mode_runs_only_query_ops_and_only_for_the_operator ... FAILED\nthread 'live_mode_runs_only_query_ops_and_only_for_the_operator' (14626574) panicked at crates/basal-module/tests/dry_run.rs:155:9:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.12s",
+    "captured_output": "test live_mode_runs_only_query_ops_and_only_for_the_operator ... FAILED\nthread 'live_mode_runs_only_query_ops_and_only_for_the_operator' (18240423) panicked at crates/basal-module/tests/dry_run.rs:155:9:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 1.83s",
     "control": "an owning agent may ask for a live dry run",
     "expected_red": "live_mode_runs_only_query_ops_and_only_for_the_operator",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/dryrun.rs; during:  1 file changed, 5 insertions(+), 4 deletions(-); after restore: empty git diff --stat",
-    "captured_output": "test each_dry_run_has_its_own_scratch_store_and_the_real_kv_and_runs_are_untouched ... FAILED\nthread 'each_dry_run_has_its_own_scratch_store_and_the_real_kv_and_runs_are_untouched' (14627935) panicked at crates/basal-module/tests/dry_run.rs:236:9:\n  left: Null\n right: 1\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.13s",
+    "captured_output": "test each_dry_run_has_its_own_scratch_store_and_the_real_kv_and_runs_are_untouched ... FAILED\nthread 'each_dry_run_has_its_own_scratch_store_and_the_real_kv_and_runs_are_untouched' (18241944) panicked at crates/basal-module/tests/dry_run.rs:236:9:\n  left: Null\n right: 1\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 2.89s",
     "control": "dry runs share one scratch store that is never removed",
     "expected_red": "each_dry_run_has_its_own_scratch_store_and_the_real_kv_and_runs_are_untouched",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/ops.rs; during:  1 file changed, 3 insertions(+), 6 deletions(-); after restore: empty git diff --stat",
-    "captured_output": "test authorization_matrix ... FAILED\nthread 'authorization_matrix' (14629891) panicked at crates/basal-module/tests/ops.rs:139:13:\n  left: Ran\n right: Refused\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.15s",
+    "captured_output": "test authorization_matrix ... FAILED\nthread 'authorization_matrix' (18244156) panicked at crates/basal-module/tests/ops.rs:139:13:\n  left: Ran\n right: Refused\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 2.55s",
     "control": "any agent may run a capture dry run of another's flow",
     "expected_red": "authorization_matrix",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/ops.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test authorization_matrix ... FAILED\nthread 'authorization_matrix' (14633134) panicked at crates/basal-module/tests/ops.rs:139:13:\n  left: Ran\n right: NeedsOperator\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.19s",
+    "captured_output": "test authorization_matrix ... FAILED\nthread 'authorization_matrix' (18249474) panicked at crates/basal-module/tests/ops.rs:139:13:\n  left: Ran\n right: NeedsOperator\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 3.45s",
     "control": "agents may read flow.health",
     "expected_red": "authorization_matrix",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/ops.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test authorization_matrix ... FAILED\nthread 'authorization_matrix' (14635895) panicked at crates/basal-module/tests/ops.rs:139:13:\n  left: Ran\n right: NeedsOperator\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.15s",
+    "captured_output": "test authorization_matrix ... FAILED\nthread 'authorization_matrix' (18260052) panicked at crates/basal-module/tests/ops.rs:139:13:\n  left: Ran\n right: NeedsOperator\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 2.59s",
     "control": "anyone may reconcile",
     "expected_red": "authorization_matrix",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/ops.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test authorization_matrix ... FAILED\nthread 'authorization_matrix' (14637138) panicked at crates/basal-module/tests/ops.rs:139:13:\n  left: Ran\n right: NeedsOperator\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.13s",
+    "captured_output": "test authorization_matrix ... FAILED\nthread 'authorization_matrix' (18280396) panicked at crates/basal-module/tests/ops.rs:139:13:\n  left: Ran\n right: NeedsOperator\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 12.48s",
     "control": "anyone may drain",
     "expected_red": "authorization_matrix",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/ops.rs, crates/basal-core/src/install.rs; during:  2 files changed, 6 insertions(+), 4 deletions(-); after restore: empty git diff --stat",
-    "captured_output": "test authorization_matrix ... FAILED\nthread 'authorization_matrix' (14638467) panicked at crates/basal-module/tests/ops.rs:139:13:\n  left: Ran\n right: Refused\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.13s",
+    "captured_output": "test authorization_matrix ... FAILED\nthread 'authorization_matrix' (18291599) panicked at crates/basal-module/tests/ops.rs:139:13:\n  left: Ran\n right: Refused\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 6.68s",
     "control": "any agent may enable any flow (the module's ownership check and the core's both removed)",
     "expected_red": "authorization_matrix",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/install.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test authorization_matrix ... FAILED\nthread 'authorization_matrix' (14639679) panicked at crates/basal-module/tests/ops.rs:177:5:\n  left: Err(\"not_permitted: NotYourDisable { flow_id: \\\"flow-own\\\", disabled_by: \\\"agent:SYNAPSE\\\" }\")\n right: Ok(Bool(true))\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.14s",
+    "captured_output": "test authorization_matrix ... FAILED\nthread 'authorization_matrix' (18299900) panicked at crates/basal-module/tests/ops.rs:177:5:\n  left: Err(\"not_permitted: NotYourDisable { flow_id: \\\"flow-own\\\", disabled_by: \\\"agent:SYNAPSE\\\" }\")\n right: Ok(Bool(true))\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 5.05s",
     "control": "the owner may not re-enable even a disable it made itself",
     "expected_red": "authorization_matrix",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/install.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test authorization_matrix ... FAILED\nthread 'authorization_matrix' (14640946) panicked at crates/basal-module/tests/ops.rs:191:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.13s",
+    "captured_output": "test authorization_matrix ... FAILED\nthread 'authorization_matrix' (18304813) panicked at crates/basal-module/tests/ops.rs:191:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.70s",
     "control": "the owner may undo the operator's disable",
     "expected_red": "authorization_matrix",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/install.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test authorization_matrix ... FAILED\nthread 'authorization_matrix' (14642179) panicked at crates/basal-module/tests/ops.rs:216:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.13s",
+    "captured_output": "test authorization_matrix ... FAILED\nthread 'authorization_matrix' (18311337) panicked at crates/basal-module/tests/ops.rs:216:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 1.66s",
     "control": "the owner may undo an auto-disable",
     "expected_red": "authorization_matrix",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/install.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test an_operator_disable_takes_over_the_owners_disable ... FAILED\nthread 'an_operator_disable_takes_over_the_owners_disable' (14643389) panicked at crates/basal-module/tests/ops.rs:666:5:\n  left: Bool(false)\n right: true\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.06s",
+    "captured_output": "test an_operator_disable_takes_over_the_owners_disable ... FAILED\nthread 'an_operator_disable_takes_over_the_owners_disable' (18315826) panicked at crates/basal-module/tests/ops.rs:666:5:\n  left: Bool(false)\n right: true\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.24s",
     "control": "an operator disable of a flow the owner disabled changes nothing",
     "expected_red": "an_operator_disable_takes_over_the_owners_disable",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/ops.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test flow_health_decodes_as_core_decodes_it ... FAILED\nthread 'flow_health_decodes_as_core_decodes_it' (14644665) panicked at crates/basal-module/tests/health_contract.rs:86:29:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s",
+    "captured_output": "test flow_health_decodes_as_core_decodes_it ... FAILED\nthread 'flow_health_decodes_as_core_decodes_it' (18317912) panicked at crates/basal-module/tests/health_contract.rs:86:29:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.89s",
     "control": "health has no as_of",
     "expected_red": "flow_health_decodes_as_core_decodes_it",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/ops.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test flow_health_decodes_as_core_decodes_it ... FAILED\nthread 'flow_health_decodes_as_core_decodes_it' (14646109) panicked at crates/basal-module/tests/health_contract.rs:208:5:\n  left: []\n right: [\"flow-auto\", \"flow-ok\"]\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s",
+    "captured_output": "test flow_health_decodes_as_core_decodes_it ... FAILED\nthread 'flow_health_decodes_as_core_decodes_it' (18321617) panicked at crates/basal-module/tests/health_contract.rs:208:5:\n  left: []\n right: [\"flow-auto\", \"flow-ok\"]\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.30s",
     "control": "health ignores flow_ids",
     "expected_red": "flow_health_decodes_as_core_decodes_it",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/ops.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test flow_health_decodes_as_core_decodes_it ... FAILED\nthread 'flow_health_decodes_as_core_decodes_it' (14647226) panicked at crates/basal-module/tests/health_contract.rs:86:29:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s",
+    "captured_output": "test flow_health_decodes_as_core_decodes_it ... FAILED\nthread 'flow_health_decodes_as_core_decodes_it' (18324873) panicked at crates/basal-module/tests/health_contract.rs:86:29:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.45s",
     "control": "health's last run has no outcome",
     "expected_red": "flow_health_decodes_as_core_decodes_it",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/ops.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test flow_health_decodes_as_core_decodes_it ... FAILED\nthread 'flow_health_decodes_as_core_decodes_it' (14648259) panicked at crates/basal-module/tests/health_contract.rs:86:29:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s",
+    "captured_output": "test flow_health_decodes_as_core_decodes_it ... FAILED\nthread 'flow_health_decodes_as_core_decodes_it' (18327154) panicked at crates/basal-module/tests/health_contract.rs:86:29:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.84s",
     "control": "health's last run time is epoch milliseconds, not RFC 3339",
     "expected_red": "flow_health_decodes_as_core_decodes_it",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/ops.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test flow_health_decodes_as_core_decodes_it ... FAILED\nthread 'flow_health_decodes_as_core_decodes_it' (14648908) panicked at crates/basal-module/tests/health_contract.rs:86:29:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s",
+    "captured_output": "test flow_health_decodes_as_core_decodes_it ... FAILED\nthread 'flow_health_decodes_as_core_decodes_it' (18330675) panicked at crates/basal-module/tests/health_contract.rs:86:29:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s",
     "control": "health's overdue age is null when nothing is overdue",
     "expected_red": "flow_health_decodes_as_core_decodes_it",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/ops.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test flow_health_decodes_as_core_decodes_it ... FAILED\nthread 'flow_health_decodes_as_core_decodes_it' (14649510) panicked at crates/basal-module/tests/health_contract.rs:86:29:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s",
+    "captured_output": "test flow_health_decodes_as_core_decodes_it ... FAILED\nthread 'flow_health_decodes_as_core_decodes_it' (18332356) panicked at crates/basal-module/tests/health_contract.rs:86:29:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.30s",
     "control": "health's needs_reconcile is a list of runs, not a boolean",
     "expected_red": "flow_health_decodes_as_core_decodes_it",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/ops.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test flow_health_decodes_as_core_decodes_it ... FAILED\nthread 'flow_health_decodes_as_core_decodes_it' (14650035) panicked at crates/basal-module/tests/health_contract.rs:86:29:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s",
+    "captured_output": "test flow_health_decodes_as_core_decodes_it ... FAILED\nthread 'flow_health_decodes_as_core_decodes_it' (18333888) panicked at crates/basal-module/tests/health_contract.rs:86:29:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.39s",
     "control": "health's overflowed is left out",
     "expected_red": "flow_health_decodes_as_core_decodes_it",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/ops.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test flow_health_decodes_as_core_decodes_it ... FAILED\nthread 'flow_health_decodes_as_core_decodes_it' (14650587) panicked at crates/basal-module/tests/health_contract.rs:86:29:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s",
+    "captured_output": "test flow_health_decodes_as_core_decodes_it ... FAILED\nthread 'flow_health_decodes_as_core_decodes_it' (18338519) panicked at crates/basal-module/tests/health_contract.rs:86:29:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.41s",
     "control": "health's auto_disabled is null when false",
     "expected_red": "flow_health_decodes_as_core_decodes_it",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/ops.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test flow_health_decodes_as_core_decodes_it ... FAILED\nthread 'flow_health_decodes_as_core_decodes_it' (14651009) panicked at crates/basal-module/tests/health_contract.rs:86:29:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s",
+    "captured_output": "test flow_health_decodes_as_core_decodes_it ... FAILED\nthread 'flow_health_decodes_as_core_decodes_it' (18340095) panicked at crates/basal-module/tests/health_contract.rs:86:29:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.13s",
     "control": "health's state is outside the contract's enum",
     "expected_red": "flow_health_decodes_as_core_decodes_it",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/ops.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test health_lists_a_flow_with_no_approved_version_as_unapproved ... FAILED\nthread 'health_lists_a_flow_with_no_approved_version_as_unapproved' (14651600) panicked at crates/basal-module/tests/ops.rs:544:5:\n  left: String(\"enabled\")\n right: \"unapproved\"\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.07s",
+    "captured_output": "test health_lists_a_flow_with_no_approved_version_as_unapproved ... FAILED\nthread 'health_lists_a_flow_with_no_approved_version_as_unapproved' (18344495) panicked at crates/basal-module/tests/ops.rs:544:5:\n  left: String(\"enabled\")\n right: \"unapproved\"\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.07s",
     "control": "health reports a flow nobody approved by its enabled switch",
     "expected_red": "health_lists_a_flow_with_no_approved_version_as_unapproved",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/ops.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test health_reports_flows_runs_and_the_module ... FAILED\nthread 'health_reports_flows_runs_and_the_module' (14652114) panicked at crates/basal-module/tests/ops.rs:524:5:\n  left: String(\"operator:operator\")\n right: \"operator\"\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.13s",
+    "captured_output": "test health_reports_flows_runs_and_the_module ... FAILED\nthread 'health_reports_flows_runs_and_the_module' (18346566) panicked at crates/basal-module/tests/ops.rs:524:5:\n  left: String(\"operator:operator\")\n right: \"operator\"\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.29s",
     "control": "health does not say who disabled a flow",
     "expected_red": "health_reports_flows_runs_and_the_module",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/ops.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test install_refuses_what_an_agent_may_not_do ... FAILED\nthread 'install_refuses_what_an_agent_may_not_do' (14652706) panicked at crates/basal-module/tests/ops.rs:417:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.06s",
+    "captured_output": "test install_refuses_what_an_agent_may_not_do ... FAILED\nthread 'install_refuses_what_an_agent_may_not_do' (18348430) panicked at crates/basal-module/tests/ops.rs:417:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.09s",
     "control": "an agent may install a flow in another author's name",
     "expected_red": "install_refuses_what_an_agent_may_not_do",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/ops.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test health_reports_flows_runs_and_the_module ... FAILED\nthread 'health_reports_flows_runs_and_the_module' (14653285) panicked at crates/basal-module/tests/ops.rs:504:5:\n  left: Null\n right: 5000\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.12s",
+    "captured_output": "test health_reports_flows_runs_and_the_module ... FAILED\nthread 'health_reports_flows_runs_and_the_module' (18350899) panicked at crates/basal-module/tests/ops.rs:504:5:\n  left: Null\n right: 5000\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.79s",
     "control": "health reports no oldest pending run",
     "expected_red": "health_reports_flows_runs_and_the_module",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-core/src/ops.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test health_reports_flows_runs_and_the_module ... FAILED\nthread 'health_reports_flows_runs_and_the_module' (14654516) panicked at crates/basal-module/tests/ops.rs:495:5:\n  left: Number(0)\n right: 2\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.13s",
+    "captured_output": "test health_reports_flows_runs_and_the_module ... FAILED\nthread 'health_reports_flows_runs_and_the_module' (18352458) panicked at crates/basal-module/tests/ops.rs:495:5:\n  left: Number(0)\n right: 2\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.37s",
     "control": "health does not count failed runs as consecutive failures",
     "expected_red": "health_reports_flows_runs_and_the_module",
     "outcome": "reddened"
   },
   {
     "applied_evidence": "crates/basal-module/src/unconfigured.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
-    "captured_output": "test the_unconfigured_host_refuses_every_dispatch_as_never_sent ... FAILED\nthread 'the_unconfigured_host_refuses_every_dispatch_as_never_sent' (14655904) panicked at crates/basal-module/tests/engine.rs:164:5:\n  left: NeedsReconcile\n right: Succeeded\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.14s",
+    "captured_output": "test the_unconfigured_host_refuses_every_dispatch_as_never_sent ... FAILED\nthread 'the_unconfigured_host_refuses_every_dispatch_as_never_sent' (18354459) panicked at crates/basal-module/tests/engine.rs:164:5:\n  left: NeedsReconcile\n right: Succeeded\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.37s",
     "control": "the unconfigured host's refusal is not proven unsent",
     "expected_red": "the_unconfigured_host_refuses_every_dispatch_as_never_sent",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-host/src/core_consent.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test a_changed_decision_updates_its_card_and_another_unknown_call_gets_its_own ... FAILED\nthread 'a_changed_decision_updates_its_card_and_another_unknown_call_gets_its_own' (18356787) panicked at crates/basal-module/tests/decisions.rs:609:5:\n  left: 0\n right: 1\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.48s",
+    "control": "decision cards: every raise goes out under a fresh dedup key, so a changed card is a second card",
+    "expected_red": "a_changed_decision_updates_its_card_and_another_unknown_call_gets_its_own",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-host/src/core_consent.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test a_crash_between_the_intent_and_core_accepting_still_shows_exactly_one_card ... FAILED\nthread 'a_crash_between_the_intent_and_core_accepting_still_shows_exactly_one_card' (18360451) panicked at crates/basal-module/tests/decisions.rs:671:5:\n  left: 0\n right: 1\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.29s",
+    "control": "decision cards: every raise goes out under a fresh dedup key, so a re-raise after a crash is a second card",
+    "expected_red": "a_crash_between_the_intent_and_core_accepting_still_shows_exactly_one_card",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/decisions.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test each_reconcile_option_and_the_default_on_expiry_apply_through_the_journaled_path ... FAILED\nthread 'each_reconcile_option_and_the_default_on_expiry_apply_through_the_journaled_path' (18362461) panicked at crates/basal-module/tests/decisions.rs:140:44:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 13 filtered out; finished in 3.12s",
+    "control": "decision cards: a decision already answered for this send of the call is written again",
+    "expected_red": "each_reconcile_option_and_the_default_on_expiry_apply_through_the_journaled_path",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/decisions.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test a_changed_decision_updates_its_card_and_another_unknown_call_gets_its_own ... FAILED\nthread 'a_changed_decision_updates_its_card_and_another_unknown_call_gets_its_own' (18366951) panicked at crates/basal-module/tests/decisions.rs:611:5:\n  left: 1\n right: 2\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.23s",
+    "control": "decision cards: a changed decision is not raised again under its key",
+    "expected_red": "a_changed_decision_updates_its_card_and_another_unknown_call_gets_its_own",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/decisions.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test an_answer_after_the_decision_was_settled_another_way_is_stale ... FAILED\nthread 'an_answer_after_the_decision_was_settled_another_way_is_stale' (18370335) panicked at crates/basal-module/tests/decisions.rs:564:5:\n  left: Open\n right: Stale\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.36s",
+    "control": "decision cards: an answer to a decision settled another way is applied instead of recorded stale",
+    "expected_red": "an_answer_after_the_decision_was_settled_another_way_is_stale",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/decisions.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test a_duplicate_answer_changes_nothing ... FAILED\nthread 'a_duplicate_answer_changes_nothing' (18374043) panicked at crates/basal-module/tests/decisions.rs:538:9:\n  left: 3\n right: 1\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 13 filtered out; finished in 2.05s",
+    "control": "decision cards: an answer delivered twice is applied twice",
+    "expected_red": "a_duplicate_answer_changes_nothing",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/reconcile.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test each_reconcile_option_and_the_default_on_expiry_apply_through_the_journaled_path ... FAILED\nthread 'each_reconcile_option_and_the_default_on_expiry_apply_through_the_journaled_path' (18376015) panicked at crates/basal-module/tests/decisions.rs:383:9:\n  left: []\n right: [(\"reconcile.not_applied\", Some(\"run-e0217d1a5d909d7a-1\"), Some(0))]\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 me",
+    "control": "decision cards: the audit row of a resolution answered on a card omits the elicitation id",
+    "expected_red": "each_reconcile_option_and_the_default_on_expiry_apply_through_the_journaled_path",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-module/src/engine.rs; during:  1 file changed, 3 insertions(+); after restore: empty git diff --stat",
+    "captured_output": "test a_crash_between_the_intent_and_core_accepting_still_shows_exactly_one_card ... FAILED\nthread 'a_crash_between_the_intent_and_core_accepting_still_shows_exactly_one_card' (18377427) panicked at crates/basal-module/tests/decisions.rs:666:5:\n  left: Some(1)\n right: None\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.38s",
+    "control": "decision cards: a card whose raise failed is recorded as raised, so the intent is lost",
+    "expected_red": "a_crash_between_the_intent_and_core_accepting_still_shows_exactly_one_card",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-host/src/core_consent.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test a_crash_between_receiving_an_answer_and_applying_it_applies_it_exactly_once ... FAILED\nthread 'a_crash_between_receiving_an_answer_and_applying_it_applies_it_exactly_once' (18380019) panicked at crates/basal-module/tests/decisions.rs:706:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.92s",
+    "control": "decision cards: a page is acknowledged although applying its answer failed",
+    "expected_red": "a_crash_between_receiving_an_answer_and_applying_it_applies_it_exactly_once",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/decisions.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test each_reconcile_option_and_the_default_on_expiry_apply_through_the_journaled_path ... FAILED\nthread 'each_reconcile_option_and_the_default_on_expiry_apply_through_the_journaled_path' (18381278) panicked at crates/basal-module/tests/decisions.rs:377:9:\n  left: Some(\"\\\"ran\\\"\")\n right: Some(\"\\\"reconciled_as_applied\\\"\")\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 13 filtered ou",
+    "control": "decision cards: 'It ran' releases an invented null result instead of reconciled_as_applied",
+    "expected_red": "each_reconcile_option_and_the_default_on_expiry_apply_through_the_journaled_path",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/reconcile.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test reconciled_as_applied_is_journaled_and_replays_the_same_rejection ... FAILED\nthread 'reconciled_as_applied_is_journaled_and_replays_the_same_rejection' (18382349) panicked at crates/basal-module/tests/decisions.rs:768:5:\n  left: \"{\\\"code\\\":\\\"reconciled_as_applied\\\",\\\"message\\\":\\\"the operator reconciled this call as applied at 1790919552393\\\"}\"\n right: \"{\\\"code\\\":\\\"reconciled_as_applied\\\",\\\"me",
+    "control": "decision cards: the reconciled_as_applied rejection depends on when it was produced",
+    "expected_red": "reconciled_as_applied_is_journaled_and_replays_the_same_rejection",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/decisions.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test each_reconcile_option_and_the_default_on_expiry_apply_through_the_journaled_path ... FAILED\nthread 'each_reconcile_option_and_the_default_on_expiry_apply_through_the_journaled_path' (18383450) panicked at crates/basal-module/tests/decisions.rs:376:9:\n  left: Succeeded\n right: NeedsReconcile\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.67s",
+    "control": "decision cards: an expired card applies an action instead of its default",
+    "expected_red": "each_reconcile_option_and_the_default_on_expiry_apply_through_the_journaled_path",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/decisions.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test an_auto_disabled_flow_raises_one_reenable_card_and_each_option_applies ... FAILED\nthread 'an_auto_disabled_flow_raises_one_reenable_card_and_each_option_applies' (18385010) panicked at crates/basal-module/tests/decisions.rs:858:9:\n  left: false\n right: true\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.84s",
+    "control": "decision cards: a re-enable answer does not enable the flow",
+    "expected_red": "an_auto_disabled_flow_raises_one_reenable_card_and_each_option_applies",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/rate.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test an_auto_disabled_flow_raises_one_reenable_card_and_each_option_applies ... FAILED\nthread 'an_auto_disabled_flow_raises_one_reenable_card_and_each_option_applies' (18387475) panicked at crates/basal-module/tests/decisions.rs:799:5:\n  left: 0\n right: 1\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.28s",
+    "control": "decision cards: an auto-disable writes no re-enable card intent",
+    "expected_red": "an_auto_disabled_flow_raises_one_reenable_card_and_each_option_applies",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-host/src/core_consent.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test a_run_in_needs_reconcile_raises_one_card_per_unknown_call_to_the_operator_only ... FAILED\nthread 'a_run_in_needs_reconcile_raises_one_card_per_unknown_call_to_the_operator_only' (18390642) panicked at crates/basal-module/tests/decisions.rs:258:5:\n  left: 0\n right: 1\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.60s",
+    "control": "decision cards: action options carry an effect core does not take",
+    "expected_red": "a_run_in_needs_reconcile_raises_one_card_per_unknown_call_to_the_operator_only",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-host/src/core_consent.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test the_request_builder_reproduces_core_v1_vectors_byte_for_byte ... FAILED\nthread 'the_request_builder_reproduces_core_v1_vectors_byte_for_byte' (18395686) panicked at crates/basal-module/tests/decisions.rs:1000:9:\n  left: \"{\\n  \\\"default\\\": \\\"send_again\\\",\\n  \\\"expires_in_ms\\\": 60000,\\n  \\\"flow_decision\\\": {\\n    \\\"call_key\\\": \\\"call-x\\\",\\n    \\\"decision\\\": \\\"reconcile\\\",\\n    \\\"flow_id\\\": \\\"fl",
+    "control": "decision cards: the default is an action rather than the declining option",
+    "expected_red": "the_request_builder_reproduces_core_v1_vectors_byte_for_byte",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-host/src/core_consent.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test the_request_builder_reproduces_core_v1_vectors_byte_for_byte ... FAILED\nthread 'the_request_builder_reproduces_core_v1_vectors_byte_for_byte' (18398241) panicked at crates/basal-module/tests/decisions.rs:1000:9:\n  left: \"{\\n  \\\"default\\\": \\\"unresolved\\\",\\n  \\\"expires_in_ms\\\": 60000,\\n  \\\"flow_decision\\\": {\\n    \\\"call_key\\\": \\\"call-x\\\",\\n    \\\"decision\\\": \\\"reconcile\\\",\\n    \\\"flow_id\\\": \\\"fl",
+    "control": "decision cards: the v1 request carries a field core's vectors do not",
+    "expected_red": "the_request_builder_reproduces_core_v1_vectors_byte_for_byte",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-host/src/core_consent.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test the_v2_body_carries_the_typed_context_field_for_field ... FAILED\nthread 'the_v2_body_carries_the_typed_context_field_for_field' (18400170) panicked at crates/basal-module/tests/decisions.rs:1016:5:\n  left: Object {\"attempts\": Number(1), \"call_key\": String(\"call-x\"), \"decision\": String(\"reconcile\"), \"flow_id\": String(\"flow-x\"), \"op\": String(\"prefrontal-core.sink.digest\"), \"run_admitted_at_ms\":",
+    "control": "decision cards: the v2 body leaves out the unknown reason",
+    "expected_red": "the_v2_body_carries_the_typed_context_field_for_field",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-host/src/core_consent.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test the_request_builder_reproduces_core_v1_vectors_byte_for_byte ... FAILED\nthread 'the_request_builder_reproduces_core_v1_vectors_byte_for_byte' (18401847) panicked at crates/basal-module/tests/decisions.rs:1000:9:\n  left: \"{\\n  \\\"default\\\": \\\"unresolved\\\",\\n  \\\"expires_in_ms\\\": 60000,\\n  \\\"flow_decision\\\": {\\n    \\\"attempts\\\": 1,\\n    \\\"call_key\\\": \\\"call-x\\\",\\n    \\\"decision\\\": \\\"reconcile\\\",\\",
+    "control": "decision cards: the v2 body goes on the wire before core accepts it",
+    "expected_red": "the_request_builder_reproduces_core_v1_vectors_byte_for_byte",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-host/src/core_consent.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test an_expiry_is_the_decline_whatever_choice_it_names ... FAILED\nthread 'an_expiry_is_the_decline_whatever_choice_it_names' (18403369) panicked at crates/basal-module/tests/decisions.rs:507:5:\n  left: Succeeded\n right: NeedsReconcile\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.76s",
+    "control": "decision cards: an expiry naming an option is applied as that option",
+    "expected_red": "an_expiry_is_the_decline_whatever_choice_it_names",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/rate.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test an_auto_disabled_flow_raises_one_reenable_card_and_each_option_applies ... FAILED\nthread 'an_auto_disabled_flow_raises_one_reenable_card_and_each_option_applies' (18406928) panicked at crates/basal-module/tests/decisions.rs:813:5:\n  left: String(\"basal disabled host-flow at 00:00 UTC: it reached its limit of 1 calls per 60-second window in 1 windows in a row.\")\n right: \"basal disabled host-fl",
+    "control": "decision cards: a run-limit auto-disable is recorded as a dispatch-limit one",
+    "expected_red": "an_auto_disabled_flow_raises_one_reenable_card_and_each_option_applies",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/rate.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test an_auto_disabled_flow_raises_one_reenable_card_and_each_option_applies ... FAILED\nthread 'an_auto_disabled_flow_raises_one_reenable_card_and_each_option_applies' (18409627) panicked at crates/basal-module/tests/decisions.rs:813:5:\n  left: String(\"basal disabled host-flow at 00:00 UTC: it reached its limit of 600 runs per 60-second window in 1 windows in a row.\")\n right: \"basal disabled host-f",
+    "control": "decision cards: the re-enable card records the other limit than the one that tripped",
+    "expected_red": "an_auto_disabled_flow_raises_one_reenable_card_and_each_option_applies",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/decisions.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test each_unknown_site_records_its_reason_and_the_card_shows_it ... FAILED\nthread 'each_unknown_site_records_its_reason_and_the_card_shows_it' (18411510) panicked at crates/basal-module/tests/decisions.rs:478:5:\n  left: String(\"Run 00:00 UTC of host-flow may not have finished: its call to mock.post was sent and then the connection closed before a reply came.\")\n right: \"Run 00:00 UTC of host-flow m",
+    "control": "decision cards: the prompt misstates why the outcome is unknown",
+    "expected_red": "each_unknown_site_records_its_reason_and_the_card_shows_it",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-host/src/transport.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test each_unknown_site_records_its_reason_and_the_card_shows_it ... FAILED\nthread 'each_unknown_site_records_its_reason_and_the_card_shows_it' (18418591) panicked at crates/basal-module/tests/decisions.rs:423:9:\n  left: Some(ConnectionLost)\n right: Some(ReplyTimeout)\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.68s",
+    "control": "unknown reasons: a timed-out reply is recorded as a lost connection",
+    "expected_red": "each_unknown_site_records_its_reason_and_the_card_shows_it",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-host/src/transport.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test each_unknown_site_records_its_reason_and_the_card_shows_it ... FAILED\nthread 'each_unknown_site_records_its_reason_and_the_card_shows_it' (18421124) panicked at crates/basal-module/tests/decisions.rs:423:9:\n  left: Some(ConnectionLost)\n right: Some(ReplyUnreadable)\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.47s",
+    "control": "unknown reasons: an unreadable reply is recorded as a lost connection",
+    "expected_red": "each_unknown_site_records_its_reason_and_the_card_shows_it",
     "outcome": "reddened"
   }
 ]
