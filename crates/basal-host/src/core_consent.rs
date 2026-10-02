@@ -35,6 +35,10 @@ pub fn request(card: &InstallCard) -> Result<Value, ConsentError> {
         .cloned()
         .ok_or_else(|| ConsentError::Refused("card is missing its attested author".into()))?;
     author_kind(&author)?;
+    // Core decodes `placement` as a required string and then renders the
+    // card's placement from the manifest itself, so a manifest without one is
+    // sent as an empty string rather than null, which core refuses.
+    let placement = f["placement"].as_str().unwrap_or("");
     // No form carries `session_ref`: core finds an agent's session in the
     // scope the author names, and a scope author sent with one is refused.
     let result = json!({"kind":"flow_install","title":format!("Install flow {} v{}",card.flow_id,card.version),
@@ -44,7 +48,7 @@ pub fn request(card: &InstallCard) -> Result<Value, ConsentError> {
         "target":{"kind":"flow","label":format!("{} v{}",card.flow_id,card.version)},"facts":[],
         "preview":{"label":"Code","text":script},"expires_in_ms":86400000,
         "flow_install":{"flow_id":card.flow_id,"version":card.version,"code_hash":hash,"script":script,"manifest_json":manifest,
-            "author":author,"placement":f["placement"],"warnings":f["warnings"].as_array().map(|warnings| warnings.iter().map(|w| json!({"code":w["kind"],"detail":w["text"]})).collect::<Vec<_>>()).unwrap_or_default(),"dry_run_summary":f["dry_run_summary"],"token_usage":{"window":f["token_cap"]["window"].as_str().unwrap_or("1d"),"fresh_input":f["token_window"]["input_tokens"].as_u64().unwrap_or(0),"cache_write":f["token_window"]["cache_write_tokens"].as_u64().unwrap_or(0),"output":f["token_window"]["output_tokens"].as_u64().unwrap_or(0),"cache_read":f["token_window"]["cached_input_tokens"].as_u64().unwrap_or(0)}}});
+            "author":author,"placement":placement,"warnings":f["warnings"].as_array().map(|warnings| warnings.iter().map(|w| json!({"code":w["kind"],"detail":w["text"]})).collect::<Vec<_>>()).unwrap_or_default(),"dry_run_summary":f["dry_run_summary"],"token_usage":{"window":f["token_cap"]["window"].as_str().unwrap_or("1d"),"fresh_input":f["token_window"]["input_tokens"].as_u64().unwrap_or(0),"cache_write":f["token_window"]["cache_write_tokens"].as_u64().unwrap_or(0),"output":f["token_window"]["output_tokens"].as_u64().unwrap_or(0),"cache_read":f["token_window"]["cached_input_tokens"].as_u64().unwrap_or(0)}}});
     Ok(result)
 }
 

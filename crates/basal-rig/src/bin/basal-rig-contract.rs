@@ -7,7 +7,15 @@
 //! ```text
 //! basal-rig-contract --core-store <file> --basal-store <file>
 //!     --machine-id <file> --kill-file <file> --results <file>
+//!     --mode registry|registry-disabled [--project-id <pj-…>]
 //! ```
+//!
+//! `--mode` says how the rig configured core's projects registry, and is
+//! written into the results. With the registry on, as production runs, the
+//! test agent is a head of the project `--project-id` names (flows-rig.sh
+//! registers it in the rig's entorhinal). With the registry-disabled fallback
+//! core cannot resolve a head's project, so the agent is an assistant, which
+//! passes the same self-registration gate and gets the same head scope.
 //!
 //! The connection file comes from `SUBC_CONNECTION_FILE`, which the rig sets.
 //! Every check is printed as it runs and written, with the replies core and
@@ -39,6 +47,8 @@ struct Args {
     machine_id: PathBuf,
     kill_file: PathBuf,
     results: PathBuf,
+    mode: String,
+    project_id: Option<String>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -62,7 +72,19 @@ fn parse_args() -> Result<Args, String> {
         machine_id: take("--machine-id")?,
         kill_file: take("--kill-file")?,
         results: take("--results")?,
+        mode: take("--mode")?.to_string_lossy().into_owned(),
+        project_id: values
+            .remove("--project-id")
+            .map(|v| v.to_string_lossy().into_owned()),
     };
+    match (args.mode.as_str(), &args.project_id) {
+        ("registry", Some(_)) | ("registry-disabled", None) => {}
+        ("registry", None) => return Err("--mode registry needs --project-id".into()),
+        ("registry-disabled", Some(_)) => {
+            return Err("--project-id is for --mode registry only".into());
+        }
+        (other, _) => return Err(format!("unknown mode {other}")),
+    }
     match values.keys().next() {
         Some(unknown) => Err(format!("unknown argument {unknown}")),
         None => Ok(args),
@@ -390,6 +412,7 @@ async fn register_agent(
     case: &mut Case,
     tag: &str,
     machine_id: &str,
+    project_id: Option<&str>,
 ) -> Result<Agent, String> {
     let name = format!("RigAgent{tag}");
     let session = format!("ses_rig_{tag}");
@@ -401,29 +424,6 @@ async fn register_agent(
             "address_json": { "version": 1, "server": "local", "session": session },
         })
     };
-
-    // A head needs its project resolved to a workspace, and this rig runs
-    // core with the projects registry off. Core's answer is recorded for its
-    // owner; the suite registers an assistant, whose residence is decided by
-    // the same self-registration gate and gets the same head scope.
-    let head_session = format!("{session}_head");
-    let head = rig
-        .client
-        .call(
-            CORE,
-            &BindIdentity::new("/", "opencode", &head_session),
-            "agent.create",
-            json!({
-                "role": "head",
-                "name": format!("RigHead{tag}"),
-                "tag": "basal rig contract",
-                "project_id": format!("pj-rig{tag}"),
-                "residence": residence(&head_session),
-            }),
-        )
-        .await;
-    println!("  head agent.create answered: {}", evidence(&head));
-    case.record("head_agent_create", evidence(&head));
 
     // The gate is live: a route may not register another session's residence.
     let other = rig
@@ -446,21 +446,38 @@ async fn register_agent(
         evidence(&other),
     );
 
-    let created = rig
-        .client
-        .call(
-            CORE,
-            &identity,
-            "agent.create",
-            json!({
-                "role": "assistant",
-                "name": name,
-                "tag": "basal rig contract",
-                "residence": residence(&session),
-            }),
-        )
-        .await;
+    // A head, as a real one registers itself, when core can resolve its
+    // project to a workspace. Without the registry it cannot, so the fallback
+    // records core's refusal of a head and registers an assistant, which the
+    // same gate admits and core gives the same head scope.
+    let head = json!({
+        "role": "head",
+        "name": name,
+        "tag": "basal rig contract",
+        "project_id": project_id.map(str::to_owned).unwrap_or_else(|| format!("pj-rig{tag}")),
+        "residence": residence(&session),
+    });
+    let mut created = rig.client.call(CORE, &identity, "agent.create", head).await;
     case.record("agent_create", evidence(&created));
+    if project_id.is_none() && created.is_err() {
+        println!("  head agent.create answered: {}", evidence(&created));
+        case.record("head_refused_without_registry", evidence(&created));
+        created = rig
+            .client
+            .call(
+                CORE,
+                &identity,
+                "agent.create",
+                json!({
+                    "role": "assistant",
+                    "name": name,
+                    "tag": "basal rig contract",
+                    "residence": residence(&session),
+                }),
+            )
+            .await;
+        case.record("agent_create", evidence(&created));
+    }
     let id = created
         .as_ref()
         .ok()
@@ -1074,6 +1091,8 @@ async fn suite(
     let started = now_ms();
     let tag = format!("{:08x}", started & 0xffff_ffff);
     summary.insert("tag".into(), json!(tag));
+    summary.insert("core_projects_registry".into(), json!(args.mode));
+    summary.insert("project_id".into(), json!(args.project_id));
     let machine_id = std::fs::read_to_string(&args.machine_id)
         .map_err(|e| format!("read {}: {e}", args.machine_id.display()))?
         .trim()
@@ -1091,7 +1110,14 @@ async fn suite(
 
     let mut setup = Case::new("setup: reset and register the test agent");
     reset(&rig, &mut setup).await;
-    let agent = register_agent(&rig, &mut setup, &tag, &machine_id).await;
+    let agent = register_agent(
+        &rig,
+        &mut setup,
+        &tag,
+        &machine_id,
+        args.project_id.as_deref(),
+    )
+    .await;
     cases.push(setup);
     let agent = agent?;
     summary.insert(
@@ -1188,6 +1214,7 @@ fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
+    println!("core projects registry: {}", args.mode);
     let started = now_ms();
     let mut cases = Vec::new();
     let mut summary = Map::new();
@@ -1204,6 +1231,7 @@ fn main() -> std::process::ExitCode {
         .count();
     let report = json!({
         "suite": "basal I1b live contract",
+        "core_projects_registry": args.mode,
         "started_at_ms": started,
         "finished_at_ms": now_ms(),
         "passed": passed,

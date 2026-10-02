@@ -109,6 +109,27 @@ fn flow_install_request(
         })
     };
     let invalid = "elicitation_invalid_request";
+    // Core decodes the nested payload strictly (prefrontal-core-store
+    // `FlowInstallCard`): these fields must be strings, `placement` included
+    // even when the manifest names none, and the version an integer.
+    let install = &params["flow_install"];
+    for field in [
+        "flow_id",
+        "code_hash",
+        "script",
+        "manifest_json",
+        "placement",
+    ] {
+        if !install[field].is_string() {
+            return refuse(
+                invalid,
+                &format!("flow_install.{field}: invalid type, expected a string"),
+            );
+        }
+    }
+    if !install["version"].is_i64() {
+        return refuse(invalid, "flow_install.version: expected an integer");
+    }
     let author = &params["flow_install"]["author"];
     let sinks = params["flow_install"]["manifest_json"]
         .as_str()

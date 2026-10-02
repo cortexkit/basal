@@ -16,7 +16,7 @@
 #                             [--commons-rev <rev>] [--entorhinal-rev <rev>]
 #                             [--dry-run]
 #   script/flows-rig.sh place    [--dry-run]
-#   script/flows-rig.sh config   [--dry-run]
+#   script/flows-rig.sh config   [--registry-disabled] [--dry-run]
 #   script/flows-rig.sh start    [--dry-run]
 #   script/flows-rig.sh status   [--dry-run]
 #   script/flows-rig.sh stop     [--dry-run]
@@ -63,6 +63,12 @@ KILL_FILE="$RUNTIME_DIR/basal-kill-at"
 # The contract suite: a client of the rig, not a module, so it is run from
 # the build output rather than placed in bin/.
 CONTRACT="$TARGETS/basal/release/basal-rig-contract"
+# Which mode config wrote core's entry in: registry or registry-disabled.
+MODE_FILE="$CONFIG_HOME/flows-rig-mode"
+# The project the suite's test agent belongs to: a git repository the rig
+# creates under its own home and registers in the rig's entorhinal.
+PROJECT_NAME="basal-rig-contract"
+PROJECT_ROOT="$RIG_HOME/projects/$PROJECT_NAME"
 # Clear of production's daemon (8757) and of the older isolation rig under
 # ckdev-rig/ (8799, plus 8377 and 8378 for one of its modules).
 PORT=8791
@@ -117,7 +123,8 @@ guard_all_paths() {
   for path in "$BIN" "$SRC" "$TARGETS" "$STACK" "$LOGS" "$RESULTS" \
       "$CONFIG_HOME" "$DATA_HOME" "$RUNTIME_DIR" "$CONN" "$PIDFILE" \
       "$SUBC_CONFIG" "$VAULT_DIR" "$VAULT_KEY" "$RIG_HOME" "$CORE_STORE" \
-      "$BASAL_STORE" "$MACHINE_ID" "$KILL_FILE" "$CONTRACT"; do
+      "$BASAL_STORE" "$MACHINE_ID" "$KILL_FILE" "$CONTRACT" "$MODE_FILE" \
+      "$PROJECT_ROOT"; do
     guard_path "$path"
   done
 }
@@ -495,7 +502,23 @@ place_one() {
 # ---------------------------------------------------------------- config
 
 cmd_config() {
-  [ $# -eq 0 ] || usage
+  # The rig runs core's projects registry consumer as production does. The
+  # fallback, --registry-disabled, turns it off with
+  # PREFRONTAL_CORE_PROJECTS_REGISTRY=disabled: a mode production never runs,
+  # kept only until core stops requiring project-identity/v1 when its
+  # registry is off. The mode is recorded in $MODE_FILE, and every stack.json
+  # and contract result names it.
+  mode=registry
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --registry-disabled) mode=registry-disabled; shift ;;
+      *) usage ;;
+    esac
+  done
+  core_env=""
+  if [ "$mode" = registry-disabled ]; then
+    core_env=' "PREFRONTAL_CORE_PROJECTS_REGISTRY": "disabled" '
+  fi
   guard_port_free
   [ -z "$(daemon_pid)" ] || die "refusing: the rig daemon is running; stop it first"
   # From scratch: the whole file is generated here, never merged with a
@@ -539,14 +562,14 @@ cmd_config() {
       "env": {},
       "enabled": true
     },
-    // Core's projects registry consumer stays off: entorhinal runs only to
-    // provide the capability, and no project is registered on this rig.
+    // Core's projects registry consumer: on, as in production, unless config
+    // was given --registry-disabled (see cmd_config).
     // Never set PREFRONTAL_CORE_DIAGNOSTICS here: it opens core's test seams,
     // which exist for prefrontal's end-to-end harness only.
     "prefrontal-core": {
       "program": "$BIN/ckdev-prefrontal-core",
       "args": [],
-      "env": { "PREFRONTAL_CORE_PROJECTS_REGISTRY": "disabled" },
+      "env": {$core_env},
       "enabled": true,
       "reserved": true,
       "launch_nonce_env": false
@@ -581,7 +604,8 @@ cmd_config() {
   }
 }
 EOF
-  say "configured; next: $0 start"
+  printf '%s\n' "$mode" | write_file "$MODE_FILE"
+  say "configured (core projects registry: $mode); next: $0 start"
 }
 
 # ---------------------------------------------------------------- start
@@ -885,17 +909,21 @@ write_manifest() {
   if [ -f "$CONTRACT" ]; then
     contract_sum=$(shasum -a 256 "$CONTRACT" | awk '{ print $1 }')
   fi
+  config_mode=$(cat "$MODE_FILE" 2>/dev/null || true)
   json=$(REPOS="$repos_tsv" BINS="$bins_tsv" python3 - "$stamp" "$RIG" "$PORT" \
-      "$CONTRACT" "$contract_sum" <<'PY'
+      "$CONTRACT" "$contract_sum" "$config_mode" <<'PY'
 import json, os, sys
 stamp, rig, port = sys.argv[1], sys.argv[2], int(sys.argv[3])
-contract, contract_sum = sys.argv[4], sys.argv[5]
+contract, contract_sum, mode = sys.argv[4], sys.argv[5], sys.argv[6]
 rows = lambda name: [l.split("\t") for l in os.environ[name].splitlines() if l]
 print(json.dumps({
     "rig": "ckdev-flows",
     "root": rig,
     "port": port,
     "written_at": stamp,
+    # How config wrote core's entry: "registry" (as production runs) or the
+    # "registry-disabled" fallback.
+    "core_projects_registry": mode or None,
     "repositories": [
         {"name": n, "source": s, "requested": r, "commit": c} for n, s, r, c in rows("REPOS")
     ],
@@ -941,13 +969,20 @@ cmd_test() {
   else
     check_daemon_identity "$pid"
   fi
+  mode=$(cat "$MODE_FILE" 2>/dev/null || true)
+  [ -n "$mode" ] || die "no mode in $MODE_FILE; run config again"
+  project_args=""
+  if [ "$mode" = registry ]; then
+    project_args="--project-id $(ensure_project)"
+  fi
   write_manifest "$stamp"
   guard_path "$dir/contract.log"
   guard_path "$dir/contract.json"
   say "running the contract suite (output: $dir/contract.log)"
   set +e
+  # shellcheck disable=SC2086 # project_args is empty, or one flag and a pj- id
   rig_env "$CONTRACT" --core-store "$CORE_STORE" --basal-store "$BASAL_STORE" \
-    --machine-id "$MACHINE_ID" --kill-file "$KILL_FILE" \
+    --machine-id "$MACHINE_ID" --kill-file "$KILL_FILE" --mode "$mode" $project_args \
     --results "$dir/contract.json" > "$dir/contract.log" 2>&1
   status=$?
   set -e
@@ -958,6 +993,52 @@ cmd_test() {
   fi
   [ "$status" = 0 ] || die "the contract suite failed (exit $status); results in $dir"
   say "the contract suite passed; results in $dir"
+}
+
+# The suite's project in the rig's entorhinal, created on first use so a
+# fresh rig needs no manual step: a git repository under the rig's home,
+# registered as $PROJECT_NAME and assigned to the workspace basal-rig, which
+# is what core needs to resolve a head agent's project to a workspace. Prints
+# the project id. Every call goes through the rig's ck, against the rig's
+# connection file; ck finds its `projects` and `workspaces` domains as
+# ck-projects and ck-workspaces on PATH, which are entorhinal's binary under
+# those names, so they are linked into a directory of the rig's own.
+ensure_project() {
+  faces="$RIG/build/faces"
+  guard_path "$faces"
+  guard_path "$PROJECT_ROOT"
+  mkdir -p "$faces" "$PROJECT_ROOT"
+  ln -sf "$BIN/ckdev-entorhinal" "$faces/ck-projects"
+  ln -sf "$BIN/ckdev-entorhinal" "$faces/ck-workspaces"
+  [ -d "$PROJECT_ROOT/.git" ] || git -C "$PROJECT_ROOT" init --quiet
+  project_id=$(rig_projects projects resolve "$PROJECT_ROOT" --json | project_field registered)
+  if [ -z "$project_id" ]; then
+    rig_projects projects register "$PROJECT_NAME" "$PROJECT_ROOT" >&2
+    project_id=$(rig_projects projects resolve "$PROJECT_ROOT" --json | project_field registered)
+    [ -n "$project_id" ] || die "entorhinal did not register $PROJECT_ROOT"
+  fi
+  workspace=$(rig_projects projects resolve "$PROJECT_ROOT" --json | project_field workspace)
+  if [ "$workspace" != basal-rig ]; then
+    rig_projects workspaces assign "$project_id" basal-rig >&2
+  fi
+  printf '%s\n' "$project_id"
+}
+
+# The rig's ck with entorhinal's operator faces on PATH.
+rig_projects() {
+  rig_env PATH="$RIG/build/faces:$(rig_path)" "$BIN/ckdev-ck" "$@"
+}
+
+# From `ck projects resolve --json` on stdin: `registered` prints the project
+# id if the root is registered (not an implicit, derived one), `workspace`
+# its workspace id.
+project_field() {
+  python3 -c 'import json, sys
+r = json.load(sys.stdin)
+if sys.argv[1] == "registered":
+    print(r["projectId"] if r.get("projectName") and not r.get("gone") else "")
+else:
+    print(r.get("workspaceId") or "")' "$1"
 }
 
 # ---------------------------------------------------------------- main
