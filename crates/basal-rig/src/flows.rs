@@ -100,7 +100,7 @@ return out;",
 }
 
 /// The crash flow: one digest item, the run's only remote call, so it is
-/// journaled at position 1.
+/// journaled at position 0 (the journal counts positions from 0).
 pub fn crash(id: &str, agent: &str) -> Flow {
     let script = format!(
         "const digest = await sink.digest({a}, {{ title: 'basal rig contract', body: 'crash case', data: {{ flow: {f} }}, links: [] }}, 'piggyback');

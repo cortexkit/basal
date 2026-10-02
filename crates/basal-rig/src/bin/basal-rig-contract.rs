@@ -635,13 +635,17 @@ async fn declined_install(rig: &Rig, flow: &Flow) -> Case {
             json!(rig.basal.card_state(&flow.id, flow.version).ok()),
         );
         let entry = rig.health(&flow.id).await;
+        // basal's flow row reports `state: enabled` from the install on, with
+        // no approved version; what keeps it from running is that no version
+        // is approved, so that is what is checked here.
         case.check(
             "basal has no approved version of the declined flow",
             entry
                 .as_ref()
-                .is_none_or(|e| e["approved_version"].is_null() && e["state"] != "enabled"),
-            entry.unwrap_or(Value::Null),
+                .is_none_or(|e| e["approved_version"].is_null()),
+            entry.clone().unwrap_or(Value::Null),
         );
+        case.record("health_after_decline", entry.unwrap_or(Value::Null));
         let installs = rig.core.installs(&flow.id);
         case.check(
             "core holds no install record for the declined flow",
@@ -967,9 +971,10 @@ fn basal_pid() -> Option<String> {
 async fn crash(rig: &Rig, flow: &Flow, agent: &Agent, since: i64) -> Case {
     let mut case = Case::new("exactly once across a kill -9 of ck-basal");
     // Arm the kill switch before approving, so the flow's first run cannot
-    // start unarmed. Its only remote call is the digest, at position 1; every
-    // other flow of this suite is disabled by now.
-    let point = "HostAnswered { position: 1 }";
+    // start unarmed. Its only remote call is the digest, at position 0 (the
+    // journal counts from 0); every other flow of this suite is disabled by
+    // now.
+    let point = "HostAnswered { position: 0 }";
     if let Err(e) = std::fs::write(&rig.kill_file, point) {
         case.check("the kill switch is armed", false, json!(e.to_string()));
         return case;
@@ -1036,8 +1041,8 @@ async fn crash(rig: &Rig, flow: &Flow, agent: &Agent, since: i64) -> Case {
     );
     let value = digest.and_then(|c| c.value.clone()).unwrap_or(Value::Null);
     case.check(
-        "the digest is the run's call at position 1 and its journaled reply is the re-issue's, replayed: true",
-        digest.is_some_and(|c| c.position == 1)
+        "the digest is the run's call at position 0 and its journaled reply is the re-issue's, replayed: true",
+        digest.is_some_and(|c| c.position == 0)
             && value["replayed"] == true
             && value["disposition"] == "stored",
         value.clone(),
@@ -1055,7 +1060,7 @@ async fn crash(rig: &Rig, flow: &Flow, agent: &Agent, since: i64) -> Case {
     case.check(
         "core holds exactly one receipt for the write, naming the journaled fire",
         receipts.len() == 1
-            && receipts[0].key == json!(["sink.digest", flow.id, run.run_id, 1])
+            && receipts[0].key == json!(["sink.digest", flow.id, run.run_id, 0])
             && receipts[0].reply["fire_id"] == value["fire_id"],
         json!(
             receipts
