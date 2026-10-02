@@ -1,5 +1,6 @@
 //! `basal-rig-contract`: basal's live contract suite against the real
-//! prefrontal-core on the ckdev-flows rig (`docs/rig.md`).
+//! prefrontal-core on the ckdev-flows rig (`script/flows-rig.sh` builds and
+//! describes the rig).
 //!
 //! `script/flows-rig.sh test` runs it, in the rig's environment, against a
 //! started rig:
@@ -1620,7 +1621,7 @@ fn main() -> std::process::ExitCode {
         .filter(|c| c["passed"] != true)
         .count();
     let report = json!({
-        "suite": "basal I1b live contract",
+        "suite": "basal live contract",
         "started_at_ms": started,
         "finished_at_ms": now_ms(),
         "passed": passed,

@@ -30,13 +30,13 @@
 //! checks the tree is clean again before the next control. It never stashes
 //! and never restores from HEAD. Every temporary edit carries the marker
 //! `NON-VACUITY BREAK` so a break left behind by a crash is easy to find.
-//! Evidence is written to `docs/findings/slice-1-mutations.json` (worker),
-//! `docs/findings/slice-2-mutations.json` (journal),
-//! `docs/findings/slice-3-mutations.json` (dispatch),
-//! `docs/findings/slice-4-mutations.json` (scheduler) or
-//! `docs/findings/slice-5-mutations.json` (module),
-//! `docs/findings/i1a-broca-mutations.json` (model host), or
-//! `docs/findings/i1a-host-mutations.json` (consumer adapters). Each evidence
+//! Evidence is written to `evidence/slice-1-mutations.json` (worker),
+//! `evidence/slice-2-mutations.json` (journal),
+//! `evidence/slice-3-mutations.json` (dispatch),
+//! `evidence/slice-4-mutations.json` (scheduler),
+//! `evidence/slice-5-mutations.json` (module),
+//! `evidence/i1a-broca-mutations.json` (model host), or
+//! `evidence/i1a-host-mutations.json` (consumer adapters). Each evidence
 //! row names the changed mechanism, expected failing test and restore checks.
 
 use std::io::Read;
@@ -2343,7 +2343,7 @@ const MODULE_CONTROLS: &[Control] = &[
         target: Target::Module("install_gate"),
         test: "placement_is_sent_only_when_the_manifest_states_one",
     },
-    // Operator decision cards (`docs/findings/decision-cards.md`).
+    // Operator decision cards.
     Control {
         label: "decision cards: every raise goes out under a fresh dedup key, so a changed card is a second card",
         edits: &[(
@@ -3574,13 +3574,13 @@ fn main() -> ExitCode {
         }
     };
     let (controls, evidence_file) = match suite.as_str() {
-        "--journal" => (JOURNAL_CONTROLS, "docs/findings/slice-2-mutations.json"),
-        "--dispatch" => (DISPATCH_CONTROLS, "docs/findings/slice-3-mutations.json"),
-        "--schedule" => (SCHEDULE_CONTROLS, "docs/findings/slice-4-mutations.json"),
-        "--module" => (MODULE_CONTROLS, "docs/findings/slice-5-mutations.json"),
-        "--hosts" => (HOST_CONTROLS, "docs/findings/i1a-host-mutations.json"),
-        "--broca" => (BROCA_CONTROLS, "docs/findings/i1a-broca-mutations.json"),
-        _ => (CONTROLS, "docs/findings/slice-1-mutations.json"),
+        "--journal" => (JOURNAL_CONTROLS, "evidence/slice-2-mutations.json"),
+        "--dispatch" => (DISPATCH_CONTROLS, "evidence/slice-3-mutations.json"),
+        "--schedule" => (SCHEDULE_CONTROLS, "evidence/slice-4-mutations.json"),
+        "--module" => (MODULE_CONTROLS, "evidence/slice-5-mutations.json"),
+        "--hosts" => (HOST_CONTROLS, "evidence/i1a-host-mutations.json"),
+        "--broca" => (BROCA_CONTROLS, "evidence/i1a-broca-mutations.json"),
+        _ => (CONTROLS, "evidence/slice-1-mutations.json"),
     };
     // `--check` only verifies that every edit's text occurs exactly once,
     // without touching anything.
@@ -3666,7 +3666,7 @@ fn main() -> ExitCode {
     let text = serde_json::to_string_pretty(&evidence).unwrap_or_default() + "\n";
     if filter.is_none() {
         let path = root.join(evidence_file);
-        if let Err(e) = std::fs::create_dir_all(root.join("docs/findings"))
+        if let Err(e) = std::fs::create_dir_all(root.join("evidence"))
             .and_then(|_| std::fs::write(&path, &text))
         {
             eprintln!("writing {}: {e}", path.display());

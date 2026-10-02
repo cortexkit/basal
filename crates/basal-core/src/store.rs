@@ -21,16 +21,19 @@ use crate::schema::{MIGRATIONS, NAMESPACE};
 /// hands data to the drive, which may still hold it in a volatile cache;
 /// `fullfsync` makes SQLite issue `F_FULLFSYNC`, which asks the drive to
 /// flush that cache too. It is far more expensive, so it is a separate
-/// choice (the measurements are in the journal findings note under
-/// `docs/findings/`).
+/// choice: measured on an Apple M5 Max under heavy load, a small commit's
+/// median was 5.8 ms with `F_FULLFSYNC` against 0.11 ms without, about 50
+/// times more (`evidence/slice-2-measurements.json`, from `journal-bench`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Durability {
     pub fullfsync: bool,
 }
 
 impl Default for Durability {
-    /// `F_FULLFSYNC` on every commit. The measured cost is in the findings
-    /// note; the default keeps the power-loss promise the design makes.
+    /// `F_FULLFSYNC` on every commit, so a power loss cannot undo a commit
+    /// basal has already acted on. At about 6 ms per commit and three
+    /// commits per new asynchronous call, that is a small share of flow
+    /// calls that take tens of milliseconds to seconds.
     fn default() -> Self {
         Self { fullfsync: true }
     }

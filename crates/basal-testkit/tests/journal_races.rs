@@ -19,7 +19,7 @@ fn done_value() -> HostOutcome {
     HostOutcome::fulfilled(JsonText::new("{\"done\":true}").expect("small"))
 }
 
-/// The race cut `docs/design.md` section 7 uses as its counterexample:
+/// The race cut that shows why the replay barrier exists:
 /// positions 0 and 1 race, 1 wins and is
 /// released, and the process dies before the winner's continuation issues
 /// position 2. Position 0 completes during recovery. Shipping it in the

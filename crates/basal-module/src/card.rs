@@ -1,5 +1,7 @@
-//! The install card's fields (`docs/design.md` section 6), built from the version as
-//! installed, the catalog, the dry run and the flow's token window.
+//! The install card's fields, built from the version as installed, the
+//! catalog, the dry run and the flow's token window. The card shows everything
+//! the manifest grants and the code itself, because approval binds to the
+//! code hash: what the operator approves is exactly what runs.
 
 use basal_core::manifest::Manifest;
 use basal_core::{Installed, Warning};

@@ -1,6 +1,6 @@
 # Deploying basal
 
-basal never places its own binaries. In this fleet SUBC places every module binary with `subconscious/scripts/fleet/place-module.sh`, from a card the module stages; the fleet procedure is the knowhow skill `stage-module-card`. basal ships two binaries, `ck-basal` (the module) and `ck-basal-worker` (the confined QuickJS worker it runs flows in), and each gets its own card. [`script/stage.sh`](../script/stage.sh) builds, signs, smoke-tests and stages both and prints the card text. Posting it, and everything after, is a person's or SUBC's step.
+basal never places its own binaries. In this fleet the operator places every module binary with `subconscious/scripts/fleet/place-module.sh`, from a card the module stages. basal ships two binaries, `ck-basal` (the module) and `ck-basal-worker` (the confined QuickJS worker it runs flows in), and each gets its own card. [`script/stage.sh`](../script/stage.sh) builds, signs, smoke-tests and stages both and prints the card text. Posting it, and everything after, is the operator's step.
 
 ## Staging
 
@@ -25,7 +25,7 @@ In order, `stage.sh`:
 7. **Declares it current**, writing `<staging root>/basal.current` and `<staging root>/basal-worker.current` through a temp file and a rename. Each holds `stage=` (the stage directory), `revision=` (the full 40-character sha) and `declared_at=` (UTC), plus `pushed=no (--local-only)` for a local-only stage. place-module.sh derives the file name from the destination binary's name without `ck-`, so the worker's card reads `basal-worker.current`.
 8. **Prints the card** and saves it in the stage directory as `card.md`: card, signing, marker and control, store and formats, order, and the post-placement check. It is not posted.
 
-## What SUBC's gate checks, and what a first placement changes
+## What the placement gate checks, and what a first placement changes
 
 place-module.sh runs one binary per call (`--dest` names the worker's destination), read-only unless given `--place`. Against this card:
 
@@ -40,13 +40,13 @@ place-module.sh runs one binary per call (`--dest` names the worker's destinatio
 | marker (staged ≥ 1, live 0) and control (both ≥ 1) | staged counts pass; no live binary to read |
 | format floors (`check-format-floors.sh basal`) | no floors: none recorded, which passes |
 
-The script resolves `--dest` (default `~/.local/share/cortexkit/bin/ck-<module>`) and refuses before any arm when it does not exist: "destination does not exist, so this is an install rather than a placement". So on the first placement it cannot run at all, not even read-only. Without `--no-restart` it refuses even earlier, at its supervisor check (`ck module status basal`), because the daemon has no basal module yet; `--no-restart` skips that check, and the destination check still stops it. The first placement is therefore an install that SUBC does by hand from the card's sha256, and the gate applies from the second card on.
+The script resolves `--dest` (default `~/.local/share/cortexkit/bin/ck-<module>`) and refuses before any arm when it does not exist: "destination does not exist, so this is an install rather than a placement". So on the first placement it cannot run at all, not even read-only. Without `--no-restart` it refuses even earlier, at its supervisor check (`ck module status basal`), because the daemon has no basal module yet; `--no-restart` skips that check, and the destination check still stops it. The first placement is therefore an install that the operator does by hand from the card's sha256, and the gate applies from the second card on.
 
 basal's store is new, so there is no migration and no format on disk: no `format-floor.json` is written, and none is needed for the gate to pass.
 
 ## The rig run before a handover
 
-Run the staged bytes on the ckdev-flows rig ([rig.md](rig.md#running-a-stage)):
+Run the staged bytes on the ckdev-flows rig, basal's isolated test stack ([`script/flows-rig.sh`](../script/flows-rig.sh) documents it in its header):
 
 ```sh
 STAGING=$(mktemp -d)
@@ -65,6 +65,6 @@ The staged `ck-basal` has no kill switch, so the contract suite cannot run its c
 ## Rollback
 
 - **First placement:** disable basal in the daemon's config (`"enabled": false` in its `subc.jsonc` entry, or remove the entry) and remove `ck-basal` and `ck-basal-worker` from `~/.local/share/cortexkit/bin`. basal's store, `<data_home>/cortexkit/basal/store.db`, holds only what basal wrote since; keep it for diagnosis or delete it with the binaries.
-- **Later placements:** with `--place`, place-module.sh keeps the previous binary as `~/.local/share/cortexkit/staging/<binary>.rollback-<timestamp>` with its sidecar (the newest three per binary are kept), and SUBC places it back with `--older`. `--older` only waives the currency arm: the rollback still passes every other arm, so its marker and control are chosen against the binary being rolled back. Roll back both binaries together: the module and the worker speak a protocol to each other and are built and tested as a pair.
-- **Store:** no card so far changes basal's store schema. A card that does must say so, and SUBC places it with `--migrates <store>`, which snapshots the store first; rolling that card back means restoring the binaries and the snapshot together.
+- **Later placements:** with `--place`, place-module.sh keeps the previous binary as `~/.local/share/cortexkit/staging/<binary>.rollback-<timestamp>` with its sidecar (the newest three per binary are kept), and the operator places it back with `--older`. `--older` only waives the currency arm: the rollback still passes every other arm, so its marker and control are chosen against the binary being rolled back. Roll back both binaries together: the module and the worker speak a protocol to each other and are built and tested as a pair.
+- **Store:** no card so far changes basal's store schema. A card that does must say so, and the operator places it with `--migrates <store>`, which snapshots the store first; rolling that card back means restoring the binaries and the snapshot together.
 - **Stage:** an unused stage is removed with its directory. If it was declared current, point the `.current` files back at the previous stage (or remove them) so the gate never takes a superseded build.

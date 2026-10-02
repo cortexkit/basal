@@ -1,6 +1,9 @@
 //! Operator decision cards: the two questions only the operator may
-//! answer, asked on core's consent plane by basal itself
-//! (`docs/design.md` section 6, "Operator decisions are cards").
+//! answer, asked on core's consent plane by basal itself. Only the
+//! daemon-attested `reserved:callosum` is the operator, and nothing forwards
+//! the operator's phone actions to basal's ops, so a card basal raises is how
+//! the operator reaches them; since only callosum can answer a card, every
+//! answer is attested by construction.
 //!
 //! - **Reconcile.** A run in `needs_reconcile` gets one card per unknown
 //!   call: leave it (the default), it never ran (send it again), it ran

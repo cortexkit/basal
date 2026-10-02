@@ -1,4 +1,4 @@
-//! Test support for basal's isolated rig, ckdev-flows (`docs/rig.md`), and
+//! Test support for basal's isolated rig, ckdev-flows (`script/flows-rig.sh`), and
 //! nothing else. Two binaries use it:
 //!
 //! - `ck-callosum-stub`, placed on the rig as `ckdev-callosum`: a module with

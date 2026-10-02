@@ -6,9 +6,8 @@
 # one built here from a named revision. It runs the credentials vault (empty),
 # Broca, entorhinal, prefrontal-core, prefrontal-routing, ck-basal and a
 # rig-only callosum stub that answers consent cards as the operator. It never
-# reads, writes or
-# starts anything belonging to the production daemon or to another rig.
-# docs/rig.md describes it.
+# reads, writes or starts anything belonging to the production daemon or to
+# another rig.
 #
 # Usage:
 #   script/flows-rig.sh build --prefrontal-rev <rev> [--subc-rev <rev>]
@@ -26,10 +25,58 @@
 # --dry-run prints every command the subcommand would run and every file it
 # would write, with the file's content, and changes nothing.
 #
+# Subcommands:
+#   build     clone each repository at the named revision and build it.
+#             --prefrontal-rev is required; the others default to their
+#             checkout's HEAD. basal is always built from this checkout's
+#             HEAD, without uncommitted changes. The source checkouts are
+#             only read.
+#   place     sign every binary by script/signing.sh under a ckdev-*
+#             identifier and place it in bin/. The rig's ck-basal is built
+#             with the rig-kill-hook feature, which the contract suite's
+#             crash case needs.
+#   config    write the rig daemon's subc.jsonc from scratch.
+#   start, status, stop
+#             run, inspect (pids, identifiers, open stores) and stop the
+#             daemon. status fails if any open store lies outside the rig.
+#   manifest  write results/<timestamp>/stack.json: every repository's
+#             commit and each binary's sha256 and signing identifier.
+#   test      start the rig if needed, write a manifest and run the live
+#             contract suite (basal-rig-contract) against the real
+#             prefrontal-core, with contract.json and contract.log beside
+#             the manifest. It fails if any check failed.
+#
 # place --from-stage <dir> places ck-basal and ck-basal-worker from a stage
 # directory script/stage.sh wrote, byte for byte and under their production
 # identifiers, instead of the rig's own build of them; every other binary is
 # the rig's build. The stage must be of the commit the rig built basal at.
+# A staged ck-basal has no kill switch, so test then reports the crash case
+# as not run; a plain place puts the rig's build back.
+#
+# What the rig isolates:
+#   - Everything lives under ~/.local/share/cortexkit/ckdev-flows/: src/ (one
+#     clone per repository at the commit built), build/ (cargo output and the
+#     build record), bin/ (the placed, signed binaries), config/, data/ and
+#     runtime/ (the rig's three XDG homes), home/ (HOME and working directory
+#     of every rig process), logs/ and results/<timestamp>/.
+#   - The daemon listens on port 8791; production's listens on 8757. config
+#     and start refuse if 8791 is taken.
+#   - Every rig process starts from an empty environment: the login name,
+#     HOME set to home/, the rig's XDG homes, SUBC_CONNECTION_FILE naming the
+#     rig's connection file, and a PATH with every CortexKit directory
+#     removed, so no production variable or file under the real home
+#     reaches a rig module.
+#   - The script refuses any path that resolves, before or after following
+#     symlinks, under ~/.local/share/cortexkit/ but outside ckdev-flows/.
+#   - The vault starts empty with its own key file, so the macOS keychain is
+#     never touched.
+#
+# Pins the contract suite runs at. prefrontal 3beea1862 serves flow.relay,
+# which the suite drives its test agent through; an earlier core has none,
+# so the agent cases fail there:
+#   script/flows-rig.sh build --prefrontal-rev 3beea1862 --subc-rev 546ea5fb \
+#       --broca-rev 7a387092 --commons-rev 57305c74 \
+#       --credentials-rev 18a566b5 --entorhinal-rev 77857aaf
 set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
@@ -481,7 +528,7 @@ cmd_place() {
   if [ -n "$stage" ]; then
     stage=$(cd "$stage" 2>/dev/null && pwd -P) || die "no stage directory at $stage"
     # stage.sh's own check of a stage: both sidecars and both signatures,
-    # under the production identifiers SUBC would place.
+    # under the production identifiers the fleet's placement would use.
     verified=$(sh "$ROOT/script/stage.sh" --verify "$stage") \
       || die "the stage at $stage fails stage.sh --verify"
     revision=$(printf '%s\n' "$verified" | sed -n 's/^revision //p')
@@ -566,8 +613,8 @@ place_one() {
 }
 
 # place_staged <name> <staged file> <dest> <identifier>: copy a staged binary
-# into the rig unchanged (never re-signed: the rig runs the bytes SUBC would
-# place), and check at the final path that the bytes match the stage's
+# into the rig unchanged (never re-signed: the rig runs the bytes production
+# placement would install), and check at the final path that the bytes match the stage's
 # sidecar and that the signature passes under its production identifier.
 place_staged() {
   name=$1

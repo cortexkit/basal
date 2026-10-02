@@ -1,4 +1,4 @@
-//! Dry runs (`docs/design.md` section 10): run a flow against the fires its schedule
+//! Dry runs: run a flow against the fires its schedule
 //! would have produced over a window, or against a synthetic trigger, and
 //! report every call and sink write it made.
 //!

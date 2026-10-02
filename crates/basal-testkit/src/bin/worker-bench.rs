@@ -8,6 +8,11 @@
 //! worker-bench --worker PATH [--out FILE] [--fuzz COUNT]
 //! ```
 //!
+//! The committed run is `evidence/slice-1-measurements.json`, written with
+//! `--out` and `--fuzz 2000` against a worker that
+//! `script/sign-worker.sh place` had signed and copied to a scratch
+//! directory.
+//!
 //! Every sample is kept in the output; summaries are the median and the
 //! nearest-rank 95th percentile.
 

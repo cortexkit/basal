@@ -1,5 +1,5 @@
 //! A one-shot kill switch for basal's isolated test rig, ckdev-flows
-//! (`docs/rig.md`). It is compiled only with the `rig-kill-hook` feature,
+//! (`script/flows-rig.sh`). It is compiled only with the `rig-kill-hook` feature,
 //! which only `script/flows-rig.sh build` turns on for the rig's own
 //! `ckdev-basal`; the production `ck-basal` never contains it.
 //!

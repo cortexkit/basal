@@ -143,7 +143,7 @@ pub enum Source {
     Spawned,
 }
 
-/// One worker handed out, for tests and the findings.
+/// One worker handed out, for tests and measurements.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Handout {
     pub worker: u64,

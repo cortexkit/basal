@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! cargo run --release -p basal-testkit --bin journal-bench -- \
-//!     --worker target/release/ck-basal-worker --out docs/findings/slice-2-measurements.json
+//!     --worker target/release/ck-basal-worker --out evidence/slice-2-measurements.json
 //! ```
 //!
 //! - Commit cost: one small write transaction through the store, under

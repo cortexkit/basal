@@ -1,5 +1,5 @@
 //! `ck-callosum-stub`: a stand-in for the operator's callosum, for basal's
-//! isolated ckdev-flows rig only (`docs/rig.md`).
+//! isolated ckdev-flows rig only (`script/flows-rig.sh`).
 //!
 //! It exists only to answer consent cards on the rig. prefrontal-core lets a
 //! caller answer a card only when the daemon attests the caller as

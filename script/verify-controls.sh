@@ -2,7 +2,7 @@
 # Runs every mutation-control set and fails unless each one really ran.
 #
 # The runner refuses to start while the worktree has unstaged changes, and
-# every run rewrites its own evidence file under docs/findings. Run in
+# every run rewrites its own evidence file under evidence/. Run in
 # sequence without care, the second set therefore refuses and the evidence
 # files keep their committed contents, which then look like a fresh result.
 # This script restores the evidence files before each set, requires each
@@ -46,7 +46,7 @@ logs=$(mktemp -d "${TMPDIR:-/tmp}/basal-controls.XXXXXX")
 failed=0
 for set_name in "$@"; do
     if [ "$set_name" = worker ]; then flag=""; else flag="--$set_name"; fi
-    git checkout -q -- docs/findings
+    git checkout -q -- evidence
     # $flag stays unquoted so the default set passes no argument at all.
     # shellcheck disable=SC2086
     if ! cargo run -q -p basal-testkit --bin mutation-controls -- $flag --check \
@@ -63,7 +63,7 @@ for set_name in "$@"; do
         failed=1
         continue
     fi
-    evidence=$(git diff --name-only -- 'docs/findings/*mutations*.json')
+    evidence=$(git diff --name-only -- 'evidence/*mutations*.json')
     if [ -z "$evidence" ]; then
         echo "$set_name: FAILED, the run wrote no fresh evidence (log: $logs/$set_name.log)"
         failed=1
@@ -86,7 +86,7 @@ EOF
         fi
     done
 done
-git checkout -q -- docs/findings
+git checkout -q -- evidence
 if [ "$failed" -ne 0 ]; then
     echo "FAILED (logs in $logs)"
     exit 1

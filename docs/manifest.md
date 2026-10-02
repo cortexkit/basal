@@ -1,6 +1,6 @@
 # The flow manifest
 
-A flow is a script plus a manifest. The manifest says everything the flow may do: what triggers it, which agents it may write to, which module ops it may call, whose facts it may read, and how many model tokens it may spend. basal checks every call the script makes against the approved manifest in the parent process before anything is dispatched (`docs/design.md` sections 5, 6 and 9). This note is the schema; the code is `crates/basal-core/src/manifest.rs` (decoding and the checks that need nothing else) and `crates/basal-core/src/install.rs` (the checks against the catalog).
+A flow is a script plus a manifest. The manifest says everything the flow may do: what triggers it, which agents it may write to, which module ops it may call, whose facts it may read, and how many model tokens it may spend. basal checks every call the script makes against the approved manifest in the parent process before anything is dispatched, never in the confined worker that runs the script. This note is the schema; the code is `crates/basal-core/src/manifest.rs` (decoding and the checks that need nothing else) and `crates/basal-core/src/install.rs` (the checks against the catalog).
 
 ## Rules that apply everywhere
 
@@ -45,7 +45,7 @@ A duration is a positive whole number followed by one unit: `s`, `m`, `h` or `d`
   | `missed` | `"once"`, `"skip"` or `"each"` | `"once"` | What happens to due times that passed while basal was not ticking (asleep, stopped, or more than the grace period late): one catch-up fire, none, or one each. |
   | `each_cap` | integer | 3 | With `each` only: 1 to 10; the newest missed due times are kept. |
 
-  The scheduler's findings (`docs/findings/slice-4-scheduler.md`) describe due times, catch-up payloads and trigger ids. A scheduled fire, like every trigger, runs the flow's version approved and enabled when it is admitted.
+  The newest due time is on time when it is at most the grace period (60 s by default) old; every older due time in the window is missed and follows `missed`. `once` fires one catch-up identified by the last missed due time; `each` keeps the newest `each_cap` missed due times and fires them oldest first. An on-time due time always fires, after any catch-up. A fire's trigger id is `schedule:<due time, RFC 3339 UTC>` (`schedule:2026-03-29T01:00:00Z`), and admission deduplicates on flow and trigger id, so one due time starts at most one run. The script sees `trigger` as `{ "kind": "schedule", "due": "..." }`; a catch-up fire adds `"catch_up": { "policy", "missed_count", "missed_window": { "first", "last" } }`, counting every missed due time, including those `each_cap` dropped. A scheduled fire, like every trigger, runs the flow's version approved and enabled when it is admitted.
 - Both, or neither, is refused.
 
 ### Sink grant

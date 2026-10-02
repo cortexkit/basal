@@ -1,4 +1,4 @@
-//! The module's own counters (`docs/design.md` section 13): worker kills and
+//! The module's own counters, for the operator's view of basal: worker kills and
 //! respawns, and what replay costs. They live in memory and start from zero
 //! at each process start; the durable figures (run ages, token windows,
 //! flow health) are read from the store when asked for.

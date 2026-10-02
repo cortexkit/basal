@@ -23,8 +23,8 @@ pub struct InstallCard {
     pub card_id: String,
     pub flow_id: String,
     pub version: u32,
-    /// The card's fields as JSON (`docs/design.md` section 6): flow id, version,
-    /// purpose, author, trigger, sinks, status targets, claims, ops, facts,
+    /// The card's fields as JSON, everything the operator needs to approve
+    /// the exact code: flow id, version, purpose, author, trigger, sinks, status targets, claims, ops, facts,
     /// token cap, placement, warnings, code hash and code, and the dry run's
     /// summary.
     pub fields: serde_json::Value,
