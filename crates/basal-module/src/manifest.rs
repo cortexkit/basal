@@ -26,6 +26,11 @@ pub const OPERATIONS: &[(&str, ManagementOperationKind, &str)] = &[
         "Run a flow against a schedule window or a synthetic trigger in an isolated scratch store and return the trace of every call and sink write.",
     ),
     (
+        "flow.list",
+        ManagementOperationKind::Query,
+        "List caller-visible flows and their approval, disable and last-run state.",
+    ),
+    (
         "flow.health",
         ManagementOperationKind::Query,
         "Per-flow health (state, last run, overdue work, consecutive failures, runs needing reconcile) and the runtime's own figures.",
