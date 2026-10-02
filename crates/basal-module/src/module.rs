@@ -215,7 +215,8 @@ impl DecisionSink for DecisionApplier {
                 Ok(())
             }
             Err(e) if is_storage(&e) => {
-                // Not recorded: core keeps the answer and delivers it
+                // The decision card's answer was not recorded: core keeps
+                // it, since its page is not acknowledged, and delivers it
                 // again after the restart.
                 self.fatal
                     .raise(format!("recording a decision answer: {e}"));

@@ -45,13 +45,17 @@ pub use crate::reconcile::RECONCILED_AS_APPLIED;
 /// `flow.reconcile` records for the operator too.
 pub const OPERATOR_ACTOR: &str = "operator";
 
-/// Reconcile card options.
+/// Reconcile card option: leave the call unresolved (the default).
 pub const LEAVE: &str = "leave";
+/// Reconcile card option: the call never ran; send it again.
 pub const NOT_APPLIED: &str = "not_applied";
+/// Reconcile card option: the call ran; continue without its result.
 pub const APPLIED: &str = "applied";
+/// Reconcile card option: cancel the run.
 pub const CANCEL: &str = "cancel";
-/// Re-enable card options.
+/// Re-enable card option: keep the flow disabled (the default).
 pub const KEEP: &str = "keep";
+/// Re-enable card option: enable the flow again.
 pub const REENABLE: &str = "reenable";
 
 fn option(id: &str, label: &str, decline: bool) -> DecisionOption {

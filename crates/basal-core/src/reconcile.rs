@@ -27,8 +27,9 @@ pub enum Resolution {
     /// The call did take effect, but its result was not observed: the
     /// script receives a rejection with code [`RECONCILED_AS_APPLIED`] and
     /// no value, so it learns the effect happened without ever seeing an
-    /// invented result. Journaled and released like any outcome, so a
-    /// replay delivers the same rejection.
+    /// invented result. The rejection is recorded as the call's outcome and
+    /// released to the script like any other, so a replay of the run
+    /// delivers the same rejection from the journal.
     ReconciledAsApplied,
 }
 

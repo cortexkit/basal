@@ -55,10 +55,12 @@ pub fn request(card: &InstallCard) -> Result<Value, ConsentError> {
     Ok(result)
 }
 
-/// The effect core gives every action option of a `flow_decision` card.
-/// Core's owner may rename it to `grant`, so it is held in this one place.
+/// The `effect` value basal sends on every action option of a
+/// `flow_decision` card, as core's contract names it. Core's owner may
+/// rename it to `grant`, so the name is held in this one constant.
 pub const DECISION_ACTION_EFFECT: &str = "choose";
-/// The effect of the one option of a card that does nothing.
+/// The `effect` value of a card's declining option, the one that does
+/// nothing and is the default.
 pub const DECISION_DECLINE_EFFECT: &str = "decline";
 /// How long core keeps a decision card open before it expires to its
 /// default.

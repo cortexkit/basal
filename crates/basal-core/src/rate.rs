@@ -178,8 +178,9 @@ pub fn check(
             other => CoreError::Invalid(other.to_string()),
         })?;
     if disabled {
-        // The operator decides whether the flow runs again, on a card
-        // raised from this row; it commits with the disable it is about.
+        // The operator decides whether the flow runs again, on a re-enable
+        // card. Its row is written in this transaction, so the disable and
+        // the intent to ask about it commit together or not at all.
         let rule = serde_json::json!({
             "rule": "rate_saturation",
             "limit": column,
