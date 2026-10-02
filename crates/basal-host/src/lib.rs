@@ -158,7 +158,8 @@ pub enum Dispatched {
 /// The op a call goes to, as `module.op`, for an operator to read. A flow's
 /// own ops name their module; primitives name the module and op they are
 /// carried by: core's sinks and facts, and Broca's `session.send` for model
-/// calls (under the module id `ck-basal` wires for Broca). Local primitives
+/// calls, under `broca`, the module id `ck-basal` is configured with for
+/// Broca. Local primitives
 /// (clock, random, `kv`) never leave basal and keep their own name.
 pub fn op_label(kind: &CallKind) -> String {
     use basal_proto::Primitive;
@@ -223,11 +224,11 @@ impl UnknownReason {
 /// Why the runtime disabled a flow by itself: a closed set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DisabledReason {
-    /// The runs admitted per rate window hit their limit for K windows in a
-    /// row.
+    /// The runs admitted per rate window hit their limit in the configured
+    /// number of windows in a row.
     RunLimitSaturated,
-    /// The calls dispatched per rate window hit their limit for K windows
-    /// in a row.
+    /// The calls dispatched per rate window hit their limit in the
+    /// configured number of windows in a row.
     DispatchLimitSaturated,
 }
 

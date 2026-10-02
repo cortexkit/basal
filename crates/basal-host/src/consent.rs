@@ -140,8 +140,8 @@ pub struct DecisionCard {
     pub prompt: String,
     /// Lowercase hex digest of what is being decided.
     pub args_digest: Option<String>,
-    /// What the card shows besides the flow, version and decision, which
-    /// core shows itself, as (label, value) pairs.
+    /// What the card shows besides the flow, version and decision (which
+    /// core adds to every decision card itself), as (label, value) pairs.
     pub facts: Vec<(String, String)>,
     pub options: Vec<DecisionOption>,
     /// How long the card stays open before it expires to its default.

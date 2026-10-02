@@ -641,7 +641,8 @@ impl Host for BrocaHost {
         // Every Broca call honours idempotency keys (`classify` above), so
         // the runtime retries an ambiguous one and, when its retries run
         // out, records it as `retries_exhausted` whatever the last attempt's
-        // cause was. That is the reason each ambiguous attempt reports.
+        // cause was. So each ambiguous attempt reports `retries_exhausted`
+        // as its reason.
         let ambiguous =
             |detail| TransportError::maybe_sent(UnknownReason::RetriesExhausted, detail);
         match self.dispatch_model(request) {

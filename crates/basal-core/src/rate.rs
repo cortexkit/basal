@@ -179,8 +179,9 @@ pub fn check(
         })?;
     if disabled {
         // The operator decides whether the flow runs again, on a re-enable
-        // card. Its row, with the rule's numbers as they are now, is written
-        // in this transaction, so the disable and the intent to ask about it
+        // card. The card's row, holding the limit that tripped, the window
+        // and the saturated-window count as they are now, is written in
+        // this transaction, so the disable and the intent to ask about it
         // commit together or not at all.
         let rule = basal_host::DecisionContext::Reenable {
             disabled_at_ms: now_ms,

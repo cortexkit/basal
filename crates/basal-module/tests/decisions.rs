@@ -769,8 +769,9 @@ fn reconciled_as_applied_is_journaled_and_replays_the_same_rejection() {
     assert_eq!(outcome.delivery_order, 0);
 }
 
-/// Rate limits that refuse a flow's second admission within one 60-second
-/// window and disable the flow on that first saturated window.
+/// Rate limits allowing one admission per 60-second window, so a flow's
+/// second admission in a window is refused, and that one saturated window
+/// disables the flow.
 fn tight() -> RateLimits {
     RateLimits {
         window: Duration::from_secs(60),

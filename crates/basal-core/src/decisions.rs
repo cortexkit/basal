@@ -72,7 +72,8 @@ fn option(id: &str, label: &str, decline: bool) -> DecisionOption {
 
 /// The options of a card, each action labelled as the decision itself (a
 /// phone arms an action on its first tap and sends it on the second), and
-/// the declining default last, as in core's test vectors.
+/// the declining default last, the order core's test vectors use, so the
+/// actions come first.
 pub fn options(kind: DecisionKind) -> Vec<DecisionOption> {
     match kind {
         DecisionKind::Reconcile => vec![
@@ -329,7 +330,7 @@ pub fn prompt(flow_id: &str, context: &DecisionContext) -> String {
 }
 
 /// The card's facts beside the flow, version and decision, which core
-/// shows itself.
+/// adds to every decision card itself.
 fn facts(context: &DecisionContext) -> Vec<(String, String)> {
     let fact = |label: &str, value: String| (label.to_owned(), value);
     match context {

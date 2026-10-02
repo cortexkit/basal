@@ -503,8 +503,9 @@ impl Activation<'_> {
         if !unknown.is_empty() {
             self.rt.store().write(|tx| {
                 for p in &unknown {
-                    // No thread of this process is sending it, so the
-                    // process that sent it stopped before recording a reply.
+                    // No thread of this process is sending the call, so
+                    // the process that sent it stopped before recording a
+                    // reply.
                     journal::record_unknown(tx, &run_id, *p, UnknownReason::BasalRestarted)?;
                 }
                 runs::exit(

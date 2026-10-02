@@ -56,7 +56,7 @@ pub fn request(card: &InstallCard) -> Result<Value, ConsentError> {
 }
 
 /// The `effect` value basal sends on every action option of a
-/// `flow_decision` card, as core's contract names it. Core's owner may
+/// `flow_decision` card, as core's contract names it. The contract may
 /// rename it to `grant`, so the name is held in this one constant.
 pub const DECISION_ACTION_EFFECT: &str = "choose";
 /// The `effect` value of a card's declining option, the one that does
