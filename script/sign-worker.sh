@@ -23,9 +23,11 @@ PROFILE="$ROOT/crates/basal-worker/sandbox/worker.sb"
 # checks on top: the embedded profile and the live confinement probe.
 # shellcheck source=script/signing.sh
 . "$ROOT/script/signing.sh"
-# BASAL_WORKER_IDENTIFIER exists for isolated rigs (script/flows-rig.sh), which
-# sign their copies under their own ckdev- identifiers so a rig binary can never
-# be mistaken for a production one; every other check is unchanged.
+# BASAL_WORKER_IDENTIFIER exists for isolated rigs (script/flows-rig.sh). A rig
+# build signs its copies under ckdev- identifiers so it can never be mistaken for
+# a production binary; a rig run on staged bytes (place --from-stage) keeps the
+# production identifier, because it tests exactly what will be placed. Every
+# other check is unchanged.
 IDENTIFIER="${BASAL_WORKER_IDENTIFIER:-ck-basal-worker}"
 
 usage() {
