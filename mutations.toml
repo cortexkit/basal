@@ -3086,7 +3086,7 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-module/src/dryrun.rs"
-old = "if !self.runs_live(&request.kind) {"
+old = "if !self.runs_live(request) {"
 new = "if false {"
 
 [[control]]
