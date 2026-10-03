@@ -170,6 +170,18 @@ impl MockHost {
                     Settlement::Rejected,
                     text(&json!({"message": "synchronous call issued asynchronously"})),
                 ),
+                // The built-ins echo their arguments: this parent has no
+                // manifest, so nothing here touches a file or the network.
+                Primitive::FsRead
+                | Primitive::FsList
+                | Primitive::FsStat
+                | Primitive::FsWrite
+                | Primitive::GitLog
+                | Primitive::GitRevParse
+                | Primitive::GitDescribeTags
+                | Primitive::GitShow
+                | Primitive::GitDiff
+                | Primitive::NetFetch => ready(Settlement::Fulfilled, call.args.clone()),
             },
         }
     }

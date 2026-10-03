@@ -30,6 +30,11 @@ fn warning(w: &Warning) -> Value {
             "op": op,
             "text": "the operator overrode the loop install rule; loop protection for this flow is rate limiting only",
         }),
+        Warning::PrivateTextWithNetFetch { host } => json!({
+            "kind": "private_text_with_net_fetch",
+            "host": host,
+            "text": "the flow reads private text and can fetch from this host, which can carry that text out",
+        }),
     }
 }
 
@@ -99,6 +104,16 @@ pub fn fields(input: &CardInput<'_>) -> Value {
             "max_output": l.max_output,
         })),
         "token_window": input.token_window,
+        // The built-in lines, as approved: roots as written (`~` is the
+        // user's home) and each host with the methods it is approved for.
+        "fs": m.fs.as_ref().map(|f| json!({ "read": f.read, "write": f.write })),
+        "git": m.git.as_ref().map(|g| json!({ "read": g.read })),
+        "net": m.net.as_ref().map(|n| json!({
+            "fetch": n.fetch.iter().map(|f| json!({
+                "host": f.host,
+                "methods": f.effective_methods(),
+            })).collect::<Vec<_>>(),
+        })),
         "placement": m.placement,
         "warnings": input.installed.warnings.iter().map(warning).collect::<Vec<_>>(),
         "code_hash": code_hash_hex(&input.installed.code_hash),

@@ -5,7 +5,15 @@
 //! ck-basal-harness --dir <dir> --worker <ck-basal-worker>
 //!     [--kill-worker-at <point>] [--kill-self-at <point>] [--cut-store-at <point>]
 //!     [--warm-spares <n>] [--max-concurrent <n>]
+//!     [--builtins-trust-der <file>] [--builtins-resolve <host>=<ip>:<port>]...
 //! ```
+//!
+//! With `--routing-fake`, the built-ins run for real through basal's own
+//! host. `--builtins-trust-der` makes `net.fetch` trust only the DER
+//! certificate in the file instead of the bundled roots, and each
+//! `--builtins-resolve` answers a host name with a fixed address, which may
+//! be a loopback one: together they point `net.fetch` at a local test
+//! server. The production module has neither setting.
 //!
 //! It is the same [`Module`] the production binary starts (store, recovery
 //! first, pool, engine, ops, consent), with the mock host (its state in
@@ -65,6 +73,8 @@ struct Args {
     max_concurrent: usize,
     routing_fake: bool,
     broca: bool,
+    builtins_trust_der: Option<PathBuf>,
+    builtins_resolve: Vec<(String, std::net::SocketAddr)>,
 }
 
 fn parse() -> Result<Args, String> {
@@ -78,6 +88,8 @@ fn parse() -> Result<Args, String> {
         max_concurrent: 4,
         routing_fake: false,
         broca: false,
+        builtins_trust_der: None,
+        builtins_resolve: Vec::new(),
     };
     let mut it = std::env::args().skip(1);
     let mut dir = None;
@@ -92,6 +104,17 @@ fn parse() -> Result<Args, String> {
             "--kill-worker-at" => args.kill_worker_at = Some(value()?),
             "--kill-self-at" => args.kill_self_at = Some(value()?),
             "--cut-store-at" => args.cut_store_at = Some(value()?),
+            "--builtins-trust-der" => args.builtins_trust_der = Some(PathBuf::from(value()?)),
+            "--builtins-resolve" => {
+                let text = value()?;
+                let (host, addr) = text
+                    .split_once('=')
+                    .ok_or("--builtins-resolve needs <host>=<ip>:<port>")?;
+                let addr = addr
+                    .parse()
+                    .map_err(|e| format!("--builtins-resolve {text}: {e}"))?;
+                args.builtins_resolve.push((host.to_owned(), addr));
+            }
             "--warm-spares" => {
                 args.warm_spares = value()?
                     .parse()
@@ -155,6 +178,28 @@ impl Hooks for HarnessHooks {
         }
         Step::Continue
     }
+}
+
+/// The built-ins' settings from the command line: production's unless a
+/// test points `net.fetch` at its own server.
+fn builtins_config(args: &Args) -> Result<basal_host::builtins::BuiltinConfig, String> {
+    let mut config = basal_host::builtins::BuiltinConfig::default();
+    if let Some(path) = &args.builtins_trust_der {
+        let der = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        config.net.trust_anchors = Some(vec![der]);
+    }
+    if !args.builtins_resolve.is_empty() {
+        let mut table = std::collections::BTreeMap::new();
+        for (host, addr) in &args.builtins_resolve {
+            table
+                .entry(host.clone())
+                .or_insert_with(Vec::new)
+                .push(*addr);
+            config.net.private_hosts.insert(host.clone());
+        }
+        config.net.resolver = Arc::new(basal_host::builtins::StaticResolver(table));
+    }
+    Ok(config)
 }
 
 fn read_clock(dir: &Path) -> i64 {
@@ -331,11 +376,21 @@ pub fn main() -> std::process::ExitCode {
         };
         let transport = Arc::new(harness_transport::HarnessTransport(mock.clone()));
         let catalog = Arc::new(SubcCatalog::new(transport.clone()));
-        Arc::new(RoutingHost::new(
-            Arc::new(ModuleOpsHost::new(transport.clone(), catalog)),
-            Arc::new(CoreHost::new(transport)),
-            model_host.clone(),
-        ))
+        let builtins = match builtins_config(&args) {
+            Ok(config) => config,
+            Err(e) => {
+                eprintln!("ck-basal-harness: {e}");
+                return std::process::ExitCode::from(64);
+            }
+        };
+        Arc::new(
+            RoutingHost::new(
+                Arc::new(ModuleOpsHost::new(transport.clone(), catalog)),
+                Arc::new(CoreHost::new(transport)),
+                model_host.clone(),
+            )
+            .with_builtins(Arc::new(basal_host::builtins::BuiltinHost::new(builtins))),
+        )
     } else {
         model_host
     };

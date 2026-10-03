@@ -614,7 +614,7 @@ impl Activation<'_> {
                 false,
             );
         }
-        let class = self.rt.class_of(&call.kind);
+        let class = self.rt.class_of(&call.kind, &call.args);
         let flow_id = self.run.flow_id.clone();
         // Clock reads and random samples need no grant. Every other call is
         // checked against the approved manifest first; a refusal is still
@@ -900,6 +900,19 @@ impl Activation<'_> {
                 );
                 let request = JsonText::new(value.to_string())
                     .map_err(|e| Refusal::new(codes::INVALID_ARGUMENTS, e.to_string()))?;
+                Ok(Prepared {
+                    request: Some(request),
+                    tokens: None,
+                })
+            }
+            CallKind::Primitive(p) if p.is_builtin() => {
+                // The scope travels with the call, so the host checks the
+                // same scope again at the moment it acts, and a resend after
+                // a crash carries the scope the call was approved under.
+                let grant = authorize::builtin_grant(manifest, *p, &args)?;
+                let request =
+                    JsonText::new(basal_host::builtins::envelope(&args, &grant).to_string())
+                        .map_err(|e| Refusal::new(codes::INVALID_ARGUMENTS, e.to_string()))?;
                 Ok(Prepared {
                     request: Some(request),
                     tokens: None,

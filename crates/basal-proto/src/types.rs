@@ -160,10 +160,23 @@ pub enum Primitive {
     KvDelete,
     /// Shell access, which exists only in the codemode profile.
     Sh,
+    /// The host built-ins: file, git and network access carried out by the
+    /// parent within the manifest's `fs`, `git` and `net` lines. The worker
+    /// itself still has no file or socket access.
+    FsRead,
+    FsList,
+    FsStat,
+    FsWrite,
+    GitLog,
+    GitRevParse,
+    GitDescribeTags,
+    GitShow,
+    GitDiff,
+    NetFetch,
 }
 
 impl Primitive {
-    pub const ALL: [Primitive; 11] = [
+    pub const ALL: [Primitive; 21] = [
         Self::Now,
         Self::Random,
         Self::Facts,
@@ -175,6 +188,16 @@ impl Primitive {
         Self::KvSet,
         Self::KvDelete,
         Self::Sh,
+        Self::FsRead,
+        Self::FsList,
+        Self::FsStat,
+        Self::FsWrite,
+        Self::GitLog,
+        Self::GitRevParse,
+        Self::GitDescribeTags,
+        Self::GitShow,
+        Self::GitDiff,
+        Self::NetFetch,
     ];
 
     /// The wire code. Zero is reserved for module ops in [`CallKind`].
@@ -191,6 +214,16 @@ impl Primitive {
             Self::KvSet => 9,
             Self::KvDelete => 10,
             Self::Sh => 11,
+            Self::FsRead => 12,
+            Self::FsList => 13,
+            Self::FsStat => 14,
+            Self::FsWrite => 15,
+            Self::GitLog => 16,
+            Self::GitRevParse => 17,
+            Self::GitDescribeTags => 18,
+            Self::GitShow => 19,
+            Self::GitDiff => 20,
+            Self::NetFetch => 21,
         }
     }
 
@@ -211,7 +244,35 @@ impl Primitive {
             Self::KvSet => "kv.set",
             Self::KvDelete => "kv.delete",
             Self::Sh => "sh",
+            // The built-ins carry the names a script calls them by.
+            Self::FsRead => "fs.read",
+            Self::FsList => "fs.list",
+            Self::FsStat => "fs.stat",
+            Self::FsWrite => "fs.write",
+            Self::GitLog => "git.log",
+            Self::GitRevParse => "git.revParse",
+            Self::GitDescribeTags => "git.describeTags",
+            Self::GitShow => "git.show",
+            Self::GitDiff => "git.diff",
+            Self::NetFetch => "net.fetch",
         }
+    }
+
+    /// Whether this is one of the file, git or network built-ins.
+    pub fn is_builtin(self) -> bool {
+        matches!(
+            self,
+            Self::FsRead
+                | Self::FsList
+                | Self::FsStat
+                | Self::FsWrite
+                | Self::GitLog
+                | Self::GitRevParse
+                | Self::GitDescribeTags
+                | Self::GitShow
+                | Self::GitDiff
+                | Self::NetFetch
+        )
     }
 }
 

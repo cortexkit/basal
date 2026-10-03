@@ -133,6 +133,129 @@ fn digests(effects: &Value) -> Vec<Value> {
         .collect()
 }
 
+/// Builds a fixture repository with one commit.
+fn git_repo(dir: &Path) {
+    std::fs::create_dir_all(dir).expect("repo dir");
+    std::fs::write(dir.join("CHANGELOG.md"), "v1\n").expect("file");
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &["add", "CHANGELOG.md"],
+        &["commit", "-q", "-m", "release v1"],
+    ] {
+        let status = Command::new("git")
+            .current_dir(dir)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
+            .args(args)
+            .status()
+            .expect("git");
+        assert!(status.success(), "git {args:?}");
+    }
+}
+
+/// A schedule-triggered flow, through the real module process and worker,
+/// reads a file and a git log, fetches from a local HTTPS server and writes
+/// a digest of all three through the mock core.
+#[test]
+fn a_schedule_flow_reads_a_file_and_a_git_log_fetches_and_writes_a_digest() {
+    use basal_testkit::https::{Reply, TestServer};
+
+    let dir = scratch("builtins");
+    let files = dir.join("files");
+    std::fs::create_dir_all(&files).expect("files");
+    std::fs::write(files.join("watch.txt"), "watched text").expect("file");
+    let repo = dir.join("repo");
+    git_repo(&repo);
+    let server = TestServer::start(|_| {
+        [("/release".to_owned(), Reply::text(200, "release 1.2.3"))]
+            .into_iter()
+            .collect()
+    });
+    let trust = dir.join("trust.der");
+    std::fs::write(&trust, server.trust_der()).expect("trust");
+    let resolve = format!("api.test={}", server.addr());
+    let harness_args = [
+        "--routing-fake",
+        "--builtins-trust-der",
+        trust.to_str().expect("utf-8"),
+        "--builtins-resolve",
+        &resolve,
+    ];
+
+    let script = format!(
+        "const file = await fs.read({file:?});\n\
+         const log = await git.log({repo:?}, {{ maxCount: 1 }});\n\
+         const page = await net.fetch({url:?});\n\
+         const body = file.text + ' | ' + log[0].subject + ' | ' + page.body;\n\
+         await sink.digest('SYNAPSE', {{ title: 'builtins', body }}, 'piggyback');\n\
+         return {{ body, status: page.status }};",
+        file = files.join("watch.txt").display().to_string(),
+        repo = repo.display().to_string(),
+        url = server.url("api.test", "/release"),
+    );
+    let manifest = json!({
+        "id": "flow-builtins",
+        "version": 1,
+        "purpose": "Digest a file, a repository and a release page.",
+        "trigger": { "schedule": { "cron": "0 * * * *", "missed": "once" } },
+        "sinks": [ { "agent": "SYNAPSE", "digest_max": "piggyback" } ],
+        "fs": { "read": [files.display().to_string()] },
+        "git": { "read": [repo.display().to_string()] },
+        "net": { "fetch": [ { "host": "api.test" } ] }
+    })
+    .to_string();
+
+    let mut h = Harness::start(&dir.join("module"), &harness_args);
+    let reply = h.ok(json!({
+        "cmd": "op",
+        "as": { "agent": "SYNAPSE" },
+        "method": "flow.install",
+        "params": { "script": script, "manifest": manifest },
+    }));
+    assert_eq!(reply["state"], "pending", "{reply:#}");
+    let cards = h.ok(json!({ "cmd": "cards" }));
+    let card = &cards[0];
+    assert_eq!(card["card_id"], reply["card_id"]);
+    // The card shows each built-in line, the default methods spelt out.
+    assert_eq!(
+        card["fields"]["fs"],
+        json!({ "read": [files.display().to_string()], "write": [] })
+    );
+    assert_eq!(
+        card["fields"]["git"],
+        json!({ "read": [repo.display().to_string()] })
+    );
+    assert_eq!(
+        card["fields"]["net"],
+        json!({ "fetch": [{ "host": "api.test", "methods": ["GET", "HEAD"] }] })
+    );
+    h.ok(
+        json!({ "cmd": "decide", "card_id": reply["card_id"], "approve": true, "by": "operator" }),
+    );
+    h.ok(json!({ "cmd": "clock", "set_ms": T0 + HOUR + 10_000 }));
+    h.ok(json!({ "cmd": "pump" }));
+
+    let runs = h.ok(json!({ "cmd": "runs" }));
+    assert_eq!(runs.as_array().map(Vec::len), Some(1), "{runs:#}");
+    assert_eq!(runs[0]["state"], "succeeded", "{runs:#}");
+    let result: Value =
+        serde_json::from_str(runs[0]["result"].as_str().expect("result")).expect("json");
+    let body = "watched text | release v1 | release 1.2.3";
+    assert_eq!(result, json!({ "body": body, "status": 200 }));
+    let effects = h.ok(json!({ "cmd": "effects" }));
+    let writes = digests(&effects);
+    assert_eq!(writes.len(), 1, "{effects:#}");
+    assert!(
+        writes[0]["args"].as_str().unwrap_or("").contains(body),
+        "{effects:#}"
+    );
+    assert_eq!(server.seen().len(), 1, "fetched once");
+    h.quit();
+    drop(server);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn a_schedule_flow_survives_a_catch_up_a_worker_kill_and_a_module_kill_with_each_write_once() {
     let dir = scratch("catch-up");

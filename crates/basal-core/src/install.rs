@@ -74,6 +74,12 @@ pub enum InstallError {
         field: &'static str,
         agent: String,
     },
+    /// An `fs` or `git` root that does not exist (after `~` expansion) when
+    /// the flow is installed.
+    MissingRoot {
+        field: &'static str,
+        root: String,
+    },
     /// The flow is bound to `module`'s events and holds a mutation on
     /// `module` that does not echo causes, without the operator's override.
     LoopRule {
@@ -151,6 +157,9 @@ pub enum Warning {
     /// The operator overrode the loop install rule for this op; loop
     /// protection for the flow is rate limiting only.
     LoopOverride { module: String, op: String },
+    /// The flow reads private text and may fetch from this host, which can
+    /// carry that text out in a URL, a header or a body.
+    PrivateTextWithNetFetch { host: String },
 }
 
 /// A recorded version.
@@ -228,11 +237,27 @@ pub fn validate(
             }
         }
     }
+    if reads_text && let Some(net) = &manifest.net {
+        for f in &net.fetch {
+            warnings.push(Warning::PrivateTextWithNetFetch {
+                host: f.host.clone(),
+            });
+        }
+    }
     for (field, agent) in manifest.agents() {
         if !catalog.agent_known(agent) {
             return Err(InstallError::UnknownAgent {
                 field,
                 agent: agent.to_owned(),
+            });
+        }
+    }
+    for (field, root) in manifest.roots() {
+        let exists = basal_host::builtins::expand_home(root).is_some_and(|p| p.exists());
+        if !exists {
+            return Err(InstallError::MissingRoot {
+                field,
+                root: root.to_owned(),
             });
         }
     }

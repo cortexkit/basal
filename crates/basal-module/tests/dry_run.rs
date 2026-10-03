@@ -180,6 +180,87 @@ fn live_mode_runs_only_query_ops_and_only_for_the_operator() {
     assert!(f.mock.effects().is_empty());
 }
 
+fn kinds_and_actions(run: &Value) -> Vec<(String, String)> {
+    calls(run)
+        .iter()
+        .map(|c| {
+            (
+                c["kind"].as_str().unwrap_or("").to_owned(),
+                c["action"].as_str().unwrap_or("").to_owned(),
+            )
+        })
+        .collect()
+}
+
+/// Capture mode captures every built-in, reads included. Live mode runs
+/// only the built-ins that read (here `fs.read`), and only inside the
+/// manifest's scope: a read outside it is refused in the parent, and a
+/// write or a `POST` is captured.
+#[test]
+fn dry_runs_capture_every_built_in_and_live_runs_only_reads_in_scope() {
+    let f = fixture("dry-builtins", Options::default());
+    let root = f.dir.join("files");
+    let outside = f.dir.join("outside");
+    std::fs::create_dir_all(&root).expect("root");
+    std::fs::create_dir_all(&outside).expect("outside");
+    std::fs::write(root.join("notes.txt"), "notes").expect("notes");
+    std::fs::write(outside.join("secret.txt"), "secret").expect("secret");
+    let mut manifest = events_manifest("flow-builtins");
+    manifest["fs"] = json!({
+        "read": [root.display().to_string()],
+        "write": [root.display().to_string()],
+    });
+    manifest["net"] = json!({ "fetch": [{ "host": "hooks.invalid", "methods": ["POST"] }] });
+    let out = root.join("out.txt");
+    let script = format!(
+        "const code = (p) => p.then(() => 'ok', (e) => e.data.code);\n\
+         const read = await fs.read({read:?}).then((r) => r.text, (e) => e.data.code);\n\
+         const outside = await code(fs.read({outside:?}));\n\
+         const write = await code(fs.write({out:?}, 'digest'));\n\
+         const post = await code(net.fetch('https://hooks.invalid/x', {{ method: 'POST', body: 'b' }}));\n\
+         return {{ read, outside, write, post }};",
+        read = root.join("notes.txt").display().to_string(),
+        outside = outside.join("secret.txt").display().to_string(),
+        out = out.display().to_string(),
+    );
+    install(&f, &agent("SYNAPSE"), &script, &manifest);
+    let synthetic = |mode: &str| json!({ "flow_id": "flow-builtins", "mode": mode, "trigger": { "kind": "synthetic" } });
+    let expected = |read: &str| {
+        [
+            ("fs.read", read),
+            ("fs.read", "refused"),
+            ("fs.write", "captured"),
+            ("net.fetch", "captured"),
+        ]
+        .map(|(k, a)| (k.to_owned(), a.to_owned()))
+        .to_vec()
+    };
+
+    let summary = dry_run(&f, &agent("SYNAPSE"), synthetic("capture")).expect("capture");
+    let run = &summary["runs"][0];
+    assert_eq!(
+        run["result"],
+        json!({ "read": "captured", "outside": "denied", "write": "captured", "post": "captured" }),
+        "{run:#}"
+    );
+    assert_eq!(kinds_and_actions(run), expected("captured"), "{run:#}");
+    assert!(
+        f.mock.builtin_sends().is_empty(),
+        "capture mode ran a built-in"
+    );
+
+    let summary = dry_run(&f, &Caller::Operator, synthetic("live")).expect("live");
+    let run = &summary["runs"][0];
+    assert_eq!(
+        run["result"],
+        json!({ "read": "notes", "outside": "denied", "write": "captured", "post": "captured" }),
+        "{run:#}"
+    );
+    assert_eq!(kinds_and_actions(run), expected("live"), "{run:#}");
+    assert_eq!(f.mock.builtin_sends(), ["fs.read"]);
+    assert!(!out.exists(), "a dry run wrote a file");
+}
+
 fn real_kv(f: &Fixture, flow: &str) -> Vec<(String, String, i64)> {
     f.module
         .rt

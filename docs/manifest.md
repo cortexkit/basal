@@ -24,6 +24,9 @@ A flow is a script plus a manifest. The manifest says everything the flow may do
 | `ops` | list of op references | no | `[]` | Every module op the flow may call. Anything else is refused at run time. |
 | `facts` | facts grant | no | none | Whose facts the flow may read. Without it, `facts()` is refused. |
 | `llm` | model grant | no | none | Without it, `llm()` and `classify()` are refused. |
+| `fs` | `{read?, write?}` lists of roots | no | none | Directories the file built-ins may read under (`fs.read`, `fs.list`, `fs.stat`) or write under (`fs.write`). Each root is absolute after `~` expansion and must exist at install. See `docs/builtins.md`. |
+| `git` | `{read}` list of repositories | no | none | Repositories the git built-ins may read. Each is absolute after `~` expansion and must exist at install. |
+| `net` | `{fetch}` list of `{host, methods?}` | no | none | Hosts `net.fetch` may reach. `methods` defaults to `GET` and `HEAD`; others must be listed. Wildcard and IP-literal hosts are refused. |
 | `placement` | string | no | none | Where the flow runs, such as `"machine:studio"`. 1 to 128 bytes, no control characters. Shown on the card. |
 | `concurrency` | integer | no | `1` | Only `1`: runs of a flow run one at a time, in trigger order. |
 | `deadline` | duration | no | the runtime's default (10 minutes) | The per-run wall-clock deadline, from `"1s"` to `"24h"`. |

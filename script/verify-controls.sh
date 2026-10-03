@@ -26,7 +26,7 @@ fi
 
 runner=crates/basal-testkit/src/bin/mutation-controls.rs
 defined="worker"
-for candidate in journal dispatch schedule module broca hosts; do
+for candidate in journal dispatch schedule module broca hosts builtins; do
     if grep -q "\"--$candidate\"" "$runner"; then
         defined="$defined $candidate"
     fi
