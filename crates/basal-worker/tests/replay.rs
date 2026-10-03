@@ -212,13 +212,19 @@ fn unreplayed_journal_entries_are_detected() {
 #[test]
 fn blocked_only_on_long_calls_suspends_and_resumes() {
     let mut parent = common::parent();
-    parent.deadline = std::time::Duration::from_secs(5);
+    // Without suspension the worker keeps asking about the same pending calls.
+    // The parent's activation deadline kills and reaps that worker before failing.
+    parent.deadline = std::time::Duration::from_secs(3);
     let script = r#"
         const a = await ops.call('mock', 'echo', 'before');
         const [answer, other] = await Promise.all([llm({ prompt: 'hi' }), ops.call('mock', 'long', {})]);
         return [a, answer, other];
     "#;
     let first = parent.run("t", script);
+    assert!(
+        !matches!(first.ending, basal_testkit::Ending::Hung),
+        "worker did not suspend on long-running calls within the 3-second activation deadline"
+    );
     assert_eq!(
         common::finished(&first),
         &ActivationResult::Suspended {
