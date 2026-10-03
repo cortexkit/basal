@@ -21,6 +21,7 @@ A mutation control disables one safety mechanism with a temporary source edit, r
 | `slice-5-mutations.json` | the module shell: worker pool, engine, ops, dry run, consent cards, manifest (`basal-module`) | `... --bin mutation-controls -- --module` |
 | `i1a-host-mutations.json` | the consumer adapters to the fleet's modules and their journal integration | `... --bin mutation-controls -- --hosts` |
 | `i1a-broca-mutations.json` | the model host: Broca contracts, recovery, token metadata and restarts | `... --bin mutation-controls -- --broca` |
+| `builtins-mutations.json` | the file, git and network built-ins: scope, hardening, journal classes, install checks | `... --bin mutation-controls -- --builtins` |
 
 `script/verify-controls.sh` runs every set in turn, checks that each run rewrote its file and that every control reddened, then restores the committed files. To refresh a file, run its command on a clean tree and commit the result. The runner refuses to start while the tree has unstaged changes.
 

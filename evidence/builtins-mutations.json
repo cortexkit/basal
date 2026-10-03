@@ -1,0 +1,156 @@
+[
+  {
+    "applied_evidence": "crates/basal-host/src/builtins/fs.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test a_symlink_resolving_outside_the_root_is_refused ... FAILED\nthread 'a_symlink_resolving_outside_the_root_is_refused' (80524878) panicked at crates/basal-testkit/tests/builtins_fs.rs:59:18:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s",
+    "control": "fs: a path is not required to lie under a root (symlink out)",
+    "expected_red": "a_symlink_resolving_outside_the_root_is_refused",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-host/src/builtins/fs.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test stat_of_a_missing_path_is_exists_false_only_when_its_parent_is_in_scope ... FAILED\nthread 'stat_of_a_missing_path_is_exists_false_only_when_its_parent_is_in_scope' (80554364) panicked at crates/basal-testkit/tests/builtins_fs.rs:59:18:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.03s",
+    "control": "fs: a path is not required to lie under a root (missing path)",
+    "expected_red": "stat_of_a_missing_path_is_exists_false_only_when_its_parent_is_in_scope",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-host/src/builtins/fs.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test a_symlink_swapped_into_the_last_component_after_the_check_is_not_followed ... FAILED\nthread 'a_symlink_swapped_into_the_last_component_after_the_check_is_not_followed' (80576910) panicked at crates/basal-testkit/tests/builtins_fs.rs:276:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s",
+    "control": "fs: the open follows a symlink in the last component",
+    "expected_red": "a_symlink_swapped_into_the_last_component_after_the_check_is_not_followed",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-host/src/builtins/fs.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test a_directory_swapped_for_a_symlink_after_the_check_is_caught_after_the_open ... FAILED\nthread 'a_directory_swapped_for_a_symlink_after_the_check_is_caught_after_the_open' (80589128) panicked at crates/basal-testkit/tests/builtins_fs.rs:295:58:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.00s",
+    "control": "fs: the opened file's real path is not checked again",
+    "expected_red": "a_directory_swapped_for_a_symlink_after_the_check_is_caught_after_the_open",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-host/src/builtins/git.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test a_repository_config_cannot_make_a_built_in_run_a_program ... FAILED\nthread 'a_repository_config_cannot_make_a_built_in_run_a_program' (80603712) panicked at crates/basal-testkit/tests/builtins_git.rs:277:5:\n  left: \"fsmonitor\\n\"\n right: \"\"\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 1.41s",
+    "control": "git: a repository's core.fsmonitor is honoured",
+    "expected_red": "a_repository_config_cannot_make_a_built_in_run_a_program",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-host/src/builtins/git.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test git_reads_only_approved_repositories ... FAILED\nthread 'git_reads_only_approved_repositories' (80713021) panicked at crates/basal-testkit/tests/builtins_git.rs:152:67:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 3.61s",
+    "control": "git: any repository counts as approved",
+    "expected_red": "git_reads_only_approved_repositories",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-host/src/builtins/net.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test only_https_urls_are_fetched ... FAILED\nthread 'only_https_urls_are_fetched' (81239018) panicked at crates/basal-testkit/tests/builtins_net.rs:148:18:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.01s",
+    "control": "net: a non-https URL is fetched",
+    "expected_red": "only_https_urls_are_fetched",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-host/src/builtins/net.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test a_redirect_to_an_unapproved_host_is_refused ... FAILED\nthread 'a_redirect_to_an_unapproved_host_is_refused' (81388091) panicked at crates/basal-testkit/tests/builtins_net.rs:148:18:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.01s",
+    "control": "net: redirect hops are not checked against the allowlist",
+    "expected_red": "a_redirect_to_an_unapproved_host_is_refused",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-host/src/builtins/net.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test a_post_redirected_to_an_unapproved_host_returns_the_redirect ... FAILED\nthread 'a_post_redirected_to_an_unapproved_host_returns_the_redirect' (81411737) panicked at crates/basal-testkit/tests/builtins_net.rs:289:6:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.01s",
+    "control": "net: a redirect not followed after a mutation is reported as refused",
+    "expected_red": "a_post_redirected_to_an_unapproved_host_returns_the_redirect",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-host/src/builtins/net.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test a_post_whose_body_is_refused_still_answers_with_status_and_headers ... FAILED\nthread 'a_post_whose_body_is_refused_still_answers_with_status_and_headers' (81423192) panicked at crates/basal-testkit/tests/builtins_net.rs:505:29:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.01s",
+    "control": "net: a refused body after a mutation refuses the whole call",
+    "expected_red": "a_post_whose_body_is_refused_still_answers_with_status_and_headers",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-host/src/builtins/net.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test a_post_whose_answer_is_unreadable_has_an_unknown_outcome ... FAILED\nthread 'a_post_whose_answer_is_unreadable_has_an_unknown_outcome' (81437889) panicked at crates/basal-testkit/tests/builtins_net.rs:541:22:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.01s",
+    "control": "net: an unreadable answer after a mutation is a refusal",
+    "expected_red": "a_post_whose_answer_is_unreadable_has_an_unknown_outcome",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-host/src/builtins/net.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test a_host_resolving_to_loopback_is_refused_before_connecting ... FAILED\nthread 'a_host_resolving_to_loopback_is_refused_before_connecting' (81464661) panicked at crates/basal-testkit/tests/builtins_net.rs:148:18:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.01s",
+    "control": "net: a private address is connected to",
+    "expected_red": "a_host_resolving_to_loopback_is_refused_before_connecting",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-host/src/builtins/net.rs; during:  1 file changed, 3 insertions(+); after restore: empty git diff --stat",
+    "captured_output": "test the_connection_goes_to_the_address_that_was_checked ... FAILED\nthread 'the_connection_goes_to_the_address_that_was_checked' (81495377) panicked at crates/basal-testkit/tests/builtins_net.rs:463:6:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 13 filtered out; finished in 1.01s",
+    "control": "net: the connection resolves the host again instead of using the checked address",
+    "expected_red": "the_connection_goes_to_the_address_that_was_checked",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-host/src/builtins/net.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test an_oversized_body_is_refused ... FAILED\nthread 'an_oversized_body_is_refused' (81518343) panicked at crates/basal-testkit/tests/builtins_net.rs:148:18:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.01s",
+    "control": "net: a body over the cap is read whole",
+    "expected_red": "an_oversized_body_is_refused",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-host/src/builtins/mod.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test each_built_in_is_journaled_with_its_class ... FAILED\nthread 'each_built_in_is_journaled_with_its_class' (81529524) panicked at crates/basal-testkit/tests/builtins_dispatch.rs:346:5:\n  left: [Query, Query, Query, KeyedMutation, Query, Query, Query]\n right: [Query, Query, Query, KeyedMutation, Query, Query, Mutation]\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out",
+    "control": "classes: net.fetch of any method is a query",
+    "expected_red": "each_built_in_is_journaled_with_its_class",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-host/src/builtins/mod.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test recovery_reissues_queries_and_writes_and_reconciles_a_post ... FAILED\nthread 'recovery_reissues_queries_and_writes_and_reconciles_a_post' (81573774) panicked at crates/basal-testkit/tests/builtins_dispatch.rs:419:9:\n  left: NeedsReconcile\n right: Succeeded\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.38s",
+    "control": "classes: fs.write does not honour idempotency keys",
+    "expected_red": "recovery_reissues_queries_and_writes_and_reconciles_a_post",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/authorize.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test calls_outside_the_manifest_are_refused_in_the_parent_and_journaled ... FAILED\nthread 'calls_outside_the_manifest_are_refused_in_the_parent_and_journaled' (81663530) panicked at crates/basal-testkit/tests/builtins_dispatch.rs:228:5:\n  left: Object {\"escape\": String(\"denied\"), \"fetched\": String(\"fetched\"), \"git\": String(\"denied\"), \"host\": String(\"ok\"), \"inside\": String(\"PRIVATE-FILE-TEXT\"), \"me",
+    "control": "authorize: a built-in's scope is not checked in the parent",
+    "expected_red": "calls_outside_the_manifest_are_refused_in_the_parent_and_journaled",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/install.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test install_refuses_bad_roots_hosts_and_methods ... FAILED\nthread 'install_refuses_bad_roots_hosts_and_methods' (81686785) panicked at crates/basal-testkit/tests/builtins_dispatch.rs:492:9:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.05s",
+    "control": "install: a root that does not exist is accepted",
+    "expected_red": "install_refuses_bad_roots_hosts_and_methods",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/manifest.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test install_refuses_bad_roots_hosts_and_methods ... FAILED\nthread 'install_refuses_bad_roots_hosts_and_methods' (81710084) panicked at crates/basal-testkit/tests/builtins_dispatch.rs:492:9:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.08s",
+    "control": "install: wildcard and IP-literal hosts are accepted",
+    "expected_red": "install_refuses_bad_roots_hosts_and_methods",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/manifest.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test install_refuses_bad_roots_hosts_and_methods ... FAILED\nthread 'install_refuses_bad_roots_hosts_and_methods' (81767478) panicked at crates/basal-testkit/tests/builtins_dispatch.rs:492:9:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.07s",
+    "control": "install: any method name is accepted",
+    "expected_red": "install_refuses_bad_roots_hosts_and_methods",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-core/src/install.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test private_text_with_a_fetch_grant_warns ... FAILED\nthread 'private_text_with_a_fetch_grant_warns' (81797054) panicked at crates/basal-testkit/tests/builtins_dispatch.rs:520:5:\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.05s",
+    "control": "install: private text with a fetch grant raises no warning",
+    "expected_red": "private_text_with_a_fetch_grant_warns",
+    "outcome": "reddened"
+  },
+  {
+    "applied_evidence": "crates/basal-module/src/dryrun.rs; during:  1 file changed, 3 insertions(+), 1 deletion(-); after restore: empty git diff --stat",
+    "captured_output": "test dry_runs_capture_every_built_in_and_live_runs_only_reads_in_scope ... FAILED\nthread 'dry_runs_capture_every_built_in_and_live_runs_only_reads_in_scope' (81832086) panicked at crates/basal-module/tests/dry_run.rs:254:5:\n  left: Object {\"outside\": String(\"denied\"), \"post\": String(\"unavailable\"), \"read\": String(\"notes\"), \"write\": String(\"ok\")}\n right: Object {\"outside\": String(\"denied\"), \"post\":",
+    "control": "dry run: live mode runs built-ins that are not queries",
+    "expected_red": "dry_runs_capture_every_built_in_and_live_runs_only_reads_in_scope",
+    "outcome": "reddened"
+  }
+]

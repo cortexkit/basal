@@ -27,6 +27,7 @@
 //!   even though its reply was lost.
 
 pub mod broca;
+pub mod builtins;
 pub mod catalog;
 pub mod consent;
 pub mod core_consent;
@@ -170,6 +171,7 @@ pub fn op_label(kind: &CallKind) -> String {
         }
         CallKind::Primitive(Primitive::Facts) => format!("{}.agent.facts", subc_catalog::CORE),
         CallKind::Primitive(Primitive::Llm | Primitive::Classify) => "broca.session.send".into(),
+        // Local primitives and the built-ins, which basal carries out itself.
         CallKind::Primitive(p) => p.name().into(),
     }
 }

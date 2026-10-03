@@ -149,6 +149,11 @@ struct Shared {
     gates: Condvar,
     sink: Mutex<Option<Arc<dyn CompletionSink>>>,
     file: Option<PathBuf>,
+    /// The file, git and network built-ins are basal's own, not the outside
+    /// world's, so the mock carries them out with the real host.
+    builtins: crate::builtins::BuiltinHost,
+    /// Every built-in sent, by name, in order.
+    builtin_sends: Mutex<Vec<String>>,
 }
 
 /// The mock host. Cloning shares the same state.
@@ -207,8 +212,34 @@ impl MockHost {
                 gates: Condvar::new(),
                 sink: Mutex::new(None),
                 file,
+                builtins: crate::builtins::BuiltinHost::default(),
+                builtin_sends: Mutex::new(Vec::new()),
             }),
         }
+    }
+
+    /// The built-ins sent to the real built-in host, by name, in order.
+    pub fn builtin_sends(&self) -> Vec<String> {
+        lock(&self.shared.builtin_sends).clone()
+    }
+
+    /// Sends a built-in to the real built-in host; `None` for any other call.
+    fn builtin(
+        &self,
+        request: &CallRequest,
+        class: Option<CallClass>,
+    ) -> Option<Result<Dispatched, TransportError>> {
+        let CallKind::Primitive(p) = request.kind else {
+            return None;
+        };
+        if !p.is_builtin() {
+            return None;
+        }
+        lock(&self.shared.builtin_sends).push(p.name().to_owned());
+        Some(match class {
+            Some(c) => self.shared.builtins.dispatch_classified(request, c),
+            None => self.shared.builtins.dispatch(request),
+        })
     }
 
     /// Persists `state`. Callers hold the state lock while saving, so two
@@ -519,6 +550,12 @@ impl MockHost {
                 _ => CallClass::Query,
             },
             CallKind::Op { .. } => CallClass::Query,
+            // The class a built-in has before its arguments are known (the
+            // runtime classes `net.fetch` by its method).
+            CallKind::Primitive(p) if p.is_builtin() => crate::builtins::class(kind, &Value::Null)
+                .unwrap_or(CallClass::Mutation {
+                    honours_idempotency_keys: false,
+                }),
             CallKind::Primitive(p) => match p {
                 Primitive::Llm | Primitive::SinkDigest | Primitive::SinkStatus => keyed,
                 Primitive::KvSet | Primitive::KvDelete | Primitive::Sh => CallClass::Mutation {
@@ -551,6 +588,9 @@ impl Host for MockHost {
     }
 
     fn dispatch(&self, request: &CallRequest) -> Result<Dispatched, TransportError> {
+        if let Some(done) = self.builtin(request, None) {
+            return done;
+        }
         let envelope: Value = serde_json::from_str(request.args.as_str()).unwrap_or(Value::Null);
         let broca = matches!(
             &request.kind,

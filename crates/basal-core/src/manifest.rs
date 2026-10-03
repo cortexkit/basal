@@ -67,6 +67,15 @@ pub struct Manifest {
     pub facts: Option<FactsGrant>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llm: Option<LlmGrant>,
+    /// Roots the `fs` built-ins may read and write under.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fs: Option<FsGrant>,
+    /// Repositories the git built-ins may read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git: Option<GitGrant>,
+    /// Hosts `net.fetch` may reach.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub net: Option<NetGrant>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placement: Option<String>,
     /// Runs of one flow run one at a time; only 1 is accepted.
@@ -177,6 +186,91 @@ pub struct TokenCap {
     pub tokens: u64,
     /// The window length, such as `"1d"`.
     pub window: String,
+}
+
+/// The `fs` line: absolute roots (a leading `~` is the user's home), each
+/// granting `fs.read`, `fs.list` and `fs.stat` (`read`) or `fs.write`
+/// (`write`) on itself and everything under it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FsGrant {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub read: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub write: Vec<String>,
+}
+
+/// The `git` line: repositories the git reads may run in.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GitGrant {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub read: Vec<String>,
+}
+
+/// The `net` line: hosts `net.fetch` may reach.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetGrant {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fetch: Vec<FetchGrant>,
+}
+
+/// One host `net.fetch` may reach, and the methods it may use there.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FetchGrant {
+    pub host: String,
+    /// `GET` and `HEAD` when absent; any other method must be listed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub methods: Option<Vec<String>>,
+}
+
+impl FetchGrant {
+    /// The methods approved for the host.
+    pub fn effective_methods(&self) -> Vec<String> {
+        match &self.methods {
+            Some(m) => m.clone(),
+            None => basal_host::builtins::net::DEFAULT_METHODS
+                .iter()
+                .map(|m| (*m).to_owned())
+                .collect(),
+        }
+    }
+}
+
+/// The longest root path.
+pub const MAX_ROOT_BYTES: usize = 4096;
+
+/// A root as written in a manifest: absolute, or under `~`, with no `.` or
+/// `..` component and no control character. Whether it exists is checked at
+/// install.
+fn check_root(field: &str, root: &str) -> Result<(), ManifestError> {
+    if root.is_empty() || root.len() > MAX_ROOT_BYTES {
+        return Err(invalid(
+            field,
+            format!("a root is 1 to {MAX_ROOT_BYTES} bytes"),
+        ));
+    }
+    if root.chars().any(char::is_control) {
+        return Err(invalid(field, format!("{root:?} has a control character")));
+    }
+    let rest = if root == "~" {
+        ""
+    } else if let Some(rest) = root.strip_prefix("~/") {
+        rest
+    } else if let Some(rest) = root.strip_prefix('/') {
+        rest
+    } else {
+        return Err(invalid(
+            field,
+            format!("{root:?} is not absolute (start it with / or ~/)"),
+        ));
+    };
+    if rest.split('/').any(|c| c == "." || c == "..") {
+        return Err(invalid(field, format!("{root:?} has a . or .. component")));
+    }
+    Ok(())
 }
 
 /// Why a manifest was refused before any catalog lookup.
@@ -447,6 +541,56 @@ impl Manifest {
                 return Err(invalid("llm.max_output", "exceeds the token cap"));
             }
         }
+        if let Some(fs) = &self.fs {
+            for r in &fs.read {
+                check_root("fs.read", r)?;
+            }
+            check_list("fs.read", fs.read.iter().cloned())?;
+            for r in &fs.write {
+                check_root("fs.write", r)?;
+            }
+            check_list("fs.write", fs.write.iter().cloned())?;
+        }
+        if let Some(git) = &self.git {
+            for r in &git.read {
+                check_root("git.read", r)?;
+            }
+            check_list("git.read", git.read.iter().cloned())?;
+        }
+        if let Some(net) = &self.net {
+            for f in &net.fetch {
+                if let Some(problem) = basal_host::builtins::net::host_problem(&f.host) {
+                    return Err(invalid(
+                        "net.fetch.host",
+                        format!("{:?}: {problem}", f.host),
+                    ));
+                }
+                if let Some(methods) = &f.methods {
+                    if methods.is_empty() {
+                        return Err(invalid(
+                            "net.fetch.methods",
+                            format!(
+                                "{} lists no method; leave methods out for GET and HEAD",
+                                f.host
+                            ),
+                        ));
+                    }
+                    for m in methods {
+                        if !basal_host::builtins::net::METHODS.contains(&m.as_str()) {
+                            return Err(invalid(
+                                "net.fetch.methods",
+                                format!(
+                                    "{m:?} is not one of {}",
+                                    basal_host::builtins::net::METHODS.join(", ")
+                                ),
+                            ));
+                        }
+                    }
+                    check_list("net.fetch.methods", methods.iter().cloned())?;
+                }
+            }
+            check_list("net.fetch", net.fetch.iter().map(|f| f.host.clone()))?;
+        }
         if let Some(p) = &self.placement
             && (p.is_empty() || p.len() > MAX_NAME_BYTES || p.chars().any(char::is_control))
         {
@@ -485,6 +629,56 @@ impl Manifest {
             .iter()
             .find(|s| s.agent == agent)
             .map(|s| s.digest_max)
+    }
+
+    /// The scope the manifest grants a built-in call, or `None` when the
+    /// line it needs is absent or empty. Roots keep their manifest
+    /// spelling; the host expands `~` and resolves them each time it acts.
+    pub fn builtin_grant(
+        &self,
+        primitive: basal_proto::Primitive,
+    ) -> Option<basal_host::builtins::Grant> {
+        use basal_proto::Primitive as P;
+        let roots = |r: &[String]| {
+            (!r.is_empty()).then(|| basal_host::builtins::Grant {
+                roots: r.to_vec(),
+                hosts: Vec::new(),
+            })
+        };
+        match primitive {
+            P::FsRead | P::FsList | P::FsStat => roots(&self.fs.as_ref()?.read),
+            P::FsWrite => roots(&self.fs.as_ref()?.write),
+            P::GitLog | P::GitRevParse | P::GitDescribeTags | P::GitShow | P::GitDiff => {
+                roots(&self.git.as_ref()?.read)
+            }
+            P::NetFetch => {
+                let fetch = &self.net.as_ref()?.fetch;
+                (!fetch.is_empty()).then(|| basal_host::builtins::Grant {
+                    roots: Vec::new(),
+                    hosts: fetch
+                        .iter()
+                        .map(|f| basal_host::builtins::HostRule {
+                            host: f.host.clone(),
+                            methods: f.effective_methods(),
+                        })
+                        .collect(),
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// Every root the manifest names, with the field naming it.
+    pub fn roots(&self) -> Vec<(&'static str, &str)> {
+        let mut out: Vec<(&'static str, &str)> = Vec::new();
+        if let Some(fs) = &self.fs {
+            out.extend(fs.read.iter().map(|r| ("fs.read", r.as_str())));
+            out.extend(fs.write.iter().map(|r| ("fs.write", r.as_str())));
+        }
+        if let Some(git) = &self.git {
+            out.extend(git.read.iter().map(|r| ("git.read", r.as_str())));
+        }
+        out
     }
 
     /// The token window in milliseconds, when the flow may call models.

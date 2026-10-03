@@ -124,6 +124,28 @@ fn agent_arg(args: &Value, primitive: Primitive) -> Result<&str, Refusal> {
     })
 }
 
+/// The scope the manifest grants a built-in call, after checking the call
+/// against it: the arguments' shape, then the scope itself (paths resolved
+/// under the roots, the repository approved, the URL's host and method
+/// approved). Run in the parent before the call is journaled; the host
+/// checks the returned scope again when it acts.
+pub fn builtin_grant(
+    manifest: &Manifest,
+    primitive: Primitive,
+    args: &Value,
+) -> Result<basal_host::builtins::Grant, Refusal> {
+    let Some(grant) = manifest.builtin_grant(primitive) else {
+        return Err(Refusal::denied(format!(
+            "the manifest grants no {}",
+            primitive.name()
+        )));
+    };
+    let call = basal_host::builtins::parse(primitive, args)
+        .map_err(|d| Refusal::new(d.code, d.message))?;
+    basal_host::builtins::authorize(&call, &grant).map_err(|d| Refusal::new(d.code, d.message))?;
+    Ok(grant)
+}
+
 /// Checks a call against the manifest. `args` is the call's parsed
 /// arguments. Model calls are only checked for a grant here; their token
 /// reservation is made with the journal row.
@@ -216,6 +238,16 @@ pub fn check(
                     Err(Refusal::denied("the manifest grants no model calls"))
                 }
             }
+            Primitive::FsRead
+            | Primitive::FsList
+            | Primitive::FsStat
+            | Primitive::FsWrite
+            | Primitive::GitLog
+            | Primitive::GitRevParse
+            | Primitive::GitDescribeTags
+            | Primitive::GitShow
+            | Primitive::GitDiff
+            | Primitive::NetFetch => builtin_grant(manifest, *p, args).map(|_| ()),
         },
     }
 }

@@ -23,7 +23,9 @@
   // Numeric codes naming each host primitive when it is passed to the native
   // bridge. They must equal basal-proto's Primitive::code on the Rust side.
   const NOW = 1, RANDOM = 2, FACTS = 3, CLASSIFY = 4, LLM = 5, SINK_DIGEST = 6,
-    SINK_STATUS = 7, KV_GET = 8, KV_SET = 9, KV_DELETE = 10, SH = 11;
+    SINK_STATUS = 7, KV_GET = 8, KV_SET = 9, KV_DELETE = 10, SH = 11, FS_READ = 12,
+    FS_LIST = 13, FS_STAT = 14, FS_WRITE = 15, GIT_LOG = 16, GIT_REV_PARSE = 17,
+    GIT_DESCRIBE_TAGS = 18, GIT_SHOW = 19, GIT_DIFF = 20, NET_FETCH = 21;
 
   const G = globalThis;
   const ObjectDefineProperty = Object.defineProperty;
@@ -290,6 +292,45 @@
       },
       delete(key) {
         return callPrimitive(KV_DELETE, { key });
+      },
+    },
+    // File, git and network built-ins. The parent carries them out within
+    // the manifest's fs, git and net lines; this VM never touches a file or
+    // a socket itself. Each resolves to the recorded result on replay.
+    fs: {
+      read(path, options) {
+        return callPrimitive(FS_READ, { path, options });
+      },
+      list(path) {
+        return callPrimitive(FS_LIST, { path });
+      },
+      stat(path) {
+        return callPrimitive(FS_STAT, { path });
+      },
+      write(path, text) {
+        return callPrimitive(FS_WRITE, { path, text });
+      },
+    },
+    git: {
+      log(repo, options) {
+        return callPrimitive(GIT_LOG, { repo, options });
+      },
+      revParse(repo, ref) {
+        return callPrimitive(GIT_REV_PARSE, { repo, ref });
+      },
+      describeTags(repo, options) {
+        return callPrimitive(GIT_DESCRIBE_TAGS, { repo, options });
+      },
+      show(repo, rev, path) {
+        return callPrimitive(GIT_SHOW, { repo, rev, path });
+      },
+      diff(repo, from, to, options) {
+        return callPrimitive(GIT_DIFF, { repo, from, to, options });
+      },
+    },
+    net: {
+      fetch(url, options) {
+        return callPrimitive(NET_FETCH, { url, options });
       },
     },
     now() {

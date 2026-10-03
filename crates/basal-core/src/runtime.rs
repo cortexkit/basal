@@ -757,14 +757,27 @@ impl Runtime {
         }
     }
 
-    pub(crate) fn class_of(&self, kind: &CallKind) -> StoredClass {
+    pub(crate) fn class_of(&self, kind: &CallKind, args: &JsonText) -> StoredClass {
         if kind.is_synchronous() {
             return StoredClass::Sync;
         }
         if crate::kv::is_kv(kind) {
             return StoredClass::Local;
         }
-        match self.shared.host.classify(kind) {
+        // A built-in's class is basal's own rule, not the host's, and for
+        // `net.fetch` it depends on the method in the arguments. Arguments
+        // over the cap are refused before dispatch, so they are not parsed.
+        let class = if basal_host::builtins::is_builtin(kind) {
+            let parsed = if args.len() <= self.config.limits.max_arg_bytes {
+                serde_json::from_str(args.as_str()).unwrap_or(serde_json::Value::Null)
+            } else {
+                serde_json::Value::Null
+            };
+            basal_host::builtins::class(kind, &parsed)
+        } else {
+            None
+        };
+        match class.unwrap_or_else(|| self.shared.host.classify(kind)) {
             basal_host::CallClass::Query => StoredClass::Query,
             basal_host::CallClass::Mutation {
                 honours_idempotency_keys: true,

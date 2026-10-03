@@ -61,6 +61,19 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 # entorhinal does.
 cortexkit-log = "0.3.3"
 tracing = "0.1"
+# net.fetch, the network built-in. basal writes its own small HTTP/1.1
+# client over rustls so it controls every step the safety rules name:
+# the connection goes to the one address it checked, redirects are
+# followed by hand, and nothing reads cookies, proxies or credentials from
+# the environment. ring is the only crypto provider, so the build needs no
+# cmake. Server certificates are checked against the bundled Mozilla
+# roots, the same on every machine.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "1.0"
+httparse = "1.10"
+# Tests only: certificates for the local HTTPS server the net.fetch tests
+# talk to.
+rcgen = "0.13"
 
 [profile.release]
 opt-level = 3

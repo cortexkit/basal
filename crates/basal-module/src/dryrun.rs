@@ -631,12 +631,26 @@ struct CaptureHost {
 }
 
 impl CaptureHost {
-    fn runs_live(&self, kind: &CallKind) -> bool {
-        match (self.mode, kind) {
-            (Mode::Live, CallKind::Op { module, op }) => self
+    /// Whether a call goes to the real host: in live mode only, and only a
+    /// catalogued query op or a built-in that only reads (the file and git
+    /// reads, and `net.fetch` with `GET` or `HEAD`). A built-in's request
+    /// carries the scope the manifest granted it, which the real host
+    /// checks again before it acts, so a live read stays within the scope.
+    fn runs_live(&self, request: &CallRequest) -> bool {
+        if self.mode != Mode::Live {
+            return false;
+        }
+        match &request.kind {
+            CallKind::Op { module, op } => self
                 .catalog
                 .op(module, op)
                 .is_some_and(|d| d.kind == Some(OpKind::Query) && !d.shell_capable),
+            kind if basal_host::builtins::is_builtin(kind) => {
+                serde_json::from_str::<Value>(request.args.as_str())
+                    .ok()
+                    .and_then(|envelope| basal_host::builtins::request_class(kind, &envelope))
+                    == Some(CallClass::Query)
+            }
             _ => false,
         }
     }
@@ -668,7 +682,14 @@ fn captured(detail: &str) -> HostOutcome {
 
 impl Host for CaptureHost {
     fn classify(&self, kind: &CallKind) -> CallClass {
-        if self.runs_live(kind) {
+        // A built-in is classed by the runtime from its arguments and never
+        // asks this; a module op's class is the catalog's.
+        let live_op = self.mode == Mode::Live
+            && matches!(kind, CallKind::Op { module, op } if self
+                .catalog
+                .op(module, op)
+                .is_some_and(|d| d.kind == Some(OpKind::Query) && !d.shell_capable));
+        if live_op {
             CallClass::Query
         } else {
             // Captured calls are answered at once by this host, so the class
@@ -682,7 +703,7 @@ impl Host for CaptureHost {
     }
 
     fn dispatch(&self, request: &CallRequest) -> Result<Dispatched, TransportError> {
-        if !self.runs_live(&request.kind) {
+        if !self.runs_live(request) {
             return Ok(Dispatched::Completed(captured("capture mode")));
         }
         match self.live.dispatch(request)? {

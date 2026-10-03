@@ -9,7 +9,7 @@
 //! committed or staged:
 //!
 //! ```text
-//! cargo run -p basal-testkit --bin mutation-controls [-- [--worker | --journal | --dispatch | --schedule | --module | --broca | --hosts] [--check] [<label filter>]]
+//! cargo run -p basal-testkit --bin mutation-controls [-- [--worker | --journal | --dispatch | --schedule | --module | --broca | --hosts | --builtins] [--check] [<label filter>]]
 //! ```
 //!
 //! Without a suite flag it runs the worker engine's controls; with
@@ -19,7 +19,10 @@
 //! basal-core; with `--schedule`, the scheduler's controls in basal-core;
 //! with `--module`, the module shell's (pool, engine, ops, dry run, consent,
 //! manifest), whose tests live in basal-module; with `--hosts`, the consumer
-//! adapters and their journal integration, also driven by basal-module tests.
+//! adapters and their journal integration, also driven by basal-module tests;
+//! with `--builtins`, the file, git and network built-ins (path scope,
+//! hardened git, network rules, journal classes, authorization, install
+//! validation and dry runs).
 //! `--broca` selects model host contracts, recovery, token metadata and restart controls.
 //! basal-core's tests live in basal-testkit. `--check` only verifies that every edit's
 //! text occurs exactly once in the current source.
@@ -35,8 +38,9 @@
 //! `evidence/slice-3-mutations.json` (dispatch),
 //! `evidence/slice-4-mutations.json` (scheduler),
 //! `evidence/slice-5-mutations.json` (module),
-//! `evidence/i1a-broca-mutations.json` (model host), or
-//! `evidence/i1a-host-mutations.json` (consumer adapters). Each evidence
+//! `evidence/i1a-broca-mutations.json` (model host),
+//! `evidence/i1a-host-mutations.json` (consumer adapters), or
+//! `evidence/builtins-mutations.json` (built-ins). Each evidence
 //! row names the changed mechanism, expected failing test and restore checks.
 
 use std::io::Read;
@@ -2024,11 +2028,7 @@ const MODULE_CONTROLS: &[Control] = &[
     },
     Control {
         label: "capture mode sends calls to the host",
-        edits: &[(
-            M_DRYRUN,
-            "if !self.runs_live(&request.kind) {",
-            "if false {",
-        )],
+        edits: &[(M_DRYRUN, "if !self.runs_live(request) {", "if false {")],
         also_restore: NO_EXTRA,
         target: Target::Module("dry_run"),
         test: "capture_mode_executes_no_host_call_and_replays_the_schedule_window",
@@ -3490,21 +3490,35 @@ fn run_control(root: &Path, control: &Control) -> Result<Value, String> {
     }
     let during = git(root, &["diff", "--stat"])?;
 
-    let mut command = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()));
-    command
-        .current_dir(root)
-        .env_remove("BASAL_WORKER_BIN")
-        .env_remove("BASAL_CUT_EXHAUSTIVE")
-        .arg("test");
-    match control.target {
-        Target::Integration(file) => command.args(["-p", "basal-worker", "--test", file]),
-        Target::Lib => command.args(["-p", "basal-worker", "--lib"]),
-        Target::Testkit(file) => command.args(["-p", "basal-testkit", "--test", file]),
-        Target::Module(file) => command.args(["-p", "basal-module", "--test", file]),
-        Target::ModuleLib => command.args(["-p", "basal-module", "--lib"]),
-        Target::Host(file) => command.args(["-p", "basal-host", "--test", file]),
-        Target::HostLib => command.args(["-p", "basal-host", "--lib"]),
+    let cargo_test = || {
+        let mut command = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()));
+        command
+            .current_dir(root)
+            .env_remove("BASAL_WORKER_BIN")
+            .env_remove("BASAL_CUT_EXHAUSTIVE")
+            .arg("test");
+        match control.target {
+            Target::Integration(file) => command.args(["-p", "basal-worker", "--test", file]),
+            Target::Lib => command.args(["-p", "basal-worker", "--lib"]),
+            Target::Testkit(file) => command.args(["-p", "basal-testkit", "--test", file]),
+            Target::Module(file) => command.args(["-p", "basal-module", "--test", file]),
+            Target::ModuleLib => command.args(["-p", "basal-module", "--lib"]),
+            Target::Host(file) => command.args(["-p", "basal-host", "--test", file]),
+            Target::HostLib => command.args(["-p", "basal-host", "--lib"]),
+        };
+        command
     };
+    // Build the mutant first, with no time limit, so the timed run below
+    // measures the test and not a compile queued behind other builds on a
+    // busy machine. A mutant that does not compile fails again, quickly,
+    // in the timed run and is reported there.
+    let mut build = cargo_test();
+    build
+        .arg("--no-run")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let _ = build.status();
+    let mut command = cargo_test();
     command.args([control.test, "--", "--exact"]);
     let ran = run_with_timeout(command, TEST_TIMEOUT);
 
@@ -3560,6 +3574,7 @@ const KNOWN_SETS: &[&str] = &[
     "--module",
     "--broca",
     "--hosts",
+    "--builtins",
 ];
 fn parse_options(args: Vec<String>) -> Result<(String, bool, Option<String>), String> {
     let mut suite = String::new();
@@ -3602,6 +3617,7 @@ fn main() -> ExitCode {
         "--module" => (MODULE_CONTROLS, "evidence/slice-5-mutations.json"),
         "--hosts" => (HOST_CONTROLS, "evidence/i1a-host-mutations.json"),
         "--broca" => (BROCA_CONTROLS, "evidence/i1a-broca-mutations.json"),
+        "--builtins" => (BUILTIN_CONTROLS, "evidence/builtins-mutations.json"),
         _ => (CONTROLS, "evidence/slice-1-mutations.json"),
     };
     // `--check` only verifies that every edit's text occurs exactly once,
@@ -3702,6 +3718,276 @@ fn main() -> ExitCode {
         ExitCode::FAILURE
     }
 }
+
+const BUILTIN_MOD: &str = "crates/basal-host/src/builtins/mod.rs";
+const BUILTIN_FS: &str = "crates/basal-host/src/builtins/fs.rs";
+const BUILTIN_GIT: &str = "crates/basal-host/src/builtins/git.rs";
+const BUILTIN_NET: &str = "crates/basal-host/src/builtins/net.rs";
+const CORE_AUTHORIZE: &str = "crates/basal-core/src/authorize.rs";
+const CORE_INSTALL: &str = "crates/basal-core/src/install.rs";
+const CORE_MANIFEST: &str = "crates/basal-core/src/manifest.rs";
+const MODULE_DRYRUN: &str = "crates/basal-module/src/dryrun.rs";
+
+/// The file, git and network built-ins: path scope, hardened git, the
+/// network rules, journal classes, authorization, install validation and
+/// dry runs.
+const BUILTIN_CONTROLS: &[Control] = &[
+    // Scope is checked twice, when the path is resolved and again on the
+    // opened descriptor, so disabling only one check leaves the other to
+    // refuse. These controls disable the under-a-root predicate both use;
+    // the descriptor check alone has its own control below.
+    Control {
+        label: "fs: a path is not required to lie under a root (symlink out)",
+        edits: &[(
+            BUILTIN_FS,
+            "roots.iter().any(|root| path.starts_with(root))",
+            "!roots.is_empty() // NON-VACUITY BREAK",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("builtins_fs"),
+        test: "a_symlink_resolving_outside_the_root_is_refused",
+    },
+    Control {
+        label: "fs: a path is not required to lie under a root (missing path)",
+        edits: &[(
+            BUILTIN_FS,
+            "roots.iter().any(|root| path.starts_with(root))",
+            "!roots.is_empty() // NON-VACUITY BREAK",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("builtins_fs"),
+        test: "stat_of_a_missing_path_is_exists_false_only_when_its_parent_is_in_scope",
+    },
+    Control {
+        label: "fs: the open follows a symlink in the last component",
+        edits: &[(
+            BUILTIN_FS,
+            "let mut flags = libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK;",
+            "let mut flags = libc::O_CLOEXEC | libc::O_NONBLOCK; // NON-VACUITY BREAK",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("builtins_fs"),
+        test: "a_symlink_swapped_into_the_last_component_after_the_check_is_not_followed",
+    },
+    Control {
+        label: "fs: the opened file's real path is not checked again",
+        edits: &[(
+            BUILTIN_FS,
+            "verify(file.as_raw_fd(), None, &real_roots(roots))?;",
+            "// NON-VACUITY BREAK",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("builtins_fs"),
+        test: "a_directory_swapped_for_a_symlink_after_the_check_is_caught_after_the_open",
+    },
+    Control {
+        label: "git: a repository's core.fsmonitor is honoured",
+        edits: &[(
+            BUILTIN_GIT,
+            "\"core.fsmonitor=false\",",
+            "\"core.quotePath=true\", // NON-VACUITY BREAK",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("builtins_git"),
+        test: "a_repository_config_cannot_make_a_built_in_run_a_program",
+    },
+    Control {
+        label: "git: any repository counts as approved",
+        edits: &[(
+            BUILTIN_GIT,
+            ".any(|r| r == real);",
+            ".any(|_| true); // NON-VACUITY BREAK",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("builtins_git"),
+        test: "git_reads_only_approved_repositories",
+    },
+    Control {
+        label: "net: a non-https URL is fetched",
+        edits: &[(
+            BUILTIN_NET,
+            "if !text[..scheme_end].eq_ignore_ascii_case(\"https\") {",
+            "if false { // NON-VACUITY BREAK",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("builtins_net"),
+        test: "only_https_urls_are_fetched",
+    },
+    Control {
+        label: "net: redirect hops are not checked against the allowlist",
+        edits: &[(
+            BUILTIN_NET,
+            "if let Err(refusal) = allowed(rules, &url.host, &method) {",
+            "if let Err(refusal) = allowed(rules, &url.host, &method).or_else(|d| if redirects == 0 { Err(d) } else { Ok(()) }) { // NON-VACUITY BREAK",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("builtins_net"),
+        test: "a_redirect_to_an_unapproved_host_is_refused",
+    },
+    // Without this control nothing would notice a fetch that reports a
+    // refusal after its POST already reached the server: a refusal looks
+    // like every other denied call, and the journal and audit would record
+    // a call that never happened while the server kept its effect.
+    Control {
+        label: "net: a redirect not followed after a mutation is reported as refused",
+        edits: &[(
+            BUILTIN_NET,
+            "    match redirected {",
+            "    match redirected.filter(|_| false) { // NON-VACUITY BREAK",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("builtins_net"),
+        test: "a_post_redirected_to_an_unapproved_host_returns_the_redirect",
+    },
+    // As with redirects: after a mutation has reached the server, an answer
+    // reported as a refusal would be journaled as a call that never
+    // happened, and nothing else would notice. The next two controls turn
+    // a refused body (`refuse_body`) and an unreadable answer
+    // (`unreadable`) back into a refusal of the whole call.
+    Control {
+        label: "net: a refused body after a mutation refuses the whole call",
+        edits: &[(
+            BUILTIN_NET,
+            "fn refuse_body(effect_possible: bool, refusal: Denial) -> Result<&'static str, Failure> {",
+            "fn refuse_body(_: bool, refusal: Denial) -> Result<&'static str, Failure> { let effect_possible = false; // NON-VACUITY BREAK",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("builtins_net"),
+        test: "a_post_whose_body_is_refused_still_answers_with_status_and_headers",
+    },
+    Control {
+        label: "net: an unreadable answer after a mutation is a refusal",
+        edits: &[(
+            BUILTIN_NET,
+            "fn unreadable(effect_possible: bool, detail: String) -> Failure {",
+            "fn unreadable(_: bool, detail: String) -> Failure { let effect_possible = false; // NON-VACUITY BREAK",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("builtins_net"),
+        test: "a_post_whose_answer_is_unreadable_has_an_unknown_outcome",
+    },
+    Control {
+        label: "net: a private address is connected to",
+        edits: &[(
+            BUILTIN_NET,
+            "&& let Some(bad) = addrs.iter().find(|a| !is_public(a.ip()))",
+            "&& let Some(bad) = addrs.iter().find(|_| false) // NON-VACUITY BREAK",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("builtins_net"),
+        test: "a_host_resolving_to_loopback_is_refused_before_connecting",
+    },
+    Control {
+        label: "net: the connection resolves the host again instead of using the checked address",
+        edits: &[(
+            BUILTIN_NET,
+            "for addr in addrs.iter().take(MAX_ADDRESS_ATTEMPTS) {",
+            "let addrs = self.config.resolver.resolve(&url.host, url.port).unwrap_or_default(); // NON-VACUITY BREAK\n        for addr in addrs.iter().take(MAX_ADDRESS_ATTEMPTS) {",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("builtins_net"),
+        test: "the_connection_goes_to_the_address_that_was_checked",
+    },
+    Control {
+        label: "net: a body over the cap is read whole",
+        edits: &[(
+            BUILTIN_NET,
+            "if length > cap {",
+            "if false { // NON-VACUITY BREAK",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("builtins_net"),
+        test: "an_oversized_body_is_refused",
+    },
+    Control {
+        label: "classes: net.fetch of any method is a query",
+        edits: &[(
+            BUILTIN_MOD,
+            "Ok(m) if net::is_query_method(&m) => CallClass::Query,",
+            "Ok(_) => CallClass::Query, // NON-VACUITY BREAK",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("builtins_dispatch"),
+        test: "each_built_in_is_journaled_with_its_class",
+    },
+    Control {
+        label: "classes: fs.write does not honour idempotency keys",
+        edits: &[(
+            BUILTIN_MOD,
+            "Primitive::FsWrite => Some(CallClass::Mutation {\n            honours_idempotency_keys: true,",
+            "Primitive::FsWrite => Some(CallClass::Mutation {\n            honours_idempotency_keys: false, // NON-VACUITY BREAK",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("builtins_dispatch"),
+        test: "recovery_reissues_queries_and_writes_and_reconciles_a_post",
+    },
+    Control {
+        label: "authorize: a built-in's scope is not checked in the parent",
+        edits: &[(
+            CORE_AUTHORIZE,
+            "basal_host::builtins::authorize(&call, &grant).map_err(|d| Refusal::new(d.code, d.message))?;",
+            "let _ = &call; // NON-VACUITY BREAK",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("builtins_dispatch"),
+        test: "calls_outside_the_manifest_are_refused_in_the_parent_and_journaled",
+    },
+    Control {
+        label: "install: a root that does not exist is accepted",
+        edits: &[(
+            CORE_INSTALL,
+            "let exists = basal_host::builtins::expand_home(root).is_some_and(|p| p.exists());",
+            "let exists = root.starts_with('/') || root.starts_with('~'); // NON-VACUITY BREAK",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("builtins_dispatch"),
+        test: "install_refuses_bad_roots_hosts_and_methods",
+    },
+    Control {
+        label: "install: wildcard and IP-literal hosts are accepted",
+        edits: &[(
+            CORE_MANIFEST,
+            "if let Some(problem) = basal_host::builtins::net::host_problem(&f.host) {",
+            "if let Some(problem) = None::<&str> { // NON-VACUITY BREAK",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("builtins_dispatch"),
+        test: "install_refuses_bad_roots_hosts_and_methods",
+    },
+    Control {
+        label: "install: any method name is accepted",
+        edits: &[(
+            CORE_MANIFEST,
+            "if !basal_host::builtins::net::METHODS.contains(&m.as_str()) {",
+            "if m.is_empty() { // NON-VACUITY BREAK",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("builtins_dispatch"),
+        test: "install_refuses_bad_roots_hosts_and_methods",
+    },
+    Control {
+        label: "install: private text with a fetch grant raises no warning",
+        edits: &[(
+            CORE_INSTALL,
+            "if reads_text && let Some(net) = &manifest.net {",
+            "if !reads_text && let Some(net) = &manifest.net { // NON-VACUITY BREAK",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Testkit("builtins_dispatch"),
+        test: "private_text_with_a_fetch_grant_warns",
+    },
+    Control {
+        label: "dry run: live mode runs built-ins that are not queries",
+        edits: &[(
+            MODULE_DRYRUN,
+            "                    == Some(CallClass::Query)",
+            "                    != None // NON-VACUITY BREAK",
+        )],
+        also_restore: NO_EXTRA,
+        target: Target::Module("dry_run"),
+        test: "dry_runs_capture_every_built_in_and_live_runs_only_reads_in_scope",
+    },
+];
 
 const HOST_CONTROLS: &[Control] = &[
     Control {

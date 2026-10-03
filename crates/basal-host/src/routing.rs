@@ -1,5 +1,6 @@
 //! Send module ops to their providers and grant-checked facts and sinks to
 //! core. Model calls use a separate host that can be replaced independently.
+use crate::builtins::BuiltinHost;
 use crate::core_host::{outcome, sample, system_now};
 use crate::subc_catalog::{SubcCatalog, Surface};
 use crate::transport::{Transport, WireError};
@@ -122,10 +123,23 @@ pub struct RoutingHost {
     ops: Arc<dyn Host>,
     core: Arc<dyn Host>,
     model: Arc<dyn Host>,
+    builtins: Arc<dyn Host>,
 }
 impl RoutingHost {
+    /// Routes the file, git and network built-ins to basal's own
+    /// [`BuiltinHost`] with production settings.
     pub fn new(ops: Arc<dyn Host>, core: Arc<dyn Host>, model: Arc<dyn Host>) -> Self {
-        Self { ops, core, model }
+        Self {
+            ops,
+            core,
+            model,
+            builtins: Arc::new(BuiltinHost::default()),
+        }
+    }
+    /// Replaces the host the built-ins go to.
+    pub fn with_builtins(mut self, builtins: Arc<dyn Host>) -> Self {
+        self.builtins = builtins;
+        self
     }
     fn target(&self, kind: &CallKind) -> &dyn Host {
         match kind {
@@ -133,6 +147,7 @@ impl RoutingHost {
             CallKind::Primitive(
                 Primitive::SinkDigest | Primitive::SinkStatus | Primitive::Facts,
             ) => self.core.as_ref(),
+            CallKind::Primitive(p) if p.is_builtin() => self.builtins.as_ref(),
             _ => self.model.as_ref(),
         }
     }
