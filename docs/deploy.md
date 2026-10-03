@@ -46,6 +46,16 @@ basal's store is new, so there is no migration and no format on disk: no `format
 
 ## The rig run before a handover
 
+Before staging, run the formatting, both clippy configurations, workspace tests and shell checks listed in the [README](../README.md), then validate and replay the safety catalogue with the pinned `ck-mutate` runner:
+
+```sh
+mkdir -p target/mutations
+ck-mutate check
+ck-mutate run --all --report target/mutations/handover.json
+```
+
+Every row must be `CAUGHT`; a build failure or a red test other than the named guard is not proof of that guard. Keep the JSON report with the handover evidence rather than committing machine output. New safety guards belong in `mutations.toml`: resolve the full libtest path, use `ck-mutate prove` to append only a caught edit, and commit the guard with its proof as described in the README. These source-level proofs complement, rather than replace, the signed-binary and live rig checks below.
+
 Run the staged bytes on the ckdev-flows rig, basal's isolated test stack ([`script/flows-rig.sh`](../script/flows-rig.sh) documents it in its header):
 
 ```sh

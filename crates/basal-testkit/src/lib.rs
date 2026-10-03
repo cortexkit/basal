@@ -2,9 +2,9 @@
 //! `ck-basal-worker` binary and serves its host calls from a deterministic
 //! mock with an in-memory journal; worker channels over real processes for
 //! basal-core's driver; the journal cut harness; the test parent binary the
-//! kill harness `kill -9`s (`src/bin/basal-test-parent.rs`); and the
-//! mutation-control runner (`src/bin/mutation-controls.rs`) that proves each
-//! safety test can fail.
+//! kill harness `kill -9`s (`src/bin/basal-test-parent.rs`); and worker and
+//! journal benchmarks. Safety proofs live in the repository's root catalogue
+//! and are replayed by the shared `ck-mutate` runner.
 
 pub mod channel;
 pub mod fuzz;

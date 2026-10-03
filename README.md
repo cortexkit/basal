@@ -15,7 +15,7 @@ basal runs as a module supervised by the subc daemon, with the binary `ck-basal`
 | `basal-core` | Runtime state: the SQLite store, admission, the run state machine, the journal and mailbox, manifests and authorization, the scheduler and the activation driver. |
 | `basal-host` | The `Host` boundary that flow calls go through (module ops, facts, model calls, sinks), the adapters to the fleet's modules, and a deterministic mock. |
 | `basal-module` | `ck-basal`: the supervised module, with its subc manifest, the worker pool, the flow ops, dry runs and consent cards. |
-| `basal-testkit` | Test parents, crash and cut harnesses, benchmarks and the mutation-control runner. |
+| `basal-testkit` | Test parents, crash and cut harnesses, and benchmarks. |
 | `basal-rig` | Test support for the isolated ckdev-flows rig only: a callosum stub and the live contract suite against a real prefrontal-core. Never deployed. |
 
 ## Building and testing
@@ -24,7 +24,7 @@ basal needs a recent stable Rust toolchain (edition 2024) on macOS. Every depend
 
 ```sh
 cargo build --workspace
-cargo test --workspace
+cargo test --workspace --locked
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo clippy --workspace --all-targets --features basal-module/rig-kill-hook -- -D warnings
@@ -33,16 +33,36 @@ shellcheck -x script/*.sh
 
 The `rig-kill-hook` feature adds a one-shot kill switch used only by the test rig; a production build never enables it.
 
-## Mutation controls
+## Mutation proofs
 
-A passing safety test proves little until it has been seen to fail. Each mutation control disables one mechanism with a temporary source edit, runs the one test named for that mechanism, records whether it went red, and restores the source. On a clean tree:
+A passing safety test proves little until it has been seen to fail. [`mutations.toml`](mutations.toml) is the checked-in catalogue of source edits and the exact full libtest paths that must catch them. The shared `ck-mutate` runner builds each mutant separately, runs its target's tests, requires the named test to fail, and restores the saved source bytes and checks `Cargo.lock`. The existing proofs name one guard each; other tests may also catch the mutant (`only = false`). Install the reviewed, immutable revision:
 
 ```sh
-script/verify-controls.sh               # every set
-script/verify-controls.sh journal       # one set
+cargo install --locked --git https://github.com/cortexkit/commons --rev 6bada448cb3efc83efbd90bf5052d12c1969ce2c cortexkit-mutate
+mkdir -p target/mutations
+ck-mutate check
+ck-mutate run --all --report target/mutations/all.json
+ck-mutate run --diff origin/main --report target/mutations/diff.json
+ck-mutate run --only worker-leaves-inherited-descriptors-open --report target/mutations/one.json
 ```
 
-The script fails unless every set ran, rewrote its evidence file and turned every one of its tests red, and then restores the committed evidence. The runner itself is `cargo run -p basal-testkit --bin mutation-controls -- [--journal | --dispatch | ...]`. The committed evidence and the benchmark measurements are in [`evidence/`](evidence/README.md).
+Run from a clean tree with `BASAL_WORKER_BIN` and `BASAL_CUT_EXHAUSTIVE` unset, so the tests build the edited worker and use their normal scope. Build and test deadlines are separate: rows allow 3600 seconds to build on a loaded host and 600 seconds to run the tests. A successful replay reports every row `CAUGHT`; compilation errors, missing anchors, missing tests, failures of other tests without the named guard failing, and timeouts are not catches. Never check out an edited file while a replay is running. Reports stay under gitignored `target/mutations/` locally and are uploaded as CI artifacts; benchmark measurements remain in [`evidence/`](evidence/README.md).
+
+To add a guard, first resolve its full test name with `cargo test -p <package> --test <target> --locked -- --list` (or `--lib` for a unit test). Then prove an exact-once source edit. For example, this existing proof shows the command shape; choose a new unique ID and a new mechanism for a new row:
+
+```sh
+ck-mutate prove --id worker-closes-descriptors-proof \
+  --guards 'worker leaves inherited descriptors open' \
+  --file crates/basal-worker/src/confinement.rs \
+  --old 'for fd in macos::open_descriptors().map_err(ConfinementError::Descriptors)? {' \
+  --new 'for fd in Vec::<i32>::new() { // NON-VACUITY BREAK' \
+  --test-file crates/basal-worker/tests/inherited_descriptors.rs \
+  --package basal-worker --target='--test inherited_descriptors' \
+  --expect-red worker_closes_extra_inherited_descriptors_at_startup --only \
+  --build-timeout-s 3600 --timeout-s 600 --report target/mutations/proof.json
+```
+
+`prove` appends a row only when it is caught. Inspect the appended row, run `ck-mutate check`, and commit the source, guarding test and catalogue together. The [pinned runner's README](https://github.com/cortexkit/commons/blob/6bada448cb3efc83efbd90bf5052d12c1969ce2c/crates/cortexkit-mutate/README.md) documents multi-file edits and survivor diagnosis. PR CI replays rows touched by the committed diff against `origin/main`; pushes to main replay the entire catalogue in isolated shards. Diff selection cannot see a changed helper or fixture that is neither an edit target nor `test_file`, so the full replay remains necessary.
 
 ## The test rig
 
