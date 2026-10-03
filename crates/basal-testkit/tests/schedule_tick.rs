@@ -766,7 +766,7 @@ fn a_disabled_schedule_does_not_tick_and_does_not_catch_up_when_enabled() {
     fx.set("2026-05-01T00:30:00Z");
     assert!(
         fx.rt()
-            .disable_flow("f", &Actor::Operator("ufuk".into()), "testing")
+            .disable_flow("f", &Actor::Operator("operator".into()), "testing")
             .expect("disable")
     );
     for now in [

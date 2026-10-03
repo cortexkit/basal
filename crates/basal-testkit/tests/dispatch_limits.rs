@@ -165,7 +165,7 @@ fn disable_fences_a_resumed_run_while_in_flight_calls_settle() {
         ActivationEnd::Suspended { .. }
     ));
     assert!(
-        rt.disable_flow("flow-test", &Actor::Operator("ufuk".into()), "testing")
+        rt.disable_flow("flow-test", &Actor::Operator("operator".into()), "testing")
             .expect("disable")
     );
     let run = finish(&rt, &world, &run_id);
@@ -211,7 +211,7 @@ fn only_the_operator_or_the_owning_agent_disables() {
     );
     assert_eq!(rt.enable_flow("flow-test"), Ok(true));
     assert_eq!(
-        rt.disable_flow("flow-test", &Actor::Operator("ufuk".into()), "operator"),
+        rt.disable_flow("flow-test", &Actor::Operator("operator".into()), "operator"),
         Ok(true)
     );
 }

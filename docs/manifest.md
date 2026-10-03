@@ -24,7 +24,7 @@ A flow is a script plus a manifest. The manifest says everything the flow may do
 | `ops` | list of op references | no | `[]` | Every module op the flow may call. Anything else is refused at run time. |
 | `facts` | facts grant | no | none | Whose facts the flow may read. Without it, `facts()` is refused. |
 | `llm` | model grant | no | none | Without it, `llm()` and `classify()` are refused. |
-| `placement` | string | no | none | Where the flow runs, such as `"machine:ufuk-mbp"`. 1 to 128 bytes, no control characters. Shown on the card. |
+| `placement` | string | no | none | Where the flow runs, such as `"machine:studio"`. 1 to 128 bytes, no control characters. Shown on the card. |
 | `concurrency` | integer | no | `1` | Only `1`: runs of a flow run one at a time, in trigger order. |
 | `deadline` | duration | no | the runtime's default (10 minutes) | The per-run wall-clock deadline, from `"1s"` to `"24h"`. |
 
@@ -104,7 +104,7 @@ This example is parsed, round-tripped and installed by `dispatch_manifest::docum
   "format": 1,
   "id": "synapse-xcom-inference-news",
   "version": 3,
-  "purpose": "Walk Ufuk's x.com feed for inference news and send hits to Synapse.",
+  "purpose": "Walk the operator's x.com feed for inference news and send hits to Synapse.",
   "trigger": { "schedule": { "cron": "*/30 * * * *", "tz": "Europe/Madrid", "missed": "once" } },
   "sinks": [ { "agent": "SYNAPSE", "digest_max": "piggyback", "break_through": false } ],
   "status": [ "SYNAPSE" ],
@@ -112,7 +112,7 @@ This example is parsed, round-tripped and installed by `dispatch_manifest::docum
   "ops": [ { "module": "cerebellum", "op": "browser.read_page" } ],
   "facts": { "targets": [ "SYNAPSE" ], "text": false },
   "llm": { "iq": 65, "eq": 20, "token_cap": { "tokens": 200000, "window": "1d" }, "max_output": 2000 },
-  "placement": "machine:ufuk-mbp",
+  "placement": "machine:studio",
   "concurrency": 1,
   "deadline": "10m"
 }

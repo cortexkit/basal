@@ -161,8 +161,12 @@ fn disabling_and_enabling_a_flow_stops_and_restarts_its_schedule() {
     approve(&rt, "return 1;", &scheduled(json!({ "cron": "0 * * * *" })));
     set(&clock, "2026-05-01T00:30:00Z");
     assert!(
-        rt.disable_flow("flow-test", &Actor::Operator("ufuk".into()), "maintenance")
-            .expect("disable")
+        rt.disable_flow(
+            "flow-test",
+            &Actor::Operator("operator".into()),
+            "maintenance"
+        )
+        .expect("disable")
     );
     assert_eq!(
         sched
