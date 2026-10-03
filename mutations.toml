@@ -468,9 +468,17 @@ expect_red = ["worker_dependency_tree_has_no_store_no_subc_and_no_core"]
 only = false
 build_timeout_s = 3600
 timeout_s = 600
-file = "crates/basal-worker/Cargo.toml"
-old = "rquickjs.workspace = true\n"
-new = "rquickjs.workspace = true\nsubc-protocol = \"0.24.1\"\n"
+edits = [
+  { file = "crates/basal-worker/Cargo.toml", old = "rquickjs.workspace = true\n", new = "rquickjs.workspace = true\nsubc-protocol = \"0.24.1\"\n" },
+  { file = "Cargo.lock", old = " \"serde\",\n \"serde_json\",\n \"subc-client-rs\",\n \"subc-protocol\",\n \"tokio\",\n \"tracing\",\n \"webpki-roots\",\n", new = " \"serde\",\n \"serde_json\",\n \"subc-client-rs\",\n \"subc-protocol 0.28.0\",\n \"tokio\",\n \"tracing\",\n \"webpki-roots\",\n" },
+  { file = "Cargo.lock", old = " \"serde_json\",\n \"sha2\",\n \"subc-client-rs\",\n \"subc-protocol\",\n \"tokio\",\n \"tracing\",\n]\n", new = " \"serde_json\",\n \"sha2\",\n \"subc-client-rs\",\n \"subc-protocol 0.28.0\",\n \"tokio\",\n \"tracing\",\n]\n" },
+  { file = "Cargo.lock", old = " \"rusqlite\",\n \"serde_json\",\n \"subc-client-rs\",\n \"subc-protocol\",\n \"tokio\",\n]\n\n", new = " \"rusqlite\",\n \"serde_json\",\n \"subc-client-rs\",\n \"subc-protocol 0.28.0\",\n \"tokio\",\n]\n\n" },
+  { file = "Cargo.lock", old = " \"libc\",\n \"rquickjs\",\n \"serde_json\",\n]\n\n[[package]]\n", new = " \"libc\",\n \"rquickjs\",\n \"serde_json\",\n \"subc-protocol 0.24.1\",\n]\n\n[[package]]\n" },
+  { file = "Cargo.lock", old = " \"serde_json\",\n \"subc-control\",\n \"subc-os\",\n \"subc-protocol\",\n \"subc-transport\",\n \"tokio\",\n \"tokio-util\",\n", new = " \"serde_json\",\n \"subc-control\",\n \"subc-os\",\n \"subc-protocol 0.28.0\",\n \"subc-transport\",\n \"tokio\",\n \"tokio-util\",\n" },
+  { file = "Cargo.lock", old = "dependencies = [\n \"serde\",\n \"serde_json\",\n \"subc-protocol\",\n]\n\n[[package]]\n", new = "dependencies = [\n \"serde\",\n \"serde_json\",\n \"subc-protocol 0.28.0\",\n]\n\n[[package]]\n" },
+  { file = "Cargo.lock", old = "dependencies = [\n \"libc\",\n \"rustix\",\n]\n\n[[package]]\n", new = "dependencies = [\n \"libc\",\n \"rustix\",\n]\n\n[[package]]\nname = \"subc-protocol\"\nversion = \"0.24.1\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"3b0fb1bc9305afe14d1202970b7e361253dba6108525b356a7e10274436bc80d\"\ndependencies = [\n \"serde\",\n \"serde_json\",\n]\n\n[[package]]\n" },
+  { file = "Cargo.lock", old = " \"serde\",\n \"serde_json\",\n \"sha2\",\n \"subc-protocol\",\n \"subtle\",\n \"tokio\",\n]\n", new = " \"serde\",\n \"serde_json\",\n \"sha2\",\n \"subc-protocol 0.28.0\",\n \"subtle\",\n \"tokio\",\n]\n" },
+]
 
 [[control]]
 id = "seatbelt-profile-not-applied"
@@ -5442,3 +5450,335 @@ timeout_s = 600
 file = "crates/basal-host/src/core_host.rs"
 old = "Err(WireError::Unreadable(\"unrecognised core reply\".into()))"
 new = "Err(WireError::Unknown(\"unrecognised core reply\".into()))"
+
+# builtins: 22 controls
+
+[[control]]
+id = "fs-a-path-is-not-required-to-lie-under-a-root-symlink-out"
+guards = "fs: a path is not required to lie under a root (symlink out)"
+test_file = "crates/basal-testkit/tests/builtins_fs.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test builtins_fs"
+expect_red = ["a_symlink_resolving_outside_the_root_is_refused"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/builtins/fs.rs"
+old = "roots.iter().any(|root| path.starts_with(root))"
+new = "!roots.is_empty() // NON-VACUITY BREAK"
+
+[[control]]
+id = "fs-a-path-is-not-required-to-lie-under-a-root-missing-path"
+guards = "fs: a path is not required to lie under a root (missing path)"
+test_file = "crates/basal-testkit/tests/builtins_fs.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test builtins_fs"
+expect_red = ["stat_of_a_missing_path_is_exists_false_only_when_its_parent_is_in_scope"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/builtins/fs.rs"
+old = "roots.iter().any(|root| path.starts_with(root))"
+new = "!roots.is_empty() // NON-VACUITY BREAK"
+
+[[control]]
+id = "fs-the-open-follows-a-symlink-in-the-last-component"
+guards = "fs: the open follows a symlink in the last component"
+test_file = "crates/basal-testkit/tests/builtins_fs.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test builtins_fs"
+expect_red = ["a_symlink_swapped_into_the_last_component_after_the_check_is_not_followed"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/builtins/fs.rs"
+old = "let mut flags = libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK;"
+new = "let mut flags = libc::O_CLOEXEC | libc::O_NONBLOCK; // NON-VACUITY BREAK"
+
+[[control]]
+id = "fs-the-opened-file-s-real-path-is-not-checked-again"
+guards = "fs: the opened file's real path is not checked again"
+test_file = "crates/basal-testkit/tests/builtins_fs.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test builtins_fs"
+expect_red = ["a_directory_swapped_for_a_symlink_after_the_check_is_caught_after_the_open"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/builtins/fs.rs"
+old = "verify(file.as_raw_fd(), None, &real_roots(roots))?;"
+new = "// NON-VACUITY BREAK"
+
+[[control]]
+id = "git-a-repository-s-core-fsmonitor-is-honoured"
+guards = "git: a repository's core.fsmonitor is honoured"
+test_file = "crates/basal-testkit/tests/builtins_git.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test builtins_git"
+expect_red = ["a_repository_config_cannot_make_a_built_in_run_a_program"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/builtins/git.rs"
+old = "\"core.fsmonitor=false\","
+new = "\"core.quotePath=true\", // NON-VACUITY BREAK"
+
+[[control]]
+id = "git-any-repository-counts-as-approved"
+guards = "git: any repository counts as approved"
+test_file = "crates/basal-testkit/tests/builtins_git.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test builtins_git"
+expect_red = ["git_reads_only_approved_repositories"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/builtins/git.rs"
+old = ".any(|r| r == real);"
+new = ".any(|_| true); // NON-VACUITY BREAK"
+
+[[control]]
+id = "net-a-non-https-url-is-fetched"
+guards = "net: a non-https URL is fetched"
+test_file = "crates/basal-testkit/tests/builtins_net.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test builtins_net"
+expect_red = ["only_https_urls_are_fetched"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/builtins/net.rs"
+old = "if !text[..scheme_end].eq_ignore_ascii_case(\"https\") {"
+new = "if false { // NON-VACUITY BREAK"
+
+[[control]]
+id = "net-redirect-hops-are-not-checked-against-the-allowlist"
+guards = "net: redirect hops are not checked against the allowlist"
+test_file = "crates/basal-testkit/tests/builtins_net.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test builtins_net"
+expect_red = ["a_redirect_to_an_unapproved_host_is_refused"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/builtins/net.rs"
+old = "if let Err(refusal) = allowed(rules, &url.host, &method) {"
+new = "if let Err(refusal) = allowed(rules, &url.host, &method).or_else(|d| if redirects == 0 { Err(d) } else { Ok(()) }) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "net-a-redirect-not-followed-after-a-mutation-is-reported-as-refused"
+guards = "net: a redirect not followed after a mutation is reported as refused"
+test_file = "crates/basal-testkit/tests/builtins_net.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test builtins_net"
+expect_red = ["a_post_redirected_to_an_unapproved_host_returns_the_redirect"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/builtins/net.rs"
+old = "    match redirected {"
+new = "    match redirected.filter(|_| false) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "net-a-refused-body-after-a-mutation-refuses-the-whole-call"
+guards = "net: a refused body after a mutation refuses the whole call"
+test_file = "crates/basal-testkit/tests/builtins_net.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test builtins_net"
+expect_red = ["a_post_whose_body_is_refused_still_answers_with_status_and_headers"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/builtins/net.rs"
+old = "fn refuse_body(effect_possible: bool, refusal: Denial) -> Result<&'static str, Failure> {"
+new = "fn refuse_body(_: bool, refusal: Denial) -> Result<&'static str, Failure> { let effect_possible = false; // NON-VACUITY BREAK"
+
+[[control]]
+id = "net-an-unreadable-answer-after-a-mutation-is-a-refusal"
+guards = "net: an unreadable answer after a mutation is a refusal"
+test_file = "crates/basal-testkit/tests/builtins_net.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test builtins_net"
+expect_red = ["a_post_whose_answer_is_unreadable_has_an_unknown_outcome"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/builtins/net.rs"
+old = "fn unreadable(effect_possible: bool, detail: String) -> Failure {"
+new = "fn unreadable(_: bool, detail: String) -> Failure { let effect_possible = false; // NON-VACUITY BREAK"
+
+[[control]]
+id = "net-a-private-address-is-connected-to"
+guards = "net: a private address is connected to"
+test_file = "crates/basal-testkit/tests/builtins_net.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test builtins_net"
+expect_red = ["a_host_resolving_to_loopback_is_refused_before_connecting"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/builtins/net.rs"
+old = "&& let Some(bad) = addrs.iter().find(|a| !is_public(a.ip()))"
+new = "&& let Some(bad) = addrs.iter().find(|_| false) // NON-VACUITY BREAK"
+
+[[control]]
+id = "net-the-connection-resolves-the-host-again-instead-of-using-the-checked-address"
+guards = "net: the connection resolves the host again instead of using the checked address"
+test_file = "crates/basal-testkit/tests/builtins_net.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test builtins_net"
+expect_red = ["the_connection_goes_to_the_address_that_was_checked"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/builtins/net.rs"
+old = "for addr in addrs.iter().take(MAX_ADDRESS_ATTEMPTS) {"
+new = "let addrs = self.config.resolver.resolve(&url.host, url.port).unwrap_or_default(); // NON-VACUITY BREAK\n        for addr in addrs.iter().take(MAX_ADDRESS_ATTEMPTS) {"
+
+[[control]]
+id = "net-a-body-over-the-cap-is-read-whole"
+guards = "net: a body over the cap is read whole"
+test_file = "crates/basal-testkit/tests/builtins_net.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test builtins_net"
+expect_red = ["an_oversized_body_is_refused"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/builtins/net.rs"
+old = "if length > cap {"
+new = "if false { // NON-VACUITY BREAK"
+
+[[control]]
+id = "classes-net-fetch-of-any-method-is-a-query"
+guards = "classes: net.fetch of any method is a query"
+test_file = "crates/basal-testkit/tests/builtins_dispatch.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test builtins_dispatch"
+expect_red = ["each_built_in_is_journaled_with_its_class"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/builtins/mod.rs"
+old = "Ok(m) if net::is_query_method(&m) => CallClass::Query,"
+new = "Ok(_) => CallClass::Query, // NON-VACUITY BREAK"
+
+[[control]]
+id = "classes-fs-write-does-not-honour-idempotency-keys"
+guards = "classes: fs.write does not honour idempotency keys"
+test_file = "crates/basal-testkit/tests/builtins_dispatch.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test builtins_dispatch"
+expect_red = ["recovery_reissues_queries_and_writes_and_reconciles_a_post"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/builtins/mod.rs"
+old = "Primitive::FsWrite => Some(CallClass::Mutation {\n            honours_idempotency_keys: true,"
+new = "Primitive::FsWrite => Some(CallClass::Mutation {\n            honours_idempotency_keys: false, // NON-VACUITY BREAK"
+
+[[control]]
+id = "authorize-a-built-in-s-scope-is-not-checked-in-the-parent"
+guards = "authorize: a built-in's scope is not checked in the parent"
+test_file = "crates/basal-testkit/tests/builtins_dispatch.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test builtins_dispatch"
+expect_red = ["calls_outside_the_manifest_are_refused_in_the_parent_and_journaled"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/authorize.rs"
+old = "basal_host::builtins::authorize(&call, &grant).map_err(|d| Refusal::new(d.code, d.message))?;"
+new = "let _ = &call; // NON-VACUITY BREAK"
+
+[[control]]
+id = "install-a-root-that-does-not-exist-is-accepted"
+guards = "install: a root that does not exist is accepted"
+test_file = "crates/basal-testkit/tests/builtins_dispatch.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test builtins_dispatch"
+expect_red = ["install_refuses_bad_roots_hosts_and_methods"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/install.rs"
+old = "let exists = basal_host::builtins::expand_home(root).is_some_and(|p| p.exists());"
+new = "let exists = root.starts_with('/') || root.starts_with('~'); // NON-VACUITY BREAK"
+
+[[control]]
+id = "install-wildcard-and-ip-literal-hosts-are-accepted"
+guards = "install: wildcard and IP-literal hosts are accepted"
+test_file = "crates/basal-testkit/tests/builtins_dispatch.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test builtins_dispatch"
+expect_red = ["install_refuses_bad_roots_hosts_and_methods"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/manifest.rs"
+old = "if let Some(problem) = basal_host::builtins::net::host_problem(&f.host) {"
+new = "if let Some(problem) = None::<&str> { // NON-VACUITY BREAK"
+
+[[control]]
+id = "install-any-method-name-is-accepted"
+guards = "install: any method name is accepted"
+test_file = "crates/basal-testkit/tests/builtins_dispatch.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test builtins_dispatch"
+expect_red = ["install_refuses_bad_roots_hosts_and_methods"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/manifest.rs"
+old = "if !basal_host::builtins::net::METHODS.contains(&m.as_str()) {"
+new = "if m.is_empty() { // NON-VACUITY BREAK"
+
+[[control]]
+id = "install-private-text-with-a-fetch-grant-raises-no-warning"
+guards = "install: private text with a fetch grant raises no warning"
+test_file = "crates/basal-testkit/tests/builtins_dispatch.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test builtins_dispatch"
+expect_red = ["private_text_with_a_fetch_grant_warns"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/install.rs"
+old = "if reads_text && let Some(net) = &manifest.net {"
+new = "if !reads_text && let Some(net) = &manifest.net { // NON-VACUITY BREAK"
+
+[[control]]
+id = "dry-run-live-mode-runs-built-ins-that-are-not-queries"
+guards = "dry run: live mode runs built-ins that are not queries"
+test_file = "crates/basal-module/tests/dry_run.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test dry_run"
+expect_red = ["dry_runs_capture_every_built_in_and_live_runs_only_reads_in_scope"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/dryrun.rs"
+old = "                    == Some(CallClass::Query)"
+new = "                    != None // NON-VACUITY BREAK"

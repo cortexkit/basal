@@ -6,6 +6,8 @@ Benchmark output that backs basal's performance claims. The measurement JSON fil
 
 Safety proofs are checked in as [`mutations.toml`](../mutations.toml), not as stale machine output. The pinned shared `ck-mutate` runner applies each edit, builds the mutant, requires the exact named test to fail, and restores source bytes. Other tests in the target may also fail: the original proofs tested one named guard, not target-wide exclusivity. See the [README](../README.md#mutation-proofs) for installation, replay and `ck-mutate prove` commands.
 
+The catalogue has 383 product controls: worker 32, journal 48, dispatch 47, schedule 35, module 97, Broca 28, hosts 74 and built-ins 22. The sole retired control, `integration: unknown flags become filters`, guarded the deleted private runner rather than product behavior. The dependency-fence proof includes a Cargo-resolved lockfile edit so its mutant can build with `--locked`; the shared runner restores and byte-verifies that file too.
+
 Write local reports under gitignored `target/mutations/` with `--report`. Each JSON row records its ID, outcome, full red and green test names, separate build and test milliseconds, reasons and output tails. All rows must be `CAUGHT`. CI uploads these reports as artifacts for PR diff replays and sharded full replays on main; no generated mutation report is committed here.
 
 ## Measurements
