@@ -5,18 +5,131 @@
 
 mod common;
 
-use std::sync::atomic::Ordering;
-use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
+use std::time::{Duration, Instant};
 
 use basal_core::{Boundary, Hooks, RunState, Step};
-use basal_module::pool::{Binding, Pool, Source};
+use basal_module::pool::{Binding, Pool, PoolConfig, ProcessSpawner, Source, Spawn};
+use basal_module::process::{SpawnError, WorkerProcess};
 use common::{
-    GatedSpawner, HOUR, Options, T0, admit, agent, events_manifest, fixture, install_approved,
-    pool_config,
+    Fixture, GatedSpawner, HOUR, Options, T0, admit, agent, events_manifest, install_approved,
 };
 
 const SCRIPT: &str = "const r = await ops.call('mock', 'echo', { n: 1 }); return r.n;";
+const WAIT: Duration = Duration::from_secs(3);
+
+fn pool_config(o: &Options) -> PoolConfig {
+    let mut config = common::pool_config(o);
+    config.handshake_timeout = WAIT;
+    config.acquire_timeout = WAIT;
+    config
+}
+
+struct PoolFixture {
+    inner: Fixture,
+    spawner: Arc<RecordedSpawner>,
+}
+
+impl std::ops::Deref for PoolFixture {
+    type Target = Fixture;
+
+    fn deref(&self) -> &Fixture {
+        &self.inner
+    }
+}
+
+fn fixture(tag: &str, mut o: Options) -> PoolFixture {
+    o.activation_deadline = WAIT;
+    o.pool_wait_timeout = Some(WAIT);
+    let inner = o
+        .spawner
+        .take()
+        .unwrap_or_else(|| Arc::new(ProcessSpawner::new(&pool_config(&o))));
+    let spawner = Arc::new(RecordedSpawner {
+        inner,
+        pids: Mutex::new(Vec::new()),
+    });
+    o.spawner = Some(spawner.clone());
+    PoolFixture {
+        inner: common::fixture(tag, o),
+        spawner,
+    }
+}
+
+fn wait_until(
+    deadline: Instant,
+    description: &str,
+    mut ready: impl FnMut() -> bool,
+) -> Result<(), String> {
+    loop {
+        if ready() {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!("timed out waiting for {description}"));
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn stop_workers(f: &PoolFixture, runs: &[String]) {
+    for run in runs {
+        f.module.pool.kill_for_run(run);
+    }
+    f.module.pool.stop();
+    f.spawner.reap_workers();
+    // A killed busy worker is reaped when its activation drops the lease.
+    // Stop once more after pending spawns finish to reap their workers too.
+    let deadline = Instant::now() + WAIT;
+    while f.module.pool.stats().busy != 0 || f.module.pool.stats().spawning != 0 {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for killed pool workers to be reaped"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    f.module.pool.stop();
+    f.spawner.reap_workers();
+}
+
+fn wait_quiet(f: &PoolFixture, runs: &[String], description: &str) {
+    if let Err(error) = wait_until(Instant::now() + WAIT, description, || {
+        f.module.engine.active_count() == 0
+    }) {
+        stop_workers(f, runs);
+        panic!("{error}");
+    }
+}
+
+fn run_until_idle(f: &PoolFixture, run: &str) {
+    // The engine's convenience method has an unbounded quiescence wait.
+    // Drive the same passes here so a stuck activation fails with its run ID.
+    let deadline = Instant::now() + WAIT;
+    for _ in 0..50 {
+        let report = f.module.engine.pass().expect("engine pass");
+        if let Err(error) = wait_until(
+            deadline,
+            &format!("run {run} and its worker to become idle"),
+            || f.module.engine.active_count() == 0,
+        ) {
+            stop_workers(f, &[run.to_owned()]);
+            panic!("{error}");
+        }
+        if report.started.is_empty() && report.admitted.is_empty() && report.expired.is_empty() {
+            return;
+        }
+    }
+    stop_workers(f, &[run.to_owned()]);
+    panic!("run {run} did not become idle after 50 engine passes");
+}
+
+fn wait_for_spares(f: &PoolFixture) {
+    if !f.module.pool.wait_for_spares(1, WAIT) {
+        stop_workers(f, &[]);
+        panic!("timed out waiting for a greeted spare worker");
+    }
+}
 
 fn workers_of(pool: &Pool, flow: &str) -> Vec<u64> {
     pool.handouts()
@@ -33,7 +146,7 @@ fn a_worker_is_never_reused_across_flows() {
     let b = install_approved(&f, &agent("SYNAPSE"), SCRIPT, &events_manifest("flow-b"));
     for (flow, trigger) in [(&a, "a-1"), (&b, "b-1"), (&a, "a-2"), (&b, "b-2")] {
         let run = admit(&f, flow, trigger);
-        f.module.engine.run_until_idle(50).expect("idle");
+        run_until_idle(&f, &run);
         assert_eq!(
             f.module.rt.run(&run).expect("run").state,
             RunState::Succeeded
@@ -99,7 +212,7 @@ fn a_killed_worker_is_replaced_and_the_run_continues() {
         &events_manifest("flow-kill"),
     );
     let run = admit(&f, &flow, "k-1");
-    f.module.engine.run_until_idle(50).expect("idle");
+    run_until_idle(&f, &run);
     let state = f.module.rt.run(&run).expect("run");
     assert_eq!(state.state, RunState::Succeeded, "{state:#?}");
     assert_eq!(state.broken, 1, "exactly one activation lost its worker");
@@ -108,7 +221,7 @@ fn a_killed_worker_is_replaced_and_the_run_continues() {
     assert_ne!(used[0], used[1], "the run continued on another worker");
     let metrics = &f.module.metrics;
     assert_eq!(metrics.workers_killed.load(Ordering::Relaxed), 1);
-    assert!(f.module.pool.wait_for_spares(1, Duration::from_secs(120)));
+    wait_for_spares(&f);
     assert_eq!(
         metrics.workers_respawned.load(Ordering::Relaxed),
         1,
@@ -127,7 +240,7 @@ fn a_killed_worker_is_replaced_and_the_run_continues() {
 #[test]
 fn an_activation_uses_a_warm_spare() {
     let f = fixture("pool-spare", Options::default());
-    assert!(f.module.pool.wait_for_spares(1, Duration::from_secs(120)));
+    wait_for_spares(&f);
     let spawned_before = f.module.metrics.workers_spawned.load(Ordering::Relaxed);
     let flow = install_approved(
         &f,
@@ -136,7 +249,7 @@ fn an_activation_uses_a_warm_spare() {
         &events_manifest("flow-spare"),
     );
     let run = admit(&f, &flow, "s-1");
-    f.module.engine.run_until_idle(50).expect("idle");
+    run_until_idle(&f, &run);
     assert_eq!(
         f.module.rt.run(&run).expect("run").state,
         RunState::Succeeded
@@ -150,7 +263,7 @@ fn an_activation_uses_a_warm_spare() {
         "no activation waited for a spawn"
     );
     // The spare was replaced in the background.
-    assert!(f.module.pool.wait_for_spares(1, Duration::from_secs(120)));
+    wait_for_spares(&f);
     assert!(f.module.metrics.workers_spawned.load(Ordering::Relaxed) > spawned_before);
 }
 
@@ -171,8 +284,8 @@ fn a_bound_worker_is_retired_after_its_activation_count_and_its_idle_period() {
         &events_manifest("flow-retire"),
     );
     for trigger in ["r-1", "r-2", "r-3"] {
-        admit(&f, &flow, trigger);
-        f.module.engine.run_until_idle(50).expect("idle");
+        let run = admit(&f, &flow, trigger);
+        run_until_idle(&f, &run);
     }
     let used = workers_of(&f.module.pool, &flow);
     assert_eq!(used[0], used[1]);
@@ -208,14 +321,127 @@ fn the_run_deadline_starts_after_the_worker_answers_its_handshake() {
     // The activation is waiting for a worker to be spawned. A launch that
     // stalls for an hour on the runtime's clock...
     requested
-        .recv_timeout(Duration::from_secs(60))
+        .recv_timeout(WAIT)
         .expect("the activation asked for a spawn");
     f.clock.set(T0 + HOUR);
     spawner.release(1);
-    f.module.engine.wait_quiet();
+    wait_quiet(
+        &f,
+        std::slice::from_ref(&run),
+        "the worker's handshake activation to finish",
+    );
     // ...does not count against a ten-second deadline: the run is claimed
     // only once the worker has answered.
     let state = f.module.rt.run(&run).expect("run");
     assert_eq!(state.state, RunState::Succeeded, "{state:#?}");
     assert_eq!(state.deadline_at, Some(T0 + HOUR + 10_000));
+}
+
+struct RecordedSpawner {
+    inner: Arc<dyn Spawn>,
+    pids: Mutex<Vec<libc::pid_t>>,
+}
+
+impl RecordedSpawner {
+    fn reap_workers(&self) {
+        for pid in self.pids.lock().unwrap().iter().copied() {
+            let deadline = Instant::now() + WAIT;
+            loop {
+                let mut status = 0;
+                // SAFETY: the spawner recorded direct children of this test.
+                let result = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+                if result == pid
+                    || (result == -1
+                        && std::io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD))
+                {
+                    break;
+                }
+                assert_eq!(result, 0, "could not wait for worker {pid}");
+                // A live, unreaped child may not have a run binding when startup
+                // failed. Kill it directly rather than relying on that binding.
+                // SAFETY: waitpid just identified a live child this test started.
+                unsafe { libc::kill(pid, libc::SIGKILL) };
+                assert!(
+                    Instant::now() < deadline,
+                    "timed out waiting for killed worker {pid} to be reaped"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+}
+
+impl Spawn for RecordedSpawner {
+    fn spawn(&self) -> Result<WorkerProcess, SpawnError> {
+        let process = self.inner.spawn()?;
+        self.pids
+            .lock()
+            .unwrap()
+            .push(process.pid().try_into().expect("worker pid"));
+        Ok(process)
+    }
+}
+
+#[test]
+fn a_wait_deadline_stops_and_reaps_its_workers() {
+    let spawner = Arc::new(RecordedSpawner {
+        inner: Arc::new(ProcessSpawner::new(&pool_config(&Options::default()))),
+        pids: Mutex::new(Vec::new()),
+    });
+    let f = fixture(
+        "pool-wait-deadline",
+        Options {
+            spawner: Some(spawner.clone()),
+            ..Options::default()
+        },
+    );
+    wait_for_spares(&f);
+    let pids = spawner.pids.lock().unwrap().clone();
+    assert_eq!(pids.len(), 1, "one real spare worker was started");
+    let pool = f.module.pool.clone();
+    let release = Arc::new(AtomicBool::new(false));
+    let ready = release.clone();
+    let (tx, rx) = mpsc::channel();
+    let waiter = std::thread::spawn(move || {
+        let result = wait_until(
+            Instant::now() + WAIT,
+            "a deliberately stalled pool fixture",
+            || ready.load(Ordering::SeqCst),
+        );
+        if result.is_err() {
+            pool.stop();
+        }
+        tx.send(result).expect("deadline observer still exists");
+    });
+    // An independent outer bound catches removal of the wait's own deadline.
+    // Release the waiter even on failure, so neither a thread nor a worker leaks.
+    let result = rx.recv_timeout(WAIT + Duration::from_secs(2));
+    release.store(true, Ordering::SeqCst);
+    f.module.pool.stop();
+    let join_deadline = Instant::now() + WAIT;
+    while !waiter.is_finished() && Instant::now() < join_deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        waiter.is_finished(),
+        "timed out waiting for the released deadline observer to exit"
+    );
+    waiter.join().expect("deadline waiter exits after release");
+    for pid in pids {
+        let mut status = 0;
+        // SAFETY: this nonblocking wait probes a child started by this test.
+        let waited = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+        assert_eq!(waited, -1, "worker {pid} was not reaped by pool shutdown");
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ECHILD)
+        );
+    }
+    let error = result
+        .expect("pool wait did not enforce its own three-second deadline")
+        .expect_err("the stalled fixture must time out");
+    assert_eq!(
+        error,
+        "timed out waiting for a deliberately stalled pool fixture"
+    );
 }

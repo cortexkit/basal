@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use basal_core::{Clock, Config, Durability, Hooks, InstallGate, NoHooks};
 use basal_host::mock::MockHost;
@@ -59,6 +59,8 @@ pub struct Options {
     pub default_deadline: Duration,
     pub max_activations: u32,
     pub idle_retire: Duration,
+    pub activation_deadline: Duration,
+    pub pool_wait_timeout: Option<Duration>,
     /// Off unless a test is about the install gate: the mock consent plane
     /// is not core, so no core approved these tests' flows.
     pub install_gate: InstallGate,
@@ -76,6 +78,8 @@ impl Default for Options {
             default_deadline: Duration::from_secs(600),
             max_activations: 256,
             idle_retire: Duration::from_secs(600),
+            activation_deadline: Duration::from_secs(60),
+            pool_wait_timeout: None,
             install_gate: InstallGate::Off,
         }
     }
@@ -86,6 +90,10 @@ pub fn pool_config(o: &Options) -> PoolConfig {
     pool.warm_spares = o.warm_spares;
     pool.max_activations = o.max_activations;
     pool.idle_retire = o.idle_retire;
+    if let Some(timeout) = o.pool_wait_timeout {
+        pool.handshake_timeout = timeout;
+        pool.acquire_timeout = timeout;
+    }
     pool
 }
 
@@ -111,7 +119,7 @@ pub fn fixture_with_store(
     let mut runtime = Config {
         selector: o.selector.clone(),
         clock: clock.clone(),
-        activation_deadline: Duration::from_secs(60),
+        activation_deadline: o.activation_deadline,
         install_gate: o.install_gate,
         ..Config::default()
     };
@@ -221,6 +229,7 @@ pub struct GatedSpawner {
     pub requested: Mutex<Option<Sender<()>>>,
     open: Mutex<u32>,
     cond: Condvar,
+    timeout: Duration,
 }
 
 impl GatedSpawner {
@@ -232,6 +241,7 @@ impl GatedSpawner {
                 requested: Mutex::new(Some(tx)),
                 open: Mutex::new(0),
                 cond: Condvar::new(),
+                timeout: pool.acquire_timeout,
             }),
             rx,
         )
@@ -250,8 +260,15 @@ impl Spawn for GatedSpawner {
             let _ = tx.send(());
         }
         let mut open = self.open.lock().unwrap();
+        let deadline = Instant::now() + self.timeout;
         while *open == 0 {
-            open = self.cond.wait(open).unwrap();
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(SpawnError::Handshake(
+                    "timed out waiting for the spawn gate".into(),
+                ));
+            }
+            open = self.cond.wait_timeout(open, deadline - now).unwrap().0;
         }
         *open -= 1;
         drop(open);

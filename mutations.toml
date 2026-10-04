@@ -5782,3 +5782,19 @@ timeout_s = 600
 file = "crates/basal-module/src/dryrun.rs"
 old = "                    == Some(CallClass::Query)"
 new = "                    != None // NON-VACUITY BREAK"
+
+# Test fixture: 1 additional control
+[[control]]
+id = "pool-fixture-wait-has-no-deadline"
+guards = "a stalled pool fixture fails within its own deadline and reaps its workers"
+test_file = "crates/basal-module/tests/pool.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test pool"
+expect_red = ["a_wait_deadline_stops_and_reaps_its_workers"]
+only = false
+build_timeout_s = 3600
+timeout_s = 30
+file = "crates/basal-module/tests/pool.rs"
+old = "if Instant::now() >= deadline {"
+new = "if false && Instant::now() >= deadline { // NON-VACUITY BREAK"
