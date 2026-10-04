@@ -79,8 +79,8 @@ fn stop_workers(f: &PoolFixture, runs: &[String]) {
     }
     f.module.pool.stop();
     f.spawner.reap_workers();
-    // A killed busy worker is reaped when its activation drops the lease.
-    // Stop once more after pending spawns finish to reap their workers too.
+    // Wait for busy activations and pending spawns to release their pool entries.
+    // Stop and reap again to cover workers created while the pool was closing.
     let deadline = Instant::now() + WAIT;
     while f.module.pool.stats().busy != 0 || f.module.pool.stats().spawning != 0 {
         assert!(
