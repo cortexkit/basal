@@ -496,7 +496,9 @@ cmd_build() {
     die "$name: the build changed tracked files in $SRC/$name"
   done
   stack=$(printf '%s' "$stack" | while IFS='	' read -r n s r c; do
-    case " $locks " in *" $n "*) l=sibling-refreshed ;; *) l=committed ;; esac
+    # Leading-paren patterns: /bin/sh's bash 3.2 misparses a bare pattern's
+    # closing paren inside a command substitution.
+    case " $locks " in (*" $n "*) l=sibling-refreshed ;; (*) l=committed ;; esac
     printf '%s\t%s\t%s\t%s\t%s\n' "$n" "$s" "$r" "$c" "$l"
   done)
   printf 'repo\tsource\trequested\tcommit\tcargo_lock\n%s\n' "$stack" | write_file "$STACK"
