@@ -55,7 +55,7 @@ pub trait Transport: Send + Sync {
     ) -> Result<Value, WireError>;
 }
 
-/// Maps a subc-client-rs 0.25.1 call error. Citations are to that release's
+/// Maps a subc-client-rs 0.26.1 call error. Citations are to that release's
 /// `src/consumer.rs`.
 pub fn map_error(error: CallError) -> WireError {
     // Read before the match moves the error apart; `None` for every variant
@@ -294,6 +294,7 @@ pub fn management_body(op: &str, params: Value) -> Value {
 pub fn tool_body(name: &str, arguments: Value, call_key: &str) -> Result<Value, WireError> {
     let mut request = subc_protocol::tool_call::ToolCallRequest::new(name, arguments);
     request.call_key = Some(call_key.to_owned());
+    request.preset = None;
     serde_json::to_value(request).map_err(|e| WireError::NeverSent(e.to_string()))
 }
 
@@ -324,7 +325,7 @@ mod tests {
         Box::new(std::io::Error::other(text.to_owned()))
     }
 
-    /// One case per subc-client-rs 0.25.1 `CallError` variant basal can build
+    /// One case per subc-client-rs 0.26.1 `CallError` variant basal can build
     /// (a `StaleRouteHandle` needs a route handle only the client can make;
     /// it maps to never sent). Each names whether the call can have been
     /// sent and, if so, the unknown reason recorded for it. An

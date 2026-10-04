@@ -104,6 +104,7 @@ dependencies = [
  "sha2",
  "subc-client-rs",
  "subc-protocol",
+ "subc-transport",
  "tokio",
  "tracing",
 ]
@@ -441,7 +442,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -923,7 +924,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1080,9 +1081,9 @@ dependencies = [
 
 [[package]]
 name = "subc-client-rs"
-version = "0.25.1"
+version = "0.26.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "836d2901e0402c11a3b6314001df0df1d72297d19be65b694ae4e3f9a2858836"
+checksum = "d671a838c7777805070da19080045ef5149882636b3bd8193c5e913a590c7315"
 dependencies = [
  "async-trait",
  "serde",
@@ -1098,9 +1099,9 @@ dependencies = [
 
 [[package]]
 name = "subc-control"
-version = "0.27.0"
+version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7cfbeb68a27b8e01681e5e33a39f8cdd37d10a47cc2e42a1d2fa30c10de071c1"
+checksum = "4cb088c665dcce2507c7e480087b2d0235caa5e9adbfb2277545022869b909de"
 dependencies = [
  "serde",
  "serde_json",
@@ -1119,9 +1120,9 @@ dependencies = [
 
 [[package]]
 name = "subc-protocol"
-version = "0.28.0"
+version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e543313883f0155add4063a1469d791eb8b0ed03d26a42eeae58c59add4a4f7"
+checksum = "d65caff6df13f6ccbc6fc855e9826af4cbcd13fcaf26ae9ce26871ed4429e471"
 dependencies = [
  "serde",
  "serde_json",
@@ -1129,9 +1130,9 @@ dependencies = [
 
 [[package]]
 name = "subc-transport"
-version = "0.9.0"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cf6824508ab1c68ae04bc563e2ef84ab90c910f7b1b31bccb9dfb211c0707bb4"
+checksum = "1edb5dfb8ff70b1f585c2d13337dbabab75a06a20531eedfba31ceee3a565047"
 dependencies = [
  "getrandom",
  "hmac",

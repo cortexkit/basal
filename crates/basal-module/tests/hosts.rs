@@ -288,6 +288,7 @@ fn agent_on_scope(agent: &str, scope_ref: &str) -> Caller {
         attributes: ScopeAttributes {
             agent_id: Some(agent.into()),
             delegates: false,
+            flow_id: None,
         },
         owner_authorized: true,
     };

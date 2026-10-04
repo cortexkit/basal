@@ -52,9 +52,10 @@ serde_json = "1"
 sha2 = "0.10"
 # The module shell. subc-client-rs owns HELLO, route binding, health and the
 # frame lifecycle; subc-protocol is the manifest and route vocabulary it
-# speaks. Both are the latest published releases.
-subc-client-rs = "0.25.1"
-subc-protocol = "0.28.0"
+# speaks. Keep the scope-stamp reader current with the protocol.
+subc-client-rs = "0.26.1"
+subc-protocol = "0.29.0"
+subc-transport = "0.10.0"
 async-trait = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 # The fleet's log format and retention; the module logs through it as

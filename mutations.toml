@@ -470,14 +470,16 @@ build_timeout_s = 3600
 timeout_s = 600
 edits = [
   { file = "crates/basal-worker/Cargo.toml", old = "rquickjs.workspace = true\n", new = "rquickjs.workspace = true\nsubc-protocol = \"0.24.1\"\n" },
-  { file = "Cargo.lock", old = " \"serde\",\n \"serde_json\",\n \"subc-client-rs\",\n \"subc-protocol\",\n \"tokio\",\n \"tracing\",\n \"webpki-roots\",\n", new = " \"serde\",\n \"serde_json\",\n \"subc-client-rs\",\n \"subc-protocol 0.28.0\",\n \"tokio\",\n \"tracing\",\n \"webpki-roots\",\n" },
-  { file = "Cargo.lock", old = " \"serde_json\",\n \"sha2\",\n \"subc-client-rs\",\n \"subc-protocol\",\n \"tokio\",\n \"tracing\",\n]\n", new = " \"serde_json\",\n \"sha2\",\n \"subc-client-rs\",\n \"subc-protocol 0.28.0\",\n \"tokio\",\n \"tracing\",\n]\n" },
-  { file = "Cargo.lock", old = " \"rusqlite\",\n \"serde_json\",\n \"subc-client-rs\",\n \"subc-protocol\",\n \"tokio\",\n]\n\n", new = " \"rusqlite\",\n \"serde_json\",\n \"subc-client-rs\",\n \"subc-protocol 0.28.0\",\n \"tokio\",\n]\n\n" },
+  { file = "Cargo.lock", old = " \"subc-client-rs\",\n \"subc-protocol\",\n \"tokio\",\n \"tracing\",\n \"webpki-roots\",\n", new = " \"subc-client-rs\",\n \"subc-protocol 0.29.0\",\n \"tokio\",\n \"tracing\",\n \"webpki-roots\",\n" },
+  { file = "Cargo.lock", old = " \"subc-client-rs\",\n \"subc-protocol\",\n \"subc-transport\",\n \"tokio\",\n \"tracing\",\n", new = " \"subc-client-rs\",\n \"subc-protocol 0.29.0\",\n \"subc-transport\",\n \"tokio\",\n \"tracing\",\n" },
+  { file = "Cargo.lock", old = " \"rusqlite\",\n \"serde_json\",\n \"subc-client-rs\",\n \"subc-protocol\",\n \"tokio\",\n]\n", new = " \"rusqlite\",\n \"serde_json\",\n \"subc-client-rs\",\n \"subc-protocol 0.29.0\",\n \"tokio\",\n]\n" },
   { file = "Cargo.lock", old = " \"libc\",\n \"rquickjs\",\n \"serde_json\",\n]\n\n[[package]]\n", new = " \"libc\",\n \"rquickjs\",\n \"serde_json\",\n \"subc-protocol 0.24.1\",\n]\n\n[[package]]\n" },
-  { file = "Cargo.lock", old = " \"serde_json\",\n \"subc-control\",\n \"subc-os\",\n \"subc-protocol\",\n \"subc-transport\",\n \"tokio\",\n \"tokio-util\",\n", new = " \"serde_json\",\n \"subc-control\",\n \"subc-os\",\n \"subc-protocol 0.28.0\",\n \"subc-transport\",\n \"tokio\",\n \"tokio-util\",\n" },
-  { file = "Cargo.lock", old = "dependencies = [\n \"serde\",\n \"serde_json\",\n \"subc-protocol\",\n]\n\n[[package]]\n", new = "dependencies = [\n \"serde\",\n \"serde_json\",\n \"subc-protocol 0.28.0\",\n]\n\n[[package]]\n" },
+  { file = "Cargo.lock", old = " \"serde_json\",\n \"subc-control\",\n \"subc-os\",\n \"subc-protocol\",\n \"subc-transport\",\n \"tokio\",\n \"tokio-util\",\n", new = " \"serde_json\",\n \"subc-control\",\n \"subc-os\",\n \"subc-protocol 0.29.0\",\n \"subc-transport\",\n \"tokio\",\n \"tokio-util\",\n" },
+  { file = "Cargo.lock", old = "dependencies = [\n \"serde\",\n \"serde_json\",\n \"subc-protocol\",\n]\n", new = "dependencies = [\n \"serde\",\n \"serde_json\",\n \"subc-protocol 0.29.0\",\n]\n" },
   { file = "Cargo.lock", old = "dependencies = [\n \"libc\",\n \"rustix\",\n]\n\n[[package]]\n", new = "dependencies = [\n \"libc\",\n \"rustix\",\n]\n\n[[package]]\nname = \"subc-protocol\"\nversion = \"0.24.1\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"3b0fb1bc9305afe14d1202970b7e361253dba6108525b356a7e10274436bc80d\"\ndependencies = [\n \"serde\",\n \"serde_json\",\n]\n\n[[package]]\n" },
-  { file = "Cargo.lock", old = " \"serde\",\n \"serde_json\",\n \"sha2\",\n \"subc-protocol\",\n \"subtle\",\n \"tokio\",\n]\n", new = " \"serde\",\n \"serde_json\",\n \"sha2\",\n \"subc-protocol 0.28.0\",\n \"subtle\",\n \"tokio\",\n]\n" },
+  { file = "Cargo.lock", old = " \"serde\",\n \"serde_json\",\n \"sha2\",\n \"subc-protocol\",\n \"subtle\",\n \"tokio\",\n]\n", new = " \"serde\",\n \"serde_json\",\n \"sha2\",\n \"subc-protocol 0.29.0\",\n \"subtle\",\n \"tokio\",\n]\n" },
+  { file = "Cargo.lock", old = "checksum = \"39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb\"\ndependencies = [\n \"libc\",\n \"windows-sys 0.52.0\",\n", new = "checksum = \"39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb\"\ndependencies = [\n \"libc\",\n \"windows-sys 0.61.2\",\n" },
+  { file = "Cargo.lock", old = " \"bitflags 2.13.2\",\n \"errno\",\n \"libc\",\n \"linux-raw-sys\",\n \"windows-sys 0.52.0\",\n", new = " \"bitflags 2.13.2\",\n \"errno\",\n \"libc\",\n \"linux-raw-sys\",\n \"windows-sys 0.61.2\",\n" },
 ]
 
 [[control]]
@@ -2456,7 +2458,7 @@ file = "crates/basal-core/src/schedule/tick.rs"
 old = "if let Some(reason) = dropped_reason(&admission) {"
 new = "if let Some(reason) = dropped_reason(&admission).filter(|_| false) {"
 
-# module: 97 controls
+# module: 99 controls
 [[control]]
 id = "pool-startup-boundary-precedes-nonce-consumption"
 guards = "pool startup boundary precedes nonce consumption"
@@ -2591,6 +2593,39 @@ timeout_s = 600
 file = "crates/basal-module/src/serve.rs"
 old = "scope: request.scope.clone(),"
 new = "scope: None,"
+
+[[control]]
+id = "flow-id-in-a-bind-scope-changes-agent-identity"
+guards = "flow id in a bind scope changes agent identity"
+test_file = "crates/basal-module/tests/caller_binding.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test caller_binding"
+expect_red = ["a_flow_id_in_the_bind_stamp_decodes_without_changing_agent_identity"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/caller.rs"
+old = "(Some(agent), true) if !agent.is_empty() => Caller::Agent {"
+new = "(Some(agent), true) if !agent.is_empty() && scope.attributes.flow_id.is_none() => Caller::Agent {"
+
+[[control]]
+id = "unknown-channel-zero-control-field-ends-basal-serving"
+guards = "unknown channel-0 control field ends basal serving"
+test_file = "crates/basal-module/tests/unknown_control.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test unknown_control"
+expect_red = ["unknown_control_field_is_refused_and_the_following_health_check_is_answered"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+edits = [
+  { file = "Cargo.toml", old = "subc-client-rs = \"0.26.1\"", new = "subc-client-rs = \"=0.26.0\"" },
+  { file = "Cargo.lock", old = "name = \"subc-client-rs\"\nversion = \"0.26.1\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"d671a838c7777805070da19080045ef5149882636b3bd8193c5e913a590c7315\"", new = "name = \"subc-client-rs\"\nversion = \"0.26.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"22961845d10f595319b1a8fc5cb614ed95d43452b4f7c6ba24fca9662cc20665\"" },
+  { file = "Cargo.lock", old = "checksum = \"39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb\"\ndependencies = [\n \"libc\",\n \"windows-sys 0.52.0\",\n", new = "checksum = \"39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb\"\ndependencies = [\n \"libc\",\n \"windows-sys 0.61.2\",\n" },
+  { file = "Cargo.lock", old = " \"bitflags 2.13.2\",\n \"errno\",\n \"libc\",\n \"linux-raw-sys\",\n \"windows-sys 0.52.0\",\n", new = " \"bitflags 2.13.2\",\n \"errno\",\n \"libc\",\n \"linux-raw-sys\",\n \"windows-sys 0.61.2\",\n" },
+]
 
 [[control]]
 id = "a-scope-owned-by-any-module-names-its-agent"

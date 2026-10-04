@@ -68,6 +68,7 @@ fn scope(owner: &str, agent: &str, owner_authorized: bool, scope_ref: String) ->
         attributes: ScopeAttributes {
             agent_id: Some(agent.to_owned()),
             delegates: false,
+            flow_id: None,
         },
         owner_authorized,
     }
@@ -131,6 +132,34 @@ fn assert_refused_on_the_flow(f: &Fixture, caller: &Caller) {
             caller.label()
         );
     }
+}
+
+#[test]
+fn a_flow_id_in_the_bind_stamp_decodes_without_changing_agent_identity() {
+    let stamp: ScopeStamp = serde_json::from_value(json!({
+        "owner": { "kind": "reserved", "module_id": CORE_MODULE },
+        "ref": "scope-with-flow",
+        "scope_epoch": 1,
+        "kind": "head",
+        "attributes": { "agent_id": OWNER, "flow_id": "flow-123" },
+        "owner_authorized": true,
+    }))
+    .expect("the 0.29 scope decoder accepts flow_id");
+    let handler = handler();
+    let caller = caller_of(
+        &handler,
+        bind_request(RouteHandle::detached(12, 1), SESSION)
+            .with_principal(Principal::Direct)
+            .with_scope(stamp),
+    );
+
+    assert_eq!(
+        caller,
+        Caller::Agent {
+            agent_id: OWNER.into(),
+            scope_ref: "scope-with-flow".into(),
+        }
+    );
 }
 
 #[test]

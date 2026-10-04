@@ -252,6 +252,7 @@ fn bind_request(handle: RouteHandle, who: &Value) -> RouteBindRequest {
                     attributes: ScopeAttributes {
                         agent_id: agent,
                         delegates: false,
+                        flow_id: None,
                     },
                     owner_authorized: true,
                 })

@@ -156,6 +156,7 @@ mod tests {
             attributes: ScopeAttributes {
                 agent_id: agent.map(str::to_owned),
                 delegates: false,
+                flow_id: None,
             },
             owner_authorized: authorized,
         }
