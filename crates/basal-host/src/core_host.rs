@@ -54,6 +54,7 @@ pub(crate) fn outcome(result: Result<Value, WireError>) -> Result<Dispatched, Tr
         TransportError::maybe_sent(UnknownReason::ReplyUnreadable, e.to_string())
     };
     match result {
+        Err(WireError::Typed(refusal)) => Err(TransportError::Refused(refusal)),
         Ok(value) => JsonText::new(value.to_string())
             .map(|v| Dispatched::Completed(HostOutcome::fulfilled(v)))
             .map_err(unreadable),
@@ -136,6 +137,10 @@ fn is_code_hash(value: &str) -> bool {
 /// `unknown` one a null hash. Anything else is refused, so a reply basal
 /// cannot read never counts as core standing behind a version.
 pub fn decode_install_status(value: &Value) -> Result<InstallStatus, String> {
+    let scope = crate::flow_scope::decode(value)?;
+    if scope.is_some() && value["state"] != "active" {
+        return Err("only an active install may carry a scope".into());
+    }
     let hash = value.get("code_hash");
     let approved_hash = || match hash.and_then(Value::as_str) {
         Some(h) if is_code_hash(h) => Ok(h.to_owned()),
@@ -146,6 +151,7 @@ pub fn decode_install_status(value: &Value) -> Result<InstallStatus, String> {
     match value.get("state").and_then(Value::as_str) {
         Some("active") => Ok(InstallStatus::Active {
             code_hash: approved_hash()?,
+            scope,
         }),
         Some("revoked") => Ok(InstallStatus::Revoked {
             code_hash: approved_hash()?,
@@ -180,7 +186,7 @@ impl Host for CoreHost {
             .map_err(|e| WireError::NeverSent(e.to_string()));
         outcome(
             params
-                .and_then(|v| self.transport.management(CORE, op, v))
+                .and_then(|v| self.transport.management(CORE, op, v).map_err(|e| crate::transport::contextual(e, CORE, op)))
                 .and_then(|v| validate_reply(p, v)),
         )
     }

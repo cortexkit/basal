@@ -44,6 +44,7 @@ fn run(rt: &Runtime, run_id: &str) -> Run {
 fn active(run: &Run) -> Option<InstallStatus> {
     Some(InstallStatus::Active {
         code_hash: hex(&run.code_hash),
+        scope: None,
     })
 }
 
@@ -133,6 +134,7 @@ fn active_with_another_code_hash_is_revoked() {
         1,
         Some(InstallStatus::Active {
             code_hash: other.clone(),
+            scope: None,
         }),
     );
     let end = rt.resume(&run_id).expect("activation");

@@ -1,6 +1,6 @@
 //! Blocking consumer boundary. The runtime dispatches off its activation thread.
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use subc_client_rs::consumer::{
     CallError, CallOptions, ConnectionState, ConsumerOptions, OutcomeUnknownCause, SubcConsumer,
@@ -11,6 +11,7 @@ use subc_protocol::{BindIdentity, RouteTarget};
 /// How a call over the daemon failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WireError {
+    Typed(crate::flow_refusal::FlowRefusal),
     /// Provably never reached the target.
     NeverSent(String),
     /// Sent, and then the route closed or the connection failed before a
@@ -34,7 +35,7 @@ impl WireError {
     pub fn unknown_reason(&self) -> Option<crate::UnknownReason> {
         use crate::UnknownReason;
         match self {
-            Self::NeverSent(_) | Self::Refused { .. } => None,
+            Self::NeverSent(_) | Self::Refused { .. } | Self::Typed(_) => None,
             Self::Unknown(_) => Some(UnknownReason::ConnectionLost),
             Self::TimedOut(_) => Some(UnknownReason::ReplyTimeout),
             Self::Unreadable(_) => Some(UnknownReason::ReplyUnreadable),
@@ -44,6 +45,13 @@ impl WireError {
 
 /// Returns decoded provider payloads, not the management response envelope.
 pub trait Transport: Send + Sync {
+    fn configure_flow(&self, _flow: &str, _agent_owned: bool, _scope: Option<crate::flow_scope::RegisteredScope>) {}
+    fn management_for_flow(&self, _flow: &str, module: &str, op: &str, params: Value) -> Result<Value, WireError> {
+        self.management(module, op, params)
+    }
+    fn tool_for_flow(&self, _flow: &str, module: &str, name: &str, arguments: Value, call_key: &str) -> Result<Value, WireError> {
+        self.tool(module, name, arguments, call_key)
+    }
     fn catalog(&self) -> Result<Value, WireError>;
     fn management(&self, module: &str, op: &str, params: Value) -> Result<Value, WireError>;
     fn tool(
@@ -58,16 +66,20 @@ pub trait Transport: Send + Sync {
 /// Maps a subc-client-rs 0.26.1 call error. Citations are to that release's
 /// `src/consumer.rs`.
 pub fn map_error(error: CallError) -> WireError {
+    if let Some(body) = error.route_open_refusal() {
+        return match crate::flow_refusal::FlowRefusal::decode(body) {
+            Ok(Some(decoded)) => WireError::Typed(decoded),
+            Ok(None) if !body.code.starts_with("scope_") => WireError::NeverSent(body.message.clone()),
+            _ => WireError::Unknown("unrecognised scoped route refusal".into()),
+        };
+    }
     // Read before the match moves the error apart; `None` for every variant
     // other than OutcomeUnknown.
     let cause = error.outcome_cause();
     match error {
         CallError::NotSent(e) => WireError::NeverSent(e.to_string()),
         CallError::StaleRouteHandle(_) => WireError::NeverSent("stale local route handle".into()),
-        CallError::Module(e) => WireError::Refused {
-            code: e.code,
-            message: e.message,
-        },
+        CallError::Module(e) => refusal(e),
         // The capability resolver's errors are raised before any request
         // frame for a call is written: `resolve_provider` (lines 1351-1363)
         // after reading the catalog, and `validate_capability_for_resolution`
@@ -83,6 +95,14 @@ pub fn map_error(error: CallError) -> WireError {
         // already sent (line 3634), and the client counts it as outcome
         // unknown (lines 4552-4560).
         other => WireError::Unknown(other.to_string()),
+    }
+}
+
+pub fn refusal(body: subc_protocol::ErrorBody) -> WireError {
+    match crate::flow_refusal::FlowRefusal::decode(&body) {
+        Ok(Some(decoded)) => WireError::Typed(decoded),
+        Ok(None) => WireError::Refused { code: body.code, message: body.message },
+        Err(detail) => WireError::Unknown(detail),
     }
 }
 
@@ -118,6 +138,7 @@ pub struct SubcTransport {
     consumer: SubcConsumer,
     identity: BindIdentity,
     timeout: Duration,
+    routes: Arc<Mutex<crate::flow_scope::ScopedRoutes<subc_client_rs::RouteHandle>>>,
 }
 impl Drop for SubcTransport {
     fn drop(&mut self) {
@@ -129,16 +150,63 @@ impl Drop for SubcTransport {
     }
 }
 impl SubcTransport {
+    fn scoped_handle(&self, flow: &str, target: &RouteTarget) -> Result<Option<subc_client_rs::RouteHandle>, WireError> {
+        self.routes.lock().unwrap_or_else(|p| p.into_inner()).route(flow, target, |scope| {
+            self.handle.block_on(self.consumer.open_route_scoped(
+                target.clone(), BindIdentity::new("/", "basal", &format!("basal:flow:{flow}")), scope.selector(),
+                CallOptions { timeout: self.timeout, ..Default::default() },
+            )).map_err(map_error)
+        })
+    }
+
+    fn call_for_flow(&self, flow: &str, target: RouteTarget, bytes: Vec<u8>, management: bool, module: &str, action: &str) -> Result<Value, WireError> {
+        let result = match self.scoped_handle(flow, &target).map_err(|e| contextual(e, module, action))? {
+            Some(handle) => {
+                let result = self.handle.block_on(self.consumer.request(&handle, bytes,
+                    CallOptions { timeout: self.timeout, ..Default::default() }));
+                if let Err(CallError::StaleRouteHandle(_)) = &result {
+                    // The client never reopens a handle request. A later activation
+                    // obtains authority again before opening a replacement route.
+                    self.routes.lock().unwrap_or_else(|p| p.into_inner()).closed(handle, true);
+                }
+                result.map_err(map_error).and_then(|bytes| decode_response(&bytes, management))
+            }
+            None => self.call_as(target, self.identity.clone(), bytes, management),
+        };
+        result.map_err(|e| contextual(e, module, action))
+    }
+
     /// Must be constructed and used on blocking threads, not inside a Tokio task.
     pub fn connect(timeout: Duration) -> Result<Arc<Self>, WireError> {
+        Self::connect_with_file(timeout, None)
+    }
+    fn connect_with_file(timeout: Duration, file: Option<&std::path::Path>) -> Result<Arc<Self>, WireError> {
         let runtime =
             tokio::runtime::Runtime::new().map_err(|e| WireError::NeverSent(e.to_string()))?;
-        let consumer = runtime
-            .block_on(SubcConsumer::connect_default(ConsumerOptions {
-                call_timeout: timeout,
-                ..Default::default()
-            }))
-            .map_err(|e| WireError::NeverSent(e.to_string()))?;
+        let opts = ConsumerOptions { call_timeout: timeout, ..Default::default() };
+        let consumer = match file {
+            Some(file) => runtime.block_on(SubcConsumer::connect(file, opts)),
+            None => runtime.block_on(SubcConsumer::connect_default(opts)),
+        }.map_err(|e| WireError::NeverSent(e.to_string()))?;
+        let routes = Arc::new(Mutex::new(crate::flow_scope::ScopedRoutes::default()));
+        let route_events = routes.clone();
+        let restored_routes = routes.clone();
+        consumer.on_connection_state(move |state| {
+            if matches!(state, ConnectionState::Restored { .. }) {
+                restored_routes.lock().unwrap_or_else(|p| p.into_inner()).connection_restored();
+            }
+        });
+        let mut pushes = consumer.control_pushes(256);
+        runtime.spawn(async move {
+            while let Some(push) = pushes.recv().await {
+                if push.op != "route.closed" { continue; }
+                let Some(channel) = push.body.get("route_channel").and_then(Value::as_u64).and_then(|v| u16::try_from(v).ok()) else { continue; };
+                let Some(epoch) = push.body.get("route_epoch").and_then(Value::as_u64).and_then(|v| u32::try_from(v).ok()) else { continue; };
+                let scope_close = push.body.get("reason").and_then(Value::as_str).is_some_and(|r| r.starts_with("scope_"));
+                let mut routes = route_events.lock().unwrap_or_else(|p| p.into_inner());
+                routes.closed_wire(channel, epoch, scope_close);
+            }
+        });
         Ok(Arc::new(Self {
             handle: runtime.handle().clone(),
             runtime: Some(runtime),
@@ -147,6 +215,7 @@ impl SubcTransport {
             // remain stable across process restarts, not include a process id.
             identity: BindIdentity::new("/", "basal", "basal:flows"),
             timeout,
+            routes,
         }))
     }
     fn call(&self, target: RouteTarget, body: Value, management: bool) -> Result<Value, WireError> {
@@ -174,33 +243,26 @@ impl SubcTransport {
                 },
             ))
             .map_err(map_error)?;
-        let value: Value =
-            serde_json::from_slice(&response).map_err(|e| WireError::Unreadable(e.to_string()))?;
-        if management {
-            if let Some(error) = value.get("error") {
-                let code = error
-                    .get("code")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| WireError::Unreadable("invalid error envelope".into()))?;
-                return Err(WireError::Refused {
-                    code: code.into(),
-                    message: error
-                        .get("message")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .into(),
-                });
-            }
-            value
-                .get("result")
-                .cloned()
-                .ok_or_else(|| WireError::Unreadable("missing management result".into()))
-        } else {
-            Ok(value)
-        }
+        decode_response(&response, management)
     }
 }
 impl SubcTransport {
+    pub(crate) fn management_for_model(&self, flow: &str, identity: BindIdentity, module: &str, op: &str, params: &[u8]) -> Result<Value, WireError> {
+        let target = RouteTarget::ManagementSurface { module_id: module.into() };
+        if self.scoped_handle(flow, &target)?.is_none() {
+            return self.call_as(target, identity, management_bytes(op, params)?, true).map_err(|e| contextual(e, module, op));
+        }
+        self.call_for_flow(flow, target, management_bytes(op, params)?, true, module, op)
+    }
+    pub(crate) fn subscribe_for_model(&self, flow: &str, identity: BindIdentity, module: &str, op: &str, params: &[u8]) -> Result<Subscription, WireError> {
+        let target = RouteTarget::ManagementSurface { module_id: module.into() };
+        let bytes = management_bytes(op, params)?;
+        let opts = SubscribeOptions { route_open_timeout: self.timeout, route_retry_deadline: self.timeout, ..Default::default() };
+        match self.scoped_handle(flow, &target)? {
+            Some(handle) => self.handle.block_on(self.consumer.subscribe_route(&handle, bytes, opts)),
+            None => self.handle.block_on(self.consumer.subscribe(target, identity, bytes, opts)),
+        }.map_err(map_error).map_err(|e| contextual(e, module, op))
+    }
     /// Shares the consumer connection but binds the supplied identity. Broca
     /// callers supply a separate session for each flow/run/call position.
     pub(crate) fn management_as(
@@ -252,6 +314,18 @@ impl SubcTransport {
     }
 }
 impl Transport for SubcTransport {
+    fn configure_flow(&self, flow: &str, agent_owned: bool, scope: Option<crate::flow_scope::RegisteredScope>) {
+        let dropped = self.routes.lock().unwrap_or_else(|p| p.into_inner()).configure(flow, agent_owned, scope.map(|s| s.selector));
+        for handle in dropped {
+            let _ = self.handle.block_on(self.consumer.close_handle(&handle, Default::default()));
+        }
+    }
+    fn management_for_flow(&self, flow: &str, module: &str, op: &str, params: Value) -> Result<Value, WireError> {
+        self.call_for_flow(flow, RouteTarget::ManagementSurface { module_id: module.into() }, serde_json::to_vec(&management_body(op, params)).map_err(|e| WireError::NeverSent(e.to_string()))?, true, module, op)
+    }
+    fn tool_for_flow(&self, flow: &str, module: &str, name: &str, arguments: Value, call_key: &str) -> Result<Value, WireError> {
+        self.call_for_flow(flow, RouteTarget::ToolProvider { module_id: module.into() }, serde_json::to_vec(&tool_body(name, arguments, call_key)?).map_err(|e| WireError::NeverSent(e.to_string()))?, false, module, name)
+    }
     fn catalog(&self) -> Result<Value, WireError> {
         let catalog = self
             .handle
@@ -288,6 +362,28 @@ impl Transport for SubcTransport {
     }
 }
 
+pub fn contextual(error: WireError, module: &str, action: &str) -> WireError {
+    match error {
+        WireError::Typed(mut refusal) => { refusal.provider = module.into(); refusal.action = action.into(); WireError::Typed(refusal) }
+        WireError::Refused { code, message } => {
+            let error = refusal(subc_protocol::ErrorBody::new(code, message));
+            if matches!(error, WireError::Typed(_)) { contextual(error, module, action) } else { error }
+        }
+        other => other,
+    }
+}
+
+fn decode_response(response: &[u8], management: bool) -> Result<Value, WireError> {
+    let value: Value = serde_json::from_slice(response).map_err(|e| WireError::Unreadable(e.to_string()))?;
+    if !management { return Ok(value); }
+    if let Some(error) = value.get("error") {
+        let body: subc_protocol::ErrorBody = serde_json::from_value(error.clone())
+            .map_err(|e| WireError::Unknown(format!("invalid error envelope: {e}")))?;
+        return Err(refusal(body));
+    }
+    value.get("result").cloned().ok_or_else(|| WireError::Unreadable("missing management result".into()))
+}
+
 pub fn management_body(op: &str, params: Value) -> Value {
     json!({"method":op,"params":params})
 }
@@ -319,6 +415,64 @@ pub fn management_bytes(op: &str, params: &[u8]) -> Result<Vec<u8>, WireError> {
 mod tests {
     use super::*;
     use crate::UnknownReason;
+
+    #[test]
+    fn real_subc_transport_opens_scoped_ops_and_models_and_reuses_routes() {
+        use subc_transport::{authenticate_server, read_frame, write_frame};
+        use subc_transport::connection_file::{ConnectionInfo, Endpoint, SCHEMA_VERSION, write_atomic};
+        use subc_protocol::{Frame, FrameType, FrameFlags, Priority};
+        use crate::flow_scope::{FlowScope, RegisteredScope};
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!("basal-scoped-wire-{}-{}",std::process::id(),NEXT.fetch_add(1,Ordering::SeqCst)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("subc-connection.json");
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let listener = runtime.block_on(tokio::net::TcpListener::bind(("127.0.0.1",0))).unwrap();
+        let address = listener.local_addr().unwrap();
+        let info = ConnectionInfo { schema: SCHEMA_VERSION, wire_version: None,
+            endpoints: vec![Endpoint {host:"127.0.0.1".into(),port:address.port()}],key:vec![7;32],daemon_id:[9;16],pid:std::process::id(),daemon_ver:"scoped-test".into() };
+        write_atomic(&file,&info).unwrap();
+        let opens = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let records = opens.clone();
+        let daemon = runtime.spawn(async move {
+            let (mut stream,_) = listener.accept().await.unwrap();
+            authenticate_server(&mut stream,&info.key,&info.daemon_id,"scoped-test",Duration::from_secs(10)).await.unwrap();
+            while let Some(frame) = read_frame(&mut stream).await.unwrap() {
+                if frame.header.ty != FrameType::Request { continue; }
+                let body:Value = serde_json::from_slice(&frame.body).unwrap();
+                let reply = if body["op"] == "route.open" {
+                    let mut records = records.lock().unwrap(); records.push(body);
+                    json!({"op":"route.open","route_channel":10+records.len(),"route_epoch":1})
+                } else if body["method"] == "session.send" {
+                    json!({"result":{"state":"active","run_id":"broca-run"}})
+                } else { json!({"result":body["params"]}) };
+                let response = Frame::build(FrameType::Response,FrameFlags::default().with_priority(Priority::Normal),frame.header.channel,frame.header.epoch,frame.header.corr,serde_json::to_vec(&reply).unwrap()).unwrap();
+                write_frame(&mut stream,&response).await.unwrap();
+            }
+        });
+        let transport = SubcTransport::connect_with_file(Duration::from_secs(10),Some(&file)).unwrap();
+        let selector = FlowScope { owner:subc_protocol::Principal::Reserved {module_id:"prefrontal-core".into()},scope_ref:"registered-flow".into(),epoch:7 };
+        let registered = RegisteredScope {selector:selector.clone(),targets:["mock".into(),"broca".into()].into_iter().collect()};
+        transport.configure_flow("flow-a",true,Some(registered));
+        for _ in 0..2 { assert_eq!(transport.management_for_flow("flow-a","mock","echo",json!({"n":7})).unwrap(),json!({"n":7})); }
+        let broca = crate::broca::subc::SubcBrocaTransport::new(transport.clone(),"broca".into(),Arc::new(||{}));
+        let route = crate::broca::Route {flow_id:Some("flow-a".into()),project_root:"/".into(),harness:"basal".into(),session:"a-run-position".into()};
+        for _ in 0..2 { assert!(matches!(crate::broca::Transport::send(broca.as_ref(),&route,b"{}"),Ok(crate::broca::wire::SendResult::Active{..}))); }
+        assert_eq!(transport.management("prefrontal-core","sink.digest",json!({"flow_id":"flow-a","flow_version":1})).unwrap(),json!({"flow_id":"flow-a","flow_version":1}));
+        let records = opens.lock().unwrap().clone();
+        assert_eq!(records.len(),3,"ops and models each reuse one route; carrier core is separate");
+        assert_eq!(records[0]["scope"],serde_json::to_value(selector.selector()).unwrap());
+        assert_eq!(records[1]["scope"],records[0]["scope"]);
+        assert!(records[2].get("scope").is_none(),"core carrier call must remain unscoped");
+        daemon.abort(); drop(broca); drop(transport); drop(runtime); std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn malformed_typed_busy_is_connection_lost_not_provably_unsent() {
+        let error = map_error(CallError::Module(subc_protocol::ErrorBody::new("resource_busy","retry safely")));
+        assert_eq!(error.unknown_reason(),Some(UnknownReason::ConnectionLost));
+    }
 
     fn boxed(text: &str) -> Box<dyn std::error::Error + Send + Sync> {
         Box::new(std::io::Error::other(text.to_owned()))

@@ -150,6 +150,7 @@ impl Runtime {
                     state: RunState::Failed,
                 }));
             }
+            journal::wake_deferred(tx, now, Some(run_id))?;
             match runs::claim(tx, run_id, &owner, now) {
                 Ok(lease) => Ok(Ok(lease)),
                 Err(CoreError::SlotBusy { holder, .. }) => {
@@ -496,6 +497,11 @@ impl Activation<'_> {
                 continue;
             }
             match (row.class, row.dispatch) {
+                (_, DispatchState::Deferred) => {
+                    let retry = self.rt.store().read(|c| journal::deferred_until(c, &run_id, row.position))?
+                        .ok_or_else(|| CoreError::Corrupt("deferred call has no retry time".into()))?;
+                    if retry <= self.rt.config.clock.now_ms() { resend.push(row.clone()); }
+                }
                 (StoredClass::Sync, _) | (_, DispatchState::Accepted) => {}
                 (StoredClass::Local, _) => {
                     // A local call's effect commits with its outcome, so a

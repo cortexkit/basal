@@ -73,6 +73,7 @@ name = "basal-host"
 version = "0.1.0"
 dependencies = [
  "basal-proto",
+ "cortexkit-resource-busy",
  "httparse",
  "libc",
  "rustls",
@@ -141,6 +142,7 @@ dependencies = [
  "rusqlite",
  "rustls",
  "serde_json",
+ "subc-protocol",
 ]
 
 [[package]]
@@ -251,6 +253,14 @@ dependencies = [
  "regex",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "cortexkit-resource-busy"
+version = "0.1.0"
+source = "git+https://github.com/cortexkit/commons?rev=c46f324133c5df6411703714e4c147f7cc8554a0#c46f324133c5df6411703714e4c147f7cc8554a0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

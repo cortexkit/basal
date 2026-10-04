@@ -259,7 +259,115 @@ ALTER TABLE installs ADD COLUMN revoked_at INTEGER;
 ALTER TABLE installs ADD COLUMN revoked_reason TEXT;
 "#,
     },
+    Migration { version: 9, statements: FLOW_DEFERRALS },
 ];
+
+// SQLite cannot widen an existing CHECK with ALTER TABLE. Copy the issue log
+// and its two foreign-key children in the migration transaction, preserving
+// every old column, including already released outcomes and mailbox sequence.
+const FLOW_DEFERRALS: &str = r#"
+CREATE TABLE migration_9_mailbox AS SELECT * FROM mailbox;
+CREATE TABLE migration_9_broca AS SELECT * FROM broca_calls;
+DROP TABLE mailbox;
+DROP TABLE broca_calls;
+CREATE TABLE journal_new (
+    run_id TEXT NOT NULL REFERENCES runs (run_id),
+    position INTEGER NOT NULL CHECK (position >= 0),
+    kind_code INTEGER NOT NULL, module TEXT, op TEXT, args TEXT NOT NULL,
+    args_digest BLOB NOT NULL CHECK (length(args_digest) = 32),
+    idempotency_key TEXT NOT NULL UNIQUE,
+    class TEXT NOT NULL CHECK (class IN ('sync', 'local', 'query', 'mutation', 'keyed_mutation')),
+    dispatch TEXT NOT NULL CHECK (dispatch IN ('none', 'sent', 'accepted', 'unknown', 'not_applied', 'deferred')),
+    attempts INTEGER NOT NULL DEFAULT 0, handle TEXT,
+    settlement TEXT CHECK (settlement IN ('fulfilled', 'rejected')), value TEXT,
+    payload_hash BLOB, delivery_order INTEGER CHECK (delivery_order >= 0),
+    clock_ms REAL, issued_generation INTEGER NOT NULL, request TEXT,
+    unknown_reason TEXT CHECK (unknown_reason IN ('basal_restarted', 'connection_lost', 'reply_timeout', 'reply_unreadable', 'retries_exhausted', 'provider_lost_run'))
+        CHECK (dispatch <> 'unknown' OR unknown_reason IS NOT NULL),
+    refusal TEXT CHECK (refusal IN ('scope_not_carrier', 'scope_ended', 'scope_not_live', 'scope_epoch_required', 'scope_not_synced', 'scope_changed', 'target_flow_unsupported', 'resource_busy', 'consent_unavailable', 'no_flow_scope')),
+    retry_not_before INTEGER,
+    refusal_detail TEXT,
+    PRIMARY KEY (run_id, position),
+    CHECK ((kind_code = 0) = (module IS NOT NULL AND op IS NOT NULL)),
+    CHECK ((settlement IS NULL) = (value IS NULL)),
+    CHECK ((settlement IS NULL) = (payload_hash IS NULL)),
+    CHECK ((settlement IS NULL) = (delivery_order IS NULL)),
+    CHECK ((dispatch = 'deferred') = (refusal IS NOT NULL)),
+    CHECK ((dispatch = 'deferred') = (retry_not_before IS NOT NULL)),
+    CHECK ((dispatch = 'deferred') = (refusal_detail IS NOT NULL)),
+    CHECK (dispatch <> 'deferred' OR (settlement IS NULL AND json_valid(refusal_detail)
+        AND json_type(refusal_detail) = 'object'
+        AND json_extract(refusal_detail, '$.reason') IS refusal
+        AND json_type(refusal_detail, '$.provider') IS 'text'
+        AND json_type(refusal_detail, '$.action') IS 'text'))
+);
+INSERT INTO journal_new SELECT *, NULL, NULL, NULL FROM journal;
+DROP TABLE journal;
+ALTER TABLE journal_new RENAME TO journal;
+CREATE UNIQUE INDEX journal_delivery_order ON journal (run_id, delivery_order) WHERE delivery_order IS NOT NULL;
+CREATE TABLE mailbox (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, position INTEGER NOT NULL,
+    handle TEXT, settlement TEXT NOT NULL CHECK (settlement IN ('fulfilled', 'rejected')),
+    value TEXT NOT NULL, payload_hash BLOB NOT NULL,
+    source TEXT NOT NULL CHECK (source IN ('host', 'completion', 'local', 'reconcile')),
+    arrived_generation INTEGER NOT NULL,
+    UNIQUE (run_id, position),
+    FOREIGN KEY (run_id, position) REFERENCES journal (run_id, position)
+);
+INSERT INTO mailbox SELECT * FROM migration_9_mailbox;
+DROP TABLE migration_9_mailbox;
+CREATE TABLE broca_calls (
+    send_id TEXT PRIMARY KEY, run_id TEXT NOT NULL,
+    position INTEGER NOT NULL CHECK (position >= 0), snapshot TEXT NOT NULL,
+    UNIQUE (run_id, position),
+    FOREIGN KEY (run_id, position) REFERENCES journal (run_id, position) ON DELETE CASCADE
+);
+INSERT INTO broca_calls SELECT * FROM migration_9_broca;
+DROP TABLE migration_9_broca;
+"#;
+
+#[cfg(test)]
+mod flow_deferral_tests {
+    use super::*;
+    use rusqlite::{Connection, types::Value};
+
+    fn old_store() -> Connection {
+        let conn=Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+        for migration in MIGRATIONS.iter().filter(|m|m.version<9) { conn.execute_batch(migration.statements).unwrap(); }
+        conn.execute_batch("INSERT INTO runs (run_id,flow_id,trigger_id,attempt,trigger,script,manifest,code_hash,state,admitted_at) VALUES ('r','f','t',1,'{}','return 1','{}',zeroblob(32),'pending',1)").unwrap();
+        for (pos,dispatch) in ["none","sent","accepted","unknown","not_applied"].iter().enumerate() {
+            conn.execute("INSERT INTO journal (run_id,position,kind_code,args,args_digest,idempotency_key,class,dispatch,issued_generation,unknown_reason) VALUES ('r',?1,1,'{}',zeroblob(32),?2,'query',?3,1,?4)",rusqlite::params![pos as i64,format!("key:{pos}"),dispatch,if *dispatch=="unknown" {Some("connection_lost")} else {None}]).unwrap();
+        }
+        conn.execute_batch("INSERT INTO mailbox (seq,run_id,position,settlement,value,payload_hash,source,arrived_generation) VALUES (9,'r',1,'fulfilled','7',zeroblob(32),'host',1); INSERT INTO broca_calls VALUES ('key:2','r',2,'{\"snapshot\":true}')").unwrap();
+        conn
+    }
+    fn rows(conn:&Connection,table:&str,columns:usize) -> Vec<Vec<Value>> {
+        let mut stmt=conn.prepare(&format!("SELECT * FROM {table} ORDER BY 1,2")).unwrap();
+        stmt.query_map([],|row|(0..columns).map(|i|row.get(i)).collect()).unwrap().collect::<Result<_,_>>().unwrap()
+    }
+    #[test]
+    fn migration_preserves_all_existing_dispatch_states_and_foreign_key_children() {
+        let conn=old_store();
+        let count=conn.prepare("SELECT * FROM journal").unwrap().column_count();
+        let before=rows(&conn,"journal",count);
+        let mailbox=rows(&conn,"mailbox",9); let broca=rows(&conn,"broca_calls",4);
+        conn.execute_batch(FLOW_DEFERRALS).unwrap();
+        assert_eq!(rows(&conn,"journal",count),before);
+        assert_eq!(rows(&conn,"mailbox",9),mailbox); assert_eq!(rows(&conn,"broca_calls",4),broca);
+        assert!(conn.prepare("PRAGMA foreign_key_check").unwrap().query([]).unwrap().next().unwrap().is_none());
+    }
+    #[test]
+    fn deferred_state_requires_closed_typed_refusal_and_retry_metadata() {
+        let conn=old_store();conn.execute_batch(FLOW_DEFERRALS).unwrap();
+        let valid="UPDATE journal SET dispatch='deferred',refusal='scope_ended',retry_not_before=250,refusal_detail='{\"reason\":\"scope_ended\",\"provider\":\"mock\",\"action\":\"send\"}' WHERE position=0";
+        conn.execute_batch(valid).unwrap();
+        for mutation in ["refusal=NULL","retry_not_before=NULL","refusal_detail=NULL","refusal='new_reason'","refusal_detail='null'","refusal_detail='{}'","dispatch='sent'"] {
+            assert!(conn.execute_batch(&format!("UPDATE journal SET {mutation} WHERE position=0")).is_err(),"accepted {mutation}");
+        }
+        conn.execute_batch("UPDATE journal SET dispatch='sent',refusal=NULL,retry_not_before=NULL,refusal_detail=NULL WHERE position=0").unwrap();
+    }
+}
 
 /// Why each unknown call's outcome is unknown, from a closed set, recorded
 /// when the outcome becomes unknown and required from then on.

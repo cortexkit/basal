@@ -125,6 +125,8 @@ pub enum DispatchState {
     /// An operator reconciled it as not applied; it may be sent again with
     /// the same key.
     NotApplied,
+    /// A typed refusal proved no effect; retry only after its durable deadline.
+    Deferred,
 }
 
 impl DispatchState {
@@ -135,6 +137,7 @@ impl DispatchState {
             Self::Accepted => "accepted",
             Self::Unknown => "unknown",
             Self::NotApplied => "not_applied",
+            Self::Deferred => "deferred",
         }
     }
 
@@ -145,6 +148,7 @@ impl DispatchState {
             "accepted" => Self::Accepted,
             "unknown" => Self::Unknown,
             "not_applied" => Self::NotApplied,
+            "deferred" => Self::Deferred,
             other => return Err(CoreError::Corrupt(format!("dispatch state {other:?}"))),
         })
     }

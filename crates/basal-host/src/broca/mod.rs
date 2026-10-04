@@ -30,6 +30,8 @@ use wire::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Route {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flow_id: Option<String>,
     pub project_root: String,
     pub harness: String,
     pub session: String,
@@ -37,6 +39,7 @@ pub struct Route {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BrocaError {
+    Flow(crate::flow_refusal::FlowRefusal),
     Invalid(String),
     UnsupportedKind,
     Wire(String),
@@ -55,6 +58,7 @@ impl std::error::Error for BrocaError {}
 
 /// Adapters bind `route` before each op.
 pub trait Transport: Send + Sync {
+    fn configure_flow(&self, _flow_id: &str, _agent_owned: bool, _scope: Option<crate::flow_scope::RegisteredScope>) {}
     fn send(&self, route: &Route, params: &[u8]) -> Result<SendResult, BrocaError>;
     /// Makes sure a subscription attached at the session's live head is
     /// open, and that it wakes `BrocaHost::poll` when the session's run
@@ -105,6 +109,9 @@ impl StoredOutcome {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredCall {
+    /// A refused send is retried only by the runtime's journal, not by polling.
+    #[serde(default)]
+    pub deferred: bool,
     pub route: Route,
     pub basal_run_id: String,
     pub position: u64,
@@ -294,7 +301,9 @@ impl BrocaHost {
             append_episode: false,
         };
         Ok(StoredCall {
+            deferred: false,
             route: Route {
+                flow_id: Some(request.flow_id.clone()),
                 project_root: self.project_root.clone(),
                 harness: self.harness.clone(),
                 session,
@@ -333,6 +342,11 @@ impl BrocaHost {
                 call.outcome = Some(rejection(&code, &detail, None));
                 self.store.save(call)?;
                 return Ok(true);
+            }
+            Err(BrocaError::Flow(refusal)) => {
+                call.deferred = true;
+                self.store.save(call)?;
+                return Err(BrocaError::Flow(refusal));
             }
             Err(e) => return Err(e),
         };
@@ -524,7 +538,7 @@ impl BrocaHost {
         let sink = lock(&self.sink).clone();
         let mut first_error = None;
         for mut call in self.store.load()? {
-            if call.acknowledged {
+            if call.acknowledged || call.deferred {
                 continue;
             }
             // One call's failure must not hold back the others.
@@ -589,7 +603,8 @@ impl BrocaHost {
             .into_iter()
             .find(|c| c.send_id == prepared.send_id);
         let mut call = match existing {
-            Some(c) => {
+            Some(mut c) => {
+                if c.route.flow_id.is_none() { c.route.flow_id = prepared.route.flow_id.clone(); }
                 if c.route != prepared.route
                     || c.envelope != prepared.envelope
                     || c.basal_run_id != request.run_id
@@ -611,6 +626,7 @@ impl BrocaHost {
             return Ok(Dispatched::Completed(outcome.host()?));
         }
         if call.unknown.is_none() {
+            call.deferred = false;
             let finished = self.issue(&mut call)?;
             if finished && call.outcome.is_none() {
                 self.resolve(&mut call)?;
@@ -632,6 +648,9 @@ impl BrocaHost {
 }
 
 impl Host for BrocaHost {
+    fn configure_flow(&self, flow_id: &str, agent_owned: bool, scope: Option<crate::flow_scope::RegisteredScope>) {
+        self.transport.configure_flow(flow_id, agent_owned, scope);
+    }
     fn classify(&self, _: &CallKind) -> CallClass {
         CallClass::Mutation {
             honours_idempotency_keys: true,
@@ -646,6 +665,7 @@ impl Host for BrocaHost {
         let ambiguous =
             |detail| TransportError::maybe_sent(UnknownReason::RetriesExhausted, detail);
         match self.dispatch_model(request) {
+            Err(BrocaError::Flow(refusal)) => Err(TransportError::Refused(refusal)),
             Ok(result) => Ok(result),
             Err(BrocaError::Unavailable {
                 proven_unsent: true,

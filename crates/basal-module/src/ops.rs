@@ -675,6 +675,7 @@ impl Module {
                 "last_run": last_run,
                 "oldest_overdue_age_ms": f.oldest_overdue_ms.unwrap_or(0),
                 "consecutive_failures": f.consecutive_failures,
+                "waiting_reason": f.waiting_reason,
                 "needs_reconcile": !f.needs_reconcile.is_empty(),
                 // The event plane does not exist yet, so no backlog can
                 // overflow.

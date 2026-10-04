@@ -20,6 +20,7 @@ impl HarnessTransport {
             attempt: 1,
         };
         match self.0.dispatch(&request) {
+            Err(basal_host::TransportError::Refused(refusal)) => Err(WireError::Typed(refusal)),
             Ok(Dispatched::Completed(outcome)) if outcome.settlement == Settlement::Fulfilled => {
                 serde_json::from_str(outcome.value.as_str())
                     .map_err(|e| WireError::Unreadable(e.to_string()))

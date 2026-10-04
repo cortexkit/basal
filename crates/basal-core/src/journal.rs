@@ -229,7 +229,7 @@ pub fn last_clock(conn: &Connection, run_id: &str) -> Result<Option<f64>> {
 pub fn authorize_resend(tx: &Transaction, lease: &Lease, position: u64) -> Result<u32> {
     let changed = tx.execute(
         &format!(
-            "UPDATE journal SET attempts = attempts + 1, dispatch = 'sent' \
+            "UPDATE journal SET attempts = attempts + 1, dispatch = 'sent', refusal = NULL, retry_not_before = NULL, refusal_detail = NULL \
              WHERE run_id = ?1 AND position = ?4 AND settlement IS NULL \
              AND class IN ('query', 'mutation', 'keyed_mutation') AND {FENCE}"
         ),
@@ -252,6 +252,25 @@ pub fn authorize_resend(tx: &Transaction, lease: &Lease, position: u64) -> Resul
         |r| r.get(0),
     )?;
     u32::try_from(attempts).map_err(|_| CoreError::Corrupt(format!("attempts {attempts}")))
+}
+
+/// The refusal and its retry time commit together; a crashed worker can replay
+/// the unresolved position, but recovery cannot turn it into an early send.
+pub fn defer(tx: &Transaction, run_id: &str, position: u64, refusal: &basal_host::flow_refusal::FlowRefusal, retry_at: i64) -> Result<()> {
+    let detail = serde_json::to_string(refusal).map_err(|e| CoreError::Invalid(e.to_string()))?;
+    tx.execute("UPDATE journal SET dispatch = 'deferred', refusal = ?3, retry_not_before = ?4, refusal_detail = ?5 WHERE run_id = ?1 AND position = ?2 AND settlement IS NULL AND dispatch IN ('sent', 'deferred')",
+        params![run_id, pos(position)?, refusal.reason.as_str(), retry_at, detail])?;
+    Ok(())
+}
+
+pub fn deferred_until(conn: &Connection, run_id: &str, position: u64) -> Result<Option<i64>> {
+    conn.query_row("SELECT retry_not_before FROM journal WHERE run_id = ?1 AND position = ?2", params![run_id, pos(position)?], |r| r.get(0)).map_err(Into::into)
+}
+
+/// Feeds the existing pending-run loop rather than creating a retry scheduler.
+pub fn wake_deferred(tx: &Transaction, now: i64, only: Option<&str>) -> Result<()> {
+    tx.execute("UPDATE runs SET state = 'pending', awaited = NULL WHERE state = 'suspended' AND (?2 IS NULL OR run_id = ?2) AND EXISTS (SELECT 1 FROM journal WHERE journal.run_id = runs.run_id AND dispatch = 'deferred' AND retry_not_before <= ?1)", params![now, only])?;
+    Ok(())
 }
 
 /// Releases the next outcome the blocked worker is waiting on: the earliest
@@ -668,7 +687,7 @@ pub fn unknown_positions(conn: &Connection, run_id: &str) -> Result<Vec<u64>> {
 /// outcome yet.
 pub fn accepted_positions(conn: &Connection, run_id: &str) -> Result<Vec<u64>> {
     let mut stmt = conn.prepare(
-        "SELECT position FROM journal WHERE run_id = ?1 AND dispatch = 'accepted' \
+        "SELECT position FROM journal WHERE run_id = ?1 AND dispatch IN ('accepted', 'deferred') \
          AND settlement IS NULL ORDER BY position",
     )?;
     let positions = stmt

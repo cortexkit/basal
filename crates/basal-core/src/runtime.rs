@@ -685,6 +685,37 @@ impl Runtime {
                 .dispatch_classified(&request, expected_class)
             {
                 Ok(d) => break Ok(d),
+                Err(TransportError::Refused(refusal)) => {
+                    use basal_host::flow_refusal::RefusalReason;
+                    if maybe_sent.is_some() {
+                        self.shared.store.write(|tx| journal::record_unknown(tx, &run_id, position, UnknownReason::ConnectionLost))?;
+                    } else if refusal.reason == RefusalReason::AgentRetired {
+                        // Operator decision cards attach here; the terminal decision
+                        // and core's disable already commit together without a retry.
+                        self.shared.store.write(|tx| {
+                            let flow_id = &request.flow_id;
+                            crate::install::disable(tx, flow_id, &crate::install::Actor::Core, "agent_retired", self.config.clock.now_ms()).map_err(|e| CoreError::Invalid(e.to_string()))?;
+                            journal::accept_outcome(tx, &run_id, position, None, &crate::kv::rejection("agent_retired", &format!("{} {}", refusal.provider, refusal.action)), Source::Host)?;
+                            tx.execute("UPDATE runs SET state = 'failed', owner = NULL, generation = generation + 1, awaited = NULL, error_kind = 'agent_retired', error_detail = ?2, ended_at = ?3 WHERE run_id = ?1 AND state IN ('running','pending','suspended')", rusqlite::params![run_id, format!("{} {}", refusal.provider, refusal.action), self.config.clock.now_ms()])?;
+                            Ok(())
+                        })?;
+                    } else {
+                        let now = self.config.clock.now_ms();
+                        let backoff = self.config.retry_backoff.saturating_mul(1u32 << (request.attempt.saturating_sub(1)).min(16)).min(self.config.install_gate_retry_max);
+                        let delay = refusal.retry_after_ms.unwrap_or_else(|| u64::try_from(backoff.as_millis()).unwrap_or(u64::MAX));
+                        // A lost grant requires an explicit decision, never a timer.
+                        // The grant-lost card can replace this deadline after consent.
+                        let retry = if refusal.reason == RefusalReason::ConsentUnavailable { i64::MAX }
+                            else { now.saturating_add(i64::try_from(delay).unwrap_or(i64::MAX)) };
+                        self.shared.store.write(|tx| {
+                            let deadline: Option<i64> = tx.query_row("SELECT deadline_at FROM runs WHERE run_id = ?1", [&run_id], |r| r.get(0))?;
+                            let retry = if refusal.reason == RefusalReason::ResourceBusy { deadline.map_or(retry, |d| retry.min(d)) } else { retry };
+                            journal::defer(tx, &run_id, position, &refusal, retry)
+                        })?;
+                    }
+                    self.shared.signal.bump();
+                    return Ok(());
+                }
                 Err(TransportError::Unavailable { sent, detail }) => {
                     let proven_unsent = sent == Sent::Never;
                     if let Sent::Maybe(reason) = sent {
@@ -826,6 +857,7 @@ impl Runtime {
     /// Pending runs no earlier run of their flow holds back, as (run,
     /// flow), in admission order: what can start now.
     pub fn startable(&self) -> Result<Vec<(String, String)>> {
+        self.shared.store.write(|tx| journal::wake_deferred(tx, self.config.clock.now_ms(), None))?;
         let mut runs = self.shared.store.read(runs::startable)?;
         // A run waiting to ask core again is not offered, so a pass loop
         // cannot ask about it on every pass while core is unreachable.

@@ -300,7 +300,8 @@ fn install_status_replies_decode_strictly() {
     assert_eq!(
         decode_install_status(&json!({"state":"active","code_hash":hash})),
         Ok(InstallStatus::Active {
-            code_hash: hash.clone()
+            code_hash: hash.clone(),
+            scope: None,
         })
     );
     assert_eq!(

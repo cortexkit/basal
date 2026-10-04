@@ -17,6 +17,7 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 fn error(e: WireError) -> BrocaError {
     match e {
+        WireError::Typed(refusal) => BrocaError::Flow(refusal),
         WireError::NeverSent(detail) => BrocaError::Unavailable {
             proven_unsent: true,
             detail,
@@ -183,19 +184,19 @@ impl SubcBrocaTransport {
         method: &str,
         params: &[u8],
     ) -> Result<T, BrocaError> {
-        let value = self
-            .connection
-            .management_as(identity(route), &self.module, method, params)
-            .map_err(error)?;
+        let value = match &route.flow_id {
+            Some(flow) => self.connection.management_for_model(flow, identity(route), &self.module, method, params),
+            None => self.connection.management_as(identity(route), &self.module, method, params),
+        }.map_err(error)?;
         serde_json::from_value(value).map_err(|e| BrocaError::Wire(e.to_string()))
     }
     fn open(&self, route: &Route) -> Result<Arc<Stream>, BrocaError> {
         let bytes = serde_json::to_vec(&SubscribeParams::live())
             .map_err(|e| BrocaError::Invalid(e.to_string()))?;
-        let mut subscription = self
-            .connection
-            .subscribe_as(identity(route), &self.module, "session.subscribe", &bytes)
-            .map_err(error)?;
+        let mut subscription = match &route.flow_id {
+            Some(flow) => self.connection.subscribe_for_model(flow, identity(route), &self.module, "session.subscribe", &bytes),
+            None => self.connection.subscribe_as(identity(route), &self.module, "session.subscribe", &bytes),
+        }.map_err(error)?;
         let stream = Arc::new(Stream::default());
         let weak = Arc::downgrade(&stream);
         let wake = self.wake.clone();
@@ -219,6 +220,9 @@ impl SubcBrocaTransport {
     }
 }
 impl Transport for SubcBrocaTransport {
+    fn configure_flow(&self, flow_id: &str, agent_owned: bool, scope: Option<crate::flow_scope::RegisteredScope>) {
+        crate::transport::Transport::configure_flow(self.connection.as_ref(), flow_id, agent_owned, scope);
+    }
     fn send(&self, route: &Route, params: &[u8]) -> Result<SendResult, BrocaError> {
         self.call(route, "session.send", params)
     }

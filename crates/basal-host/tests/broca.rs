@@ -100,6 +100,7 @@ fn exact_send_contract_and_parallel_sessions() {
     assert_eq!(
         sends[0].0,
         basal_host::broca::Route {
+            flow_id: Some("f".into()),
             project_root: "/project".into(),
             harness: "basal".into(),
             session: "basal:flow-f:r:0".into()

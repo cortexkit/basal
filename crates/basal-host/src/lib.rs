@@ -32,6 +32,8 @@ pub mod catalog;
 pub mod consent;
 pub mod core_consent;
 pub mod core_host;
+pub mod flow_scope;
+pub mod flow_refusal;
 pub mod mock;
 pub mod routing;
 pub mod selector;
@@ -264,6 +266,7 @@ pub enum Sent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransportError {
     Unavailable { sent: Sent, detail: String },
+    Refused(flow_refusal::FlowRefusal),
 }
 
 impl TransportError {
@@ -287,6 +290,7 @@ impl TransportError {
 impl fmt::Display for TransportError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Refused(refusal) => write!(f, "{}: {} {}", refusal.reason.as_str(), refusal.provider, refusal.action),
             Self::Unavailable { sent, detail } => match sent {
                 Sent::Never => write!(f, "host unavailable (provably unsent): {detail}"),
                 Sent::Maybe(reason) => write!(
@@ -309,7 +313,7 @@ impl std::error::Error for TransportError {}
 pub enum InstallStatus {
     /// Core stands behind the version. `code_hash` is the code hash core
     /// approved, as 64 lowercase hex digits.
-    Active { code_hash: String },
+    Active { code_hash: String, scope: Option<flow_scope::RegisteredScope> },
     /// The operator revoked the version in core, which now refuses its sink
     /// writes.
     Revoked { code_hash: String },
@@ -385,6 +389,8 @@ pub trait CompletionSink: Send + Sync {
 /// The hosts a flow reaches. Implementations must be safe to call from
 /// several threads at once: the runtime runs a run's calls concurrently.
 pub trait Host: Send + Sync {
+    /// The activation gate supplies fresh core authority before any run calls.
+    fn configure_flow(&self, _flow_id: &str, _agent_owned: bool, _scope: Option<flow_scope::RegisteredScope>) {}
     /// Whether the call only reads, and if not whether it honours
     /// idempotency keys.
     fn classify(&self, kind: &CallKind) -> CallClass;

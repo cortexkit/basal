@@ -1037,8 +1037,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/gate.rs"
-old = "Ok(InstallStatus::Active { code_hash }) if code_hash == run_hash => {"
-new = "Ok(InstallStatus::Active { code_hash: _ }) => {"
+old = "Ok(InstallStatus::Active { code_hash, scope }) if code_hash == run_hash => {"
+new = "Ok(InstallStatus::Active { code_hash: _, scope }) => {"
 
 [[control]]
 id = "install-gate-a-revoked-version-activates"
@@ -3408,8 +3408,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-module/src/ops.rs"
-old = "\"consecutive_failures\": f.consecutive_failures,\n                \"needs_reconcile\": !f.needs_reconcile.is_empty(),"
-new = "\"consecutive_failures\": f.consecutive_failures,\n                \"needs_reconcile\": f.needs_reconcile.clone(),"
+old = "\"needs_reconcile\": !f.needs_reconcile.is_empty(),"
+new = "\"needs_reconcile\": f.needs_reconcile.clone(),"
 
 [[control]]
 id = "health-s-overflowed-is-left-out"
