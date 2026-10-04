@@ -4,8 +4,8 @@
 //! basal-core's driver; the journal cut harness; the test parent binary the
 //! kill harness `kill -9`s (`src/bin/basal-test-parent.rs`); worker and journal
 //! benchmarks; and a local HTTPS server for the `net.fetch` tests (`https`).
-//! Safety proofs live in the repository's root catalogue and are replayed by
-//! the shared `ck-mutate` runner.
+//! The mutation controls proving these tests catch broken rules are listed in
+//! `mutations.toml` at the repository root, and `ck-mutate` replays them.
 
 pub mod channel;
 pub mod fuzz;
