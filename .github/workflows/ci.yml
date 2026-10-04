@@ -4,19 +4,27 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The nightly breadth audit: the full catalogue with `--broad`, which runs
+  # each mutant against every test target in its package. That reveals a
+  # control whose mutant breaks unrelated tests (CAUGHT_BROADLY), which a
+  # normal replay of the row's own target cannot see.
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 # A newer push to a pull request supersedes the older run. On main every
-# commit gets its full catalogue replay, so a later push never cancels one.
+# commit gets its full catalogue replay, and the nightly audit always
+# finishes, so a later run never cancels either.
 concurrency:
   group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: never
-  CK_MUTATE_REV: 2d096217015f295fe92e8ce52fe0ab8103efa370
+  CK_MUTATE_REV: c46f324133c5df6411703714e4c147f7cc8554a0
 
 jobs:
   checks:
@@ -95,8 +103,10 @@ jobs:
           name: mutations-pr
           path: target/mutations/diff.json
 
+  # On a push to main: the full catalogue, each row against its own target.
+  # Nightly or on demand: the same catalogue with `--broad`.
   mutations-main:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     needs: checks
     runs-on: macos-latest
     strategy:
@@ -132,9 +142,11 @@ jobs:
         run: |
           mkdir -p target/mutations
           rm -f target/mutations/all.json
-          env -u BASAL_WORKER_BIN -u BASAL_CUT_EXHAUSTIVE ck-mutate run --all --shard ${{ matrix.shard }}/5 --report target/mutations/all.json
+          env -u BASAL_WORKER_BIN -u BASAL_CUT_EXHAUSTIVE ck-mutate run --all --shard ${{ matrix.shard }}/5 ${BROAD:+--broad} --report target/mutations/all.json
+        env:
+          BROAD: ${{ github.event_name != 'push' && 'true' || '' }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
-          name: mutations-main-${{ matrix.shard }}
+          name: mutations-${{ github.event_name == 'push' && 'main' || 'broad' }}-${{ matrix.shard }}
           path: target/mutations/all.json

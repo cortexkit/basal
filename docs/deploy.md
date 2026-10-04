@@ -49,7 +49,7 @@ basal's store is new, so there is no migration and no format on disk: no `format
 Before staging, run the formatting, both clippy configurations, workspace tests and shell checks listed in the [README](../README.md), then validate and replay the safety catalogue with the pinned `ck-mutate` runner:
 
 ```sh
-cargo install --locked --git https://github.com/cortexkit/commons --rev 2d096217015f295fe92e8ce52fe0ab8103efa370 cortexkit-mutate
+cargo install --locked --git https://github.com/cortexkit/commons --rev c46f324133c5df6411703714e4c147f7cc8554a0 cortexkit-mutate
 mkdir -p target/mutations
 ck-mutate check
 ck-mutate run --all --report target/mutations/handover.json
