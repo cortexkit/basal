@@ -134,6 +134,13 @@ fn assert_refused_on_the_flow(f: &Fixture, caller: &Caller) {
     }
 }
 
+/// subc-protocol 0.29 added `flow_id` to a scope's attributes: core sets it
+/// when a route is opened on behalf of a flow rather than the agent itself.
+/// The daemon delivers such a route only to a module that declares the
+/// `flow-scopes/v1` capability, and basal does not, so no real bind to basal
+/// carries it. This test proves only that a stamp carrying `flow_id` still
+/// decodes and binds. Treating such a caller as a flow rather than its owner
+/// agent is not implemented, and must be before basal declares the capability.
 #[test]
 fn a_flow_id_in_the_bind_stamp_decodes_without_changing_agent_identity() {
     let stamp: ScopeStamp = serde_json::from_value(json!({

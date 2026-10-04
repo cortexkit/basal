@@ -294,7 +294,6 @@ pub fn management_body(op: &str, params: Value) -> Value {
 pub fn tool_body(name: &str, arguments: Value, call_key: &str) -> Result<Value, WireError> {
     let mut request = subc_protocol::tool_call::ToolCallRequest::new(name, arguments);
     request.call_key = Some(call_key.to_owned());
-    request.preset = None;
     serde_json::to_value(request).map_err(|e| WireError::NeverSent(e.to_string()))
 }
 
