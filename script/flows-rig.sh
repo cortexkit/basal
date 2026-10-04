@@ -13,7 +13,7 @@
 #   script/flows-rig.sh build --prefrontal-rev <rev> [--subc-rev <rev>]
 #                             [--broca-rev <rev>] [--credentials-rev <rev>]
 #                             [--commons-rev <rev>] [--entorhinal-rev <rev>]
-#                             [--dry-run]
+#                             [--sibling-lock <repo>]... [--dry-run]
 #   script/flows-rig.sh place    [--from-stage <dir>] [--dry-run]
 #   script/flows-rig.sh config   [--dry-run]
 #   script/flows-rig.sh start    [--dry-run]
@@ -30,7 +30,11 @@
 #             --prefrontal-rev is required; the others default to their
 #             checkout's HEAD. basal is always built from this checkout's
 #             HEAD, without uncommitted changes. The source checkouts are
-#             only read.
+#             only read. A build that changes a tracked file fails, except
+#             that --sibling-lock <repo> lets that repository's Cargo.lock
+#             change the versions of path dependencies on a sibling clone
+#             (claustrum builds against ../subconscious by path); the
+#             manifest then records its cargo_lock as sibling-refreshed.
 #   place     sign every binary by script/signing.sh under a ckdev-*
 #             identifier and place it in bin/. The rig's ck-basal is built
 #             with the rig-kill-hook feature, which the contract suite's
@@ -397,8 +401,10 @@ cmd_build() {
   credentials_rev=HEAD
   commons_rev=HEAD
   entorhinal_rev=HEAD
+  sibling_lock=""
   while [ $# -gt 0 ]; do
     case "$1" in
+      --sibling-lock) [ $# -ge 2 ] || usage; sibling_lock="$sibling_lock $2"; shift 2 ;;
       --prefrontal-rev) [ $# -ge 2 ] || usage; prefrontal_rev=$2; shift 2 ;;
       --subc-rev) [ $# -ge 2 ] || usage; subc_rev=$2; shift 2 ;;
       --broca-rev) [ $# -ge 2 ] || usage; broca_rev=$2; shift 2 ;;
@@ -464,17 +470,71 @@ cmd_build() {
 
   # A build that rewrote a tracked file (a Cargo.lock refreshed against a
   # sibling at another revision) did not build exactly the named commit.
+  # The one exception is a repository named with --sibling-lock: its
+  # Cargo.lock may change, but only the versions of path dependencies on a
+  # sibling clone. That happens when the repository was built in production
+  # against a sibling checkout at an earlier revision than the rig's. The
+  # change is saved beside the clone, recorded in the stack, and undone.
+  locks=""
   for line in $(repos | tr '\t' '|'); do
     name=${line%%|*}
-    if [ "$DRY" = 0 ] && [ -n "$(git -C "$SRC/$name" status --porcelain --untracked-files=no)" ]; then
-      git -C "$SRC/$name" status --short --untracked-files=no >&2
-      die "$name: the build changed tracked files in $SRC/$name"
-    fi
+    [ "$DRY" = 0 ] || continue
+    changed=$(git -C "$SRC/$name" status --porcelain --untracked-files=no)
+    [ -n "$changed" ] || continue
+    case " $sibling_lock " in
+      *" $name "*)
+        if [ "$changed" = " M Cargo.lock" ] && sibling_versions_only "$SRC/$name"; then
+          git -C "$SRC/$name" diff Cargo.lock > "$SRC/$name.sibling-lock.diff"
+          git -C "$SRC/$name" checkout --quiet -- Cargo.lock
+          say "$name: Cargo.lock refreshed against sibling path dependencies; diff in $SRC/$name.sibling-lock.diff"
+          locks="$locks $name"
+          continue
+        fi
+        ;;
+    esac
+    git -C "$SRC/$name" status --short --untracked-files=no >&2
+    die "$name: the build changed tracked files in $SRC/$name"
   done
-  printf 'repo\tsource\trequested\tcommit\n%s' "$stack" | write_file "$STACK"
+  stack=$(printf '%s' "$stack" | while IFS='	' read -r n s r c; do
+    case " $locks " in *" $n "*) l=sibling-refreshed ;; *) l=committed ;; esac
+    printf '%s\t%s\t%s\t%s\t%s\n' "$n" "$s" "$r" "$c" "$l"
+  done)
+  printf 'repo\tsource\trequested\tcommit\tcargo_lock\n%s\n' "$stack" | write_file "$STACK"
   say "built; next: $0 place"
 }
 
+# sibling_versions_only <clone>: succeed if the clone's Cargo.lock differs from
+# its commit only in the version of packages that have no `source`, which are
+# path dependencies, and adds or removes no package.
+sibling_versions_only() {
+  git -C "$1" show HEAD:Cargo.lock > "$1.committed-lock"
+  status=0
+  python3 - "$1.committed-lock" "$1/Cargo.lock" <<'PY' || status=$?
+import sys
+def blocks(path):
+    out = {}
+    for chunk in open(path).read().split("[[package]]")[1:]:
+        fields = dict(
+            line.split(" = ", 1) for line in chunk.strip().splitlines()
+            if " = " in line and not line.startswith(" ")
+        )
+        out[(fields["name"], fields.get("source"))] = (fields, chunk)
+    return out
+old = blocks(sys.argv[1])
+new = blocks(sys.argv[2])
+if old.keys() != new.keys():
+    sys.exit(1)
+for key, (fields, chunk) in new.items():
+    if chunk == old[key][1]:
+        continue
+    if key[1] is not None:
+        sys.exit(1)
+    if chunk.replace(fields["version"], old[key][0]["version"], 1) != old[key][1]:
+        sys.exit(1)
+PY
+  rm -f "$1.committed-lock"
+  return "$status"
+}
 # Bring $SRC/<name> to exactly <sha> without touching the source checkout:
 # a separate clone, detached at the commit, with no local changes.
 clone_at() {
@@ -1016,7 +1076,8 @@ write_manifest() {
     commit=$(printf '%s' "$line" | cut -d'|' -f4)
     head=$(git -C "$SRC/$name" rev-parse HEAD)
     [ "$head" = "$commit" ] || die "$name: the clone is at $head, but $commit was built"
-    repos_tsv="$repos_tsv$(printf '%s' "$line" | tr '|' '\t')
+    lock=$(printf '%s' "$line" | cut -d'|' -f5)
+    repos_tsv="$repos_tsv$(printf '%s' "$line" | cut -d'|' -f1-4 | tr '|' '\t')	${lock:-committed}
 "
   done
   bins_tsv=""
@@ -1050,7 +1111,11 @@ print(json.dumps({
     "port": port,
     "written_at": stamp,
     "repositories": [
-        {"name": n, "source": s, "requested": r, "commit": c} for n, s, r, c in rows("REPOS")
+        # cargo_lock is "committed", or "sibling-refreshed" when the build
+        # ran with path dependencies at the rig's sibling revision instead
+        # of the versions the commit's Cargo.lock records.
+        {"name": n, "source": s, "requested": r, "commit": c, "cargo_lock": l}
+        for n, s, r, c, l in rows("REPOS")
     ],
     "binaries": [
         {"name": n, "repository": r, "path": p, "sha256": h, "identifier": i}
