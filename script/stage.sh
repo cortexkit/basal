@@ -180,10 +180,13 @@ identity() {
 }
 
 # hold <program> [args]: start the program so that it stays alive as that
-# image, and print its pid. Its stdout is a pipe already full to the last
-# byte, with the read end held open by the child itself, so its first write
-# blocks for good. That keeps a short-lived command (--version) running long
-# enough to attach to, without arguments that make it do anything else.
+# image, and print its pid and then the pid of a reader process. Its stdout is
+# a pipe already full to the last byte, so its first write blocks for good.
+# That keeps a short-lived command (--version) running long enough to attach
+# to, without arguments that make it do anything else. A separate `sleep`
+# holds the pipe's read end open: ck-basal-worker closes every inherited
+# descriptor above 2 at startup, so a read end handed to the program itself
+# would be closed, and the write would fail with EPIPE instead of blocking.
 hold() {
   python3 - "$@" <<'PY'
 import fcntl, os, subprocess, sys
@@ -195,10 +198,12 @@ try:
 except BlockingIOError:
     pass
 fcntl.fcntl(w, fcntl.F_SETFL, 0)
+reader = subprocess.Popen(["sleep", "600"], stdin=subprocess.DEVNULL,
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                          pass_fds=(r,), start_new_session=True)
 child = subprocess.Popen(sys.argv[1:], stdin=subprocess.DEVNULL, stdout=w,
-                         stderr=subprocess.DEVNULL, pass_fds=(r,),
-                         start_new_session=True)
-print(child.pid)
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+print(child.pid, reader.pid)
 PY
 }
 
@@ -222,8 +227,9 @@ attach() {
 debugger_probe() {
   file=$1
   shift
-  pid=$(hold "$file" "$@")
-  HELD="$HELD $pid"
+  pids=$(hold "$file" "$@")
+  HELD="$HELD $pids"
+  pid=${pids%% *}
   sleep 1
   kill -0 "$pid" 2>/dev/null || die "$file exited before the debugger probe"
   # The physical path: lsof names the image by its resolved path.
@@ -231,7 +237,8 @@ debugger_probe() {
   [ "$(running_inode "$pid" "$physical_file")" = "$(stat -f %i "$file")" ] \
     || die "pid $pid is not running $file"
   out=$(attach "$pid")
-  kill -KILL "$pid" 2>/dev/null || true
+  # shellcheck disable=SC2086 # two pids, split on purpose
+  kill -KILL $pids 2>/dev/null || true
   if printf '%s\n' "$out" | grep -q "Process $pid detached"; then
     VERDICT=attached
   elif printf '%s\n' "$out" | grep -q 'attach failed.*Not allowed to attach'; then
