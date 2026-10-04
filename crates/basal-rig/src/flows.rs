@@ -139,3 +139,63 @@ return {{ digest }};",
         script,
     }
 }
+
+/// Model cases are agent-owned at installation, just like the scoped writer.
+/// Each daily cap bounds every scheduled run, not just the first run the suite
+/// observes. The three sending flows total 3,072 tokens; the refused one adds
+/// 16, for a finite 3,088-token allowance even if cleanup is interrupted.
+pub fn model(id: &str, agent: &str, classify: bool, capped: bool) -> Flow {
+    let mut m: Value = serde_json::from_str(&manifest(
+        id,
+        "Basal rig contract: a tiny, agent-owned model call through Broca.",
+        agent,
+        false,
+    ))
+    .expect("valid manifest");
+    m["llm"] = json!({
+        "iq": 0, "eq": 0,
+        "token_cap": {"tokens": if capped {16} else {1024}, "window": "1d"},
+        "max_output": if capped {16} else {64},
+    });
+    let request = if classify {
+        "classify('A friendly hello.', ['positive', 'negative'])"
+    } else {
+        "llm({prompt:'Reply with the word hello.', max_output:16})"
+    };
+    Flow {
+        id: id.into(),
+        version: 1,
+        manifest: m.to_string(),
+        script: format!("return await {request}.catch({CAUGHT});"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_manifests_bound_the_suite_and_keep_prompts_tiny() {
+        let mut total = 0;
+        for (id, classify, capped) in [
+            ("first", false, false),
+            ("classify", true, false),
+            ("crash", false, false),
+            ("cap", false, true),
+        ] {
+            let f = model(id, "RigAgent", classify, capped);
+            let m = f.manifest_value();
+            let tokens = m["llm"]["token_cap"]["tokens"].as_u64().unwrap();
+            total += tokens;
+            assert_eq!(m["llm"]["token_cap"]["window"], "1d");
+            assert!((16..=64).contains(&m["llm"]["max_output"].as_u64().unwrap()));
+            assert!(f.script.len() < 256);
+            assert!(!f.script.contains("tools"));
+            assert_eq!(f.script.matches("await").count(), 1);
+            if capped {
+                assert_eq!(tokens, 16);
+            }
+        }
+        assert_eq!(total, 3088);
+    }
+}

@@ -14,4 +14,5 @@
 
 pub mod client;
 pub mod flows;
+pub mod models;
 pub mod stores;
