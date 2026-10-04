@@ -156,6 +156,14 @@ say "=== build (release, CK_BUILD_GIT_SHA=$SHA CK_BUILD_GIT_DIRTY=$DIRTY)"
 hook=$(strings "$TARGET/release/ck-basal" | grep -cF -- "$KILL_HOOK_NEEDLE" || true)
 [ "$hook" = 0 ] || die "the built ck-basal contains the rig kill switch ($KILL_HOOK_NEEDLE); nothing staged"
 say "ck-basal carries no rig kill switch ($KILL_HOOK_NEEDLE: 0)"
+# The placement gate refuses a binary that still carries its debug map (the
+# OSO entries pointing at object files on the build machine). Cargo strips
+# release builds, but a stripping failure is only a warning, so check.
+for bin in $BINARIES; do
+  oso=$(nm -a "$TARGET/release/$bin" | grep -c ' OSO ' || true)
+  [ "$oso" = 0 ] || die "$bin still carries $oso debug-map entries: stripping failed; nothing staged"
+done
+say "debug map: 0 entries in each binary"
 
 # ---------------------------------------------------------------- sign
 
@@ -372,6 +380,15 @@ write_current basal-worker
 # ---------------------------------------------------------------- card
 
 sum_of() { awk '{ print $1 }' "$STAGE_DIR/$1.sha256"; }
+# The CI result for the staged commit, as GitHub reports it, so the card
+# never claims a run it did not look up.
+ci_of() {
+  command -v gh >/dev/null 2>&1 || { printf 'not checked (gh is not installed)'; return; }
+  gh run list --repo cortexkit/basal --workflow CI --commit "$SHA" --limit 1 \
+      --json status,conclusion,url \
+      --jq '.[0] | if . == null then "no run for this commit" else "\(.status) \(.conclusion // ""), \(.url)" end' \
+      2>/dev/null || printf 'not checked (gh failed)'
+}
 CARD="$STAGE_DIR/card.md"
 cat > "$CARD" <<EOF
 @SUBC basal: a FIRST placement, two binaries, one card each (ck-basal, ck-basal-worker)
@@ -380,9 +397,11 @@ cat > "$CARD" <<EOF
 - stage: $STAGE_DIR (both binaries)
 - ck-basal: $STAGE_DIR/ck-basal, sha256 $(sum_of ck-basal); basal.current revision $SHA
 - ck-basal-worker: $STAGE_DIR/ck-basal-worker, sha256 $(sum_of ck-basal-worker); basal-worker.current revision $SHA
-- build: release, clean tree, CK_BUILD_GIT_SHA=$SHA CK_BUILD_GIT_DIRTY=$DIRTY, commit $PUSHED. basal has no CI yet.
+- build: release, clean tree, CK_BUILD_GIT_SHA=$SHA CK_BUILD_GIT_DIRTY=$DIRTY, commit $PUSHED.
+- CI for that commit: $(ci_of)
+- daemon floor: 0.20.53, the oldest daemon a subc-protocol 0.29 module is known to run against.
 
-**Signing** (both): ad hoc, hardened runtime, explicit identifier, no entitlements, no get-task-allow
+**Signing** (both): ad hoc, hardened runtime, explicit identifier, no entitlements, no get-task-allow, 0 debug-map entries
 - ck-basal: Identifier=ck-basal flags=$(codesign_flags "$STAGE_DIR/ck-basal")
 - ck-basal-worker: Identifier=ck-basal-worker flags=$(codesign_flags "$STAGE_DIR/ck-basal-worker")
 - no entitlements: the worker's QuickJS is an interpreter and needs no JIT; its sandbox is a Seatbelt profile it applies to itself.
@@ -395,14 +414,14 @@ cat > "$CARD" <<EOF
 - control: a string every build of each binary carries
   - ck-basal "$(control_of ck-basal)": $(cat "$CONTROL_DIR/ck-basal.control")
   - ck-basal-worker "$(control_of ck-basal-worker)": $(cat "$CONTROL_DIR/ck-basal-worker.control")
-- This is a first placement: there is no running basal, so the gate's marker and control arms have no live binary to compare. place-module.sh refuses a missing destination before any arm ("destination does not exist, so this is an install rather than a placement"), so this card needs an install, not a gated placement. The two binaries' sha256 above, and the build revision in \`ck --json provenance basal\` afterwards, are the identity checks that remain.
+- This is a first install: there is no running basal, so place each binary with place-module.sh's \`--install\` mode and the marker above (\`--module basal --staged $STAGE_DIR/ck-basal --marker $SHA --install\`, then the same for ck-basal-worker with \`--dest ~/.local/share/cortexkit/bin/ck-basal-worker\`). It checks that the destination does not exist, that the binary is hardened with no get-task-allow, that its identifier matches the destination name, and that the marker is in the staged binary. No restart: basal starts on \`ck module rescan\` once its config entry exists.
 
 **Store and formats**
 - new module: no migration, no existing format, no format-floor.json. basal's store, <data_home>/cortexkit/basal/store.db, is created on first start. check-format-floors.sh finds no floors for basal and passes.
 
 **Order**
 - both binaries in ~/.local/share/cortexkit/bin before basal first starts: ck-basal runs ck-basal-worker from its own directory under that exact name.
-- the daemon has no basal module yet: its subc.jsonc entry (reserved, so its routes carry reserved:basal) is the operator's approval step and comes after both files are in place.
+- the daemon has no basal module yet: its subc.jsonc entry is the operator's approval step and comes after both files are in place. The entry: no environment (basal finds its store from its home), \`reserved: true\` (core accepts basal's install and decision cards only from reserved:basal), and exclusive overlap (the journal is a single-writer database).
 
 **Post-placement check** (mine)
 - \`ck --json provenance basal\`: build_git_sha $SHA, and the observed pid's running image is the placed ck-basal (same inode).
