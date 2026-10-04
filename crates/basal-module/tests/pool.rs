@@ -415,7 +415,7 @@ fn a_wait_deadline_stops_and_reaps_its_workers() {
     });
     // An independent outer bound catches removal of the wait's own deadline.
     // Release the waiter even on failure, so neither a thread nor a worker leaks.
-    let result = rx.recv_timeout(WAIT + Duration::from_secs(2));
+    let result = rx.recv_timeout(Duration::from_secs(5));
     release.store(true, Ordering::SeqCst);
     f.module.pool.stop();
     let join_deadline = Instant::now() + WAIT;
