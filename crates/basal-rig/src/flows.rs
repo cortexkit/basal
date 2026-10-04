@@ -162,7 +162,7 @@ pub fn model(id: &str, agent: &str, classify: bool, capped: bool) -> Flow {
     let request = if classify {
         "classify('A friendly hello.', ['positive', 'negative'])"
     } else {
-        "llm({prompt:'Reply with the word hello.', max_output:16})"
+        "llm({prompt:'Reply with the word hello.', max_output:64})"
     };
     Flow {
         id: id.into(),

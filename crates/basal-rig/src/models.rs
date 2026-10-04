@@ -22,6 +22,12 @@ pub fn no_tools(send: &Value) -> bool {
     send["tools"] == json!([]) && send["tool_choice"] == json!({"type":"none"})
 }
 
+/// A completed run can spend its entire small output allowance on reasoning.
+/// Empty visible text is still a result, but a missing transcript is not.
+pub fn result_matches_transcript(result: &Value, text: Option<&str>) -> bool {
+    text.is_some_and(|t| result["text"] == t)
+}
+
 /// Broca's canonical input is already fresh input. Missing capped measurements
 /// stay null and retain the unmeasured part of the reservation; they are not
 /// evidence of zero usage (OpenAI may omit cache-write usage entirely).
@@ -49,6 +55,21 @@ pub fn settled_usage(charge: &Value, usage: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completed_empty_text_is_valid_but_missing_transcript_is_not() {
+        assert!(result_matches_transcript(&json!({"text":""}), Some("")));
+        assert!(result_matches_transcript(
+            &json!({"text":"hello"}),
+            Some("hello")
+        ));
+        assert!(!result_matches_transcript(
+            &json!({"text":"hello"}),
+            Some("")
+        ));
+        assert!(!result_matches_transcript(&json!({"text":""}), None));
+        assert!(!result_matches_transcript(&Value::Null, Some("")));
+    }
 
     #[test]
     fn only_a_complete_luna_selection_passes() {

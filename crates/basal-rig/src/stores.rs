@@ -111,7 +111,7 @@ impl BasalStore {
     pub fn model_call(&self, run_id: &str) -> Result<Option<Value>, String> {
         let c = open(&self.path)?;
         c.query_row(
-            "SELECT j.args, b.snapshot FROM journal j JOIN broca_calls b
+            "SELECT COALESCE(j.request, j.args), b.snapshot FROM journal j JOIN broca_calls b
                 ON b.run_id = j.run_id AND b.position = j.position
               WHERE j.run_id = ?1 AND j.position = 0",
             [run_id],
@@ -249,6 +249,36 @@ pub struct BrocaStore {
 }
 
 impl BrocaStore {
+    /// The daemon-attested principal and scope Broca retained, rather than an
+    /// assumption derived from the session's caller-chosen harness label.
+    pub fn ownership(&self, route: &Value) -> Result<Value, String> {
+        let c = open(&self.path)?;
+        let key = ["project_root", "harness", "session"]
+            .iter()
+            .map(|k| {
+                route[k]
+                    .as_str()
+                    .ok_or_else(|| format!("missing route {k}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .join("\u{1f}");
+        let checkpoint: String = c
+            .query_row(
+                "SELECT admission_checkpoint_json FROM meta WHERE session = ?1",
+                [key],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        let value: Value = serde_json::from_str(&checkpoint).map_err(|e| e.to_string())?;
+        let owner = value
+            .pointer("/checkpoint/ownership")
+            .ok_or("Broca has no ownership checkpoint")?;
+        Ok(
+            json!({"scope": owner["scope"], "first_principal": owner["first_principal"],
+            "recorded_principals": owner["recorded_principals"], "episodes": owner["episodes"]}),
+        )
+    }
+
     pub fn runs(&self, route: &Value) -> Result<Vec<Value>, String> {
         let c = open(&self.path)?;
         let mut s = c

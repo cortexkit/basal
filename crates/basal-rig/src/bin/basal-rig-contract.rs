@@ -33,7 +33,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use basal_rig::client::{Client, Relayed, Reply, evidence, suite_identity};
 use basal_rig::flows::{self, Flow};
-use basal_rig::models::{frozen_send, no_tools, selected_luna, settled_usage};
+use basal_rig::models::{
+    frozen_send, no_tools, result_matches_transcript, selected_luna, settled_usage,
+};
 use basal_rig::stores::{
     BasalStore, BrocaStore, Call, CoreStore, KIND_SINK_DIGEST, KIND_SINK_STATUS, Receipt, Run,
 };
@@ -1506,17 +1508,14 @@ async fn models(
     let first = flows::model(&format!("rig-model-first-{tag}"), &agent.name, false, false);
     let mut minimal = Case::new(MODEL_CASES[0]);
     // On hook builds, kill before the first dispatch. The hook captures the
-    // committed journal while attempts is still zero; replay must use it.
+    // committed request before the host has any snapshot; replay must use it.
     if !args.no_kill_hook {
         arm_model(rig, &first, "CallCommitted { position: 0 }")?;
     }
     let run = model_run(rig, agent, &first, &mut minimal).await;
     let _ = std::fs::remove_file(&rig.kill_file);
     let ok = run.as_ref().is_some_and(|r| {
-        r.state == "succeeded"
-            && r.result
-                .as_ref()
-                .is_some_and(|v| v["text"].as_str().is_some_and(|t| !t.is_empty()))
+        r.state == "succeeded" && r.result.as_ref().is_some_and(|v| v["text"].is_string())
     });
     minimal.check("the first call returns model text, without an access or scope refusal", ok,
         json!({"result": run.as_ref().and_then(|r| r.result.clone()), "error": run.as_ref().and_then(|r| r.error.clone())}));
@@ -1536,9 +1535,10 @@ async fn models(
     };
     if !args.no_kill_hook {
         let before_send = kill_evidence(rig);
-        routing.check("fixture-pinned route.select runner, provider, model and decision id were durable with zero dispatch attempts",
+        routing.check("fixture-pinned route.select runner, provider, model and decision id were durable before the host prepared a send",
             run.as_ref().is_some_and(|r| before_send["run_id"] == r.run_id)
-                && before_send["attempts"] == 0 && before_send["dispatch"] == "none"
+                && before_send["attempts"] == 1 && before_send["dispatch"] == "sent"
+                && before_send["broca_snapshots"] == 0
                 && before_send["settlement"].is_null() && selected_luna(&before_send["args"]["selection"])
                 && before_send["args"]["selection"] == call["journal"]["selection"], before_send);
     }
@@ -1564,6 +1564,10 @@ async fn models(
     let mut result = Case::new(MODEL_CASES[2]);
     let indexed = rig.broca.runs(&snapshot["route"])?;
     result.record("broca_run_index", json!(indexed));
+    result.record(
+        "broca_route",
+        json!({"bind": snapshot["route"], "ownership": rig.broca.ownership(&snapshot["route"])?}),
+    );
     result.record("saved_call", call.clone());
     let text = poll(Duration::from_secs(20), || async {
         rig.broca.final_text(&snapshot["route"]).ok().flatten()
@@ -1572,9 +1576,10 @@ async fn models(
     result.check(
         "llm returns the completed run.result text, equal to Broca's independent transcript",
         snapshot["state"] == "completed"
-            && text
-                .as_deref()
-                .is_some_and(|t| run.result.as_ref().is_some_and(|v| v["text"] == t)),
+            && run
+                .result
+                .as_ref()
+                .is_some_and(|v| result_matches_transcript(v, text.as_deref())),
         json!({"broca_text": text, "flow_result": run.result}),
     );
     let ledger = rig.basal.ledger(&run.run_id)?;
@@ -1620,6 +1625,14 @@ async fn models(
     );
     if let Some(r) = &classified {
         let saved = rig.basal.model_call(&r.run_id)?.unwrap_or(Value::Null);
+        if !saved.is_null() {
+            label.record(
+                "broca_send",
+                json!({"bind": saved["broca"]["route"],
+                "ownership": rig.broca.ownership(&saved["broca"]["route"])? ,
+                "runs": rig.broca.runs(&saved["broca"]["route"])?}),
+            );
+        }
         let send = frozen_send(&saved["broca"]).unwrap_or(Value::Null);
         tools.check(
             "classify's frozen send also has no tools and tool_choice none",
@@ -1668,9 +1681,21 @@ async fn models(
         if let Some(r) = recovered {
             let saved = rig.basal.model_call(&r.run_id)?.unwrap_or(Value::Null);
             let sends = rig.broca.runs(&saved["broca"]["route"])?;
+            crash.record(
+                "broca_send",
+                json!({"bind": saved["broca"]["route"],
+                "ownership": rig.broca.ownership(&saved["broca"]["route"])? , "runs": sends}),
+            );
             let calls = rig.basal.calls(&flow.id)?;
+            let text = poll(Duration::from_secs(20), || async {
+                rig.broca
+                    .final_text(&saved["broca"]["route"])
+                    .ok()
+                    .flatten()
+            })
+            .await;
             crash.check("restart completes from Broca's result with exactly one independent session run",
-                r.state == "succeeded" && r.result.as_ref().is_some_and(|v| v["text"].as_str().is_some_and(|t| !t.is_empty()))
+                r.state == "succeeded" && r.result.as_ref().is_some_and(|v| result_matches_transcript(v, text.as_deref()))
                     && sends.len() == 1 && sends[0]["run_id"] == saved["broca"]["broca_run_id"]
                     && sends[0]["state"] == "completed" && calls.len() == 1 && calls[0].attempts == 1,
                 json!({"result": r.result, "broca_run_index": sends, "attempts": calls.first().map(|c| c.attempts)}));

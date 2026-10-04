@@ -79,12 +79,12 @@ fn model_journal_and_ledger_reads_are_scoped_to_the_run_and_preserve_missing_usa
     let scratch = Scratch::new();
     let c = Connection::open(&scratch.0).unwrap();
     c.execute_batch(
-        "CREATE TABLE journal (run_id TEXT, position INTEGER, args TEXT);
+        "CREATE TABLE journal (run_id TEXT, position INTEGER, args TEXT, request TEXT);
         CREATE TABLE broca_calls (run_id TEXT, position INTEGER, snapshot TEXT);
         CREATE TABLE token_ledger (run_id TEXT, position INTEGER, state TEXT, reserved INTEGER,
             input_tokens INTEGER, cache_write_tokens INTEGER, output_tokens INTEGER,
             cached_input_tokens INTEGER, unreported_tokens INTEGER);
-        INSERT INTO journal VALUES ('first', 0, '{\"selection\":{\"decisionID\":\"d1\"}}');
+        INSERT INTO journal VALUES ('first', 0, '{\"prompt\":\"authored\"}', '{\"selection\":{\"decisionID\":\"d1\"}}');
         INSERT INTO broca_calls VALUES ('first', 0, '{\"broca_run_id\":\"b1\"}');
         INSERT INTO token_ledger VALUES ('first', 0, 'settled', 800, 9, NULL, 2, 1, 789);",
     )
@@ -102,4 +102,39 @@ fn model_journal_and_ledger_reads_are_scoped_to_the_run_and_preserve_missing_usa
     assert_eq!(charge[0]["unreported_tokens"], 789);
     assert!(store.model_call("unsent").unwrap().is_none());
     assert!(store.ledger("unsent").unwrap().is_empty());
+}
+
+#[test]
+fn ownership_reads_brocas_attestation_not_the_callers_harness_label() {
+    let scratch = Scratch::new();
+    let c = Connection::open(&scratch.0).unwrap();
+    c.execute_batch("CREATE TABLE meta (session TEXT, admission_checkpoint_json TEXT);")
+        .unwrap();
+    let owner = json!({"episodes":1,"first_principal":{"kind":"direct"},
+        "recorded_principals":[{"kind":"direct"}]});
+    c.execute(
+        "INSERT INTO meta VALUES (?1, ?2)",
+        params![
+            "/rig\u{1f}basal\u{1f}first",
+            json!({"version":1,"checkpoint":{"ownership":owner}}).to_string()
+        ],
+    )
+    .unwrap();
+    let store = BrocaStore {
+        path: scratch.0.clone(),
+    };
+    let route = json!({"project_root":"/rig","harness":"basal","session":"first"});
+    let recorded = store.ownership(&route).unwrap();
+    assert_eq!(recorded["first_principal"], json!({"kind":"direct"}));
+    assert_eq!(recorded["episodes"], 1);
+    assert_eq!(recorded["scope"], Value::Null);
+    assert_eq!(
+        recorded["recorded_principals"],
+        owner["recorded_principals"]
+    );
+    assert!(
+        store
+            .ownership(&json!({"project_root":"/other","harness":"basal","session":"first"}))
+            .is_err()
+    );
 }

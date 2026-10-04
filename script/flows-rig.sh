@@ -100,8 +100,9 @@
 #
 # Model cases need core's agent-owned flow scope registration at approval:
 # prefrontal 73c66ff1f or later, plus a basal build that opens scoped Broca
-# routes. Without the latter, the first call reports scope_owner_mismatch;
-# it must not be bypassed. The other repositories default to their HEAD:
+# routes. Broca may accept basal's own unscoped sessions before that change;
+# results record Broca's retained principal and scope, never assume a scope
+# refusal. Any scope_owner_mismatch must not be bypassed. Other repos use HEAD:
 #   script/flows-rig.sh build --prefrontal-rev 73c66ff1f --sibling-lock claustrum
 set -eu
 
