@@ -2,14 +2,17 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 permissions:
   contents: read
 
+# A newer push to a pull request supersedes the older run. On main every
+# commit gets its full catalogue replay, so a later push never cancels one.
 concurrency:
   group: ci-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: never
@@ -62,16 +65,17 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
-      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+      # Restore the build the checks job saved for this commit and never save
+      # a second copy: the repository's cache quota holds only a few target
+      # directories.
+      - uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-${{ runner.arch }}-cargo-mutations-pr-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-cargo-mutations-pr-${{ hashFiles('Cargo.lock') }}-
-            ${{ runner.os }}-${{ runner.arch }}-cargo-checks-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-checks-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-cargo-checks-
       - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         id: mutate-cache
         with:
@@ -98,25 +102,24 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Three rows per checkout; the longest measured row sum is about
-        # 16 minutes on a shared host, including compile-slot queues.
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128]
+        # GitHub runs at most five macOS jobs at once for this account, so
+        # five shards replay the catalogue in one wave. More shards would only
+        # queue, and each one pays its own checkout and cache restore.
+        shard: [1, 2, 3, 4, 5]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Install stable Rust
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
-      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+      - uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-${{ runner.arch }}-cargo-mutations-${{ matrix.shard }}-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-cargo-mutations-${{ matrix.shard }}-${{ hashFiles('Cargo.lock') }}-
-            ${{ runner.os }}-${{ runner.arch }}-cargo-checks-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-checks-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-cargo-checks-
       - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         id: mutate-cache
         with:
@@ -129,7 +132,7 @@ jobs:
         run: |
           mkdir -p target/mutations
           rm -f target/mutations/all.json
-          env -u BASAL_WORKER_BIN -u BASAL_CUT_EXHAUSTIVE ck-mutate run --all --shard ${{ matrix.shard }}/128 --report target/mutations/all.json
+          env -u BASAL_WORKER_BIN -u BASAL_CUT_EXHAUSTIVE ck-mutate run --all --shard ${{ matrix.shard }}/5 --report target/mutations/all.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
