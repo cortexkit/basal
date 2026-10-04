@@ -1521,9 +1521,31 @@ async fn models(
     minimal.check("the first call returns model text, without an access or scope refusal", ok,
         json!({"result": run.as_ref().and_then(|r| r.result.clone()), "error": run.as_ref().and_then(|r| r.error.clone())}));
     cases.push(minimal);
+    // A Broca scope or access refusal still leaves a valid routing proof. Read
+    // the selected-but-unsent checkpoint before stopping the remaining cases.
+    let call = run
+        .as_ref()
+        .map(|r| rig.basal.model_call(&r.run_id))
+        .transpose()?
+        .flatten()
+        .unwrap_or(Value::Null);
+    let mut routing = if args.no_kill_hook {
+        Case::skipped(MODEL_CASES[1], NO_KILL_HOOK_REASON)
+    } else {
+        Case::new(MODEL_CASES[1])
+    };
+    if !args.no_kill_hook {
+        let before_send = kill_evidence(rig);
+        routing.check("fixture-pinned route.select runner, provider, model and decision id were durable with zero dispatch attempts",
+            run.as_ref().is_some_and(|r| before_send["run_id"] == r.run_id)
+                && before_send["attempts"] == 0 && before_send["dispatch"] == "none"
+                && before_send["settlement"].is_null() && selected_luna(&before_send["args"]["selection"])
+                && before_send["args"]["selection"] == call["journal"]["selection"], before_send);
+    }
+    cases.push(routing);
     if !ok {
         let detail = json!({"result": run.as_ref().and_then(|r| r.result.clone()), "error": run.as_ref().and_then(|r| r.error.clone())});
-        for name in &MODEL_CASES[1..] {
+        for name in &MODEL_CASES[2..] {
             cases.push(Case::skipped(
                 name,
                 "first minimal model call refused or failed; no further model sends",
@@ -1534,25 +1556,10 @@ async fn models(
         ));
     }
     let run = run.expect("successful run checked above");
-    let call = rig
-        .basal
-        .model_call(&run.run_id)?
-        .ok_or("first model call has no Broca snapshot")?;
-    let snapshot = &call["broca"];
-    let mut routing = if args.no_kill_hook {
-        Case::skipped(MODEL_CASES[1], NO_KILL_HOOK_REASON)
-    } else {
-        Case::new(MODEL_CASES[1])
-    };
-    if !args.no_kill_hook {
-        let before_send = kill_evidence(rig);
-        routing.check("route.select's runner, provider, model and decision id were durable with zero dispatch attempts",
-            before_send["run_id"] == run.run_id && before_send["attempts"] == 0
-                && before_send["dispatch"] == "none" && before_send["settlement"].is_null()
-                && selected_luna(&before_send["args"]["selection"])
-                && before_send["args"]["selection"] == call["journal"]["selection"], before_send);
+    if call.is_null() {
+        return Err("first model call has no Broca snapshot".into());
     }
-    cases.push(routing);
+    let snapshot = &call["broca"];
 
     let mut result = Case::new(MODEL_CASES[2]);
     let indexed = rig.broca.runs(&snapshot["route"])?;

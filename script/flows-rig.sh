@@ -46,6 +46,8 @@
 #             Temporarily start the rig to read its served Fusiform catalog,
 #             then pin alfonso-routing.jsonc to openai/gpt-6-luna. Refuse a
 #             catalog without that model. No production config is copied.
+#             Luna's only score is a labeled rig fixture (elo 1, eq/speed 0),
+#             not measured quality; the stack manifest records that fact.
 #   credential ingest the isolated API key with provider_ids: ["openai"],
 #             delete the input file after deposit and confirm exactly one
 #             active credential. The operator saves it at
@@ -870,12 +872,25 @@ EOF
 }
 
 configure_live() {
-  # Grants are vault records, not subc JSON fields. Re-running grant is
-  # idempotent; these are the only authorities this configuration installs.
-  rig_auth grant --principal reserved:broca --selector-kind exact \
-    --selector apikey:openai --operation read || return 1
-  rig_auth grant --principal reserved:prefrontal-routing --selector-kind category \
-    --selector llm-provider --operation list || return 1
+  # Grants are vault records, not subc JSON fields. The CLI refuses duplicate
+  # grants, so read their metadata and install only the missing authorities.
+  # An unexpected existing grant is a configuration error, never silently kept.
+  if [ "$DRY" = 1 ]; then
+    rig_auth grants
+    say "+ grant each missing authority; refuse any other existing grant"
+    rig_auth grant --principal reserved:broca --selector-kind exact --selector apikey:openai --operation read
+    rig_auth grant --principal reserved:prefrontal-routing --selector-kind category --selector llm-provider --operation list
+  else
+    grant_rows=$(rig_auth grants) || return 1
+    missing=$(printf '%s\n' "$grant_rows" | missing_grants) || return 1
+    for row in $missing; do
+      principal=${row%%|*}; row=${row#*|}
+      kind=${row%%|*}; row=${row#*|}
+      selector=${row%%|*}; operation=${row#*|}
+      rig_auth grant --principal "reserved:$principal" --selector-kind "$kind" \
+        --selector "$selector" --operation "$operation" || return 1
+    done
+  fi
   if [ "$DRY" = 1 ]; then
     say "+ read the served catalog: ckdev-models get --subc $CONN --json"
     say "+ write $ROUTING_CONFIG: model_routing.exclude = [every served provider, -openai/gpt-6-luna]"
@@ -883,6 +898,23 @@ configure_live() {
   else
     pin_routing
   fi
+}
+
+missing_grants() {
+  python3 -c 'import sys
+lines = sys.stdin.read().splitlines()
+allowed = {("reserved", "broca", "exact", "apikey:openai", "read"),
+           ("reserved", "prefrontal-routing", "category", "llm-provider", "list")}
+if lines == ["no grants"]:
+    existing = set()
+elif lines and lines[0].startswith("KIND "):
+    existing = {tuple(line.split()[:5]) for line in lines[1:] if line.strip()}
+else:
+    sys.exit("flows-rig: missing grant inventory header")
+if not existing <= allowed:
+    sys.exit("flows-rig: rig vault has unexpected grants; inspect with explicit rig auth flags")
+for row in sorted(allowed - existing):
+    print("|".join(row[1:]))'
 }
 
 pin_routing() {
@@ -893,7 +925,14 @@ models = catalog["models"]
 if "openai/gpt-6-luna" not in models:
     sys.exit("flows-rig: served Fusiform catalog lacks openai/gpt-6-luna")
 providers = sorted({key.split("/", 1)[0] for key in models})
-print(json.dumps({"model_routing": {"exclude": providers + ["-openai/gpt-6-luna"]}}, indent=2))') || return 1
+policy = {"model_routing": {"exclude": providers + ["-openai/gpt-6-luna"],
+          "models": {"openai/gpt-6-luna": {"elo": 1, "eq": 0, "speed": 0}}}}
+text = json.dumps(policy, indent=2)
+entry = "      \"openai/gpt-6-luna\": {"
+comment = ("      // Rig fixture values, not measured model quality. An empty routing store\n"
+           "      // discovers Luna as unscored and never selects it. As the only eligible\n"
+           "      // model, elo=1 clears iq=20; no EQ or speed score is demanded.\n")
+print(text.replace(entry, comment + entry))') || return 1
   printf '%s\n' "$policy" | write_file "$ROUTING_CONFIG"
 }
 
@@ -1217,7 +1256,8 @@ write_manifest() {
     say "+ shasum -a 256 and codesign -dv each binary in $BIN"
     say "+ write $dest (rig, root, port, repositories[name, source, requested, commit],"
     say "  binaries[name, repository, path, sha256, identifier], basal_features,"
-    say "  basal_placement[mode, stage, revision], contract_suite[path, sha256])"
+    say "  basal_placement[mode, stage, revision], contract_suite[path, sha256],"
+    say "  routing[config_path, sha256, policy, fixture_scores: not measured model quality])"
     return
   fi
   [ -f "$STACK" ] || die "nothing built yet; run build first"
@@ -1251,18 +1291,31 @@ write_manifest() {
   source_tsv="rig-build"
   [ ! -f "$BASAL_SOURCE" ] || source_tsv=$(cat "$BASAL_SOURCE")
   json=$(REPOS="$repos_tsv" BINS="$bins_tsv" python3 - "$stamp" "$RIG" "$PORT" \
-      "$CONTRACT" "$contract_sum" "$source_tsv" <<'PY'
-import json, os, sys
+      "$CONTRACT" "$contract_sum" "$source_tsv" "$ROUTING_CONFIG" <<'PY'
+import hashlib, json, os, sys
 stamp, rig, port = sys.argv[1], sys.argv[2], int(sys.argv[3])
 contract, contract_sum = sys.argv[4], sys.argv[5]
 source = (sys.argv[6].split("\t") + ["", ""])[:3]
 staged = source[0] == "staged"
+with open(sys.argv[7], "rb") as file:
+    routing_bytes = file.read()
+routing_policy = json.loads("\n".join(line for line in routing_bytes.decode().splitlines()
+                                      if not line.lstrip().startswith("//")))
+routing_fixture = routing_policy["model_routing"]["models"]["openai/gpt-6-luna"]
 rows = lambda name: [l.split("\t") for l in os.environ[name].splitlines() if l]
 print(json.dumps({
     "rig": "ckdev-flows",
     "root": rig,
     "port": port,
     "written_at": stamp,
+    "routing": {
+        "config_path": sys.argv[7],
+        "sha256": hashlib.sha256(routing_bytes).hexdigest(),
+        "policy": routing_policy,
+        "fixture_scores": {"model": "openai/gpt-6-luna", "scores": routing_fixture,
+                           "measured_model_quality": False,
+                           "reason": "one eligible model must pass the rig demand iq=20, eq=0"},
+    },
     "repositories": [
         # cargo_lock is "committed", or "sibling-refreshed" when the build
         # ran with path dependencies at the rig's sibling revision instead

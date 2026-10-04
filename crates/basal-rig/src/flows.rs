@@ -153,8 +153,9 @@ pub fn model(id: &str, agent: &str, classify: bool, capped: bool) -> Flow {
     ))
     .expect("valid manifest");
     m["llm"] = json!({
-        // Routing refuses all-zero requirements without a required capability.
-        "iq": 1, "eq": 0,
+        // A low but nonzero demand admits the rig's explicitly synthetic
+        // routing fixture; all-zero requirements are refused by routing.
+        "iq": 20, "eq": 0,
         "token_cap": {"tokens": if capped {16} else {1024}, "window": "1d"},
         "max_output": if capped {16} else {64},
     });
@@ -189,7 +190,7 @@ mod tests {
             let tokens = m["llm"]["token_cap"]["tokens"].as_u64().unwrap();
             total += tokens;
             assert_eq!(m["llm"]["token_cap"]["window"], "1d");
-            assert_eq!(m["llm"]["iq"], 1);
+            assert_eq!(m["llm"]["iq"], 20);
             assert!((16..=64).contains(&m["llm"]["max_output"].as_u64().unwrap()));
             assert!(f.script.len() < 256);
             assert!(!f.script.contains("tools"));

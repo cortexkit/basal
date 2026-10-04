@@ -33,9 +33,14 @@ class RigChecks(unittest.TestCase):
             result = self.run_shell(code, home)
             self.assertEqual(result.returncode, 0, result.stderr)
             policy = Path(home) / ".local/share/cortexkit/ckdev-flows/config/cortexkit/alfonso-routing.jsonc"
-            self.assertEqual(json.loads(policy.read_text()), {"model_routing": {"exclude": [
-                "another", "new-provider", "openai", "-openai/gpt-6-luna",
-            ]}})
+            policy_text = policy.read_text()
+            self.assertIn("// Rig fixture values, not measured model quality.", policy_text)
+            value = json.loads("\n".join(line for line in policy_text.splitlines()
+                                         if not line.lstrip().startswith("//")))
+            self.assertEqual(value, {"model_routing": {
+                "exclude": ["another", "new-provider", "openai", "-openai/gpt-6-luna"],
+                "models": {"openai/gpt-6-luna": {"elo": 1, "eq": 0, "speed": 0}},
+            }})
             policy.unlink()
             catalog.write_text('{"models":{"openai/other":{}}}')
             result = self.run_shell(code, home)
@@ -89,7 +94,7 @@ write_file() { /bin/cat > /dev/null; }
 ready=0
 cmd_start() { ready=1; }
 cmd_stop() { ready=0; }
-rig_auth() { [ "$1" = bootstrap ] || [ "$ready" = 1 ] || return 1; printf '%s\\n' "$*"; }
+rig_auth() { [ "$1" = bootstrap ] || [ "$ready" = 1 ] || return 1; if [ "$1" = grants ]; then printf 'no grants\\n'; else printf '%s\\n' "$*"; fi; }
 pin_routing() { [ "$ready" = 1 ]; }
 cmd_config
 [ "$ready" = 0 ]
@@ -100,6 +105,28 @@ cmd_config
                 "grant --principal reserved:broca --selector-kind exact --selector apikey:openai --operation read",
                 "grant --principal reserved:prefrontal-routing --selector-kind category --selector llm-provider --operation list",
             ])
+
+    def test_grant_plan_is_exact_and_idempotent(self):
+        with tempfile.TemporaryDirectory() as home:
+            inventory = Path(home) / "grants"
+            code = '/bin/cat "$HOME/grants" | missing_grants'
+            inventory.write_text("no grants\n")
+            result = self.run_shell(code, home)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.splitlines(), [
+                "broca|exact|apikey:openai|read", "prefrontal-routing|category|llm-provider|list",
+            ])
+            valid = ("KIND PRINCIPAL SELECTOR KIND SELECTOR OP REACHES GRANTED\n"
+                     "reserved broca exact apikey:openai read 1 timestamp\n"
+                     "reserved prefrontal-routing category llm-provider list 1 timestamp\n")
+            inventory.write_text(valid)
+            result = self.run_shell(code, home)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, "")
+            inventory.write_text(valid + "reserved broca category llm-provider read 1 timestamp\n")
+            result = self.run_shell(code, home)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("unexpected grants", result.stderr)
 
 
 if __name__ == "__main__":
