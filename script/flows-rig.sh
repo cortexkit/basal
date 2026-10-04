@@ -850,25 +850,39 @@ cmd_config() {
 EOF
   run mkdir -p -m 700 "$RIG_HOME" "$RUNTIME_DIR/tmp" "$(dirname "$VAULT_KEY")"
   rig_auth bootstrap
+  if [ "$DRY" = 1 ]; then
+    say "+ start the temporary rig for authenticated vault grants and its served catalog"
+  else
+    cmd_start
+  fi
+  # --subc requires a live connection file for grants. Bootstrap is the one
+  # offline command; grant writes go through the running vault's admin route.
+  config_status=0
+  configure_live || config_status=$?
+  if [ "$DRY" = 1 ]; then
+    say "+ stop the temporary rig"
+  else
+    # Stop even when an authenticated grant or catalog read was refused.
+    cmd_stop
+  fi
+  [ "$config_status" = 0 ] || die "cannot configure the rig's vault grants and served Luna pin"
+  say "configured; next: $0 start"
+}
+
+configure_live() {
   # Grants are vault records, not subc JSON fields. Re-running grant is
   # idempotent; these are the only authorities this configuration installs.
   rig_auth grant --principal reserved:broca --selector-kind exact \
-    --selector apikey:openai --operation read
+    --selector apikey:openai --operation read || return 1
   rig_auth grant --principal reserved:prefrontal-routing --selector-kind category \
-    --selector llm-provider --operation list
+    --selector llm-provider --operation list || return 1
   if [ "$DRY" = 1 ]; then
-    say "+ start the rig; read its catalog with ckdev-models get --subc $CONN --json"
+    say "+ read the served catalog: ckdev-models get --subc $CONN --json"
     say "+ write $ROUTING_CONFIG: model_routing.exclude = [every served provider, -openai/gpt-6-luna]"
-    say "+ fail if openai/gpt-6-luna is absent; stop the temporary rig"
+    say "+ fail if openai/gpt-6-luna is absent"
   else
-    cmd_start
-    # Always stop the temporary daemon, including a failed catalog read/pin.
-    pin_status=0
-    pin_routing || pin_status=$?
-    cmd_stop
-    [ "$pin_status" = 0 ] || die "cannot pin routing to the rig's served Luna model"
+    pin_routing
   fi
-  say "configured; next: $0 start"
 }
 
 pin_routing() {

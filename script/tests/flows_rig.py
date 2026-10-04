@@ -80,6 +80,27 @@ class RigChecks(unittest.TestCase):
             self.assertIn("auth path resolves outside the rig", result.stderr)
             self.assertNotIn(" auth status ", result.stdout)
 
+    def test_config_grants_only_after_the_temporary_daemon_starts(self):
+        with tempfile.TemporaryDirectory() as home:
+            result = self.run_shell('''
+guard_all_paths
+guard_port_free() { :; }; daemon_pid() { :; }
+write_file() { /bin/cat > /dev/null; }
+ready=0
+cmd_start() { ready=1; }
+cmd_stop() { ready=0; }
+rig_auth() { [ "$1" = bootstrap ] || [ "$ready" = 1 ] || return 1; printf '%s\\n' "$*"; }
+pin_routing() { [ "$ready" = 1 ]; }
+cmd_config
+[ "$ready" = 0 ]
+''', home)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            grants = [line for line in result.stdout.splitlines() if line.startswith("grant ")]
+            self.assertEqual(grants, [
+                "grant --principal reserved:broca --selector-kind exact --selector apikey:openai --operation read",
+                "grant --principal reserved:prefrontal-routing --selector-kind category --selector llm-provider --operation list",
+            ])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
