@@ -16,10 +16,10 @@ pub const SCOPE_ENDED: &str = "flow_install_scope_ended";
 
 fn error(e: WireError) -> ConsentError {
     match e {
-        WireError::Refused { code, message } if code == SCOPE_UNKNOWN || code == SCOPE_ENDED => {
+        WireError::Refused { code, message } | WireError::RefusedDetails {code,message,..} if code == SCOPE_UNKNOWN || code == SCOPE_ENDED => {
             ConsentError::AuthorScope { code, message }
         }
-        WireError::Refused { code, message } => ConsentError::Refused(format!("{code}: {message}")),
+        WireError::Refused { code, message } | WireError::RefusedDetails {code,message,..} => ConsentError::Refused(format!("{code}: {message}")),
         other => ConsentError::Unavailable(format!("{other:?}")),
     }
 }

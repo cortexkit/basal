@@ -13,6 +13,7 @@ pub enum RefusalReason {
     ScopeEpochRequired,
     ScopeNotSynced,
     ScopeChanged,
+    ScopeUnsupported,
     TargetFlowUnsupported,
     ResourceBusy,
     ConsentUnavailable,
@@ -29,6 +30,7 @@ impl RefusalReason {
             Self::ScopeEpochRequired => "scope_epoch_required",
             Self::ScopeNotSynced => "scope_not_synced",
             Self::ScopeChanged => "scope_changed",
+            Self::ScopeUnsupported => "scope_unsupported",
             Self::TargetFlowUnsupported => "target_flow_unsupported",
             Self::ResourceBusy => "resource_busy",
             Self::ConsentUnavailable => "consent_unavailable",
@@ -49,7 +51,13 @@ pub struct FlowRefusal {
 
 impl FlowRefusal {
     pub fn new(reason: RefusalReason, provider: &str, action: &str) -> Self {
-        Self { reason, provider: provider.into(), action: action.into(), retry_after_ms: None, detail: None }
+        Self {
+            reason,
+            provider: provider.into(),
+            action: action.into(),
+            retry_after_ms: None,
+            detail: None,
+        }
     }
 
     /// `None` means an ordinary refusal. A malformed known refusal is an
@@ -62,6 +70,7 @@ impl FlowRefusal {
             "scope_epoch_required" => RefusalReason::ScopeEpochRequired,
             "scope_not_synced" => RefusalReason::ScopeNotSynced,
             "scope_changed" => RefusalReason::ScopeChanged,
+            "scope_unsupported" => RefusalReason::ScopeUnsupported,
             "target_flow_unsupported" => RefusalReason::TargetFlowUnsupported,
             "resource_busy" => RefusalReason::ResourceBusy,
             "consent_unavailable" => RefusalReason::ConsentUnavailable,
@@ -70,8 +79,9 @@ impl FlowRefusal {
         };
         let mut refusal = Self::new(reason, "", "");
         if reason == RefusalReason::ResourceBusy {
-            let busy: ResourceBusy = serde_json::from_value(body.detail.clone().ok_or("missing busy detail")?)
-                .map_err(|e| e.to_string())?;
+            let busy: ResourceBusy =
+                serde_json::from_value(body.detail.clone().ok_or("missing busy detail")?)
+                    .map_err(|e| e.to_string())?;
             busy.validate().map_err(|e| e.to_string())?;
             refusal.retry_after_ms = Some(busy.retry_after_ms);
         }
@@ -90,7 +100,8 @@ mod tests {
     #[test]
     fn resource_busy_uses_shared_type_and_validates() {
         let busy = ResourceBusy::new("browser_profile", Holder::flow("flow-a"), 10, 250);
-        let body = ErrorBody::new("resource_busy", "irrelevant").with_detail(serde_json::to_value(&busy).unwrap());
+        let body = ErrorBody::new("resource_busy", "irrelevant")
+            .with_detail(serde_json::to_value(&busy).unwrap());
         let decoded = FlowRefusal::decode(&body).unwrap().unwrap();
         assert_eq!(decoded.reason, RefusalReason::ResourceBusy);
         assert_eq!(decoded.retry_after_ms, Some(250));
@@ -99,7 +110,13 @@ mod tests {
 
     #[test]
     fn malformed_busy_cannot_prove_unsent() {
-        for detail in [None, Some(json!({})), Some(json!({"resource":"Bad", "holder":{"kind":"head"}, "since_ms":0, "retry_after_ms":1}))] {
+        for detail in [
+            None,
+            Some(json!({})),
+            Some(
+                json!({"resource":"Bad", "holder":{"kind":"head"}, "since_ms":0, "retry_after_ms":1}),
+            ),
+        ] {
             let mut body = ErrorBody::new("resource_busy", "valid looking prose");
             body.detail = detail;
             assert!(FlowRefusal::decode(&body).is_err());
@@ -108,7 +125,10 @@ mod tests {
 
     #[test]
     fn consent_and_retirement_ignore_detail_and_message() {
-        for (code, reason) in [("consent_unavailable", RefusalReason::ConsentUnavailable), ("agent_retired", RefusalReason::AgentRetired)] {
+        for (code, reason) in [
+            ("consent_unavailable", RefusalReason::ConsentUnavailable),
+            ("agent_retired", RefusalReason::AgentRetired),
+        ] {
             for detail in [None, Some(json!("not a structure"))] {
                 let mut body = ErrorBody::new(code, "resource_busy");
                 body.detail = detail.clone();
@@ -117,6 +137,9 @@ mod tests {
                 assert_eq!(decoded.detail, detail);
             }
         }
-        assert_eq!(FlowRefusal::decode(&ErrorBody::new("other", "agent_retired")).unwrap(), None);
+        assert_eq!(
+            FlowRefusal::decode(&ErrorBody::new("other", "agent_retired")).unwrap(),
+            None
+        );
     }
 }

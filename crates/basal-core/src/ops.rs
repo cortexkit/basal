@@ -124,7 +124,7 @@ pub fn flow_health(conn: &Connection, now_ms: i64) -> Result<Vec<FlowHealth>> {
         for run in finished {
             if counting {
                 match run.state.as_str() {
-                    "failed" if run.error_kind.as_deref() == Some("agent_retired") => {},
+                    "failed" if run.error_kind.as_deref() == Some("agent_retired") => {}
                     "failed" | "engine_mismatch" => consecutive_failures += 1,
                     "succeeded" => counting = false,
                     _ => {}

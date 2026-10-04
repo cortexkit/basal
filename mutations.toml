@@ -470,8 +470,9 @@ build_timeout_s = 3600
 timeout_s = 600
 edits = [
   { file = "crates/basal-worker/Cargo.toml", old = "rquickjs.workspace = true\n", new = "rquickjs.workspace = true\nsubc-protocol = \"0.24.1\"\n" },
-  { file = "Cargo.lock", old = " \"subc-client-rs\",\n \"subc-protocol\",\n \"tokio\",\n \"tracing\",\n \"webpki-roots\",\n", new = " \"subc-client-rs\",\n \"subc-protocol 0.29.0\",\n \"tokio\",\n \"tracing\",\n \"webpki-roots\",\n" },
-  { file = "Cargo.lock", old = " \"subc-client-rs\",\n \"subc-protocol\",\n \"subc-transport\",\n \"tokio\",\n \"tracing\",\n", new = " \"subc-client-rs\",\n \"subc-protocol 0.29.0\",\n \"subc-transport\",\n \"tokio\",\n \"tracing\",\n" },
+  { file = "Cargo.lock", old = " \"subc-client-rs\",\n \"subc-protocol\",\n \"subc-transport\",\n \"tokio\",\n \"tracing\",\n \"webpki-roots\",\n", new = " \"subc-client-rs\",\n \"subc-protocol 0.29.0\",\n \"subc-transport\",\n \"tokio\",\n \"tracing\",\n \"webpki-roots\",\n" },
+  { file = "Cargo.lock", old = " \"sha2\",\n \"subc-client-rs\",\n \"subc-protocol\",\n \"subc-transport\",\n \"tokio\",\n \"tracing\",\n", new = " \"sha2\",\n \"subc-client-rs\",\n \"subc-protocol 0.29.0\",\n \"subc-transport\",\n \"tokio\",\n \"tracing\",\n" },
+  { file = "Cargo.lock", old = " \"rcgen\",\n \"rusqlite\",\n \"rustls\",\n \"serde_json\",\n \"subc-protocol\",\n", new = " \"rcgen\",\n \"rusqlite\",\n \"rustls\",\n \"serde_json\",\n \"subc-protocol 0.29.0\",\n" },
   { file = "Cargo.lock", old = " \"rusqlite\",\n \"serde_json\",\n \"subc-client-rs\",\n \"subc-protocol\",\n \"tokio\",\n]\n", new = " \"rusqlite\",\n \"serde_json\",\n \"subc-client-rs\",\n \"subc-protocol 0.29.0\",\n \"tokio\",\n]\n" },
   { file = "Cargo.lock", old = " \"libc\",\n \"rquickjs\",\n \"serde_json\",\n]\n\n[[package]]\n", new = " \"libc\",\n \"rquickjs\",\n \"serde_json\",\n \"subc-protocol 0.24.1\",\n]\n\n[[package]]\n" },
   { file = "Cargo.lock", old = " \"serde_json\",\n \"subc-control\",\n \"subc-os\",\n \"subc-protocol\",\n \"subc-transport\",\n \"tokio\",\n \"tokio-util\",\n", new = " \"serde_json\",\n \"subc-control\",\n \"subc-os\",\n \"subc-protocol 0.29.0\",\n \"subc-transport\",\n \"tokio\",\n \"tokio-util\",\n" },

@@ -39,6 +39,25 @@ impl BrocaStore {
     }
 }
 impl StateStore for BrocaStore {
+    fn identity(
+        &self,
+        run_id: &str,
+    ) -> Result<Option<basal_host::broca::FlowIdentity>, BrocaError> {
+        self.store()?
+            .read(|c| {
+                let run = crate::runs::load(c, run_id)?;
+                let version = run
+                    .flow_version
+                    .ok_or_else(|| CoreError::Corrupt("model run has no install version".into()))?;
+                Ok(Some(basal_host::broca::FlowIdentity {
+                    flow_id: run.flow_id.clone(),
+                    version,
+                    code_hash: crate::ids::hex(&run.code_hash),
+                    agent_owned: crate::install::agent_owned_version(c, &run.flow_id, version)?,
+                }))
+            })
+            .map_err(|e| BrocaError::Store(e.to_string()))
+    }
     fn load(&self) -> Result<Vec<StoredCall>, BrocaError> {
         self.store()?
             .read(|c| {

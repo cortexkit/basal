@@ -54,8 +54,13 @@ impl ModuleOpsHost {
             return outcome(Err(WireError::NeverSent("not a module op".into())));
         };
         let result = (|| {
-            if module == crate::subc_catalog::CORE && !crate::Catalog::supports_flow_scopes(self.catalog.as_ref(), module) {
-                return Err(WireError::Refused { code: "basal_scope_bug".into(), message: format!("core flow op {op} cannot use the carrier route") });
+            if module == crate::subc_catalog::CORE
+                && !crate::Catalog::supports_flow_scopes(self.catalog.as_ref(), module)
+            {
+                return Err(WireError::Refused {
+                    code: "basal_scope_bug".into(),
+                    message: format!("core flow op {op} cannot use the carrier route"),
+                });
             }
             let decl = self
                 .catalog
@@ -83,17 +88,29 @@ impl ModuleOpsHost {
             let args = serde_json::from_str(request.args.as_str())
                 .map_err(|e| WireError::NeverSent(e.to_string()))?;
             match decl.surface {
-                Surface::Management => self.transport.management_for_flow(&request.flow_id, module, op, args),
-                Surface::Tool => self
-                    .transport
-                    .tool_for_flow(&request.flow_id, module, op, args, &request.idempotency_key),
+                Surface::Management => {
+                    self.transport
+                        .management_for_flow(&request.flow_id, module, op, args)
+                }
+                Surface::Tool => self.transport.tool_for_flow(
+                    &request.flow_id,
+                    module,
+                    op,
+                    args,
+                    &request.idempotency_key,
+                ),
             }
         })();
         outcome(result.map_err(|e| crate::transport::contextual(e, module, op)))
     }
 }
 impl Host for ModuleOpsHost {
-    fn configure_flow(&self, flow_id: &str, agent_owned: bool, scope: Option<crate::flow_scope::RegisteredScope>) {
+    fn configure_flow(
+        &self,
+        flow_id: &str,
+        agent_owned: bool,
+        scope: Option<crate::flow_scope::RegisteredScope>,
+    ) {
         self.transport.configure_flow(flow_id, agent_owned, scope);
     }
     fn classify(&self, kind: &CallKind) -> CallClass {
@@ -159,7 +176,13 @@ impl RoutingHost {
     }
 }
 impl Host for RoutingHost {
-    fn configure_flow(&self, flow_id: &str, agent_owned: bool, scope: Option<crate::flow_scope::RegisteredScope>) {
+    fn scope_checks(&self, enabled: bool) { self.model.scope_checks(enabled); }
+    fn configure_flow(
+        &self,
+        flow_id: &str,
+        agent_owned: bool,
+        scope: Option<crate::flow_scope::RegisteredScope>,
+    ) {
         self.ops.configure_flow(flow_id, agent_owned, scope.clone());
         self.model.configure_flow(flow_id, agent_owned, scope);
     }

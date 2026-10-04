@@ -67,7 +67,9 @@ pub struct EventDecl {
 /// The declarations basal validates manifests against. Implementations
 /// must be safe to call from several threads.
 pub trait Catalog: Send + Sync {
-    fn supports_flow_scopes(&self, _module: &str) -> bool { false }
+    fn supports_flow_scopes(&self, _module: &str) -> bool {
+        false
+    }
     /// The declaration of `module`'s event `name` at `version`, if declared.
     fn event(&self, module: &str, name: &str, version: u32) -> Option<EventDecl>;
     /// The declaration of `module`'s op `op`, if declared.
@@ -94,8 +96,11 @@ pub struct MockCatalog {
 
 impl MockCatalog {
     pub fn set_flow_capable(&self, module: &str, capable: bool) {
-        if capable { self.write().flow_capable.insert(module.into()); }
-        else { self.write().flow_capable.remove(module); }
+        if capable {
+            self.write().flow_capable.insert(module.into());
+        } else {
+            self.write().flow_capable.remove(module);
+        }
     }
     pub fn new() -> Self {
         Self::default()
@@ -205,7 +210,9 @@ impl MockCatalog {
 }
 
 impl Catalog for MockCatalog {
-    fn supports_flow_scopes(&self, module: &str) -> bool { self.read().flow_capable.contains(module) }
+    fn supports_flow_scopes(&self, module: &str) -> bool {
+        self.read().flow_capable.contains(module)
+    }
     fn event(&self, module: &str, name: &str, version: u32) -> Option<EventDecl> {
         self.read()
             .events

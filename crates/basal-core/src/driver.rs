@@ -498,9 +498,16 @@ impl Activation<'_> {
             }
             match (row.class, row.dispatch) {
                 (_, DispatchState::Deferred) => {
-                    let retry = self.rt.store().read(|c| journal::deferred_until(c, &run_id, row.position))?
-                        .ok_or_else(|| CoreError::Corrupt("deferred call has no retry time".into()))?;
-                    if retry <= self.rt.config.clock.now_ms() { resend.push(row.clone()); }
+                    let retry = self
+                        .rt
+                        .store()
+                        .read(|c| journal::deferred_until(c, &run_id, row.position))?
+                        .ok_or_else(|| {
+                            CoreError::Corrupt("deferred call has no retry time".into())
+                        })?;
+                    if retry <= self.rt.config.clock.now_ms() {
+                        resend.push(row.clone());
+                    }
                 }
                 (StoredClass::Sync, _) | (_, DispatchState::Accepted) => {}
                 (StoredClass::Local, _) => {

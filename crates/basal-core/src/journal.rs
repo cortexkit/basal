@@ -256,7 +256,13 @@ pub fn authorize_resend(tx: &Transaction, lease: &Lease, position: u64) -> Resul
 
 /// The refusal and its retry time commit together; a crashed worker can replay
 /// the unresolved position, but recovery cannot turn it into an early send.
-pub fn defer(tx: &Transaction, run_id: &str, position: u64, refusal: &basal_host::flow_refusal::FlowRefusal, retry_at: i64) -> Result<()> {
+pub fn defer(
+    tx: &Transaction,
+    run_id: &str,
+    position: u64,
+    refusal: &basal_host::flow_refusal::FlowRefusal,
+    retry_at: i64,
+) -> Result<()> {
     let detail = serde_json::to_string(refusal).map_err(|e| CoreError::Invalid(e.to_string()))?;
     tx.execute("UPDATE journal SET dispatch = 'deferred', refusal = ?3, retry_not_before = ?4, refusal_detail = ?5 WHERE run_id = ?1 AND position = ?2 AND settlement IS NULL AND dispatch IN ('sent', 'deferred')",
         params![run_id, pos(position)?, refusal.reason.as_str(), retry_at, detail])?;
@@ -264,7 +270,12 @@ pub fn defer(tx: &Transaction, run_id: &str, position: u64, refusal: &basal_host
 }
 
 pub fn deferred_until(conn: &Connection, run_id: &str, position: u64) -> Result<Option<i64>> {
-    conn.query_row("SELECT retry_not_before FROM journal WHERE run_id = ?1 AND position = ?2", params![run_id, pos(position)?], |r| r.get(0)).map_err(Into::into)
+    conn.query_row(
+        "SELECT retry_not_before FROM journal WHERE run_id = ?1 AND position = ?2",
+        params![run_id, pos(position)?],
+        |r| r.get(0),
+    )
+    .map_err(Into::into)
 }
 
 /// Feeds the existing pending-run loop rather than creating a retry scheduler.

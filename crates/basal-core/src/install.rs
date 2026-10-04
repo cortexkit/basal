@@ -41,7 +41,10 @@ pub struct InstallRequest {
 /// Why an install was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstallError {
-    FlowScopeUnsupported { module: String, op: String },
+    FlowScopeUnsupported {
+        module: String,
+        op: String,
+    },
     Manifest(ManifestError),
     ScriptTooLarge {
         bytes: usize,
@@ -207,7 +210,10 @@ pub fn validate(
     let reads_text = manifest.facts.as_ref().is_some_and(|f| f.text);
     for OpRef { module, op } in &manifest.ops {
         if module == basal_host::subc_catalog::CORE && !catalog.supports_flow_scopes(module) {
-            return Err(InstallError::FlowScopeUnsupported { module: module.clone(), op: op.clone() });
+            return Err(InstallError::FlowScopeUnsupported {
+                module: module.clone(),
+                op: op.clone(),
+            });
         }
         let pair = || (module.clone(), op.clone());
         if denylist.contains(module, op) {
@@ -614,16 +620,25 @@ pub fn flow(conn: &Connection, flow_id: &str) -> Result<Option<FlowRecord>> {
 /// Author labels alone cannot distinguish an operator installing in an
 /// agent's name. The consent card records the attested author form.
 pub fn agent_owned_version(conn: &Connection, flow_id: &str, version: u32) -> Result<bool> {
-    let card: Option<String> = conn.query_row("SELECT card FROM install_cards WHERE flow_id=?1 AND version=?2", params![flow_id, version_i64(version)], |r| r.get(0)).optional()?;
+    let card: Option<String> = conn
+        .query_row(
+            "SELECT card FROM install_cards WHERE flow_id=?1 AND version=?2",
+            params![flow_id, version_i64(version)],
+            |r| r.get(0),
+        )
+        .optional()?;
     if let Some(card) = card {
-        let card: serde_json::Value = serde_json::from_str(&card).map_err(|e| CoreError::Corrupt(e.to_string()))?;
+        let card: serde_json::Value =
+            serde_json::from_str(&card).map_err(|e| CoreError::Corrupt(e.to_string()))?;
         if let Some(author) = card.get("wire_author") {
             return Ok(author.get("operator") != Some(&serde_json::Value::Bool(true)));
         }
     }
     // Direct runtime installs have no consent card. Only the explicit operator
     // author is global; unknown authors fail closed until core supplies scope.
-    Ok(flow(conn, flow_id)?.and_then(|f| f.owner).is_none_or(|o| o != "operator"))
+    Ok(flow(conn, flow_id)?
+        .and_then(|f| f.owner)
+        .is_none_or(|o| o != "operator"))
 }
 
 /// Whether the flow is disabled. A flow with no record is treated as

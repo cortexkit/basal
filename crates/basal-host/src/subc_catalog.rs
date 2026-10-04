@@ -144,11 +144,19 @@ impl SubcCatalog {
 }
 impl Catalog for SubcCatalog {
     fn supports_flow_scopes(&self, module: &str) -> bool {
-        self.transport.catalog().ok().and_then(|c| c["modules"].as_array().and_then(|modules| {
-            modules.iter().find(|m| m["module_id"] == module).map(|m| {
-                m["capabilities"]["provides"].as_array().is_some_and(|caps| caps.iter().any(|c| c == "flow-scopes/v1"))
+        self.transport
+            .catalog()
+            .ok()
+            .and_then(|c| {
+                c["modules"].as_array().and_then(|modules| {
+                    modules.iter().find(|m| m["module_id"] == module).map(|m| {
+                        m["capabilities"]["provides"]
+                            .as_array()
+                            .is_some_and(|caps| caps.iter().any(|c| c == "flow-scopes/v1"))
+                    })
+                })
             })
-        })).unwrap_or(false)
+            .unwrap_or(false)
     }
     fn event(&self, _: &str, _: &str, _: u32) -> Option<EventDecl> {
         None

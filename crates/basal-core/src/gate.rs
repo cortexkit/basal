@@ -158,14 +158,24 @@ impl Runtime {
         let run_hash = hex(&code_hash(&run.script, &run.manifest));
         let (cause, reason) = match self.shared.host.install_status(flow_id, version) {
             Ok(InstallStatus::Active { code_hash, scope }) if code_hash == run_hash => {
-                let agent_owned = self.store().read(|c| install::agent_owned_version(c, flow_id, version))?;
-                self.shared.host.configure_flow(flow_id, agent_owned, scope.clone());
+                let agent_owned = self
+                    .store()
+                    .read(|c| install::agent_owned_version(c, flow_id, version))?;
+                self.shared
+                    .host
+                    .configure_flow(flow_id, agent_owned, scope.clone());
                 if agent_owned && let Some(scope) = scope {
                     let manifest = crate::manifest::Manifest::parse(&run.manifest)
                         .map_err(|e| crate::error::CoreError::Corrupt(e.to_string()))?;
-                    let mut required: std::collections::BTreeSet<_> = manifest.ops.iter().map(|op| op.module.as_str()).collect();
-                    if manifest.llm.is_some() { required.insert("broca"); }
-                    if let Some(module) = required.into_iter().find(|module| !scope.targets.contains(*module)) {
+                    let mut required: std::collections::BTreeSet<_> =
+                        manifest.ops.iter().map(|op| op.module.as_str()).collect();
+                    if manifest.llm.is_some() {
+                        required.insert("broca");
+                    }
+                    if let Some(module) = required
+                        .into_iter()
+                        .find(|module| !scope.targets.contains(*module))
+                    {
                         return self.defer(lease, format!("target_flow_unsupported: {module}"));
                     }
                 }
@@ -203,10 +213,12 @@ impl Runtime {
     /// No answer from core: the run goes back to `pending` untouched and
     /// waits out its backoff.
     fn defer(&self, lease: &Lease, detail: String) -> Result<Gate> {
-        self.store()
-            .write(|tx| runs::exit(tx, lease, &Exit::Deferred))?;
         self.store().write(|tx| {
-            tx.execute("UPDATE runs SET error_detail = ?2 WHERE run_id = ?1", rusqlite::params![lease.run_id, detail])?;
+            runs::exit(tx, lease, &Exit::Deferred)?;
+            tx.execute(
+                "UPDATE runs SET error_detail = ?2 WHERE run_id = ?1",
+                rusqlite::params![lease.run_id, detail],
+            )?;
             Ok(())
         })?;
         let retry_in = self.back_off(&lease.run_id);

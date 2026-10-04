@@ -81,6 +81,7 @@ dependencies = [
  "serde_json",
  "subc-client-rs",
  "subc-protocol",
+ "subc-transport",
  "tokio",
  "tracing",
  "webpki-roots",

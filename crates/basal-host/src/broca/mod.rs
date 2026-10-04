@@ -58,7 +58,16 @@ impl std::error::Error for BrocaError {}
 
 /// Adapters bind `route` before each op.
 pub trait Transport: Send + Sync {
-    fn configure_flow(&self, _flow_id: &str, _agent_owned: bool, _scope: Option<crate::flow_scope::RegisteredScope>) {}
+    fn refresh_flow(&self, _identity: &FlowIdentity) -> Result<(), BrocaError> {
+        Ok(())
+    }
+    fn configure_flow(
+        &self,
+        _flow_id: &str,
+        _agent_owned: bool,
+        _scope: Option<crate::flow_scope::RegisteredScope>,
+    ) {
+    }
     fn send(&self, route: &Route, params: &[u8]) -> Result<SendResult, BrocaError>;
     /// Makes sure a subscription attached at the session's live head is
     /// open, and that it wakes `BrocaHost::poll` when the session's run
@@ -82,8 +91,18 @@ pub trait Transport: Send + Sync {
 /// SQLite implementation so this crate never opens a second writer to its
 /// database.
 pub trait StateStore: Send + Sync {
+    fn identity(&self, _run_id: &str) -> Result<Option<FlowIdentity>, BrocaError> {
+        Ok(None)
+    }
     fn load(&self) -> Result<Vec<StoredCall>, BrocaError>;
     fn save(&self, call: &StoredCall) -> Result<(), BrocaError>;
+}
+
+pub struct FlowIdentity {
+    pub flow_id: String,
+    pub version: u32,
+    pub code_hash: String,
+    pub agent_owned: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -141,6 +160,7 @@ pub struct StoredCall {
 }
 
 pub struct BrocaHost {
+    scope_checks: std::sync::atomic::AtomicBool,
     transport: Arc<dyn Transport>,
     store: Arc<dyn StateStore>,
     project_root: String,
@@ -168,6 +188,7 @@ impl BrocaHost {
         selector: Arc<dyn ModelSelector>,
     ) -> Self {
         Self {
+            scope_checks: std::sync::atomic::AtomicBool::new(true),
             transport,
             store,
             project_root,
@@ -344,6 +365,12 @@ impl BrocaHost {
                 return Ok(true);
             }
             Err(BrocaError::Flow(refusal)) => {
+                if call.handle.is_some() {
+                    return Err(BrocaError::Unavailable {
+                        proven_unsent: false,
+                        detail: format!("accepted model call can no longer be read: {refusal:?}"),
+                    });
+                }
                 call.deferred = true;
                 self.store.save(call)?;
                 return Err(BrocaError::Flow(refusal));
@@ -541,6 +568,14 @@ impl BrocaHost {
             if call.acknowledged || call.deferred {
                 continue;
             }
+            if self.scope_checks.load(std::sync::atomic::Ordering::SeqCst)
+                && let Some(identity) = self.store.identity(&call.basal_run_id)? {
+                call.route.flow_id = Some(identity.flow_id.clone());
+                if let Err(error) = self.transport.refresh_flow(&identity) {
+                    first_error.get_or_insert(error);
+                    continue;
+                }
+            }
             // One call's failure must not hold back the others.
             if let Err(error) = self.advance(&mut call, sink.as_deref()) {
                 first_error.get_or_insert(error);
@@ -604,7 +639,9 @@ impl BrocaHost {
             .find(|c| c.send_id == prepared.send_id);
         let mut call = match existing {
             Some(mut c) => {
-                if c.route.flow_id.is_none() { c.route.flow_id = prepared.route.flow_id.clone(); }
+                if c.route.flow_id.is_none() {
+                    c.route.flow_id = prepared.route.flow_id.clone();
+                }
                 if c.route != prepared.route
                     || c.envelope != prepared.envelope
                     || c.basal_run_id != request.run_id
@@ -629,7 +666,13 @@ impl BrocaHost {
             call.deferred = false;
             let finished = self.issue(&mut call)?;
             if finished && call.outcome.is_none() {
-                self.resolve(&mut call)?;
+                self.resolve(&mut call).map_err(|error| match error {
+                    BrocaError::Flow(refusal) => BrocaError::Unavailable {
+                        proven_unsent: false,
+                        detail: format!("accepted model call can no longer be read: {refusal:?}"),
+                    },
+                    other => other,
+                })?;
             }
         }
         if let Some(outcome) = &call.outcome {
@@ -648,7 +691,13 @@ impl BrocaHost {
 }
 
 impl Host for BrocaHost {
-    fn configure_flow(&self, flow_id: &str, agent_owned: bool, scope: Option<crate::flow_scope::RegisteredScope>) {
+    fn scope_checks(&self, enabled: bool) { self.scope_checks.store(enabled, std::sync::atomic::Ordering::SeqCst); }
+    fn configure_flow(
+        &self,
+        flow_id: &str,
+        agent_owned: bool,
+        scope: Option<crate::flow_scope::RegisteredScope>,
+    ) {
         self.transport.configure_flow(flow_id, agent_owned, scope);
     }
     fn classify(&self, _: &CallKind) -> CallClass {
