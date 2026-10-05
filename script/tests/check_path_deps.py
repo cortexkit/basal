@@ -1,4 +1,8 @@
-"""Offline tests for the Cargo path dependency boundary."""
+"""Tests for the Cargo path dependency boundary.
+
+The scratch workspaces have no registry dependencies, so they resolve offline.
+The check against basal's own workspace resolves online, as it does in CI.
+"""
 
 import os
 from pathlib import Path
