@@ -5971,3 +5971,83 @@ expect_red = ["rig_kill::tests::crash_evidence_records_the_unsent_journal_not_a_
 only = true
 timeout_s = 600
 build_timeout_s = 3600
+
+[[control]]
+id = "rig-routing-pin-accepts-a-catalog-without-luna"
+guards = "the routing pin refuses a served catalog without openai/gpt-6-luna"
+file = "script/flows-rig.sh"
+old = 'if "openai/gpt-6-luna" not in models:'
+new = "if False:"
+edits = []
+test_file = "script/tests/flows_rig.py"
+runner = "command"
+command = ["python3", "-m", "unittest", "{test}"]
+expect_red = ["script.tests.flows_rig.RigChecks.test_pin_uses_served_providers_and_refuses_missing_luna"]
+only = false
+timeout_s = 120
+build_timeout_s = 1800
+
+
+[[control]]
+id = "rig-credential-check-accepts-extra-credentials"
+guards = "the rig vault must hold exactly one active apikey:openai credential"
+file = "script/flows-rig.sh"
+old = "if len(rows) != 1 or"
+new = "if len(rows) < 1 or"
+edits = []
+test_file = "script/tests/flows_rig.py"
+runner = "command"
+command = ["python3", "-m", "unittest", "{test}"]
+expect_red = ["script.tests.flows_rig.RigChecks.test_credential_inventory_requires_one_active_openai_binding"]
+only = false
+timeout_s = 120
+build_timeout_s = 1800
+
+
+[[control]]
+id = "rig-grant-plan-tolerates-unexpected-grants"
+guards = "the rig vault may hold no grants beyond Broca's read and routing's list"
+file = "script/flows-rig.sh"
+old = "if not existing <= allowed:"
+new = "if False:"
+edits = []
+test_file = "script/tests/flows_rig.py"
+runner = "command"
+command = ["python3", "-m", "unittest", "{test}"]
+expect_red = ["script.tests.flows_rig.RigChecks.test_grant_plan_is_exact_and_idempotent"]
+only = false
+timeout_s = 120
+build_timeout_s = 1800
+
+
+[[control]]
+id = "rig-auth-omits-the-explicit-key-path"
+guards = "every rig auth command names the rig's own master-key file"
+file = "script/flows-rig.sh"
+old = '--data-dir "$VAULT_DIR" --key-path "$VAULT_KEY" --subc "$CONN"'
+new = '--data-dir "$VAULT_DIR" --subc "$CONN"'
+edits = []
+test_file = "script/tests/flows_rig.py"
+runner = "command"
+command = ["python3", "-m", "unittest", "{test}"]
+expect_red = ["script.tests.flows_rig.RigChecks.test_auth_dry_runs_name_all_three_rig_paths_without_reading_payload"]
+only = false
+timeout_s = 120
+build_timeout_s = 1800
+
+
+[[control]]
+id = "rig-auth-path-check-skipped"
+guards = "auth paths that resolve outside the rig, through a final symlink, are refused"
+file = "script/flows-rig.sh"
+old = "if not os.path.realpath(path).startswith(root):"
+new = "if False and not os.path.realpath(path).startswith(root):"
+edits = []
+test_file = "script/tests/flows_rig.py"
+runner = "command"
+command = ["python3", "-m", "unittest", "{test}"]
+expect_red = ["script.tests.flows_rig.RigChecks.test_auth_refuses_a_final_key_symlink_outside_the_rig"]
+only = false
+timeout_s = 120
+build_timeout_s = 1800
+
