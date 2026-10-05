@@ -37,8 +37,9 @@ pub struct Receipt {
 }
 
 impl CoreStore {
-    /// The selector core published after the daemon accepted the flow registration.
-    /// Reachability being null means no registration has been accepted yet.
+    /// The scope selector (owner, ref, epoch) core recorded for a flow version
+    /// once the daemon accepted its scope registration, or None before that.
+    /// A null reachability column means the registration hasn't been accepted.
     pub fn flow_scope(&self, flow_id: &str, version: i64) -> Result<Option<Value>, String> {
         let c = open(&self.path)?;
         c.query_row(
@@ -284,10 +285,12 @@ impl BrocaStore {
         .map_err(|e| e.to_string())
     }
 
-    /// Fresh refused sessions must have no record bytes, independently of the index.
-    /// Broca names its WAL by FNV-1a of the U+001F-joined bind triple. A WAL may
-    /// contain just the verified lineage frame (version 2, sequence and fence 0).
-    /// Any other bytes, including partial records, fail this stronger no-write check.
+    /// Whether Broca wrote nothing for a session it refused, checked on its WAL
+    /// file directly rather than trusting its run index. Broca names each
+    /// session's WAL file by the FNV-1a hash of the bind triple joined with
+    /// U+001F. A refused session's file may hold only Broca's fixed header
+    /// frame (version 2, sequence 0, fence 0); any other bytes, a partial
+    /// record included, mean something was written.
     pub fn wal_has_no_records(&self, route: &Value) -> Result<bool, String> {
         use sha2::{Digest, Sha256};
         let key = session_key(route)?;

@@ -140,11 +140,12 @@ return {{ digest }};",
     }
 }
 
-/// Model cases are agent-owned at installation, just like the scoped writer.
-/// Each daily cap bounds every scheduled run, not just the first run the suite
-/// observes. Three normal sends and the unscoped negative flow total 4,096
-/// tokens; the capped flow adds 16. The 4,112-token allowance stays finite
-/// even if refusal enforcement regresses or cleanup is interrupted.
+/// A model-case flow, installed agent-owned so core registers a flow scope for
+/// it. Each manifest's daily token cap bounds every scheduled run of that flow,
+/// not only the first one the suite watches. Three normal sends and the
+/// unscoped negative flow total 4,096 tokens, and the capped flow adds 16, so
+/// the whole suite can spend at most 4,112 tokens a day even if Broca stopped
+/// refusing unscoped sends or cleanup were interrupted.
 pub fn model(id: &str, agent: &str, classify: bool, capped: bool) -> Flow {
     let mut m: Value = serde_json::from_str(&manifest(
         id,

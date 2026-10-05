@@ -235,7 +235,8 @@ fn wal_no_record_reader_rejects_record_bytes_and_partial_writes_at_the_pinned_ad
         path: dir.join("run-index.db"),
     };
     let route = json!({"project_root":"/rig","harness":"basal","session":"first"});
-    // Address pinned independently to Broca's FNV-1a bind encoding.
+    // The WAL file name Broca derives for this bind triple, computed separately
+    // and pinned here so the reader's own hashing is checked against it.
     let path = dir.join("wal/2c81ab058ec72219.wal");
     assert!(store.wal_has_no_records(&route).unwrap());
     std::fs::write(&path, b"a record or a partial frame").unwrap();

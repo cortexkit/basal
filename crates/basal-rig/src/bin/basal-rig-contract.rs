@@ -1542,8 +1542,10 @@ async fn non_carrier(rig: &Rig, flow: &Flow, run: &Run) -> Result<Case, String> 
     );
     let selector = json!({"owner":registered["owner"],"ref":registered["ref"],"scope_epoch":registered["epoch"]});
     let opened = rig.client.open_flow_scope(bind, selector.clone()).await;
-    // This proves non-carrier refusal, not the exact carrier list. Exactness is
-    // pinned by prefrontal cba528a11, crates/prefrontal-core-module/src/scope_owner.rs:
+    // This proves a non-carrier is refused; it can't read the carrier list,
+    // which no store exposes. That the list is exactly [reserved:basal] is
+    // tested in the prefrontal repository at cba528a11, in
+    // crates/prefrontal-core-module/src/scope_owner.rs:
     // flow_scope_registration_is_basal_only,
     // registered_flow_scope_wire_vector_pins_attributes_and_the_entire_carrier_list,
     // registered_global_flow_scope_wire_vector_pins_no_agent_and_the_entire_carrier_list.

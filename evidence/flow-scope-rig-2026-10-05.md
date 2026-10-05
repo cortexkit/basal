@@ -28,7 +28,7 @@ was `cortexkit-mutate 0.3.0` installed from commons
 
 Full live artifacts on the test machine:
 `~/.local/share/cortexkit/ckdev-flows/results/20261005T122030Z/{stack.json,contract.json,contract.log}`.
-These contain the independent registration, ownership, bind and refusal details.
+These hold the registration, ownership, bind and refusal details read from core's and Broca's own stores and from the daemon's replies, not from basal's account of them.
 The direct probe received `scope_not_carrier` for core's selector
 `44d719ae26ada904da08f278ec7408de`, epoch 1. Its bind had no meta row, run-index
 entry or WAL record. The unscoped basal send received `flow_scope_required`; its
@@ -115,8 +115,8 @@ as well as normal execution.
 
 Five new cargo mutation controls were proved one at a time by the pinned runner:
 separate ref and epoch mismatches, successful non-carrier open, unrefused send,
-and unarmed-flow hook firing. Each reddened only its named test, with all other
-tests in its target green. Reports and live/restore diff-stat evidence are under
+and unarmed-flow hook firing. Under each mutation, only its named test failed,
+and every other test in its target passed. Reports and live/restore diff-stat evidence are under
 the worktree's gitignored `target/mutations/`. The existing worker dependency-fence
 control also remained caught after updating its lockfile anchor for rig's sha2
 dependency. No mutant remained in the committed sources.

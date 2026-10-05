@@ -33,7 +33,9 @@ pub const KILL_FILE_ENV: &str = "BASAL_RIG_KILL_FILE";
 
 pub const UNSCOPED_FILE_ENV: &str = "BASAL_RIG_UNSCOPED_FILE";
 
-/// A separate, closed arming file prevents a crash boundary from stripping scope.
+/// Arms one unscoped Broca send for one named flow. It has its own arming file,
+/// separate from the crash switch's, so arming a crash can never also make a
+/// send go out without its scope.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UnscopedArmed {

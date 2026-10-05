@@ -69,12 +69,16 @@
 #             in normal execution; each manifest caps all its scheduled runs
 #             in a day, for an aggregate allowance of 4,112 tokens per suite
 #             (including the unscoped negative flow if enforcement regresses).
-#             Each send's Broca checkpoint must match core's flow_scope selector,
-#             attest reserved:basal first and freeze the flow_id. A direct client
-#             opening the same selector must be refused as a non-carrier. This
-#             proves non-carrier refusal, not exactness of the carrier list.
-#             Exact [reserved:basal] registration is pinned by prefrontal at
-#             cba528a11 in crates/prefrontal-core-module/src/scope_owner.rs:
+#             Core registers each flow its own subc scope, and the scope's
+#             carrier list names the only principals the daemon lets open routes
+#             under it. Each send's Broca checkpoint must match core's
+#             flow_scope selector, attest reserved:basal as the first sender
+#             and freeze the flow_id. A direct client opening the same selector
+#             must be refused as a non-carrier. That proves an outsider can't
+#             use the scope; it doesn't read the carrier list, which no store
+#             exposes. That the list is exactly [reserved:basal] is tested in
+#             the prefrontal repository at cba528a11, in
+#             crates/prefrontal-core-module/src/scope_owner.rs:
 #             flow_scope_registration_is_basal_only,
 #             registered_flow_scope_wire_vector_pins_attributes_and_the_entire_carrier_list,
 #             registered_global_flow_scope_wire_vector_pins_no_agent_and_the_entire_carrier_list.

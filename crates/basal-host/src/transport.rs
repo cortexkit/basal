@@ -376,7 +376,9 @@ impl SubcTransport {
             .ok_or_else(|| WireError::NeverSent("model route has no handle".into()))
     }
 
-    /// The rig alone can exercise Broca's refusal of an unscoped basal send.
+    /// Sends to Broca as basal without the flow's scope. Only the test rig's
+    /// build has this, to prove that Broca refuses such a send; production
+    /// basal never sends a flow's model call unscoped.
     #[cfg(feature = "rig-kill-hook")]
     pub(crate) fn unscoped_model_send(
         &self,
