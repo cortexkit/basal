@@ -122,6 +122,19 @@ pub fn count(
     Ok(())
 }
 
+/// An intent was counted but the daemon subsequently proved a readiness
+/// refusal was never forwarded. Refund only that dispatch's original window.
+pub fn refund_dispatch(
+    tx: &Transaction,
+    flow_id: &str,
+    at: i64,
+    limits: &RateLimits,
+) -> Result<()> {
+    let window_ms = limits.window_ms()?;
+    tx.execute("UPDATE rate_windows SET dispatches=MAX(dispatches-1,0) WHERE flow_id=?1 AND window_ms=?2 AND window_start=?3",params![flow_id,window_ms,window_start(at,window_ms)])?;
+    Ok(())
+}
+
 /// Whether the window that contains `now_ms` has room for one more
 /// admission or dispatch. A refusal marks the window saturated and, when
 /// that completes K saturated windows in a row, disables the flow; both

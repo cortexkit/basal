@@ -28,10 +28,12 @@ fn error(e: WireError) -> BrocaError {
             proven_unsent: false,
             detail,
         },
-        WireError::Refused { code, message } | WireError::RefusedDetails {code,message,..} => BrocaError::Refused {
-            code,
-            detail: message,
-        },
+        WireError::Refused { code, message } | WireError::RefusedDetails { code, message, .. } => {
+            BrocaError::Refused {
+                code,
+                detail: message,
+            }
+        }
     }
 }
 fn identity(route: &Route) -> BindIdentity {
@@ -192,9 +194,11 @@ impl SubcBrocaTransport {
                 method,
                 params,
             ),
-            None => self
-                .connection
-                .management_as(identity(route), &self.module, method, params),
+            None => Err(WireError::Typed(crate::flow_refusal::FlowRefusal::new(
+                crate::flow_refusal::RefusalReason::NoFlowScope,
+                &self.module,
+                method,
+            ))),
         }
         .map_err(error)?;
         serde_json::from_value(value).map_err(|e| BrocaError::Wire(e.to_string()))
@@ -210,12 +214,11 @@ impl SubcBrocaTransport {
                 "session.subscribe",
                 &bytes,
             ),
-            None => self.connection.subscribe_as(
-                identity(route),
+            None => Err(WireError::Typed(crate::flow_refusal::FlowRefusal::new(
+                crate::flow_refusal::RefusalReason::NoFlowScope,
                 &self.module,
                 "session.subscribe",
-                &bytes,
-            ),
+            ))),
         }
         .map_err(error)?;
         let stream = Arc::new(Stream::default());
@@ -241,6 +244,18 @@ impl SubcBrocaTransport {
     }
 }
 impl Transport for SubcBrocaTransport {
+    fn provider_ready(
+        &self,
+        flow_id: &str,
+        action: &str,
+    ) -> Result<(), crate::flow_refusal::FlowRefusal> {
+        crate::transport::Transport::provider_ready(
+            self.connection.as_ref(),
+            flow_id,
+            &self.module,
+            action,
+        )
+    }
     fn refresh_flow(&self, identity: &super::FlowIdentity) -> Result<(), BrocaError> {
         use crate::transport::Transport;
         let value = self
@@ -256,7 +271,7 @@ impl Transport for SubcBrocaTransport {
                 if code_hash == identity.code_hash =>
             {
                 self.connection
-                    .configure_flow(&identity.flow_id, identity.agent_owned, scope);
+                    .configure_flow(&identity.flow_id, true, scope);
                 Ok(())
             }
             _ => Err(BrocaError::Unavailable {

@@ -724,7 +724,7 @@ build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/driver.rs"
 old = "                let run_id = self.lease.run_id.clone();\n                self.rt.register(&run_id, call.position);"
-new = "                let run_id = self.lease.run_id.clone();\n                self.rt.spawn_dispatch(basal_host::CallRequest { flow_id: flow_id.clone(), run_id: run_id.clone(), position: call.position, kind: call.kind.clone(), args: call.args.clone(), idempotency_key: crate::ids::idempotency_key(&flow_id, &run_id, call.position), attempt: 1 }, class);\n                self.rt.register(&run_id, call.position);"
+new = "                let run_id = self.lease.run_id.clone();\n                self.rt.spawn_dispatch(basal_host::CallRequest { flow_id: flow_id.clone(), run_id: run_id.clone(), position: call.position, kind: call.kind.clone(), args: call.args.clone(), idempotency_key: crate::ids::idempotency_key(&flow_id, &run_id, call.position), attempt: 1 }, class, true);\n                self.rt.register(&run_id, call.position);"
 
 [[control]]
 id = "recovery-resends-a-mutation-that-ignores-idempotency-keys"
@@ -3409,8 +3409,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-module/src/ops.rs"
-old = "\"needs_reconcile\": !f.needs_reconcile.is_empty(),"
-new = "\"needs_reconcile\": f.needs_reconcile.clone(),"
+old = "\"waiting_reason\": f.waiting_reason,\n                \"needs_reconcile\": !f.needs_reconcile.is_empty(),"
+new = "\"waiting_reason\": f.waiting_reason,\n                \"needs_reconcile\": f.needs_reconcile.clone(),"
 
 [[control]]
 id = "health-s-overflowed-is-left-out"
@@ -4296,8 +4296,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/broca/mod.rs"
-old = "if call.acknowledged {"
-new = "if false && call.acknowledged {"
+old = "if call.acknowledged || call.deferred {"
+new = "if false && call.acknowledged || call.deferred {"
 
 [[control]]
 id = "broca-usage-metadata-is-ignored-by-the-ledger"
@@ -4402,7 +4402,7 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/selector.rs"
-old = "            code,\n            detail: message,"
+old = "                code,\n                detail: message,"
 new = "            code: if code == \"no_available_model\" {\"wrong\".into()} else {code},\n            detail: message,"
 
 [[control]]
@@ -4417,7 +4417,7 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/selector.rs"
-old = "            code,\n            detail: message,"
+old = "                code,\n                detail: message,"
 new = "            code: if code == \"quota_or_cooldown_exhausted\" {\"wrong\".into()} else {code},\n            detail: message,"
 
 [[control]]
@@ -4432,7 +4432,7 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/selector.rs"
-old = "            code,\n            detail: message,"
+old = "                code,\n                detail: message,"
 new = "            code: if code == \"all_routes_inadequate\" {\"wrong\".into()} else {code},\n            detail: message,"
 
 [[control]]
@@ -4447,7 +4447,7 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/selector.rs"
-old = "            code,\n            detail: message,"
+old = "                code,\n                detail: message,"
 new = "            code: if code == \"no_adequate_route\" {\"wrong\".into()} else {code},\n            detail: message,"
 
 [[control]]
@@ -4462,7 +4462,7 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/selector.rs"
-old = "            code,\n            detail: message,"
+old = "                code,\n                detail: message,"
 new = "            code: if code == \"missing_required_capability\" {\"wrong\".into()} else {code},\n            detail: message,"
 
 [[control]]
@@ -4477,7 +4477,7 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/selector.rs"
-old = "            code,\n            detail: message,"
+old = "                code,\n                detail: message,"
 new = "            code: if code == \"context_too_small\" {\"wrong\".into()} else {code},\n            detail: message,"
 
 [[control]]
@@ -4492,7 +4492,7 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/selector.rs"
-old = "            code,\n            detail: message,"
+old = "                code,\n                detail: message,"
 new = "            code: if code == \"invalid_requirements\" {\"wrong\".into()} else {code},\n            detail: message,"
 
 [[control]]
@@ -4883,8 +4883,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/broca/mod.rs"
-old = "\"cancelled\" => ModelOutcome::Cancelled"
-new = "\"cancelled\" => ModelOutcome::Completed"
+old = "Some(\"cancelled\") => ModelOutcome::Cancelled"
+new = "Some(\"cancelled\") => ModelOutcome::Completed"
 
 [[control]]
 id = "selector-decision-outcome-key-changed"
@@ -5213,8 +5213,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/core_host.rs"
-old = "HostOutcome::rejected(v)"
-new = "HostOutcome::fulfilled(v)"
+old = "JsonText::new(json!({\"code\":code,\"message\":message}).to_string())\n                .map(|v| Dispatched::Completed(HostOutcome::rejected(v)))"
+new = "JsonText::new(json!({\"code\":code,\"message\":message}).to_string())\n                .map(|v| Dispatched::Completed(HostOutcome::fulfilled(v)))"
 
 [[control]]
 id = "hosts-closed-sink-decoder-bypassed"
@@ -5820,6 +5820,337 @@ old = "                    == Some(CallClass::Query)"
 new = "                    != None // NON-VACUITY BREAK"
 
 # Test fixture: 1 additional control
+## Flow-scope controls. These rows still need proof on available build capacity.
+[[control]]
+id = "flow-scoped-open-is-not-used"
+guards = "provider routes must use core's selector"
+test_file = "crates/basal-host/src/transport.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--lib"
+expect_red = ["transport::tests::real_subc_transport_opens_scoped_ops_and_models_and_reuses_routes"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/transport.rs"
+old = ".block_on(self.consumer.open_route_scoped(\n                        target.clone(),\n                        BindIdentity::new(\"/\", \"basal\", format!(\"basal:flow:{flow}\")),\n                        scope.selector(),"
+new = ".block_on(self.consumer.open_route( // NON-VACUITY BREAK\n                        target.clone(),\n                        BindIdentity::new(\"/\", \"basal\", format!(\"basal:flow:{flow}\")),"
+
+[[control]]
+id = "flow-route-cache-is-not-reused"
+guards = "one route per selector and target is reused"
+test_file = "crates/basal-host/tests/flow_scope_routes.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--test flow_scope_routes"
+expect_red = ["route_cache_reuses_handles_and_replaces_changed_selectors"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/flow_scope.rs"
+old = "if let Some((_, handle, _)) = self.routes.get(&key) {"
+new = "if let Some((_, handle, _)) = self.routes.get(&key).filter(|_| false) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "flow-new-selector-is-ignored"
+guards = "epoch and ref changes replace the old route"
+test_file = "crates/basal-host/tests/flow_scope_routes.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--test flow_scope_routes"
+expect_red = ["route_cache_reuses_handles_and_replaces_changed_selectors"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/flow_scope.rs"
+old = "self.flows.insert(flow.into(), scope);"
+new = "let scope = self.flows.get(flow).cloned().flatten().or(scope); // NON-VACUITY BREAK\n        self.flows.insert(flow.into(), scope);"
+
+[[control]]
+id = "flow-scope-close-is-not-recorded"
+guards = "a daemon scope close never reopens the old scoped route"
+test_file = "crates/basal-host/src/transport.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--lib"
+expect_red = ["transport::tests::real_subc_transport_opens_scoped_ops_and_models_and_reuses_routes"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/transport.rs"
+old = "routes.control_push(&push, |handle| handle.channel);"
+new = "let _ = (&mut routes, &push); // NON-VACUITY BREAK"
+
+[[control]]
+id = "flow-selector-plumbing-is-scoped"
+guards = "routing selection remains unscoped while its Broca send is scoped"
+test_file = "crates/basal-host/src/transport.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--lib"
+expect_red = ["transport::tests::real_subc_transport_opens_scoped_ops_and_models_and_reuses_routes"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/selector.rs"
+old = ".management(\"prefrontal-routing\", \"route.select\", select_params(request))"
+new = ".management_for_flow(&request.flow_id, \"prefrontal-routing\", \"route.select\", select_params(request)) // NON-VACUITY BREAK"
+
+[[control]]
+id = "flow-no-selector-is-deferred"
+guards = "no_flow_scope cannot be represented as deferred state"
+test_file = "crates/basal-core/src/schema_flow_deferral_tests.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+expect_red = ["schema::flow_deferral_tests::deferred_state_requires_closed_typed_refusal_and_retry_metadata"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/schema.rs"
+old = "'scope_unsupported', 'resource_busy', 'consent_unavailable'))"
+new = "'scope_unsupported', 'resource_busy', 'consent_unavailable', 'no_flow_scope')) /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "flow-target-readiness-preflight-is-disabled"
+guards = "missing flow_scope_targets reject before forwarding while VM activation remains allowed"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test flow_scopes"
+expect_red = ["unsupported_target_preflight_rejects_without_sending_but_run_activates"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/flow_scope.rs"
+old = "if !scope.targets.contains(module) {"
+new = "if false && !scope.targets.contains(module) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "flow-scope-not-carrier-is-ordinary-rejection"
+guards = "scope_not_carrier is a typed bounded unsent deferral"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test flow_scopes"
+expect_red = ["scope_not_carrier_is_deferred_unsent"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/flow_refusal.rs"
+old = "\"scope_not_carrier\" => RefusalReason::ScopeNotCarrier,"
+new = "\"scope_not_carrier\" => return Ok(None), // NON-VACUITY BREAK"
+
+[[control]]
+id = "flow-scope-ended-is-ordinary-rejection"
+guards = "scope_ended is a typed bounded unsent deferral"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test flow_scopes"
+expect_red = ["scope_ended_is_deferred_unsent"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/flow_refusal.rs"
+old = "\"scope_ended\" => RefusalReason::ScopeEnded,"
+new = "\"scope_ended\" => return Ok(None), // NON-VACUITY BREAK"
+
+[[control]]
+id = "flow-stale-scope-is-ordinary-rejection"
+guards = "scope_not_live is a typed bounded unsent deferral"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test flow_scopes"
+expect_red = ["scope_not_live_is_deferred_unsent"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/flow_refusal.rs"
+old = "\"scope_not_live\" => RefusalReason::ScopeNotLive,"
+new = "\"scope_not_live\" => return Ok(None), // NON-VACUITY BREAK"
+
+[[control]]
+id = "flow-unsynced-scope-is-ordinary-rejection"
+guards = "scope_not_synced is a typed bounded unsent deferral"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test flow_scopes"
+expect_red = ["scope_not_synced_is_deferred_unsent"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/flow_refusal.rs"
+old = "\"scope_not_synced\" => RefusalReason::ScopeNotSynced,"
+new = "\"scope_not_synced\" => return Ok(None), // NON-VACUITY BREAK"
+
+[[control]]
+id = "flow-target-unsupported-is-deferred"
+guards = "target_flow_unsupported ends the unsent call and refunds dispatch counting"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test flow_scopes"
+expect_red = ["daemon_target_flow_unsupported_rejects_without_dispatch_or_failure_count"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/flow_refusal.rs"
+old = "RefusalReason::NoFlowScope | RefusalReason::TargetFlowUnsupported"
+new = "RefusalReason::NoFlowScope // NON-VACUITY BREAK"
+
+[[control]]
+id = "flow-busy-hint-is-not-decoded"
+guards = "resource_busy reads the shared validated relative retry hint"
+test_file = "crates/basal-host/src/flow_refusal.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--lib"
+expect_red = ["flow_refusal::tests::resource_busy_uses_shared_type_and_validates"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/flow_refusal.rs"
+old = "refusal.retry_after_ms = Some(busy.retry_after_ms);"
+new = "refusal.retry_after_ms = None; // NON-VACUITY BREAK"
+
+[[control]]
+id = "flow-consent-is-automatically-retried"
+guards = "consent_unavailable awaits an explicit operator grant"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test flow_scopes"
+expect_red = ["consent_unavailable_waits_for_explicit_grant_and_names_provider_action"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/runtime.rs"
+old = "let retry = if refusal.reason == RefusalReason::ConsentUnavailable {"
+new = "let retry = if false && refusal.reason == RefusalReason::ConsentUnavailable { // NON-VACUITY BREAK"
+
+[[control]]
+id = "flow-retired-agent-is-retryable"
+guards = "agent_retired is permanent and disables through core"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test flow_scopes"
+expect_red = ["agent_retired_fails_and_core_disables_without_auto_disable_count"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/flow_refusal.rs"
+old = "\"agent_retired\" => RefusalReason::AgentRetired,"
+new = "\"agent_retired\" => RefusalReason::ConsentUnavailable, // NON-VACUITY BREAK"
+
+[[control]]
+id = "flow-required-scope-bug-is-suspended"
+guards = "flow_scope_required fails loudly for every provider without retry"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test flow_scopes"
+expect_red = ["flow_scope_required_from_multiple_targets_fails_unsent_without_retry"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/flow_refusal.rs"
+old = "\"flow_scope_required\" => RefusalReason::FlowScopeRequired,"
+new = "\"flow_scope_required\" => RefusalReason::ConsentUnavailable, // NON-VACUITY BREAK"
+
+[[control]]
+id = "flow-deferred-call-resends-early"
+guards = "cold-store recovery respects retry_not_before"
+test_file = "crates/basal-testkit/tests/flow_scope_recovery.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test flow_scope_recovery"
+expect_red = ["reopening_store_never_resends_early_and_keeps_position_and_call_key"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "if retry <= self.rt.config.clock.now_ms() {"
+new = "if true || retry <= self.rt.config.clock.now_ms() { // NON-VACUITY BREAK"
+
+[[control]]
+id = "flow-deferred-resend-changes-call-key"
+guards = "resend retains the original journal position and call key"
+test_file = "crates/basal-testkit/tests/flow_scope_recovery.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test flow_scope_recovery"
+expect_red = ["reopening_store_never_resends_early_and_keeps_position_and_call_key"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/runtime.rs"
+old = "idempotency_key: row.idempotency_key.clone(),"
+new = "idempotency_key: format!(\"{}-changed\", row.idempotency_key), // NON-VACUITY BREAK"
+
+[[control]]
+id = "flow-expiry-leaves-unsent-obligations-open"
+guards = "expiry settles unsent deferred calls and recovery never sends them"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test flow_scopes"
+expect_red = ["resource_busy_wait_uses_relative_hint_and_counts_against_expiry"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/runs.rs"
+old = "crate::journal::expire_deferred(tx, run_id)?;"
+new = "let _ = run_id; // NON-VACUITY BREAK"
+
+[[control]]
+id = "flow-busy-wait-exceeds-run-deadline"
+guards = "resource_busy wait is capped by the absolute existing deadline"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test flow_scopes"
+expect_red = ["resource_busy_hint_is_capped_by_existing_run_deadline"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/runtime.rs"
+old = "deadline.map_or(retry, |d| retry.min(d))"
+new = "deadline.map_or(retry, |_| retry) // NON-VACUITY BREAK"
+
+[[control]]
+id = "flow-core-op-install-capability-check-is-disabled"
+guards = "core manifest ops require catalog flow-scopes/v1"
+test_file = "crates/basal-module/tests/flow_scope_capabilities.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test flow_scope_capabilities"
+expect_red = ["core_op_install_requires_catalog_capability_for_every_author"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/install.rs"
+old = "if module == basal_host::subc_catalog::CORE && !catalog.supports_flow_scopes(module) {"
+new = "if false && module == basal_host::subc_catalog::CORE && !catalog.supports_flow_scopes(module) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "flow-core-op-dry-run-capability-check-is-disabled"
+guards = "dry run rechecks core's catalog opt-in"
+test_file = "crates/basal-module/tests/flow_scope_capabilities.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test flow_scope_capabilities"
+expect_red = ["dry_run_rechecks_core_op_catalog_capability"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/install.rs"
+old = "if module == basal_host::subc_catalog::CORE && !catalog.supports_flow_scopes(module) {"
+new = "if false && module == basal_host::subc_catalog::CORE && !catalog.supports_flow_scopes(module) { // NON-VACUITY BREAK"
+
 [[control]]
 id = "pool-fixture-wait-has-no-deadline"
 guards = "a stalled pool fixture fails within its own deadline and reaps its workers"

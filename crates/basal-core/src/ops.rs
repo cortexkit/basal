@@ -123,7 +123,21 @@ pub fn flow_health(conn: &Connection, now_ms: i64) -> Result<Vec<FlowHealth>> {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         for run in finished {
             if counting {
+                let readiness_failure = if run.error_kind.as_deref() == Some("script") {
+                    let value:Option<String>=conn.query_row("SELECT value FROM journal WHERE run_id=?1 AND settlement='rejected' AND delivery_order=(SELECT MAX(delivery_order) FROM journal WHERE run_id=?1)",[&run.run_id],|r|r.get(0)).optional()?.flatten();
+                    value
+                        .as_deref()
+                        .is_some_and(|value| typed_scope_rejection(value, true))
+                } else if run.error_kind.as_deref() == Some("deadline") {
+                    let values:Vec<String>=conn.prepare("SELECT value FROM mailbox WHERE run_id=?1 AND settlement='rejected' UNION ALL SELECT value FROM journal WHERE run_id=?1 AND settlement='rejected'")?.query_map([&run.run_id],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?;
+                    values
+                        .iter()
+                        .any(|value| typed_scope_rejection(value, false))
+                } else {
+                    false
+                };
                 match run.state.as_str() {
+                    "failed" if readiness_failure => {}
                     "failed" if run.error_kind.as_deref() == Some("agent_retired") => {}
                     "failed" | "engine_mismatch" => consecutive_failures += 1,
                     "succeeded" => counting = false,
@@ -169,7 +183,7 @@ pub fn flow_health(conn: &Connection, now_ms: i64) -> Result<Vec<FlowHealth>> {
             .map(|since| now_ms - since)
             .max();
         flows.push(FlowHealth {
-            waiting_reason: conn.query_row("SELECT refusal_detail FROM journal JOIN runs USING (run_id) WHERE runs.flow_id = ?1 AND journal.dispatch = 'deferred' AND runs.state IN ('running','pending','suspended') ORDER BY admit_seq, position LIMIT 1", [&flow_id], |r| r.get(0)).optional()?.or(conn.query_row("SELECT error_detail FROM runs WHERE flow_id = ?1 AND state = 'pending' AND error_detail LIKE 'target_flow_unsupported:%' ORDER BY admit_seq LIMIT 1", [&flow_id], |r| r.get::<_, Option<String>>(0)).optional()?.flatten()),
+            waiting_reason: conn.query_row("SELECT refusal_detail FROM journal JOIN runs USING (run_id) WHERE runs.flow_id = ?1 AND journal.dispatch = 'deferred' AND runs.state IN ('running','pending','suspended') ORDER BY admit_seq, position LIMIT 1", [&flow_id], |r| r.get(0)).optional()?.or(conn.query_row("SELECT scope_health FROM flows WHERE flow_id=?1",[&flow_id],|r|r.get::<_,Option<String>>(0))?),
             auto_disabled: record.disabled_by.as_deref() == Some(crate::install::RUNTIME_ACTOR),
             disabled_reason: record.disabled_reason,
             flow_id,
@@ -184,6 +198,30 @@ pub fn flow_health(conn: &Connection, now_ms: i64) -> Result<Vec<FlowHealth>> {
         });
     }
     Ok(flows)
+}
+
+fn typed_scope_rejection(value: &str, readiness_only: bool) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(value) else {
+        return false;
+    };
+    if !value["module"].is_string() {
+        return false;
+    }
+    match value["code"].as_str() {
+        Some("no_flow_scope" | "target_flow_unsupported") => true,
+        Some(
+            "scope_not_carrier"
+            | "scope_ended"
+            | "scope_not_live"
+            | "scope_epoch_required"
+            | "scope_not_synced"
+            | "scope_changed"
+            | "scope_unsupported"
+            | "resource_busy"
+            | "consent_unavailable",
+        ) => !readiness_only,
+        _ => false,
+    }
 }
 
 pub(crate) fn health(conn: &Connection) -> Result<Health> {

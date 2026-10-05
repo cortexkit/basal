@@ -45,7 +45,7 @@ impl Host for Provider {
     }
     fn attach(&self, _: Arc<dyn CompletionSink>) {}
     fn install_status(&self, _: &str, _: u32) -> Result<InstallStatus, TransportError> {
-        *self.queries.lock().unwrap()+=1;
+        *self.queries.lock().unwrap() += 1;
         Ok(InstallStatus::Active {
             code_hash: self.hash.lock().unwrap().clone(),
             scope: Some(RegisteredScope {
@@ -133,5 +133,5 @@ fn reopening_store_never_resends_early_and_keeps_position_and_call_key() {
     assert_eq!(calls[1].position, 0);
     assert_eq!(calls[1].idempotency_key, key);
     assert_eq!(rt.calls(&run).unwrap().len(), 1);
-    assert_eq!(*provider.queries.lock().unwrap(),3);
+    assert_eq!(*provider.queries.lock().unwrap(), 3);
 }

@@ -21,6 +21,7 @@ use crate::manifest::{DigestAction, Manifest, OpRef};
 pub struct Refusal {
     pub code: String,
     pub message: String,
+    pub module: Option<String>,
 }
 
 impl Refusal {
@@ -28,6 +29,7 @@ impl Refusal {
         Self {
             code: code.into(),
             message: message.into(),
+            module: None,
         }
     }
 
@@ -37,7 +39,15 @@ impl Refusal {
     }
 
     pub fn outcome(&self) -> HostOutcome {
-        rejection(&self.code, &self.message)
+        let mut outcome = rejection(&self.code, &self.message);
+        if let Some(module) = &self.module {
+            let mut value: Value =
+                serde_json::from_str(outcome.value.as_str()).expect("rejection JSON");
+            value["module"] = Value::String(module.clone());
+            outcome.value =
+                basal_proto::JsonText::new(value.to_string()).expect("bounded rejection");
+        }
+        outcome
     }
 }
 

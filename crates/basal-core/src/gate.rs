@@ -158,27 +158,34 @@ impl Runtime {
         let run_hash = hex(&code_hash(&run.script, &run.manifest));
         let (cause, reason) = match self.shared.host.install_status(flow_id, version) {
             Ok(InstallStatus::Active { code_hash, scope }) if code_hash == run_hash => {
-                let agent_owned = self
-                    .store()
-                    .read(|c| install::agent_owned_version(c, flow_id, version))?;
-                self.shared
-                    .host
-                    .configure_flow(flow_id, agent_owned, scope.clone());
-                if agent_owned && let Some(scope) = scope {
-                    let manifest = crate::manifest::Manifest::parse(&run.manifest)
-                        .map_err(|e| crate::error::CoreError::Corrupt(e.to_string()))?;
-                    let mut required: std::collections::BTreeSet<_> =
-                        manifest.ops.iter().map(|op| op.module.as_str()).collect();
-                    if manifest.llm.is_some() {
-                        required.insert("broca");
-                    }
-                    if let Some(module) = required
-                        .into_iter()
-                        .find(|module| !scope.targets.contains(*module))
-                    {
-                        return self.defer(lease, format!("target_flow_unsupported: {module}"));
+                if let Some(registered) = &scope {
+                    let previous: Option<String> = self.store().read(|c| {
+                        Ok(c.query_row(
+                            "SELECT scope_health FROM flows WHERE flow_id=?1",
+                            [flow_id],
+                            |r| r.get(0),
+                        )?)
+                    })?;
+                    if let Some(previous) = previous {
+                        let previous: serde_json::Value = serde_json::from_str(&previous)
+                            .map_err(|e| crate::error::CoreError::Corrupt(e.to_string()))?;
+                        let clears = previous["reason"] == "no_flow_scope"
+                            || (previous["reason"] == "target_flow_unsupported"
+                                && previous["provider"]
+                                    .as_str()
+                                    .is_some_and(|p| registered.targets.contains(p)));
+                        if clears {
+                            self.store().write(|tx| {
+                                tx.execute(
+                                    "UPDATE flows SET scope_health=NULL WHERE flow_id=?1",
+                                    [flow_id],
+                                )?;
+                                Ok(())
+                            })?;
+                        }
                     }
                 }
+                self.shared.host.configure_flow(flow_id, true, scope);
                 self.clear_backoff(&run.run_id);
                 return Ok(Gate::Open);
             }

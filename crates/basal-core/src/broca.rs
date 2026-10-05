@@ -53,7 +53,6 @@ impl StateStore for BrocaStore {
                     flow_id: run.flow_id.clone(),
                     version,
                     code_hash: crate::ids::hex(&run.code_hash),
-                    agent_owned: crate::install::agent_owned_version(c, &run.flow_id, version)?,
                 }))
             })
             .map_err(|e| BrocaError::Store(e.to_string()))

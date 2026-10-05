@@ -27,7 +27,11 @@ pub enum WireError {
         code: String,
         message: String,
     },
-    RefusedDetails { code: String, message: String, detail: Value },
+    RefusedDetails {
+        code: String,
+        message: String,
+        detail: Value,
+    },
 }
 
 impl WireError {
@@ -36,7 +40,10 @@ impl WireError {
     pub fn unknown_reason(&self) -> Option<crate::UnknownReason> {
         use crate::UnknownReason;
         match self {
-            Self::NeverSent(_) | Self::Refused { .. } | Self::RefusedDetails { .. } | Self::Typed(_) => None,
+            Self::NeverSent(_)
+            | Self::Refused { .. }
+            | Self::RefusedDetails { .. }
+            | Self::Typed(_) => None,
             Self::Unknown(_) => Some(UnknownReason::ConnectionLost),
             Self::TimedOut(_) => Some(UnknownReason::ReplyTimeout),
             Self::Unreadable(_) => Some(UnknownReason::ReplyUnreadable),
@@ -46,6 +53,14 @@ impl WireError {
 
 /// Returns decoded provider payloads, not the management response envelope.
 pub trait Transport: Send + Sync {
+    fn provider_ready(
+        &self,
+        _flow: &str,
+        _module: &str,
+        _action: &str,
+    ) -> Result<(), crate::flow_refusal::FlowRefusal> {
+        Ok(())
+    }
     fn configure_flow(
         &self,
         _flow: &str,
@@ -124,8 +139,15 @@ pub fn refusal(body: subc_protocol::ErrorBody) -> WireError {
     match crate::flow_refusal::FlowRefusal::decode(&body) {
         Ok(Some(decoded)) => WireError::Typed(decoded),
         Ok(None) => match body.detail {
-            Some(detail)=>WireError::RefusedDetails{code:body.code,message:body.message,detail},
-            None=>WireError::Refused {code:body.code,message:body.message},
+            Some(detail) => WireError::RefusedDetails {
+                code: body.code,
+                message: body.message,
+                detail,
+            },
+            None => WireError::Refused {
+                code: body.code,
+                message: body.message,
+            },
         },
         Err(detail) => WireError::Unknown(detail),
     }
@@ -232,7 +254,11 @@ impl SubcTransport {
                     .map_err(map_error)
                     .and_then(|bytes| decode_response(&bytes, management))
             }
-            None => self.call_as(target, self.identity.clone(), bytes, management),
+            None => Err(WireError::Typed(crate::flow_refusal::FlowRefusal::new(
+                crate::flow_refusal::RefusalReason::NoFlowScope,
+                module,
+                action,
+            ))),
         };
         result.map_err(|e| contextual(e, module, action))
     }
@@ -327,7 +353,7 @@ impl SubcTransport {
     pub(crate) fn management_for_model(
         &self,
         flow: &str,
-        identity: BindIdentity,
+        _identity: BindIdentity,
         module: &str,
         op: &str,
         params: &[u8],
@@ -336,9 +362,11 @@ impl SubcTransport {
             module_id: module.into(),
         };
         if self.scoped_handle(flow, &target)?.is_none() {
-            return self
-                .call_as(target, identity, management_bytes(op, params)?, true)
-                .map_err(|e| contextual(e, module, op));
+            return Err(WireError::Typed(crate::flow_refusal::FlowRefusal::new(
+                crate::flow_refusal::RefusalReason::NoFlowScope,
+                module,
+                op,
+            )));
         }
         self.call_for_flow(
             flow,
@@ -352,7 +380,7 @@ impl SubcTransport {
     pub(crate) fn subscribe_for_model(
         &self,
         flow: &str,
-        identity: BindIdentity,
+        _identity: BindIdentity,
         module: &str,
         op: &str,
         params: &[u8],
@@ -370,52 +398,16 @@ impl SubcTransport {
             Some(handle) => self
                 .handle
                 .block_on(self.consumer.subscribe_route(&handle, bytes, opts)),
-            None => self
-                .handle
-                .block_on(self.consumer.subscribe(target, identity, bytes, opts)),
+            None => {
+                return Err(WireError::Typed(crate::flow_refusal::FlowRefusal::new(
+                    crate::flow_refusal::RefusalReason::NoFlowScope,
+                    module,
+                    op,
+                )));
+            }
         }
         .map_err(map_error)
         .map_err(|e| contextual(e, module, op))
-    }
-    /// Shares the consumer connection but binds the supplied identity. Broca
-    /// callers supply a separate session for each flow/run/call position.
-    pub(crate) fn management_as(
-        &self,
-        identity: BindIdentity,
-        module: &str,
-        op: &str,
-        params: &[u8],
-    ) -> Result<Value, WireError> {
-        self.call_as(
-            RouteTarget::ManagementSurface {
-                module_id: module.into(),
-            },
-            identity,
-            management_bytes(op, params)?,
-            true,
-        )
-    }
-    pub(crate) fn subscribe_as(
-        &self,
-        identity: BindIdentity,
-        module: &str,
-        op: &str,
-        params: &[u8],
-    ) -> Result<Subscription, WireError> {
-        self.handle
-            .block_on(self.consumer.subscribe(
-                RouteTarget::ManagementSurface {
-                    module_id: module.into(),
-                },
-                identity,
-                management_bytes(op, params)?,
-                SubscribeOptions {
-                    route_open_timeout: self.timeout,
-                    route_retry_deadline: self.timeout,
-                    ..Default::default()
-                },
-            ))
-            .map_err(map_error)
     }
     pub(crate) fn spawn(
         &self,
@@ -428,6 +420,17 @@ impl SubcTransport {
     }
 }
 impl Transport for SubcTransport {
+    fn provider_ready(
+        &self,
+        flow: &str,
+        module: &str,
+        action: &str,
+    ) -> Result<(), crate::flow_refusal::FlowRefusal> {
+        self.routes
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .ready(flow, module, action)
+    }
     fn configure_flow(
         &self,
         flow: &str,
@@ -438,7 +441,7 @@ impl Transport for SubcTransport {
             .routes
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .configure(flow, agent_owned, scope.map(|s| s.selector));
+            .configure(flow, agent_owned, scope);
         for handle in dropped {
             let _ = self
                 .handle
@@ -535,9 +538,17 @@ pub fn contextual(error: WireError, module: &str, action: &str) -> WireError {
                 error
             }
         }
-        WireError::RefusedDetails {code,message,detail} => {
-            let error=refusal(subc_protocol::ErrorBody::new(code,message).with_detail(detail));
-            if matches!(error,WireError::Typed(_)) {contextual(error,module,action)} else {error}
+        WireError::RefusedDetails {
+            code,
+            message,
+            detail,
+        } => {
+            let error = refusal(subc_protocol::ErrorBody::new(code, message).with_detail(detail));
+            if matches!(error, WireError::Typed(_)) {
+                contextual(error, module, action)
+            } else {
+                error
+            }
         }
         other => other,
     }
@@ -629,6 +640,8 @@ mod tests {
         write_atomic(&file, &info).unwrap();
         let opens = Arc::new(Mutex::new(Vec::<Value>::new()));
         let records = opens.clone();
+        let calls = Arc::new(Mutex::new(Vec::<(u16, Value)>::new()));
+        let recorded_calls = calls.clone();
         let daemon = runtime.spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             authenticate_server(
@@ -645,6 +658,7 @@ mod tests {
                     continue;
                 }
                 let body: Value = serde_json::from_slice(&frame.body).unwrap();
+                recorded_calls.lock().unwrap().push((frame.header.channel,body.clone()));
                 let end_scope = body["method"] == "end_scope";
                 let reply = if body["op"] == "route.open" {
                     let mut records = records.lock().unwrap();
@@ -652,6 +666,14 @@ mod tests {
                     json!({"op":"route.open","route_channel":10+records.len(),"route_epoch":1})
                 } else if body["method"] == "session.send" {
                     json!({"result":{"state":"active","run_id":"broca-run"}})
+                } else if body["method"]=="route.select" {
+                    json!({"result":{"selected":{"model":{"providerID":"registry","modelID":"model"}},"decisionID":"selection-1","runner":{"provider":"runner","model":"model"}}})
+                } else if body["method"]=="run.result" {
+                    json!({"result":{"run_id":"broca-run","state":"completed","final_message":{"ordinal":0,"mid":"m","text":"answer"}}})
+                } else if body["method"]=="run.status" {
+                    json!({"result":{"state":"completed"}})
+                } else if body["method"]=="route.set_decision_outcome" {
+                    json!({"result":{"ok":true}})
                 } else {
                     json!({"result":body["params"]})
                 };
@@ -711,23 +733,42 @@ mod tests {
                 json!({"n":7})
             );
         }
+        use crate::selector::ModelSelector;
+        let selector_client = Arc::new(crate::selector::RoutingSelector::new(transport.clone()));
+        let selection = selector_client
+            .select(&crate::selector::SelectionRequest {
+                iq: 70,
+                eq: 20,
+                flow_id: "flow-a".into(),
+                run_id: "run-a".into(),
+                send_id: "send-1".into(),
+            })
+            .unwrap();
         let broca = crate::broca::subc::SubcBrocaTransport::new(
             transport.clone(),
             "broca".into(),
             Arc::new(|| {}),
         );
-        let route = crate::broca::Route {
-            flow_id: Some("flow-a".into()),
-            project_root: "/".into(),
-            harness: "basal".into(),
-            session: "a-run-position".into(),
-        };
-        for _ in 0..2 {
-            assert!(matches!(
-                crate::broca::Transport::send(broca.as_ref(), &route, b"{}"),
-                Ok(crate::broca::wire::SendResult::Active { .. })
-            ));
-        }
+        let model_store = Arc::new(crate::broca::fake::MemoryStore::default());
+        let model_host = crate::broca::BrocaHost::new(
+            broca.clone(),
+            model_store.clone(),
+            "/".into(),
+            "basal".into(),
+            selector_client.clone(),
+        );
+        let request=crate::CallRequest {flow_id:"flow-a".into(),run_id:"run-a".into(),position:0,kind:basal_proto::CallKind::Primitive(basal_proto::Primitive::Llm),args:basal_proto::JsonText::new(json!({"send_id":"send-1","work_class":"flow:flow-a","session":"basal:flow-flow-a:run-a:0","op":"llm","max_output":16,"request":{"prompt":"hello"},"selection":selection}).to_string()).unwrap(),idempotency_key:"send-1".into(),attempt:1};
+        model_host.dispatch_model(&request).unwrap();
+        drop(model_host);
+        let recovered_host = crate::broca::BrocaHost::new(
+            broca.clone(),
+            model_store,
+            "/".into(),
+            "basal".into(),
+            selector_client,
+        );
+        recovered_host.poll().unwrap();
+        recovered_host.poll().unwrap();
         assert_eq!(
             transport
                 .management(
@@ -741,16 +782,20 @@ mod tests {
         let records = opens.lock().unwrap().clone();
         assert_eq!(
             records.len(),
-            3,
+            4,
             "ops and models each reuse one route; carrier core is separate"
         );
         assert_eq!(
             records[0]["scope"],
             serde_json::to_value(selector.selector()).unwrap()
         );
-        assert_eq!(records[1]["scope"], records[0]["scope"]);
+        assert_eq!(records[2]["scope"], records[0]["scope"]);
         assert!(
-            records[2].get("scope").is_none(),
+            records[1].get("scope").is_none(),
+            "model-selection plumbing must remain unscoped"
+        );
+        assert!(
+            records[3].get("scope").is_none(),
             "core carrier call must remain unscoped"
         );
         transport
@@ -762,7 +807,7 @@ mod tests {
             true,
             Some(RegisteredScope {
                 selector: selector.clone(),
-                targets: Default::default(),
+                targets: ["mock".into(), "broca".into()].into_iter().collect(),
             }),
         );
         assert!(
@@ -772,7 +817,7 @@ mod tests {
             ),
             "a daemon scope close must not trigger an automatic reopen"
         );
-        assert_eq!(opens.lock().unwrap().len(), 3);
+        assert_eq!(opens.lock().unwrap().len(), 4);
         let mut next = selector;
         next.epoch += 1;
         transport.configure_flow(
@@ -780,16 +825,50 @@ mod tests {
             true,
             Some(RegisteredScope {
                 selector: next.clone(),
-                targets: Default::default(),
+                targets: ["mock".into(), "broca".into()].into_iter().collect(),
             }),
         );
         transport
             .management_for_flow("flow-a", "mock", "echo", json!({}))
             .unwrap();
         assert_eq!(
-            opens.lock().unwrap()[3]["scope"],
+            opens.lock().unwrap()[4]["scope"],
             serde_json::to_value(next.selector()).unwrap()
         );
+        let calls = calls.lock().unwrap();
+        let reports: Vec<_> = calls
+            .iter()
+            .filter(|(_, body)| body["method"] == "route.set_decision_outcome")
+            .collect();
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].1["params"]["decisionID"], "selection-1");
+        let selected = calls
+            .iter()
+            .find(|(_, body)| body["method"] == "route.select")
+            .unwrap();
+        assert_eq!(selected.0, reports[0].0);
+        assert_eq!(
+            selected.1["params"],
+            json!({"targetAgent":"flow","requirements":{"iq":70,"eq":20},"excludeRouteKeys":[],"sendID":"send-1","taskId":"flow:flow-a:run-a","substrate":"broca"})
+        );
+        let sent = calls
+            .iter()
+            .find(|(_, body)| body["method"] == "session.send")
+            .unwrap();
+        assert_ne!(selected.0, sent.0);
+        assert_eq!(sent.1["params"]["send_id"], "send-1");
+        for method in ["run.result", "run.status"] {
+            let reads: Vec<_> = calls
+                .iter()
+                .filter(|(_, body)| body["method"] == method)
+                .collect();
+            assert_eq!(reads.len(), 1);
+            assert_eq!(
+                reads[0].0, sent.0,
+                "recovered Broca reads must use the send's scoped route"
+            );
+        }
+        drop(calls);
         daemon.abort();
         drop(broca);
         drop(transport);

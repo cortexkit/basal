@@ -322,7 +322,9 @@ impl Runtime {
             threads: Mutex::new(Vec::new()),
         });
         let config = Arc::new(config);
-        shared.host.scope_checks(config.install_gate == crate::gate::InstallGate::Core);
+        shared
+            .host
+            .scope_checks(config.install_gate == crate::gate::InstallGate::Core);
         shared.host.attach(Arc::new(Sink {
             shared: Arc::downgrade(&shared),
             config: config.clone(),
@@ -653,26 +655,37 @@ impl Runtime {
     }
 
     /// Dispatches an authorized call on its own thread.
-    pub(crate) fn spawn_dispatch(&self, request: CallRequest, class: StoredClass) {
+    pub(crate) fn spawn_dispatch(
+        &self,
+        request: CallRequest,
+        class: StoredClass,
+        prior_unsent: bool,
+    ) {
         let rt = self.clone();
         self.spawn(move || {
             let run_id = request.run_id.clone();
             let position = request.position;
             // Errors here mean the store failed or was cut: the outcome is
             // not recorded, and recovery decides what to do with the call.
-            let _ = rt.dispatch(request, class);
+            let _ = rt.dispatch(request, class, prior_unsent);
             rt.unregister(&run_id, position);
             rt.shared.signal.bump();
         });
     }
 
-    fn dispatch(&self, mut request: CallRequest, class: StoredClass) -> Result<()> {
+    fn dispatch(
+        &self,
+        mut request: CallRequest,
+        class: StoredClass,
+        prior_unsent: bool,
+    ) -> Result<()> {
         let run_id = request.run_id.clone();
         let position = request.position;
         let mut retries = 0;
         // Why the latest send that may have reached the host ended without
         // an answer; `None` while every failed send provably never left.
-        let mut maybe_sent: Option<UnknownReason> = None;
+        let mut maybe_sent: Option<UnknownReason> =
+            (!prior_unsent && class != StoredClass::Query).then_some(UnknownReason::BasalRestarted);
         let answer = loop {
             let expected_class = match class {
                 StoredClass::Query => basal_host::CallClass::Query,
@@ -688,6 +701,12 @@ impl Runtime {
                 Ok(d) => break Ok(d),
                 Err(TransportError::Refused(refusal)) => {
                     use basal_host::flow_refusal::RefusalReason;
+                    if refusal.reason == RefusalReason::FlowScopeRequired {
+                        tracing::error!(provider=%refusal.provider,action=%refusal.action,code="flow_scope_required","provider refused a flow call without its required scope");
+                        self.accept(&run_id, position, None, &refusal.outcome(), Source::Host)?;
+                        self.shared.host.refusal_committed(&request, &refusal);
+                        return Ok(());
+                    }
                     if maybe_sent.is_some() {
                         self.shared.store.write(|tx| {
                             journal::record_unknown(
@@ -697,6 +716,18 @@ impl Runtime {
                                 UnknownReason::ConnectionLost,
                             )
                         })?;
+                    } else if refusal.readiness() {
+                        self.shared.store.write(|tx| {
+                            let accepted=journal::accept_outcome(tx,&run_id,position,None,&refusal.outcome(),Source::Host)?;
+                            if accepted.ack==CompletionAck::Accepted {
+                                crate::flow_scope::health(tx,&request.flow_id,&refusal)?;
+                                let at:i64=tx.query_row("SELECT at FROM call_audit WHERE run_id=?1 AND position=?2",rusqlite::params![run_id,position],|r|r.get(0))?;
+                                crate::rate::refund_dispatch(tx,&request.flow_id,at,&self.config.rate)?;
+                                tx.execute("UPDATE call_audit SET outcome=?3 WHERE run_id=?1 AND position=?2",rusqlite::params![run_id,position,refusal.reason.as_str()])?;
+                            }
+                            Ok(())
+                        })?;
+                        self.shared.host.refusal_committed(&request, &refusal);
                     } else if refusal.reason == RefusalReason::AgentRetired {
                         // Operator decision cards attach here; the terminal decision
                         // and core's disable already commit together without a retry.
@@ -730,7 +761,7 @@ impl Runtime {
                                 [&run_id],
                                 |r| r.get(0),
                             )?;
-                            let retry = if refusal.reason == RefusalReason::ResourceBusy {
+                            let retry = if refusal.reason != RefusalReason::ConsentUnavailable {
                                 deadline.map_or(retry, |d| retry.min(d))
                             } else {
                                 retry
@@ -904,7 +935,21 @@ impl Runtime {
     /// notices its own run's deadline.
     pub fn enforce_deadlines(&self) -> Result<Vec<String>> {
         let now = self.config.clock.now_ms();
-        let expired = self.shared.store.write(|tx| runs::expire(tx, now, None))?;
+        let (expired,refusals) = self.shared.store.write(|tx| {
+            let mut stmt=tx.prepare("SELECT j.run_id,j.position,j.refusal_detail FROM journal j JOIN runs r USING (run_id) WHERE j.dispatch='deferred' AND r.deadline_at<=?1 AND r.state IN ('pending','running','suspended')")?;
+            let rows=stmt.query_map([now],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;drop(stmt);
+            let mut refusals=Vec::new();
+            for (run_id,position,detail) in rows {
+                let run=runs::load(tx,&run_id)?;
+                let row=journal::row(tx,&run_id,crate::model::to_u64(position,"position")?)?.ok_or_else(||CoreError::Corrupt("expired call missing".into()))?;
+                let refusal=serde_json::from_str::<basal_host::flow_refusal::FlowRefusal>(&detail).map_err(|e|CoreError::Corrupt(e.to_string()))?;
+                refusals.push((Self::request(&run,&row,row.attempts),refusal));
+            }
+            Ok((runs::expire(tx,now,None)?,refusals))
+        })?;
+        for (request, refusal) in refusals {
+            self.shared.host.refusal_committed(&request, &refusal);
+        }
         self.shared.signal.bump();
         for (_, flow_id) in &expired {
             self.wake_flow(flow_id);

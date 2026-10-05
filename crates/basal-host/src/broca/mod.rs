@@ -58,6 +58,13 @@ impl std::error::Error for BrocaError {}
 
 /// Adapters bind `route` before each op.
 pub trait Transport: Send + Sync {
+    fn provider_ready(
+        &self,
+        _flow_id: &str,
+        _action: &str,
+    ) -> Result<(), crate::flow_refusal::FlowRefusal> {
+        Ok(())
+    }
     fn refresh_flow(&self, _identity: &FlowIdentity) -> Result<(), BrocaError> {
         Ok(())
     }
@@ -102,7 +109,6 @@ pub struct FlowIdentity {
     pub flow_id: String,
     pub version: u32,
     pub code_hash: String,
-    pub agent_owned: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -535,23 +541,21 @@ impl BrocaHost {
     }
 
     fn report_terminal(&self, call: &mut StoredCall) -> Result<(), BrocaError> {
-        if !call.report_attempted {
-            if let Some(state) = &call.state {
-                let outcome = match state.as_str() {
-                    "completed" => ModelOutcome::Completed,
-                    "cancelled" => ModelOutcome::Cancelled,
-                    "interrupted" => ModelOutcome::Interrupted,
-                    _ => ModelOutcome::Error,
-                };
-                if let Err(error) = self
-                    .selector
-                    .report_outcome(&call.selection.decision_id, outcome)
-                {
-                    tracing::warn!(%error,"model routing outcome report failed");
-                }
-                call.report_attempted = true;
-                self.store.save(call)?;
+        if !call.report_attempted && (call.outcome.is_some() || call.unknown.is_some()) {
+            let outcome = match call.state.as_deref() {
+                Some("completed") => ModelOutcome::Completed,
+                Some("cancelled") => ModelOutcome::Cancelled,
+                Some("interrupted") => ModelOutcome::Interrupted,
+                _ => ModelOutcome::Error,
+            };
+            if let Err(error) = self
+                .selector
+                .report_outcome(&call.selection.decision_id, outcome)
+            {
+                tracing::warn!(%error,"model routing outcome report failed");
             }
+            call.report_attempted = true;
+            self.store.save(call)?;
         }
         Ok(())
     }
@@ -569,7 +573,8 @@ impl BrocaHost {
                 continue;
             }
             if self.scope_checks.load(std::sync::atomic::Ordering::SeqCst)
-                && let Some(identity) = self.store.identity(&call.basal_run_id)? {
+                && let Some(identity) = self.store.identity(&call.basal_run_id)?
+            {
                 call.route.flow_id = Some(identity.flow_id.clone());
                 if let Err(error) = self.transport.refresh_flow(&identity) {
                     first_error.get_or_insert(error);
@@ -691,7 +696,43 @@ impl BrocaHost {
 }
 
 impl Host for BrocaHost {
-    fn scope_checks(&self, enabled: bool) { self.scope_checks.store(enabled, std::sync::atomic::Ordering::SeqCst); }
+    fn provider_ready(
+        &self,
+        flow_id: &str,
+        kind: &CallKind,
+    ) -> Result<(), crate::flow_refusal::FlowRefusal> {
+        self.transport
+            .provider_ready(flow_id, &crate::op_label(kind))
+    }
+    fn refusal_committed(&self, request: &CallRequest, refusal: &crate::flow_refusal::FlowRefusal) {
+        let result = (|| {
+            let _guard = lock(&self.gate);
+            if let Some(mut call) = self
+                .store
+                .load()?
+                .into_iter()
+                .find(|c| c.send_id == request.idempotency_key)
+            {
+                let outcome = refusal.outcome();
+                call.outcome = Some(StoredOutcome {
+                    rejected: true,
+                    value: outcome.value.into_string(),
+                    usage: outcome.usage,
+                });
+                call.acknowledged = true;
+                self.store.save(&call)?;
+                self.report_terminal(&mut call)?;
+            }
+            Ok::<_, BrocaError>(())
+        })();
+        if let Err(error) = result {
+            tracing::error!(%error,"recording an unsent model refusal");
+        }
+    }
+    fn scope_checks(&self, enabled: bool) {
+        self.scope_checks
+            .store(enabled, std::sync::atomic::Ordering::SeqCst);
+    }
     fn configure_flow(
         &self,
         flow_id: &str,

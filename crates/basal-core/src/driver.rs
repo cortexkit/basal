@@ -573,8 +573,14 @@ impl Activation<'_> {
             self.at(Boundary::ResendAuthorized {
                 position: row.position,
             })?;
-            self.rt
-                .spawn_dispatch(Runtime::request(&self.run, &row, attempt), row.class);
+            self.rt.spawn_dispatch(
+                Runtime::request(&self.run, &row, attempt),
+                row.class,
+                matches!(
+                    row.dispatch,
+                    DispatchState::Deferred | DispatchState::NotApplied
+                ),
+            );
         }
         Ok(Flow::Continue)
     }
@@ -773,6 +779,7 @@ impl Activation<'_> {
                         attempt: 1,
                     },
                     class,
+                    true,
                 );
                 Ok(Flow::Continue)
             }
@@ -827,6 +834,15 @@ impl Activation<'_> {
             &call.kind,
             &args,
         )?;
+        self.rt
+            .shared
+            .host
+            .provider_ready(&self.run.flow_id, &call.kind)
+            .map_err(|refusal| {
+                let mut rejected = Refusal::new(refusal.reason.as_str(), refusal.message());
+                rejected.module = Some(refusal.provider);
+                rejected
+            })?;
         match &call.kind {
             CallKind::Primitive(p @ (Primitive::Llm | Primitive::Classify)) => {
                 let Some(grant) = &manifest.llm else {
@@ -992,6 +1008,26 @@ impl Activation<'_> {
             request: None,
         };
         journal::insert_call(tx, &self.lease, flow_id, &new)?;
+        if let Some(module) = &refusal.module {
+            let reason = match refusal.code.as_str() {
+                "no_flow_scope" => Some(basal_host::flow_refusal::RefusalReason::NoFlowScope),
+                "target_flow_unsupported" => {
+                    Some(basal_host::flow_refusal::RefusalReason::TargetFlowUnsupported)
+                }
+                _ => None,
+            };
+            if let Some(reason) = reason {
+                crate::flow_scope::health(
+                    tx,
+                    flow_id,
+                    &basal_host::flow_refusal::FlowRefusal::new(
+                        reason,
+                        module,
+                        &basal_host::op_label(&call.kind),
+                    ),
+                )?;
+            }
+        }
         audit::record(
             tx,
             flow_id,

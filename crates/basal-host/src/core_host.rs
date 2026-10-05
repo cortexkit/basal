@@ -55,7 +55,13 @@ pub(crate) fn outcome(result: Result<Value, WireError>) -> Result<Dispatched, Tr
     };
     match result {
         Err(WireError::Typed(refusal)) => Err(TransportError::Refused(refusal)),
-        Err(WireError::RefusedDetails {code,message,detail}) => JsonText::new(json!({"code":code,"message":message,"detail":detail}).to_string()).map(|v|Dispatched::Completed(HostOutcome::rejected(v))).map_err(unreadable),
+        Err(WireError::RefusedDetails {
+            code,
+            message,
+            detail,
+        }) => JsonText::new(json!({"code":code,"message":message,"detail":detail}).to_string())
+            .map(|v| Dispatched::Completed(HostOutcome::rejected(v)))
+            .map_err(unreadable),
         Ok(value) => JsonText::new(value.to_string())
             .map(|v| Dispatched::Completed(HostOutcome::fulfilled(v)))
             .map_err(unreadable),

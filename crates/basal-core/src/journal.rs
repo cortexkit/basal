@@ -284,6 +284,36 @@ pub fn wake_deferred(tx: &Transaction, now: i64, only: Option<&str>) -> Result<(
     Ok(())
 }
 
+/// Expiry closes every known-unsent obligation atomically with the run. No
+/// worker activation is allowed after the deadline merely to deliver it.
+pub fn expire_deferred(tx: &Transaction, run_id: &str) -> Result<()> {
+    let mut stmt=tx.prepare("SELECT position,refusal_detail FROM journal WHERE run_id=?1 AND dispatch='deferred' ORDER BY position")?;
+    let rows = stmt
+        .query_map([run_id], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(stmt);
+    let flow: String = tx.query_row("SELECT flow_id FROM runs WHERE run_id=?1", [run_id], |r| {
+        r.get(0)
+    })?;
+    for (position, detail) in rows {
+        let refusal: basal_host::flow_refusal::FlowRefusal =
+            serde_json::from_str(&detail).map_err(|e| CoreError::Corrupt(e.to_string()))?;
+        tx.execute("UPDATE journal SET dispatch='sent',refusal=NULL,retry_not_before=NULL,refusal_detail=NULL WHERE run_id=?1 AND position=?2",params![run_id,position])?;
+        accept_outcome(
+            tx,
+            run_id,
+            crate::model::to_u64(position, "position")?,
+            None,
+            &refusal.outcome(),
+            Source::Host,
+        )?;
+        crate::flow_scope::health(tx, &flow, &refusal)?;
+    }
+    Ok(())
+}
+
 /// Releases the next outcome the blocked worker is waiting on: the earliest
 /// arrival in the mailbox among `awaiting`, written into the journal with
 /// the next delivery order, fenced, and removed from the mailbox. Returns the

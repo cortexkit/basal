@@ -17,15 +17,18 @@ pub struct FlowScope {
 }
 
 fn decode_owner<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Principal, D::Error> {
-    let owner=serde_json::Value::deserialize(deserializer)?;
+    let owner = serde_json::Value::deserialize(deserializer)?;
     // Use the protocol's strict scope-principal decoder, not Principal's
     // forward-compatible attribution decoder, for authority-bearing input.
-    let selector:ScopeSelector=serde_json::from_value(serde_json::json!({"owner":owner,"ref":"owner-decoder","scope_epoch":0})).map_err(serde::de::Error::custom)?;
+    let selector: ScopeSelector = serde_json::from_value(
+        serde_json::json!({"owner":owner,"ref":"owner-decoder","scope_epoch":0}),
+    )
+    .map_err(serde::de::Error::custom)?;
     Ok(selector.owner)
 }
 
 pub struct ScopedRoutes<H> {
-    flows: HashMap<String, (bool, Option<FlowScope>)>,
+    flows: HashMap<String, Option<RegisteredScope>>,
     routes: HashMap<String, (FlowScope, Option<H>, String)>,
 }
 impl<H> Default for ScopedRoutes<H> {
@@ -85,14 +88,19 @@ impl<H: Copy + Eq> ScopedRoutes<H> {
         // do not: their next use opens a scoped route on the new connection.
         self.routes.retain(|_, (_, handle, _)| handle.is_none());
     }
-    pub fn configure(&mut self, flow: &str, agent_owned: bool, scope: Option<FlowScope>) -> Vec<H> {
-        self.flows.insert(flow.into(), (agent_owned, scope));
+    pub fn configure(
+        &mut self,
+        flow: &str,
+        _agent_owned: bool,
+        scope: Option<RegisteredScope>,
+    ) -> Vec<H> {
+        self.flows.insert(flow.into(), scope);
         let mut dropped = Vec::new();
         self.routes.retain(|_, (selector, handle, _)| {
             let live = self
                 .flows
                 .values()
-                .any(|(_, s)| s.as_ref() == Some(selector));
+                .any(|s| s.as_ref().is_some_and(|s| &s.selector == selector));
             if !live && let Some(handle) = handle {
                 dropped.push(*handle);
             }
@@ -114,23 +122,15 @@ impl<H: Copy + Eq> ScopedRoutes<H> {
             | subc_protocol::RouteTarget::ToolProvider { module_id } => module_id.as_str(),
             _ => return Err(WireError::NeverSent("unsupported flow target".into())),
         };
-        let (owned, scope) = self.flows.get(flow).cloned().unwrap_or((true, None));
-        let Some(scope) = scope else {
-            if owned {
-                return Err(WireError::Typed(FlowRefusal::new(
-                    RefusalReason::NoFlowScope,
-                    module,
-                    "route.open",
-                )));
-            }
-            if module == crate::subc_catalog::CORE {
-                return Err(WireError::Refused {
-                    code: "basal_scope_bug".into(),
-                    message: "a flow core op has no scoped route".into(),
-                });
-            }
-            return Ok(None);
-        };
+        self.ready(flow, module, "route.open")
+            .map_err(WireError::Typed)?;
+        let scope = self
+            .flows
+            .get(flow)
+            .and_then(Option::as_ref)
+            .unwrap()
+            .selector
+            .clone();
         let key = format!(
             "{}:{}",
             serde_json::to_string(&scope).unwrap(),
@@ -164,6 +164,20 @@ impl<H: Copy + Eq> ScopedRoutes<H> {
             }
         });
     }
+
+    pub fn ready(&self, flow: &str, module: &str, action: &str) -> Result<(), FlowRefusal> {
+        let Some(scope) = self.flows.get(flow).and_then(Option::as_ref) else {
+            return Err(FlowRefusal::new(RefusalReason::NoFlowScope, module, action));
+        };
+        if !scope.targets.contains(module) {
+            return Err(FlowRefusal::new(
+                RefusalReason::TargetFlowUnsupported,
+                module,
+                action,
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl FlowScope {
@@ -191,8 +205,7 @@ pub fn decode(value: &serde_json::Value) -> Result<Option<RegisteredScope>, Stri
         _ => return Err("scope and flow_scope_targets must be present together".into()),
     };
     let selector: FlowScope = serde_json::from_value(scope.clone()).map_err(|e| e.to_string())?;
-    if !matches!(selector.owner, Principal::Reserved { .. })
-        || selector.scope_ref.trim().is_empty()
+    if !matches!(selector.owner, Principal::Reserved { .. }) || selector.scope_ref.trim().is_empty()
     {
         return Err("invalid flow scope selector".into());
     }
@@ -217,15 +230,23 @@ mod tests {
     fn fixture() -> serde_json::Value {
         json!({"scope":{"owner":{"kind":"reserved","module_id":"prefrontal-core"},"ref":"flow:a","epoch":7},"flow_scope_targets":["broca","cerebellum"]})
     }
+    fn registered(selector: FlowScope) -> RegisteredScope {
+        RegisteredScope {
+            selector,
+            targets: ["broca".into()].into_iter().collect(),
+        }
+    }
     #[test]
     fn install_scope_fields_are_absent_or_a_complete_registered_selector() {
         assert_eq!(decode(&json!({})).unwrap(), None);
         let decoded = decode(&fixture()).unwrap().unwrap();
         assert_eq!(decoded.selector.epoch, 7);
         assert_eq!(decoded.selector.scope_ref, "flow:a");
-        let mut zero=fixture();zero["scope"]["epoch"]=json!(0);
-        assert_eq!(decode(&zero).unwrap().unwrap().selector.epoch,0);
-        let mut unknown_owner=fixture();unknown_owner["scope"]["owner"]["unknown_constraint"]=json!(true);
+        let mut zero = fixture();
+        zero["scope"]["epoch"] = json!(0);
+        assert_eq!(decode(&zero).unwrap().unwrap().selector.epoch, 0);
+        let mut unknown_owner = fixture();
+        unknown_owner["scope"]["owner"]["unknown_constraint"] = json!(true);
         assert!(decode(&unknown_owner).is_err());
         assert_eq!(
             decoded.targets,
@@ -250,7 +271,7 @@ mod tests {
     fn a_scope_closed_route_is_not_reopened_under_the_same_selector() {
         let mut routes = ScopedRoutes::<u64>::default();
         let scope = decode(&fixture()).unwrap().unwrap().selector;
-        routes.configure("a", true, Some(scope.clone()));
+        routes.configure("a", true, Some(registered(scope.clone())));
         let target = subc_protocol::RouteTarget::ManagementSurface {
             module_id: "broca".into(),
         };
@@ -260,7 +281,7 @@ mod tests {
             routes.route("a", &target, |_| panic!("scope close reopened")),
             Err(WireError::Typed(_))
         ));
-        routes.configure("a", true, Some(scope.clone()));
+        routes.configure("a", true, Some(registered(scope.clone())));
         assert!(
             routes
                 .route("a", &target, |_| panic!(
@@ -270,7 +291,7 @@ mod tests {
         );
         let mut next = scope;
         next.epoch += 1;
-        routes.configure("a", true, Some(next));
+        routes.configure("a", true, Some(registered(next)));
         assert_eq!(routes.route("a", &target, |_| Ok(2)).unwrap(), Some(2));
     }
     #[test]
@@ -280,7 +301,7 @@ mod tests {
         let target = subc_protocol::RouteTarget::ManagementSurface {
             module_id: "broca".into(),
         };
-        routes.configure("a", true, Some(scope.clone()));
+        routes.configure("a", true, Some(registered(scope.clone())));
         routes.route("a", &target, |_| Ok(1)).unwrap();
         assert_eq!(
             routes
@@ -289,7 +310,10 @@ mod tests {
             Some(1)
         );
         scope.epoch += 1;
-        assert_eq!(routes.configure("a", true, Some(scope)), vec![1]);
+        assert_eq!(
+            routes.configure("a", true, Some(registered(scope))),
+            vec![1]
+        );
         assert_eq!(routes.route("a", &target, |_| Ok(2)).unwrap(), Some(2));
     }
 }

@@ -398,6 +398,16 @@ pub trait CompletionSink: Send + Sync {
 /// The hosts a flow reaches. Implementations must be safe to call from
 /// several threads at once: the runtime runs a run's calls concurrently.
 pub trait Host: Send + Sync {
+    /// Only flow-owned provider calls use scope readiness. Plumbing and local
+    /// built-ins keep the default so they cannot accidentally acquire a scope.
+    fn provider_ready(
+        &self,
+        _flow_id: &str,
+        _kind: &CallKind,
+    ) -> Result<(), flow_refusal::FlowRefusal> {
+        Ok(())
+    }
+    fn refusal_committed(&self, _request: &CallRequest, _refusal: &flow_refusal::FlowRefusal) {}
     /// Production checks core; capture-only and non-gate tests explicitly opt out.
     fn scope_checks(&self, _enabled: bool) {}
     /// The activation gate supplies fresh core authority before any run calls.

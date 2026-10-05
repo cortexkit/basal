@@ -195,6 +195,7 @@ pub fn expire(
         .collect::<rusqlite::Result<_>>()?;
     drop(stmt);
     for (run_id, _) in &expired {
+        crate::journal::expire_deferred(tx, run_id)?;
         tx.execute(
             "UPDATE runs SET state = 'failed', owner = NULL, generation = generation + 1, \
              awaited = NULL, error_kind = 'deadline', error_detail = ?2, ended_at = ?3 \

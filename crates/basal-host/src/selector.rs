@@ -73,10 +73,12 @@ impl ModelSelector for UnconfiguredSelector {
 }
 fn error(e: WireError) -> SelectionError {
     match e {
-        WireError::Refused { code, message } | WireError::RefusedDetails {code,message,..} => SelectionError::Refused {
-            code,
-            detail: message,
-        },
+        WireError::Refused { code, message } | WireError::RefusedDetails { code, message, .. } => {
+            SelectionError::Refused {
+                code,
+                detail: message,
+            }
+        }
         other => SelectionError::Unavailable {
             detail: format!("{other:?}"),
         },

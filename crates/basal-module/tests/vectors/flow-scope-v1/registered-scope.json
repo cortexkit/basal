@@ -1,0 +1,1 @@
+{"owner":{"kind":"reserved","module_id":"prefrontal-core"},"record":{"attributes":{"agent_id":"ag_fixture","delegates":true,"flow_id":"flow-x"},"carriers":[{"principal":{"kind":"reserved","module_id":"basal"},"targets":["broca","plexus","prefrontal-core"]}],"kind":"head","ref":"0123456789abcdef0123456789abcdef","scope_epoch":1}}

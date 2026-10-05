@@ -19,6 +19,7 @@ pub enum RefusalReason {
     ConsentUnavailable,
     NoFlowScope,
     AgentRetired,
+    FlowScopeRequired,
 }
 
 impl RefusalReason {
@@ -36,6 +37,7 @@ impl RefusalReason {
             Self::ConsentUnavailable => "consent_unavailable",
             Self::NoFlowScope => "no_flow_scope",
             Self::AgentRetired => "agent_retired",
+            Self::FlowScopeRequired => "flow_scope_required",
         }
     }
 }
@@ -50,6 +52,40 @@ pub struct FlowRefusal {
 }
 
 impl FlowRefusal {
+    pub fn readiness(&self) -> bool {
+        matches!(
+            self.reason,
+            RefusalReason::NoFlowScope | RefusalReason::TargetFlowUnsupported
+        )
+    }
+    pub fn message(&self) -> &'static str {
+        match self.reason {
+            RefusalReason::NoFlowScope => "waiting for core to register the flow scope",
+            RefusalReason::TargetFlowUnsupported => {
+                "the target module does not yet provide flow-scopes/v1"
+            }
+            RefusalReason::ResourceBusy => "the provider's exclusive resource is busy",
+            RefusalReason::ConsentUnavailable => {
+                "the provider requires a standing grant for this action"
+            }
+            RefusalReason::AgentRetired => "the target agent retired",
+            RefusalReason::FlowScopeRequired => {
+                "basal sent a provider call without its required flow scope"
+            }
+            _ => "the flow scope is not currently admitted",
+        }
+    }
+    pub fn outcome(&self) -> crate::HostOutcome {
+        let mut outcome=crate::HostOutcome::rejected(basal_proto::JsonText::new(serde_json::json!({"code":self.reason.as_str(),"module":self.provider,"action":self.action,"message":self.message(),"detail":self.detail}).to_string()).expect("bounded refusal payload"));
+        // A typed unsent refusal proves no inference spent any tokens.
+        outcome.usage = Some(crate::TokenUsage {
+            input_tokens: Some(0),
+            cache_write_tokens: Some(0),
+            output_tokens: Some(0),
+            cached_input_tokens: Some(0),
+        });
+        outcome
+    }
     pub fn new(reason: RefusalReason, provider: &str, action: &str) -> Self {
         Self {
             reason,
@@ -75,6 +111,7 @@ impl FlowRefusal {
             "resource_busy" => RefusalReason::ResourceBusy,
             "consent_unavailable" => RefusalReason::ConsentUnavailable,
             "agent_retired" => RefusalReason::AgentRetired,
+            "flow_scope_required" => RefusalReason::FlowScopeRequired,
             _ => return Ok(None),
         };
         let mut refusal = Self::new(reason, "", "");
@@ -141,5 +178,8 @@ mod tests {
             FlowRefusal::decode(&ErrorBody::new("other", "agent_retired")).unwrap(),
             None
         );
+        let large =
+            ErrorBody::new("consent_unavailable", "ignored").with_detail(json!("x".repeat(4097)));
+        assert_eq!(FlowRefusal::decode(&large).unwrap().unwrap().detail, None);
     }
 }

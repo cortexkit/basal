@@ -105,6 +105,17 @@ impl ModuleOpsHost {
     }
 }
 impl Host for ModuleOpsHost {
+    fn provider_ready(
+        &self,
+        flow_id: &str,
+        kind: &CallKind,
+    ) -> Result<(), crate::flow_refusal::FlowRefusal> {
+        if let CallKind::Op { module, op } = kind {
+            self.transport.provider_ready(flow_id, module, op)
+        } else {
+            Ok(())
+        }
+    }
     fn configure_flow(
         &self,
         flow_id: &str,
@@ -176,7 +187,20 @@ impl RoutingHost {
     }
 }
 impl Host for RoutingHost {
-    fn scope_checks(&self, enabled: bool) { self.model.scope_checks(enabled); }
+    fn provider_ready(
+        &self,
+        flow_id: &str,
+        kind: &CallKind,
+    ) -> Result<(), crate::flow_refusal::FlowRefusal> {
+        self.target(kind).provider_ready(flow_id, kind)
+    }
+    fn refusal_committed(&self, request: &CallRequest, refusal: &crate::flow_refusal::FlowRefusal) {
+        self.target(&request.kind)
+            .refusal_committed(request, refusal);
+    }
+    fn scope_checks(&self, enabled: bool) {
+        self.model.scope_checks(enabled);
+    }
     fn configure_flow(
         &self,
         flow_id: &str,

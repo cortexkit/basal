@@ -54,15 +54,16 @@ impl Wire {
     }
 }
 impl Transport for Wire {
+    fn provider_ready(&self, flow: &str, module: &str, action: &str) -> Result<(), FlowRefusal> {
+        self.routes.lock().unwrap().ready(flow, module, action)
+    }
     fn configure_flow(&self, flow: &str, owned: bool, scope: Option<RegisteredScope>) {
-        self.routes
-            .lock()
-            .unwrap()
-            .configure(flow, owned, scope.map(|s| s.selector));
+        self.routes.lock().unwrap().configure(flow, owned, scope);
     }
     fn catalog(&self) -> Result<Value, WireError> {
         let mut modules = vec![
             json!({"module_id":"mock","roles":[{"role":"management_surface","operations":[{"name":"send","kind":"mutate"}],"config_schema":{},"observability":[],"identity_scope":[],"concurrency":"serial"}],"control_ops":[]}),
+            json!({"module_id":"plexus","roles":[{"role":"management_surface","operations":[{"name":"pr.comment","kind":"mutate"}],"config_schema":{},"observability":[],"identity_scope":[],"concurrency":"serial"}],"control_ops":[]}),
         ];
         modules.push(json!({"module_id":"prefrontal-core", "capabilities":{"provides":if *self.core_capable.lock().unwrap() {vec!["flow-scopes/v1"]} else {vec![]}}, "roles":[{"role":"management_surface","operations":[{"name":"board.read","kind":"query"}],"config_schema":{},"observability":[],"identity_scope":[],"concurrency":"serial"}]}));
         Ok(json!({"generation":1,"modules":modules,"subc_ops":[]}))
@@ -85,6 +86,9 @@ impl Transport for Wire {
                 .lock()
                 .unwrap()
                 .push((None, module.into(), management_body(op, params)));
+            if let Some(refusal) = self.refusals.lock().unwrap().pop_front() {
+                return Err(refusal);
+            }
             return Ok(json!({"disposition":"stored","fire_id":"wf-test","replayed":false}));
         }
         self.invoke(None, module, management_body(op, params))
@@ -290,26 +294,41 @@ fn new_epoch_or_ref_drops_the_old_route() {
 }
 
 #[test]
-fn agent_without_scope_suspends_unsent_but_global_calls_as_before() {
-    let f = Fixture::new("no-scope", SCRIPT, false, true);
-    let run = f.admit("one");
-    f.activate(&run);
-    assert_eq!(f.rt.run(&run).unwrap().state, RunState::Suspended);
-    assert_eq!(f.sends(), 0);
-    assert!(f.wire.opens.lock().unwrap().is_empty());
-    assert!(
-        f.rt.flow_health().unwrap()[0]
-            .waiting_reason
-            .as_ref()
-            .unwrap()
-            .contains("no_flow_scope")
-    );
-    let global = Fixture::new("global-scope", SCRIPT, false, false);
-    let run = global.admit("one");
-    global.activate(&run);
-    assert_eq!(global.rt.run(&run).unwrap().state, RunState::Succeeded);
-    assert_eq!(global.sends(), 1);
-    assert!(global.wire.opens.lock().unwrap().is_empty());
+fn all_flows_without_scope_reject_unsent_without_deferring() {
+    for owned in [true, false] {
+        let f = Fixture::new("no-scope", SCRIPT, false, owned);
+        let run = f.admit("one");
+        f.activate(&run);
+        assert_eq!(f.rt.run(&run).unwrap().state, RunState::Failed);
+        assert_eq!(f.sends(), 0);
+        assert!(f.wire.opens.lock().unwrap().is_empty());
+        let call = &f.rt.calls(&run).unwrap()[0];
+        assert_ne!(call.dispatch, basal_core::DispatchState::Deferred);
+        let error: Value =
+            serde_json::from_str(call.outcome.as_ref().unwrap().value.as_str()).unwrap();
+        assert_eq!(error["code"], "no_flow_scope");
+        assert_eq!(error["module"], "mock");
+        let health = &f.rt.flow_health().unwrap()[0];
+        assert_eq!(health.consecutive_failures, 0);
+        assert!(
+            health
+                .waiting_reason
+                .as_ref()
+                .unwrap()
+                .contains("waiting for core")
+        );
+        let counts: (i64, i64) =
+            f.rt.store()
+                .read(|c| {
+                    Ok(c.query_row(
+                        "SELECT SUM(runs),SUM(dispatches) FROM rate_windows",
+                        [],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )?)
+                })
+                .unwrap();
+        assert_eq!(counts, (1, 0));
+    }
 }
 
 fn assert_deferred(reason: RefusalReason) {
@@ -350,10 +369,84 @@ mapping!(scope_epoch_required_is_deferred_unsent, ScopeEpochRequired);
 mapping!(scope_not_synced_is_deferred_unsent, ScopeNotSynced);
 mapping!(scope_changed_is_deferred_unsent, ScopeChanged);
 mapping!(scope_unsupported_is_deferred_unsent, ScopeUnsupported);
-mapping!(
-    target_flow_unsupported_is_deferred_without_auto_disable,
-    TargetFlowUnsupported
-);
+#[test]
+fn daemon_target_flow_unsupported_rejects_without_dispatch_or_failure_count() {
+    let f = Fixture::new("target-unsupported", SCRIPT, true, true);
+    let run = f.defer(RefusalReason::TargetFlowUnsupported);
+    assert_eq!(f.rt.run(&run).unwrap().state, RunState::Failed);
+    assert_eq!(f.sends(), 0);
+    assert_eq!(f.rt.flow_health().unwrap()[0].consecutive_failures, 0);
+    assert_ne!(
+        f.rt.calls(&run).unwrap()[0].dispatch,
+        basal_core::DispatchState::Deferred
+    );
+    let dispatches: i64 = f
+        .rt
+        .store()
+        .read(|c| Ok(c.query_row("SELECT SUM(dispatches) FROM rate_windows", [], |r| r.get(0))?))
+        .unwrap();
+    assert_eq!(dispatches, 0);
+}
+
+#[test]
+fn flow_scope_required_from_multiple_targets_fails_unsent_without_retry() {
+    for module in ["mock", "plexus"] {
+        let f = Fixture::new("scope-required", SCRIPT, true, true);
+        let mut manifest = test_manifest();
+        manifest.as_object_mut().unwrap().remove("llm");
+        manifest["version"] = json!(2);
+        manifest["ops"] =
+            json!([{"module":module,"op":if module=="mock" {"send"} else {"pr.comment"}}]);
+        let op = if module == "mock" {
+            "send"
+        } else {
+            "pr.comment"
+        };
+        // The provider code is authoritative even when its optional detail
+        // differs between providers; prose and transmission hints are not parsed.
+        let body = subc_protocol::ErrorBody::new("flow_scope_required", "no scope")
+            .with_detail(json!({"transmission":"not_sent"}));
+        f.wire
+            .open_refusals
+            .lock()
+            .unwrap()
+            .push_back(basal_host::transport::refusal(body));
+        if module == "plexus" {
+            // The transport's catalog resolves both test targets as ordinary
+            // mutating operations; each is approved independently.
+            let installed =
+                f.rt.install(&InstallRequest {
+                    script: format!("return await ops.call('{module}','{op}',{{}});"),
+                    manifest: manifest.to_string(),
+                    author: "ALF".into(),
+                    loop_override: true,
+                })
+                .unwrap();
+            f.rt.approve("flow-test", 2, &installed.code_hash, "approval-2")
+                .unwrap();
+            *f.wire.hash.lock().unwrap() = basal_core::ids::hex(&installed.code_hash);
+            f.wire
+                .scope
+                .lock()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .targets
+                .insert(module.into());
+        }
+        let run = f.admit("one");
+        f.activate(&run);
+        assert_eq!(f.rt.run(&run).unwrap().state, RunState::Failed);
+        let call = &f.rt.calls(&run).unwrap()[0];
+        assert_ne!(call.dispatch, basal_core::DispatchState::Deferred);
+        assert_eq!(call.attempts, 1);
+        let value: Value =
+            serde_json::from_str(call.outcome.as_ref().unwrap().value.as_str()).unwrap();
+        assert_eq!(value["code"], "flow_scope_required");
+        assert_eq!(value["module"], module);
+        assert_eq!(f.sends(), 0);
+    }
+}
 
 #[test]
 fn resource_busy_wait_uses_relative_hint_and_counts_against_expiry() {
@@ -379,6 +472,26 @@ fn resource_busy_wait_uses_relative_hint_and_counts_against_expiry() {
         f.rt.run(&run).unwrap().error_kind.as_deref(),
         Some("deadline")
     );
+    assert_eq!(f.sends(), 1);
+    assert!(
+        f.rt.store()
+            .read(|c| basal_core::journal::unsettled_positions(c, &run))
+            .unwrap()
+            .is_empty()
+    );
+    let code: String =
+        f.rt.store()
+            .read(|c| {
+                Ok(c.query_row(
+                    "SELECT json_extract(value,'$.code') FROM mailbox WHERE run_id=?1",
+                    [&run],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+    assert_eq!(code, "resource_busy");
+    f.rt.recover().unwrap();
+    assert!(f.rt.startable().unwrap().is_empty());
     assert_eq!(f.sends(), 1);
 }
 
@@ -436,7 +549,12 @@ fn consent_unavailable_waits_for_explicit_grant_and_names_provider_action() {
 
 #[test]
 fn agent_retired_fails_and_core_disables_without_auto_disable_count() {
-    let f = Fixture::new("retired", SCRIPT, true, true);
+    let f = Fixture::new(
+        "retired",
+        "return await sink.digest('ALF',{title:'retired'});",
+        true,
+        true,
+    );
     let run = f.defer(RefusalReason::AgentRetired);
     assert_eq!(f.rt.run(&run).unwrap().state, RunState::Failed);
     let flow = f.rt.flow("flow-test").unwrap().unwrap();
@@ -444,12 +562,17 @@ fn agent_retired_fails_and_core_disables_without_auto_disable_count() {
     assert_eq!(flow.disabled_by.as_deref(), Some("core"));
     assert_eq!(f.rt.flow_health().unwrap()[0].consecutive_failures, 0);
     assert!(f.rt.decision_cards().unwrap().is_empty());
-    assert_eq!(f.sends(), 1);
+    assert_eq!(f.sends(), 0);
 }
 
 #[test]
-fn unsupported_manifest_target_does_not_activate() {
-    let f = Fixture::new("activation-cap", SCRIPT, true, true);
+fn unsupported_target_preflight_rejects_without_sending_but_run_activates() {
+    let f = Fixture::new(
+        "activation-cap",
+        "return await ops.call('mock','send',{}).catch(e=>e.data.code);",
+        true,
+        true,
+    );
     f.wire
         .scope
         .lock()
@@ -460,7 +583,12 @@ fn unsupported_manifest_target_does_not_activate() {
         .clear();
     let run = f.admit("one");
     f.activate(&run);
-    assert_eq!(f.rt.activation_count(&run).unwrap(), 0);
+    assert_eq!(f.rt.activation_count(&run).unwrap(), 1);
+    assert_eq!(f.rt.run(&run).unwrap().state, RunState::Succeeded);
+    assert_eq!(
+        f.rt.run(&run).unwrap().result.as_deref(),
+        Some("\"target_flow_unsupported\"")
+    );
     assert_eq!(f.sends(), 0);
     assert!(
         f.rt.flow_health().unwrap()[0]
@@ -524,7 +652,9 @@ fn core_flow_ops_require_a_scope_and_never_change_script_arguments() {
     assert!(outcome.value.as_str().contains("basal_scope_bug"));
     assert!(wire.calls.lock().unwrap().is_empty());
     *wire.core_capable.lock().unwrap() = true;
-    host.configure_flow("flow-a", true, Some(scope(1)));
+    let mut core_scope = scope(1);
+    core_scope.targets.insert("prefrontal-core".into());
+    host.configure_flow("flow-a", true, Some(core_scope));
     host.dispatch(&request).unwrap();
     assert_eq!(
         wire.calls.lock().unwrap()[0],
@@ -535,10 +665,12 @@ fn core_flow_ops_require_a_scope_and_never_change_script_arguments() {
         )
     );
     host.configure_flow("flow-a", false, None);
-    let Dispatched::Completed(outcome) = host.dispatch(&request).unwrap() else {
-        panic!("global core op cannot use basal's carrier identity")
-    };
-    assert_eq!(outcome.settlement, Settlement::Rejected);
-    assert!(outcome.value.as_str().contains("basal_scope_bug"));
+    assert!(matches!(
+        host.dispatch(&request),
+        Err(basal_host::TransportError::Refused(FlowRefusal {
+            reason: RefusalReason::NoFlowScope,
+            ..
+        }))
+    ));
     assert_eq!(wire.calls.lock().unwrap().len(), 1);
 }

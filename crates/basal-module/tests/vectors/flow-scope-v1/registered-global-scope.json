@@ -1,0 +1,1 @@
+{"owner":{"kind":"reserved","module_id":"prefrontal-core"},"record":{"attributes":{"flow_id":"global"},"carriers":[{"principal":{"kind":"reserved","module_id":"basal"},"targets":["broca","plexus","prefrontal-core"]}],"kind":"head","ref":"0123456789abcdef0123456789abcdef","scope_epoch":1}}
