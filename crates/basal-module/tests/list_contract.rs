@@ -22,10 +22,18 @@ fn ids(raw: &Value) -> Vec<&str> {
 
 fn populated(name: &str) -> Fixture {
     let f = fixture(name, Options::default());
-    install_approved(&f, &agent("A"), "return 1;", &events_manifest("a"));
-    install(&f, &agent("B"), "return 1;", &events_manifest("b"));
+    f.catalog.add_agent("A");
+    f.catalog.add_agent("B");
+    install_approved(&f, &agent("A"), "return 1;", &owned_manifest("a", "A"));
+    install(&f, &agent("B"), "return 1;", &owned_manifest("b", "B"));
     install(&f, &Caller::Local, "return 1;", &events_manifest("local"));
     f
+}
+
+fn owned_manifest(id: &str, owner: &str) -> Value {
+    let mut m = events_manifest(id);
+    m["sinks"][0]["agent"] = json!(owner);
+    m
 }
 
 #[test]
@@ -142,7 +150,7 @@ fn list_reply_decodes_against_documented_shape_and_health_state() {
     let f = populated("list-shape");
     let run = admit(&f, "a", "run");
     f.module.engine.run_until_idle(50).unwrap();
-    let mut update = events_manifest("a");
+    let mut update = owned_manifest("a", "A");
     update["version"] = json!(2);
     install(&f, &agent("A"), "return 2;", &update);
     let doc = include_str!("../../../docs/ops.md");
@@ -214,13 +222,19 @@ fn list_declined_card_and_reconciliation() {
     use basal_host::CardDecision;
     use basal_host::mock::Fault;
     let f = fixture("list-reconcile", Options::default());
-    let declined = install(&f, &agent("A"), "return 1;", &events_manifest("declined"));
+    f.catalog.add_agent("A");
+    let declined = install(
+        &f,
+        &agent("A"),
+        "return 1;",
+        &owned_manifest("declined", "A"),
+    );
     assert!(f.consent.decide(
         declined["card_id"].as_str().unwrap(),
         CardDecision::Reject,
         "operator"
     ));
-    let mut m = events_manifest("post");
+    let mut m = owned_manifest("post", "A");
     m["ops"] = json!([{"module":"mock", "op":"post"}]);
     let flow = install_approved(
         &f,

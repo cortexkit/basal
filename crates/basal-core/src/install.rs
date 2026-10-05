@@ -78,6 +78,12 @@ pub enum InstallError {
         field: &'static str,
         agent: String,
     },
+    /// An agent-owned flow may act only for its owner, not another agent.
+    ForeignAgentTarget {
+        field: &'static str,
+        agent: String,
+        author: String,
+    },
     /// An `fs` or `git` root that does not exist (after `~` expansion) when
     /// the flow is installed.
     MissingRoot {
@@ -177,9 +183,10 @@ pub struct Installed {
     pub new: bool,
 }
 
-/// Validates a parsed manifest against the catalog and the shell denylist.
+/// Validates a parsed manifest against its author, the catalog and the shell denylist.
 pub fn validate(
     manifest: &Manifest,
+    author: &str,
     catalog: &dyn Catalog,
     denylist: &ShellDenylist,
     loop_override: bool,
@@ -255,7 +262,25 @@ pub fn validate(
         }
     }
     for (field, agent) in manifest.agents() {
-        if !catalog.agent_known(agent) {
+        // Agent-owned flows act only for their owner. Global operator flows
+        // and unverified local installs retain their catalog-wide grants.
+        if author != "operator" && author != "local:unverified" {
+            let Some(target_id) = catalog.agent_id(agent) else {
+                return Err(InstallError::UnknownAgent {
+                    field,
+                    agent: agent.to_owned(),
+                });
+            };
+            // Manifests may use a display name, while the scope-stamped author
+            // is a stable id. Compare resolved identities, not their spelling.
+            if target_id != author {
+                return Err(InstallError::ForeignAgentTarget {
+                    field,
+                    agent: agent.to_owned(),
+                    author: author.to_owned(),
+                });
+            }
+        } else if !catalog.agent_known(agent) {
             return Err(InstallError::UnknownAgent {
                 field,
                 agent: agent.to_owned(),
@@ -829,6 +854,7 @@ impl Runtime {
         let manifest = Manifest::parse(&request.manifest).map_err(InstallError::Manifest)?;
         let warnings = validate(
             &manifest,
+            &request.author,
             self.catalog(),
             &self.config().shell_denylist,
             request.loop_override,

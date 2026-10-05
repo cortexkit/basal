@@ -134,6 +134,9 @@ pub struct DryRunRequest {
 
 #[derive(Debug)]
 pub enum DryRunError {
+    /// An agent-owned manifest names another agent. Preserve the install
+    /// refusal so dry run reports the same code rather than a generic error.
+    InstallRefused(basal_core::InstallError),
     /// The request itself is wrong (a window too long, a manifest that does
     /// not parse).
     Invalid(String),
@@ -145,6 +148,7 @@ pub enum DryRunError {
 impl std::fmt::Display for DryRunError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::InstallRefused(e) => write!(f, "dry run install refused: {e}"),
             Self::Invalid(e) => write!(f, "invalid dry run: {e}"),
             Self::Failed(e) => write!(f, "dry run failed: {e}"),
         }
@@ -356,7 +360,12 @@ impl DryRunner {
                 author: request.author.clone(),
                 loop_override: request.loop_override,
             })
-            .map_err(|e| DryRunError::Invalid(format!("install into the scratch store: {e}")))?;
+            .map_err(|e| match e {
+                e @ basal_core::InstallError::ForeignAgentTarget { .. } => {
+                    DryRunError::InstallRefused(e)
+                }
+                other => DryRunError::Invalid(format!("install into the scratch store: {other}")),
+            })?;
         rt.approve(
             &installed.flow_id,
             installed.version,

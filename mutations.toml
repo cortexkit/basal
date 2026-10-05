@@ -6576,3 +6576,54 @@ only = false
 timeout_s = 120
 build_timeout_s = 1800
 
+
+[[control]]
+id = "install-agent-owned-foreign-targets"
+guards = "agent-owned flows cannot target another agent"
+file = "crates/basal-core/src/install.rs"
+old = 'if author != "operator" && author != "local:unverified" {'
+new = 'if false && author != "operator" && author != "local:unverified" { // NON-VACUITY BREAK'
+edits = []
+test_file = "crates/basal-module/tests/agent_targets.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test agent_targets"
+expect_red = ["agent_owned_manifests_reject_foreign_targets_before_install_and_dry_run"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "install-agent-owned-foreign-facts-targets"
+guards = "agent ownership restriction includes facts targets"
+file = "crates/basal-core/src/install.rs"
+old = "if target_id != author {"
+new = 'if field != "facts.targets" && target_id != author { // NON-VACUITY BREAK'
+edits = []
+test_file = "crates/basal-module/tests/agent_targets.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test agent_targets"
+expect_red = ["agent_owned_manifests_reject_foreign_targets_before_install_and_dry_run"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "install-reserved-package-instance-id"
+guards = "plain installs cannot squat on package instance flow ids"
+file = "crates/basal-module/src/ops.rs"
+old = "if manifest.id.rsplit_once('_').is_some_and(|(_, suffix)| {"
+new = "if false && manifest.id.rsplit_once('_').is_some_and(|(_, suffix)| { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-module/tests/agent_targets.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test agent_targets"
+expect_red = ["plain_install_cannot_occupy_package_instance_ids"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+

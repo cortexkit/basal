@@ -266,7 +266,12 @@ fn catalog_install_refuses_missing_ops_and_events_and_marks_mutations() {
     assert!(cat.agent_known("ag_synapse"));
     assert!(cat.agent_known("SYNAPSE"));
     assert!(!cat.agent_known("unknown"));
-    common::install(&f, &common::agent("SYNAPSE"), "return 1;", &manifest());
+    common::install(
+        &f,
+        &agent_on_scope("ag_synapse", "scope-live"),
+        "return 1;",
+        &manifest(),
+    );
     let cards = f.module.rt.cards("host-flow").unwrap();
     let fields: Value = serde_json::from_str(&cards[0].card).unwrap();
     assert_eq!(fields["ops"][1]["kind"], "mutate");
@@ -303,7 +308,7 @@ fn install_card_is_byte_exact_and_scope_comes_from_the_route_stamp() {
     let script = "return 1;\n";
     let m = format!("  {}\n", manifest());
     let stamped = "5e1f0c3a9b7d4e2f8a6c1b3d5f7e9a0c";
-    let caller = agent_on_scope("SYNAPSE", stamped);
+    let caller = agent_on_scope("ag_synapse", stamped);
     f.module
         .handle(
             &caller,
@@ -461,7 +466,7 @@ fn core_refusing_the_author_scope_is_a_clear_install_error() {
         ("scope-nobody-minted", "flow_install_scope_unknown"),
         ("scope-agentless", "flow_install_scope_unknown"),
     ] {
-        let r = install_as(&agent_on_scope("SYNAPSE", scope_ref));
+        let r = install_as(&agent_on_scope("ag_synapse", scope_ref));
         let e = r.expect_err("refused");
         assert_eq!(e.code, code, "{scope_ref}: {e:?}");
         assert!(e.message.contains("live agent session"), "{e:?}");
@@ -471,7 +476,7 @@ fn core_refusing_the_author_scope_is_a_clear_install_error() {
     // Installing again from a route under a live scope sends the existing
     // card with that live scope as its author, rather than the ended scope
     // recorded when the card was first created.
-    let reply = install_as(&agent_on_scope("SYNAPSE", "scope-live")).expect("raised");
+    let reply = install_as(&agent_on_scope("ag_synapse", "scope-live")).expect("raised");
     assert_eq!(reply["state"], "pending");
     let calls = fake.calls("elicitation.request");
     let last = &calls.last().expect("sent")["params"];
@@ -535,7 +540,7 @@ fn routing_host_runs_install_decision_facts_ops_and_sinks_end_to_end() {
     let f = fixture(fake.clone(), consent.clone(), "routing-e2e");
     common::install(
         &f,
-        &common::agent("SYNAPSE"),
+        &agent_on_scope("ag_synapse", "scope-live"),
         "const a=await facts('SYNAPSE'); const b=await ops.call('mock','echo',{n:2}); await sink.digest('SYNAPSE',{title:'facts',body:'unknown'},'piggyback'); const s=await sink.status('SYNAPSE','ready'); return {state:a.activity.state.status,n:b.n,status:s.disposition};",
         &manifest(),
     );
@@ -817,6 +822,34 @@ fn denylist_and_paged_agent_registry_fail_closed() {
     assert_eq!(
         fake.calls("agent.list")[1]["params"],
         json!({"cursor":"page2"})
+    );
+    fake.enqueue(
+        "agent.list",
+        vec![
+            Ok(json!({"agents":[],"next_cursor":"page2"})),
+            Ok(json!({"agents":[{"agent_id":"ag_2","name":"ALF"}]})),
+        ],
+    );
+    assert_eq!(cat.agent_id("ALF").as_deref(), Some("ag_2"));
+    fake.enqueue(
+        "agent.list",
+        vec![Ok(json!({
+            "agents":[{"agent_id":"ag_2","name":"ALF"}]
+        }))],
+    );
+    assert_eq!(cat.agent_id("ag_2").as_deref(), Some("ag_2"));
+    fake.enqueue("agent.list", vec![Ok(json!({"agents":[]}))]);
+    assert_eq!(cat.agent_id("missing"), None);
+    fake.enqueue(
+        "agent.list",
+        vec![Err(WireError::Unknown("registry unavailable".into()))],
+    );
+    assert_eq!(cat.agent_id("ALF"), None);
+    fake.enqueue("agent.list", vec![Ok(json!({"agents":[{"name":"ALF"}]}))]);
+    assert_eq!(
+        cat.agent_id("ALF"),
+        None,
+        "a name without a stable id cannot confer ownership"
     );
     fake.enqueue(
         "agent.list",

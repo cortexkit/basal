@@ -423,19 +423,33 @@ fn install_refuses_what_an_agent_may_not_do() {
         json!({ "script": SCRIPT, "manifest": v2().to_string(), "loop_override": true }),
     );
     assert!(refused(&r), "{r:?}");
-    // The operator installs for anyone.
+    // Installing in an agent's name still confines the flow to that agent,
+    // even when the operator calls install.
     let r = call(
         &f,
         &Caller::Operator,
         "flow.install",
         json!({ "script": SCRIPT, "manifest": events_manifest("flow-alf").to_string(), "author": "ALF" }),
+    );
+    assert!(
+        matches!(&r, Err(e) if e.starts_with("foreign_agent_target")),
+        "{r:?}"
+    );
+    assert!(f.module.rt.flow("flow-alf").expect("flow").is_none());
+    assert!(f.module.rt.cards("flow-alf").expect("cards").is_empty());
+    // A global operator-authored flow may name any known agent.
+    let r = call(
+        &f,
+        &Caller::Operator,
+        "flow.install",
+        json!({ "script": SCRIPT, "manifest": events_manifest("flow-alf").to_string(), "author": "operator" }),
     )
-    .expect("operator installs for ALF");
+    .expect("operator installs a global flow");
     let card = f
         .consent
         .card(r["card_id"].as_str().expect("card"))
         .expect("raised");
-    assert_eq!(card.fields["author"], "ALF");
+    assert_eq!(card.fields["author"], "operator");
     // An invalid manifest is refused before anything is recorded.
     let r = call(
         &f,
