@@ -6683,3 +6683,19 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
+
+[[control]]
+id = "cargo-path-dependency-outside-workspace-is-accepted"
+guards = "Cargo path dependencies outside the workspace are refused"
+file = "script/check-path-deps.py"
+old = "if manifest_path != root and root not in manifest_path.parents:"
+new = "if False and manifest_path != root and root not in manifest_path.parents: # NON-VACUITY BREAK"
+edits = []
+test_file = "script/tests/check_path_deps.py"
+runner = "command"
+command = ["python3", "-m", "unittest", "{test}"]
+expect_red = ["script.tests.check_path_deps.PathDependencyChecks.test_outside_path_dependency_is_refused_and_named"]
+only = false
+timeout_s = 120
+build_timeout_s = 1800
+
