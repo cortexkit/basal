@@ -331,6 +331,10 @@ impl Transport for SubcBrocaTransport {
     }
     fn release(&self, route: &Route) {
         lock(&self.streams).remove(&key(route));
+        if let Some(flow) = &route.flow_id {
+            self.connection
+                .release_model(flow, identity(route), &self.module);
+        }
     }
 }
 

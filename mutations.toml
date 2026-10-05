@@ -5822,7 +5822,22 @@ old = "                    == Some(CallClass::Query)"
 new = "                    != None // NON-VACUITY BREAK"
 
 # Test fixture: 1 additional control
-## Flow scopes: 23 additional controls, including uncaught rejection identity.
+## Flow scopes: 24 additional controls, including uncaught rejection identity.
+[[control]]
+id = "flow-model-sessions-collapse-to-the-flow"
+guards = "each model call has its own scoped conversation, preserved on recovery"
+test_file = "crates/basal-host/src/transport.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--lib"
+expect_red = ["transport::tests::scoped_model_calls_keep_per_call_sessions_across_runs_and_recovery"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/transport.rs"
+old = "let bind = identity;"
+new = "let bind = BindIdentity::new(\"/\", \"basal\", format!(\"basal:flow:{flow}\")); // NON-VACUITY BREAK"
+
 [[control]]
 id = "flow-readiness-rejection-identity-is-not-tracked"
 guards = "only the actual uncaught host rejection carries its journal position"

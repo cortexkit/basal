@@ -408,7 +408,9 @@ pub trait Host: Send + Sync {
         Ok(())
     }
     fn refusal_committed(&self, _request: &CallRequest, _refusal: &flow_refusal::FlowRefusal) {}
-    /// Production checks core; capture-only and non-gate tests explicitly opt out.
+    /// Require core's registered scope before provider calls and refresh it
+    /// when recovering pending calls. Offline simulations can disable these
+    /// checks when they have no core connection.
     fn scope_checks(&self, _enabled: bool) {}
     /// The activation gate supplies fresh core authority before any run calls.
     fn configure_flow(

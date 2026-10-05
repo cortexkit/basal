@@ -278,7 +278,8 @@ pub fn deferred_until(conn: &Connection, run_id: &str, position: u64) -> Result<
     .map_err(Into::into)
 }
 
-/// Feeds the existing pending-run loop rather than creating a retry scheduler.
+/// Make suspended runs with due, provably unsent calls runnable again so
+/// their next activation can retry the calls already recorded in the journal.
 pub fn wake_deferred(tx: &Transaction, now: i64, only: Option<&str>) -> Result<()> {
     tx.execute("UPDATE runs SET state = 'pending', awaited = NULL WHERE state = 'suspended' AND (?2 IS NULL OR run_id = ?2) AND EXISTS (SELECT 1 FROM journal WHERE journal.run_id = runs.run_id AND dispatch = 'deferred' AND retry_not_before <= ?1)", params![now, only])?;
     Ok(())

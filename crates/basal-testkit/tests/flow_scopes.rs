@@ -1,5 +1,6 @@
-//! Scoped opens and durable unsent waits through the production host adapters
-//! and the real confined worker. Time advances only on the injectable clock.
+//! Exercise scoped provider calls and journaled retry delays with the real
+//! confined JavaScript worker. An injectable clock advances retries and expiry
+//! without sleeping.
 use basal_core::{Clock, Config, InstallGate, InstallRequest, NoHooks, RunState, Runtime, Store};
 use basal_host::core_host::CoreHost;
 use basal_host::flow_refusal::{FlowRefusal, RefusalReason};

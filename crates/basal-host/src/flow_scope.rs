@@ -4,7 +4,7 @@ use crate::transport::WireError;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::collections::HashMap;
-use subc_protocol::{Principal, scope::ScopeSelector};
+use subc_protocol::{BindIdentity, Principal, scope::ScopeSelector};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -117,6 +117,28 @@ impl<H: Copy + Eq> ScopedRoutes<H> {
         target: &subc_protocol::RouteTarget,
         open: impl FnOnce(&FlowScope) -> Result<H, WireError>,
     ) -> Result<Option<H>, WireError> {
+        self.route_with_identity(flow, target, None, open)
+    }
+
+    /// Broca keeps conversation history under the bind identity. Only reads
+    /// and subscriptions belonging to that same model call may reuse its route.
+    pub fn route_for_identity(
+        &mut self,
+        flow: &str,
+        target: &subc_protocol::RouteTarget,
+        identity: &BindIdentity,
+        open: impl FnOnce(&FlowScope) -> Result<H, WireError>,
+    ) -> Result<Option<H>, WireError> {
+        self.route_with_identity(flow, target, Some(identity), open)
+    }
+
+    fn route_with_identity(
+        &mut self,
+        flow: &str,
+        target: &subc_protocol::RouteTarget,
+        identity: Option<&BindIdentity>,
+        open: impl FnOnce(&FlowScope) -> Result<H, WireError>,
+    ) -> Result<Option<H>, WireError> {
         let module = match target {
             subc_protocol::RouteTarget::ManagementSurface { module_id }
             | subc_protocol::RouteTarget::ToolProvider { module_id } => module_id.as_str(),
@@ -131,11 +153,7 @@ impl<H: Copy + Eq> ScopedRoutes<H> {
             .unwrap()
             .selector
             .clone();
-        let key = format!(
-            "{}:{}",
-            serde_json::to_string(&scope).unwrap(),
-            serde_json::to_string(target).unwrap()
-        );
+        let key = Self::cache_key(&scope, target, identity);
         if let Some((_, handle, _)) = self.routes.get(&key) {
             return handle.map(Some).ok_or_else(|| {
                 WireError::Typed(FlowRefusal::new(
@@ -149,6 +167,26 @@ impl<H: Copy + Eq> ScopedRoutes<H> {
         self.routes
             .insert(key, (scope, Some(handle), module.into()));
         Ok(Some(handle))
+    }
+
+    fn cache_key(
+        scope: &FlowScope,
+        target: &subc_protocol::RouteTarget,
+        identity: Option<&BindIdentity>,
+    ) -> String {
+        serde_json::to_string(&(scope, target, identity)).expect("route identity JSON")
+    }
+
+    /// A settled model call no longer needs a channel or a subscription.
+    pub fn release_identity(
+        &mut self,
+        flow: &str,
+        target: &subc_protocol::RouteTarget,
+        identity: &BindIdentity,
+    ) -> Option<H> {
+        let scope = &self.flows.get(flow)?.as_ref()?.selector;
+        let key = Self::cache_key(scope, target, Some(identity));
+        self.routes.remove(&key).and_then(|(_, handle, _)| handle)
     }
 
     pub fn closed(&mut self, handle: H, scope_close: bool) {

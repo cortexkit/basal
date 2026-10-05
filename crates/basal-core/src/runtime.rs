@@ -729,8 +729,8 @@ impl Runtime {
                         })?;
                         self.shared.host.refusal_committed(&request, &refusal);
                     } else if refusal.reason == RefusalReason::AgentRetired {
-                        // Operator decision cards attach here; the terminal decision
-                        // and core's disable already commit together without a retry.
+                        // A retired agent cannot authorize more calls. Fail the run
+                        // and disable its flow together so recovery cannot retry it.
                         self.shared.store.write(|tx| {
                             let flow_id = &request.flow_id;
                             crate::install::disable(tx, flow_id, &crate::install::Actor::Core, "agent_retired", self.config.clock.now_ms()).map_err(|e| CoreError::Invalid(e.to_string()))?;
@@ -748,8 +748,8 @@ impl Runtime {
                         let delay = refusal.retry_after_ms.unwrap_or_else(|| {
                             u64::try_from(backoff.as_millis()).unwrap_or(u64::MAX)
                         });
-                        // A lost grant requires an explicit decision, never a timer.
-                        // The grant-lost card can replace this deadline after consent.
+                        // Missing consent must be restored by an explicit grant.
+                        // i64::MAX prevents automatic retries before that grant.
                         let retry = if refusal.reason == RefusalReason::ConsentUnavailable {
                             i64::MAX
                         } else {
