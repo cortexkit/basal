@@ -5833,3 +5833,141 @@ timeout_s = 30
 file = "crates/basal-module/tests/pool.rs"
 old = "if Instant::now() >= deadline {"
 new = "if false && Instant::now() >= deadline { // NON-VACUITY BREAK"
+
+[[control]]
+id = "rig-model-send-tools-check-omitted"
+guards = "Model evidence must reject attached tools"
+file = "crates/basal-rig/src/models.rs"
+old = 'send["tools"] == json!([]) && send["tool_choice"] == json!({"type":"none"})'
+new = 'send["tool_choice"] == json!({"type":"none"}) // NON-VACUITY BREAK: ignore attached tools.'
+edits = []
+test_file = "crates/basal-rig/src/models.rs"
+runner = "cargo"
+package = "basal-rig"
+target = "--lib"
+expect_red = ["models::tests::tools_evidence_requires_empty_tools_and_explicit_none"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "rig-model-selection-missing-decision-identity"
+guards = "A Luna selection must carry a nonempty routing decision id"
+file = "crates/basal-rig/src/models.rs"
+old = """
+        && selection["decisionID"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty())"""
+new = "        // NON-VACUITY BREAK: omit the decision identity."
+edits = []
+test_file = "crates/basal-rig/src/models.rs"
+runner = "cargo"
+package = "basal-rig"
+target = "--lib"
+expect_red = ["models::tests::only_a_complete_luna_selection_passes"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "rig-model-usage-fabricates-zero-unreported-charge"
+guards = "Missing capped usage retains the unmeasured reservation"
+file = "crates/basal-rig/src/models.rs"
+old = 'charge["unreported_tokens"] == unreported'
+new = 'charge["unreported_tokens"] == unreported.saturating_sub(unreported) // NON-VACUITY BREAK: fabricate zero unmeasured usage.'
+edits = []
+test_file = "crates/basal-rig/src/models.rs"
+runner = "cargo"
+package = "basal-rig"
+target = "--lib"
+expect_red = ["models::tests::usage_evidence_distinguishes_fresh_input_and_reservation"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "rig-model-result-rejects-completed-empty-text"
+guards = "Completed empty visible text is valid but a missing transcript is not"
+file = "crates/basal-rig/src/models.rs"
+old = 'text.is_some_and(|t| result["text"] == t)'
+new = 'text.is_some_and(|t| !t.is_empty() && result["text"] == t) // NON-VACUITY BREAK: reject a valid empty result.'
+edits = []
+test_file = "crates/basal-rig/src/models.rs"
+runner = "cargo"
+package = "basal-rig"
+target = "--lib"
+expect_red = ["models::tests::completed_empty_text_is_valid_but_missing_transcript_is_not"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "rig-broca-evidence-ignores-bind-project-root"
+guards = "Independent Broca run evidence must match the complete bind identity"
+file = "crates/basal-rig/src/stores.rs"
+old = "WHERE json_extract(session, '$.project_root') = ?1"
+new = "WHERE ?1 = ?1 -- NON-VACUITY BREAK: ignore the project root."
+edits = []
+test_file = "crates/basal-rig/tests/stores.rs"
+runner = "cargo"
+package = "basal-rig"
+target = "--test stores"
+expect_red = ["independent_broca_evidence_matches_the_entire_bind_and_counts_duplicate_runs"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "rig-model-journal-reader-discards-clamped-request"
+guards = "Model journal evidence reads the durable selected request, not authored args"
+file = "crates/basal-rig/src/stores.rs"
+old = "COALESCE(j.request, j.args)"
+new = "j.args /* NON-VACUITY BREAK: ignore journal.request */"
+edits = []
+test_file = "crates/basal-rig/tests/stores.rs"
+runner = "cargo"
+package = "basal-rig"
+target = "--test stores"
+expect_red = ["model_journal_and_ledger_reads_are_scoped_to_the_run_and_preserve_missing_usage"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "rig-ownership-evidence-invents-principal-from-harness"
+guards = "Broca ownership evidence must retain the daemon-attested principal"
+file = "crates/basal-rig/src/stores.rs"
+old = '"first_principal": owner["first_principal"]'
+new = '"first_principal": {"kind": "reserved", "module_id": route["harness"]} /* NON-VACUITY BREAK: invent authority from a harness label */'
+edits = []
+test_file = "crates/basal-rig/tests/stores.rs"
+runner = "cargo"
+package = "basal-rig"
+target = "--test stores"
+expect_red = ["ownership_reads_brocas_attestation_not_the_callers_harness_label"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "rig-crash-checkpoint-discards-clamped-request"
+guards = "Crash-boundary evidence captures the selected request before host dispatch"
+file = "crates/basal-module/src/rig_kill.rs"
+old = "SELECT COALESCE(request, args), dispatch, attempts, settlement FROM journal WHERE run_id = ?1 AND position = 0"
+new = "SELECT args, dispatch, attempts, settlement FROM journal WHERE run_id = ?1 AND position = 0 -- NON-VACUITY BREAK: discard clamped request evidence"
+edits = []
+test_file = "crates/basal-module/src/rig_kill.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--lib"
+expect_red = ["rig_kill::tests::crash_evidence_records_the_unsent_journal_not_a_later_outcome"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
