@@ -5820,7 +5820,7 @@ old = "                    == Some(CallClass::Query)"
 new = "                    != None // NON-VACUITY BREAK"
 
 # Test fixture: 1 additional control
-## Flow-scope controls. These rows still need proof on available build capacity.
+## Flow scopes: 23 additional controls, including uncaught rejection identity.
 [[control]]
 id = "flow-readiness-rejection-identity-is-not-tracked"
 guards = "only the actual uncaught host rejection carries its journal position"
