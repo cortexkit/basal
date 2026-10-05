@@ -8,6 +8,8 @@
 //! cut in turn (set `BASAL_CUT_EXHAUSTIVE=1` to do this for every first
 //! cut).
 
+mod common;
+
 use std::sync::Mutex;
 
 use basal_core::Config;
@@ -26,7 +28,7 @@ fn uncut() -> CutRun {
         &[],
         &Config {
             install_gate: basal_core::InstallGate::Off,
-            ..Config::default()
+            ..common::config()
         },
     )
     .expect("uncut run")
@@ -97,7 +99,7 @@ fn run_all(cases: Vec<Vec<Point>>) -> Vec<(Vec<Point>, Result<CutRun, String>)> 
                         &cuts,
                         &Config {
                             install_gate: basal_core::InstallGate::Off,
-                            ..Config::default()
+                            ..common::config()
                         },
                     );
                     if let Ok(mut r) = results.lock() {

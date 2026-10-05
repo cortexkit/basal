@@ -2,6 +2,8 @@
 //! representative run, and separately of the worker. Every killed run must
 //! recover to the uncut run's final state and effect counts.
 
+mod common;
+
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process::Command;
@@ -114,7 +116,7 @@ fn killing_the_worker_at_every_boundary_recovers_to_the_uncut_state() {
         &[],
         &Config {
             install_gate: basal_core::InstallGate::Off,
-            ..Config::default()
+            ..common::config()
         },
     )
     .expect("uncut");
@@ -146,7 +148,7 @@ fn killing_the_worker_at_every_boundary_recovers_to_the_uncut_state() {
                             probe.clone(),
                             Config {
                                 install_gate: basal_core::InstallGate::Off,
-                                ..Config::default()
+                                ..common::config()
                             },
                         )
                         .expect("runtime");

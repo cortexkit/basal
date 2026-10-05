@@ -1,3 +1,5 @@
+mod common;
+
 use basal_core::{Config, InstallGate, InstallRequest, NoHooks, RunState, Runtime, Store};
 use basal_host::broca::wire::*;
 use basal_host::broca::{BrocaError, BrocaHost, Route, Transport};
@@ -119,7 +121,7 @@ fn global_model_call_rejects_without_scope_then_uses_registered_scope() {
         Config {
             selector: world.selector.clone(),
             install_gate: InstallGate::Core,
-            ..Config::default()
+            ..common::config()
         },
     );
     let installed = rt

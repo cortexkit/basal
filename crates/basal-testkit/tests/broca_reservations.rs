@@ -1,3 +1,5 @@
+mod common;
+
 use basal_core::broca::BrocaStore;
 use basal_core::tokens::Usage as LedgerUsage;
 use basal_core::{ActivationEnd, Config, DispatchState, NoHooks, RunState, Runtime, Store};
@@ -11,7 +13,6 @@ use basal_proto::JsonText;
 use basal_testkit::harness::{World, test_manifest};
 use serde_json::json;
 use std::sync::Arc;
-use std::time::Duration;
 
 fn setup(world: &World) -> (Runtime, Arc<BrocaHost>, Arc<FakeBroca>, Arc<BrocaStore>) {
     let store = Arc::new(Store::open(world.store_path(), world.durability).unwrap());
@@ -33,9 +34,8 @@ fn setup(world: &World) -> (Runtime, Arc<BrocaHost>, Arc<FakeBroca>, Arc<BrocaSt
         Config {
             selector: world.selector.clone(),
             auto_resume: false,
-            activation_deadline: Duration::from_secs(60),
             install_gate: basal_core::InstallGate::Off,
-            ..Config::default()
+            ..common::config()
         },
     );
     rt.recover().unwrap();
@@ -181,9 +181,8 @@ fn script_value_cannot_supply_usage_and_absent_ledger_fields_are_nullable() {
             Config {
                 selector: world.selector.clone(),
                 auto_resume: false,
-                activation_deadline: Duration::from_secs(60),
                 install_gate: basal_core::InstallGate::Off,
-                ..Config::default()
+                ..common::config()
             },
         )
         .unwrap();
@@ -319,9 +318,8 @@ fn usage_settles_once_when_an_outcome_is_redelivered_after_a_restart() {
             Config {
                 selector: world.selector.clone(),
                 auto_resume: false,
-                activation_deadline: Duration::from_secs(60),
                 install_gate: basal_core::InstallGate::Off,
-                ..Config::default()
+                ..common::config()
             },
         );
         (rt, host, fake.clone(), snapshots)

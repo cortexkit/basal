@@ -5,18 +5,64 @@
 mod common;
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::sync::{Arc, OnceLock, mpsc};
+use std::time::{Duration, Instant};
 
+use basal_core::channel::WorkerChannel;
 use basal_core::{ActivationEnd, Boundary, RunState, Step};
 use basal_host::HostOutcome;
 use basal_proto::JsonText;
-use basal_testkit::harness::{FnHooks, Point, Probe, World, run_with_cuts};
+use basal_testkit::harness::{FnHooks, Point, Probe, World, run_with_cuts, wait_until};
 use common::{admit, config, finish, query_i64, result, runtime, runtime_with, sql};
 use serde_json::json;
 
 fn done_value() -> HostOutcome {
     HostOutcome::fulfilled(JsonText::new("{\"done\":true}").expect("small"))
+}
+
+#[test]
+fn an_unanswered_call_hits_the_fixture_activation_deadline() {
+    let world = World::new("fixture-activation-deadline");
+    let rt = runtime(&world);
+    let run_id = admit(
+        &rt,
+        &world,
+        "await ops.call('mock', 'echo', { gate: 'deadline' }); return 1;",
+    );
+    let mut worker = world.source.spawn().expect("worker");
+    let (tx, rx) = mpsc::channel();
+    let driver = {
+        let rt = rt.clone();
+        std::thread::spawn(move || {
+            let end = rt.activate(&run_id, &mut worker);
+            tx.send(()).expect("deadline observer still exists");
+            (end, worker)
+        })
+    };
+    // The outer bound is independent of the fixture's activation budget.
+    // Opening the gate on either outcome lets even a late driver be reaped.
+    let waited = rx.recv_timeout(Duration::from_secs(8));
+    world.mock.open_gate("deadline");
+    wait_until(
+        Instant::now() + Duration::from_secs(5),
+        "the released fixture activation driver to exit",
+        || driver.is_finished(),
+    )
+    .expect("driver cleanup");
+    let (end, mut worker) = driver.join().expect("driver thread");
+    let reaped = worker.exited(Duration::from_secs(3));
+    worker.kill();
+    rt.quiesce();
+    waited.expect("the fixture activation did not fail within eight seconds");
+    let end = end.expect("activation");
+    assert!(
+        matches!(&end, ActivationEnd::Failed { kind, .. } if kind == "deadline"),
+        "{end:?}"
+    );
+    assert!(
+        reaped,
+        "the fixture activation deadline did not reap its worker"
+    );
 }
 
 /// The race cut that shows why the replay barrier exists:

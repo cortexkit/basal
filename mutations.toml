@@ -6541,3 +6541,20 @@ only = true
 timeout_s = 30
 build_timeout_s = 3600
 
+
+[[control]]
+id = "runtime-fixtures-keep-the-production-activation-deadline"
+guards = "an unanswered fixture call fails within the short activation deadline and reaps its worker"
+file = "crates/basal-testkit/tests/common/mod.rs"
+old = "activation_deadline: Duration::from_secs(5),"
+new = "activation_deadline: Duration::from_secs(60), // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-testkit/tests/journal_races.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test journal_races"
+expect_red = ["an_unanswered_call_hits_the_fixture_activation_deadline"]
+only = true
+timeout_s = 30
+build_timeout_s = 3600
+
