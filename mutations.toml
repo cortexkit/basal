@@ -471,9 +471,9 @@ timeout_s = 600
 edits = [
   { file = "crates/basal-worker/Cargo.toml", old = "rquickjs.workspace = true\n", new = "rquickjs.workspace = true\nsubc-protocol = \"0.24.1\"\n" },
   { file = "Cargo.lock", old = " \"subc-client-rs\",\n \"subc-protocol\",\n \"subc-transport\",\n \"tokio\",\n \"tracing\",\n \"webpki-roots\",\n", new = " \"subc-client-rs\",\n \"subc-protocol 0.29.0\",\n \"subc-transport\",\n \"tokio\",\n \"tracing\",\n \"webpki-roots\",\n" },
-  { file = "Cargo.lock", old = " \"sha2\",\n \"subc-client-rs\",\n \"subc-protocol\",\n \"subc-transport\",\n \"tokio\",\n \"tracing\",\n", new = " \"sha2\",\n \"subc-client-rs\",\n \"subc-protocol 0.29.0\",\n \"subc-transport\",\n \"tokio\",\n \"tracing\",\n" },
+  { file = "Cargo.lock", old = " \"serde\",\n \"serde_json\",\n \"sha2\",\n \"subc-client-rs\",\n \"subc-protocol\",\n \"subc-transport\",\n \"tokio\",\n \"tracing\",\n", new = " \"serde\",\n \"serde_json\",\n \"sha2\",\n \"subc-client-rs\",\n \"subc-protocol 0.29.0\",\n \"subc-transport\",\n \"tokio\",\n \"tracing\",\n" },
   { file = "Cargo.lock", old = " \"rcgen\",\n \"rusqlite\",\n \"rustls\",\n \"serde_json\",\n \"subc-protocol\",\n", new = " \"rcgen\",\n \"rusqlite\",\n \"rustls\",\n \"serde_json\",\n \"subc-protocol 0.29.0\",\n" },
-  { file = "Cargo.lock", old = " \"rusqlite\",\n \"serde_json\",\n \"subc-client-rs\",\n \"subc-protocol\",\n \"tokio\",\n]\n", new = " \"rusqlite\",\n \"serde_json\",\n \"subc-client-rs\",\n \"subc-protocol 0.29.0\",\n \"tokio\",\n]\n" },
+  { file = "Cargo.lock", old = " \"rusqlite\",\n \"serde_json\",\n \"sha2\",\n \"subc-client-rs\",\n \"subc-protocol\",\n \"tokio\",\n]\n", new = " \"rusqlite\",\n \"serde_json\",\n \"sha2\",\n \"subc-client-rs\",\n \"subc-protocol 0.29.0\",\n \"tokio\",\n]\n" },
   { file = "Cargo.lock", old = " \"libc\",\n \"rquickjs\",\n \"serde_json\",\n]\n\n[[package]]\n", new = " \"libc\",\n \"rquickjs\",\n \"serde_json\",\n \"subc-protocol 0.24.1\",\n]\n\n[[package]]\n" },
   { file = "Cargo.lock", old = " \"serde_json\",\n \"subc-control\",\n \"subc-os\",\n \"subc-protocol\",\n \"subc-transport\",\n \"tokio\",\n \"tokio-util\",\n", new = " \"serde_json\",\n \"subc-control\",\n \"subc-os\",\n \"subc-protocol 0.29.0\",\n \"subc-transport\",\n \"tokio\",\n \"tokio-util\",\n" },
   { file = "Cargo.lock", old = "dependencies = [\n \"serde\",\n \"serde_json\",\n \"subc-protocol\",\n]\n", new = "dependencies = [\n \"serde\",\n \"serde_json\",\n \"subc-protocol 0.29.0\",\n]\n" },
@@ -6413,4 +6413,94 @@ expect_red = ["script.tests.flows_rig.RigChecks.test_auth_refuses_a_final_key_sy
 only = false
 timeout_s = 120
 build_timeout_s = 1800
+
+
+[[control]]
+id = "rig-scope-ref-mismatch-accepted"
+guards = "Broca scope ref must equal core registration"
+file = "crates/basal-rig/src/models.rs"
+old = '&& scope["ref"] == registered["ref"]'
+new = "&& true // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-rig/src/models.rs"
+runner = "cargo"
+package = "basal-rig"
+target = "--lib"
+expect_red = ["models::tests::scope_evidence_rejects_mismatched_ref_epoch_owner_and_missing_fields"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "rig-scope-epoch-mismatch-accepted"
+guards = "Broca scope epoch must equal core registration"
+file = "crates/basal-rig/src/models.rs"
+old = '&& scope["scope_epoch"] == registered["epoch"]'
+new = "&& true // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-rig/src/models.rs"
+runner = "cargo"
+package = "basal-rig"
+target = "--lib"
+expect_red = ["models::tests::scope_evidence_rejects_mismatched_ref_epoch_owner_and_missing_fields"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "rig-successful-non-carrier-open-accepted"
+guards = "the direct carrier probe must be refused by the daemon"
+file = "crates/basal-rig/src/models.rs"
+old = 'reply["refused"]["code"] == "scope_not_carrier"'
+new = "reply.is_object() // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-rig/src/models.rs"
+runner = "cargo"
+package = "basal-rig"
+target = "--lib"
+expect_red = ["models::tests::carrier_evidence_requires_the_daemons_exact_non_carrier_refusal"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "rig-unrefused-unscoped-send-accepted"
+guards = "the unscoped send must have been refused with flow_scope_required"
+file = "crates/basal-rig/src/models.rs"
+old = """
+snapshot["outcome"]["rejected"] == true
+        && snapshot["outcome"]["value"]
+            .as_str()
+            .and_then(|s| serde_json::from_str::<Value>(s).ok())
+            .is_some_and(|v| v["code"] == "flow_scope_required")"""
+new = "snapshot.is_object() // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-rig/src/models.rs"
+runner = "cargo"
+package = "basal-rig"
+target = "--lib"
+expect_red = ["models::tests::negative_send_evidence_requires_a_rejected_flow_scope_required_outcome"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "rig-unscoped-hook-fires-for-unarmed-flow"
+guards = "only the flow named by the arming file can send unscoped once"
+file = "crates/basal-module/src/rig_kill.rs"
+old = "armed.flow_id.is_empty() || flow_id != Some(armed.flow_id.as_str())"
+new = "armed.flow_id.is_empty() || flow_id.is_none() /* NON-VACUITY BREAK */"
+edits = []
+test_file = "crates/basal-module/src/rig_kill.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--lib"
+expect_red = ["rig_kill::tests::unscoped_send_fires_only_for_the_armed_flow_once"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
 

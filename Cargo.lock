@@ -126,6 +126,7 @@ dependencies = [
  "async-trait",
  "rusqlite",
  "serde_json",
+ "sha2",
  "subc-client-rs",
  "subc-protocol",
  "tokio",

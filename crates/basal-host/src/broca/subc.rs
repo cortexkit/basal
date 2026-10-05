@@ -156,7 +156,11 @@ pub struct SubcBrocaTransport {
     module: String,
     streams: Mutex<HashMap<Key, Arc<Stream>>>,
     wake: Wake,
+    #[cfg(feature = "rig-kill-hook")]
+    unscoped_send: Mutex<Option<UnscopedSendHook>>,
 }
+#[cfg(feature = "rig-kill-hook")]
+type UnscopedSendHook = Arc<dyn Fn(&Route) -> bool + Send + Sync>;
 impl SubcBrocaTransport {
     pub fn new(connection: Arc<SubcTransport>, module: String, wake: Wake) -> Arc<Self> {
         let transport = Arc::new(Self {
@@ -164,6 +168,8 @@ impl SubcBrocaTransport {
             module,
             streams: Mutex::new(HashMap::new()),
             wake,
+            #[cfg(feature = "rig-kill-hook")]
+            unscoped_send: Mutex::new(None),
         });
         let weak = Arc::downgrade(&transport);
         connection.on_connection_state(move |state| {
@@ -179,6 +185,10 @@ impl SubcBrocaTransport {
         // Subscriptions belong to the old daemon connection. Drop them and
         // poll: each pending call is re-read and re-watched.
         reconnect(&self.streams, &self.wake);
+    }
+    #[cfg(feature = "rig-kill-hook")]
+    pub fn set_unscoped_send_hook(&self, hook: UnscopedSendHook) {
+        *lock(&self.unscoped_send) = Some(hook);
     }
     fn call<T: serde::de::DeserializeOwned>(
         &self,
@@ -294,6 +304,17 @@ impl Transport for SubcBrocaTransport {
         );
     }
     fn send(&self, route: &Route, params: &[u8]) -> Result<SendResult, BrocaError> {
+        #[cfg(feature = "rig-kill-hook")]
+        if lock(&self.unscoped_send)
+            .as_ref()
+            .is_some_and(|hook| hook(route))
+        {
+            let value = self
+                .connection
+                .unscoped_model_send(identity(route), &self.module, params)
+                .map_err(error)?;
+            return serde_json::from_value(value).map_err(|e| BrocaError::Wire(e.to_string()));
+        }
         self.call(route, "session.send", params)
     }
     fn watch(&self, route: &Route) -> Result<(), BrocaError> {

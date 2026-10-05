@@ -3,6 +3,39 @@
 
 use serde_json::{Value, json};
 
+/// Broca records `scope_epoch`, while core publishes the selector's `epoch`.
+pub fn scope_matches(ownership: &Value, registered: &Value) -> bool {
+    let scope = &ownership["scope"];
+    scope["owner"] == json!({"kind":"reserved","module_id":"prefrontal-core"})
+        && scope["owner"] == registered["owner"]
+        && registered["ref"].as_str().is_some_and(|s| !s.is_empty())
+        && registered["epoch"].as_u64().is_some_and(|n| n > 0)
+        && scope["ref"] == registered["ref"]
+        && scope["scope_epoch"] == registered["epoch"]
+}
+
+pub fn basal_first_principal(ownership: &Value) -> bool {
+    ownership["first_principal"] == json!({"kind":"reserved","module_id":"basal"})
+}
+
+pub fn stamped_flow(ownership: &Value, flow_id: &str) -> bool {
+    ownership["scope"]["flow_id"] == flow_id && !flow_id.is_empty()
+}
+
+/// A successful open or a different refusal does not prove carrier enforcement.
+pub fn non_carrier_refused(reply: &Value) -> bool {
+    reply["refused"]["code"] == "scope_not_carrier"
+}
+
+/// Read the actual saved send outcome, not a local pre-dispatch refusal.
+pub fn unscoped_send_refused(snapshot: &Value) -> bool {
+    snapshot["outcome"]["rejected"] == true
+        && snapshot["outcome"]["value"]
+            .as_str()
+            .and_then(|s| serde_json::from_str::<Value>(s).ok())
+            .is_some_and(|v| v["code"] == "flow_scope_required")
+}
+
 pub fn selected_luna(selection: &Value) -> bool {
     selection["providerID"] == "openai"
         && selection["modelID"] == "gpt-6-luna"
@@ -55,6 +88,72 @@ pub fn settled_usage(charge: &Value, usage: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scope_evidence_rejects_mismatched_ref_epoch_owner_and_missing_fields() {
+        let registered = json!({"owner":{"kind":"reserved","module_id":"prefrontal-core"},"ref":"core-ref","epoch":7});
+        let owner = json!({"scope":{"owner":registered["owner"],"ref":"core-ref","scope_epoch":7}});
+        assert!(scope_matches(&owner, &registered));
+        for (key, wrong) in [
+            ("ref", json!("other-ref")),
+            ("scope_epoch", json!(8)),
+            ("owner", json!({"kind":"direct"})),
+            ("ref", Value::Null),
+            ("scope_epoch", Value::Null),
+        ] {
+            let mut bad = owner.clone();
+            bad["scope"][key] = wrong;
+            assert!(!scope_matches(&bad, &registered), "{key}");
+        }
+        assert!(!scope_matches(&Value::Null, &Value::Null));
+    }
+
+    #[test]
+    fn automation_evidence_requires_attested_basal_and_this_flow() {
+        let mut owner = json!({"first_principal":{"kind":"reserved","module_id":"basal"},"scope":{"flow_id":"flow-a"}});
+        assert!(basal_first_principal(&owner));
+        assert!(stamped_flow(&owner, "flow-a"));
+        assert!(!stamped_flow(&owner, "flow-b"));
+        owner["first_principal"] = json!({"kind":"direct"});
+        assert!(!basal_first_principal(&owner));
+        assert!(!basal_first_principal(&Value::Null));
+        assert!(!stamped_flow(&Value::Null, "flow-a"));
+    }
+
+    #[test]
+    fn carrier_evidence_requires_the_daemons_exact_non_carrier_refusal() {
+        assert!(non_carrier_refused(
+            &json!({"refused":{"code":"scope_not_carrier"}})
+        ));
+        for reply in [
+            json!({"ok":{"opened":true}}),
+            json!({"refused":{"code":"scope_ended"}}),
+            Value::Null,
+        ] {
+            assert!(!non_carrier_refused(&reply));
+        }
+    }
+
+    #[test]
+    fn negative_send_evidence_requires_a_rejected_flow_scope_required_outcome() {
+        let snapshot = |rejected, code| json!({"outcome":{"rejected":rejected,"value":json!({"code":code}).to_string()}});
+        assert!(unscoped_send_refused(&snapshot(
+            true,
+            "flow_scope_required"
+        )));
+        assert!(!unscoped_send_refused(&snapshot(
+            false,
+            "flow_scope_required"
+        )));
+        assert!(!unscoped_send_refused(&snapshot(
+            true,
+            "scope_owner_mismatch"
+        )));
+        assert!(!unscoped_send_refused(
+            &json!({"state":"active","broca_run_id":"b1"})
+        ));
+        assert!(!unscoped_send_refused(&Value::Null));
+    }
 
     #[test]
     fn completed_empty_text_is_valid_but_missing_transcript_is_not() {

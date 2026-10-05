@@ -133,6 +133,14 @@ cmd_config
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("unexpected grants", result.stderr)
 
+    def test_config_and_contract_share_the_isolated_unscoped_arming_file(self):
+        with tempfile.TemporaryDirectory() as home:
+            result = self.run_shell('guard_all_paths; DRY=1; cmd_config; cmd_test --models', home)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            path = f"{home}/.local/share/cortexkit/ckdev-flows/runtime/basal-unscoped-send"
+            self.assertIn(f'"BASAL_RIG_UNSCOPED_FILE": "{path}"', result.stdout)
+            self.assertIn(f"--unscoped-file {path}", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

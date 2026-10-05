@@ -125,6 +125,25 @@ impl Client {
         }
     }
 
+    /// Try the registered selector as a direct client, without sending a request.
+    /// A mistakenly admitted route is closed immediately and never used.
+    pub async fn open_flow_scope(&self, identity: BindIdentity, selector: Value) -> Reply {
+        let selector = serde_json::from_value(selector).map_err(|e| Refusal {
+            code: "invalid_selector".into(),
+            message: e.to_string(),
+        })?;
+        let route = self
+            .consumer
+            .open_route_scoped(target("broca"), identity, selector, self.options())
+            .await
+            .map_err(refusal)?;
+        self.consumer
+            .close_handle(&route, Default::default())
+            .await
+            .map_err(refusal)?;
+        Ok(json!({"opened":true}))
+    }
+
     /// One management call on an unscoped route bound with `identity`.
     pub async fn call(
         &self,

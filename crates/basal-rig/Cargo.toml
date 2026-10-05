@@ -25,6 +25,7 @@ test = false
 async-trait.workspace = true
 rusqlite.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 subc-client-rs.workspace = true
 subc-protocol.workspace = true
 tokio = { workspace = true, features = ["sync", "time"] }

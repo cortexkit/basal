@@ -142,8 +142,9 @@ return {{ digest }};",
 
 /// Model cases are agent-owned at installation, just like the scoped writer.
 /// Each daily cap bounds every scheduled run, not just the first run the suite
-/// observes. The three sending flows total 3,072 tokens; the refused one adds
-/// 16, for a finite 3,088-token allowance even if cleanup is interrupted.
+/// observes. Three normal sends and the unscoped negative flow total 4,096
+/// tokens; the capped flow adds 16. The 4,112-token allowance stays finite
+/// even if refusal enforcement regresses or cleanup is interrupted.
 pub fn model(id: &str, agent: &str, classify: bool, capped: bool) -> Flow {
     let mut m: Value = serde_json::from_str(&manifest(
         id,
@@ -184,6 +185,7 @@ mod tests {
             ("classify", true, false),
             ("crash", false, false),
             ("cap", false, true),
+            ("unscoped", false, false),
         ] {
             let f = model(id, "RigAgent", classify, capped);
             let m = f.manifest_value();
@@ -199,6 +201,6 @@ mod tests {
                 assert_eq!(tokens, 16);
             }
         }
-        assert_eq!(total, 3088);
+        assert_eq!(total, 4112);
     }
 }
