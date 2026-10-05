@@ -41,7 +41,13 @@ class PathDependencyChecks(unittest.TestCase):
 
     def run_check(self, root):
         return subprocess.run(
-            [sys.executable, str(SCRIPT), "--manifest-path", str(root / "Cargo.toml")],
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--manifest-path",
+                str(root / "Cargo.toml"),
+                "--offline",
+            ],
             text=True,
             capture_output=True,
             check=False,

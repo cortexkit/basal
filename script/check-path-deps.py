@@ -17,9 +17,16 @@ def main():
         default=default_manifest,
         help="workspace manifest to inspect (default: repository root)",
     )
+    parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="avoid registry access for dependency-free scratch workspaces",
+    )
     args = parser.parse_args()
 
-    command = ["cargo", "metadata", "--format-version", "1", "--locked", "--offline"]
+    command = ["cargo", "metadata", "--format-version", "1", "--locked"]
+    if args.offline:
+        command.append("--offline")
     command.extend(["--manifest-path", str(args.manifest_path.resolve())])
     result = subprocess.run(command, text=True, capture_output=True, check=False)
     if result.returncode:
