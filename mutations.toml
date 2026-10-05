@@ -5834,7 +5834,7 @@ build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-worker/src/prelude.js"
 old = "ReflectApply(weakMapSet, hostRejections, [error, position]);"
-new = "void position; // NON-VACUITY BREAK"
+new = "if (position === 0) ReflectApply(weakMapSet, hostRejections, [error, position]); // NON-VACUITY BREAK"
 
 [[control]]
 id = "flow-scoped-open-is-not-used"

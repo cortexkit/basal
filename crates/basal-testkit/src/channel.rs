@@ -145,13 +145,20 @@ pub fn worker_binary() -> PathBuf {
         }
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-        let status = Command::new(cargo)
+        // Keep build chatter out of libtest's status lines, which mutation
+        // reports parse. A failed build must never select a stale worker.
+        let output = Command::new(cargo)
             .current_dir(&root)
             .args(["build", "-p", "basal-worker", "--bin", "ck-basal-worker"])
-            .status();
-        if !status.as_ref().is_ok_and(|s| s.success()) {
-            eprintln!("building ck-basal-worker failed: {status:?}");
-        }
+            .output()
+            .expect("launch Cargo to build ck-basal-worker");
+        assert!(
+            output.status.success(),
+            "building ck-basal-worker failed: {}\n{}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
         let target = std::env::var_os("CARGO_TARGET_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| root.join("target"));
