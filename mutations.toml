@@ -6524,3 +6524,20 @@ only = true
 timeout_s = 30
 build_timeout_s = 3600
 
+
+[[control]]
+id = "ownership-driver-wait-loses-its-short-deadline"
+guards = "a stalled ownership driver fails within the fixture deadline and returns its worker for reaping"
+file = "crates/basal-testkit/tests/journal_ownership.rs"
+old = "const OWNER_DRIVER_WAIT: Duration = Duration::from_secs(3);"
+new = "const OWNER_DRIVER_WAIT: Duration = Duration::from_secs(60); // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-testkit/tests/journal_ownership.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test journal_ownership"
+expect_red = ["a_stuck_ownership_driver_wait_deadline_releases_and_reaps_its_worker"]
+only = true
+timeout_s = 30
+build_timeout_s = 3600
+

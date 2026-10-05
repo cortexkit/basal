@@ -5,18 +5,20 @@
 mod common;
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
+use std::time::{Duration, Instant};
 
+use basal_core::channel::WorkerChannel;
 use basal_core::runs::Lease;
 use basal_core::{ActivationEnd, Boundary, RunState, Runtime, Step};
 use basal_testkit::ProcessSource;
-use basal_testkit::harness::{FnHooks, World};
+use basal_testkit::harness::{FnHooks, World, wait_until};
 use basal_testkit::worker_binary;
 use common::{admit, admit_as, finish, query_i64, result, runtime, runtime_with};
 use serde_json::json;
 
 type Slot = Arc<OnceLock<Runtime>>;
+const OWNER_DRIVER_WAIT: Duration = Duration::from_secs(3);
 
 /// Hooks that, the first time `when` matches, take the run over for a
 /// second owner and keep its lease.
@@ -126,7 +128,37 @@ fn owner_loss_after_call_commit_dispatches_once() {
         "const r = await ops.call('mock', 'post', { n: 1, gate: 'g' }); return r.applied.n;",
     );
     let mut old = world.source.spawn().expect("worker");
-    let end = rt.activate(&run_id, &mut old).expect("activation");
+    let driver = {
+        let rt = rt.clone();
+        let run_id = run_id.clone();
+        std::thread::spawn(move || {
+            let end = rt.activate(&run_id, &mut old);
+            (end, old)
+        })
+    };
+    // The gate normally opens in the new owner's activation. If the old
+    // driver dispatches inline, it cannot return to start that activation.
+    let waited = wait_until(
+        Instant::now() + OWNER_DRIVER_WAIT,
+        &format!("superseded run {run_id}'s activation driver to exit"),
+        || driver.is_finished(),
+    );
+    if waited.is_err() {
+        world.mock.open_gate("g");
+        wait_until(
+            Instant::now() + OWNER_DRIVER_WAIT,
+            "the released superseded activation driver to exit",
+            || driver.is_finished(),
+        )
+        .expect("driver cleanup");
+    }
+    let (end, mut old) = driver.join().expect("driver thread");
+    if let Err(error) = waited {
+        old.kill();
+        rt.quiesce();
+        panic!("{error}");
+    }
+    let end = end.expect("activation");
     assert_eq!(end, ActivationEnd::OwnerLost);
     assert!(
         old.exited(Duration::from_secs(5)),
@@ -141,6 +173,66 @@ fn owner_loss_after_call_commit_dispatches_once() {
     assert!(matches!(end, ActivationEnd::Succeeded { .. }), "{end:?}");
     assert_eq!(world.mock.total_sends(), 1, "the call was dispatched twice");
     assert_eq!(world.mock.effects().len(), 1);
+}
+
+#[test]
+fn a_stuck_ownership_driver_wait_deadline_releases_and_reaps_its_worker() {
+    let world = World::new("owner-driver-wait");
+    let rt = runtime(&world);
+    let run_id = admit(
+        &rt,
+        &world,
+        "await ops.call('mock', 'post', { gate: 'observer' }); return 1;",
+    );
+    let mut worker = world.source.spawn().expect("worker");
+    let driver = {
+        let rt = rt.clone();
+        std::thread::spawn(move || {
+            let end = rt.activate(&run_id, &mut worker);
+            (end, worker)
+        })
+    };
+    let (tx, rx) = mpsc::channel();
+    let waiter = std::thread::spawn(move || {
+        let waited = wait_until(
+            Instant::now() + OWNER_DRIVER_WAIT,
+            "a deliberately stalled ownership driver",
+            || driver.is_finished(),
+        );
+        tx.send(waited).expect("deadline observer still exists");
+        driver
+    });
+    // The outer bound must remain independent of the driver's wait. Always
+    // release its host gate so the test can join and reap before failing.
+    let waited = rx.recv_timeout(Duration::from_secs(5));
+    world.mock.open_gate("observer");
+    wait_until(
+        Instant::now() + Duration::from_secs(5),
+        "the released ownership deadline observer to exit",
+        || waiter.is_finished(),
+    )
+    .expect("observer cleanup");
+    let driver = waiter.join().expect("deadline observer");
+    wait_until(
+        Instant::now() + Duration::from_secs(5),
+        "the released ownership driver to exit",
+        || driver.is_finished(),
+    )
+    .expect("driver cleanup");
+    let (_, mut worker) = driver.join().expect("driver thread");
+    worker.kill();
+    assert!(
+        worker.exited(Duration::from_secs(3)),
+        "worker was not reaped"
+    );
+    rt.quiesce();
+    let error = waited
+        .expect("the ownership driver wait did not fail within five seconds")
+        .expect_err("the stalled ownership driver unexpectedly exited");
+    assert!(
+        error.contains("deliberately stalled ownership driver"),
+        "{error}"
+    );
 }
 
 /// The run is taken over while the old worker is blocked, before a
