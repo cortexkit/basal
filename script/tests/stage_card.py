@@ -41,8 +41,10 @@ class StageCardChecks(unittest.TestCase):
         self.write_binaries()
         for binary, digest in [("ck-basal", "basal-digest"), ("ck-basal-worker", "worker-digest")]:
             (self.stage / (binary + ".sha256")).write_text(digest + "  " + binary + "\n")
-        # gh's response depends on its actual event filter. The newer scheduled
-        # audit has a different conclusion from the push run for this commit.
+        # The fake gh answers by the --event filter it is given: with --event
+        # push it returns the push-triggered CI run (success); without a filter
+        # it returns a newer scheduled run (failure). The card must report the
+        # push run, so a missing filter shows up as the wrong conclusion.
         tools = self.home / "tools"
         tools.mkdir()
         gh = tools / "gh"
@@ -165,7 +167,7 @@ write_card
         for cmd in commands:
             self.assertEqual(cmd[cmd.index("--module") + 1], "basal")
         self.assertIn("Warm workers are spawned by ck-basal", card)
-        self.assertIn("worker protocol change is additive", card)
+        self.assertIn("requires that the worker protocol change is additive", card)
 
     def test_marker_refusal_writes_no_card(self):
         self.store(7)

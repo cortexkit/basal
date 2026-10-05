@@ -562,7 +562,7 @@ cat >> "$CARD" <<EOF
    \`place-module.sh --module basal --staged $(shell_quote "$STAGE_DIR/ck-basal-worker") --marker $(shell_quote "$WORKER_MARKER") --control $(shell_quote "$WORKER_CONTROL") --dest ~/.local/share/cortexkit/bin/ck-basal-worker --no-restart\`
 2. Then ck-basal, with the default update restart:
    \`place-module.sh --module basal --staged $(shell_quote "$STAGE_DIR/ck-basal") --marker $(shell_quote "$BASAL_MARKER") --control $(shell_quote "$BASAL_CONTROL")$MIGRATES_ARG\`
-- These commands are read-only gate runs; SUBC adds \`--place\` for placement. Warm workers are spawned by ck-basal, so restarting ck-basal last makes every worker come from the new file. In the meantime, the old parent spawning a new worker is safe because the worker protocol change is additive.
+- These commands are read-only gate runs; SUBC adds \`--place\` for placement. Warm workers are spawned by ck-basal, so restarting ck-basal last makes every worker come from the new file. Between the two placements the old parent may spawn a new worker, so this order requires that the worker protocol change is additive: the old parent must decode every message the new worker sends. Check that before placing; a change that is not additive needs basal stopped while both binaries are replaced.
 
 **Post-placement check** (mine)
 - \`ck --json provenance basal\`: build_git_sha $SHA, and the observed pid's running image is the placed ck-basal (same inode).

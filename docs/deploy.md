@@ -1,6 +1,6 @@
 # Deploying basal
 
-basal never places its own binaries. In this fleet the operator places every module binary with `subconscious/scripts/fleet/place-module.sh`, from a card the module stages. basal ships two binaries, `ck-basal` (the module) and `ck-basal-worker` (the confined QuickJS worker it runs flows in). [`script/stage.sh`](../script/stage.sh) builds, signs, smoke-tests and stages both and prints one card covering the two gate invocations. Posting it, and everything after, is the operator's step.
+basal never places its own binaries. In this fleet the operator places every module binary with `subconscious/scripts/fleet/place-module.sh`, from a card the module stages. basal ships two binaries, `ck-basal` (the module) and `ck-basal-worker` (the confined QuickJS worker it runs flows in). [`script/stage.sh`](../script/stage.sh) builds, signs, smoke-tests and stages both and prints one card covering the two gate invocations. The operator posts the card and performs every step after staging.
 
 ## Staging
 
@@ -28,7 +28,7 @@ In order, `stage.sh`:
    For updates it also compares the highest migration `version:` in `crates/basal-core/src/schema.rs` at `HEAD` with `SELECT max(version) FROM cortexkit_schema_version` in the live store. The store is opened with a SQLite `mode=ro` URI, never read-write; a missing or unreadable store refuses the card. A schema rise adds `--migrates ~/.local/share/cortexkit/basal/store.db` to the ck-basal command, not the worker command.
 6. **Stages** both under `<staging root>/basal-<short sha>/`, with a `.sha256` sidecar each that passes `shasum -c`, and a `revision` file. The default staging root is `~/.local/share/cortexkit/staging`. A stage directory is never rewritten: staging the same commit twice refuses.
 7. **Declares it current**, writing `<staging root>/basal.current` and `<staging root>/basal-worker.current` through a temp file and a rename. Each holds `stage=` (the stage directory), `revision=` (the full 40-character sha) and `declared_at=` (UTC), plus `pushed=no (--local-only)` for a local-only stage. place-module.sh derives the file name from the destination binary's name without `ck-`, so the worker's card reads `basal-worker.current`.
-8. **Prints the card** and saves it in the stage directory as `card.md`: card, signing, marker and control, store/rollback, order, and the post-placement check. Its CI line looks up the push-triggered CI run for the exact commit and names its conclusion and URL, not a newer scheduled breadth audit. It is not posted.
+8. **Prints the card** and saves it in the stage directory as `card.md`: card, signing, marker and control, store/rollback, order, and the post-placement check. Its CI line looks up the push-triggered CI run for the exact commit and names its conclusion and URL. CI also runs on a nightly schedule, replaying every mutation control against every test target in its package to find controls whose mutant breaks unrelated tests. That run can be newer and can fail for reasons unrelated to the commit, so the card never reports it. It is not posted.
 
 ## What the placement gate checks, and what a first placement changes
 
@@ -56,7 +56,7 @@ An update names a discriminator and shared control for each staged/live pair, th
 1. **ck-basal-worker first**, `--module basal --dest ~/.local/share/cortexkit/bin/ck-basal-worker --no-restart`, with the worker's staged path, marker and control.
 2. **ck-basal last**, `--module basal`, with its staged path, marker and control, and `--migrates ~/.local/share/cortexkit/basal/store.db` only when the schema version rises. Leave the default update restart enabled.
 
-Warm workers are spawned by ck-basal. Restarting ck-basal last ensures every worker comes from the newly placed worker file, not a warm outgoing image. Between the two placements, the old parent spawning a new worker is safe because the worker protocol change is additive. The commands on the card are gate-only; the operator adds `--place` to each after checking them.
+Warm workers are spawned by ck-basal. Restarting ck-basal last ensures every worker comes from the newly placed worker file, not a warm outgoing image. Between the two placements the old parent may spawn a new worker, so this order requires that every change to the parent-worker protocol (`crates/basal-proto`) since the live build is additive: the old parent must decode every message the new worker sends. A change that isn't additive needs basal stopped while both binaries are replaced. The commands on the card are gate-only; the operator adds `--place` to each after checking them.
 
 After placement, basal checks that `ck --json provenance basal` names the commit, the parent's and a worker's running images match their placed files by inode, the sandbox verifies at the placed worker path, the store reads the build's new schema version with its tables intact, and `flow.list` answers.
 
