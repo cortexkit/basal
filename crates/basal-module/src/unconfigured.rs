@@ -93,6 +93,10 @@ impl Catalog for EmptyCatalog {
     fn agent_known(&self, _agent: &str) -> bool {
         false
     }
+
+    fn agent_id(&self, _agent: &str) -> Option<String> {
+        None
+    }
 }
 
 /// A consent plane that cannot be reached.

@@ -277,7 +277,14 @@ fn install_refuses_unknown_agents() {
     for m in cases {
         assert!(
             matches!(
-                install(&rt, &m, false),
+                rt.install(&InstallRequest {
+                    script: "return 1;".into(),
+                    manifest: m.to_string(),
+                    // Global flows must still reject unknown agents even
+                    // though their grants are not confined to one owner.
+                    author: "operator".into(),
+                    loop_override: false,
+                }),
                 Err(InstallError::UnknownAgent { .. })
             ),
             "{m}"

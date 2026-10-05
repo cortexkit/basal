@@ -16,6 +16,10 @@
 //! first runtime thread to reach that boundary in a run of that flow deletes
 //! the file and kills the process; runs of every other flow pass untouched.
 //! Without the variable, or without the file, the hook does nothing.
+//!
+//! `$BASAL_RIG_UNSCOPED_FILE` separately arms one unscoped Broca send with
+//! `{"flow_id":"rig-model-unscoped-…"}`. Only that flow consumes the file;
+//! the rig checks that Broca refuses it before writing any run records.
 
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
@@ -26,6 +30,46 @@ use serde::Deserialize;
 
 /// The environment variable naming the arming file.
 pub const KILL_FILE_ENV: &str = "BASAL_RIG_KILL_FILE";
+
+pub const UNSCOPED_FILE_ENV: &str = "BASAL_RIG_UNSCOPED_FILE";
+
+/// Arms one unscoped Broca send for one named flow. It has its own arming file,
+/// separate from the crash switch's, so arming a crash can never also make a
+/// send go out without its scope.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UnscopedArmed {
+    pub flow_id: String,
+}
+
+pub struct RigUnscopedSend {
+    path: PathBuf,
+}
+
+impl RigUnscopedSend {
+    pub fn from_env() -> Option<Self> {
+        Some(Self {
+            path: std::env::var_os(UNSCOPED_FILE_ENV)
+                .filter(|s| !s.is_empty())?
+                .into(),
+        })
+    }
+
+    /// Only the named flow consumes the file. Removing it before the send makes
+    /// the switch one-shot even with concurrent dispatches or a module restart.
+    pub fn take(&self, flow_id: Option<&str>) -> bool {
+        let Ok(text) = std::fs::read_to_string(&self.path) else {
+            return false;
+        };
+        let Ok(armed) = serde_json::from_str::<UnscopedArmed>(&text) else {
+            return false;
+        };
+        if armed.flow_id.is_empty() || flow_id != Some(armed.flow_id.as_str()) {
+            return false;
+        }
+        std::fs::remove_file(&self.path).is_ok()
+    }
+}
 
 /// The arming file's content.
 #[derive(Debug, Deserialize, PartialEq, Eq)]
@@ -147,6 +191,42 @@ impl Hooks for RigKillHook {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unscoped_send_fires_only_for_the_armed_flow_once() {
+        let path = std::env::temp_dir().join(format!("basal-unscoped-{}.arm", std::process::id()));
+        let hook = RigUnscopedSend { path: path.clone() };
+        let _ = std::fs::remove_file(&path);
+        assert!(!hook.take(Some("armed")), "absent file");
+        std::fs::write(&path, r#"{"flow_id":"armed"}"#).unwrap();
+        assert!(
+            !hook.take(Some("unarmed")),
+            "another flow must not consume the arm"
+        );
+        assert!(path.exists());
+        assert!(!hook.take(None), "unknown flow");
+        assert!(hook.take(Some("armed")));
+        assert!(!path.exists());
+        assert!(!hook.take(Some("armed")), "one shot");
+    }
+
+    #[test]
+    fn unscoped_send_arming_file_is_closed_and_malformed_arms_do_not_fire() {
+        let path =
+            std::env::temp_dir().join(format!("basal-unscoped-closed-{}.arm", std::process::id()));
+        let hook = RigUnscopedSend { path: path.clone() };
+        for text in [
+            r#"{"flow_id":"f","extra":1}"#,
+            "f",
+            "{}",
+            r#"{"flow_id":""}"#,
+        ] {
+            std::fs::write(&path, text).unwrap();
+            assert!(!hook.take(Some("f")), "{text}");
+            assert!(path.exists());
+        }
+        std::fs::remove_file(path).unwrap();
+    }
 
     fn armed() -> Armed {
         serde_json::from_str(r#"{"flow_id":"rig-crash","boundary":"HostAnswered { position: 0 }"}"#)

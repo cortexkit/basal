@@ -124,6 +124,16 @@ impl Module {
             InstallError::NotOwner { .. } | InstallError::NotYourDisable { .. } => {
                 OpError::new("not_permitted", e.to_string())
             }
+            InstallError::ForeignAgentTarget {
+                field,
+                agent,
+                author,
+            } => OpError::new(
+                "foreign_agent_target",
+                format!(
+                    "{field} names agent {agent}; an agent-owned flow may name only its author {author}"
+                ),
+            ),
             InstallError::UnknownEvent {
                 module,
                 name,
@@ -206,6 +216,19 @@ impl Module {
         let manifest = Manifest::parse(&p.manifest).map_err(|e| {
             OpError::new("install_refused", format!("the manifest is invalid: {e}"))
         })?;
+        // Package instances derive their ids from the package and agent.
+        // Plain installs must not occupy that namespace before an instance exists.
+        if manifest.id.rsplit_once('_').is_some_and(|(_, suffix)| {
+            suffix.len() == 16
+                && suffix
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        }) {
+            return Err(OpError::new(
+                "flow_id_reserved",
+                format!("flow id {} is reserved for package instances", manifest.id),
+            ));
+        }
         // Authorization: an agent installs for itself, never with the
         // operator's loop override, and only a flow no other agent wrote.
         let author = match caller {
@@ -469,6 +492,7 @@ impl Module {
                 now_ms: self.rt.config().clock.now_ms(),
             })
             .map_err(|e| match e {
+                DryRunError::InstallRefused(e) => self.install_error(e),
                 DryRunError::Invalid(m) => invalid_params(m),
                 DryRunError::Failed(m) => OpError::new("dry_run_failed", m),
             })?;

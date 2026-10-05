@@ -376,6 +376,26 @@ impl SubcTransport {
             .ok_or_else(|| WireError::NeverSent("model route has no handle".into()))
     }
 
+    /// Sends to Broca as basal without the flow's scope. Only the test rig's
+    /// build has this, to prove that Broca refuses such a send; production
+    /// basal never sends a flow's model call unscoped.
+    #[cfg(feature = "rig-kill-hook")]
+    pub(crate) fn unscoped_model_send(
+        &self,
+        identity: BindIdentity,
+        module: &str,
+        params: &[u8],
+    ) -> Result<Value, WireError> {
+        self.call_as(
+            RouteTarget::ManagementSurface {
+                module_id: module.into(),
+            },
+            identity,
+            management_bytes("session.send", params)?,
+            true,
+        )
+    }
+
     pub(crate) fn management_for_model(
         &self,
         flow: &str,
@@ -931,6 +951,57 @@ mod tests {
             }
             drop(calls);
             drop(broca);
+        });
+    }
+
+    #[cfg(feature = "rig-kill-hook")]
+    #[test]
+    fn rig_send_hook_opens_only_the_selected_send_unscoped_and_keeps_other_calls_scoped() {
+        use crate::broca::{Route, Transport as _};
+        use crate::flow_scope::{FlowScope, RegisteredScope};
+        with_scoped_transport(|transport, opens, calls, _| {
+            transport.configure_flow(
+                "armed",
+                true,
+                Some(RegisteredScope {
+                    selector: FlowScope {
+                        owner: subc_protocol::Principal::Reserved {
+                            module_id: "prefrontal-core".into(),
+                        },
+                        scope_ref: "registered".into(),
+                        epoch: 7,
+                    },
+                    targets: ["broca".into()].into_iter().collect(),
+                }),
+            );
+            let broca = crate::broca::subc::SubcBrocaTransport::new(
+                transport,
+                "broca".into(),
+                Arc::new(|| {}),
+            );
+            broca.set_unscoped_send_hook(Arc::new(|route| route.session == "unscoped"));
+            for session in ["unscoped", "scoped"] {
+                let route = Route {
+                    flow_id: Some("armed".into()),
+                    project_root: "/".into(),
+                    harness: "basal".into(),
+                    session: session.into(),
+                };
+                broca.send(&route, br#"{"send_id":"s"}"#).unwrap();
+            }
+            let opens = opens.lock().unwrap();
+            assert_eq!(opens.len(), 2);
+            assert!(opens[0].get("scope").is_none());
+            assert_eq!(opens[0]["identity"]["session"], "unscoped");
+            assert_eq!(opens[1]["scope"]["ref"], "registered");
+            let calls = calls.lock().unwrap();
+            assert_eq!(
+                calls
+                    .iter()
+                    .filter(|(_, body)| body["method"] == "session.send")
+                    .count(),
+                2
+            );
         });
     }
 

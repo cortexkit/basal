@@ -7,6 +7,10 @@ license.workspace = true
 publish.workspace = true
 rust-version.workspace = true
 
+[features]
+# Only the rig's ck-basal exposes the unscoped-send test seam.
+rig-kill-hook = []
+
 [dependencies]
 basal-proto.workspace = true
 cortexkit-resource-busy.workspace = true

@@ -112,6 +112,11 @@ impl SubcCatalog {
         Ok(found)
     }
     pub fn known_agent(&self, agent: &str) -> Result<bool, WireError> {
+        self.resolve_agent(agent).map(|id| id.is_some())
+    }
+
+    /// Resolves either public agent identifier through core's agent registry.
+    pub fn resolve_agent(&self, agent: &str) -> Result<Option<String>, WireError> {
         let mut cursor: Option<String> = None;
         let mut seen = std::collections::BTreeSet::new();
         loop {
@@ -124,14 +129,19 @@ impl SubcCatalog {
                 .get("agents")
                 .and_then(Value::as_array)
                 .ok_or_else(|| WireError::Unknown("agent.list agents missing".into()))?;
-            if agents.iter().any(|a| {
+            if let Some(found) = agents.iter().find(|a| {
                 a.get("agent_id").and_then(Value::as_str) == Some(agent)
                     || a.get("name").and_then(Value::as_str) == Some(agent)
             }) {
-                return Ok(true);
+                return found
+                    .get("agent_id")
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.is_empty())
+                    .map(|id| Some(id.to_owned()))
+                    .ok_or_else(|| WireError::Unknown("agent.list agent_id missing".into()));
             }
             match reply.get("next_cursor") {
-                None | Some(Value::Null) => return Ok(false),
+                None | Some(Value::Null) => return Ok(None),
                 Some(Value::String(c)) if seen.insert(c.clone()) => cursor = Some(c.clone()),
                 _ => {
                     return Err(WireError::Unknown(
@@ -169,5 +179,8 @@ impl Catalog for SubcCatalog {
     }
     fn agent_known(&self, agent: &str) -> bool {
         self.known_agent(agent).unwrap_or(false)
+    }
+    fn agent_id(&self, agent: &str) -> Option<String> {
+        self.resolve_agent(agent).ok().flatten()
     }
 }

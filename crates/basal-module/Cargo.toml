@@ -23,7 +23,7 @@ test = false
 # Compiles the one-shot kill switch (`src/rig_kill.rs`) into ck-basal. Only
 # script/flows-rig.sh turns it on, for the ckdev-flows rig's own binary; a
 # production build never does.
-rig-kill-hook = []
+rig-kill-hook = ["basal-host/rig-kill-hook"]
 
 [dependencies]
 basal-core.workspace = true

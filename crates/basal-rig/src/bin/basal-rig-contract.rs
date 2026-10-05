@@ -7,13 +7,13 @@
 //!
 //! ```text
 //! basal-rig-contract --core-store <file> --basal-store <file>
-//!     --machine-id <file> --kill-file <file> --results <file>
+//!     --machine-id <file> --kill-file <file> --unscoped-file <file> --results <file>
 //!     --project-id <pj-…> --broca-index <file> [--no-kill-hook] [--models]
 //! ```
 //!
 //! `--no-kill-hook` is for a rig running a staged production ck-basal
 //! (`flows-rig.sh place --from-stage`), which is built without the rig kill
-//! switch: the crash case cannot run there, so it is reported as not run,
+//! switches: the crash and unscoped-send cases cannot run there, so each is reported as not run,
 //! by name and with the reason, and never counted as passed.
 //!
 //! The rig runs core's projects registry as production does, against the
@@ -34,7 +34,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use basal_rig::client::{Client, Relayed, Reply, evidence, suite_identity};
 use basal_rig::flows::{self, Flow};
 use basal_rig::models::{
-    frozen_send, no_tools, result_matches_transcript, selected_luna, settled_usage,
+    basal_first_principal, frozen_send, no_tools, non_carrier_refused, result_matches_transcript,
+    scope_matches, selected_luna, settled_usage, stamped_flow, unscoped_send_refused,
 };
 use basal_rig::stores::{
     BasalStore, BrocaStore, Call, CoreStore, KIND_SINK_DIGEST, KIND_SINK_STATUS, Receipt, Run,
@@ -50,8 +51,8 @@ const RUN_WAIT: Duration = Duration::from_secs(150);
 /// The crash case's name, shared by the case and its not-run record.
 const CRASH_CASE: &str = "exactly once across a kill -9 of ck-basal";
 const NO_KILL_HOOK_REASON: &str =
-    "the staged ck-basal is a production build without the rig kill hook";
-const MODEL_CASES: [&str; 7] = [
+    "the staged ck-basal is a production build without the rig-only hooks";
+const MODEL_CASES: [&str; 9] = [
     "models: first minimal Luna call",
     "models: routing selection journaled before dispatch",
     "models: run.result text and run.status usage settlement",
@@ -59,6 +60,8 @@ const MODEL_CASES: [&str; 7] = [
     "models: token cap refuses before send",
     "models: crash recovers Broca result without a second run",
     "models: flow calls carry no tools",
+    "models: a direct non-carrier cannot open the registered flow scope",
+    "models: Broca refuses an unscoped basal send without starting a run",
 ];
 
 struct Args {
@@ -68,6 +71,7 @@ struct Args {
     broca_index: PathBuf,
     machine_id: PathBuf,
     kill_file: PathBuf,
+    unscoped_file: PathBuf,
     results: PathBuf,
     project_id: String,
     /// ck-basal has no kill switch, so the crash case is not run.
@@ -106,6 +110,7 @@ fn parse_args() -> Result<Args, String> {
         broca_index: take("--broca-index")?,
         machine_id: take("--machine-id")?,
         kill_file: take("--kill-file")?,
+        unscoped_file: take("--unscoped-file")?,
         results: take("--results")?,
         project_id: take("--project-id")?.to_string_lossy().into_owned(),
         no_kill_hook,
@@ -221,6 +226,7 @@ struct Rig {
     basal: BasalStore,
     broca: BrocaStore,
     kill_file: PathBuf,
+    unscoped_file: PathBuf,
 }
 
 /// The suite's agent: its registry name and id, the residence session it
@@ -475,6 +481,7 @@ async fn reset(rig: &Rig, case: &mut Case) {
     }
     case.record("disabled_leftover_flows", Value::Array(disabled));
     let _ = std::fs::remove_file(&rig.kill_file);
+    let _ = std::fs::remove_file(&rig.unscoped_file);
 }
 
 async fn register_agent(
@@ -1489,6 +1496,106 @@ fn kill_evidence(rig: &Rig) -> Value {
         .unwrap_or(Value::Null)
 }
 
+/// Compare each send's independent admission evidence with core's durable selector.
+async fn check_model_scope(rig: &Rig, case: &mut Case, flow: &Flow, run: &Run, snapshot: &Value) {
+    let route = &snapshot["route"];
+    let ownership = rig.broca.ownership(route);
+    let registered = rig.core.flow_scope(&flow.id, flow.version);
+    let detail = json!({"bind":route,"ownership":ownership,"core_registration":registered,
+        "flow_id":flow.id,"run_id":run.run_id,"position":0});
+    let owner = ownership.unwrap_or(Value::Null);
+    let scope = registered.ok().flatten().unwrap_or(Value::Null);
+    let prefix = format!("{} {}#0", flow.id, run.run_id);
+    case.check(
+        &format!("{prefix}: Broca evidence belongs to this call's per-call session"),
+        route["session"] == format!("basal:flow-{}:{}:0", flow.id, run.run_id),
+        detail.clone(),
+    );
+    case.check(&format!("{prefix}: scope owner is reserved:prefrontal-core and ref/epoch match core's registration"),
+        scope_matches(&owner, &scope), detail.clone());
+    case.check(
+        &format!("{prefix}: attested first principal is reserved:basal"),
+        basal_first_principal(&owner),
+        detail.clone(),
+    );
+    case.check(
+        &format!("{prefix}: Broca's scope stamp carries this flow_id"),
+        stamped_flow(&owner, &flow.id),
+        detail,
+    );
+}
+
+async fn non_carrier(rig: &Rig, flow: &Flow, run: &Run) -> Result<Case, String> {
+    let mut case = Case::new(MODEL_CASES[7]);
+    let registered = rig
+        .core
+        .flow_scope(&flow.id, flow.version)?
+        .ok_or("core has no registered flow scope")?;
+    let bind = BindIdentity::new("/", "basal-rig", format!("non-carrier:{}", run.run_id));
+    let route = serde_json::to_value(&bind).map_err(|e| e.to_string())?;
+    case.check(
+        "the direct probe bind is fresh in Broca before opening",
+        rig.broca.meta_count(&route)? == 0
+            && rig.broca.runs(&route)?.is_empty()
+            && rig.broca.wal_has_no_records(&route)?,
+        route.clone(),
+    );
+    let selector = json!({"owner":registered["owner"],"ref":registered["ref"],"scope_epoch":registered["epoch"]});
+    let opened = rig.client.open_flow_scope(bind, selector.clone()).await;
+    // This proves a non-carrier is refused; it can't read the carrier list,
+    // which no store exposes. That the list is exactly [reserved:basal] is
+    // tested in the prefrontal repository at cba528a11, in
+    // crates/prefrontal-core-module/src/scope_owner.rs:
+    // flow_scope_registration_is_basal_only,
+    // registered_flow_scope_wire_vector_pins_attributes_and_the_entire_carrier_list,
+    // registered_global_flow_scope_wire_vector_pins_no_agent_and_the_entire_carrier_list.
+    case.check(
+        "only an attested carrier can open the flow's scope; a direct client is refused",
+        non_carrier_refused(&evidence(&opened)),
+        json!({"selector":selector,"reply":evidence(&opened)}),
+    );
+    let meta = rig.broca.meta_count(&route)?;
+    let runs = rig.broca.runs(&route)?;
+    let no_records = rig.broca.wal_has_no_records(&route)?;
+    case.check("the refused non-carrier open reaches no Broca session: no meta row, run_index entry or WAL record",
+        meta == 0 && runs.is_empty() && no_records,
+        json!({"bind":route,"meta_rows":meta,"run_index":runs,"wal_has_no_records":no_records}));
+    Ok(case)
+}
+
+async fn unscoped_send(rig: &Rig, agent: &Agent, tag: &str) -> Result<Case, String> {
+    let mut case = Case::new(MODEL_CASES[8]);
+    let flow = flows::model(
+        &format!("rig-model-unscoped-{tag}"),
+        &agent.name,
+        false,
+        false,
+    );
+    std::fs::write(&rig.unscoped_file, json!({"flow_id":flow.id}).to_string())
+        .map_err(|e| e.to_string())?;
+    let run = model_run(rig, agent, &flow, &mut case).await;
+    case.check(
+        "the named flow consumed the one-shot unscoped-send arm",
+        !rig.unscoped_file.exists(),
+        json!({"arming_file":rig.unscoped_file}),
+    );
+    let _ = std::fs::remove_file(&rig.unscoped_file);
+    if let Some(run) = run {
+        let saved = rig.basal.model_call(&run.run_id)?.unwrap_or(Value::Null);
+        case.check(
+            "the running Broca refuses basal's unscoped send with flow_scope_required",
+            unscoped_send_refused(&saved["broca"]),
+            saved.clone(),
+        );
+        let runs = rig.broca.runs(&saved["broca"]["route"])?;
+        let no_records = rig.broca.wal_has_no_records(&saved["broca"]["route"])?;
+        case.check("the refused unscoped send writes no RunStarted or run_index entry for its per-call session",
+            runs.is_empty() && no_records,
+            json!({"bind":saved["broca"]["route"],"run_index":runs,"wal_has_no_records":no_records}));
+    }
+    Ok(case)
+}
+
 async fn models(
     rig: &Rig,
     args: &Args,
@@ -1519,7 +1626,6 @@ async fn models(
     });
     minimal.check("the first call returns model text, without an access or scope refusal", ok,
         json!({"result": run.as_ref().and_then(|r| r.result.clone()), "error": run.as_ref().and_then(|r| r.error.clone())}));
-    cases.push(minimal);
     // A Broca scope or access refusal still leaves a valid routing proof. Read
     // the selected-but-unsent checkpoint before stopping the remaining cases.
     let call = run
@@ -1528,6 +1634,10 @@ async fn models(
         .transpose()?
         .flatten()
         .unwrap_or(Value::Null);
+    if let Some(r) = &run {
+        check_model_scope(rig, &mut minimal, &first, r, &call["broca"]).await;
+    }
+    cases.push(minimal);
     let mut routing = if args.no_kill_hook {
         Case::skipped(MODEL_CASES[1], NO_KILL_HOOK_REASON)
     } else {
@@ -1541,6 +1651,9 @@ async fn models(
                 && before_send["broca_snapshots"] == 0
                 && before_send["settlement"].is_null() && selected_luna(&before_send["args"]["selection"])
                 && before_send["args"]["selection"] == call["journal"]["selection"], before_send);
+        if let Some(r) = &run {
+            check_model_scope(rig, &mut routing, &first, r, &call["broca"]).await;
+        }
     }
     cases.push(routing);
     if !ok {
@@ -1560,6 +1673,7 @@ async fn models(
         return Err("first model call has no Broca snapshot".into());
     }
     let snapshot = &call["broca"];
+    cases.push(non_carrier(rig, &first, &run).await?);
 
     let mut result = Case::new(MODEL_CASES[2]);
     let indexed = rig.broca.runs(&snapshot["route"])?;
@@ -1569,6 +1683,7 @@ async fn models(
         json!({"bind": snapshot["route"], "ownership": rig.broca.ownership(&snapshot["route"])?}),
     );
     result.record("saved_call", call.clone());
+    check_model_scope(rig, &mut result, &first, &run, snapshot).await;
     let text = poll(Duration::from_secs(20), || async {
         rig.broca.final_text(&snapshot["route"]).ok().flatten()
     })
@@ -1598,6 +1713,7 @@ async fn models(
     cases.push(result);
 
     let mut tools = Case::new(MODEL_CASES[6]);
+    check_model_scope(rig, &mut tools, &first, &run, snapshot).await;
     let send = frozen_send(snapshot).ok_or("invalid frozen Broca send")?;
     tools.check(
         "the frozen Broca send has no tools and tool_choice none",
@@ -1625,6 +1741,8 @@ async fn models(
     );
     if let Some(r) = &classified {
         let saved = rig.basal.model_call(&r.run_id)?.unwrap_or(Value::Null);
+        check_model_scope(rig, &mut label, &classify, r, &saved["broca"]).await;
+        check_model_scope(rig, &mut tools, &classify, r, &saved["broca"]).await;
         if !saved.is_null() {
             label.record(
                 "broca_send",
@@ -1680,6 +1798,8 @@ async fn models(
         );
         if let Some(r) = recovered {
             let saved = rig.basal.model_call(&r.run_id)?.unwrap_or(Value::Null);
+            check_model_scope(rig, &mut crash, &flow, &r, &saved["broca"]).await;
+            check_model_scope(rig, &mut tools, &flow, &r, &saved["broca"]).await;
             let sends = rig.broca.runs(&saved["broca"]["route"])?;
             crash.record(
                 "broca_send",
@@ -1705,6 +1825,11 @@ async fn models(
         cases.push(crash);
     }
     cases.push(tools);
+    if args.no_kill_hook {
+        cases.push(Case::skipped(MODEL_CASES[8], NO_KILL_HOOK_REASON));
+    } else {
+        cases.push(unscoped_send(rig, agent, tag).await?);
+    }
     Ok(())
 }
 
@@ -1733,6 +1858,7 @@ async fn suite(
             path: args.broca_index.clone(),
         },
         kill_file: args.kill_file.clone(),
+        unscoped_file: args.unscoped_file.clone(),
     };
 
     let mut setup = Case::new("setup: reset and register the test agent");
@@ -1836,7 +1962,7 @@ async fn suite(
     cases.push(relay_refusals(&rig, &refused_flow, &agent).await);
     summary.insert(
         "model_token_allowance".into(),
-        json!(if args.models { 3088 } else { 0 }),
+        json!(if args.models { 4112 } else { 0 }),
     );
     models(&rig, args, &agent, &tag, cases).await?;
 

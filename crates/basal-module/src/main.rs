@@ -135,6 +135,12 @@ fn serve() -> ExitCode {
                 "broca".into(),
                 wake.callback(),
             );
+            #[cfg(feature = "rig-kill-hook")]
+            if let Some(hook) = basal_module::rig_kill::RigUnscopedSend::from_env() {
+                broca_transport.set_unscoped_send_hook(Arc::new(move |route| {
+                    hook.take(route.flow_id.as_deref())
+                }));
+            }
             let model_host = Arc::new(basal_host::broca::BrocaHost::new(
                 broca_transport,
                 store.clone(),

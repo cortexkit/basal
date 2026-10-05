@@ -1,10 +1,11 @@
 //! Read-only views of the stores the suite checks against.
 //!
-//! Both stores are SQLite in WAL mode with a live writer (core and basal), so
+//! The stores are SQLite in WAL mode with live writers, so
 //! each read opens the file with SQLite's read-only flag and never writes,
 //! checkpoints or migrates anything. Core's store is read for records no core
 //! management op returns: the `flow_sink_receipt` rows and its `flow_install`
-//! records. Basal's store is read for its journal, runs and install cards.
+//! records and registered flow selectors. Basal's store is read for its journal,
+//! runs and install cards; Broca's index and WAL independently prove admission.
 
 use std::path::{Path, PathBuf};
 
@@ -36,6 +37,30 @@ pub struct Receipt {
 }
 
 impl CoreStore {
+    /// The scope selector (owner, ref, epoch) core recorded for a flow version
+    /// once the daemon accepted its scope registration, or None before that.
+    /// A null reachability column means the registration hasn't been accepted.
+    pub fn flow_scope(&self, flow_id: &str, version: i64) -> Result<Option<Value>, String> {
+        let c = open(&self.path)?;
+        c.query_row(
+            "SELECT s.scope_ref, s.scope_epoch FROM flow_scope s
+             JOIN flow_install i ON i.flow_id = s.flow_id AND i.author_agent_id IS s.agent_id
+             LEFT JOIN agent a ON a.agent_id = s.agent_id
+             WHERE i.flow_id = ?1 AND i.version = ?2 AND i.revoked_at_ms IS NULL
+               AND (s.agent_id IS NULL OR a.terminal_reason IS NULL)
+               AND s.removed_at_ms IS NULL AND s.flow_scope_targets_json IS NOT NULL",
+            params![flow_id, version],
+            |r| {
+                Ok(
+                    json!({"owner":{"kind":"reserved","module_id":"prefrontal-core"},
+                "ref":r.get::<_, String>(0)?, "epoch":r.get::<_, u64>(1)?}),
+                )
+            },
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    }
+
     /// Every sink receipt of one flow. Core keys a digest receipt
     /// `["sink.digest", flow id, run id, call position]` and a status receipt
     /// `["sink.status", flow id, agent name, status revision]`.
@@ -249,6 +274,50 @@ pub struct BrocaStore {
 }
 
 impl BrocaStore {
+    /// A refused scoped open must not even create the session's materialized row.
+    pub fn meta_count(&self, route: &Value) -> Result<i64, String> {
+        let c = open(&self.path)?;
+        c.query_row(
+            "SELECT COUNT(*) FROM meta WHERE session = ?1",
+            [session_key(route)?],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    /// Whether Broca wrote nothing for a session it refused, checked on its WAL
+    /// file directly rather than trusting its run index. Broca names each
+    /// session's WAL file by the FNV-1a hash of the bind triple joined with
+    /// U+001F. A refused session's file may hold only Broca's fixed header
+    /// frame (version 2, sequence 0, fence 0); any other bytes, a partial
+    /// record included, mean something was written.
+    pub fn wal_has_no_records(&self, route: &Value) -> Result<bool, String> {
+        use sha2::{Digest, Sha256};
+        let key = session_key(route)?;
+        let hash = key.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+        });
+        let path = self
+            .path
+            .parent()
+            .ok_or("Broca index has no parent")?
+            .join("wal")
+            .join(format!("{hash:016x}.wal"));
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(true),
+            Err(e) => return Err(format!("read {}: {e}", path.display())),
+        };
+        if bytes.is_empty() {
+            return Ok(true);
+        }
+        Ok(bytes.len() == 69
+            && bytes[..4] == 16_u32.to_le_bytes()
+            && bytes[4] == 2
+            && bytes[5..21] == [0; 16]
+            && Sha256::digest([&bytes[4..21], &bytes[53..]].concat()).as_slice() == &bytes[21..53])
+    }
+
     /// The daemon-attested principal and scope Broca retained, rather than an
     /// assumption derived from the session's caller-chosen harness label.
     pub fn ownership(&self, route: &Value) -> Result<Value, String> {
@@ -350,6 +419,19 @@ impl BrocaStore {
         }
         Ok(None)
     }
+}
+
+fn session_key(route: &Value) -> Result<String, String> {
+    ["project_root", "harness", "session"]
+        .iter()
+        .map(|k| {
+            route[k]
+                .as_str()
+                .filter(|s| !s.contains('\u{1f}'))
+                .ok_or_else(|| format!("missing or unkeyable route {k}"))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(|parts| parts.join("\u{1f}"))
 }
 
 /// One run of a flow, as basal recorded it.

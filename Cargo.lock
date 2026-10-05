@@ -126,6 +126,7 @@ dependencies = [
  "async-trait",
  "rusqlite",
  "serde_json",
+ "sha2",
  "subc-client-rs",
  "subc-protocol",
  "tokio",
@@ -267,9 +268,9 @@ dependencies = [
 
 [[package]]
 name = "cortexkit-store"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "296867f81ea54ae96f30022caf885b9394707d542e73fd288bf77fed698fefe4"
+checksum = "7a6cc64ebbed57cb7f006b2b5fec9983c634d69334e4c966072b39b9433a907c"
 dependencies = [
  "cortexkit-lease",
  "cortexkit-store-types",
@@ -454,7 +455,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -936,7 +937,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
