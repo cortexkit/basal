@@ -106,6 +106,43 @@ pub struct Call {
 }
 
 impl BasalStore {
+    /// The selected request is journaled before dispatch; the Broca snapshot
+    /// holds the separate frozen send and terminal result/usage it read.
+    pub fn model_call(&self, run_id: &str) -> Result<Option<Value>, String> {
+        let c = open(&self.path)?;
+        c.query_row(
+            "SELECT COALESCE(j.request, j.args), b.snapshot FROM journal j JOIN broca_calls b
+                ON b.run_id = j.run_id AND b.position = j.position
+              WHERE j.run_id = ?1 AND j.position = 0",
+            [run_id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .map(|(args, snapshot)| {
+            Ok(
+                json!({"journal": serde_json::from_str::<Value>(&args).map_err(|e| e.to_string())?,
+                "broca": serde_json::from_str::<Value>(&snapshot).map_err(|e| e.to_string())?}),
+            )
+        })
+        .transpose()
+    }
+
+    pub fn ledger(&self, run_id: &str) -> Result<Vec<Value>, String> {
+        let c = open(&self.path)?;
+        let mut s = c.prepare("SELECT state, reserved, input_tokens, cache_write_tokens, output_tokens,
+            cached_input_tokens, unreported_tokens FROM token_ledger WHERE run_id = ?1 ORDER BY position")
+            .map_err(|e| e.to_string())?;
+        let rows = s.query_map([run_id], |r| Ok(json!({
+            "state": r.get::<_, String>(0)?, "reserved": r.get::<_, i64>(1)?,
+            "input_tokens": r.get::<_, Option<i64>>(2)?, "cache_write_tokens": r.get::<_, Option<i64>>(3)?,
+            "output_tokens": r.get::<_, Option<i64>>(4)?, "cached_input_tokens": r.get::<_, Option<i64>>(5)?,
+            "unreported_tokens": r.get::<_, Option<i64>>(6)?,
+        }))).map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
+    }
+
     /// The state of the install card for one flow version, if basal has one.
     pub fn card_state(&self, flow_id: &str, version: i64) -> Result<Option<String>, String> {
         let c = open(&self.path)?;
@@ -201,6 +238,117 @@ impl BasalStore {
             .map_err(|e| e.to_string())?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())
+    }
+}
+
+/// Broca's independent run index, not basal's assertion about sends. These
+/// reads never open a Broca route or initiate a model call. The index stores
+/// the full bind triple as JSON; message.session uses the U+001F-joined triple.
+pub struct BrocaStore {
+    pub path: PathBuf,
+}
+
+impl BrocaStore {
+    /// The daemon-attested principal and scope Broca retained, rather than an
+    /// assumption derived from the session's caller-chosen harness label.
+    pub fn ownership(&self, route: &Value) -> Result<Value, String> {
+        let c = open(&self.path)?;
+        let key = ["project_root", "harness", "session"]
+            .iter()
+            .map(|k| {
+                route[k]
+                    .as_str()
+                    .ok_or_else(|| format!("missing route {k}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .join("\u{1f}");
+        let checkpoint: String = c
+            .query_row(
+                "SELECT admission_checkpoint_json FROM meta WHERE session = ?1",
+                [key],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        let value: Value = serde_json::from_str(&checkpoint).map_err(|e| e.to_string())?;
+        let owner = value
+            .pointer("/checkpoint/ownership")
+            .ok_or("Broca has no ownership checkpoint")?;
+        Ok(
+            json!({"scope": owner["scope"], "first_principal": owner["first_principal"],
+            "recorded_principals": owner["recorded_principals"], "episodes": owner["episodes"]}),
+        )
+    }
+
+    pub fn runs(&self, route: &Value) -> Result<Vec<Value>, String> {
+        let c = open(&self.path)?;
+        let mut s = c
+            .prepare(
+                "SELECT run_id, state, usage_json FROM run_index
+            WHERE json_extract(session, '$.project_root') = ?1
+              AND json_extract(session, '$.harness') = ?2
+              AND json_extract(session, '$.session') = ?3 ORDER BY rowid",
+            )
+            .map_err(|e| e.to_string())?;
+        let field = |name| {
+            route[name]
+                .as_str()
+                .ok_or_else(|| format!("missing route {name}"))
+        };
+        let rows = s
+            .query_map(
+                params![field("project_root")?, field("harness")?, field("session")?],
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )
+            .map_err(|e| e.to_string())?;
+        rows.map(|row| {
+            let (id, state, usage) = row.map_err(|e| e.to_string())?;
+            Ok(json!({"run_id": id, "state": state, "usage": usage
+                .map(|u| serde_json::from_str::<Value>(&u)).transpose().map_err(|e| e.to_string())?}))
+        }).collect()
+    }
+
+    /// The same final assistant text that run.result reads from the durable
+    /// transcript. Each flow call has its own session and exactly one run.
+    pub fn final_text(&self, route: &Value) -> Result<Option<String>, String> {
+        let c = open(&self.path)?;
+        let key = ["project_root", "harness", "session"]
+            .iter()
+            .map(|k| {
+                route[k]
+                    .as_str()
+                    .ok_or_else(|| format!("missing route {k}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .join("\u{1f}");
+        let mut s = c
+            .prepare("SELECT json FROM message WHERE session = ?1 ORDER BY ord DESC")
+            .map_err(|e| e.to_string())?;
+        let rows = s
+            .query_map([key], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            let msg: Value = serde_json::from_str(&row.map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+            if msg["role"] == "assistant" {
+                let content = msg["content"]
+                    .as_array()
+                    .ok_or("assistant message has no content")?;
+                return Ok(Some(
+                    content
+                        .iter()
+                        .filter(|b| b["type"] == "text")
+                        .filter_map(|b| b["text"].as_str())
+                        .collect(),
+                ));
+            }
+        }
+        Ok(None)
     }
 }
 

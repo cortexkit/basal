@@ -3,8 +3,8 @@
 #
 # The rig is a private subc daemon with its own port, its own XDG homes under
 # ~/.local/share/cortexkit/ckdev-flows/ and its own ckdev-* binaries, every
-# one built here from a named revision. It runs the credentials vault (empty),
-# Broca, entorhinal, prefrontal-core, prefrontal-routing, ck-basal and a
+# one built here from a named revision. It runs the credentials vault,
+# Fusiform, Broca, entorhinal, prefrontal-core, prefrontal-routing, ck-basal and a
 # rig-only callosum stub that answers consent cards as the operator. It never
 # reads, writes or starts anything belonging to the production daemon or to
 # another rig.
@@ -13,6 +13,7 @@
 #   script/flows-rig.sh build --prefrontal-rev <rev> [--subc-rev <rev>]
 #                             [--broca-rev <rev>] [--credentials-rev <rev>]
 #                             [--commons-rev <rev>] [--entorhinal-rev <rev>]
+#                             [--fusiform-rev <rev>]
 #                             [--sibling-lock <repo>]... [--dry-run]
 #   script/flows-rig.sh place    [--from-stage <dir>] [--dry-run]
 #   script/flows-rig.sh config   [--dry-run]
@@ -20,7 +21,8 @@
 #   script/flows-rig.sh status   [--dry-run]
 #   script/flows-rig.sh stop     [--dry-run]
 #   script/flows-rig.sh manifest [--dry-run]
-#   script/flows-rig.sh test     [--dry-run]
+#   script/flows-rig.sh credential --key-file <path> [--dry-run]
+#   script/flows-rig.sh test     [--models] [--dry-run]
 #
 # --dry-run prints every command the subcommand would run and every file it
 # would write, with the file's content, and changes nothing.
@@ -39,7 +41,17 @@
 #             identifier and place it in bin/. The rig's ck-basal is built
 #             with the rig-kill-hook feature, which the contract suite's
 #             crash case needs.
-#   config    write the rig daemon's subc.jsonc from scratch.
+#   config    write subc.jsonc, bootstrap the key-file vault and grant only
+#             Broca's read of apikey:openai and routing's llm-provider list.
+#             Temporarily start the rig to read its served Fusiform catalog,
+#             then pin alfonso-routing.jsonc to openai/gpt-6-luna. Refuse a
+#             catalog without that model. No production config is copied.
+#             Luna's only score is a labeled rig fixture (elo 1, eq/speed 0),
+#             not measured quality; the stack manifest records that fact.
+#   credential ingest the isolated API key with provider_ids: ["openai"],
+#             delete the input file after deposit and confirm exactly one
+#             active credential. The operator saves it at
+#             ~/.local/share/cortexkit/ckdev-flows/home/.secrets/openai.key.
 #   start, status, stop
 #             run, inspect (pids, identifiers, open stores) and stop the
 #             daemon. status fails if any open store lies outside the rig.
@@ -49,6 +61,15 @@
 #             contract suite (basal-rig-contract) against the real
 #             prefrontal-core, with contract.json and contract.log beside
 #             the manifest. It fails if any check failed.
+#             Without --models, report the model cases as not run by name.
+#             --models requires that credential and agent-owned flows through
+#             core's relay (prefrontal 73c66ff1f or later): minimal call first,
+#             routing/journal, result/usage settlement, classify, token-cap
+#             refusal, crash recovery and no tools. Three tiny calls at most
+#             in normal execution; each manifest caps all its scheduled runs
+#             in a day, for an aggregate allowance of 3,088 tokens per suite.
+#             Any first-call refusal is reported verbatim and stops the model
+#             cases; it is never retried with another provider or model.
 #
 # place --from-stage <dir> places ck-basal and ck-basal-worker from a stage
 # directory script/stage.sh wrote, byte for byte and under their production
@@ -73,14 +94,16 @@
 #   - The script refuses any path that resolves, before or after following
 #     symlinks, under ~/.local/share/cortexkit/ but outside ckdev-flows/.
 #   - The vault starts empty with its own key file, so the macOS keychain is
-#     never touched.
+#     never touched. Every auth command names the rig data, key and connection
+#     paths explicitly. Fusiform's store and HTTPS catalog polling are isolated
+#     too; no production auth-methods.json is ever copied into the rig.
 #
-# Pins the contract suite runs at. prefrontal 3beea1862 serves flow.relay,
-# which the suite drives its test agent through; an earlier core has none,
-# so the agent cases fail there:
-#   script/flows-rig.sh build --prefrontal-rev 3beea1862 --subc-rev 546ea5fb \
-#       --broca-rev 7a387092 --commons-rev 57305c74 \
-#       --credentials-rev 18a566b5 --entorhinal-rev 77857aaf
+# Model cases need core's agent-owned flow scope registration at approval:
+# prefrontal 73c66ff1f or later, plus a basal build that opens scoped Broca
+# routes. Broca may accept basal's own unscoped sessions before that change;
+# results record Broca's retained principal and scope, never assume a scope
+# refusal. Any scope_owner_mismatch must not be bypassed. Other repos use HEAD:
+#   script/flows-rig.sh build --prefrontal-rev 73c66ff1f --sibling-lock claustrum
 set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
@@ -112,6 +135,8 @@ RIG_HOME="$RIG/home"
 CONN="$RUNTIME_DIR/subc-connection.json"
 PIDFILE="$RUNTIME_DIR/ckdev-subc.pid"
 SUBC_CONFIG="$CONFIG_HOME/cortexkit/subc.jsonc"
+ROUTING_CONFIG="$CONFIG_HOME/cortexkit/alfonso-routing.jsonc"
+BROCA_INDEX="$DATA_HOME/cortexkit/broca/run-index.db"
 # The vault's data directory is where the daemon's storage convention puts
 # module `claustrum`. Its master key must live outside that directory (the
 # vault refuses a key beside its own store), so it sits in the config home.
@@ -184,7 +209,7 @@ guard_all_paths() {
   esac
   for path in "$BIN" "$SRC" "$TARGETS" "$STACK" "$BASAL_SOURCE" "$LOGS" "$RESULTS" \
       "$CONFIG_HOME" "$DATA_HOME" "$RUNTIME_DIR" "$CONN" "$PIDFILE" \
-      "$SUBC_CONFIG" "$VAULT_DIR" "$VAULT_KEY" "$RIG_HOME" "$CORE_STORE" \
+      "$SUBC_CONFIG" "$ROUTING_CONFIG" "$BROCA_INDEX" "$VAULT_DIR" "$VAULT_KEY" "$RIG_HOME" "$CORE_STORE" \
       "$BASAL_STORE" "$MACHINE_ID" "$KILL_FILE" "$CONTRACT" "$PROJECTS"; do
     guard_path "$path"
   done
@@ -304,6 +329,23 @@ rig_ck() {
   fi
 }
 
+# ck's auth face is linked only inside the rig. All three paths are explicit
+# even for offline bootstrap, so neither CLI discovery nor a keychain fallback
+# can ever select the operator's real vault.
+rig_auth() {
+  # Follow final symlinks too: a key-file or connection-file symlink must not
+  # make explicit rig flags a disguised reference to production.
+  python3 - "$RIG_PHYSICAL" "$VAULT_DIR" "$VAULT_KEY" "$CONN" <<'PY' || die "auth paths escape the rig"
+import os, sys
+root = sys.argv[1] + os.sep
+for path in sys.argv[2:]:
+    if not os.path.realpath(path).startswith(root):
+        sys.exit("flows-rig: auth path resolves outside the rig: " + path)
+PY
+  run rig_env PATH="$BIN:$(rig_path)" "$BIN/ckdev-ck" auth "$@" \
+    --data-dir "$VAULT_DIR" --key-path "$VAULT_KEY" --subc "$CONN"
+}
+
 conn_pid() {
   python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["pid"])' "$CONN" 2>/dev/null || true
 }
@@ -341,6 +383,7 @@ commons	$WORKSPACE/commons
 broca	$WORKSPACE/broca
 claustrum	$WORKSPACE/claustrum
 entorhinal	$WORKSPACE/entorhinal
+fusiform	$WORKSPACE/fusiform
 prefrontal	$WORKSPACE/prefrontal
 basal	$ROOT
 EOF
@@ -357,6 +400,8 @@ broca	broca	ck-broca	ckdev-broca
 claustrum	claustrum	ck-claustrum	ckdev-claustrum
 auth	claustrum	ck-auth	ckdev-auth
 entorhinal	entorhinal	ck-entorhinal	ckdev-entorhinal
+fusiform	fusiform	ck-fusiform	ckdev-fusiform
+models	fusiform	ck-models	ckdev-models
 prefrontal-core	prefrontal	ck-prefrontal-core	ckdev-prefrontal-core
 prefrontal-routing	prefrontal	ck-prefrontal-routing	ckdev-prefrontal-routing
 basal	basal	ck-basal	ckdev-basal
@@ -370,6 +415,7 @@ modules() {
   cat <<'EOF'
 claustrum	ckdev-claustrum
 broca	ckdev-broca
+fusiform	ckdev-fusiform
 entorhinal	ckdev-entorhinal
 prefrontal-core	ckdev-prefrontal-core
 prefrontal-routing	ckdev-prefrontal-routing
@@ -401,6 +447,7 @@ cmd_build() {
   credentials_rev=HEAD
   commons_rev=HEAD
   entorhinal_rev=HEAD
+  fusiform_rev=HEAD
   sibling_lock=""
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -411,6 +458,7 @@ cmd_build() {
       --credentials-rev) [ $# -ge 2 ] || usage; credentials_rev=$2; shift 2 ;;
       --commons-rev) [ $# -ge 2 ] || usage; commons_rev=$2; shift 2 ;;
       --entorhinal-rev) [ $# -ge 2 ] || usage; entorhinal_rev=$2; shift 2 ;;
+      --fusiform-rev) [ $# -ge 2 ] || usage; fusiform_rev=$2; shift 2 ;;
       *) usage ;;
     esac
   done
@@ -436,6 +484,7 @@ cmd_build() {
       broca) rev=$broca_rev ;;
       claustrum) rev=$credentials_rev ;;
       entorhinal) rev=$entorhinal_rev ;;
+      fusiform) rev=$fusiform_rev ;;
       prefrontal) rev=$prefrontal_rev ;;
       basal) rev=HEAD ;;
     esac
@@ -452,6 +501,8 @@ cmd_build() {
   cargo_build broca "" -p broca-module-serve --bin ck-broca
   cargo_build claustrum "" -p credentials-module --bin ck-claustrum --bin ck-auth
   cargo_build entorhinal "" -p entorhinal-module --bin ck-entorhinal
+  cargo_build fusiform "" -p fusiform-module --bin ck-fusiform
+  cargo_build fusiform "" -p fusiform-cli --bin ck-models
   prefrontal_sha=$(printf '%s' "$stack" | awk -F'\t' '$1=="prefrontal"{print $4}')
   # prefrontal's build scripts embed the revision they were told; the clone
   # is at that exact commit with no local changes, so it is not dirty.
@@ -617,6 +668,7 @@ cmd_place() {
     esac
     place_one "$name" "$TARGETS/$repo/release/$cargo_bin" "$BIN/$file"
   done
+  run ln -sf ckdev-auth "$BIN/ck-auth"
   if [ -n "$stage" ]; then
     printf 'staged\t%s\t%s\n' "$stage" "$revision" | write_file "$BASAL_SOURCE"
     worker_identifier=ck-basal-worker
@@ -722,7 +774,7 @@ cmd_config() {
     "data_home": "$DATA_HOME"
   },
   "modules": {
-    // The credentials vault, empty, keyed by a master key file of the rig's
+    // The credentials vault, keyed by a master key file of the rig's
     // own (never the macOS keychain, never a production key).
     "claustrum": {
       "program": "$BIN/ckdev-claustrum",
@@ -736,6 +788,15 @@ cmd_config() {
       "program": "$BIN/ckdev-broca",
       "args": [],
       "env": { "BROCA_STATE_ROOT": "$DATA_HOME/cortexkit/broca" },
+      "enabled": true,
+      "reserved": true,
+      "launch_nonce_env": false
+    },
+    // The daemon supplies data/cortexkit/fusiform/store.db to this module.
+    "fusiform": {
+      "program": "$BIN/ckdev-fusiform",
+      "args": [],
+      "env": {},
       "enabled": true
     },
     // The project-identity/v1 provider. prefrontal-core declares that
@@ -764,6 +825,7 @@ cmd_config() {
       "args": [],
       "env": {},
       "enabled": true,
+      "reserved": true,
       "launch_nonce_env": false
     },
     // Reserved, so its routes carry the principal reserved:basal. The rig's
@@ -789,7 +851,135 @@ cmd_config() {
   }
 }
 EOF
+  run mkdir -p -m 700 "$RIG_HOME" "$RUNTIME_DIR/tmp" "$(dirname "$VAULT_KEY")"
+  rig_auth bootstrap
+  if [ "$DRY" = 1 ]; then
+    say "+ start the temporary rig for authenticated vault grants and its served catalog"
+  else
+    cmd_start
+  fi
+  # --subc requires a live connection file for grants. Bootstrap is the one
+  # offline command; grant writes go through the running vault's admin route.
+  config_status=0
+  configure_live || config_status=$?
+  if [ "$DRY" = 1 ]; then
+    say "+ stop the temporary rig"
+  else
+    # Stop even when an authenticated grant or catalog read was refused.
+    cmd_stop
+  fi
+  [ "$config_status" = 0 ] || die "cannot configure the rig's vault grants and served Luna pin"
   say "configured; next: $0 start"
+}
+
+configure_live() {
+  # Grants are vault records, not subc JSON fields. The CLI refuses duplicate
+  # grants, so read their metadata and install only the missing authorities.
+  # An unexpected existing grant is a configuration error, never silently kept.
+  if [ "$DRY" = 1 ]; then
+    rig_auth grants
+    say "+ grant each missing authority; refuse any other existing grant"
+    rig_auth grant --principal reserved:broca --selector-kind exact --selector apikey:openai --operation read
+    rig_auth grant --principal reserved:prefrontal-routing --selector-kind category --selector llm-provider --operation list
+  else
+    grant_rows=$(rig_auth grants) || return 1
+    missing=$(printf '%s\n' "$grant_rows" | missing_grants) || return 1
+    for row in $missing; do
+      principal=${row%%|*}; row=${row#*|}
+      kind=${row%%|*}; row=${row#*|}
+      selector=${row%%|*}; operation=${row#*|}
+      rig_auth grant --principal "reserved:$principal" --selector-kind "$kind" \
+        --selector "$selector" --operation "$operation" || return 1
+    done
+  fi
+  if [ "$DRY" = 1 ]; then
+    say "+ read the served catalog: ckdev-models get --subc $CONN --json"
+    say "+ write $ROUTING_CONFIG: model_routing.exclude = [every served provider, -openai/gpt-6-luna]"
+    say "+ fail if openai/gpt-6-luna is absent"
+  else
+    pin_routing
+  fi
+}
+
+missing_grants() {
+  python3 -c 'import sys
+lines = sys.stdin.read().splitlines()
+allowed = {("reserved", "broca", "exact", "apikey:openai", "read"),
+           ("reserved", "prefrontal-routing", "category", "llm-provider", "list")}
+if lines == ["no grants"]:
+    existing = set()
+elif lines and lines[0].startswith("KIND "):
+    existing = {tuple(line.split()[:5]) for line in lines[1:] if line.strip()}
+else:
+    sys.exit("flows-rig: missing grant inventory header")
+if not existing <= allowed:
+    sys.exit("flows-rig: rig vault has unexpected grants; inspect with explicit rig auth flags")
+for row in sorted(allowed - existing):
+    print("|".join(row[1:]))'
+}
+
+pin_routing() {
+  catalog=$(rig_env "$BIN/ckdev-models" get --subc "$CONN" --json) || return 1
+  policy=$(printf '%s\n' "$catalog" | python3 -c 'import json, sys
+catalog = json.load(sys.stdin)
+models = catalog["models"]
+if "openai/gpt-6-luna" not in models:
+    sys.exit("flows-rig: served Fusiform catalog lacks openai/gpt-6-luna")
+providers = sorted({key.split("/", 1)[0] for key in models})
+policy = {"model_routing": {"exclude": providers + ["-openai/gpt-6-luna"],
+          "models": {"openai/gpt-6-luna": {"elo": 1, "eq": 0, "speed": 0}}}}
+text = json.dumps(policy, indent=2)
+entry = "      \"openai/gpt-6-luna\": {"
+comment = ("      // Rig fixture values, not measured model quality. An empty routing store\n"
+           "      // discovers Luna as unscored and never selects it. As the only eligible\n"
+           "      // model, elo=1 clears iq=20; no EQ or speed score is demanded.\n")
+print(text.replace(entry, comment + entry))') || return 1
+  printf '%s\n' "$policy" | write_file "$ROUTING_CONFIG"
+}
+
+# ---------------------------------------------------------------- credential
+
+cmd_credential() {
+  [ $# -eq 2 ] && [ "$1" = --key-file ] || usage
+  key_file=$2
+  # realpath also follows the final component: never ingest or delete a
+  # production file through a symlink in the rig's secrets directory.
+  key_file=$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$key_file")
+  case "$key_file" in
+    "$RIG_PHYSICAL"/*) ;;
+    *) die "the payload file must be inside $RIG" ;;
+  esac
+  if [ "$DRY" = 1 ]; then
+    rig_auth put --id apikey:openai --provider-id openai --payload-file "$key_file"
+    run rm -f "$key_file"
+    rig_auth status
+    say "+ verify exactly one credential: active apikey:openai, provider_ids [openai]"
+    return
+  fi
+  [ -f "$key_file" ] || die "no input key file at $key_file"
+  pid=$(daemon_pid)
+  [ -n "$pid" ] || die "start the rig before depositing its credential"
+  check_daemon_identity "$pid"
+  rig_auth put --id apikey:openai --provider-id openai --payload-file "$key_file"
+  rm -f "$key_file"
+  rig_auth status
+  require_model_credential
+}
+
+require_model_credential() {
+  listing=$(rig_auth list) || { say "cannot read the rig credential inventory" >&2; return 1; }
+  printf '%s\n' "$listing" | python3 -c 'import sys
+lines = sys.stdin.read().splitlines()
+start = next((i for i, line in enumerate(lines) if line.startswith("STATE ")), None)
+if start is None:
+    sys.exit("flows-rig: missing credential inventory header")
+rows = []
+for line in lines[start+1:]:
+    if not line.strip(): break
+    rows.append(line.split())
+if len(rows) != 1 or rows[0][0] != "active" or rows[0][2:] != ["apikey:openai", "llm-provider", "openai"]:
+    sys.exit("flows-rig: expected exactly one active apikey:openai credential with provider_ids [openai]")' \
+    || return 1
 }
 
 # ---------------------------------------------------------------- start
@@ -810,7 +1000,7 @@ cmd_start() {
   # An empty vault of the rig's own. Bootstrap mints a fresh master key into
   # the rig's key file and is idempotent; nothing is copied from anywhere.
   if [ "$DRY" = 1 ] || [ ! -f "$VAULT_DIR/store.db" ]; then
-    run rig_env "$BIN/ckdev-auth" bootstrap --data-dir "$VAULT_DIR" --key-path "$VAULT_KEY"
+    rig_auth bootstrap
   fi
 
   log="$LOGS/daemon-$(date -u +%Y%m%dT%H%M%SZ).out"
@@ -874,7 +1064,8 @@ cmd_status() {
     say "  lsof -d txt (running inode vs placed file), lsof -Ftn (open regular files),"
     say "  failing on any store outside $CONFIG_HOME, $DATA_HOME or $RUNTIME_DIR,"
     say "  and on any other open file under $HOME that is outside $RIG"
-    say "+ rig_env $BIN/ckdev-auth list --data-dir $VAULT_DIR --key-path $VAULT_KEY"
+    say "+ status includes Fusiform's pid, ckdev-fusiform signature and rig-only store"
+    rig_auth list
     return
   fi
   pid=$(daemon_pid)
@@ -992,9 +1183,9 @@ store_verdict() {
 
 # The vault's credential inventory. `list` with an explicit data directory
 # reads only the unencrypted metadata, so it needs neither the master key nor
-# the running vault. The rig is meant to hold none.
+# the running vault. Only the isolated OpenAI key may be deposited here.
 report_credentials() {
-  listing=$(rig_env "$BIN/ckdev-auth" list --data-dir "$VAULT_DIR" --key-path "$VAULT_KEY" 2>&1) || {
+  listing=$(rig_auth list 2>&1) || {
     say "credentials: cannot read the rig vault: $listing"
     return 0
   }
@@ -1066,7 +1257,8 @@ write_manifest() {
     say "+ shasum -a 256 and codesign -dv each binary in $BIN"
     say "+ write $dest (rig, root, port, repositories[name, source, requested, commit],"
     say "  binaries[name, repository, path, sha256, identifier], basal_features,"
-    say "  basal_placement[mode, stage, revision], contract_suite[path, sha256])"
+    say "  basal_placement[mode, stage, revision], contract_suite[path, sha256],"
+    say "  routing[config_path, sha256, policy, fixture_scores: not measured model quality])"
     return
   fi
   [ -f "$STACK" ] || die "nothing built yet; run build first"
@@ -1100,18 +1292,31 @@ write_manifest() {
   source_tsv="rig-build"
   [ ! -f "$BASAL_SOURCE" ] || source_tsv=$(cat "$BASAL_SOURCE")
   json=$(REPOS="$repos_tsv" BINS="$bins_tsv" python3 - "$stamp" "$RIG" "$PORT" \
-      "$CONTRACT" "$contract_sum" "$source_tsv" <<'PY'
-import json, os, sys
+      "$CONTRACT" "$contract_sum" "$source_tsv" "$ROUTING_CONFIG" <<'PY'
+import hashlib, json, os, sys
 stamp, rig, port = sys.argv[1], sys.argv[2], int(sys.argv[3])
 contract, contract_sum = sys.argv[4], sys.argv[5]
 source = (sys.argv[6].split("\t") + ["", ""])[:3]
 staged = source[0] == "staged"
+with open(sys.argv[7], "rb") as file:
+    routing_bytes = file.read()
+routing_policy = json.loads("\n".join(line for line in routing_bytes.decode().splitlines()
+                                      if not line.lstrip().startswith("//")))
+routing_fixture = routing_policy["model_routing"]["models"]["openai/gpt-6-luna"]
 rows = lambda name: [l.split("\t") for l in os.environ[name].splitlines() if l]
 print(json.dumps({
     "rig": "ckdev-flows",
     "root": rig,
     "port": port,
     "written_at": stamp,
+    "routing": {
+        "config_path": sys.argv[7],
+        "sha256": hashlib.sha256(routing_bytes).hexdigest(),
+        "policy": routing_policy,
+        "fixture_scores": {"model": "openai/gpt-6-luna", "scores": routing_fixture,
+                           "measured_model_quality": False,
+                           "reason": "one eligible model must pass the rig demand iq=20, eq=0"},
+    },
     "repositories": [
         # cargo_lock is "committed", or "sibling-refreshed" when the build
         # ran with path dependencies at the rig's sibling revision instead
@@ -1150,7 +1355,8 @@ PY
 # output in contract.log and its results in contract.json beside it, and stop
 # the rig again only if this command started it.
 cmd_test() {
-  [ $# -eq 0 ] || usage
+  models=0
+  if [ $# -eq 1 ] && [ "$1" = --models ]; then models=1; else [ $# -eq 0 ] || usage; fi
   stamp=$(date -u +%Y%m%dT%H%M%SZ)
   dir="$RESULTS/$stamp"
   if [ "$DRY" = 1 ]; then
@@ -1160,6 +1366,13 @@ cmd_test() {
     say "+ rig_env $CONTRACT --core-store $CORE_STORE --basal-store $BASAL_STORE"
     say "    --machine-id $MACHINE_ID --kill-file $KILL_FILE --project-id <the project>"
     say "    --results $dir/contract.json"
+    say "    --broca-index $BROCA_INDEX"
+    if [ "$models" = 1 ]; then
+      rig_auth list
+      say "    --models (after requiring exactly one active OpenAI credential)"
+    else
+      say "    (all seven model cases reported as not run by name)"
+    fi
     say "    [--no-kill-hook, only when place --from-stage placed a staged ck-basal]"
     say "  (output into $dir/contract.log)"
     return
@@ -1186,11 +1399,19 @@ cmd_test() {
   else
     set --
   fi
+  if [ "$models" = 1 ]; then
+    # A failed prerequisite must not leave a daemon this command started.
+    if ! require_model_credential; then
+      [ "$started" = 0 ] || cmd_stop
+      die "the rig credential prerequisite failed"
+    fi
+    set -- "$@" --models
+  fi
   say "running the contract suite (output: $dir/contract.log)"
   set +e
   rig_env "$CONTRACT" --core-store "$CORE_STORE" --basal-store "$BASAL_STORE" \
     --machine-id "$MACHINE_ID" --kill-file "$KILL_FILE" --project-id "$project_id" \
-    --results "$dir/contract.json" "$@" > "$dir/contract.log" 2>&1
+    --results "$dir/contract.json" --broca-index "$BROCA_INDEX" "$@" > "$dir/contract.log" 2>&1
   status=$?
   set -e
   cat "$dir/contract.log"
@@ -1258,12 +1479,14 @@ else:
 [ $# -ge 1 ] || usage
 command=$1
 shift
-args=""
-for arg in "$@"; do
-  if [ "$arg" = "--dry-run" ]; then DRY=1; else args="$args $arg"; fi
+# Rotate the arguments instead of flattening them: a payload path may contain
+# spaces, and only the auth CLI is allowed to open that file.
+remaining=$#
+while [ "$remaining" -gt 0 ]; do
+  arg=$1; shift
+  if [ "$arg" = --dry-run ]; then DRY=1; else set -- "$@" "$arg"; fi
+  remaining=$((remaining - 1))
 done
-# shellcheck disable=SC2086 # no rig argument contains whitespace
-set -- $args
 guard_all_paths
 case "$command" in
   build) cmd_build "$@" ;;
@@ -1273,6 +1496,7 @@ case "$command" in
   status) cmd_status "$@" ;;
   stop) cmd_stop "$@" ;;
   manifest) cmd_manifest "$@" ;;
+  credential) cmd_credential "$@" ;;
   test) cmd_test "$@" ;;
   *) usage ;;
 esac

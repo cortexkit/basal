@@ -1,0 +1,138 @@
+"""Offline checks of the rig's generated policy and explicit vault boundary."""
+
+import json
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+import unittest
+
+
+SCRIPT = Path(__file__).resolve().parents[1] / "flows-rig.sh"
+HELPERS = SCRIPT.read_text().split("# ---------------------------------------------------------------- main")[0]
+
+
+class RigChecks(unittest.TestCase):
+    def run_shell(self, code, home):
+        return subprocess.run(
+            ["/bin/sh", "-c", HELPERS + "\n" + code, str(SCRIPT)],
+            env={**os.environ, "HOME": str(home)},
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    def test_pin_uses_served_providers_and_refuses_missing_luna(self):
+        with tempfile.TemporaryDirectory() as home:
+            catalog = Path(home) / "catalog.json"
+            catalog.write_text(json.dumps({"models": {
+                "new-provider/some-model": {}, "openai/gpt-6-luna": {},
+                "openai/other": {}, "another/model/with/slashes": {},
+            }}))
+            code = 'guard_all_paths; rig_env() { /bin/cat "$HOME/catalog.json"; }; pin_routing'
+            result = self.run_shell(code, home)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            policy = Path(home) / ".local/share/cortexkit/ckdev-flows/config/cortexkit/alfonso-routing.jsonc"
+            policy_text = policy.read_text()
+            self.assertIn("// Rig fixture values, not measured model quality.", policy_text)
+            value = json.loads("\n".join(line for line in policy_text.splitlines()
+                                         if not line.lstrip().startswith("//")))
+            self.assertEqual(value, {"model_routing": {
+                "exclude": ["another", "new-provider", "openai", "-openai/gpt-6-luna"],
+                "models": {"openai/gpt-6-luna": {"elo": 1, "eq": 0, "speed": 0}},
+            }})
+            policy.unlink()
+            catalog.write_text('{"models":{"openai/other":{}}}')
+            result = self.run_shell(code, home)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("lacks openai/gpt-6-luna", result.stderr)
+            self.assertFalse(policy.exists())
+
+    def test_credential_inventory_requires_one_active_openai_binding(self):
+        with tempfile.TemporaryDirectory() as home:
+            inventory = Path(home) / "inventory"
+            code = 'rig_auth() { /bin/cat "$HOME/inventory"; }; require_model_credential'
+            header = "STATE          VER   CREDENTIAL  CATEGORIES  PROVIDERS\n"
+            valid = "active v1 apikey:openai llm-provider openai\n"
+            for rows, expected in [(valid, 0), ("", 1), (valid + valid, 1),
+                                   (valid.replace("openai\n", "-\n"), 1),
+                                   (valid.replace("active", "retired"), 1)]:
+                inventory.write_text(header + rows + "\n")
+                result = self.run_shell(code, home)
+                self.assertEqual(result.returncode, expected, result.stderr)
+
+    def test_auth_dry_runs_name_all_three_rig_paths_without_reading_payload(self):
+        with tempfile.TemporaryDirectory() as home:
+            code = 'guard_all_paths; DRY=1; rig_auth status; cmd_credential --key-file "$RIG_HOME/.secrets/key with spaces"'
+            result = self.run_shell(code, home)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for line in result.stdout.splitlines():
+                if " auth " in line:
+                    self.assertIn(f"--data-dir {home}/.local/share/cortexkit/ckdev-flows/data/cortexkit/claustrum", line)
+                    self.assertIn(f"--key-path {home}/.local/share/cortexkit/ckdev-flows/config/claustrum/master.key", line)
+                    self.assertIn(f"--subc {home}/.local/share/cortexkit/ckdev-flows/runtime/subc-connection.json", line)
+            self.assertIn("--provider-id openai", result.stdout)
+            self.assertIn("--payload-file", result.stdout)
+            self.assertIn("key with spaces", result.stdout)
+
+    def test_auth_refuses_a_final_key_symlink_outside_the_rig(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # Resolve the temp dir first: on macOS it sits under /var, a
+            # symlink to /private/var, and an unresolved home would be refused
+            # for that reason alone, so the test couldn't tell whether the
+            # check follows the key file's own symlink.
+            home = os.path.realpath(tmp)
+            key = Path(home) / ".local/share/cortexkit/ckdev-flows/config/claustrum/master.key"
+            key.parent.mkdir(parents=True)
+            key.symlink_to(Path(home) / "outside-master.key")
+            result = self.run_shell("guard_all_paths; DRY=1; rig_auth status", home)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("auth path resolves outside the rig", result.stderr)
+            self.assertNotIn(" auth status ", result.stdout)
+
+    def test_config_grants_only_after_the_temporary_daemon_starts(self):
+        with tempfile.TemporaryDirectory() as home:
+            result = self.run_shell('''
+guard_all_paths
+guard_port_free() { :; }; daemon_pid() { :; }
+write_file() { /bin/cat > /dev/null; }
+ready=0
+cmd_start() { ready=1; }
+cmd_stop() { ready=0; }
+rig_auth() { [ "$1" = bootstrap ] || [ "$ready" = 1 ] || return 1; if [ "$1" = grants ]; then printf 'no grants\\n'; else printf '%s\\n' "$*"; fi; }
+pin_routing() { [ "$ready" = 1 ]; }
+cmd_config
+[ "$ready" = 0 ]
+''', home)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            grants = [line for line in result.stdout.splitlines() if line.startswith("grant ")]
+            self.assertEqual(grants, [
+                "grant --principal reserved:broca --selector-kind exact --selector apikey:openai --operation read",
+                "grant --principal reserved:prefrontal-routing --selector-kind category --selector llm-provider --operation list",
+            ])
+
+    def test_grant_plan_is_exact_and_idempotent(self):
+        with tempfile.TemporaryDirectory() as home:
+            inventory = Path(home) / "grants"
+            code = '/bin/cat "$HOME/grants" | missing_grants'
+            inventory.write_text("no grants\n")
+            result = self.run_shell(code, home)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.splitlines(), [
+                "broca|exact|apikey:openai|read", "prefrontal-routing|category|llm-provider|list",
+            ])
+            valid = ("KIND PRINCIPAL SELECTOR KIND SELECTOR OP REACHES GRANTED\n"
+                     "reserved broca exact apikey:openai read 1 timestamp\n"
+                     "reserved prefrontal-routing category llm-provider list 1 timestamp\n")
+            inventory.write_text(valid)
+            result = self.run_shell(code, home)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, "")
+            inventory.write_text(valid + "reserved broca category llm-provider read 1 timestamp\n")
+            result = self.run_shell(code, home)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("unexpected grants", result.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

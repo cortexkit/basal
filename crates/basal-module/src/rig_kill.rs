@@ -43,6 +43,32 @@ pub struct RigKillHook {
 }
 
 impl RigKillHook {
+    /// Capture the journal at the crash boundary, before the supervisor can
+    /// restart basal. This distinguishes a selected-but-unsent call from an
+    /// accepted call whose result has not reached the journal.
+    fn evidence(&self, run_id: &str, boundary: &Boundary) -> Option<String> {
+        let c = Connection::open_with_flags(self.store.get()?, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .ok()?;
+        let row = c.query_row(
+            "SELECT COALESCE(request, args), dispatch, attempts, settlement FROM journal WHERE run_id = ?1 AND position = 0",
+            [run_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, Option<String>>(3)?)),
+        ).ok()?;
+        let snapshots: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM broca_calls WHERE run_id = ?1",
+                [run_id],
+                |r| r.get(0),
+            )
+            .ok()?;
+        Some(
+            serde_json::json!({"run_id": run_id, "boundary": format!("{boundary:?}"),
+            "args": serde_json::from_str::<serde_json::Value>(&row.0).ok()?,
+            "dispatch": row.1, "attempts": row.2, "settlement": row.3,
+            "broca_snapshots": snapshots})
+            .to_string(),
+        )
+    }
+
     /// The hook armed by the file `$BASAL_RIG_KILL_FILE` names, or `None`
     /// when the variable is unset or empty. `store` is filled with the
     /// store's path when the module learns it.
@@ -91,6 +117,9 @@ impl Hooks for RigKillHook {
             || !matches(&armed, self.flow_of(run_id).as_deref(), boundary)
         {
             return Step::Continue;
+        }
+        if let Some(evidence) = self.evidence(run_id, boundary) {
+            let _ = std::fs::write(self.path.with_extension("evidence"), evidence);
         }
         // Disarm before dying, so the restarted process passes the same
         // boundary when it re-sends the call. Only one thread can remove the
@@ -146,5 +175,35 @@ mod tests {
             serde_json::from_str::<Armed>(r#"{"flow_id":"f","boundary":"b","extra":1}"#).is_err()
         );
         assert!(serde_json::from_str::<Armed>("HostAnswered { position: 0 }").is_err());
+    }
+
+    #[test]
+    fn crash_evidence_records_the_unsent_journal_not_a_later_outcome() {
+        let path =
+            std::env::temp_dir().join(format!("basal-rig-evidence-{}.db", std::process::id()));
+        let c = Connection::open(&path).unwrap();
+        c.execute_batch("CREATE TABLE journal (run_id TEXT, position INTEGER, args TEXT, request TEXT,
+            dispatch TEXT, attempts INTEGER, settlement TEXT);
+            CREATE TABLE broca_calls (run_id TEXT);
+            INSERT INTO journal VALUES ('r', 0, '{\"prompt\":\"authored\"}', '{\"selection\":{\"decisionID\":\"d1\"}}', 'sent', 1, NULL);").unwrap();
+        let store = Arc::new(OnceLock::new());
+        store.set(path.clone()).unwrap();
+        let hook = RigKillHook {
+            path: path.with_extension("arm"),
+            store,
+        };
+        let at = Boundary::CallCommitted { position: 0 };
+        let evidence: serde_json::Value =
+            serde_json::from_str(&hook.evidence("r", &at).unwrap()).unwrap();
+        assert_eq!(evidence["run_id"], "r");
+        assert_eq!(evidence["boundary"], "CallCommitted { position: 0 }");
+        assert_eq!(evidence["args"]["selection"]["decisionID"], "d1");
+        assert_eq!(evidence["attempts"], 1);
+        assert_eq!(evidence["dispatch"], "sent");
+        assert_eq!(evidence["broca_snapshots"], 0);
+        assert!(evidence["settlement"].is_null());
+        assert!(hook.evidence("other", &at).is_none());
+        drop(c);
+        std::fs::remove_file(path).unwrap();
     }
 }

@@ -24,7 +24,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: never
-  CK_MUTATE_REV: c46f324133c5df6411703714e4c147f7cc8554a0
+  CK_MUTATE_REV: 0b1004452fb2b673fdb2bc010a850b430e3e945f
 
 jobs:
   checks:
@@ -59,6 +59,8 @@ jobs:
         run: |
           command -v shellcheck || brew install shellcheck
           shellcheck -x script/*.sh
+      - name: Check offline flow rig contracts
+        run: python3 -m unittest script.tests.flows_rig -v
       - run: ck-mutate check
 
   mutations-pr:
