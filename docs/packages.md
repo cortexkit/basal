@@ -26,26 +26,28 @@ Code-hash test vector: the script `"// package script bytes\n"` and the manifest
 
 ## Instances
 
-An instance is a flow whose id is derived from its package and its agent:
+An instance is a flow whose id is derived from its package and its agent's stable `agent_id` (the `agent_…` id core assigns), never the agent's name, which can change:
 
 ```
 instance flow id = <package> "_" <first 16 lowercase hex characters of h>
-h = BLAKE3("basal-instance-id-v1\0" || u64_le(len package) || package || u64_le(len agent) || agent)
+h = BLAKE3("basal-instance-id-v1\0" || u64_le(len package) || package || u64_le(len agent_id) || agent_id)
 ```
 
-Both lengths are byte lengths, and the agent is the exact agent name, so case matters.
+Both lengths are byte lengths. Renaming an agent leaves its instances, and their state, where they are.
 
-| Package | Agent | Instance flow id |
+| Package | `agent_id` | Instance flow id |
 |---|---|---|
-| `dark-wake` | `ALF` | `dark-wake_d87dc8558dc3b3cf` |
-| `dark-wake` | `BASAL` | `dark-wake_07185384bda9b4cb` |
-| `ci-watch` | `basal-test_01` | `ci-watch_06fd7ecbcfc46e1f` |
+| `dark-wake` | `agent_47120287c700722b` | `dark-wake_d04794834aa77fe7` |
+| `dark-wake` | `agent_d1e7002e2c9b9f43` | `dark-wake_4dc17caa47226d32` |
+| `ci-watch` | `agent_47120287c700722b` | `ci-watch_461d8a6c652aa677` |
+
+`flow.install` refuses any flow id that ends in `_` followed by exactly 16 lowercase hex characters (`flow_id_reserved`), so an ordinary flow can never take an instance's id.
 
 The id doesn't depend on the package version. So an instance keeps its `kv`, token windows, rate windows and schedule across upgrades, the same way a flow keeps them across versions. Each agent's instance has its own state, so one agent's instance can't read or exhaust another's.
 
-An instance's owner is its agent. It acts only as that agent:
-- Every `$self` in its manifest resolves to that agent when calls are authorized.
-- The script receives the agent in its activation input as `self: {"agent": "<agent>"}`, recorded in the journal like `trigger`.
+An instance's owner is its agent's `agent_id`. It acts only as that agent:
+- Every `$self` in its manifest resolves to that `agent_id` when calls are authorized, and sink calls carry that id.
+- The script receives the agent in its activation input as `self: {"agent_id": "<agent_id>"}`, recorded in the journal like `trigger`.
 - Core registers the instance's flow scope under the instance flow id, with that agent as owner, as for any agent-owned flow.
 
 ## package.register
@@ -93,7 +95,7 @@ Caller: prefrontal-core only, on its own unscoped route.
 
 Params:
 ```json
-{"package":"string","version":"integer","agent":"string"}
+{"package":"string","version":"integer","agent_id":"string"}
 ```
 
 Reply:
@@ -107,13 +109,13 @@ The call makes the agent's instance of the package run the given version:
 - **Removed:** it clears the removed mark, so the instance runs again with the state it kept.
 - **Enable state:** it never changes it. Removal is a separate mark, not a disable, so a disable by the operator, the owning agent or the runtime stays as it is, with its usual rules for lifting it.
 
-The call is idempotent by package and agent. Repeating it with the same version changes nothing, and answers `new: false` with `previous_version` equal to that version.
+The call is idempotent by package and `agent_id`. Repeating it with the same version changes nothing, and answers `new: false` with `previous_version` equal to that version.
 
 Approval isn't checked here. As for every flow, each activation and resume asks core's `flow.install_status`, with the instance flow id, the package version and the package's code hash. Runs already admitted finish on the version they were admitted with, so an upgrade needs no drain.
 
 Refusals:
 - `package_unknown`: that version isn't registered.
-- `agent_unknown`: the catalog doesn't know the agent.
+- `agent_unknown`: core's agent list has no agent with that `agent_id`.
 
 ## flow.instance.remove
 
@@ -121,7 +123,7 @@ Caller: prefrontal-core only, on its own unscoped route.
 
 Params:
 ```json
-{"package":"string","agent":"string"}
+{"package":"string","agent_id":"string"}
 ```
 
 Reply:
