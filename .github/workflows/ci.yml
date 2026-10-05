@@ -61,6 +61,10 @@ jobs:
           shellcheck -x script/*.sh
       - name: Check offline flow rig contracts
         run: python3 -m unittest script.tests.flows_rig -v
+      - name: Check offline placement cards
+        run: |
+          /bin/sh -n script/stage.sh
+          python3 -m unittest script.tests.stage_card -v
       - run: ck-mutate check
 
   mutations-pr:

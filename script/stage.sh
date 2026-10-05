@@ -7,6 +7,8 @@
 #
 # Usage:
 #   script/stage.sh [--local-only] [--staging-root <dir>]
+#                   [--basal-marker <string> --basal-control <string>]
+#                   [--worker-marker <string> --worker-control <string>]
 #   script/stage.sh --verify <stage dir>
 #
 # --local-only    skip only the check that HEAD is on origin/main, for rig
@@ -15,6 +17,10 @@
 # --staging-root  where the stage directory and the .current files go;
 #                 default ~/.local/share/cortexkit/staging. Point it at a
 #                 temporary directory for anything but a real stage.
+# --basal-marker / --basal-control / --worker-marker / --worker-control
+#                 required when ck-basal already exists at the live destination:
+#                 each marker must read staged >= 1 / live 0, and each control
+#                 must read >= 1 in both files, as the placement gate requires.
 # --verify        check an existing stage directory (both binaries' sidecars
 #                 and signatures) and print its revision; changes nothing.
 #                 script/flows-rig.sh place --from-stage uses it.
@@ -55,14 +61,25 @@ usage() {
 LOCAL_ONLY=0
 STAGING="$CK_SHARE/staging"
 VERIFY=""
+BASAL_MARKER=""
+BASAL_CONTROL=""
+WORKER_MARKER=""
+WORKER_CONTROL=""
+parse_options() {
 while [ $# -gt 0 ]; do
   case "$1" in
     --local-only) LOCAL_ONLY=1; shift ;;
     --staging-root) [ $# -ge 2 ] || usage; STAGING=$2; shift 2 ;;
     --verify) [ $# -ge 2 ] || usage; VERIFY=$2; shift 2 ;;
+    --basal-marker) [ $# -ge 2 ] || usage; BASAL_MARKER=$2; shift 2 ;;
+    --basal-control) [ $# -ge 2 ] || usage; BASAL_CONTROL=$2; shift 2 ;;
+    --worker-marker) [ $# -ge 2 ] || usage; WORKER_MARKER=$2; shift 2 ;;
+    --worker-control) [ $# -ge 2 ] || usage; WORKER_CONTROL=$2; shift 2 ;;
     *) usage ;;
   esac
 done
+}
+parse_options "$@"
 
 # ---------------------------------------------------------------- verify
 
@@ -315,11 +332,11 @@ done
 
 # ---------------------------------------------------------------- marker
 
-say ""
-say "=== marker and control"
 # count <file> <needle>: as place-module.sh counts in its strings table.
 count() {
-  strings "$1" | grep -cF -- "$2" || true
+  # Check the reader separately: a failed strings invocation is not a zero count.
+  table=$(strings "$1") || die "cannot read the strings table of $1"
+  printf '%s\n' "$table" | grep -cF -- "$2" || true
 }
 # counts <bin> <needle>: "staged N / live M", where live is the running
 # binary in ~/.local/share/cortexkit/bin, which a first placement has none of.
@@ -329,18 +346,90 @@ counts() {
   else
     live="none (no running $1)"
   fi
-  printf 'staged %s / live %s\n' "$(count "$SCRATCH/$1" "$2")" "$live"
+  printf 'staged %s / live %s\n' "$(count "$CARD_BIN_DIR/$1" "$2")" "$live"
 }
+marker_of() {
+  case "$1" in
+    (ck-basal) printf '%s\n' "$BASAL_MARKER" ;;
+    (ck-basal-worker) printf '%s\n' "$WORKER_MARKER" ;;
+  esac
+}
+update_control_of() {
+  case "$1" in
+    (ck-basal) printf '%s\n' "$BASAL_CONTROL" ;;
+    (ck-basal-worker) printf '%s\n' "$WORKER_CONTROL" ;;
+  esac
+}
+
+# Read the committed build input, not a possibly changed working file. SQLite's
+# read-only URI sees committed WAL data without opening the running store for writes.
+store_versions() {
+  schema=$(git -C "$ROOT" show HEAD:crates/basal-core/src/schema.rs) \
+    || die "cannot read the schema at HEAD"
+  versions=$(printf '%s\n' "$schema" | python3 -c '
+import pathlib, re, sqlite3, sys
+versions = [int(v) for v in re.findall(r"^\s*version:\s*(\d+)\s*,", sys.stdin.read(), re.M)]
+if not versions:
+    sys.exit("no migration versions in the schema at HEAD")
+with sqlite3.connect(pathlib.Path(sys.argv[1]).resolve().as_uri() + "?mode=ro", uri=True) as db:
+    live = db.execute("SELECT max(version) FROM cortexkit_schema_version").fetchone()[0]
+if not isinstance(live, int) or live < 0:
+    sys.exit("the live store has no valid schema version")
+print(max(versions), live)
+' "$LIVE_STORE") || die "cannot compare the build and live store schema versions"
+  BUILD_SCHEMA=${versions%% *}
+  LIVE_SCHEMA=${versions#* }
+  MIGRATES_ARG=""
+  if [ "$BUILD_SCHEMA" -gt "$LIVE_SCHEMA" ]; then
+    MIGRATES_ARG=" --migrates ~/.local/share/cortexkit/basal/store.db"
+  fi
+}
+
+# Validate before publishing a stage or opening card.md, so a failed gate cannot
+# leave a declaration that looks ready for placement.
+prepare_card() {
+CARD_BIN_DIR=$1
+LIVE_STORE="$CK_SHARE/basal/store.db"
+UPDATE=0
+if [ -e "$LIVE_BIN/ck-basal" ]; then
+  UPDATE=1
+  [ -n "$BASAL_MARKER" ] && [ -n "$BASAL_CONTROL" ] \
+    && [ -n "$WORKER_MARKER" ] && [ -n "$WORKER_CONTROL" ] \
+    || die "an update requires --basal-marker, --basal-control, --worker-marker and --worker-control"
+fi
 for bin in $BINARIES; do
+  [ "$(count "$CARD_BIN_DIR/$bin" "$SHA")" -ge 1 ] || die "$bin does not embed $SHA; nothing staged"
+  marker=$SHA
   control=$(control_of "$bin")
-  [ "$(count "$SCRATCH/$bin" "$SHA")" -ge 1 ] || die "$bin does not embed $SHA; nothing staged"
-  [ "$(count "$SCRATCH/$bin" "$control")" -ge 1 ] \
+  if [ "$UPDATE" = 1 ]; then
+    marker=$(marker_of "$bin")
+    control=$(update_control_of "$bin")
+    [ -f "$LIVE_BIN/$bin" ] || die "an update needs the live destination $LIVE_BIN/$bin"
+    staged_marker=$(count "$CARD_BIN_DIR/$bin" "$marker") || exit 1
+    live_marker=$(count "$LIVE_BIN/$bin" "$marker") || exit 1
+    [ "$staged_marker" -ge 1 ] && [ "$live_marker" -eq 0 ] \
+      || die "$bin marker '$marker': staged $staged_marker / live $live_marker; need staged >= 1 / live 0; no card written"
+    staged_control=$(count "$CARD_BIN_DIR/$bin" "$control") || exit 1
+    live_control=$(count "$LIVE_BIN/$bin" "$control") || exit 1
+    [ "$staged_control" -ge 1 ] && [ "$live_control" -ge 1 ] \
+      || die "$bin control '$control': staged $staged_control / live $live_control; need both >= 1; no card written"
+  fi
+  [ "$(count "$CARD_BIN_DIR/$bin" "$control")" -ge 1 ] \
     || die "$bin does not contain its control '$control'; nothing staged"
-  counts "$bin" "$SHA" > "$CONTROL_DIR/$bin.marker"
+  counts "$bin" "$marker" > "$CONTROL_DIR/$bin.marker"
   counts "$bin" "$control" > "$CONTROL_DIR/$bin.control"
-  say "$bin marker \"$SHA\": $(cat "$CONTROL_DIR/$bin.marker")"
+  say "$bin marker \"$marker\": $(cat "$CONTROL_DIR/$bin.marker")"
   say "$bin control \"$control\": $(cat "$CONTROL_DIR/$bin.control")"
 done
+if [ "$UPDATE" = 1 ]; then
+  store_versions
+fi
+}
+
+# ---------------------------------------------------------------- prepare card
+say ""
+say "=== marker and control"
+prepare_card "$SCRATCH"
 
 # ---------------------------------------------------------------- stage
 
@@ -384,12 +473,12 @@ sum_of() { awk '{ print $1 }' "$STAGE_DIR/$1.sha256"; }
 # never claims a run it did not look up.
 ci_of() {
   command -v gh >/dev/null 2>&1 || { printf 'not checked (gh is not installed)'; return; }
-  gh run list --repo cortexkit/basal --workflow CI --commit "$SHA" --limit 1 \
+  gh run list --repo cortexkit/basal --workflow CI --commit "$SHA" --event push --limit 1 \
       --json status,conclusion,url \
       --jq '.[0] | if . == null then "no run for this commit" else "\(.status) \(.conclusion // ""), \(.url)" end' \
       2>/dev/null || printf 'not checked (gh failed)'
 }
-CARD="$STAGE_DIR/card.md"
+write_first_install_card() {
 cat > "$CARD" <<EOF
 @SUBC basal: a FIRST placement, two binaries, one card each (ck-basal, ck-basal-worker)
 
@@ -429,6 +518,83 @@ cat > "$CARD" <<EOF
 - BASAL_WORKER_IDENTIFIER=ck-basal-worker sh script/sign-worker.sh verify ~/.local/share/cortexkit/bin/ck-basal-worker passes at the placed path.
 - basal's flow.list answers (no flows yet).
 EOF
+}
+
+write_update_card() {
+cat > "$CARD" <<EOF
+@SUBC basal: an UPDATE, two binaries, worker first and ck-basal restarted last
+
+**Card**
+- stage: $STAGE_DIR (both binaries)
+- ck-basal: $STAGE_DIR/ck-basal, sha256 $(sum_of ck-basal); basal.current revision $SHA
+- ck-basal-worker: $STAGE_DIR/ck-basal-worker, sha256 $(sum_of ck-basal-worker); basal-worker.current revision $SHA
+- build: release, clean tree, CK_BUILD_GIT_SHA=$SHA CK_BUILD_GIT_DIRTY=$DIRTY, commit $PUSHED.
+- CI for that commit (push event): $(ci_of)
+- daemon floor: 0.20.53, the oldest daemon a subc-protocol 0.29 module is known to run against.
+
+**Signing** (both): ad hoc, hardened runtime, explicit identifier, no entitlements, no get-task-allow, 0 debug-map entries
+- ck-basal: Identifier=ck-basal flags=$(codesign_flags "$STAGE_DIR/ck-basal")
+- ck-basal-worker: Identifier=ck-basal-worker flags=$(codesign_flags "$STAGE_DIR/ck-basal-worker")
+- no entitlements: the worker's QuickJS is an interpreter and needs no JIT; its sandbox is a Seatbelt profile it applies to itself.
+- smoke-tested on the signed files: ck-basal --manifest (module_id basal, provenance build_git_sha $SHA); --version on both; the worker's sandbox self-check (script/sign-worker.sh verify: embedded profile, and a file read, a socket connect and a program launch all denied); lldb -p refused on both, with an unhardened ad-hoc copy of /bin/sleep as the control that did attach. Inode and flags unchanged across the run.
+
+**Marker and control** (strings table, checked against the live destinations)
+- ck-basal marker "$BASAL_MARKER": $(cat "$CONTROL_DIR/ck-basal.marker")
+- ck-basal control "$BASAL_CONTROL": $(cat "$CONTROL_DIR/ck-basal.control")
+- ck-basal-worker marker "$WORKER_MARKER": $(cat "$CONTROL_DIR/ck-basal-worker.marker")
+- ck-basal-worker control "$WORKER_CONTROL": $(cat "$CONTROL_DIR/ck-basal-worker.control")
+
+**Store and rollback**
+- $LIVE_STORE: build schema $BUILD_SCHEMA / live schema $LIVE_SCHEMA (SELECT max(version) FROM cortexkit_schema_version, mode=ro).
+EOF
+if [ -n "$MIGRATES_ARG" ]; then
+  cat >> "$CARD" <<EOF
+- This update migrates the store. The ck-basal command below includes \`--migrates ~/.local/share/cortexkit/basal/store.db\` so place-module.sh snapshots it before placement.
+- Rollback is the old binary AND the store backup together, with both binaries restored as a pair. A binary-only rollback refuses to open the newer store: basal_core::Store::open returns "the store's schema is at version N but this build knows only up to M". Stop basal before restoring the store backup; do not let it reopen the store until both old binaries and the backup are restored.
+EOF
+else
+  say "- No schema rise: no store migration or store backup is requested. Roll back both binaries together with place-module.sh's --older mode." >> "$CARD"
+fi
+cat >> "$CARD" <<EOF
+
+**Order and restart**
+1. Worker first, without restarting the parent:
+   \`place-module.sh --module basal --staged $(shell_quote "$STAGE_DIR/ck-basal-worker") --marker $(shell_quote "$WORKER_MARKER") --control $(shell_quote "$WORKER_CONTROL") --dest ~/.local/share/cortexkit/bin/ck-basal-worker --no-restart\`
+2. Then ck-basal, with the default update restart:
+   \`place-module.sh --module basal --staged $(shell_quote "$STAGE_DIR/ck-basal") --marker $(shell_quote "$BASAL_MARKER") --control $(shell_quote "$BASAL_CONTROL")$MIGRATES_ARG\`
+- These commands are read-only gate runs; SUBC adds \`--place\` for placement. Warm workers are spawned by ck-basal, so restarting ck-basal last makes every worker come from the new file. In the meantime, the old parent spawning a new worker is safe because the worker protocol change is additive.
+
+**Post-placement check** (mine)
+- \`ck --json provenance basal\`: build_git_sha $SHA, and the observed pid's running image is the placed ck-basal (same inode).
+- a worker's running image is the placed ck-basal-worker (same inode) once a flow runs.
+- BASAL_WORKER_IDENTIFIER=ck-basal-worker sh script/sign-worker.sh verify ~/.local/share/cortexkit/bin/ck-basal-worker passes at the placed path.
+- the store reads schema version $BUILD_SCHEMA with its tables intact.
+- basal's flow.list answers.
+EOF
+}
+
+shell_quote() {
+  # Needles are literal strings, not shell fragments. Preserve quotes and spaces
+  # when SUBC copies the gate command from the card.
+  printf "'"
+  printf '%s' "$1" | sed "s/'/'\\\\''/g"
+  printf "'"
+}
+
+write_card() {
+  # Run validation here too: callers that only generate a card get the same
+  # refusal as staging, before card.md can be created or truncated.
+  prepare_card "$STAGE_DIR"
+  CARD="$STAGE_DIR/card.md"
+  if [ "$UPDATE" = 1 ]; then
+    write_update_card
+  else
+    write_first_install_card
+  fi
+}
+
+# ---------------------------------------------------------------- output
+write_card
 say ""
 say "=== card (saved to $CARD; not posted)"
 cat "$CARD"

@@ -6414,3 +6414,79 @@ only = false
 timeout_s = 120
 build_timeout_s = 1800
 
+
+[[control]]
+id = "stage-schema-rise-condition"
+guards = "the update requests a store backup exactly when its schema rises"
+file = "script/stage.sh"
+old = '  if [ "$BUILD_SCHEMA" -gt "$LIVE_SCHEMA" ]; then'
+new = '  if [ "$BUILD_SCHEMA" -ge "$LIVE_SCHEMA" ]; then # NON-VACUITY BREAK'
+edits = []
+test_file = "script/tests/stage_card.py"
+runner = "command"
+command = ["python3", "-m", "unittest", "{test}"]
+expect_red = ["script.tests.stage_card.StageCardChecks.test_migrates_exactly_when_schema_rises"]
+only = false
+timeout_s = 120
+build_timeout_s = 1800
+
+
+[[control]]
+id = "stage-worker-first-order"
+guards = "the new worker is placed before the parent restart"
+file = "script/stage.sh"
+old = '''
+1. Worker first, without restarting the parent:
+   \`place-module.sh --module basal --staged $(shell_quote "$STAGE_DIR/ck-basal-worker") --marker $(shell_quote "$WORKER_MARKER") --control $(shell_quote "$WORKER_CONTROL") --dest ~/.local/share/cortexkit/bin/ck-basal-worker --no-restart\`
+2. Then ck-basal, with the default update restart:
+   \`place-module.sh --module basal --staged $(shell_quote "$STAGE_DIR/ck-basal") --marker $(shell_quote "$BASAL_MARKER") --control $(shell_quote "$BASAL_CONTROL")$MIGRATES_ARG\`'''
+new = '''
+1. Parent first: NON-VACUITY BREAK
+   \`place-module.sh --module basal --staged $(shell_quote "$STAGE_DIR/ck-basal") --marker $(shell_quote "$BASAL_MARKER") --control $(shell_quote "$BASAL_CONTROL")$MIGRATES_ARG\`
+2. Worker last:
+   \`place-module.sh --module basal --staged $(shell_quote "$STAGE_DIR/ck-basal-worker") --marker $(shell_quote "$WORKER_MARKER") --control $(shell_quote "$WORKER_CONTROL") --dest ~/.local/share/cortexkit/bin/ck-basal-worker --no-restart\`'''
+edits = []
+test_file = "script/tests/stage_card.py"
+runner = "command"
+command = ["python3", "-m", "unittest", "{test}"]
+expect_red = ["script.tests.stage_card.StageCardChecks.test_worker_first_without_restart_then_parent_restart"]
+only = false
+timeout_s = 120
+build_timeout_s = 1800
+
+
+[[control]]
+id = "stage-marker-refusal"
+guards = "invalid staged or live markers refuse the update card"
+file = "script/stage.sh"
+old = '    [ "$staged_marker" -ge 1 ] && [ "$live_marker" -eq 0 ] \'
+new = '''
+    # NON-VACUITY BREAK
+    [ "$staged_marker" -ge 0 ] && [ "$live_marker" -ge 0 ] \'''
+edits = []
+test_file = "script/tests/stage_card.py"
+runner = "command"
+command = ["python3", "-m", "unittest", "{test}"]
+expect_red = ["script.tests.stage_card.StageCardChecks.test_marker_refusal_writes_no_card"]
+only = false
+timeout_s = 120
+build_timeout_s = 1800
+
+
+[[control]]
+id = "stage-push-event-ci-filter"
+guards = "the card reports the push CI run rather than a newer scheduled audit"
+file = "script/stage.sh"
+old = '  gh run list --repo cortexkit/basal --workflow CI --commit "$SHA" --event push --limit 1 \'
+new = '''
+  # NON-VACUITY BREAK
+  gh run list --repo cortexkit/basal --workflow CI --commit "$SHA" --limit 1 \'''
+edits = []
+test_file = "script/tests/stage_card.py"
+runner = "command"
+command = ["python3", "-m", "unittest", "{test}"]
+expect_red = ["script.tests.stage_card.StageCardChecks.test_push_event_ci_run_not_newer_nightly"]
+only = false
+timeout_s = 120
+build_timeout_s = 1800
+
