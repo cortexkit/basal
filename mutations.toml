@@ -510,7 +510,8 @@ build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/journal.rs"
 old = "let prefix: Vec<RecordedCall> = rows.iter().map(CallRow::recorded).collect();"
-new = "let mut prefix: Vec<RecordedCall> = rows.iter().map(CallRow::recorded).collect();\n    let mut next = prefix.iter().filter_map(|c| c.outcome.as_ref().map(|o| o.delivery_order + 1)).max().unwrap_or(0);\n    let mut stmt = conn.prepare(\"SELECT position, settlement, value FROM mailbox WHERE run_id = ?1 ORDER BY seq\")?;\n    let late = stmt.query_map([run_id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;\n    for (p, s, v) in late {\n        if let Some(call) = prefix.get_mut(to_u64(p, \"position\")? as usize) {\n            call.outcome = Some(basal_proto::RecordedOutcome { settlement: parse_settlement(&s)?, value: json(v, \"late value\")?, delivery_order: next });\n            next += 1;\n        }\n    }"
+# Only unresolved calls before an already released call cross the replay barrier.
+new = "let mut prefix: Vec<RecordedCall> = rows.iter().map(CallRow::recorded).collect();\n    let mut next = prefix.iter().filter_map(|c| c.outcome.as_ref().map(|o| o.delivery_order + 1)).max().unwrap_or(0);\n    let mut stmt = conn.prepare(\"SELECT m.position, m.settlement, m.value FROM mailbox m JOIN journal j ON j.run_id = m.run_id AND j.position = m.position WHERE m.run_id = ?1 AND j.settlement IS NULL AND m.position < (SELECT MAX(position) FROM journal WHERE run_id = ?1 AND delivery_order IS NOT NULL) ORDER BY m.seq\")?;\n    let late = stmt.query_map([run_id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;\n    for (p, s, v) in late { // NON-VACUITY BREAK\n        if let Some(call) = prefix.get_mut(to_u64(p, \"position\")? as usize) {\n            call.outcome = Some(basal_proto::RecordedOutcome { settlement: parse_settlement(&s)?, value: json(v, \"late value\")?, delivery_order: next });\n            next += 1;\n        }\n    }"
 
 [[control]]
 id = "suspend-transition-does-not-re-read-arrivals-lost-wakeup"
@@ -630,7 +631,8 @@ build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/driver.rs"
 old = "if waiting.contains(&row.position) || self.rt.is_inflight(&run_id, row.position) {"
-new = "if self.rt.is_inflight(&run_id, row.position) {"
+# Ignore a waiting outcome only for local effects, not for remote completions.
+new = "if (waiting.contains(&row.position) && row.class != StoredClass::Local) || self.rt.is_inflight(&run_id, row.position) { // NON-VACUITY BREAK"
 
 [[control]]
 id = "a-synchronous-call-journaled-without-its-value-is-not-answered-again"
@@ -721,8 +723,9 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/driver.rs"
-old = "                let run_id = self.lease.run_id.clone();\n                self.rt.register(&run_id, call.position);"
-new = "                let run_id = self.lease.run_id.clone();\n                self.rt.spawn_dispatch(basal_host::CallRequest { flow_id: flow_id.clone(), run_id: run_id.clone(), position: call.position, kind: call.kind.clone(), args: call.args.clone(), idempotency_key: crate::ids::idempotency_key(&flow_id, &run_id, call.position), attempt: 1 }, class, true);\n                self.rt.register(&run_id, call.position);"
+# Dispatch only on a failed commit: successful calls must not be sent twice.
+old = "                    self.on_host_call(call)?"
+new = "                    let flow = self.on_host_call(call.clone());\n                    if flow.is_err() && self.rt.store().read(|_| Ok(())).is_err()\n                        && matches!(self.rt.class_of(&call.kind, &call.args), StoredClass::Query | StoredClass::KeyedMutation | StoredClass::Mutation)\n                        && let Ok(prepared) = self.prepare(&call) { // NON-VACUITY BREAK\n                        let flow_id = self.run.flow_id.clone();\n                        let run_id = self.lease.run_id.clone();\n                        let _ = self.rt.shared.host.dispatch(&basal_host::CallRequest { flow_id: flow_id.clone(), run_id: run_id.clone(), position: call.position, kind: call.kind, args: prepared.request.unwrap_or(call.args), idempotency_key: crate::ids::idempotency_key(&flow_id, &run_id, call.position), attempt: 1 });\n                    }\n                    flow?"
 
 [[control]]
 id = "recovery-resends-a-mutation-that-ignores-idempotency-keys"
@@ -1021,8 +1024,9 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/driver.rs"
+# Leave first-activation scope setup intact and bypass only the resumed-run gate.
 old = "if let Gate::Closed(end) = self.rt.check_install(&self.lease, &self.run)? {"
-new = "if let Some(end) = None::<ActivationEnd> {"
+new = "if self.lease.generation == 1 && let Gate::Closed(end) = self.rt.check_install(&self.lease, &self.run)? { // NON-VACUITY BREAK"
 
 [[control]]
 id = "install-gate-core-s-code-hash-is-not-compared-with-the-run-s"
@@ -1643,7 +1647,8 @@ build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/driver.rs"
 old = "if waiting.contains(&row.position) || self.rt.is_inflight(&run_id, row.position) {"
-new = "if self.rt.is_inflight(&run_id, row.position) {"
+# Ignore a waiting outcome only for local effects, not for remote completions.
+new = "if (waiting.contains(&row.position) && row.class != StoredClass::Local) || self.rt.is_inflight(&run_id, row.position) { // NON-VACUITY BREAK"
 
 [[control]]
 id = "a-run-starts-while-an-earlier-run-of-its-flow-holds-the-slot"
@@ -1975,7 +1980,8 @@ build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/schedule/due.rs"
 old = "        if at > after {\n            return Ok(Some(at));"
-new = "        if at >= after {\n            return Ok(Some(at));"
+# Admit an equal instant only across an offset change, not on every ordinary tick.
+new = "        if at > after || (at == after && after.checked_sub(jiff::SignedDuration::from_hours(1)).ok().is_some_and(|previous| previous.to_zoned(tz.clone()).offset() != after.to_zoned(tz.clone()).offset())) { // NON-VACUITY BREAK\n            return Ok(Some(at));"
 
 [[control]]
 id = "an-interval-s-next-due-time-counts-from-the-tick-not-the-anchor"
@@ -2170,7 +2176,8 @@ build_timeout_s = 3600
 timeout_s = 600
 edits = [
   { file = "crates/basal-core/src/schedule/tick.rs", old = "params![flow_id, scan.next.map(to_ms), last_fired, at],", new = "params![flow_id, row.next_due.map(to_ms), last_fired, at]," },
-  { file = "crates/basal-core/src/schedule/tick.rs", old = "format!(\"schedule:{due}\")", new = "format!(\"schedule:{due}:{:?}\", std::time::Instant::now())" },
+  # New fires keep their IDs; only a re-planned, already admitted fire gets a new ID.
+  { file = "crates/basal-core/src/schedule/tick.rs", old = "                fire.trigger_id,", new = "                { // NON-VACUITY BREAK\n                    let duplicate: bool = tx.query_row(\"SELECT EXISTS(SELECT 1 FROM trigger_inbox WHERE flow_id = ?1 AND trigger_id = ?2)\", params![flow_id, fire.trigger_id], |r| r.get(0))?;\n                    if duplicate {\n                        let count: i64 = tx.query_row(\"SELECT COUNT(*) FROM trigger_inbox WHERE flow_id = ?1\", [flow_id], |r| r.get(0))?;\n                        format!(\"{}:{count}\", fire.trigger_id)\n                    } else { fire.trigger_id.clone() }\n                }," },
 ]
 
 [[control]]
@@ -3030,8 +3037,9 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-module/src/engine.rs"
-old = "        let mut lease = match self.inner.pool.acquire(Binding::Flow(flow_id.to_owned())) {\n            Ok(lease) => lease,\n            Err(e) => {\n                tracing::warn!(target: \"engine\", run = %run_id, \"no worker for the run: {e}\");\n                return None;\n            }\n        };\n        lease.serve_run(run_id);\n        Some(self.inner.rt.activate(run_id, &mut lease))"
-new = "        let _ = (flow_id, Binding::DryRun(String::new()));\n        Some(self.inner.rt.resume(run_id))"
+# Start only the deadline early; keep pooling, flow binding and retirement intact.
+old = "        let mut lease = match self.inner.pool.acquire(Binding::Flow(flow_id.to_owned())) {"
+new = "        self.inner.rt.store().write(|tx| { // NON-VACUITY BREAK\n            tx.execute(\"UPDATE runs SET deadline_at = ?2 + deadline_ms WHERE run_id = ?1 AND deadline_at IS NULL AND deadline_ms IS NOT NULL\", rusqlite::params![run_id, self.inner.rt.config().clock.now_ms()])?;\n            Ok(())\n        }).expect(\"set premature deadline\");\n        let mut lease = match self.inner.pool.acquire(Binding::Flow(flow_id.to_owned())) {"
 
 [[control]]
 id = "activations-are-not-bounded"
@@ -3572,8 +3580,9 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/core_consent.rs"
+# A valid invented placement breaks omission without making core reject the card.
 old = "let placement = f[\"placement\"].as_str().filter(|p| !p.is_empty());"
-new = "let placement = Some(f[\"placement\"].as_str().unwrap_or(\"\"));"
+new = "let placement = Some(f[\"placement\"].as_str().filter(|p| !p.is_empty()).unwrap_or(\"not stated\")); // NON-VACUITY BREAK"
 
 [[control]]
 id = "decision-cards-every-raise-goes-out-under-a-fresh-dedup-key-so-a-changed-card-is-a-second-card"
@@ -5076,8 +5085,9 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/subc_catalog.rs"
-old = "find(|o| o.name == op)"
-new = "find(|_| true)"
+# Invent a declaration only for a missing op, without changing existing ones.
+old = "        Ok(found)"
+new = "        Ok(found.or_else(|| Some(CatalogOp { // NON-VACUITY BREAK\n            declaration: OpDecl { kind: Some(OpKind::Query), cause_echo: false, shell_capable: false },\n            surface: Surface::Management, execution_mode: None,\n        })))"
 
 [[control]]
 id = "hosts-undeclared-events-fabricated"

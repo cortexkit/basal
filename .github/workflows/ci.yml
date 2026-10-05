@@ -24,7 +24,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: never
-  CK_MUTATE_REV: 0b1004452fb2b673fdb2bc010a850b430e3e945f
+  CK_MUTATE_REV: 3750ff9bbeca4e00f87b86451b5ba91e96b2cca8
 
 jobs:
   checks:
