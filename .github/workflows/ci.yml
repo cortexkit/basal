@@ -59,6 +59,8 @@ jobs:
         run: |
           command -v shellcheck || brew install shellcheck
           shellcheck -x script/*.sh
+      - name: Check offline flow rig contracts
+        run: python3 -m unittest script.tests.flows_rig -v
       - run: ck-mutate check
 
   mutations-pr:
