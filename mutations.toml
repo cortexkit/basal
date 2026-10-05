@@ -1219,8 +1219,10 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/schema.rs"
-old = "    CHECK (dispatch <> 'unknown' OR unknown_reason IS NOT NULL);"
-new = ";"
+# The final table is rebuilt to add deferred dispatches, so its constraint,
+# rather than the superseded ALTER TABLE constraint, must be neutralized.
+old = "        CHECK (dispatch <> 'unknown' OR unknown_reason IS NOT NULL),"
+new = "        , -- NON-VACUITY BREAK"
 
 # dispatch: 47 controls
 [[control]]
@@ -4342,7 +4344,7 @@ build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/broca/mod.rs"
 old = "if let Some(outcome) = &call.outcome {\n            sink.complete"
-new = "if let Some(outcome) = call.outcome.as_ref().filter(|_| false) {\n            sink.complete"
+new = "if let Some(outcome) = call.outcome.as_ref().filter(|_| false) { // NON-VACUITY BREAK\n            sink.complete"
 
 [[control]]
 id = "unknown-reasons-the-host-s-reported-reason-is-not-recorded"

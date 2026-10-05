@@ -10,7 +10,7 @@
 //! A second test cuts the store under a running activation: the process
 //! exits non-zero and the restart recovers the run.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
@@ -27,6 +27,7 @@ struct Harness {
     child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
+    stderr: std::thread::JoinHandle<Vec<u8>>,
 }
 
 impl Harness {
@@ -39,15 +40,25 @@ impl Harness {
             .args(extra)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
+            .stderr(Stdio::piped())
             .spawn()
             .expect("start the harness");
         let stdin = child.stdin.take().expect("stdin");
         let stdout = BufReader::new(child.stdout.take().expect("stdout"));
+        // Drain the child continuously, but print its diagnostics from the
+        // test thread so libtest captures them instead of corrupting status
+        // lines consumed by mutation reports.
+        let mut stderr = child.stderr.take().expect("stderr");
+        let stderr = std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            stderr.read_to_end(&mut bytes).expect("harness diagnostics");
+            bytes
+        });
         Self {
             child,
             stdin,
             stdout,
+            stderr,
         }
     }
 
@@ -70,7 +81,12 @@ impl Harness {
 
     fn wait(mut self) -> ExitStatus {
         drop(self.stdin);
-        self.child.wait().expect("wait")
+        let status = self.child.wait().expect("wait");
+        let stderr = self.stderr.join().expect("harness diagnostics thread");
+        if !stderr.is_empty() {
+            eprintln!("{}", String::from_utf8_lossy(&stderr));
+        }
+        status
     }
 
     fn quit(mut self) {
