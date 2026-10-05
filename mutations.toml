@@ -3,7 +3,8 @@
 # Other tests in the target may also fail: the original proofs ran
 # only the named test and did not assert target-wide exclusivity.
 # Build and test deadlines are separate: 3600 s for loaded-host builds,
-# 600 s for the test binary. Reports belong in target/mutations/.
+# 600 s for test binaries unless a row extends the bound for many stalled tests.
+# Reports belong in target/mutations/.
 
 # worker: 32 controls
 [[control]]
@@ -557,7 +558,7 @@ build_timeout_s = 3600
 timeout_s = 7200
 file = "crates/basal-core/src/journal.rs"
 old = "payload_hash FROM mailbox \\\n         WHERE run_id = ?1 ORDER BY seq\","
-new = "payload_hash FROM mailbox \\\n         WHERE run_id = ?1 AND arrived_generation < (SELECT generation FROM runs WHERE run_id = ?1) ORDER BY seq\","
+new = "payload_hash FROM mailbox \\\n         WHERE run_id = ?1 AND arrived_generation < (SELECT generation FROM runs WHERE run_id = ?1) ORDER BY seq\", // NON-VACUITY BREAK"
 
 [[control]]
 id = "rejections-journaled-as-fulfilments-caught-rejection"
@@ -619,7 +620,7 @@ build_timeout_s = 3600
 timeout_s = 3600
 file = "crates/basal-core/src/runtime.rs"
 old = "let handle = thread::spawn(f);"
-new = "f();\n        let handle = thread::spawn(|| {});"
+new = "f(); // NON-VACUITY BREAK\n        let handle = thread::spawn(|| {});"
 
 [[control]]
 id = "recovery-applies-a-committed-local-effect-again"
