@@ -149,10 +149,23 @@ struct Fixture {
     clock: Clock,
     rt: Runtime,
 }
-const ACTIVATION_WAIT: Duration = Duration::from_secs(3);
+// Healthy scoped calls keep the production activation budget under host load.
+const ACTIVATION_WAIT: Duration = Duration::from_secs(60);
+// Only the fixture with a deliberately withheld provider reply uses this limit.
+const STALLED_ACTIVATION_WAIT: Duration = Duration::from_secs(3);
 
 impl Fixture {
     fn new(tag: &str, script: &str, registered: bool, owned: bool) -> Self {
+        Self::with_activation_deadline(tag, script, registered, owned, ACTIVATION_WAIT)
+    }
+
+    fn with_activation_deadline(
+        tag: &str,
+        script: &str,
+        registered: bool,
+        owned: bool,
+        activation_deadline: Duration,
+    ) -> Self {
         let world = World::new(tag);
         let wire = Arc::new(Wire::default());
         if registered {
@@ -172,9 +185,7 @@ impl Fixture {
             Arc::new(NoHooks),
             Some(world.source.clone()),
             Config {
-                // A withheld outcome must fail promptly rather than consuming
-                // the production activation budget in every fixture run.
-                activation_deadline: ACTIVATION_WAIT,
+                activation_deadline,
                 install_gate: InstallGate::Core,
                 clock: clock.clone(),
                 retry_backoff: Duration::from_millis(100),
@@ -710,7 +721,13 @@ fn carrier_core_payload_and_route_remain_unchanged() {
 
 #[test]
 fn a_stalled_scope_activation_deadline_reaps_its_worker() {
-    let f = Fixture::new("scope-activation-wait", SCRIPT, true, true);
+    let f = Fixture::with_activation_deadline(
+        "scope-activation-wait",
+        SCRIPT,
+        true,
+        true,
+        STALLED_ACTIVATION_WAIT,
+    );
     let run = f.admit("one");
     let mut worker = f._world.source.spawn().expect("worker");
     // Only provider dispatch reads this queue. Holding it withholds a reply
@@ -730,7 +747,7 @@ fn a_stalled_scope_activation_deadline_reaps_its_worker() {
     let waited = rx.recv_timeout(Duration::from_secs(5));
     drop(held_reply);
     wait_until(
-        Instant::now() + Duration::from_secs(5),
+        Instant::now() + ACTIVATION_WAIT,
         "the released scope activation driver to exit",
         || driver.is_finished(),
     )

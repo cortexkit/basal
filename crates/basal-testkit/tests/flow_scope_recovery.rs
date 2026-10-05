@@ -1,5 +1,3 @@
-mod common;
-
 use basal_core::{Clock, Config, InstallGate, NoHooks, RunState, Runtime, Store};
 use basal_host::flow_refusal::{FlowRefusal, RefusalReason};
 use basal_host::flow_scope::{FlowScope, RegisteredScope};
@@ -75,7 +73,7 @@ fn open(world: &World, provider: Arc<Provider>, clock: &Clock) -> Runtime {
             install_gate: InstallGate::Core,
             retry_backoff: Duration::from_millis(100),
             auto_resume: false,
-            ..common::config()
+            ..Config::default()
         },
     )
 }

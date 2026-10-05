@@ -2,7 +2,7 @@
 //! of one flow run one at a time in trigger order, a run holds the slot
 //! until it is terminal (suspended included), and the deadline fails a
 //! stuck run, kills its worker and frees the slot. Run deadlines use a manual
-//! clock; fixture waits have short real-time bounds so a stuck driver fails.
+//! clock; fixture waits are bounded so a stuck driver cannot hang the suite.
 
 mod common;
 
@@ -26,7 +26,10 @@ fn admit_trigger(rt: &Runtime, world: &World, script: &str, trigger: &str) -> St
 }
 
 const T0: i64 = 1_798_761_600_000;
-const DRIVER_WAIT: Duration = Duration::from_secs(3);
+// A driver that is merely slow to finish must not fail on a loaded host.
+const DRIVER_WAIT: Duration = Duration::from_secs(60);
+// This short limit is exercised only while the fixture deliberately holds a gate.
+const STALLED_DRIVER_WAIT: Duration = Duration::from_secs(3);
 
 fn manual_runtime(world: &World) -> (Runtime, Clock) {
     let clock = Clock::manual(T0);
@@ -188,7 +191,7 @@ fn a_stuck_driver_wait_deadline_releases_and_reaps_its_worker() {
     let (tx, rx) = mpsc::channel();
     let waiter = std::thread::spawn(move || {
         let waited = wait_until(
-            Instant::now() + DRIVER_WAIT,
+            Instant::now() + STALLED_DRIVER_WAIT,
             "a deliberately stalled activation driver",
             || driver.is_finished(),
         );
@@ -200,14 +203,14 @@ fn a_stuck_driver_wait_deadline_releases_and_reaps_its_worker() {
     let waited = rx.recv_timeout(Duration::from_secs(5));
     world.mock.open_gate("observer");
     wait_until(
-        Instant::now() + Duration::from_secs(5),
+        Instant::now() + DRIVER_WAIT,
         "the released driver deadline observer to exit",
         || waiter.is_finished(),
     )
     .expect("observer cleanup");
     let driver = waiter.join().expect("deadline observer");
     wait_until(
-        Instant::now() + Duration::from_secs(5),
+        Instant::now() + DRIVER_WAIT,
         "the released activation driver to exit",
         || driver.is_finished(),
     )

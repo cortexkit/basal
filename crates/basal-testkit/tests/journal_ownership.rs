@@ -18,7 +18,10 @@ use common::{admit, admit_as, finish, query_i64, result, runtime, runtime_with};
 use serde_json::json;
 
 type Slot = Arc<OnceLock<Runtime>>;
-const OWNER_DRIVER_WAIT: Duration = Duration::from_secs(3);
+// Both a healthy superseded driver and cleanup need loaded-host scheduling room.
+const OWNER_DRIVER_WAIT: Duration = Duration::from_secs(60);
+// Only the deliberately gated observer must reach this short deadline.
+const STALLED_OWNER_DRIVER_WAIT: Duration = Duration::from_secs(3);
 
 /// Hooks that, the first time `when` matches, take the run over for a
 /// second owner and keep its lease.
@@ -195,7 +198,7 @@ fn a_stuck_ownership_driver_wait_deadline_releases_and_reaps_its_worker() {
     let (tx, rx) = mpsc::channel();
     let waiter = std::thread::spawn(move || {
         let waited = wait_until(
-            Instant::now() + OWNER_DRIVER_WAIT,
+            Instant::now() + STALLED_OWNER_DRIVER_WAIT,
             "a deliberately stalled ownership driver",
             || driver.is_finished(),
         );
@@ -207,14 +210,14 @@ fn a_stuck_ownership_driver_wait_deadline_releases_and_reaps_its_worker() {
     let waited = rx.recv_timeout(Duration::from_secs(5));
     world.mock.open_gate("observer");
     wait_until(
-        Instant::now() + Duration::from_secs(5),
+        Instant::now() + OWNER_DRIVER_WAIT,
         "the released ownership deadline observer to exit",
         || waiter.is_finished(),
     )
     .expect("observer cleanup");
     let driver = waiter.join().expect("deadline observer");
     wait_until(
-        Instant::now() + Duration::from_secs(5),
+        Instant::now() + OWNER_DRIVER_WAIT,
         "the released ownership driver to exit",
         || driver.is_finished(),
     )

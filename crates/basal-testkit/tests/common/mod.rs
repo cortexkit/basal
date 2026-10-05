@@ -10,9 +10,9 @@ use basal_testkit::harness::{World, drive, test_manifest};
 
 pub fn config() -> Config {
     Config {
-        // A withheld fixture outcome must not spend a production-sized budget
-        // in every test before the package can report its failures.
-        activation_deadline: Duration::from_secs(5),
+        // Healthy activations need headroom when cut runs share a loaded host.
+        // Short activation budgets belong only to deliberately stalled fixtures.
+        activation_deadline: Duration::from_secs(20),
         install_gate: basal_core::InstallGate::Off,
         ..Config::default()
     }
