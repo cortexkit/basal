@@ -255,26 +255,29 @@ const SCRIPT: &str = "return await ops.call('mock','send',{value:7});";
 
 #[test]
 fn only_the_uncaught_readiness_rejection_object_is_exempt_from_failures() {
-    let uncaught = Fixture::new(
-        "uncaught-readiness",
+    for script in [
         "Date.now(); return await ops.call('mock','send',{});",
-        false,
-        true,
-    );
-    let run = uncaught.admit("one");
-    uncaught.activate(&run);
-    assert_eq!(
-        uncaught.rt.run(&run).unwrap().error_kind.as_deref(),
-        Some("readiness_rejection")
-    );
-    assert_eq!(
-        uncaught.rt.flow_health().unwrap()[0].consecutive_failures,
-        0
-    );
-    assert_eq!(uncaught.rt.calls(&run).unwrap()[1].position, 1);
+        // A later delivered call must not replace the originating position.
+        "Date.now(); let rejection; try { await ops.call('mock','send',{}); } catch (e) { rejection=e; } Date.now(); rejection.name='Changed'; rejection.data=null; throw rejection;",
+    ] {
+        let uncaught = Fixture::new("uncaught-readiness", script, false, true);
+        let run = uncaught.admit("one");
+        uncaught.activate(&run);
+        assert_eq!(
+            uncaught.rt.run(&run).unwrap().error_kind.as_deref(),
+            Some("readiness_rejection")
+        );
+        assert_eq!(
+            uncaught.rt.flow_health().unwrap()[0].consecutive_failures,
+            0
+        );
+        assert_eq!(uncaught.rt.calls(&run).unwrap()[1].position, 1);
+    }
     for script in [
         "try { await ops.call('mock','send',{}); } catch (_) {} throw new Error('unrelated');",
         "try { await ops.call('mock','send',{}); } catch (e) { const fake = new Error(e.message); fake.name=e.name; fake.data=e.data; throw fake; }",
+        "try { await ops.call('mock','send',{}); } catch (_) {} throw 'unrelated';",
+        "try { await ops.call('mock','send',{}); } catch (_) {} throw null;",
     ] {
         let caught = Fixture::new("caught-then-throw", script, false, true);
         let run = caught.admit("one");
@@ -285,6 +288,40 @@ fn only_the_uncaught_readiness_rejection_object_is_exempt_from_failures() {
         );
         assert_eq!(caught.rt.flow_health().unwrap()[0].consecutive_failures, 1);
     }
+
+    // Both rejections are genuine host errors. Only the uncaught one's row
+    // determines whether the failure is a readiness problem.
+    let other_host = Fixture::new(
+        "caught-readiness-then-host-rejection",
+        "try { await ops.call('mock','send',{}); } catch (_) {} return await sink.digest('ALF',{title:'denied'});",
+        false,
+        true,
+    );
+    other_host
+        .wire
+        .refusals
+        .lock()
+        .unwrap()
+        .push_back(basal_host::transport::refusal(
+            subc_protocol::ErrorBody::new("denied", "denied"),
+        ));
+    let run = other_host.admit("one");
+    other_host.activate(&run);
+    assert_eq!(
+        other_host.rt.run(&run).unwrap().error_kind.as_deref(),
+        Some("script")
+    );
+    assert_eq!(
+        other_host.rt.flow_health().unwrap()[0].consecutive_failures,
+        1
+    );
+    let calls = other_host.rt.calls(&run).unwrap();
+    assert_eq!(calls.len(), 2);
+    assert!(
+        calls
+            .iter()
+            .all(|call| call.outcome.as_ref().unwrap().settlement == Settlement::Rejected)
+    );
 }
 
 #[test]
