@@ -31,6 +31,8 @@ cargo clippy --workspace --all-targets --features basal-module/rig-kill-hook -- 
 shellcheck -x script/*.sh
 ```
 
+CI also refuses Cargo path dependencies that resolve outside this repository.
+
 The `rig-kill-hook` feature adds a one-shot kill switch used only by the test rig; a production build never enables it.
 
 ## Mutation proofs
