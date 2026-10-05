@@ -1,16 +1,17 @@
 //! The per-flow concurrency slot and the per-run wall-clock deadline: runs
 //! of one flow run one at a time in trigger order, a run holds the slot
 //! until it is terminal (suspended included), and the deadline fails a
-//! stuck run, kills its worker and frees the slot. Time is a manual clock;
-//! nothing here waits on wall time to pass.
+//! stuck run, kills its worker and frees the slot. Run deadlines use a manual
+//! clock; fixture waits have short real-time bounds so a stuck driver fails.
 
 mod common;
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, mpsc};
+use std::time::{Duration, Instant};
 
+use basal_core::channel::WorkerChannel;
 use basal_core::{ActivationEnd, Clock, Config, NoHooks, RunState, Runtime};
-use basal_testkit::harness::World;
+use basal_testkit::harness::{World, wait_until};
 use common::{config, finish, result};
 use serde_json::json;
 
@@ -25,6 +26,7 @@ fn admit_trigger(rt: &Runtime, world: &World, script: &str, trigger: &str) -> St
 }
 
 const T0: i64 = 1_798_761_600_000;
+const DRIVER_WAIT: Duration = Duration::from_secs(3);
 
 fn manual_runtime(world: &World) -> (Runtime, Clock) {
     let clock = Clock::manual(T0);
@@ -106,7 +108,28 @@ fn deadline_fails_a_stuck_run_and_frees_the_slot() {
     // Past the default ten-minute deadline.
     clock.advance(601_000);
     rt.enforce_deadlines().expect("enforce");
+    // Killing the worker cannot release a host call accidentally dispatched on
+    // the driver thread. Bound the join and open the fixture's gate on expiry.
+    let waited = wait_until(
+        Instant::now() + DRIVER_WAIT,
+        &format!("expired run {first}'s activation driver to exit"),
+        || driver.is_finished(),
+    );
+    if waited.is_err() {
+        world.mock.open_gate("stuck");
+        wait_until(
+            Instant::now() + DRIVER_WAIT,
+            "the released activation driver to exit",
+            || driver.is_finished(),
+        )
+        .expect("driver cleanup");
+    }
     let (end, mut worker) = driver.join().expect("driver thread");
+    if let Err(error) = waited {
+        worker.kill();
+        rt.quiesce();
+        panic!("{error}");
+    }
     let end = end.expect("activation");
     assert!(
         matches!(&end, ActivationEnd::OwnerLost)
@@ -141,6 +164,68 @@ fn deadline_fails_a_stuck_run_and_frees_the_slot() {
     rt.quiesce();
     let open = rt.health().expect("health").open_obligations;
     assert!(!open.iter().any(|(r, _)| *r == first), "{open:?}");
+}
+
+#[test]
+fn a_stuck_driver_wait_deadline_releases_and_reaps_its_worker() {
+    let world = World::new("slot-driver-wait");
+    let rt = common::runtime(&world);
+    let run = admit_trigger(
+        &rt,
+        &world,
+        "await ops.call('mock', 'echo', { gate: 'observer' }); return 1;",
+        "t1",
+    );
+    let mut worker = world.source.spawn().expect("worker");
+    let driver = {
+        let rt = rt.clone();
+        let run = run.clone();
+        std::thread::spawn(move || {
+            let end = rt.activate(&run, &mut worker);
+            (end, worker)
+        })
+    };
+    let (tx, rx) = mpsc::channel();
+    let waiter = std::thread::spawn(move || {
+        let waited = wait_until(
+            Instant::now() + DRIVER_WAIT,
+            "a deliberately stalled activation driver",
+            || driver.is_finished(),
+        );
+        tx.send(waited).expect("deadline observer still exists");
+        driver
+    });
+    // This independent bound detects a missing inner deadline. Release the
+    // host call even on failure so the driver can return its worker for reaping.
+    let waited = rx.recv_timeout(Duration::from_secs(5));
+    world.mock.open_gate("observer");
+    wait_until(
+        Instant::now() + Duration::from_secs(5),
+        "the released driver deadline observer to exit",
+        || waiter.is_finished(),
+    )
+    .expect("observer cleanup");
+    let driver = waiter.join().expect("deadline observer");
+    wait_until(
+        Instant::now() + Duration::from_secs(5),
+        "the released activation driver to exit",
+        || driver.is_finished(),
+    )
+    .expect("driver cleanup");
+    let (_, mut worker) = driver.join().expect("driver thread");
+    worker.kill();
+    assert!(
+        worker.exited(Duration::from_secs(3)),
+        "worker was not reaped"
+    );
+    rt.quiesce();
+    let error = waited
+        .expect("the driver wait did not fail within five seconds")
+        .expect_err("the stalled driver unexpectedly exited");
+    assert!(
+        error.contains("deliberately stalled activation driver"),
+        "{error}"
+    );
 }
 
 #[test]

@@ -156,6 +156,24 @@ pub fn approve_spec(
     Ok(spec(text))
 }
 
+/// Waits for a fixture condition until its deadline. Callers must release any
+/// blocked host calls and stop their workers before reporting a timeout.
+pub fn wait_until(
+    deadline: Instant,
+    description: &str,
+    mut ready: impl FnMut() -> bool,
+) -> Result<(), String> {
+    loop {
+        if ready() {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!("timed out waiting for {description}"));
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 /// A unique scratch directory.
 pub fn scratch(tag: &str) -> PathBuf {
     static SEQ: AtomicU64 = AtomicU64::new(0);

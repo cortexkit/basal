@@ -1,6 +1,7 @@
 //! Exercise scoped provider calls and journaled retry delays with the real
 //! confined JavaScript worker. An injectable clock advances retries and expiry
 //! without sleeping.
+use basal_core::channel::WorkerChannel;
 use basal_core::{Clock, Config, InstallGate, InstallRequest, NoHooks, RunState, Runtime, Store};
 use basal_host::core_host::CoreHost;
 use basal_host::flow_refusal::{FlowRefusal, RefusalReason};
@@ -10,11 +11,11 @@ use basal_host::subc_catalog::SubcCatalog;
 use basal_host::transport::{Transport, WireError, management_body, tool_body};
 use basal_host::{CallRequest, Dispatched, Host};
 use basal_proto::{CallKind, JsonText, Settlement};
-use basal_testkit::harness::{World, test_manifest};
+use basal_testkit::harness::{World, test_manifest, wait_until};
 use serde_json::{Value, json};
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::{Duration, Instant};
 use subc_protocol::{Principal, RouteTarget};
 
 #[derive(Default)]
@@ -148,6 +149,8 @@ struct Fixture {
     clock: Clock,
     rt: Runtime,
 }
+const ACTIVATION_WAIT: Duration = Duration::from_secs(3);
+
 impl Fixture {
     fn new(tag: &str, script: &str, registered: bool, owned: bool) -> Self {
         let world = World::new(tag);
@@ -169,6 +172,9 @@ impl Fixture {
             Arc::new(NoHooks),
             Some(world.source.clone()),
             Config {
+                // A withheld outcome must fail promptly rather than consuming
+                // the production activation budget in every fixture run.
+                activation_deadline: ACTIVATION_WAIT,
                 install_gate: InstallGate::Core,
                 clock: clock.clone(),
                 retry_backoff: Duration::from_millis(100),
@@ -681,6 +687,8 @@ fn carrier_core_payload_and_route_remain_unchanged() {
     );
     let run = f.admit("one");
     f.activate(&run);
+    let state = f.rt.run(&run).unwrap();
+    assert_eq!(state.state, RunState::Succeeded, "{state:#?}");
     let calls = f.wire.calls.lock().unwrap();
     let (route, module, body) = calls
         .iter()
@@ -698,6 +706,46 @@ fn carrier_core_payload_and_route_remain_unchanged() {
         )
     );
     assert!(body["params"].get("scope").is_none() && body["params"].get("flow").is_none());
+}
+
+#[test]
+fn a_stalled_scope_activation_deadline_reaps_its_worker() {
+    let f = Fixture::new("scope-activation-wait", SCRIPT, true, true);
+    let run = f.admit("one");
+    let mut worker = f._world.source.spawn().expect("worker");
+    // Only provider dispatch reads this queue. Holding it withholds a reply
+    // without blocking the install gate or the runtime's deadline checks.
+    let held_reply = f.wire.refusals.lock().unwrap();
+    let (tx, rx) = mpsc::channel();
+    let driver = {
+        let rt = f.rt.clone();
+        std::thread::spawn(move || {
+            let end = rt.activate(&run, &mut worker);
+            tx.send(()).expect("deadline observer still exists");
+            (end, worker)
+        })
+    };
+    // Release the provider even if the inner deadline was removed, then join
+    // and reap before asserting the independently observed deadline result.
+    let waited = rx.recv_timeout(Duration::from_secs(5));
+    drop(held_reply);
+    wait_until(
+        Instant::now() + Duration::from_secs(5),
+        "the released scope activation driver to exit",
+        || driver.is_finished(),
+    )
+    .expect("driver cleanup");
+    let (end, mut worker) = driver.join().expect("driver thread");
+    let reaped = worker.exited(Duration::from_secs(3));
+    worker.kill();
+    f.rt.quiesce();
+    waited.expect("the scope activation did not fail within five seconds");
+    let end = end.expect("activation");
+    assert!(
+        matches!(&end, basal_core::ActivationEnd::Failed { kind, .. } if kind == "deadline"),
+        "{end:?}"
+    );
+    assert!(reaped, "the activation deadline did not reap its worker");
 }
 
 #[test]

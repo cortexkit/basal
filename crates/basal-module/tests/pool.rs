@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use basal_core::{Boundary, Hooks, RunState, Step};
 use basal_module::pool::{Binding, Pool, PoolConfig, ProcessSpawner, Source, Spawn};
 use basal_module::process::{SpawnError, WorkerProcess};
+use basal_testkit::harness::wait_until;
 use common::{
     Fixture, GatedSpawner, HOUR, Options, T0, admit, agent, events_manifest, install_approved,
 };
@@ -54,22 +55,6 @@ fn fixture(tag: &str, mut o: Options) -> PoolFixture {
     PoolFixture {
         inner: common::fixture(tag, o),
         spawner,
-    }
-}
-
-fn wait_until(
-    deadline: Instant,
-    description: &str,
-    mut ready: impl FnMut() -> bool,
-) -> Result<(), String> {
-    loop {
-        if ready() {
-            return Ok(());
-        }
-        if Instant::now() >= deadline {
-            return Err(format!("timed out waiting for {description}"));
-        }
-        std::thread::sleep(Duration::from_millis(5));
     }
 }
 

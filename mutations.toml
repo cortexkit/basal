@@ -6194,7 +6194,7 @@ expect_red = ["a_wait_deadline_stops_and_reaps_its_workers"]
 only = false
 build_timeout_s = 3600
 timeout_s = 30
-file = "crates/basal-module/tests/pool.rs"
+file = "crates/basal-testkit/src/harness.rs"
 old = "if Instant::now() >= deadline {"
 new = "if false && Instant::now() >= deadline { // NON-VACUITY BREAK"
 
@@ -6489,4 +6489,38 @@ expect_red = ["script.tests.stage_card.StageCardChecks.test_push_event_ci_run_no
 only = false
 timeout_s = 120
 build_timeout_s = 1800
+
+
+[[control]]
+id = "dispatch-driver-wait-loses-its-short-deadline"
+guards = "a stalled activation driver fails within the fixture deadline and returns its worker for reaping"
+file = "crates/basal-testkit/tests/dispatch_slots.rs"
+old = "const DRIVER_WAIT: Duration = Duration::from_secs(3);"
+new = "const DRIVER_WAIT: Duration = Duration::from_secs(60); // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-testkit/tests/dispatch_slots.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test dispatch_slots"
+expect_red = ["a_stuck_driver_wait_deadline_releases_and_reaps_its_worker"]
+only = true
+timeout_s = 30
+build_timeout_s = 3600
+
+
+[[control]]
+id = "flow-scope-fixture-keeps-the-production-activation-deadline"
+guards = "a stalled scope activation fails within the fixture deadline and reaps its worker"
+file = "crates/basal-testkit/tests/flow_scopes.rs"
+old = "const ACTIVATION_WAIT: Duration = Duration::from_secs(3);"
+new = "const ACTIVATION_WAIT: Duration = Duration::from_secs(60); // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test flow_scopes"
+expect_red = ["a_stalled_scope_activation_deadline_reaps_its_worker"]
+only = true
+timeout_s = 30
+build_timeout_s = 3600
 
