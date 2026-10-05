@@ -111,8 +111,10 @@ fn deadline_fails_a_stuck_run_and_frees_the_slot() {
     // Past the default ten-minute deadline.
     clock.advance(601_000);
     rt.enforce_deadlines().expect("enforce");
-    // Killing the worker cannot release a host call accidentally dispatched on
-    // the driver thread. Bound the join and open the fixture's gate on expiry.
+    // If a regression dispatched the mock call on the driver thread itself,
+    // killing the worker would not unblock it: the call waits on the mock's
+    // "stuck" gate. So bound the wait for the driver, and if it doesn't exit,
+    // open that gate so the driver can finish and the test can fail cleanly.
     let waited = wait_until(
         Instant::now() + DRIVER_WAIT,
         &format!("expired run {first}'s activation driver to exit"),
@@ -198,8 +200,10 @@ fn a_stuck_driver_wait_deadline_releases_and_reaps_its_worker() {
         tx.send(waited).expect("deadline observer still exists");
         driver
     });
-    // This independent bound detects a missing inner deadline. Release the
-    // host call even on failure so the driver can return its worker for reaping.
+    // The five-second receive timeout is the test's own check that the
+    // observer's STALLED_DRIVER_WAIT fired. Open the mock's "observer" gate
+    // whatever the result, so the stalled call returns and the driver hands
+    // back its worker for reaping.
     let waited = rx.recv_timeout(Duration::from_secs(5));
     world.mock.open_gate("observer");
     wait_until(

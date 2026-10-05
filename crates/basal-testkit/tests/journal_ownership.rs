@@ -139,8 +139,10 @@ fn owner_loss_after_call_commit_dispatches_once() {
             (end, old)
         })
     };
-    // The gate normally opens in the new owner's activation. If the old
-    // driver dispatches inline, it cannot return to start that activation.
+    // The mock's gate "g" normally opens from this test's runtime hook during
+    // owner-b's activation, below. If a regression made the old driver dispatch the call on
+    // its own thread, it would block on "g" and never return to let owner-b
+    // start. So bound the wait, and open "g" ourselves if it runs out.
     let waited = wait_until(
         Instant::now() + OWNER_DRIVER_WAIT,
         &format!("superseded run {run_id}'s activation driver to exit"),
@@ -205,8 +207,10 @@ fn a_stuck_ownership_driver_wait_deadline_releases_and_reaps_its_worker() {
         tx.send(waited).expect("deadline observer still exists");
         driver
     });
-    // The outer bound must remain independent of the driver's wait. Always
-    // release its host gate so the test can join and reap before failing.
+    // The five-second receive timeout is the test's own check that the
+    // observer's STALLED_OWNER_DRIVER_WAIT fired, kept separate from that
+    // wait. Open the mock's "observer" gate whatever the result, so the test
+    // can join the driver and reap its worker before failing.
     let waited = rx.recv_timeout(Duration::from_secs(5));
     world.mock.open_gate("observer");
     wait_until(

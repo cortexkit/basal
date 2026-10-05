@@ -742,8 +742,10 @@ fn a_stalled_scope_activation_deadline_reaps_its_worker() {
             (end, worker)
         })
     };
-    // Release the provider even if the inner deadline was removed, then join
-    // and reap before asserting the independently observed deadline result.
+    // The five-second receive timeout is the test's own check that the
+    // activation's STALLED_ACTIVATION_WAIT fired. Release the held provider
+    // reply whatever the result, then join the driver and reap its worker
+    // before asserting, so a failure never leaves a worker behind.
     let waited = rx.recv_timeout(Duration::from_secs(5));
     drop(held_reply);
     wait_until(
