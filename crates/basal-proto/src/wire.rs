@@ -278,6 +278,11 @@ fn failure(enc: &mut Encoder, f: &Failure) {
             enc.u8(10);
             detail(enc, d);
         }
+        Failure::ScriptHostRejection { position, message } => {
+            enc.u8(11);
+            enc.u64(*position);
+            detail(enc, message);
+        }
     }
 }
 
@@ -311,6 +316,10 @@ fn read_failure(dec: &mut Decoder<'_>) -> Result<Failure, DecodeError> {
         }),
         9 => Ok(Failure::HostLink { detail: text(dec)? }),
         10 => Ok(Failure::Engine { detail: text(dec)? }),
+        11 => Ok(Failure::ScriptHostRejection {
+            position: dec.u64("host rejection position")?,
+            message: text(dec)?,
+        }),
         tag => Err(DecodeError::UnknownTag {
             field: "failure",
             tag,

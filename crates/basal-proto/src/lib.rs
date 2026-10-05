@@ -113,6 +113,10 @@ mod tests {
             Failure::Script {
                 message: "boom".into(),
             },
+            Failure::ScriptHostRejection {
+                position: 7,
+                message: "no scope".into(),
+            },
             Failure::Nondeterminism(Nondeterminism::Divergence {
                 position: 2,
                 recorded: sig.clone(),
@@ -190,6 +194,40 @@ mod tests {
             let back = read_worker_message(&mut frame.as_slice()).expect("decodes");
             assert_eq!(back, m);
         }
+    }
+
+    #[test]
+    fn script_host_rejection_is_additive_and_pins_its_position_on_the_wire() {
+        let legacy = WorkerMessage::Finished {
+            activation_id: 1,
+            result: ActivationResult::Failed(Failure::Script {
+                message: "no".into(),
+            }),
+        };
+        let host = WorkerMessage::Finished {
+            activation_id: 1,
+            result: ActivationResult::Failed(Failure::ScriptHostRejection {
+                position: 7,
+                message: "no".into(),
+            }),
+        };
+        let legacy_bytes = [
+            0, 0, 0, 17, 104, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 2, b'n', b'o',
+        ];
+        let host_bytes = [
+            0, 0, 0, 25, 104, 0, 0, 0, 0, 0, 0, 0, 1, 1, 11, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 2,
+            b'n', b'o',
+        ];
+        assert_eq!(encode_worker_frame(&legacy).unwrap(), legacy_bytes);
+        assert_eq!(encode_worker_frame(&host).unwrap(), host_bytes);
+        assert_eq!(
+            read_worker_message(&mut host_bytes.as_slice()).unwrap(),
+            host
+        );
+        assert_eq!(
+            read_worker_message(&mut legacy_bytes.as_slice()).unwrap(),
+            legacy
+        );
     }
 
     #[test]

@@ -1312,6 +1312,30 @@ impl Activation<'_> {
             ActivationResult::Failed(Failure::Script { message }) => {
                 self.fail("script", message, true)
             }
+            ActivationResult::Failed(Failure::ScriptHostRejection { position, message }) => {
+                let readiness = self.rt.store().read(|c| {
+                    Ok(
+                        journal::row(c, &self.lease.run_id, position)?.is_some_and(|row| {
+                            row.outcome.as_ref().is_some_and(|outcome| {
+                                outcome.settlement == Settlement::Rejected
+                                    && crate::ops::typed_scope_rejection(
+                                        outcome.value.as_str(),
+                                        true,
+                                    )
+                            })
+                        }),
+                    )
+                })?;
+                self.fail(
+                    if readiness {
+                        "readiness_rejection"
+                    } else {
+                        "script"
+                    },
+                    message,
+                    true,
+                )
+            }
             ActivationResult::Failed(other) => self.fail("activation", format!("{other:?}"), true),
             ActivationResult::Stalled => self.fail(
                 "stalled",

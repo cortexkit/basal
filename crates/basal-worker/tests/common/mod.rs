@@ -37,7 +37,9 @@ pub fn nondeterminism(report: &Report) -> &Nondeterminism {
 
 pub fn script_error(report: &Report) -> &str {
     match finished(report) {
-        ActivationResult::Failed(Failure::Script { message }) => message,
+        ActivationResult::Failed(
+            Failure::Script { message } | Failure::ScriptHostRejection { message, .. },
+        ) => message,
         other => panic!("expected a script failure, got {other:?}"),
     }
 }

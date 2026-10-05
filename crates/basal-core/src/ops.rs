@@ -123,11 +123,9 @@ pub fn flow_health(conn: &Connection, now_ms: i64) -> Result<Vec<FlowHealth>> {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         for run in finished {
             if counting {
-                let readiness_failure = if run.error_kind.as_deref() == Some("script") {
-                    let value:Option<String>=conn.query_row("SELECT value FROM journal WHERE run_id=?1 AND settlement='rejected' AND delivery_order=(SELECT MAX(delivery_order) FROM journal WHERE run_id=?1)",[&run.run_id],|r|r.get(0)).optional()?.flatten();
-                    value
-                        .as_deref()
-                        .is_some_and(|value| typed_scope_rejection(value, true))
+                let readiness_failure = if run.error_kind.as_deref() == Some("readiness_rejection")
+                {
+                    true
                 } else if run.error_kind.as_deref() == Some("deadline") {
                     let values:Vec<String>=conn.prepare("SELECT value FROM mailbox WHERE run_id=?1 AND settlement='rejected' UNION ALL SELECT value FROM journal WHERE run_id=?1 AND settlement='rejected'")?.query_map([&run.run_id],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?;
                     values
@@ -200,7 +198,7 @@ pub fn flow_health(conn: &Connection, now_ms: i64) -> Result<Vec<FlowHealth>> {
     Ok(flows)
 }
 
-fn typed_scope_rejection(value: &str, readiness_only: bool) -> bool {
+pub(crate) fn typed_scope_rejection(value: &str, readiness_only: bool) -> bool {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(value) else {
         return false;
     };

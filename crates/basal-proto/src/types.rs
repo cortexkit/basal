@@ -458,6 +458,12 @@ pub enum Failure {
     Script {
         message: String,
     },
+    /// The top-level rejection is the same object the prelude created for
+    /// this host outcome, not a script-created error with similar fields.
+    ScriptHostRejection {
+        position: u64,
+        message: String,
+    },
     Nondeterminism(Nondeterminism),
     /// The script tried to issue a call its profile forbids.
     ProfileViolation {

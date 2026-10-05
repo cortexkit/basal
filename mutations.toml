@@ -5822,6 +5822,21 @@ new = "                    != None // NON-VACUITY BREAK"
 # Test fixture: 1 additional control
 ## Flow-scope controls. These rows still need proof on available build capacity.
 [[control]]
+id = "flow-readiness-rejection-identity-is-not-tracked"
+guards = "only the actual uncaught host rejection carries its journal position"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test flow_scopes"
+expect_red = ["only_the_uncaught_readiness_rejection_object_is_exempt_from_failures"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-worker/src/prelude.js"
+old = "ReflectApply(weakMapSet, hostRejections, [error, position]);"
+new = "void position; // NON-VACUITY BREAK"
+
+[[control]]
 id = "flow-scoped-open-is-not-used"
 guards = "provider routes must use core's selector"
 test_file = "crates/basal-host/src/transport.rs"

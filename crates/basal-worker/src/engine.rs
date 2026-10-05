@@ -470,11 +470,13 @@ fn native_bridge<'js>(ctx: &Ctx<'js>, shared: &Rc<Shared>) -> rquickjs::Result<O
                         "asynchronous primitive issued synchronously",
                     ));
                 }
+                let position = s.bridge.borrow().next_position;
                 match s.issue(kind, args) {
                     Ok(Issued::Sync { fulfilled, value }) => {
                         let reply = Array::new(ctx.clone())?;
                         reply.set(0, fulfilled)?;
                         reply.set(1, value.as_str())?;
+                        reply.set(2, position as f64)?;
                         Ok(reply)
                     }
                     _ => Err(halt_exception(&ctx)),
@@ -495,7 +497,11 @@ struct Hooks {
 enum ScriptState {
     Pending,
     Fulfilled(String),
-    Rejected { kind: String, text: String },
+    Rejected {
+        kind: String,
+        text: String,
+        host_position: Option<u64>,
+    },
 }
 
 /// Classifies an exception that escaped into Rust.
@@ -874,12 +880,14 @@ impl Activation {
             let state: i32 = reply.get(0)?;
             let first: String = reply.get(1)?;
             let second: String = reply.get(2)?;
+            let host_position: Option<u64> = reply.get(3)?;
             Ok(match state {
                 0 => ScriptState::Pending,
                 1 => ScriptState::Fulfilled(first),
                 _ => ScriptState::Rejected {
                     kind: first,
                     text: second,
+                    host_position,
                 },
             })
         })
@@ -965,13 +973,23 @@ impl Activation {
                 (outstanding, all_long)
             };
             match state {
-                ScriptState::Rejected { kind, text } => {
+                ScriptState::Rejected {
+                    kind,
+                    text,
+                    host_position,
+                } => {
                     return Ok(match kind.as_str() {
                         "memory" => ActivationResult::BudgetExhausted(BudgetKind::Memory),
                         "stack" => ActivationResult::BudgetExhausted(BudgetKind::Stack),
                         "unserializable" => failed(Failure::ResultNotSerializable {
                             detail: truncate(text),
                         }),
+                        "host_rejection" if host_position.is_some() => {
+                            failed(Failure::ScriptHostRejection {
+                                position: host_position.expect("host rejection position"),
+                                message: truncate(text),
+                            })
+                        }
                         _ => failed(Failure::Script {
                             message: truncate(text),
                         }),

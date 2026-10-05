@@ -42,6 +42,9 @@
   const mapGet = Map.prototype.get;
   const mapSet = Map.prototype.set;
   const mapDelete = Map.prototype.delete;
+  const WeakMapCtor = WeakMap;
+  const weakMapGet = WeakMap.prototype.get;
+  const weakMapSet = WeakMap.prototype.set;
   const SetCtor = Set;
   const arrayPush = Array.prototype.push;
   const NativeDate = Date;
@@ -63,19 +66,23 @@
   // settled. Positions are allocated by the worker's Rust side, which also
   // decides when an outcome is delivered; this table only routes it.
   const pending = new MapCtor();
+  // Identity is private to the prelude. Script-visible names and data may
+  // be changed or copied and therefore cannot identify an uncaught host error.
+  const hostRejections = new WeakMapCtor();
 
   function encodeArgs(args) {
     const text = JSONStringify(args === undefined ? null : args);
     return text === undefined ? 'null' : text;
   }
 
-  function hostError(data) {
+  function hostError(data, position) {
     const message = data !== null && typeof data === 'object' && typeof data.message === 'string'
       ? data.message
       : 'host call rejected';
     const error = new ErrorCtor(message);
     ObjectDefineProperty(error, 'name', { value: 'HostError', writable: true, enumerable: false, configurable: true });
     ObjectDefineProperty(error, 'data', { value: data, writable: true, enumerable: true, configurable: true });
+    ReflectApply(weakMapSet, hostRejections, [error, position]);
     return error;
   }
 
@@ -96,7 +103,7 @@
     const reply = issueSync(code, 'null');
     const value = JSONParse(reply[1]);
     if (!reply[0]) {
-      throw hostError(value);
+      throw hostError(value, reply[2]);
     }
     return value;
   }
@@ -119,7 +126,7 @@
     if (fulfilled) {
       entry.resolve(value);
     } else {
-      entry.reject(hostError(value));
+      entry.reject(hostError(value, position));
     }
     return 0;
   }
@@ -429,6 +436,7 @@
   let resultText = '';
   let failureKind = '';
   let failureText = '';
+  let failureHostPosition = null;
 
   // Classifies a rejection. Memory and stack exhaustion surface as ordinary
   // exceptions in QuickJS, so they are recognised by their engine messages.
@@ -457,8 +465,10 @@
   }
 
   function fail(error) {
+    const position = ReflectApply(weakMapGet, hostRejections, [error]);
     const described = describe(error);
-    failureKind = described[0];
+    failureKind = position === undefined ? described[0] : 'host_rejection';
+    failureHostPosition = position === undefined ? null : position;
     failureText = described[1];
     state = 2;
   }
@@ -483,7 +493,7 @@
   }
 
   function status() {
-    return [state, state === 1 ? resultText : failureKind, failureText];
+    return [state, state === 1 ? resultText : failureKind, failureText, failureHostPosition];
   }
 
   return { deliver, start, status, roots };

@@ -254,6 +254,40 @@ impl Fixture {
 const SCRIPT: &str = "return await ops.call('mock','send',{value:7});";
 
 #[test]
+fn only_the_uncaught_readiness_rejection_object_is_exempt_from_failures() {
+    let uncaught = Fixture::new(
+        "uncaught-readiness",
+        "Date.now(); return await ops.call('mock','send',{});",
+        false,
+        true,
+    );
+    let run = uncaught.admit("one");
+    uncaught.activate(&run);
+    assert_eq!(
+        uncaught.rt.run(&run).unwrap().error_kind.as_deref(),
+        Some("readiness_rejection")
+    );
+    assert_eq!(
+        uncaught.rt.flow_health().unwrap()[0].consecutive_failures,
+        0
+    );
+    assert_eq!(uncaught.rt.calls(&run).unwrap()[1].position, 1);
+    for script in [
+        "try { await ops.call('mock','send',{}); } catch (_) {} throw new Error('unrelated');",
+        "try { await ops.call('mock','send',{}); } catch (e) { const fake = new Error(e.message); fake.name=e.name; fake.data=e.data; throw fake; }",
+    ] {
+        let caught = Fixture::new("caught-then-throw", script, false, true);
+        let run = caught.admit("one");
+        caught.activate(&run);
+        assert_eq!(
+            caught.rt.run(&run).unwrap().error_kind.as_deref(),
+            Some("script")
+        );
+        assert_eq!(caught.rt.flow_health().unwrap()[0].consecutive_failures, 1);
+    }
+}
+
+#[test]
 fn module_ops_open_under_core_selector_and_reuse_across_runs() {
     let f = Fixture::new("scope-reuse", SCRIPT, true, true);
     for trigger in ["first", "second"] {
