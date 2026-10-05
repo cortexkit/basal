@@ -76,7 +76,12 @@ class RigChecks(unittest.TestCase):
             self.assertIn("key with spaces", result.stdout)
 
     def test_auth_refuses_a_final_key_symlink_outside_the_rig(self):
-        with tempfile.TemporaryDirectory() as home:
+        with tempfile.TemporaryDirectory() as tmp:
+            # Resolve the temp dir first: on macOS it sits under /var, a
+            # symlink to /private/var, and an unresolved home would be refused
+            # for that reason alone, so the test couldn't tell whether the
+            # check follows the key file's own symlink.
+            home = os.path.realpath(tmp)
             key = Path(home) / ".local/share/cortexkit/ckdev-flows/config/claustrum/master.key"
             key.parent.mkdir(parents=True)
             key.symlink_to(Path(home) / "outside-master.key")

@@ -6035,13 +6035,12 @@ only = false
 timeout_s = 120
 build_timeout_s = 1800
 
-
 [[control]]
-id = "rig-auth-path-check-skipped"
-guards = "auth paths that resolve outside the rig, through a final symlink, are refused"
+id = "rig-auth-path-check-ignores-final-symlinks"
+guards = "auth paths are resolved through a final symlink before the inside-the-rig check"
 file = "script/flows-rig.sh"
 old = "if not os.path.realpath(path).startswith(root):"
-new = "if False and not os.path.realpath(path).startswith(root):"
+new = "if not os.path.abspath(path).startswith(root):"
 edits = []
 test_file = "script/tests/flows_rig.py"
 runner = "command"
