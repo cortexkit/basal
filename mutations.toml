@@ -8,6 +8,8 @@
 # worker: 32 controls
 [[control]]
 id = "worker-leaves-inherited-descriptors-open"
+hub = "Only stdio remains open at worker startup, asserted by both inherited-descriptor and confinement probes"
+hub_targets = ["confinement"]
 guards = "worker leaves inherited descriptors open"
 test_file = "crates/basal-worker/tests/inherited_descriptors.rs"
 runner = "cargo"
@@ -68,6 +70,8 @@ new = "for (const fn of []) {"
 
 [[control]]
 id = "lockdown-date-prototype-constructor-still-names-the-native-date"
+hub = "Date.prototype.constructor must use the journaled clock rather than recover the native clock, asserted by lockdown and clock tests"
+hub_targets = ["clock"]
 guards = "lockdown: Date.prototype.constructor still names the native Date"
 test_file = "crates/basal-worker/tests/lockdown.rs"
 runner = "cargo"
@@ -263,6 +267,8 @@ new = "if false && (recorded.kind != kind || recorded.args_digest != digest) {"
 
 [[control]]
 id = "suspension-on-long-running-calls-disabled"
+hub = "A worker blocked only on long calls suspends and can resume with a fresh clock reading, asserted by replay and clock tests"
+hub_targets = ["clock"]
 guards = "suspension on long-running calls disabled"
 test_file = "crates/basal-worker/tests/replay.rs"
 runner = "cargo"
@@ -278,6 +284,8 @@ new = "if false && all_long {"
 
 [[control]]
 id = "interrupt-handler-never-stops-the-engine-cpu-loop"
+hub = "The JS CPU budget interrupts unbounded scripts, including loops and regex payloads, asserted by budgets and fuzz tests"
+hub_targets = ["fuzz"]
 guards = "interrupt handler never stops the engine (CPU loop)"
 test_file = "crates/basal-worker/tests/budgets.rs"
 runner = "cargo"
@@ -293,6 +301,8 @@ new = "false && (interrupt.halted.get() || interrupt.clock.over_budget())"
 
 [[control]]
 id = "interrupt-handler-never-stops-the-engine-catastrophic-regex"
+hub = "The JS CPU budget interrupts unbounded scripts, including loops and regex payloads, asserted by fuzz and budgets tests"
+hub_targets = ["budgets"]
 guards = "interrupt handler never stops the engine (catastrophic regex)"
 test_file = "crates/basal-worker/tests/fuzz.rs"
 runner = "cargo"
@@ -308,6 +318,8 @@ new = "false && (interrupt.halted.get() || interrupt.clock.over_budget())"
 
 [[control]]
 id = "js-time-measured-as-wall-time-from-the-first-engine-entry"
+hub = "Time spent outside the JS engine never consumes its CPU budget, asserted by the clock unit test and host-wait integration test"
+hub_targets = ["basal_worker"]
 guards = "JS time measured as wall time from the first engine entry"
 test_file = "crates/basal-worker/tests/budgets.rs"
 runner = "cargo"
@@ -369,6 +381,8 @@ new = "ScriptState::Pending if false && outstanding.is_empty() => {"
 
 [[control]]
 id = "sh-installed-in-every-profile"
+hub = "The flow profile exposes no shell primitive, asserted by the profile test and lockdown's exact global inventory"
+hub_targets = ["lockdown"]
 guards = "sh installed in every profile"
 test_file = "crates/basal-worker/tests/profile.rs"
 runner = "cargo"
@@ -499,6 +513,8 @@ new = "    // sandbox skipped\n"
 # journal: 48 controls
 [[control]]
 id = "late-outcome-shipped-in-the-prefix-with-a-higher-order-replay-barrier-removed"
+hub = "An earlier unresolved call cannot join a replay prefix after a later call has already been released; race, token and crash recovery tests assert this barrier"
+hub_targets = ["dispatch_tokens", "journal_cut", "journal_kill"]
 guards = "late outcome shipped in the prefix with a higher order (replay barrier removed)"
 test_file = "crates/basal-testkit/tests/journal_races.rs"
 runner = "cargo"
@@ -560,6 +576,8 @@ new = "payload_hash FROM mailbox \\\n         WHERE run_id = ?1 AND arrived_gene
 
 [[control]]
 id = "rejections-journaled-as-fulfilments-caught-rejection"
+hub = "Journaled rejection settlements stay rejected through delivery and replay, including authorization, KV, token and provider refusals"
+hub_targets = ["builtins_dispatch", "dispatch_authorization", "dispatch_kv", "dispatch_tokens", "flow_scopes", "journal_cut"]
 guards = "rejections journaled as fulfilments (caught rejection)"
 test_file = "crates/basal-testkit/tests/journal_races.rs"
 runner = "cargo"
@@ -575,6 +593,8 @@ new = "            position,\n            { let _ = &settlement; \"fulfilled\" }
 
 [[control]]
 id = "rejections-journaled-as-fulfilments-all-rejected-any"
+hub = "Journaled rejection settlements stay rejected through delivery and replay, including authorization, KV, token and provider refusals"
+hub_targets = ["builtins_dispatch", "dispatch_authorization", "dispatch_kv", "dispatch_tokens", "flow_scopes", "journal_cut"]
 guards = "rejections journaled as fulfilments (all-rejected any)"
 test_file = "crates/basal-testkit/tests/journal_races.rs"
 runner = "cargo"
@@ -590,6 +610,8 @@ new = "            position,\n            { let _ = &settlement; \"fulfilled\" }
 
 [[control]]
 id = "rejections-journaled-as-fulfilments-early-all-rejection"
+hub = "Journaled rejection settlements stay rejected through delivery and replay, including authorization, KV, token and provider refusals"
+hub_targets = ["builtins_dispatch", "dispatch_authorization", "dispatch_kv", "dispatch_tokens", "flow_scopes", "journal_cut"]
 guards = "rejections journaled as fulfilments (early all rejection)"
 test_file = "crates/basal-testkit/tests/journal_races.rs"
 runner = "cargo"
@@ -620,6 +642,8 @@ new = "f();\n        let handle = thread::spawn(|| {});"
 
 [[control]]
 id = "recovery-applies-a-committed-local-effect-again"
+hub = "A local effect whose outcome is already waiting in the mailbox is never applied again on recovery, asserted by KV and crash recovery tests"
+hub_targets = ["dispatch_kv", "journal_cut", "journal_kill"]
 guards = "recovery applies a committed local effect again"
 test_file = "crates/basal-testkit/tests/journal_races.rs"
 runner = "cargo"
@@ -729,6 +753,8 @@ new = "                    let flow = self.on_host_call(call.clone());\n        
 
 [[control]]
 id = "recovery-resends-a-mutation-that-ignores-idempotency-keys"
+hub = "Recovery reconciles an unknown unkeyed mutation instead of resending it, asserted by the journal and built-in dispatch recovery tests"
+hub_targets = ["builtins_dispatch"]
 guards = "recovery resends a mutation that ignores idempotency keys"
 test_file = "crates/basal-testkit/tests/journal_unknown.rs"
 runner = "cargo"
@@ -744,6 +770,8 @@ new = "(_, _) => resend.push(row.clone()),"
 
 [[control]]
 id = "a-resend-mints-a-new-idempotency-key"
+hub = "Every resend preserves the committed call key across cuts, reconciliation and scope deferral, asserted by each recovery target"
+hub_targets = ["flow_scope_recovery", "journal_cut", "journal_kill"]
 guards = "a resend mints a new idempotency key"
 test_file = "crates/basal-testkit/tests/journal_unknown.rs"
 runner = "cargo"
@@ -879,6 +907,8 @@ new = "if let Some(run_id) = tomb.filter(|_| false) {"
 
 [[control]]
 id = "admission-does-not-deduplicate"
+hub = "Redelivering an admitted trigger returns its existing run without consuming another rate slot or repeating effects after a parent kill"
+hub_targets = ["dispatch_limits", "journal_kill"]
 guards = "admission does not deduplicate"
 test_file = "crates/basal-testkit/tests/journal_admin.rs"
 runner = "cargo"
@@ -954,6 +984,8 @@ new = "c.pragma_update(None, \"fullfsync\", false)?;"
 
 [[control]]
 id = "recovery-does-not-resend-queries-cut-harness"
+hub = "Recovery resends unresolved queries so runs finish after cuts or parent kills, asserted by the crash and built-in recovery targets"
+hub_targets = ["builtins_dispatch", "journal_kill"]
 guards = "recovery does not resend queries (cut harness)"
 test_file = "crates/basal-testkit/tests/journal_cut.rs"
 runner = "cargo"
@@ -969,6 +1001,8 @@ new = "(StoredClass::KeyedMutation, _) => resend.push(row.clone()),"
 
 [[control]]
 id = "recovery-does-not-resend-queries-cuts-in-recovery-suffixes"
+hub = "Recovery resends unresolved queries so runs finish after cuts or parent kills, asserted by the crash and built-in recovery targets"
+hub_targets = ["builtins_dispatch", "journal_kill"]
 guards = "recovery does not resend queries (cuts in recovery suffixes)"
 test_file = "crates/basal-testkit/tests/journal_cut.rs"
 runner = "cargo"
@@ -984,6 +1018,8 @@ new = "(StoredClass::KeyedMutation, _) => resend.push(row.clone()),"
 
 [[control]]
 id = "recovery-does-not-resend-keyed-mutations-parent-kill-9"
+hub = "Recovery resends unresolved keyed mutations under their original key, asserted by built-in, KV, model and journal crash recovery tests"
+hub_targets = ["builtins_dispatch", "dispatch_kv", "dispatch_tokens", "journal_cut", "journal_unknown"]
 guards = "recovery does not resend keyed mutations (parent kill -9)"
 test_file = "crates/basal-testkit/tests/journal_kill.rs"
 runner = "cargo"
@@ -1014,6 +1050,8 @@ new = "if true || self.run.broken + 1 >= self.rt.config.max_broken_activations {
 
 [[control]]
 id = "install-gate-an-activation-does-not-ask-core-first"
+hub = "Every resumed activation refreshes core's install status and scope selector, asserted by install-gate and scope recovery tests"
+hub_targets = ["flow_scope_recovery", "flow_scopes"]
 guards = "install gate: an activation does not ask core first"
 test_file = "crates/basal-testkit/tests/install_gate.rs"
 runner = "cargo"
@@ -1379,6 +1417,8 @@ new = "if false && approved.code_hash != code_hash(&spec.script, &spec.manifest)
 
 [[control]]
 id = "ops-outside-the-manifest-are-dispatched"
+hub = "An unlisted op is rejected without dispatch and its rejection replays after a cut, asserted by authorization and crash recovery tests"
+hub_targets = ["journal_cut"]
 guards = "ops outside the manifest are dispatched"
 test_file = "crates/basal-testkit/tests/dispatch_authorization.rs"
 runner = "cargo"
@@ -1469,6 +1509,8 @@ new = "Some(_) => Ok(()),"
 
 [[control]]
 id = "audit-row-written-outside-the-transaction-that-journals-the-call-cut-harness"
+hub = "The audit row commits atomically with the call intent so neither cuts nor parent kills leave an unaudited issued call"
+hub_targets = ["dispatch_kv", "journal_kill"]
 guards = "audit row written outside the transaction that journals the call (cut harness)"
 test_file = "crates/basal-testkit/tests/journal_cut.rs"
 runner = "cargo"
@@ -1515,6 +1557,8 @@ new = "if false && used.saturating_add(r.amount) > r.cap {"
 
 [[control]]
 id = "a-re-issued-model-call-sends-the-script-s-bytes-not-the-journaled-request"
+hub = "A reissued call sends the frozen journaled request bytes, including model clamps and built-in envelopes, asserted by dispatch and crash tests"
+hub_targets = ["builtins_dispatch", "journal_cut", "journal_kill"]
 guards = "a re-issued model call sends the script's bytes, not the journaled request"
 test_file = "crates/basal-testkit/tests/dispatch_tokens.rs"
 runner = "cargo"
@@ -1545,6 +1589,8 @@ new = "requested"
 
 [[control]]
 id = "usage-applied-again-for-a-settled-send-id"
+hub = "A settled model send charges usage exactly once despite completion redelivery, asserted by token ledger and Broca reservation tests"
+hub_targets = ["broca_reservations"]
 guards = "usage applied again for a settled send id"
 test_file = "crates/basal-testkit/tests/dispatch_tokens.rs"
 runner = "cargo"
@@ -1636,6 +1682,8 @@ new = "if false && total - previous + entry > bytes_i64(limits.max_flow_bytes)? 
 
 [[control]]
 id = "recovery-applies-a-committed-kv-write-again"
+hub = "A local effect whose outcome is already waiting in the mailbox is never applied again on recovery, asserted by KV and crash recovery tests"
+hub_targets = ["journal_cut", "journal_kill", "journal_races"]
 guards = "recovery applies a committed kv write again"
 test_file = "crates/basal-testkit/tests/dispatch_kv.rs"
 runner = "cargo"
@@ -1667,6 +1715,8 @@ new = "if let Some(holder) = slot_holder(tx, run_id)?.filter(|_| false) {"
 
 [[control]]
 id = "run-deadline-never-enforced-activation-and-expiry"
+hub = "The run deadline frees its slot whether active, suspended or waiting for provider readiness, asserted by slot and flow-scope tests"
+hub_targets = ["flow_scopes"]
 guards = "run deadline never enforced (activation and expiry)"
 test_file = "crates/basal-testkit/tests/dispatch_slots.rs"
 runner = "cargo"
@@ -1683,6 +1733,8 @@ edits = [
 
 [[control]]
 id = "suspended-runs-never-expire"
+hub = "Suspended runs expire at the original run deadline, including provider-readiness waits, asserted by slot and flow-scope tests"
+hub_targets = ["flow_scopes"]
 guards = "suspended runs never expire"
 test_file = "crates/basal-testkit/tests/dispatch_slots.rs"
 runner = "cargo"
@@ -1698,6 +1750,8 @@ new = "deadline_at IS NOT NULL AND deadline_at <= ?1 AND 0 \\"
 
 [[control]]
 id = "admission-ignores-the-run-rate-limit"
+hub = "Admission refuses a run past its flow's rate limit, including scheduled fires, asserted by rate-window and schedule integration tests"
+hub_targets = ["schedule_flows"]
 guards = "admission ignores the run rate limit"
 test_file = "crates/basal-testkit/tests/dispatch_limits.rs"
 runner = "cargo"
@@ -1863,6 +1917,8 @@ new = "(false && bytes > cap).then(|| {"
 
 [[control]]
 id = "manifest-schedule-not-validated-by-the-scheduler"
+hub = "Installing a schedule uses the scheduler's validation rules, asserted by manifest validation and schedule approval tests"
+hub_targets = ["schedule_tick"]
 guards = "manifest schedule not validated by the scheduler"
 test_file = "crates/basal-testkit/tests/dispatch_manifest.rs"
 runner = "cargo"
@@ -2045,6 +2101,8 @@ new = "let start = cap.saturating_sub(cap);"
 
 [[control]]
 id = "each-admits-its-fires-newest-first"
+hub = "The each catch-up policy admits kept due times oldest first, which also determines which fire gets the last rate slot"
+hub_targets = ["schedule_flows"]
 guards = "each admits its fires newest first"
 test_file = "crates/basal-testkit/tests/schedule_tick.rs"
 runner = "cargo"
@@ -2105,6 +2163,8 @@ new = "if count == u64::MAX {"
 
 [[control]]
 id = "the-schedule-advance-is-not-committed-with-its-planned-fires"
+hub = "Planning durably advances the next due time with its fires so repeat ticks and restarted schedulers never plan the same window twice"
+hub_targets = ["schedule_flows"]
 guards = "the schedule advance is not committed with its planned fires"
 test_file = "crates/basal-testkit/tests/schedule_tick.rs"
 runner = "cargo"
@@ -2120,6 +2180,8 @@ new = "params![flow_id, row.next_due.map(to_ms), last_fired, at],"
 
 [[control]]
 id = "planned-fires-are-not-persisted-with-the-advance"
+hub = "Planned fires are durably queued with the schedule advance before admission, asserted by tick and installed-flow tests reading the queue"
+hub_targets = ["schedule_flows"]
 guards = "planned fires are not persisted with the advance"
 test_file = "crates/basal-testkit/tests/schedule_tick.rs"
 runner = "cargo"
@@ -2135,6 +2197,8 @@ new = "for fire in fires.iter().filter(|_| false) {"
 
 [[control]]
 id = "planned-fires-are-not-persisted-restart-mid-admission"
+hub = "Planned fires are durably queued with the schedule advance before admission, asserted by tick and installed-flow tests reading the queue"
+hub_targets = ["schedule_flows"]
 guards = "planned fires are not persisted (restart mid-admission)"
 test_file = "crates/basal-testkit/tests/schedule_tick.rs"
 runner = "cargo"
@@ -2150,6 +2214,8 @@ new = "for fire in fires.iter().filter(|_| false) {"
 
 [[control]]
 id = "planned-fires-are-admitted-newest-first"
+hub = "The durable fire queue admits oldest first, including after a restart and when a rate limit drops later fires"
+hub_targets = ["schedule_flows"]
 guards = "planned fires are admitted newest first"
 test_file = "crates/basal-testkit/tests/schedule_tick.rs"
 runner = "cargo"
@@ -2165,6 +2231,8 @@ new = "FROM schedule_fires ORDER BY seq DESC LIMIT 1"
 
 [[control]]
 id = "the-schedule-is-not-advanced-and-fire-ids-are-not-derived-from-the-due-time"
+hub = "Advancing the schedule and reusing each due time's fire ID prevent duplicate admission on repeat ticks, asserted by tick and flow integration tests"
+hub_targets = ["schedule_flows"]
 guards = "the schedule is not advanced and fire ids are not derived from the due time"
 test_file = "crates/basal-testkit/tests/schedule_tick.rs"
 runner = "cargo"
@@ -2197,6 +2265,8 @@ new = "let counted_from = old.last_fired_due.unwrap_or(now);"
 
 [[control]]
 id = "approving-a-newer-version-drops-what-the-old-version-owed"
+hub = "A version swap plans the old version's owed due times before replacing its schedule, asserted by lifecycle and installed-flow tests"
+hub_targets = ["schedule_flows"]
 guards = "approving a newer version drops what the old version owed"
 test_file = "crates/basal-testkit/tests/schedule_tick.rs"
 runner = "cargo"
@@ -2212,6 +2282,8 @@ new = "if false && old.state == ScheduleState::Active {"
 
 [[control]]
 id = "a-disabled-schedule-ticks"
+hub = "A disabled schedule plans no fires, asserted by scheduler lifecycle and installed-flow disable/enable tests"
+hub_targets = ["schedule_flows"]
 guards = "a disabled schedule ticks"
 test_file = "crates/basal-testkit/tests/schedule_tick.rs"
 runner = "cargo"
@@ -2228,6 +2300,8 @@ edits = [
 
 [[control]]
 id = "enabling-resumes-from-the-stale-next-due-time-and-catches-up-the-disabled-hours"
+hub = "Enabling a schedule starts from the enable time rather than catching up disabled hours, asserted by both lifecycle targets"
+hub_targets = ["schedule_flows"]
 guards = "enabling resumes from the stale next due time and catches up the disabled hours"
 test_file = "crates/basal-testkit/tests/schedule_tick.rs"
 runner = "cargo"
@@ -2273,6 +2347,8 @@ new = "if admission != Admission::Draining || true {"
 
 [[control]]
 id = "unknown-spec-fields-accepted"
+hub = "Unknown schedule-spec fields are refused at both direct validation and manifest installation boundaries"
+hub_targets = ["dispatch_manifest"]
 guards = "unknown spec fields accepted"
 test_file = "crates/basal-testkit/tests/schedule_spec.rs"
 runner = "cargo"
@@ -2303,6 +2379,8 @@ new = "if cap == 0 {"
 
 [[control]]
 id = "interval-range-not-checked"
+hub = "Schedule intervals must lie within the supported range, asserted by direct validation and manifest installation tests"
+hub_targets = ["dispatch_manifest"]
 guards = "interval range not checked"
 test_file = "crates/basal-testkit/tests/schedule_spec.rs"
 runner = "cargo"
@@ -2318,6 +2396,8 @@ new = "if secs == u64::MAX {"
 
 [[control]]
 id = "an-unknown-zone-falls-back-to-utc"
+hub = "An unknown schedule zone is refused rather than silently using UTC, asserted by spec, manifest and approval tests"
+hub_targets = ["dispatch_manifest", "schedule_tick"]
 guards = "an unknown zone falls back to UTC"
 test_file = "crates/basal-testkit/tests/schedule_spec.rs"
 runner = "cargo"
@@ -2378,6 +2458,8 @@ new = "if parsed.find_next_occurrence(&probe, true).is_err() && false {"
 
 [[control]]
 id = "approving-a-version-with-a-schedule-trigger-does-not-create-its-schedule"
+hub = "Approving a scheduled version creates the schedule the tick loop reads, asserted by installed-flow and scheduler approval tests"
+hub_targets = ["schedule_tick"]
 guards = "approving a version with a schedule trigger does not create its schedule"
 test_file = "crates/basal-testkit/tests/schedule_flows.rs"
 runner = "cargo"
@@ -2393,6 +2475,8 @@ new = "match None::<crate::schedule::ScheduleSpec> {"
 
 [[control]]
 id = "a-version-swap-does-not-plan-what-the-old-version-owed-installed-flows"
+hub = "A version swap plans the old version's owed due times before replacing its schedule, asserted by both lifecycle targets"
+hub_targets = ["schedule_tick"]
 guards = "a version swap does not plan what the old version owed (installed flows)"
 test_file = "crates/basal-testkit/tests/schedule_flows.rs"
 runner = "cargo"
@@ -2408,6 +2492,8 @@ new = "if false && old.state == ScheduleState::Active {"
 
 [[control]]
 id = "disabling-a-flow-leaves-its-schedule-ticking"
+hub = "Disabling a flow stops its schedule, asserted by installed-flow integration and scheduler lifecycle tests"
+hub_targets = ["schedule_tick"]
 guards = "disabling a flow leaves its schedule ticking"
 test_file = "crates/basal-testkit/tests/schedule_flows.rs"
 runner = "cargo"
@@ -2423,6 +2509,8 @@ new = "    let _ = timestamp(now_ms)?;"
 
 [[control]]
 id = "enabling-a-flow-leaves-its-schedule-stopped"
+hub = "Enabling a flow restarts its schedule, asserted by installed-flow integration and scheduler lifecycle tests"
+hub_targets = ["schedule_tick"]
 guards = "enabling a flow leaves its schedule stopped"
 test_file = "crates/basal-testkit/tests/schedule_flows.rs"
 runner = "cargo"
@@ -2438,6 +2526,8 @@ new = "        let _ = timestamp(now_ms)?;"
 
 [[control]]
 id = "approving-a-version-without-a-schedule-trigger-keeps-the-old-schedule"
+hub = "Approving a version without a schedule removes the old schedule and its queued fires, asserted by both lifecycle targets"
+hub_targets = ["schedule_flows"]
 guards = "approving a version without a schedule trigger keeps the old schedule"
 test_file = "crates/basal-testkit/tests/schedule_tick.rs"
 runner = "cargo"
@@ -2529,6 +2619,8 @@ new = "if p.flow_ids.is_none() && !self.owns(owner, &f.flow_id)? {"
 
 [[control]]
 id = "flow-list-state-diverges-from-flow-health"
+hub = "Flow list preserves the same approved/enabled state as health, including unapproved and core-revoked flows, asserted by list and gate tests"
+hub_targets = ["install_gate"]
 guards = "flow.list state diverges from flow.health"
 test_file = "crates/basal-module/tests/list_contract.rs"
 runner = "cargo"
@@ -2574,6 +2666,8 @@ new = "operations: OPERATIONS\n                .iter()\n                .skip(1)
 
 [[control]]
 id = "an-agent-id-in-a-scope-nobody-vouched-for-is-taken-as-the-caller"
+hub = "An agent identity requires a core-owned, owner-authorized route stamp, asserted by the caller unit and binding tests"
+hub_targets = ["caller_binding"]
 guards = "an agent id in a scope nobody vouched for is taken as the caller"
 test_file = "crates/basal-module/src/caller.rs"
 runner = "cargo"
@@ -2589,6 +2683,8 @@ new = "core_owned"
 
 [[control]]
 id = "the-scope-stamp-on-a-route-s-bind-is-dropped"
+hub = "The daemon's attested scope stamp survives route binding and supplies the agent identity and scope used by scoped model flows"
+hub_targets = ["e2e"]
 guards = "the scope stamp on a route's bind is dropped"
 test_file = "crates/basal-module/tests/caller_binding.rs"
 runner = "cargo"
@@ -2635,6 +2731,8 @@ edits = [
 
 [[control]]
 id = "a-scope-owned-by-any-module-names-its-agent"
+hub = "Only a scope owned by core can attest an agent identity, asserted by the caller unit and binding tests"
+hub_targets = ["basal_module"]
 guards = "a scope owned by any module names its agent"
 test_file = "crates/basal-module/tests/caller_binding.rs"
 runner = "cargo"
@@ -2650,6 +2748,8 @@ new = "Principal::Reserved { .. }\n        );"
 
 [[control]]
 id = "an-agent-id-in-a-core-scope-the-daemon-does-not-vouch-for-names-the-agent"
+hub = "An agent identity requires owner authorization on its core scope, asserted by the caller unit and binding tests"
+hub_targets = ["basal_module"]
 guards = "an agent id in a core scope the daemon does not vouch for names the agent"
 test_file = "crates/basal-module/tests/caller_binding.rs"
 runner = "cargo"
@@ -2665,6 +2765,8 @@ new = "core_owned"
 
 [[control]]
 id = "an-unscoped-route-that-is-neither-direct-nor-core-s-is-taken-as-the-operator"
+hub = "An unscoped unrelated route is not the operator, asserted by caller classification, binding and authorization tests"
+hub_targets = ["basal_module", "ops"]
 guards = "an unscoped route that is neither direct nor core's is taken as the operator"
 test_file = "crates/basal-module/tests/caller_binding.rs"
 runner = "cargo"
@@ -2695,6 +2797,8 @@ new = "let _ = handle;"
 
 [[control]]
 id = "a-vouched-agent-may-run-a-capture-dry-run-of-a-flow-it-does-not-own"
+hub = "An agent may capture-dry-run only a flow it owns, asserted by route binding and the authorization matrix"
+hub_targets = ["ops"]
 guards = "a vouched agent may run a capture dry run of a flow it does not own"
 test_file = "crates/basal-module/tests/caller_binding.rs"
 runner = "cargo"
@@ -2710,6 +2814,8 @@ new = "(Caller::Agent { .. }, Mode::Capture) => {}"
 
 [[control]]
 id = "a-vouched-agent-may-enable-a-flow-it-does-not-own-the-module-s-ownership-check-and-the-core-s-both-removed"
+hub = "An agent may enable only a flow it owns; both ownership checks protect the binding and authorization-matrix tests"
+hub_targets = ["ops"]
 guards = "a vouched agent may enable a flow it does not own (the module's ownership check and the core's both removed)"
 test_file = "crates/basal-module/tests/caller_binding.rs"
 runner = "cargo"
@@ -2726,6 +2832,8 @@ edits = [
 
 [[control]]
 id = "an-unscoped-direct-key-holder-is-the-operator"
+hub = "A direct key holder is local, not an attested operator, asserted by caller classification, binding and authorization tests"
+hub_targets = ["basal_module", "caller_binding"]
 guards = "an unscoped direct key-holder is the operator"
 test_file = "crates/basal-module/tests/ops.rs"
 runner = "cargo"
@@ -2741,6 +2849,8 @@ new = "Some(Principal::Direct) => Caller::Operator,"
 
 [[control]]
 id = "any-reserved-module-is-the-operator-not-only-the-attested-callosum"
+hub = "Only the attested callosum module is the operator; other reserved modules remain unrelated callers at every authorization boundary"
+hub_targets = ["basal_module", "caller_binding"]
 guards = "any reserved module is the operator, not only the attested callosum"
 test_file = "crates/basal-module/tests/ops.rs"
 runner = "cargo"
@@ -2756,6 +2866,8 @@ new = "Some(Principal::Reserved { .. }) => Caller::Operator,"
 
 [[control]]
 id = "a-local-caller-refused-an-operator-action-is-told-not-permitted-not-operator-attestation-required"
+hub = "A local caller refused an operator-only action receives operator_attestation_required, asserted by binding and authorization tests"
+hub_targets = ["caller_binding"]
 guards = "a local caller refused an operator action is told not_permitted, not operator_attestation_required"
 test_file = "crates/basal-module/tests/ops.rs"
 runner = "cargo"
@@ -2816,6 +2928,8 @@ new = "if false {\n                    return Err(OpError::operator_attestation_
 
 [[control]]
 id = "a-local-caller-s-flow-without-a-digest-sink-is-installed-and-its-card-raised"
+hub = "A local install requires a digest sink before any card is raised, asserted by local-install and card-author tests"
+hub_targets = ["hosts"]
 guards = "a local caller's flow without a digest sink is installed and its card raised"
 test_file = "crates/basal-module/tests/ops.rs"
 runner = "cargo"
@@ -2831,6 +2945,8 @@ new = "if false {"
 
 [[control]]
 id = "a-local-caller-s-card-names-the-operator-as-its-author"
+hub = "A local install card identifies its author as local, never operator, asserted by local-install and card-author tests"
+hub_targets = ["hosts"]
 guards = "a local caller's card names the operator as its author"
 test_file = "crates/basal-module/tests/ops.rs"
 runner = "cargo"
@@ -2876,6 +2992,8 @@ new = "        _ => Ok(AuthorKind::Operator),"
 
 [[control]]
 id = "an-agent-s-scope-ref-is-taken-from-its-agent-id-instead-of-the-route-s-stamp"
+hub = "The agent's scope reference comes unchanged from the route stamp rather than the agent ID, asserted by caller and install-card tests"
+hub_targets = ["basal_module", "hosts"]
 guards = "an agent's scope_ref is taken from its agent id instead of the route's stamp"
 test_file = "crates/basal-module/tests/caller_binding.rs"
 runner = "cargo"
@@ -2891,6 +3009,8 @@ new = "scope_ref: agent.clone(),"
 
 [[control]]
 id = "an-agent-s-card-author-names-its-agent-id-instead-of-the-scope-ref-it-was-stamped-with"
+hub = "An agent's install card author names its attested scope reference, not the agent ID, asserted by card encoding and binding tests"
+hub_targets = ["caller_binding"]
 guards = "an agent's card author names its agent id instead of the scope_ref it was stamped with"
 test_file = "crates/basal-module/tests/hosts.rs"
 runner = "cargo"
@@ -3058,6 +3178,8 @@ new = "if active.runs.len() >= usize::MAX {"
 
 [[control]]
 id = "a-storage-error-does-not-raise-the-fatal-latch-in-process"
+hub = "A storage error raises the fatal latch so the engine stops and the process exits for recovery; decision and host cut tests assert this too"
+hub_targets = ["decisions", "e2e", "hosts"]
 guards = "a storage error does not raise the fatal latch (in process)"
 test_file = "crates/basal-module/tests/engine.rs"
 runner = "cargo"
@@ -3073,6 +3195,8 @@ new = "        if false {\n            *slot = Some(why);"
 
 [[control]]
 id = "a-storage-error-does-not-end-the-process"
+hub = "A storage error raises the fatal latch so the engine stops and the process exits for recovery; decision and host cut tests assert this too"
+hub_targets = ["decisions", "engine", "hosts"]
 guards = "a storage error does not end the process"
 test_file = "crates/basal-module/tests/e2e.rs"
 runner = "cargo"
@@ -3088,6 +3212,8 @@ new = "        if false {\n            *slot = Some(why);"
 
 [[control]]
 id = "the-module-starts-without-recovering-runs-left-running"
+hub = "Module startup recovers runs left running so journaled decisions, sink intents and model selections can resume after a cut"
+hub_targets = ["decisions", "hosts"]
 guards = "the module starts without recovering runs left running"
 test_file = "crates/basal-module/tests/e2e.rs"
 runner = "cargo"
@@ -3103,6 +3229,8 @@ new = "let recovered: Vec<String> = Vec::new();"
 
 [[control]]
 id = "a-card-s-approval-is-applied-as-a-rejection"
+hub = "An approved install card approves its version, asserted both by the install test and by fixtures verifying approval before running flows"
+hub_targets = ["caller_binding", "decisions", "dry_run", "e2e", "engine", "health_contract", "hosts", "install_gate", "list_contract", "pool"]
 guards = "a card's approval is applied as a rejection"
 test_file = "crates/basal-module/tests/ops.rs"
 runner = "cargo"
@@ -3118,6 +3246,8 @@ new = "CardDecision::Approve => Decision::Reject,"
 
 [[control]]
 id = "capture-mode-sends-calls-to-the-host"
+hub = "Capture dry runs execute no host effects, including install previews; decision, host and end-to-end tests assert no extra effects from those previews"
+hub_targets = ["decisions", "e2e", "hosts"]
 guards = "capture mode sends calls to the host"
 test_file = "crates/basal-module/tests/dry_run.rs"
 runner = "cargo"
@@ -3163,6 +3293,8 @@ new = ".is_some(),"
 
 [[control]]
 id = "an-owning-agent-may-ask-for-a-live-dry-run"
+hub = "Only the operator can request a live dry run, asserted by the dry-run target and authorization matrix"
+hub_targets = ["ops"]
 guards = "an owning agent may ask for a live dry run"
 test_file = "crates/basal-module/tests/dry_run.rs"
 runner = "cargo"
@@ -3194,6 +3326,8 @@ edits = [
 
 [[control]]
 id = "any-agent-may-run-a-capture-dry-run-of-another-s-flow"
+hub = "An agent may capture-dry-run only a flow it owns, asserted by the authorization matrix and route binding tests"
+hub_targets = ["caller_binding"]
 guards = "any agent may run a capture dry run of another's flow"
 test_file = "crates/basal-module/tests/ops.rs"
 runner = "cargo"
@@ -3254,6 +3388,8 @@ new = "        if false {\n            return Err(OpError::not_permitted(\"flow.
 
 [[control]]
 id = "any-agent-may-enable-any-flow-the-module-s-ownership-check-and-the-core-s-both-removed"
+hub = "An agent may enable only a flow it owns; both ownership checks protect the authorization-matrix and binding tests"
+hub_targets = ["caller_binding"]
 guards = "any agent may enable any flow (the module's ownership check and the core's both removed)"
 test_file = "crates/basal-module/tests/ops.rs"
 runner = "cargo"
@@ -3270,6 +3406,8 @@ edits = [
 
 [[control]]
 id = "the-owner-may-not-re-enable-even-a-disable-it-made-itself"
+hub = "The owning agent may re-enable a flow it disabled itself, asserted by owner binding tests and the authorization matrix"
+hub_targets = ["caller_binding"]
 guards = "the owner may not re-enable even a disable it made itself"
 test_file = "crates/basal-module/tests/ops.rs"
 runner = "cargo"
@@ -3360,6 +3498,8 @@ new = ".is_none_or(|ids| ids.is_empty() || flow_id.is_empty())"
 
 [[control]]
 id = "health-s-last-run-has-no-outcome"
+hub = "Health's last-run object names its outcome using the documented field, asserted by strict decoding and ops health tests"
+hub_targets = ["ops"]
 guards = "health's last run has no outcome"
 test_file = "crates/basal-module/tests/health_contract.rs"
 runner = "cargo"
@@ -3405,6 +3545,8 @@ new = "\"oldest_overdue_age_ms\": f.oldest_overdue_ms,"
 
 [[control]]
 id = "health-s-needs-reconcile-is-a-list-of-runs-not-a-boolean"
+hub = "Health's needs_reconcile field is a boolean, asserted by strict health decoding and the ops reconciliation test"
+hub_targets = ["ops"]
 guards = "health's needs_reconcile is a list of runs, not a boolean"
 test_file = "crates/basal-module/tests/health_contract.rs"
 runner = "cargo"
@@ -3435,6 +3577,8 @@ new = "\"overflow\": false,"
 
 [[control]]
 id = "health-s-auto-disabled-is-null-when-false"
+hub = "Health's auto_disabled field is always a boolean, including false, asserted by strict decoding and ops health tests"
+hub_targets = ["ops"]
 guards = "health's auto_disabled is null when false"
 test_file = "crates/basal-module/tests/health_contract.rs"
 runner = "cargo"
@@ -3450,6 +3594,8 @@ new = "\"auto_disabled\": f.auto_disabled.then_some(true),"
 
 [[control]]
 id = "health-s-state-is-outside-the-contract-s-enum"
+hub = "An approved enabled flow is reported as enabled, never active, across strict health decoding, ops, list and install-gate tests"
+hub_targets = ["install_gate", "list_contract", "ops"]
 guards = "health's state is outside the contract's enum"
 test_file = "crates/basal-module/tests/health_contract.rs"
 runner = "cargo"
@@ -3465,6 +3611,8 @@ new = "(Some(_), true) => \"active\","
 
 [[control]]
 id = "health-reports-a-flow-nobody-approved-by-its-enabled-switch"
+hub = "A flow with no approved version is unapproved regardless of its enabled switch, asserted by health, list and revocation tests"
+hub_targets = ["health_contract", "install_gate", "list_contract"]
 guards = "health reports a flow nobody approved by its enabled switch"
 test_file = "crates/basal-module/tests/ops.rs"
 runner = "cargo"
@@ -3480,6 +3628,8 @@ new = "(None, _) => if enabled { \"enabled\" } else { \"disabled\" },"
 
 [[control]]
 id = "health-does-not-say-who-disabled-a-flow"
+hub = "Health normalizes a disable's author to its documented operator/owner/auto/core category, asserted by ops and strict health decoding"
+hub_targets = ["health_contract"]
 guards = "health does not say who disabled a flow"
 test_file = "crates/basal-module/tests/ops.rs"
 runner = "cargo"
@@ -3510,6 +3660,8 @@ new = "if p.author.as_ref().is_some_and(|a| a == \"nobody\" && a != agent) {"
 
 [[control]]
 id = "health-reports-no-oldest-pending-run"
+hub = "Health includes the oldest pending run's age when one exists, asserted by ops and strict health-contract tests"
+hub_targets = ["health_contract"]
 guards = "health reports no oldest pending run"
 test_file = "crates/basal-module/tests/ops.rs"
 runner = "cargo"
@@ -3525,6 +3677,8 @@ new = "oldest_pending_ms: oldest(\"pending\")?.filter(|_| false),"
 
 [[control]]
 id = "health-does-not-count-failed-runs-as-consecutive-failures"
+hub = "Health counts failed runs in consecutive_failures, asserted by ops health and the independently decoded health contract"
+hub_targets = ["health_contract"]
 guards = "health does not count failed runs as consecutive failures"
 test_file = "crates/basal-module/tests/ops.rs"
 runner = "cargo"
@@ -3555,6 +3709,8 @@ new = "sent: Sent::Maybe(basal_host::UnknownReason::ConnectionLost),"
 
 [[control]]
 id = "flow-list-reports-a-disable-by-core-as-the-owner-s"
+hub = "Flow list preserves core as the disable author after revocation, asserted by list-contract and install-gate tests"
+hub_targets = ["install_gate"]
 guards = "flow.list reports a disable by core as the owner's"
 test_file = "crates/basal-module/tests/list_contract.rs"
 runner = "cargo"
@@ -3992,6 +4148,8 @@ new = "if false && (old.bytes != params || &old.route != route) {"
 
 [[control]]
 id = "broca-call-sessions-lose-the-position"
+hub = "Each model call's session identity includes its position as well as flow and run, asserted by reservation and global model-scope tests"
+hub_targets = ["global_model_scope"]
 guards = "Broca call sessions lose the position"
 test_file = "crates/basal-testkit/tests/broca_reservations.rs"
 runner = "cargo"
@@ -4202,6 +4360,8 @@ new = "_ => return Ok(Some(CompletionAck::Accepted)),"
 
 [[control]]
 id = "broca-poll-does-not-read-run-result-for-pending-calls"
+hub = "Polling resolves pending model calls from run.result even after missed notifications or reconnects, asserted by Broca and scoped transport tests"
+hub_targets = ["basal_host"]
 guards = "Broca poll does not read run.result for pending calls"
 test_file = "crates/basal-host/tests/broca.rs"
 runner = "cargo"
@@ -4232,6 +4392,8 @@ new = "self.transport.watch(&call.route)?; let watched: Result<(), BrocaError> =
 
 [[control]]
 id = "broca-pending-call-is-not-watched"
+hub = "Every pending model call opens a watch at the live head, asserted by completion, reconnect and scoped transport recovery tests"
+hub_targets = ["basal_host"]
 guards = "Broca pending call is not watched"
 test_file = "crates/basal-host/tests/broca.rs"
 runner = "cargo"
@@ -4308,6 +4470,8 @@ new = "if false && call.acknowledged || call.deferred {"
 
 [[control]]
 id = "broca-usage-metadata-is-ignored-by-the-ledger"
+hub = "Model completion usage replaces the reservation in the token ledger, asserted by reservation, token-window and crash recovery tests"
+hub_targets = ["dispatch_tokens", "journal_cut"]
 guards = "Broca usage metadata is ignored by the ledger"
 test_file = "crates/basal-testkit/tests/broca_reservations.rs"
 runner = "cargo"
@@ -4338,6 +4502,8 @@ new = "if true || labels.contains(text) {"
 
 [[control]]
 id = "broca-completion-is-not-delivered-after-module-restart"
+hub = "A durable model completion is delivered to the journal sink after restart, asserted by end-to-end and model-selection recovery tests"
+hub_targets = ["hosts"]
 guards = "Broca completion is not delivered after module restart"
 test_file = "crates/basal-module/tests/e2e.rs"
 runner = "cargo"
@@ -4535,6 +4701,8 @@ edits = [
 
 [[control]]
 id = "integration-model-store-initialization-omitted"
+hub = "The module initializes the durable model-call store before dispatch or recovery, asserted by model-journal and end-to-end restart tests"
+hub_targets = ["e2e"]
 guards = "integration: model store initialization omitted"
 test_file = "crates/basal-module/tests/hosts.rs"
 runner = "cargo"
@@ -4850,6 +5018,8 @@ new = "args: { let mut v: serde_json::Value = serde_json::from_str(row.dispatch_
 
 [[control]]
 id = "selector-outcome-report-omitted"
+hub = "A model outcome reports the exact selected decision ID best-effort, asserted by Broca reporting and real scoped transport tests"
+hub_targets = ["basal_host"]
 guards = "selector: outcome report omitted"
 test_file = "crates/basal-host/tests/broca.rs"
 runner = "cargo"
@@ -5241,6 +5411,8 @@ new = "if true {"
 
 [[control]]
 id = "hosts-sink-idempotency-disabled"
+hub = "Sink writes honour the journaled idempotency key so safe retries and recovery do not duplicate an effect, asserted by host, decision and end-to-end tests"
+hub_targets = ["decisions", "e2e"]
 guards = "hosts: sink idempotency disabled"
 test_file = "crates/basal-module/tests/hosts.rs"
 runner = "cargo"
@@ -5256,6 +5428,8 @@ new = "honours_idempotency_keys: false"
 
 [[control]]
 id = "hosts-management-mutation-marked-query"
+hub = "Management mutations retain their declared mutation kind and are never retried as queries, asserted by catalog, decision and transport safety tests"
+hub_targets = ["decisions"]
 guards = "hosts: management mutation marked query"
 test_file = "crates/basal-module/tests/hosts.rs"
 runner = "cargo"
@@ -5347,6 +5521,8 @@ new = ".ok();"
 
 [[control]]
 id = "hosts-approval-decoded-as-rejection"
+hub = "Core's answered approve choice decodes as approval, asserted by decision acknowledgements, decision recovery and install-gate tests"
+hub_targets = ["decisions", "install_gate"]
 guards = "hosts: approval decoded as rejection"
 test_file = "crates/basal-module/tests/hosts.rs"
 runner = "cargo"
@@ -5362,6 +5538,8 @@ new = "(Some(\"answered\"), Some(\"approve\")) => CardDecision::Reject"
 
 [[control]]
 id = "hosts-reissue-ignores-journaled-envelope"
+hub = "Resends use the frozen journaled envelope rather than script arguments, asserted by sink, model-selection and end-to-end recovery tests"
+hub_targets = ["e2e"]
 guards = "hosts: reissue ignores journaled envelope"
 test_file = "crates/basal-module/tests/hosts.rs"
 runner = "cargo"
@@ -5377,6 +5555,8 @@ new = "args: row.args.clone(),"
 
 [[control]]
 id = "hosts-core-routing-bypassed"
+hub = "Core primitives dispatch through the core host, including journaled sink writes, asserted by routing and decision recovery tests"
+hub_targets = ["decisions"]
 guards = "hosts: core routing bypassed"
 test_file = "crates/basal-module/tests/hosts.rs"
 runner = "cargo"
@@ -5422,6 +5602,8 @@ new = "Some(\"unknown\") => Ok(InstallStatus::Unknown),"
 
 [[control]]
 id = "hosts-the-routing-host-does-not-send-the-install-status-question-to-core"
+hub = "The routing host asks core for install status before activation or resumed decision work, asserted by gate and decision recovery tests"
+hub_targets = ["decisions"]
 guards = "hosts: the routing host does not send the install status question to core"
 test_file = "crates/basal-module/tests/install_gate.rs"
 runner = "cargo"
@@ -5499,6 +5681,8 @@ new = "Err(WireError::Unknown(\"unrecognised core reply\".into()))"
 
 [[control]]
 id = "fs-a-path-is-not-required-to-lie-under-a-root-symlink-out"
+hub = "Every resolved filesystem path remains under a granted root, including symlink, missing-path and compromised-envelope checks in both dispatch targets"
+hub_targets = ["builtins_dispatch"]
 guards = "fs: a path is not required to lie under a root (symlink out)"
 test_file = "crates/basal-testkit/tests/builtins_fs.rs"
 runner = "cargo"
@@ -5514,6 +5698,8 @@ new = "!roots.is_empty() // NON-VACUITY BREAK"
 
 [[control]]
 id = "fs-a-path-is-not-required-to-lie-under-a-root-missing-path"
+hub = "Every resolved filesystem path remains under a granted root, including symlink, missing-path and compromised-envelope checks in both dispatch targets"
+hub_targets = ["builtins_dispatch"]
 guards = "fs: a path is not required to lie under a root (missing path)"
 test_file = "crates/basal-testkit/tests/builtins_fs.rs"
 runner = "cargo"
@@ -5876,6 +6062,8 @@ new = ".block_on(self.consumer.open_route( // NON-VACUITY BREAK\n               
 
 [[control]]
 id = "flow-route-cache-is-not-reused"
+hub = "An unchanged flow selector reuses its scoped route handle, asserted by route-cache unit, integration and real transport tests"
+hub_targets = ["basal_host"]
 guards = "one route per selector and target is reused"
 test_file = "crates/basal-host/tests/flow_scope_routes.rs"
 runner = "cargo"
@@ -5891,6 +6079,8 @@ new = "if let Some((_, handle, _)) = self.routes.get(&key).filter(|_| false) { /
 
 [[control]]
 id = "flow-new-selector-is-ignored"
+hub = "A changed flow selector replaces the old scope and route handle, asserted by route-cache unit, integration and scoped transport tests"
+hub_targets = ["basal_host"]
 guards = "epoch and ref changes replace the old route"
 test_file = "crates/basal-host/tests/flow_scope_routes.rs"
 runner = "cargo"
@@ -6116,6 +6306,8 @@ new = "if true || retry <= self.rt.config.clock.now_ms() { // NON-VACUITY BREAK"
 
 [[control]]
 id = "flow-deferred-resend-changes-call-key"
+hub = "Scope-deferred and crash-recovered resends preserve the committed call key, asserted by scope, reconciliation and crash recovery tests"
+hub_targets = ["journal_cut", "journal_kill", "journal_unknown"]
 guards = "resend retains the original journal position and call key"
 test_file = "crates/basal-testkit/tests/flow_scope_recovery.rs"
 runner = "cargo"
