@@ -25,6 +25,56 @@ fn real_trampoline_confirms_and_worker_completes_seatbelt_handshake() {
 }
 
 #[test]
+fn disclaimed_worker_closes_extra_inherited_descriptors_at_startup() {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+    use subc_os::privacy_identity::DisclaimedCommand;
+
+    let mut pipe = [-1; 2];
+    // SAFETY: the live buffer has room for both returned descriptors.
+    assert_eq!(unsafe { libc::pipe(pipe.as_mut_ptr()) }, 0);
+    // SAFETY: a successful pipe returned two newly owned descriptors.
+    let (_read, write) = unsafe { (OwnedFd::from_raw_fd(pipe[0]), OwnedFd::from_raw_fd(pipe[1])) };
+    let write_fd = write.as_raw_fd();
+    let mut builder = DisclaimedCommand::new(
+        env!("CARGO_BIN_EXE_ck-basal"),
+        basal_testkit::channel::worker_binary(),
+    );
+    builder
+        .args(["--confinement-probe", "--no-sandbox"])
+        .env_clear()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let (mut command, confirmation) = builder.into_command().expect("disclaimed command");
+    // SETEXEC preserves non-CLOEXEC descriptors. Deliberately inject authority
+    // on both a low and a high fd; the worker, not the trampoline, must close it.
+    // SAFETY: this fork hook uses only async-signal-safe descriptor operations.
+    unsafe {
+        command.pre_exec(move || {
+            for target in [3, 64] {
+                if libc::dup2(write_fd, target) < 0 || libc::fcntl(target, libc::F_SETFD, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            Ok(())
+        });
+    }
+    let mut child = command.spawn().expect("disclaimed descriptor probe");
+    drop(command);
+    if let Err(error) = confirmation.confirm(Instant::now() + Duration::from_secs(180)) {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("descriptor probe confirmation: {error}");
+    }
+    let output = child.wait_with_output().expect("descriptor probe output");
+    assert!(output.status.success(), "{output:?}");
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).expect("probe JSON");
+    assert_eq!(report["open_descriptors"], serde_json::json!([0, 1, 2]));
+}
+
+#[test]
 fn production_pool_constructor_requires_its_own_trampoline() {
     let config = PoolConfig::beside_current_exe().expect("production pool config");
     let WorkerLaunch::Disclaimed { trampoline } = config.worker_launch else {
