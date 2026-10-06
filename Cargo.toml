@@ -55,6 +55,7 @@ sha2 = "0.10"
 # frame lifecycle; subc-protocol is the manifest and route vocabulary it
 # speaks. Keep the scope-stamp reader current with the protocol.
 subc-client-rs = "0.26.1"
+subc-os = "0.1.7"
 subc-protocol = "0.29.0"
 subc-transport = "0.10.0"
 async-trait = "0.1"

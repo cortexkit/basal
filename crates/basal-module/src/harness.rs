@@ -347,7 +347,7 @@ pub fn main() -> std::process::ExitCode {
         cut_store_at: args.cut_store_at.clone(),
         seen: Mutex::new(HashMap::new()),
     });
-    let mut pool = PoolConfig::new(&args.worker);
+    let mut pool = PoolConfig::new(&args.worker, crate::process::WorkerLaunch::Plain);
     pool.warm_spares = args.warm_spares;
     pool.handshake_timeout = Duration::from_secs(180);
     let config = ModuleConfig {

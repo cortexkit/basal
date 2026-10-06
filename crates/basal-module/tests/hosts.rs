@@ -666,7 +666,10 @@ fn journaled_sink_intent_is_byte_identical_after_a_cut() {
     ] {
         let dir = common::scratch("core-cut");
         let clock = Clock::manual(common::T0);
-        let pool = PoolConfig::new(basal_testkit::channel::worker_binary());
+        let pool = PoolConfig::new(
+            basal_testkit::channel::worker_binary(),
+            basal_module::process::WorkerLaunch::Plain,
+        );
         let config = ModuleConfig {
             store_path: dir.join("basal.db"),
             durability: Durability { fullfsync: false },
@@ -1566,7 +1569,10 @@ fn selections_freeze_at_intent_commit_and_only_uncommitted_calls_reselect() {
             .lock()
             .unwrap()
             .extend([Ok(choice("first")), Ok(choice("second"))]);
-        let pool = PoolConfig::new(basal_testkit::channel::worker_binary());
+        let pool = PoolConfig::new(
+            basal_testkit::channel::worker_binary(),
+            basal_module::process::WorkerLaunch::Plain,
+        );
         let config = ModuleConfig {
             store_path: dir.join("basal.db"),
             durability: Durability { fullfsync: false },

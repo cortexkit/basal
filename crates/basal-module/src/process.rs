@@ -1,29 +1,41 @@
 //! One `ck-basal-worker` child process, spoken to over its stdio frames.
 //!
-//! The worker inherits nothing but its three pipes: an empty environment,
-//! no other descriptors (Rust opens every file and pipe close-on-exec), and
-//! no arguments. It confines itself before reading its first frame, so the
-//! parent only has to start it and complete the handshake.
+//! The worker receives an empty environment, three pipes and no arguments.
+//! Rust's descriptors are close-on-exec; the worker also closes every inherited
+//! descriptor above stdio and confines itself before reading its first frame. The
+//! parent disclaims its macOS privacy identity before completing the handshake,
+//! so untrusted scripts cannot borrow the module's privacy grants.
 
 use std::fmt;
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use basal_core::channel::ChannelError;
 use basal_proto::{
     FrameError, PROTOCOL_VERSION, ParentMessage, Welcome, WorkerMessage, encode_parent_frame,
     read_worker_message,
 };
+use subc_os::privacy_identity::DisclaimedCommand;
+
+/// How to execute a worker. Test binaries do not implement the trampoline;
+/// production uses `ck-basal` itself, before any runtime or threads start.
+#[derive(Debug, Clone)]
+pub enum WorkerLaunch {
+    Disclaimed { trampoline: PathBuf },
+    Plain,
+}
 
 /// Why a worker could not be started or greeted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SpawnError {
     /// The binary could not be executed.
     Exec(String),
+    /// Its own macOS privacy identity could not be confirmed.
+    Disclaim(String),
     /// It started but did not complete the handshake.
     Handshake(String),
 }
@@ -32,6 +44,7 @@ impl fmt::Display for SpawnError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Exec(e) => write!(f, "cannot start the worker: {e}"),
+            Self::Disclaim(e) => write!(f, "cannot disclaim the worker's privacy identity: {e}"),
             Self::Handshake(e) => write!(f, "the worker did not complete its handshake: {e}"),
         }
     }
@@ -55,14 +68,48 @@ impl WorkerProcess {
     /// The timeout is long on purpose: macOS evaluates an ad-hoc signed
     /// binary on its first launch, and again after a few idle minutes, and
     /// that evaluation has been measured stalling `exec` for over a minute.
-    pub fn start(binary: &Path, timeout: Duration) -> Result<Self, SpawnError> {
-        let mut child = Command::new(binary)
-            .env_clear()
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+    pub fn start(
+        binary: &Path,
+        launch: &WorkerLaunch,
+        timeout: Duration,
+    ) -> Result<Self, SpawnError> {
+        let (mut command, confirmation) = match launch {
+            WorkerLaunch::Disclaimed { trampoline } => {
+                let mut builder = DisclaimedCommand::new(trampoline, binary);
+                builder
+                    .env_clear()
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped());
+                let (command, confirmation) = builder
+                    .into_command()
+                    .map_err(|e| SpawnError::Disclaim(e.to_string()))?;
+                (command, Some(confirmation))
+            }
+            WorkerLaunch::Plain => {
+                let mut command = Command::new(binary);
+                command
+                    .env_clear()
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped());
+                (command, None)
+            }
+        };
+        let deadline = Instant::now() + timeout;
+        let mut child = command
             .spawn()
             .map_err(|e| SpawnError::Exec(format!("{}: {e}", binary.display())))?;
+        // The command owns the parent's acknowledgement writer. Retaining it
+        // would prevent EOF even after a successful trampoline exec.
+        drop(command);
+        if let Some(confirmation) = confirmation
+            && let Err(error) = confirmation.confirm(deadline)
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(SpawnError::Disclaim(error.to_string()));
+        }
         let stdin = child.stdin.take();
         let (Some(mut stdout), Some(mut stderr)) = (child.stdout.take(), child.stderr.take())
         else {

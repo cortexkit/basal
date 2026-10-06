@@ -19,8 +19,11 @@ use basal_module::manifest::{manifest, version_line};
 use basal_module::module::{Hosts, ModuleConfig};
 use basal_module::pool::PoolConfig;
 use basal_module::serve::BasalHandler;
+use subc_os::privacy_identity;
 
 fn main() -> ExitCode {
+    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    privacy_identity::trampoline_main(&args);
     let args: Vec<String> = std::env::args().skip(1).collect();
     let serving = args
         .iter()
@@ -71,6 +74,22 @@ fn serve() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
+    let trampoline = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(error) => {
+            tracing::error!("worker privacy identity probe cannot locate ck-basal: {error}");
+            return ExitCode::from(basal_module::fatal::EXIT_PRIVACY_IDENTITY_FAILURE);
+        }
+    };
+    // Consume the launch nonce first, then validate the single-threaded
+    // trampoline before even warm spares can inherit any privacy grants.
+    if let Err(error) = privacy_identity::probe(
+        &trampoline,
+        std::time::Instant::now() + std::time::Duration::from_secs(180),
+    ) {
+        tracing::error!("worker privacy identity probe failed; refusing startup: {error}");
+        return ExitCode::from(basal_module::fatal::EXIT_PRIVACY_IDENTITY_FAILURE);
+    }
     let pool = match PoolConfig::beside_current_exe() {
         Ok(p) => p,
         Err(e) => {

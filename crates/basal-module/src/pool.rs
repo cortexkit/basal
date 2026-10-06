@@ -34,7 +34,7 @@ use basal_core::channel::{ChannelError, WorkerChannel};
 use basal_proto::{ParentMessage, Welcome, WorkerMessage};
 
 use crate::metrics::Metrics;
-use crate::process::{SpawnError, WorkerProcess};
+use crate::process::{SpawnError, WorkerLaunch, WorkerProcess};
 
 /// The pool's parameters. The defaults keep two spares (an install's dry
 /// run uses up to ten single-use workers in a row), cap the pool at 16
@@ -46,6 +46,9 @@ use crate::process::{SpawnError, WorkerProcess};
 pub struct PoolConfig {
     /// `ck-basal-worker`; by default the one beside the running binary.
     pub worker_binary: PathBuf,
+    /// Production disclaims through its own executable; test pools can launch
+    /// directly because their binaries do not handle the hidden trampoline mode.
+    pub worker_launch: WorkerLaunch,
     /// Greeted, unbound workers kept ready.
     pub warm_spares: usize,
     /// Live worker processes at most, spares, idle, busy and starting
@@ -65,9 +68,10 @@ pub struct PoolConfig {
 }
 
 impl PoolConfig {
-    pub fn new(worker_binary: impl Into<PathBuf>) -> Self {
+    pub fn new(worker_binary: impl Into<PathBuf>, worker_launch: WorkerLaunch) -> Self {
         Self {
             worker_binary: worker_binary.into(),
+            worker_launch,
             warm_spares: 2,
             max_workers: 16,
             max_activations: 256,
@@ -78,13 +82,17 @@ impl PoolConfig {
     }
 
     /// The worker beside the running executable, which is how the module is
-    /// installed: both binaries in one directory.
+    /// installed: both binaries in one directory. This production constructor
+    /// always disclaims, with no environment or configuration opt-out.
     pub fn beside_current_exe() -> std::io::Result<Self> {
         let exe = std::env::current_exe()?;
         let dir = exe
             .parent()
             .ok_or_else(|| std::io::Error::other("the executable has no directory"))?;
-        Ok(Self::new(dir.join("ck-basal-worker")))
+        Ok(Self::new(
+            dir.join("ck-basal-worker"),
+            WorkerLaunch::Disclaimed { trampoline: exe },
+        ))
     }
 }
 
@@ -97,6 +105,7 @@ pub trait Spawn: Send + Sync {
 /// Spawns the configured worker binary.
 pub struct ProcessSpawner {
     binary: PathBuf,
+    launch: WorkerLaunch,
     timeout: Duration,
 }
 
@@ -104,6 +113,7 @@ impl ProcessSpawner {
     pub fn new(config: &PoolConfig) -> Self {
         Self {
             binary: config.worker_binary.clone(),
+            launch: config.worker_launch.clone(),
             timeout: config.handshake_timeout,
         }
     }
@@ -111,7 +121,7 @@ impl ProcessSpawner {
 
 impl Spawn for ProcessSpawner {
     fn spawn(&self) -> Result<WorkerProcess, SpawnError> {
-        let process = WorkerProcess::start(&self.binary, self.timeout)?;
+        let process = WorkerProcess::start(&self.binary, &self.launch, self.timeout)?;
         // A worker that could not sandbox itself would run flow code with
         // file and network access; it is refused, not used.
         if process.welcome().confinement != basal_proto::Confinement::Seatbelt {

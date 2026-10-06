@@ -106,6 +106,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "subc-client-rs",
+ "subc-os",
  "subc-protocol",
  "subc-transport",
  "tokio",
@@ -1123,9 +1124,9 @@ dependencies = [
 
 [[package]]
 name = "subc-os"
-version = "0.1.4"
+version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2eaab39470b0164f2f230c8ef0331eff3379f98e15673b2ce1efacb4447acfe5"
+checksum = "e41721196fb1a6d3cafd075a68835eefbecd188c24cf067d32700eaa92ab2d70"
 dependencies = [
  "libc",
  "rustix",

@@ -9,6 +9,8 @@
 //! after a restart the flow's sink writes have happened exactly once each.
 //! A second test cuts the store under a running activation: the process
 //! exits non-zero and the restart recovers the run.
+//! On macOS a separate case drives the production `ck-basal` startup against
+//! a wire daemon and measures a real worker's responsible-process identity.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::process::ExitStatusExt;
@@ -23,6 +25,226 @@ use serde_json::{Value, json};
 /// 2026-05-01T00:00:00Z, the harness's starting clock.
 const T0: i64 = 1_777_593_600_000;
 const HOUR: i64 = 3_600_000;
+
+#[cfg(target_os = "macos")]
+mod privacy {
+    use super::*;
+    use std::time::Duration;
+    use subc_protocol::{Flags, Frame, FrameType, PROTOCOL_VERSION, Priority};
+    use subc_transport::connection_file::{ConnectionInfo, Endpoint, SCHEMA_VERSION, write_atomic};
+    use subc_transport::{authenticate_server, read_frame, write_frame};
+
+    struct ReapedChild(Child);
+
+    impl Drop for ReapedChild {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    struct Directory(PathBuf);
+
+    impl Drop for Directory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn responsible_pid(pid: u32) -> u32 {
+        // SAFETY: Darwin exports this fixed private ABI from libSystem. The
+        // function accepts a pid, retains no pointers and stays loaded for the
+        // process lifetime. Measuring live children avoids stale pid reuse.
+        unsafe {
+            let address = libc::dlsym(
+                libc::RTLD_DEFAULT,
+                c"responsibility_get_pid_responsible_for_pid".as_ptr(),
+            );
+            assert!(!address.is_null(), "responsibility probe unavailable");
+            let probe: unsafe extern "C" fn(libc::pid_t) -> libc::pid_t =
+                std::mem::transmute(address);
+            let result = probe(pid as libc::pid_t);
+            assert!(
+                result > 0,
+                "responsibility lookup failed for {pid}: {result}"
+            );
+            result as u32
+        }
+    }
+
+    fn worker_pids(parent: u32, worker: &Path) -> Vec<u32> {
+        // libproc.h's parent-pid filter is not named by the libc crate.
+        const PROC_PPID_ONLY: u32 = 6;
+        let mut pids = [0i32; 32];
+        // SAFETY: libproc writes at most the stated byte size into the live
+        // buffer. PROC_PPID_ONLY selects only this module's direct children.
+        let bytes = unsafe {
+            libc::proc_listpids(
+                PROC_PPID_ONLY,
+                parent,
+                pids.as_mut_ptr().cast(),
+                std::mem::size_of_val(&pids) as i32,
+            )
+        };
+        assert!(bytes >= 0, "list module children");
+        pids.into_iter()
+            .take(bytes as usize / std::mem::size_of::<i32>())
+            .filter(|pid| {
+                let mut path = [0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+                // SAFETY: the buffer remains live and its size is given to
+                // libproc. Verify the exec image, not just a trampoline pid.
+                let len = unsafe {
+                    libc::proc_pidpath(*pid, path.as_mut_ptr().cast(), path.len() as u32)
+                };
+                len > 0
+                    && std::ffi::CStr::from_bytes_until_nul(&path)
+                        .is_ok_and(|p| p.to_bytes() == worker.as_os_str().as_encoded_bytes())
+            })
+            .map(|pid| pid as u32)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn production_worker_is_its_own_responsible_process() {
+        // This plain child is held alive by stdin, not a duration. Its identity
+        // must differ from a disclaimed child under the same measurement.
+        let control = ReapedChild(
+            Command::new("/bin/cat")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("plain control child"),
+        );
+        let parent_responsible = responsible_pid(std::process::id());
+        assert_eq!(responsible_pid(control.0.id()), parent_responsible);
+        assert_ne!(responsible_pid(control.0.id()), control.0.id());
+
+        let dir = Directory(scratch("privacy"));
+        let binary = dir.0.join("ck-basal");
+        let worker = dir.0.join("ck-basal-worker");
+        // Use production bytes with the installation layout; the harness and
+        // test executable are not privacy trampolines.
+        std::fs::copy(env!("CARGO_BIN_EXE_ck-basal"), &binary).expect("copy module");
+        std::fs::copy(worker_binary(), &worker).expect("copy worker");
+        let worker = worker.canonicalize().expect("worker path");
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("listen");
+        let address = listener.local_addr().expect("address");
+        let file = dir.0.join("connection.json");
+        let key = [0x5a; 32];
+        let daemon_id = [0x2b; 16];
+        write_atomic(
+            &file,
+            &ConnectionInfo {
+                schema: SCHEMA_VERSION,
+                wire_version: None,
+                endpoints: vec![Endpoint {
+                    host: address.ip().to_string(),
+                    port: address.port(),
+                }],
+                key: key.to_vec(),
+                daemon_id,
+                pid: std::process::id(),
+                daemon_ver: "privacy-test".into(),
+            },
+        )
+        .expect("connection file");
+        let module = ReapedChild(
+            Command::new(&binary)
+                .args(["--subc".as_ref(), file.as_os_str()])
+                .env_clear()
+                .env("SUBC_MODULE_ID", "basal")
+                .env("SUBC_CONNECTION_FILE", &file)
+                .env("SUBC_LAUNCH_NONCE", "private-test-nonce")
+                .env("XDG_DATA_HOME", &dir.0)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::inherit())
+                .spawn()
+                .expect("start real ck-basal"),
+        );
+        // Bound all socket operations and startup waits only to prevent hangs;
+        // there is no assertion about how quickly startup completes.
+        tokio::time::timeout(Duration::from_secs(300), async {
+            let (mut consumer, _) = listener.accept().await.expect("host connection");
+            authenticate_server(
+                &mut consumer,
+                &key,
+                &daemon_id,
+                "privacy-test",
+                Duration::from_secs(30),
+            )
+            .await
+            .expect("authenticate hosts");
+            let (mut stream, _) = listener.accept().await.expect("module connection");
+            authenticate_server(
+                &mut stream,
+                &key,
+                &daemon_id,
+                "privacy-test",
+                Duration::from_secs(30),
+            )
+            .await
+            .expect("authenticate module");
+            let hello = read_frame(&mut stream)
+                .await
+                .expect("read hello")
+                .expect("hello");
+            assert_eq!(hello.header.ty, FrameType::Hello);
+            let storage = cortexkit_store_types::StorageDescriptor {
+                module_id: "basal".into(),
+                storage_namespace: "core".into(),
+                isolation: cortexkit_store_types::Isolation::Module,
+                backend: cortexkit_store_types::StorageBackend::Sqlite {
+                    path: dir.0.join("store.db").to_string_lossy().into_owned(),
+                },
+            };
+            let ack = Frame::build(
+                FrameType::HelloAck,
+                Flags::new(false, Priority::Passive, false),
+                0,
+                0,
+                hello.header.corr,
+                serde_json::to_vec(&json!({
+                    "negotiated_ver": PROTOCOL_VERSION,
+                    "subc_ops": [], "subc_capabilities": [],
+                    "storage": storage, "machine_id": null
+                }))
+                .expect("encode ack"),
+            )
+            .expect("ack");
+            write_frame(&mut stream, &ack).await.expect("write ack");
+            let pids = loop {
+                let pids = worker_pids(module.0.id(), &worker);
+                if !pids.is_empty() {
+                    break pids;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            };
+            for pid in pids {
+                let responsible = responsible_pid(pid);
+                assert_eq!(
+                    responsible, pid,
+                    "worker must be its own responsible process"
+                );
+                assert_ne!(
+                    responsible,
+                    module.0.id(),
+                    "worker must not borrow ck-basal's grants"
+                );
+                assert_ne!(
+                    responsible,
+                    responsible_pid(module.0.id()),
+                    "worker must not borrow the module's responsible identity"
+                );
+            }
+        })
+        .await
+        .expect("production worker startup deadline");
+    }
+}
 
 struct Harness {
     child: Child,

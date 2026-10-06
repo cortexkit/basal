@@ -69,7 +69,10 @@ struct Rig {
 impl Rig {
     fn new(tag: &str, rate: Option<RateLimits>) -> Self {
         let dir = common::scratch(tag);
-        let pool = PoolConfig::new(basal_testkit::channel::worker_binary());
+        let pool = PoolConfig::new(
+            basal_testkit::channel::worker_binary(),
+            basal_module::process::WorkerLaunch::Plain,
+        );
         let mut runtime = Config {
             clock: Clock::manual(common::T0),
             ..Default::default()

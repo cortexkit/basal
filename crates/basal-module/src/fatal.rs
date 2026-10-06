@@ -17,6 +17,10 @@ use basal_core::{CoreError, InstallError};
 /// restart is expected to clear.
 pub const EXIT_STORE_FAILURE: i32 = 75;
 
+/// Startup cannot safely launch workers with their own privacy identity.
+/// The supervisor must report this refusal and restart, never launch plainly.
+pub const EXIT_PRIVACY_IDENTITY_FAILURE: u8 = 76;
+
 /// Whether a core error is a failure of the store itself, as opposed to a
 /// refusal or a request the core found invalid.
 pub fn is_storage(e: &CoreError) -> bool {

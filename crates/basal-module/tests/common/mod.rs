@@ -16,7 +16,7 @@ use basal_module::dryrun::DryRunConfig;
 use basal_module::engine::EngineConfig;
 use basal_module::module::{Hosts, Module, ModuleConfig};
 use basal_module::pool::{PoolConfig, ProcessSpawner, Spawn};
-use basal_module::process::{SpawnError, WorkerProcess};
+use basal_module::process::{SpawnError, WorkerLaunch, WorkerProcess};
 use basal_testkit::channel::worker_binary;
 use serde_json::{Value, json};
 
@@ -86,7 +86,7 @@ impl Default for Options {
 }
 
 pub fn pool_config(o: &Options) -> PoolConfig {
-    let mut pool = PoolConfig::new(worker_binary());
+    let mut pool = PoolConfig::new(worker_binary(), WorkerLaunch::Plain);
     pool.warm_spares = o.warm_spares;
     pool.max_activations = o.max_activations;
     pool.idle_retire = o.idle_retire;
