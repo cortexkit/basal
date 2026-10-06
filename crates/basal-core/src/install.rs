@@ -583,6 +583,8 @@ pub fn revocation(conn: &Connection, flow_id: &str, version: u32) -> Result<Opti
 /// and is disabled by core with `reason`, which stops its schedule and
 /// tells its owner as every disable does. Returns false when the version
 /// was already recorded as revoked (nothing is written then).
+/// Package instances only record the version's revocation: their enable state
+/// is independent of approval, so selecting another version can admit work again.
 pub fn revoke(
     tx: &Transaction,
     flow_id: &str,
@@ -599,16 +601,7 @@ pub fn revoke(
         .optional()?
         .flatten();
     if package.is_some() {
-        let current: bool = tx.query_row(
-            "SELECT approved_version=?2 FROM flows WHERE flow_id=?1",
-            params![flow_id, version],
-            |r| r.get(0),
-        )?;
         let changed = tx.execute("INSERT OR IGNORE INTO instance_revocations (flow_id,version,reason,revoked_at) VALUES (?1,?2,?3,?4)", params![flow_id,version,reason,now_ms])?;
-        if changed != 0 && current {
-            disable(tx, flow_id, &Actor::Core, reason, now_ms)
-                .map_err(|e| CoreError::Corrupt(e.to_string()))?;
-        }
         return Ok(changed != 0);
     }
     let row: Option<(String, Option<i64>)> = tx
@@ -1074,7 +1067,7 @@ pub fn enable(
         "UPDATE rate_windows SET saturated = 0 WHERE flow_id = ?1",
         [flow_id],
     )?;
-    if changed > 0 {
+    if changed > 0 && !crate::packages::removed(tx, flow_id)? {
         schedule::table::enable(tx, flow_id, timestamp(now_ms)?)?;
     }
     Ok(changed > 0)

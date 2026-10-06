@@ -207,13 +207,16 @@ impl Runtime {
         agent: &str,
         incoming: i64,
     ) -> Result<Value, PackageError> {
+        // The catalog may page core's agent list over the network. Resolve it
+        // before holding the store's writer, so journal commits do not wait on core.
+        let known_agent = self.catalog().agent_id(agent).as_deref() == Some(agent);
         decide(self, |tx| {
             if let Some(reply) = generation(tx, package, agent, incoming, "ensure", Some(version))?
             {
                 return Ok(reply);
             }
             let p = get(tx, package, version)?.ok_or_else(|| refused("package_unknown"))?;
-            if self.catalog().agent_id(agent).as_deref() != Some(agent) {
+            if !known_agent {
                 return Err(refused("agent_unknown"));
             }
             let id = instance_id(package, agent);
@@ -228,6 +231,7 @@ impl Runtime {
                 .optional()?
                 .flatten();
             let new = previous.is_none();
+            let was_removed = removed(tx, &id)?;
             tx.execute("INSERT INTO flows (flow_id,owner,approved_version,created_at,package) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(flow_id) DO UPDATE SET approved_version=excluded.approved_version,removed=0", params![id,agent,version,self.config().clock.now_ms(),package])?;
             // A same-version generation changes only ordering and removal.
             // In particular, a disabled schedule must not be reset by a resend.
@@ -253,6 +257,13 @@ impl Runtime {
                 } else {
                     schedule::table::remove(tx, &id)?;
                 }
+            }
+            if was_removed && !install::is_disabled(tx, &id)? {
+                // Removal pauses a schedule without disabling its flow. Resume
+                // after now, so time spent removed never becomes catch-up work.
+                let now = jiff::Timestamp::from_millisecond(self.config().clock.now_ms())
+                    .map_err(|e| CoreError::Invalid(e.to_string()))?;
+                schedule::table::enable(tx, &id, now)?;
             }
             let reply =
                 json!({"flow_id":id,"generation":incoming,"new":new,"previous_version":previous});
@@ -284,6 +295,11 @@ impl Runtime {
                 "UPDATE flows SET removed=1 WHERE flow_id=?1 AND package IS NOT NULL AND removed=0",
                 [&id],
             )?;
+            if changed != 0 {
+                let now = jiff::Timestamp::from_millisecond(self.config().clock.now_ms())
+                    .map_err(|e| CoreError::Invalid(e.to_string()))?;
+                schedule::table::disable(tx, &id, now)?;
+            }
             let reply = json!({"flow_id":id,"generation":incoming,"removed":changed != 0});
             record_generation(tx, package, agent, incoming, "remove", None, &reply)?;
             Ok(reply)

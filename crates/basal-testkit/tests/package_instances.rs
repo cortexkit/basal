@@ -231,6 +231,7 @@ fn instance_core_revocation_does_not_mutate_package_bytes() {
     let id = ensure(&rt, "return 1;", 1, 1);
     let run = admit(&rt, &id, "first");
     let before = rt.get_package("dark-wake", 1).unwrap();
+    let flow_before = rt.flow(&id).unwrap().unwrap();
     world
         .mock
         .set_install_status(&id, 1, Some(InstallStatus::Unknown));
@@ -239,14 +240,188 @@ fn instance_core_revocation_does_not_mutate_package_bytes() {
         ActivationEnd::Revoked { .. }
     ));
     assert_eq!(rt.get_package("dark-wake", 1).unwrap(), before);
-    assert!(!rt.flow(&id).unwrap().unwrap().enabled);
-    assert_eq!(rt.flow(&id).unwrap().unwrap().approved_version, None);
+    let mut expected = flow_before.clone();
+    expected.approved_version = None;
+    assert_eq!(rt.flow(&id).unwrap().unwrap(), expected);
     rt.ensure_instance("dark-wake", 1, OWNER, 2).unwrap();
-    assert!(!rt.flow(&id).unwrap().unwrap().enabled);
-    rt.enable_flow(&id).unwrap();
+    assert_eq!(rt.flow(&id).unwrap().unwrap(), expected);
     assert_eq!(
         rt.admit_trigger(&id, "revoked", JsonText::null()).unwrap(),
         Admission::NotApproved
+    );
+    assert!(rt.outbox().unwrap().is_empty());
+    ensure(&rt, "return 2;", 2, 3);
+    let upgraded = admit(&rt, &id, "upgraded");
+    let hash = basal_core::ids::hex(&rt.run(&upgraded).unwrap().code_hash);
+    world.mock.set_install_status(
+        &id,
+        2,
+        Some(InstallStatus::Active {
+            code_hash: hash,
+            scope: None,
+        }),
+    );
+    assert!(matches!(
+        rt.resume(&upgraded).unwrap(),
+        ActivationEnd::Succeeded { .. }
+    ));
+    let mut expected = flow_before;
+    expected.approved_version = Some(2);
+    assert_eq!(rt.flow(&id).unwrap().unwrap(), expected);
+}
+
+/// A second SQLite connection observes the real writer lock, rather than a
+/// flag pretending that the catalog was called outside a transaction.
+struct WriterProbeCatalog {
+    catalog: basal_host::MockCatalog,
+    store_path: std::path::PathBuf,
+    lookups: std::sync::atomic::AtomicUsize,
+}
+
+impl basal_host::Catalog for WriterProbeCatalog {
+    fn supports_flow_scopes(&self, module: &str) -> bool {
+        self.catalog.supports_flow_scopes(module)
+    }
+    fn event(&self, module: &str, name: &str, version: u32) -> Option<basal_host::EventDecl> {
+        self.catalog.event(module, name, version)
+    }
+    fn op(&self, module: &str, op: &str) -> Option<basal_host::OpDecl> {
+        self.catalog.op(module, op)
+    }
+    fn agent_known(&self, agent: &str) -> bool {
+        self.catalog.agent_known(agent)
+    }
+    fn agent_id(&self, agent: &str) -> Option<String> {
+        let conn = rusqlite::Connection::open(&self.store_path).unwrap();
+        conn.busy_timeout(std::time::Duration::ZERO).unwrap();
+        assert!(
+            conn.execute_batch("BEGIN IMMEDIATE; ROLLBACK;").is_ok(),
+            "agent lookup must not hold the SQLite writer"
+        );
+        self.lookups
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.catalog.agent_id(agent)
+    }
+}
+
+#[test]
+fn instance_agent_lookup_leaves_the_sqlite_writer_available() {
+    let world = World::new("pkg-lookup-lock");
+    world.catalog.add_named_agent(OWNER, "RenameMe");
+    let store = Arc::new(basal_core::Store::open(world.store_path(), world.durability).unwrap());
+    let catalog = Arc::new(WriterProbeCatalog {
+        catalog: world.catalog.clone(),
+        store_path: world.store_path(),
+        lookups: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let rt = basal_core::Runtime::new(
+        store,
+        Arc::new(world.mock.clone()),
+        catalog.clone(),
+        Arc::new(NoHooks),
+        None,
+        Config {
+            auto_resume: false,
+            ..common::config()
+        },
+    );
+    rt.register_package("return 1;", &manifest(1).to_string())
+        .unwrap();
+    let first = rt.ensure_instance("dark-wake", 1, OWNER, 1).unwrap();
+    assert_eq!(rt.ensure_instance("dark-wake", 1, OWNER, 1).unwrap(), first);
+    assert_eq!(catalog.lookups.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
+#[test]
+fn removed_instance_schedule_pauses_and_resumes_without_catch_up() {
+    let world = World::new("pkg-schedule-removal");
+    let start: jiff::Timestamp = "2026-05-01T00:00:00Z".parse().unwrap();
+    let clock = basal_core::Clock::manual(start.as_millisecond());
+    world.catalog.add_named_agent(OWNER, "RenameMe");
+    let rt = world
+        .runtime(
+            Arc::new(NoHooks),
+            Config {
+                clock: clock.clone(),
+                auto_resume: false,
+                ..common::config()
+            },
+        )
+        .unwrap();
+    let mut m = manifest(1);
+    m["trigger"] = json!({"schedule":{"interval":"15m"}});
+    rt.register_package("return trigger;", &m.to_string())
+        .unwrap();
+    let id = rt.ensure_instance("dark-wake", 1, OWNER, 1).unwrap()["flow_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let scheduler = rt.scheduler().unwrap();
+    let before = rt.flow(&id).unwrap();
+    rt.remove_instance("dark-wake", OWNER, 2).unwrap();
+    assert_eq!(rt.flow(&id).unwrap(), before);
+    for minute in [15, 30, 45, 60] {
+        clock.set(start.as_millisecond() + minute * 60_000);
+        let tick = scheduler.tick().unwrap();
+        assert!(
+            tick.planned.is_empty() && tick.admitted.is_empty() && tick.waiting == 0,
+            "{tick:?}"
+        );
+        assert!(scheduler.dropped().unwrap().is_empty());
+    }
+    clock.set(start.as_millisecond() + 65 * 60_000);
+    rt.ensure_instance("dark-wake", 1, OWNER, 3).unwrap();
+    assert_eq!(rt.flow(&id).unwrap(), before);
+    let resumed = scheduler.schedule(&id).unwrap().unwrap();
+    assert_eq!(resumed.anchor, start);
+    assert_eq!(
+        resumed.next_due.unwrap().as_millisecond(),
+        start.as_millisecond() + 75 * 60_000
+    );
+    assert!(scheduler.tick().unwrap().admitted.is_empty());
+    clock.set(start.as_millisecond() + 75 * 60_000);
+    let tick = scheduler.tick().unwrap();
+    assert_eq!(tick.new_runs().len(), 1);
+    let run = rt.run(tick.new_runs()[0]).unwrap();
+    let trigger: Value = serde_json::from_str(run.trigger.as_str()).unwrap();
+    assert_eq!(
+        trigger,
+        json!({"kind":"schedule","due":"2026-05-01T01:15:00Z"})
+    );
+    assert!(scheduler.dropped().unwrap().is_empty());
+
+    // Neither removal nor reconciliation can undo an operator's disable.
+    rt.disable_flow(&id, &basal_core::Actor::Operator("operator".into()), "stop")
+        .unwrap();
+    let disabled = rt.flow(&id).unwrap();
+    rt.remove_instance("dark-wake", OWNER, 4).unwrap();
+    clock.set(start.as_millisecond() + 120 * 60_000);
+    rt.ensure_instance("dark-wake", 1, OWNER, 5).unwrap();
+    assert_eq!(rt.flow(&id).unwrap(), disabled);
+    assert_eq!(
+        scheduler.schedule(&id).unwrap().unwrap().state,
+        basal_core::schedule::ScheduleState::Disabled
+    );
+    assert!(scheduler.tick().unwrap().admitted.is_empty());
+    assert!(scheduler.dropped().unwrap().is_empty());
+
+    // Enabling while removed changes the flow's brake, not its membership.
+    rt.remove_instance("dark-wake", OWNER, 6).unwrap();
+    rt.enable_flow(&id).unwrap();
+    clock.set(start.as_millisecond() + 180 * 60_000);
+    let tick = scheduler.tick().unwrap();
+    assert!(tick.planned.is_empty() && tick.admitted.is_empty());
+    assert!(scheduler.dropped().unwrap().is_empty());
+    rt.ensure_instance("dark-wake", 1, OWNER, 7).unwrap();
+    assert_eq!(
+        scheduler
+            .schedule(&id)
+            .unwrap()
+            .unwrap()
+            .next_due
+            .unwrap()
+            .as_millisecond(),
+        start.as_millisecond() + 195 * 60_000
     );
 }
 

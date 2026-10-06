@@ -6835,3 +6835,94 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
+
+[[control]]
+id = "instance-agent-lookup-outside-writer"
+guards = "core agent lookup must happen before the SQLite writer is held"
+file = "crates/basal-core/src/packages.rs"
+old = """
+let known_agent = self.catalog().agent_id(agent).as_deref() == Some(agent);
+        decide(self, |tx| {"""
+new = """
+decide(self, |tx| {
+            let known_agent = self.catalog().agent_id(agent).as_deref() == Some(agent); // NON-VACUITY BREAK"""
+edits = []
+test_file = "crates/basal-testkit/tests/package_instances.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test package_instances"
+expect_red = ["instance_agent_lookup_leaves_the_sqlite_writer_available"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "instance-removal-pauses-schedule"
+guards = "removed instances must neither plan fires nor accumulate rejection rows"
+file = "crates/basal-core/src/packages.rs"
+old = "if changed != 0 {"
+new = "if false && changed != 0 { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-testkit/tests/package_instances.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test package_instances"
+expect_red = ["removed_instance_schedule_pauses_and_resumes_without_catch_up"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "instance-reensure-resumes-schedule"
+guards = "re-ensure must resume enabled removed instances after now without catch-up"
+file = "crates/basal-core/src/packages.rs"
+old = "if was_removed && !install::is_disabled(tx, &id)? {"
+new = "if false && was_removed && !install::is_disabled(tx, &id)? { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-testkit/tests/package_instances.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test package_instances"
+expect_red = ["removed_instance_schedule_pauses_and_resumes_without_catch_up"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "instance-revocation-preserves-enable"
+guards = "instance revocation must not disable a flow that can select a newer package version"
+file = "crates/basal-core/src/install.rs"
+old = "if package.is_some() {"
+new = """
+if package.is_some() {
+        disable(tx, flow_id, &Actor::Core, reason, now_ms).map_err(|e| CoreError::Corrupt(e.to_string()))?; // NON-VACUITY BREAK"""
+edits = []
+test_file = "crates/basal-testkit/tests/package_instances.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test package_instances"
+expect_red = ["instance_core_revocation_does_not_mutate_package_bytes"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "instance-removal-cancellation-recheck"
+guards = "a stale removal observation must be rechecked in the cancellation transaction"
+file = "crates/basal-core/src/gate.rs"
+old = "if !crate::packages::removed(tx, flow_id)? {"
+new = "if false && !crate::packages::removed(tx, flow_id)? { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-core/src/gate.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+expect_red = ["gate::removal_tests::removed_cancellation_rechecks_mark_in_its_write_transaction"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
