@@ -213,7 +213,7 @@ impl Module {
         Ok(!owners.is_empty() && owners.iter().all(|o| o == agent))
     }
 
-    // ---- flow.install --------------------------------------------------
+    // ---- packages and instances ---------------------------------------
 
     fn op_package(&self, caller: &Caller, method: &str, params: Value) -> OpResult {
         let permitted = *caller == Caller::Core
@@ -285,6 +285,8 @@ impl Module {
             .with_detail(current.map(|current| json!({"current":current}))),
         })
     }
+
+    // ---- flow.install --------------------------------------------------
 
     fn op_install(&self, caller: &Caller, params: Value) -> OpResult {
         #[derive(Deserialize)]

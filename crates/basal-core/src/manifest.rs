@@ -418,16 +418,20 @@ fn check_agent(field: &'static str, agent: &str) -> Result<(), ManifestError> {
 impl Manifest {
     /// Decodes and checks a manifest's exact bytes.
     pub fn parse(text: &str) -> Result<Self, ManifestError> {
+        let manifest = Self::decode(text)?;
+        manifest.check()?;
+        Ok(manifest)
+    }
+
+    /// Package ids have their own length refusal, before the flow-id bound.
+    pub(crate) fn decode(text: &str) -> Result<Self, ManifestError> {
         if text.len() > MAX_MANIFEST_BYTES {
             return Err(ManifestError::TooLarge {
                 bytes: text.len(),
                 cap: MAX_MANIFEST_BYTES,
             });
         }
-        let manifest: Manifest =
-            serde_json::from_str(text).map_err(|e| ManifestError::Decode(e.to_string()))?;
-        manifest.check()?;
-        Ok(manifest)
+        serde_json::from_str(text).map_err(|e| ManifestError::Decode(e.to_string()))
     }
 
     /// Everything that can be checked without the catalog.

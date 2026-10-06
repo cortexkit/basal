@@ -94,7 +94,7 @@ fn self_grants_resolve_to_the_owner_and_sink_calls_carry_stable_id() {
 #[test]
 fn self_replays_from_admission_and_upgrade_keeps_kv_and_old_run_version() {
     let world = World::new("pkg-replay");
-    let rt = runtime(&world, InstallGate::Off);
+    let rt = runtime(&world, InstallGate::Core);
     let id = ensure(
         &rt,
         "await kv.set('identity', self.agent_id); await ops.call('mock','long',{}); return {identity:self, seen:await kv.get('identity')};",
@@ -102,6 +102,15 @@ fn self_replays_from_admission_and_upgrade_keeps_kv_and_old_run_version() {
         1,
     );
     let run = admit(&rt, &id, "first");
+    let hash = basal_core::ids::hex(&rt.run(&run).unwrap().code_hash);
+    world.mock.set_install_status(
+        &id,
+        1,
+        Some(InstallStatus::Active {
+            code_hash: hash,
+            scope: None,
+        }),
+    );
     assert!(matches!(
         rt.resume(&run).unwrap(),
         ActivationEnd::Suspended { .. }
@@ -111,6 +120,18 @@ fn self_replays_from_admission_and_upgrade_keeps_kv_and_old_run_version() {
         "return {identity:self, seen:await kv.get('identity')};",
         2,
         2,
+    );
+    let hash = rt.get_package("dark-wake", 2).unwrap()["code_hash"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    world.mock.set_install_status(
+        &id,
+        2,
+        Some(InstallStatus::Active {
+            code_hash: hash.clone(),
+            scope: None,
+        }),
     );
     assert_eq!(rt.run(&run).unwrap().flow_version, Some(1));
     // A corrupt mutable owner is not activation input: replay uses the snapshot.
@@ -149,6 +170,14 @@ fn self_replays_from_admission_and_upgrade_keeps_kv_and_old_run_version() {
         .unwrap()
         .to_owned();
     let other_run = admit(&rt, &other, "first");
+    world.mock.set_install_status(
+        &other,
+        2,
+        Some(InstallStatus::Active {
+            code_hash: hash,
+            scope: None,
+        }),
+    );
     assert!(matches!(
         rt.resume(&other_run).unwrap(),
         ActivationEnd::Succeeded { .. }
@@ -156,6 +185,10 @@ fn self_replays_from_admission_and_upgrade_keeps_kv_and_old_run_version() {
     assert_eq!(
         common::result(&rt.run(&other_run).unwrap())["seen"],
         Value::Null
+    );
+    assert_eq!(
+        world.mock.install_queries(),
+        vec![(id.clone(), 1), (id.clone(), 1), (id, 2), (other, 2)]
     );
 }
 
@@ -207,6 +240,7 @@ fn instance_core_revocation_does_not_mutate_package_bytes() {
     ));
     assert_eq!(rt.get_package("dark-wake", 1).unwrap(), before);
     assert!(!rt.flow(&id).unwrap().unwrap().enabled);
+    assert_eq!(rt.flow(&id).unwrap().unwrap().approved_version, None);
     rt.ensure_instance("dark-wake", 1, OWNER, 2).unwrap();
     assert!(!rt.flow(&id).unwrap().unwrap().enabled);
     rt.enable_flow(&id).unwrap();

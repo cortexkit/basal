@@ -599,8 +599,13 @@ pub fn revoke(
         .optional()?
         .flatten();
     if package.is_some() {
+        let current: bool = tx.query_row(
+            "SELECT approved_version=?2 FROM flows WHERE flow_id=?1",
+            params![flow_id, version],
+            |r| r.get(0),
+        )?;
         let changed = tx.execute("INSERT OR IGNORE INTO instance_revocations (flow_id,version,reason,revoked_at) VALUES (?1,?2,?3,?4)", params![flow_id,version,reason,now_ms])?;
-        if changed != 0 && flow(tx, flow_id)?.is_some_and(|f| f.approved_version == Some(version)) {
+        if changed != 0 && current {
             disable(tx, flow_id, &Actor::Core, reason, now_ms)
                 .map_err(|e| CoreError::Corrupt(e.to_string()))?;
         }
@@ -664,7 +669,9 @@ pub fn flow(conn: &Connection, flow_id: &str) -> Result<Option<FlowRecord>> {
     );
     let row: Option<Row> = conn
         .query_row(
-            "SELECT owner, state, approved_version, disabled_by, disabled_reason FROM flows \
+            "SELECT owner, state, CASE WHEN package IS NOT NULL AND EXISTS \
+             (SELECT 1 FROM instance_revocations r WHERE r.flow_id=flows.flow_id AND r.version=flows.approved_version) \
+             THEN NULL ELSE approved_version END, disabled_by, disabled_reason FROM flows \
              WHERE flow_id = ?1",
             [flow_id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),

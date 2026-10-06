@@ -6699,3 +6699,139 @@ only = false
 timeout_s = 120
 build_timeout_s = 1800
 
+
+[[control]]
+id = "package-self-only"
+guards = "package agent fields must name only self"
+file = "crates/basal-core/src/packages.rs"
+old = 'if manifest.agents().iter().any(|(_, agent)| *agent != "$self") {'
+new = 'if false && manifest.agents().iter().any(|(_, agent)| *agent != "$self") { // NON-VACUITY BREAK'
+edits = []
+test_file = "crates/basal-module/tests/packages.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test packages"
+expect_red = ["packages_require_self_in_every_agent_field"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "install-self-requires-package"
+guards = "ordinary installs explicitly refuse self agent fields"
+file = "crates/basal-core/src/install.rs"
+old = 'if manifest.agents().iter().any(|(_, agent)| *agent == "$self") {'
+new = 'if false && manifest.agents().iter().any(|(_, agent)| *agent == "$self") { // NON-VACUITY BREAK'
+edits = []
+test_file = "crates/basal-module/tests/packages.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test packages"
+expect_red = ["ordinary_installs_refuse_self_in_every_agent_field"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "instance-stale-generation"
+guards = "lower generations cannot change an instance"
+file = "crates/basal-core/src/packages.rs"
+old = "if incoming < current {"
+new = "if false && incoming < current { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-module/tests/packages.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test packages"
+expect_red = ["generations_fence_stale_calls_and_record_absent_removals"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "instance-absent-removal-generation"
+guards = "removal records ordering even when no instance exists"
+file = "crates/basal-core/src/packages.rs"
+old = 'record_generation(tx, package, agent, incoming, "remove", None, &reply)?;'
+new = 'if changed != 0 { record_generation(tx, package, agent, incoming, "remove", None, &reply)?; } // NON-VACUITY BREAK'
+edits = []
+test_file = "crates/basal-module/tests/packages.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test packages"
+expect_red = ["generations_fence_stale_calls_and_record_absent_removals"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "instance-removal-preserves-enable"
+guards = "instance removal never changes enable state or disable actor"
+file = "crates/basal-core/src/packages.rs"
+old = '"UPDATE flows SET removed=1 WHERE flow_id=?1 AND package IS NOT NULL AND removed=0",'
+new = """"UPDATE flows SET removed=1,state='disabled',disabled_by='core' WHERE flow_id=?1 AND package IS NOT NULL AND removed=0", // NON-VACUITY BREAK"""
+edits = []
+test_file = "crates/basal-module/tests/packages.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test packages"
+expect_red = ["removal_and_reensure_never_change_enable_state_or_actor"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "package-core-only-callers"
+guards = "package get and instance management admit only unscoped core"
+file = "crates/basal-module/src/ops.rs"
+old = "if !permitted {"
+new = "if false && !permitted { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-module/tests/packages.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test packages"
+expect_red = ["package_callers_are_core_only_except_operator_registration"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "package-version-immutable"
+guards = "a registered version refuses different code bytes"
+file = "crates/basal-core/src/packages.rs"
+old = "if existing.as_ref().is_some_and(|p| p.code_hash != hash) {"
+new = "if false && existing.as_ref().is_some_and(|p| p.code_hash != hash) { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-module/tests/packages.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test packages"
+expect_red = ["registered_versions_are_immutable_and_get_returns_exact_bytes"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "instance-self-owner-resolution"
+guards = "self grants resolve to the stable instance owner before dispatch"
+file = "crates/basal-core/src/authorize.rs"
+old = 'if agent == "$self" {'
+new = 'if false && agent == "$self" { // NON-VACUITY BREAK'
+edits = []
+test_file = "crates/basal-testkit/tests/package_instances.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test package_instances"
+expect_red = ["self_grants_resolve_to_the_owner_and_sink_calls_carry_stable_id"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+

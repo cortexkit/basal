@@ -155,10 +155,13 @@ impl Runtime {
             }));
         }
         let manifest =
-            Manifest::parse(text).map_err(|e| PackageError::Install(InstallError::Manifest(e)))?;
+            Manifest::decode(text).map_err(|e| PackageError::Install(InstallError::Manifest(e)))?;
         if manifest.id.len() > 46 {
             return Err(refused("package_id_too_long"));
         }
+        manifest
+            .check()
+            .map_err(|e| PackageError::Install(InstallError::Manifest(e)))?;
         if manifest.agents().iter().any(|(_, agent)| *agent != "$self") {
             return Err(refused("package_names_agent"));
         }
@@ -214,7 +217,16 @@ impl Runtime {
                 return Err(refused("agent_unknown"));
             }
             let id = instance_id(package, agent);
-            let previous = install::flow(tx, &id)?.and_then(|f| f.approved_version);
+            // The pointer remains even when approval is revoked, so removal
+            // and re-ensure can report the selected version without losing state.
+            let previous: Option<u32> = tx
+                .query_row(
+                    "SELECT approved_version FROM flows WHERE flow_id=?1",
+                    [&id],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .flatten();
             let new = previous.is_none();
             tx.execute("INSERT INTO flows (flow_id,owner,approved_version,created_at,package) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(flow_id) DO UPDATE SET approved_version=excluded.approved_version,removed=0", params![id,agent,version,self.config().clock.now_ms(),package])?;
             // A same-version generation changes only ordering and removal.

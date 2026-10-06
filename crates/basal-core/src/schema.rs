@@ -283,6 +283,9 @@ CREATE TRIGGER package_versions_no_update BEFORE UPDATE ON package_versions
 BEGIN SELECT RAISE(ABORT, 'package versions are immutable'); END;
 CREATE TRIGGER package_versions_no_delete BEFORE DELETE ON package_versions
 BEGIN SELECT RAISE(ABORT, 'package versions are immutable'); END;
+CREATE TRIGGER package_versions_no_replace BEFORE INSERT ON package_versions
+WHEN EXISTS (SELECT 1 FROM package_versions WHERE package=NEW.package AND version=NEW.version)
+BEGIN SELECT RAISE(ABORT, 'package versions are immutable'); END;
 ALTER TABLE flows ADD COLUMN package TEXT;
 ALTER TABLE flows ADD COLUMN removed INTEGER NOT NULL DEFAULT 0 CHECK (removed IN (0,1));
 CREATE TABLE instance_revocations (

@@ -154,7 +154,8 @@ fn registered_versions_are_immutable_and_get_returns_exact_bytes() {
                 c.execute("UPDATE package_versions SET script='changed'", [])
                     .is_err()
             );
-            assert!(c.execute("DELETE FROM package_versions", []).is_err());
+        assert!(c.execute("DELETE FROM package_versions", []).is_err());
+        assert!(c.execute("INSERT OR REPLACE INTO package_versions SELECT package,version,'changed',manifest,code_hash,registered_at FROM package_versions",[]).is_err());
             Ok(())
         })
         .unwrap();
@@ -364,18 +365,20 @@ fn generations_resend_identical_replies_and_conflicts_record_nothing() {
 fn package_length_and_unknown_agent_refusals_do_not_write() {
     let f = setup("pkg-refusals");
     let mut m = manifest(1);
-    m["id"] = json!("p".repeat(47));
-    assert_eq!(
-        f.module
-            .handle(
-                &Caller::Core,
-                "package.register",
-                json!({"script":"return 1;","manifest":m.to_string()})
-            )
-            .unwrap_err()
-            .code,
-        "package_id_too_long"
-    );
+    for length in [47, 63, 64, 128] {
+        m["id"] = json!("p".repeat(length));
+        assert_eq!(
+            f.module
+                .handle(
+                    &Caller::Core,
+                    "package.register",
+                    json!({"script":"return 1;","manifest":m.to_string()})
+                )
+                .unwrap_err()
+                .code,
+            "package_id_too_long"
+        );
+    }
     m["id"] = json!("p".repeat(46));
     assert!(
         f.module
