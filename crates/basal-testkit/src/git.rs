@@ -12,8 +12,11 @@ pub fn git_command() -> Command {
 fn git_command_with_env(base_env: impl IntoIterator<Item = (OsString, OsString)>) -> Command {
     let base_env: Vec<_> = base_env.into_iter().collect();
     let mut command = Command::new("git");
-    // Apply the supplied environment first so the isolation boundary also
-    // drops configuration injected by the process that launched the test.
+    // Set the base environment on the command, then clear it. In production
+    // the base is this process's own environment, so the clear only drops
+    // what it would have inherited. A test can pass a base carrying injected
+    // git settings instead: if the clear ever went missing, those settings
+    // would reach git, and the isolation test would see the difference.
     command.envs(base_env.iter().cloned());
     command.env_clear();
     for key in [OsStr::new("PATH"), OsStr::new("HOME")] {
