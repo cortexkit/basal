@@ -9,6 +9,7 @@
 
 pub mod channel;
 pub mod fuzz;
+pub mod git;
 pub mod harness;
 pub mod https;
 pub mod mock;

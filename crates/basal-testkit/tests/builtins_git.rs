@@ -2,24 +2,20 @@
 //! the answers, the approved-repository check, argument checks, and that a
 //! repository's own configuration cannot make a built-in run a program.
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
-
 use basal_host::builtins::git::{self, Op, hardened_command, run_command};
 use basal_host::builtins::{Denial, codes};
 use basal_proto::Primitive;
+use basal_testkit::git::git_command;
 use basal_testkit::harness::scratch;
 use serde_json::{Value, json};
+use std::path::{Path, PathBuf};
 
 /// Runs git to build a fixture, with no outside configuration.
 fn setup_git(dir: &Path, args: &[&str], date: &str) {
-    let status = Command::new("git")
+    let status = git_command()
         .current_dir(dir)
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_AUTHOR_DATE", date)
         .env("GIT_COMMITTER_DATE", date)
-        .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
         .args(args)
         .status()
         .expect("git");
@@ -232,11 +228,9 @@ fn a_repository_config_cannot_make_a_built_in_run_a_program() {
     ));
     std::fs::write(&config, text).expect("plant config");
 
-    // The plant works: plain git runs the fsmonitor program.
-    let status = Command::new("git")
+    // The plant works: git still honors repository-local fsmonitor settings.
+    let status = git_command()
         .current_dir(&repo.dir)
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .args(["status", "--porcelain"])
         .output()
         .expect("git status");

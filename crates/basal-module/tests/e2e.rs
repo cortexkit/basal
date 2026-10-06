@@ -17,6 +17,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 
 use basal_module::fatal::EXIT_STORE_FAILURE;
 use basal_testkit::channel::worker_binary;
+use basal_testkit::git::git_command;
 use serde_json::{Value, json};
 
 /// 2026-05-01T00:00:00Z, the harness's starting clock.
@@ -158,11 +159,8 @@ fn git_repo(dir: &Path) {
         &["add", "CHANGELOG.md"],
         &["commit", "-q", "-m", "release v1"],
     ] {
-        let status = Command::new("git")
+        let status = git_command()
             .current_dir(dir)
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
             .args(args)
             .status()
             .expect("git");
