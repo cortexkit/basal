@@ -86,7 +86,12 @@ fn run(args: Args) -> Result<serde_json::Value, String> {
     .map_err(|e| e.to_string())?;
     let config = Config {
         selector: Arc::new(basal_host::selector::FakeSelector::default()),
-        activation_deadline: Duration::from_secs(30),
+        // This run is healthy, so its deadlines only stop a hang. The kill
+        // harness runs several of these processes at once, and on a loaded
+        // machine an activation can wait a long time for CPU, so keep them
+        // generous: a deadline firing here would end the run in a state the
+        // test compares against, and report load as a failure.
+        activation_deadline: Duration::from_secs(300),
         install_gate: basal_core::InstallGate::Off,
         ..Config::default()
     };
@@ -110,7 +115,7 @@ fn run(args: Args) -> Result<serde_json::Value, String> {
     )?;
     let admission = rt.admit(&spec).map_err(|e| e.to_string())?;
     let run_id = admission.run_id().ok_or("not admitted")?.to_owned();
-    let run = drive(&rt, &mock, &run_id, Duration::from_secs(120)).map_err(|e| e.to_string())?;
+    let run = drive(&rt, &mock, &run_id, Duration::from_secs(900)).map_err(|e| e.to_string())?;
     rt.quiesce();
     let summary = summarize(&rt, &mock, &run.run_id).map_err(|e| e.to_string())?;
     let points: Vec<String> = probe.points().iter().map(Point::render).collect();
