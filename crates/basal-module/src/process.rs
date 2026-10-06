@@ -2,9 +2,18 @@
 //!
 //! The worker receives an empty environment, three pipes and no arguments.
 //! Rust's descriptors are close-on-exec; the worker also closes every inherited
-//! descriptor above stdio and confines itself before reading its first frame. The
-//! parent disclaims its macOS privacy identity before completing the handshake,
-//! so untrusted scripts cannot borrow the module's privacy grants.
+//! descriptor above stdio and confines itself before reading its first frame.
+//!
+//! **Disclaimed launch.** On macOS, a child normally shares its parent's
+//! "responsible process", the identity privacy (TCC) grants such as Files &
+//! Folders are checked against. So a worker launched plainly could use any
+//! grant `ck-basal` holds. Production instead launches each worker
+//! *disclaimed*: it becomes its own responsible process and holds no grants.
+//! `subc-os` does this through a **trampoline**: `ck-basal` re-executes itself
+//! in a hidden mode, single-threaded, which sets the disclaim attribute and then
+//! replaces itself with the worker (keeping the same pid and pipes). The parent
+//! waits for the trampoline's confirmation before the handshake, and a failed
+//! confirmation kills the child rather than falling back to a plain launch.
 
 use std::fmt;
 use std::io::{Read, Write};
@@ -21,8 +30,9 @@ use basal_proto::{
 };
 use subc_os::privacy_identity::DisclaimedCommand;
 
-/// How to execute a worker. Test binaries do not implement the trampoline;
-/// production uses `ck-basal` itself, before any runtime or threads start.
+/// How to execute a worker. `Disclaimed` runs it through a trampoline
+/// executable (see the module comment); only `ck-basal` implements that hidden
+/// mode, handling it first thing in `main`, so test binaries use `Plain`.
 #[derive(Debug, Clone)]
 pub enum WorkerLaunch {
     Disclaimed { trampoline: PathBuf },
@@ -34,7 +44,8 @@ pub enum WorkerLaunch {
 pub enum SpawnError {
     /// The binary could not be executed.
     Exec(String),
-    /// Its own macOS privacy identity could not be confirmed.
+    /// The trampoline did not confirm that the worker was launched as its own
+    /// macOS responsible process.
     Disclaim(String),
     /// It started but did not complete the handshake.
     Handshake(String),
@@ -100,8 +111,9 @@ impl WorkerProcess {
         let mut child = command
             .spawn()
             .map_err(|e| SpawnError::Exec(format!("{}: {e}", binary.display())))?;
-        // The command owns the parent's acknowledgement writer. Retaining it
-        // would prevent EOF even after a successful trampoline exec.
+        // The command holds this process's copy of the trampoline's confirmation
+        // pipe. The confirmation reads that pipe to end-of-file, which never comes
+        // while a copy stays open here, so drop it before confirming.
         drop(command);
         if let Some(confirmation) = confirmation
             && let Err(error) = confirmation.confirm(deadline)

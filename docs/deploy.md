@@ -58,7 +58,7 @@ An update names a discriminator and shared control for each staged/live pair, th
 
 Warm workers are spawned by ck-basal. Restarting ck-basal last ensures every worker comes from the newly placed worker file, not a warm outgoing image. Between the two placements the old parent may spawn a new worker, so this order requires that every change to the parent-worker protocol (`crates/basal-proto`) since the live build is additive: the old parent must decode every message the new worker sends. A change that isn't additive needs basal stopped while both binaries are replaced. The commands on the card are gate-only; the operator adds `--place` to each after checking them.
 
-On macOS each worker is launched through `ck-basal`'s single-threaded privacy trampoline (`subc-os`), becoming its own responsible process instead of inheriting the module's TCC grants. The environment remains empty and the worker still closes inherited descriptors and applies its own Seatbelt profile. After its first Subconscious connection consumes the launch nonce, `ck-basal` probes that trampoline once, before starting any warm spares. A refused probe never falls back to a plain launch.
+On macOS, privacy (TCC) grants such as Files & Folders belong to a "responsible process", which a child normally shares with its parent. So `ck-basal` launches each worker *disclaimed*, making it its own responsible process, so flow code can never use a grant `ck-basal` holds. It does this with `subc-os`'s trampoline: `ck-basal` re-executes itself in a hidden single-threaded mode that sets the disclaim attribute and then becomes the worker. The environment stays empty, and the worker still closes inherited descriptors and applies its own Seatbelt profile. After its first Subconscious connection and before starting any warm spares, `ck-basal` runs the trampoline once in its check mode (the startup probe), which confirms it can launch disclaimed. If that fails, `ck-basal` exits rather than ever launching a worker plainly.
 
 Fatal exits are reported to the supervisor, which restarts the module:
 
@@ -66,7 +66,7 @@ Fatal exits are reported to the supervisor, which restarts the module:
 |---|---|---|
 | 1 | startup failure | The first Subconscious connection or another startup prerequisite failed. |
 | 75 | `EXIT_STORE_FAILURE` | A store failure requires recovery on restart (`EX_TEMPFAIL`). |
-| 76 | `EXIT_PRIVACY_IDENTITY_FAILURE` | The worker privacy trampoline could not be located or its startup probe failed. No workers are launched. |
+| 76 | `EXIT_PRIVACY_IDENTITY_FAILURE` | `ck-basal` couldn't find its own executable, or the startup probe (the trampoline run once in its check mode) failed. No worker is launched. |
 
 After placement, basal checks that `ck --json provenance basal` names the commit, the parent's and a worker's running images match their placed files by inode, the sandbox verifies at the placed worker path, the store reads the build's new schema version with its tables intact, and `flow.list` answers.
 

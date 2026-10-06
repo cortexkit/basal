@@ -106,8 +106,9 @@ mod privacy {
 
     #[tokio::test]
     async fn production_worker_is_its_own_responsible_process() {
-        // This plain child is held alive by stdin, not a duration. Its identity
-        // must differ from a disclaimed child under the same measurement.
+        // A control: a plainly launched child, held alive by its open stdin
+        // rather than a timer. It must report its parent's responsible process,
+        // so the measurement below can tell a disclaimed worker from a plain one.
         let control = ReapedChild(
             Command::new("/bin/cat")
                 .stdin(Stdio::piped())
@@ -123,8 +124,9 @@ mod privacy {
         let dir = Directory(scratch("privacy"));
         let binary = dir.0.join("ck-basal");
         let worker = dir.0.join("ck-basal-worker");
-        // Use production bytes with the installation layout; the harness and
-        // test executable are not privacy trampolines.
+        // Use the production binaries in their installed layout, side by side.
+        // Only `ck-basal` implements the trampoline mode that launches workers
+        // disclaimed; the harness and this test binary don't.
         std::fs::copy(env!("CARGO_BIN_EXE_ck-basal"), &binary).expect("copy module");
         std::fs::copy(worker_binary(), &worker).expect("copy worker");
         let worker = worker.canonicalize().expect("worker path");

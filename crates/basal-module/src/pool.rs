@@ -46,8 +46,9 @@ use crate::process::{SpawnError, WorkerLaunch, WorkerProcess};
 pub struct PoolConfig {
     /// `ck-basal-worker`; by default the one beside the running binary.
     pub worker_binary: PathBuf,
-    /// Production disclaims through its own executable; test pools can launch
-    /// directly because their binaries do not handle the hidden trampoline mode.
+    /// How workers are launched (see `crate::process`). Production launches them
+    /// disclaimed through its own executable; test pools launch them plainly,
+    /// because test binaries don't implement the trampoline mode.
     pub worker_launch: WorkerLaunch,
     /// Greeted, unbound workers kept ready.
     pub warm_spares: usize,
@@ -83,7 +84,8 @@ impl PoolConfig {
 
     /// The worker beside the running executable, which is how the module is
     /// installed: both binaries in one directory. This production constructor
-    /// always disclaims, with no environment or configuration opt-out.
+    /// always launches workers disclaimed, through the running executable, with
+    /// no environment or configuration opt-out.
     pub fn beside_current_exe() -> std::io::Result<Self> {
         let exe = std::env::current_exe()?;
         let dir = exe

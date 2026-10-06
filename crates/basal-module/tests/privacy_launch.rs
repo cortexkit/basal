@@ -48,8 +48,11 @@ fn disclaimed_worker_closes_extra_inherited_descriptors_at_startup() {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let (mut command, confirmation) = builder.into_command().expect("disclaimed command");
-    // SETEXEC preserves non-CLOEXEC descriptors. Deliberately inject authority
-    // on both a low and a high fd; the worker, not the trampoline, must close it.
+    // The trampoline replaces itself with the worker in place (posix_spawn with
+    // SETEXEC), which keeps every descriptor not marked close-on-exec. Plant an
+    // open pipe at fd 3 and fd 64 to stand for a handle the worker must not
+    // keep, such as the daemon's launch-nonce pipe: the worker's own startup,
+    // not the trampoline, has to close both.
     // SAFETY: this fork hook uses only async-signal-safe descriptor operations.
     unsafe {
         command.pre_exec(move || {
@@ -92,8 +95,10 @@ fn disclaim_refusal_is_named_and_child_is_killed_and_reaped() {
     std::fs::create_dir_all(&dir).expect("fixture directory");
     let script = dir.join("trampoline");
     let pid_file = dir.join("child.pid");
-    // The fixture writes a valid refusal and closes its ack writer, but stays
-    // alive on stdin. Only the caller's kill-and-reap path can remove it.
+    // This stand-in trampoline reports a refusal on its confirmation pipe and
+    // closes it, but then keeps running, blocked on stdin. It only goes away if
+    // the caller kills and reaps it after reading the refusal, which is what
+    // this test checks.
     std::fs::write(
         &script,
         "#!/bin/sh\necho $$ > \"$3\"\neval 'printf \"SUBC_PRIVACY_REFUSAL_V1 privacy identity trampoline setup failed: fixture refusal\\n\" >&'\"$2\"\neval \"exec $2>&-\"\nread -r line\n",
