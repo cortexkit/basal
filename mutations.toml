@@ -7139,3 +7139,20 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
+
+[[control]]
+id = "fixture-git-helper-clears-inherited-environment"
+guards = "fixture git commands ignore injected caller git configuration"
+file = "crates/basal-testkit/src/git.rs"
+old = "command.env_clear();"
+new = "// command.env_clear(); // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-testkit/src/git.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--lib"
+expect_red = ["git::tests::fixture_git_commands_ignore_injected_global_hooks"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
