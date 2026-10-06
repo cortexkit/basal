@@ -7166,3 +7166,22 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
+
+
+[[control]]
+id = "production-worker-inherits-parent-privacy-identity"
+guards = "production workers must be their own macOS responsible processes, not borrow the module privacy grants"
+file = "crates/basal-module/src/pool.rs"
+old = "WorkerLaunch::Disclaimed { trampoline: exe },"
+new = "WorkerLaunch::Plain, // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-module/tests/e2e.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test e2e"
+expect_red = ["privacy::production_worker_is_its_own_responsible_process"]
+only = true
+platforms = ["macos"]
+timeout_s = 600
+build_timeout_s = 3600
+
