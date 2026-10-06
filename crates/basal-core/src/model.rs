@@ -301,6 +301,7 @@ pub struct Run {
     pub trigger_id: String,
     pub attempt: u32,
     pub trigger: JsonText,
+    pub self_input: JsonText,
     pub script: String,
     pub manifest: String,
     pub code_hash: [u8; 32],
@@ -329,7 +330,7 @@ pub struct Run {
 
 pub const RUN_COLUMNS: &str = "run_id, flow_id, trigger_id, attempt, trigger, script, manifest, \
     code_hash, fingerprint, state, owner, generation, readiness, awaited, result, error_kind, \
-    error_detail, broken, admitted_at, ended_at, flow_version, admit_seq, deadline_ms, deadline_at";
+    error_detail, broken, admitted_at, ended_at, flow_version, admit_seq, deadline_ms, deadline_at, self_input";
 
 impl Run {
     pub fn from_row(row: &Row<'_>) -> rusqlite::Result<Result<Self>> {
@@ -357,6 +358,7 @@ impl Run {
         let admit_seq: Option<i64> = row.get(21)?;
         let deadline_ms: Option<i64> = row.get(22)?;
         let deadline_at: Option<i64> = row.get(23)?;
+        let self_input: Option<String> = row.get(24)?;
         Ok((|| {
             let awaited = match awaited {
                 None => Vec::new(),
@@ -370,6 +372,7 @@ impl Run {
                 attempt: u32::try_from(attempt)
                     .map_err(|_| CoreError::Corrupt(format!("attempt {attempt}")))?,
                 trigger: json(trigger, "trigger")?,
+                self_input: json(self_input.unwrap_or_else(|| "null".into()), "self input")?,
                 script,
                 manifest,
                 code_hash: digest(code_hash)?,

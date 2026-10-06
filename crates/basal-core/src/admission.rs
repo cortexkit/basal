@@ -124,6 +124,9 @@ fn gate(
     if draining(tx)? {
         return Ok(Err(Admission::Draining));
     }
+    if crate::packages::removed(tx, &spec.flow_id)? {
+        return Ok(Err(Admission::NotApproved));
+    }
     match install::flow(tx, &spec.flow_id)? {
         None => return Ok(Err(Admission::NotApproved)),
         Some(flow) if !flow.enabled => return Ok(Err(Admission::Disabled)),
@@ -178,6 +181,10 @@ fn insert_run(
             seq,
             grant.deadline_ms
         ],
+    )?;
+    tx.execute(
+        "UPDATE runs SET self_input=(SELECT json_object('agent_id',owner) FROM flows WHERE flow_id=?2 AND package IS NOT NULL) WHERE run_id=?1",
+        params![run_id, spec.flow_id],
     )?;
     tx.execute(
         "INSERT INTO trigger_inbox (flow_id, trigger_id, attempt, run_id, admitted_at) \

@@ -14,7 +14,7 @@ A flow is a script plus a manifest. The manifest says everything the flow may do
 | Field | Type | Required | Default | Limits and meaning |
 |---|---|---|---|---|
 | `format` | integer | no | `1` | The manifest format. Only `1` is read. |
-| `id` | string | yes | | The flow id: 1 to 63 bytes of `a-z`, `0-9`, `-`, `_`. Stable across versions; `kv`, the token windows, the rate limits and the owner are per flow id. |
+| `id` | string | yes | | The flow id: 1 to 63 bytes of `a-z`, `0-9`, `-`, `_`. Stable across versions; `kv`, the token windows, the rate limits and the owner are per flow id. `flow.install` refuses ids ending in `_` followed by exactly 16 lowercase hex characters (`_[0-9a-f]{16}$`) with `flow_id_reserved`: this namespace belongs to [package instances](packages.md). |
 | `version` | integer | yes | | At least 1. A new install must be above the approved version. |
 | `purpose` | string | yes | | 1 to 1024 bytes, no control characters except newline. Shown on the card. |
 | `trigger` | object | yes | | Exactly one of `events` and `schedule` (below). |
@@ -34,6 +34,12 @@ A flow is a script plus a manifest. The manifest says everything the flow may do
 Names: module ids use `a-z`, `0-9`, `-`, `_`; op names add `A-Z` and `.` (`browser.read_page`; the pair, never the dots, identifies the op); event names and source kinds are one NATS subject token, `a-z`, `0-9`, `_`; agent names use letters, digits, `-` and `_`. Every name is 1 to 128 bytes.
 
 A duration is a positive whole number followed by one unit: `s`, `m`, `h` or `d` (`"90s"`, `"10m"`, `"6h"`, `"1d"`).
+
+### Agent fields
+
+Agent fields also accept the literal `$self` in [package manifests](packages.md). Registration permits only `$self`; activation resolves it to the instance's stable owner id. Ordinary `flow.install` refuses `$self` with `self_requires_package`.
+
+Every agent named by `sinks[].agent`, `status[]`, `claims[].agent` and `facts.targets[]` must be known to the catalog. Fields may use a display name or a stable `agent_id`; the catalog resolves both to that id. For an agent-owned flow, every resolved id must equal its author's stable id: the flow acts only for its owner. Install and dry run refuse a foreign target with `foreign_agent_target`, naming the field and agent, before recording an install or raising a consent card. The author's id comes from the daemon-stamped caller scope for an agent install, not the manifest. An operator installing in an agent's name uses that agent's stable id as the author and follows the same rule. Global flows authored as `operator` and local-caller installs authored as `local:unverified` may still name any known agent.
 
 ### `trigger`
 

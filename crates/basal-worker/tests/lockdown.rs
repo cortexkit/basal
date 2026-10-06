@@ -78,6 +78,7 @@ const ALLOWED_GLOBALS: &[&str] = &[
     "parseFloat",
     "parseInt",
     "random",
+    "self",
     "sink",
     "step",
     "trigger",

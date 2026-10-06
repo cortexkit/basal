@@ -50,6 +50,7 @@ use crate::module::Module;
 pub struct OpError {
     pub code: String,
     pub message: String,
+    pub detail: Option<Value>,
 }
 
 impl OpError {
@@ -57,7 +58,13 @@ impl OpError {
         Self {
             code: code.to_owned(),
             message: message.into(),
+            detail: None,
         }
+    }
+
+    fn with_detail(mut self, detail: Option<Value>) -> Self {
+        self.detail = detail;
+        self
     }
 
     /// The refusal of `op` for `caller`. Every op is open to the operator,
@@ -121,9 +128,23 @@ impl Module {
             return OpError::new("store_failure", text);
         }
         match e {
+            InstallError::SelfRequiresPackage => OpError::new(
+                "self_requires_package",
+                "$self is available only in package manifests",
+            ),
             InstallError::NotOwner { .. } | InstallError::NotYourDisable { .. } => {
                 OpError::new("not_permitted", e.to_string())
             }
+            InstallError::ForeignAgentTarget {
+                field,
+                agent,
+                author,
+            } => OpError::new(
+                "foreign_agent_target",
+                format!(
+                    "{field} names agent {agent}; an agent-owned flow may name only its author {author}"
+                ),
+            ),
             InstallError::UnknownEvent {
                 module,
                 name,
@@ -143,6 +164,10 @@ impl Module {
     /// Runs one op for `caller`.
     pub fn handle(&self, caller: &Caller, method: &str, params: Value) -> OpResult {
         let result = match method {
+            "package.register"
+            | "package.get"
+            | "flow.instance.ensure"
+            | "flow.instance.remove" => self.op_package(caller, method, params),
             "flow.install" => self.op_install(caller, params),
             "flow.dry_run" => self.op_dry_run(caller, params),
             "flow.health" => self.op_health(caller, params),
@@ -188,6 +213,79 @@ impl Module {
         Ok(!owners.is_empty() && owners.iter().all(|o| o == agent))
     }
 
+    // ---- packages and instances ---------------------------------------
+
+    fn op_package(&self, caller: &Caller, method: &str, params: Value) -> OpResult {
+        let permitted = *caller == Caller::Core
+            || (method == "package.register" && *caller == Caller::Operator);
+        if !permitted {
+            return Err(OpError::new(
+                "not_permitted",
+                format!("{} may not call {method}", caller.label()),
+            ));
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Register {
+            script: String,
+            manifest: String,
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Get {
+            package: String,
+            version: u32,
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Ensure {
+            package: String,
+            version: u32,
+            agent_id: String,
+            generation: i64,
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Remove {
+            package: String,
+            agent_id: String,
+            generation: i64,
+        }
+        let result = match method {
+            "package.register" => {
+                let p: Register = serde_json::from_value(params).map_err(invalid_params)?;
+                self.rt.register_package(&p.script, &p.manifest)
+            }
+            "package.get" => {
+                let p: Get = serde_json::from_value(params).map_err(invalid_params)?;
+                self.rt.get_package(&p.package, p.version)
+            }
+            "flow.instance.ensure" => {
+                let p: Ensure = serde_json::from_value(params).map_err(invalid_params)?;
+                self.rt
+                    .ensure_instance(&p.package, p.version, &p.agent_id, p.generation)
+            }
+            "flow.instance.remove" => {
+                let p: Remove = serde_json::from_value(params).map_err(invalid_params)?;
+                self.rt
+                    .remove_instance(&p.package, &p.agent_id, p.generation)
+            }
+            _ => unreachable!(),
+        };
+        result.map_err(|e| match e {
+            basal_core::packages::PackageError::Install(e) => self.install_error(e),
+            basal_core::packages::PackageError::Store(e) => self.core_error(e),
+            basal_core::packages::PackageError::Refused { code, current } => OpError::new(
+                code,
+                current.map_or_else(
+                    || code.to_owned(),
+                    |current| format!("the call is stale; the current generation is {current}"),
+                ),
+            )
+            .with_detail(current.map(|current| json!({"current":current}))),
+        })
+    }
+
     // ---- flow.install --------------------------------------------------
 
     fn op_install(&self, caller: &Caller, params: Value) -> OpResult {
@@ -206,6 +304,19 @@ impl Module {
         let manifest = Manifest::parse(&p.manifest).map_err(|e| {
             OpError::new("install_refused", format!("the manifest is invalid: {e}"))
         })?;
+        // Package instances derive their ids from the package and agent.
+        // Plain installs must not occupy that namespace before an instance exists.
+        if manifest.id.rsplit_once('_').is_some_and(|(_, suffix)| {
+            suffix.len() == 16
+                && suffix
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        }) {
+            return Err(OpError::new(
+                "flow_id_reserved",
+                format!("flow id {} is reserved for package instances", manifest.id),
+            ));
+        }
         // Authorization: an agent installs for itself, never with the
         // operator's loop override, and only a flow no other agent wrote.
         let author = match caller {
@@ -469,6 +580,7 @@ impl Module {
                 now_ms: self.rt.config().clock.now_ms(),
             })
             .map_err(|e| match e {
+                DryRunError::InstallRefused(e) => self.install_error(e),
                 DryRunError::Invalid(m) => invalid_params(m),
                 DryRunError::Failed(m) => OpError::new("dry_run_failed", m),
             })?;

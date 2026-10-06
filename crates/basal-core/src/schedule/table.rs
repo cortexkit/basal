@@ -191,6 +191,28 @@ pub fn approve(
     now: Timestamp,
     config: &SchedulerConfig,
 ) -> Result<Approval> {
+    approve_inner(tx, flow, now, config, true)
+}
+
+/// Like `approve`, but a package instance may move to a lower version: core
+/// orders instance changes by its own per-instance generation number, and a
+/// persona can legitimately pin an older package version.
+pub(crate) fn approve_instance(
+    tx: &Transaction,
+    flow: &ScheduledFlow,
+    now: Timestamp,
+    config: &SchedulerConfig,
+) -> Result<Approval> {
+    approve_inner(tx, flow, now, config, false)
+}
+
+fn approve_inner(
+    tx: &Transaction,
+    flow: &ScheduledFlow,
+    now: Timestamp,
+    config: &SchedulerConfig,
+    monotonic: bool,
+) -> Result<Approval> {
     let compiled =
         validate(&flow.spec).map_err(|e| CoreError::Invalid(format!("{}: {e}", flow.flow_id)))?;
     let version = version_sql(flow.version)?;
@@ -221,7 +243,7 @@ pub fn approve(
         return Ok(Approval::Created);
     };
 
-    if flow.version < old.version {
+    if monotonic && flow.version < old.version {
         return Err(CoreError::Invalid(format!(
             "{}: version {} is older than the approved version {}",
             flow.flow_id, flow.version, old.version

@@ -29,6 +29,7 @@ fn activation(prelude_hash: PreludeHash, script: &str) -> ParentMessage {
         prelude_hash,
         script: script.into(),
         trigger: JsonText::null(),
+        self_input: JsonText::null(),
         budgets: Budgets::default(),
         prefix: Vec::new(),
     }))

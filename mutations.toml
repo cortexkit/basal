@@ -3,7 +3,8 @@
 # Other tests in the target may also fail: the original proofs ran
 # only the named test and did not assert target-wide exclusivity.
 # Build and test deadlines are separate: 3600 s for loaded-host builds,
-# 600 s for the test binary. Reports belong in target/mutations/.
+# 600 s for test binaries unless a row extends the bound for many stalled tests.
+# Reports belong in target/mutations/.
 
 # worker: 32 controls
 [[control]]
@@ -561,6 +562,8 @@ new = "awaited = NULL WHERE run_id = ?1 AND state IN ('pending', 'running')\","
 
 [[control]]
 id = "outcomes-arriving-during-an-activation-are-never-released-by-it"
+hub = "Available mailbox outcomes are delivered during the current activation after prefix replay, rather than waiting for another activation; live-call, scoped-flow and crash recovery tests assert that delivery"
+hub_targets = ["builtins_dispatch", "dispatch_authorization", "dispatch_kv", "dispatch_limits", "dispatch_tokens", "flow_scope_recovery", "flow_scopes", "global_model_scope", "journal_admin", "journal_cut", "journal_identity", "journal_kill", "journal_ownership", "journal_unknown", "package_instances"]
 guards = "outcomes arriving during an activation are never released by it"
 test_file = "crates/basal-testkit/tests/journal_races.rs"
 runner = "cargo"
@@ -569,10 +572,12 @@ target = "--test journal_races"
 expect_red = ["completion_during_replay_is_released_after_the_prefix"]
 only = false
 build_timeout_s = 3600
-timeout_s = 600
+# The broad replay withholds replies in many tests, each retaining its healthy
+# 20- or 60-second activation budget. Allow their failures to finish under load.
+timeout_s = 7200
 file = "crates/basal-core/src/journal.rs"
 old = "payload_hash FROM mailbox \\\n         WHERE run_id = ?1 ORDER BY seq\","
-new = "payload_hash FROM mailbox \\\n         WHERE run_id = ?1 AND arrived_generation < (SELECT generation FROM runs WHERE run_id = ?1) ORDER BY seq\","
+new = "payload_hash FROM mailbox \\\n         WHERE run_id = ?1 AND arrived_generation < (SELECT generation FROM runs WHERE run_id = ?1) ORDER BY seq\", // NON-VACUITY BREAK"
 
 [[control]]
 id = "rejections-journaled-as-fulfilments-caught-rejection"
@@ -627,6 +632,8 @@ new = "            position,\n            { let _ = &settlement; \"fulfilled\" }
 
 [[control]]
 id = "calls-of-one-run-dispatched-serially-on-the-activation-s-thread"
+hub = "Calls dispatch concurrently off the activation thread, so a blocked host cannot prevent other calls, deadline enforcement or ownership loss from progressing"
+hub_targets = ["dispatch_slots", "flow_scopes", "journal_ownership"]
 guards = "calls of one run dispatched serially on the activation's thread"
 test_file = "crates/basal-testkit/tests/journal_races.rs"
 runner = "cargo"
@@ -635,10 +642,12 @@ target = "--test journal_races"
 expect_red = ["calls_of_one_run_are_dispatched_concurrently"]
 only = false
 build_timeout_s = 3600
-timeout_s = 600
+# Serial dispatch also stalls gated drivers. Their bounded joins leave room for
+# healthy scheduling delays, and the broad replay pays those waits under load.
+timeout_s = 3600
 file = "crates/basal-core/src/runtime.rs"
 old = "let handle = thread::spawn(f);"
-new = "f();\n        let handle = thread::spawn(|| {});"
+new = "f(); // NON-VACUITY BREAK\n        let handle = thread::spawn(|| {});"
 
 [[control]]
 id = "recovery-applies-a-committed-local-effect-again"
@@ -6391,8 +6400,9 @@ target = "--test pool"
 expect_red = ["a_wait_deadline_stops_and_reaps_its_workers"]
 only = false
 build_timeout_s = 3600
-timeout_s = 30
-file = "crates/basal-module/tests/pool.rs"
+# The broad runner covers the whole package; the guard keeps its own short deadline.
+timeout_s = 600
+file = "crates/basal-testkit/src/harness.rs"
 old = "if Instant::now() >= deadline {"
 new = "if false && Instant::now() >= deadline { // NON-VACUITY BREAK"
 
@@ -6777,4 +6787,355 @@ expect_red = ["script.tests.stage_card.StageCardChecks.test_push_event_ci_run_no
 only = false
 timeout_s = 120
 build_timeout_s = 1800
+
+
+[[control]]
+id = "dispatch-driver-wait-loses-its-short-deadline"
+guards = "a deliberately stalled activation driver reaches its short wait deadline and returns its worker for reaping"
+file = "crates/basal-testkit/tests/dispatch_slots.rs"
+old = "const STALLED_DRIVER_WAIT: Duration = Duration::from_secs(3);"
+new = "const STALLED_DRIVER_WAIT: Duration = Duration::from_secs(60); // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-testkit/tests/dispatch_slots.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test dispatch_slots"
+expect_red = ["a_stuck_driver_wait_deadline_releases_and_reaps_its_worker"]
+only = true
+# The broad runner covers the whole package; the guard keeps its own short deadline.
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "install-agent-owned-foreign-targets"
+hub = "Agent targets and install_refuses_what_an_agent_may_not_do both assert that an agent's ordinary install can grant only its own identity, never another agent"
+hub_targets = ["ops"]
+guards = "agent-owned flows cannot target another agent"
+file = "crates/basal-core/src/install.rs"
+old = 'if author != "operator" && author != "local:unverified" {'
+new = 'if false && author != "operator" && author != "local:unverified" { // NON-VACUITY BREAK'
+edits = []
+test_file = "crates/basal-module/tests/agent_targets.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test agent_targets"
+expect_red = ["agent_owned_manifests_reject_foreign_targets_before_install_and_dry_run"]
+# Both targets intentionally assert the same self-only install restriction.
+only = false
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "flow-scope-fixture-keeps-the-production-activation-deadline"
+guards = "a deliberately stalled scope activation reaches its short deadline and reaps its worker"
+file = "crates/basal-testkit/tests/flow_scopes.rs"
+old = "const STALLED_ACTIVATION_WAIT: Duration = Duration::from_secs(3);"
+new = "const STALLED_ACTIVATION_WAIT: Duration = Duration::from_secs(60); // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test flow_scopes"
+expect_red = ["a_stalled_scope_activation_deadline_reaps_its_worker"]
+only = true
+# The broad runner covers the whole package; the guard keeps its own short deadline.
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "install-agent-owned-foreign-facts-targets"
+guards = "agent ownership restriction includes facts targets"
+file = "crates/basal-core/src/install.rs"
+old = "if target_id != author {"
+new = 'if field != "facts.targets" && target_id != author { // NON-VACUITY BREAK'
+edits = []
+test_file = "crates/basal-module/tests/agent_targets.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test agent_targets"
+expect_red = ["agent_owned_manifests_reject_foreign_targets_before_install_and_dry_run"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "ownership-driver-wait-loses-its-short-deadline"
+guards = "a deliberately stalled ownership driver reaches its short wait deadline and returns its worker for reaping"
+file = "crates/basal-testkit/tests/journal_ownership.rs"
+old = "const STALLED_OWNER_DRIVER_WAIT: Duration = Duration::from_secs(3);"
+new = "const STALLED_OWNER_DRIVER_WAIT: Duration = Duration::from_secs(60); // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-testkit/tests/journal_ownership.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test journal_ownership"
+expect_red = ["a_stuck_ownership_driver_wait_deadline_releases_and_reaps_its_worker"]
+only = true
+# The broad runner covers the whole package; the guard keeps its own short deadline.
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "install-reserved-package-instance-id"
+guards = "plain installs cannot squat on package instance flow ids"
+file = "crates/basal-module/src/ops.rs"
+old = "if manifest.id.rsplit_once('_').is_some_and(|(_, suffix)| {"
+new = "if false && manifest.id.rsplit_once('_').is_some_and(|(_, suffix)| { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-module/tests/agent_targets.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test agent_targets"
+expect_red = ["plain_install_cannot_occupy_package_instance_ids"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "cargo-path-dependency-outside-workspace-is-accepted"
+guards = "Cargo path dependencies outside the workspace are refused"
+file = "script/check-path-deps.py"
+old = "if manifest_path != root and root not in manifest_path.parents:"
+new = "if False and manifest_path != root and root not in manifest_path.parents: # NON-VACUITY BREAK"
+edits = []
+test_file = "script/tests/check_path_deps.py"
+runner = "command"
+command = ["python3", "-m", "unittest", "{test}"]
+expect_red = ["script.tests.check_path_deps.PathDependencyChecks.test_outside_path_dependency_is_refused_and_named"]
+only = false
+timeout_s = 120
+build_timeout_s = 1800
+
+
+[[control]]
+id = "package-self-only"
+guards = "package agent fields must name only self"
+file = "crates/basal-core/src/packages.rs"
+old = 'if manifest.agents().iter().any(|(_, agent)| *agent != "$self") {'
+new = 'if false && manifest.agents().iter().any(|(_, agent)| *agent != "$self") { // NON-VACUITY BREAK'
+edits = []
+test_file = "crates/basal-module/tests/packages.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test packages"
+expect_red = ["packages_require_self_in_every_agent_field"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "install-self-requires-package"
+guards = "ordinary installs explicitly refuse self agent fields"
+file = "crates/basal-core/src/install.rs"
+old = 'if manifest.agents().iter().any(|(_, agent)| *agent == "$self") {'
+new = 'if false && manifest.agents().iter().any(|(_, agent)| *agent == "$self") { // NON-VACUITY BREAK'
+edits = []
+test_file = "crates/basal-module/tests/packages.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test packages"
+expect_red = ["ordinary_installs_refuse_self_in_every_agent_field"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "instance-stale-generation"
+guards = "lower generations cannot change an instance"
+file = "crates/basal-core/src/packages.rs"
+old = "if incoming < current {"
+new = "if false && incoming < current { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-module/tests/packages.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test packages"
+expect_red = ["generations_fence_stale_calls_and_record_absent_removals"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "instance-absent-removal-generation"
+guards = "removal records ordering even when no instance exists"
+file = "crates/basal-core/src/packages.rs"
+old = 'record_generation(tx, package, agent, incoming, "remove", None, &reply)?;'
+new = 'if changed != 0 { record_generation(tx, package, agent, incoming, "remove", None, &reply)?; } // NON-VACUITY BREAK'
+edits = []
+test_file = "crates/basal-module/tests/packages.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test packages"
+expect_red = ["generations_fence_stale_calls_and_record_absent_removals"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "instance-removal-preserves-enable"
+guards = "instance removal never changes enable state or disable actor"
+file = "crates/basal-core/src/packages.rs"
+old = '"UPDATE flows SET removed=1 WHERE flow_id=?1 AND package IS NOT NULL AND removed=0",'
+new = """"UPDATE flows SET removed=1,state='disabled',disabled_by='core' WHERE flow_id=?1 AND package IS NOT NULL AND removed=0", // NON-VACUITY BREAK"""
+edits = []
+test_file = "crates/basal-module/tests/packages.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test packages"
+expect_red = ["removal_and_reensure_never_change_enable_state_or_actor"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "package-core-only-callers"
+guards = "package get and instance management admit only unscoped core"
+file = "crates/basal-module/src/ops.rs"
+old = "if !permitted {"
+new = "if false && !permitted { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-module/tests/packages.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test packages"
+expect_red = ["package_callers_are_core_only_except_operator_registration"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "package-version-immutable"
+guards = "a registered version refuses different code bytes"
+file = "crates/basal-core/src/packages.rs"
+old = "if existing.as_ref().is_some_and(|p| p.code_hash != hash) {"
+new = "if false && existing.as_ref().is_some_and(|p| p.code_hash != hash) { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-module/tests/packages.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test packages"
+expect_red = ["registered_versions_are_immutable_and_get_returns_exact_bytes"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "instance-self-owner-resolution"
+guards = "self grants resolve to the stable instance owner before dispatch"
+file = "crates/basal-core/src/authorize.rs"
+old = 'if agent == "$self" {'
+new = 'if false && agent == "$self" { // NON-VACUITY BREAK'
+edits = []
+test_file = "crates/basal-testkit/tests/package_instances.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test package_instances"
+expect_red = ["self_grants_resolve_to_the_owner_and_sink_calls_carry_stable_id"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "instance-agent-lookup-outside-writer"
+guards = "core agent lookup must happen before the SQLite writer is held"
+file = "crates/basal-core/src/packages.rs"
+old = """
+let known_agent = self.catalog().agent_id(agent).as_deref() == Some(agent);
+        decide(self, |tx| {"""
+new = """
+decide(self, |tx| {
+            let known_agent = self.catalog().agent_id(agent).as_deref() == Some(agent); // NON-VACUITY BREAK"""
+edits = []
+test_file = "crates/basal-testkit/tests/package_instances.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test package_instances"
+expect_red = ["instance_agent_lookup_leaves_the_sqlite_writer_available"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "instance-removal-pauses-schedule"
+guards = "removed instances must neither plan fires nor accumulate rejection rows"
+file = "crates/basal-core/src/packages.rs"
+old = "if changed != 0 {"
+new = "if false && changed != 0 { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-testkit/tests/package_instances.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test package_instances"
+expect_red = ["removed_instance_schedule_pauses_and_resumes_without_catch_up"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "instance-reensure-resumes-schedule"
+guards = "re-ensure must resume enabled removed instances after now without catch-up"
+file = "crates/basal-core/src/packages.rs"
+old = "if was_removed && !install::is_disabled(tx, &id)? {"
+new = "if false && was_removed && !install::is_disabled(tx, &id)? { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-testkit/tests/package_instances.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test package_instances"
+expect_red = ["removed_instance_schedule_pauses_and_resumes_without_catch_up"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "instance-revocation-preserves-enable"
+guards = "instance revocation must not disable a flow that can select a newer package version"
+file = "crates/basal-core/src/install.rs"
+old = "if package.is_some() {"
+new = """
+if package.is_some() {
+        disable(tx, flow_id, &Actor::Core, reason, now_ms).map_err(|e| CoreError::Corrupt(e.to_string()))?; // NON-VACUITY BREAK"""
+edits = []
+test_file = "crates/basal-testkit/tests/package_instances.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test package_instances"
+expect_red = ["instance_core_revocation_does_not_mutate_package_bytes"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "instance-removal-cancellation-recheck"
+guards = "a stale removal observation must be rechecked in the cancellation transaction"
+file = "crates/basal-core/src/gate.rs"
+old = "if !crate::packages::removed(tx, flow_id)? {"
+new = "if false && !crate::packages::removed(tx, flow_id)? { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-core/src/gate.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+expect_red = ["gate::removal_tests::removed_cancellation_rechecks_mark_in_its_write_transaction"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
 

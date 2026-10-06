@@ -12,7 +12,7 @@ A package manifest is a flow manifest ([`manifest.md`](manifest.md)) with three 
 
 - `id` is the package id. It must be at most 46 bytes, so that the instance flow id below fits the 63-byte flow id limit. `version` is the package version.
 - Every agent field names `$self` and nothing else: `sinks[].agent`, `status[]`, `claims[].agent` and `facts.targets[]`. `$self` stands for the agent an instance runs as. `$` is outside the agent-name alphabet, so `$self` can never be a real agent's name.
-- `flow.install` refuses a manifest that contains `$self`. A package reaches only its own agent. A flow that must reach other agents is a global flow, installed by the operator.
+- `flow.install` refuses a manifest that contains `$self`, with `self_requires_package`. A package reaches only its own agent. A flow that must reach other agents is a global flow, installed by the operator.
 
 The code hash is the ordinary code hash ([`manifest.md`](manifest.md)), taken over the exact manifest bytes, `$self` included. So one hash, and one approval, covers every instance of a package version.
 
@@ -89,18 +89,28 @@ Reply:
 
 This returns the exact registered bytes, so core can render the package card from them and check the code hash itself. Refusal: `package_unknown`.
 
+## Ordering: the generation
+
+Core can lose a route while a call is still running inside basal, then send a newer call for the same package and agent on a new route. The two calls may then finish in either order. So every `flow.instance.ensure` and `flow.instance.remove` carries a `generation`: an integer that core assigns, that strictly increases for each (package, `agent_id`) pair, and that survives core restarts. basal stores the generation of the last call it applied to the pair, in the same transaction as the call's change, and decides each call by it:
+
+- **Higher than stored:** the call applies.
+- **Equal:** the call is a resend. Nothing changes, and basal answers the same reply as the first time. An equal generation that arrives with a different operation or version is a caller error, and is refused with `generation_conflict`.
+- **Lower:** the call is stale. Nothing changes, and basal refuses it with `generation_stale`, with the stored generation in the refusal detail as `current`. Core treats that as superseded, not as failure.
+
+A `flow.instance.remove` for a pair with no instance still records its generation, so a stale `flow.instance.ensure` arriving after it can't create the instance.
+
 ## flow.instance.ensure
 
 Caller: prefrontal-core only, on its own unscoped route.
 
 Params:
 ```json
-{"package":"string","version":"integer","agent_id":"string"}
+{"package":"string","version":"integer","agent_id":"string","generation":"integer"}
 ```
 
 Reply:
 ```json
-{"flow_id":"string","new":"boolean","previous_version":"integer|null"}
+{"flow_id":"string","generation":"integer","new":"boolean","previous_version":"integer|null"}
 ```
 
 The call makes the agent's instance of the package run the given version:
@@ -109,13 +119,16 @@ The call makes the agent's instance of the package run the given version:
 - **Removed:** it clears the removed mark, so the instance runs again with the state it kept.
 - **Enable state:** it never changes it. Removal is a separate mark, not a disable, so a disable by the operator, the owning agent or the runtime stays as it is, with its usual rules for lifting it.
 
-The call is idempotent by package and `agent_id`. Repeating it with the same version changes nothing, and answers `new: false` with `previous_version` equal to that version.
+A newer generation with the same version changes nothing else, and answers `new: false` with `previous_version` equal to that version.
 
 Approval isn't checked here. As for every flow, each activation and resume asks core's `flow.install_status`, with the instance flow id, the package version and the package's code hash. Runs already admitted finish on the version they were admitted with, so an upgrade needs no drain.
 
 Refusals:
+- `generation_stale` and `generation_conflict`: see above.
 - `package_unknown`: that version isn't registered.
 - `agent_unknown`: core's agent list has no agent with that `agent_id`.
+
+A refused call records no generation.
 
 ## flow.instance.remove
 
@@ -123,15 +136,15 @@ Caller: prefrontal-core only, on its own unscoped route.
 
 Params:
 ```json
-{"package":"string","agent_id":"string"}
+{"package":"string","agent_id":"string","generation":"integer"}
 ```
 
 Reply:
 ```json
-{"flow_id":"string","removed":"boolean"}
+{"flow_id":"string","generation":"integer","removed":"boolean"}
 ```
 
-The call marks the instance removed. No new run of a removed instance is admitted, and a run already admitted ends at its next activation, as for a flow core has revoked. The instance's enable state is left as it is. Nothing is deleted: its `kv`, journal and audit stay, and a later `flow.instance.ensure` clears the mark and the same instance runs again with its state. `removed` is false when the instance doesn't exist or is already removed.
+The call marks the instance removed. No new run of a removed instance is admitted, and a run already admitted ends at its next activation, as for a flow core has revoked. The instance's enable state is left as it is. Nothing is deleted: its `kv`, journal and audit stay, and a later `flow.instance.ensure` clears the mark and the same instance runs again with its state. `removed` is false when the instance doesn't exist or is already removed. Refusals: `generation_stale` and `generation_conflict`.
 
 ## flow.instantiate
 

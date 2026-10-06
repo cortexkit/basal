@@ -41,6 +41,7 @@ pub struct InstallRequest {
 /// Why an install was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstallError {
+    SelfRequiresPackage,
     FlowScopeUnsupported {
         module: String,
         op: String,
@@ -77,6 +78,12 @@ pub enum InstallError {
     UnknownAgent {
         field: &'static str,
         agent: String,
+    },
+    /// An agent-owned flow may act only for its owner, not another agent.
+    ForeignAgentTarget {
+        field: &'static str,
+        agent: String,
+        author: String,
     },
     /// An `fs` or `git` root that does not exist (after `~` expansion) when
     /// the flow is installed.
@@ -177,12 +184,27 @@ pub struct Installed {
     pub new: bool,
 }
 
-/// Validates a parsed manifest against the catalog and the shell denylist.
+/// Validates a parsed manifest against its author, the catalog and the shell denylist.
 pub fn validate(
     manifest: &Manifest,
+    author: &str,
     catalog: &dyn Catalog,
     denylist: &ShellDenylist,
     loop_override: bool,
+) -> std::result::Result<Vec<Warning>, InstallError> {
+    if manifest.agents().iter().any(|(_, agent)| *agent == "$self") {
+        return Err(InstallError::SelfRequiresPackage);
+    }
+    validate_inner(manifest, author, catalog, denylist, loop_override, false)
+}
+
+pub(crate) fn validate_inner(
+    manifest: &Manifest,
+    author: &str,
+    catalog: &dyn Catalog,
+    denylist: &ShellDenylist,
+    loop_override: bool,
+    package: bool,
 ) -> std::result::Result<Vec<Warning>, InstallError> {
     let mut warnings = Vec::new();
     let mut trigger_modules: Vec<&str> = Vec::new();
@@ -255,7 +277,28 @@ pub fn validate(
         }
     }
     for (field, agent) in manifest.agents() {
-        if !catalog.agent_known(agent) {
+        if package {
+            continue;
+        }
+        // Agent-owned flows act only for their owner. Global operator flows
+        // and unverified local installs retain their catalog-wide grants.
+        if author != "operator" && author != "local:unverified" {
+            let Some(target_id) = catalog.agent_id(agent) else {
+                return Err(InstallError::UnknownAgent {
+                    field,
+                    agent: agent.to_owned(),
+                });
+            };
+            // Manifests may use a display name, while the scope-stamped author
+            // is a stable id. Compare resolved identities, not their spelling.
+            if target_id != author {
+                return Err(InstallError::ForeignAgentTarget {
+                    field,
+                    agent: agent.to_owned(),
+                    author: author.to_owned(),
+                });
+            }
+        } else if !catalog.agent_known(agent) {
             return Err(InstallError::UnknownAgent {
                 field,
                 agent: agent.to_owned(),
@@ -484,6 +527,9 @@ pub struct Approved {
 }
 
 pub fn approved(conn: &Connection, flow_id: &str) -> Result<Option<Approved>> {
+    if let Some(approved) = crate::packages::approved(conn, flow_id)? {
+        return Ok(Some(approved));
+    }
     let row: Option<(i64, Vec<u8>, String, String)> = conn
         .query_row(
             "SELECT i.version, i.code_hash, i.script, i.manifest FROM flows f \
@@ -508,6 +554,16 @@ pub fn approved(conn: &Connection, flow_id: &str) -> Result<Option<Approved>> {
 /// Why core no longer stands behind `version` of `flow_id`, if basal has
 /// recorded that it does not (see [`revoke`]).
 pub fn revocation(conn: &Connection, flow_id: &str, version: u32) -> Result<Option<String>> {
+    let instance: Option<String> = conn
+        .query_row(
+            "SELECT reason FROM instance_revocations WHERE flow_id=?1 AND version=?2",
+            params![flow_id, version],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if instance.is_some() {
+        return Ok(instance);
+    }
     let reason: Option<Option<String>> = conn
         .query_row(
             "SELECT revoked_reason FROM installs WHERE flow_id = ?1 AND version = ?2 \
@@ -527,6 +583,8 @@ pub fn revocation(conn: &Connection, flow_id: &str, version: u32) -> Result<Opti
 /// and is disabled by core with `reason`, which stops its schedule and
 /// tells its owner as every disable does. Returns false when the version
 /// was already recorded as revoked (nothing is written then).
+/// Package instances only record the version's revocation: their enable state
+/// is independent of approval, so selecting another version can admit work again.
 pub fn revoke(
     tx: &Transaction,
     flow_id: &str,
@@ -534,6 +592,18 @@ pub fn revoke(
     reason: &str,
     now_ms: i64,
 ) -> Result<bool> {
+    let package: Option<String> = tx
+        .query_row(
+            "SELECT package FROM flows WHERE flow_id=?1",
+            [flow_id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten();
+    if package.is_some() {
+        let changed = tx.execute("INSERT OR IGNORE INTO instance_revocations (flow_id,version,reason,revoked_at) VALUES (?1,?2,?3,?4)", params![flow_id,version,reason,now_ms])?;
+        return Ok(changed != 0);
+    }
     let row: Option<(String, Option<i64>)> = tx
         .query_row(
             "SELECT state, revoked_at FROM installs WHERE flow_id = ?1 AND version = ?2",
@@ -592,7 +662,9 @@ pub fn flow(conn: &Connection, flow_id: &str) -> Result<Option<FlowRecord>> {
     );
     let row: Option<Row> = conn
         .query_row(
-            "SELECT owner, state, approved_version, disabled_by, disabled_reason FROM flows \
+            "SELECT owner, state, CASE WHEN package IS NOT NULL AND EXISTS \
+             (SELECT 1 FROM instance_revocations r WHERE r.flow_id=flows.flow_id AND r.version=flows.approved_version) \
+             THEN NULL ELSE approved_version END, disabled_by, disabled_reason FROM flows \
              WHERE flow_id = ?1",
             [flow_id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
@@ -829,6 +901,7 @@ impl Runtime {
         let manifest = Manifest::parse(&request.manifest).map_err(InstallError::Manifest)?;
         let warnings = validate(
             &manifest,
+            &request.author,
             self.catalog(),
             &self.config().shell_denylist,
             request.loop_override,
@@ -994,7 +1067,7 @@ pub fn enable(
         "UPDATE rate_windows SET saturated = 0 WHERE flow_id = ?1",
         [flow_id],
     )?;
-    if changed > 0 {
+    if changed > 0 && !crate::packages::removed(tx, flow_id)? {
         schedule::table::enable(tx, flow_id, timestamp(now_ms)?)?;
     }
     Ok(changed > 0)

@@ -17,6 +17,26 @@ pub const MODULE_ID: &str = "basal";
 /// Every op basal serves, with whether it changes anything and what it does.
 pub const OPERATIONS: &[(&str, ManagementOperationKind, &str)] = &[
     (
+        "package.register",
+        ManagementOperationKind::Mutate,
+        "Register immutable package bytes; operator or core only.",
+    ),
+    (
+        "package.get",
+        ManagementOperationKind::Query,
+        "Return exact registered package bytes; core only.",
+    ),
+    (
+        "flow.instance.ensure",
+        ManagementOperationKind::Mutate,
+        "Ensure an agent's package version, ordered by generation; core only.",
+    ),
+    (
+        "flow.instance.remove",
+        ManagementOperationKind::Mutate,
+        "Mark an instance removed without changing enable state; core only.",
+    ),
+    (
         "flow.install",
         ManagementOperationKind::Mutate,
         "Validate a flow version, run its capture-only dry run and raise its consent card; returns the pending install.",

@@ -10,6 +10,8 @@ use basal_testkit::harness::{World, drive, test_manifest};
 
 pub fn config() -> Config {
     Config {
+        // Healthy activations need headroom when cut runs share a loaded host.
+        // Short activation budgets belong only to deliberately stalled fixtures.
         activation_deadline: Duration::from_secs(20),
         install_gate: basal_core::InstallGate::Off,
         ..Config::default()

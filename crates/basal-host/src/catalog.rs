@@ -76,6 +76,9 @@ pub trait Catalog: Send + Sync {
     fn op(&self, module: &str, op: &str) -> Option<OpDecl>;
     /// Whether `agent` names a known agent.
     fn agent_known(&self, agent: &str) -> bool;
+    /// Resolves an agent's display name or stable id to its stable id.
+    /// Unknown agents and unavailable registries must not resolve.
+    fn agent_id(&self, agent: &str) -> Option<String>;
 }
 
 #[derive(Default)]
@@ -83,7 +86,7 @@ struct Entries {
     flow_capable: BTreeSet<String>,
     events: BTreeMap<(String, String, u32), EventDecl>,
     ops: BTreeMap<(String, String), OpDecl>,
-    agents: BTreeSet<String>,
+    agents: BTreeMap<String, String>,
 }
 
 /// An in-memory catalog. Cloning shares the same entries, so a test can
@@ -205,7 +208,15 @@ impl MockCatalog {
     }
 
     pub fn add_agent(&self, agent: &str) {
-        self.write().agents.insert(agent.to_owned());
+        self.add_named_agent(agent, agent);
+    }
+
+    pub fn add_named_agent(&self, agent_id: &str, name: &str) {
+        let mut entries = self.write();
+        entries
+            .agents
+            .insert(agent_id.to_owned(), agent_id.to_owned());
+        entries.agents.insert(name.to_owned(), agent_id.to_owned());
     }
 }
 
@@ -228,6 +239,10 @@ impl Catalog for MockCatalog {
     }
 
     fn agent_known(&self, agent: &str) -> bool {
-        self.read().agents.contains(agent)
+        self.read().agents.contains_key(agent)
+    }
+
+    fn agent_id(&self, agent: &str) -> Option<String> {
+        self.read().agents.get(agent).cloned()
     }
 }

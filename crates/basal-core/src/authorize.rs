@@ -134,6 +134,29 @@ fn agent_arg(args: &Value, primitive: Primitive) -> Result<&str, Refusal> {
     })
 }
 
+/// Resolve grants against the admission-time owner, never a mutable agent name.
+pub fn resolve_self(manifest: &mut Manifest, agent_id: &str) {
+    let resolve = |agent: &mut String| {
+        if agent == "$self" {
+            *agent = agent_id.to_owned();
+        }
+    };
+    for sink in &mut manifest.sinks {
+        resolve(&mut sink.agent);
+    }
+    for agent in &mut manifest.status {
+        resolve(agent);
+    }
+    for claim in &mut manifest.claims {
+        resolve(&mut claim.agent);
+    }
+    if let Some(facts) = &mut manifest.facts {
+        for agent in &mut facts.targets {
+            resolve(agent);
+        }
+    }
+}
+
 /// The scope the manifest grants a built-in call, after checking the call
 /// against it: the arguments' shape, then the scope itself (paths resolved
 /// under the roots, the repository approved, the URL's host and method

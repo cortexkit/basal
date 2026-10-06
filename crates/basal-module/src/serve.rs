@@ -219,6 +219,20 @@ struct WireRequest {
     params: Value,
 }
 
+fn op_error_outcome(e: crate::ops::OpError) -> HandlerOutcome {
+    match e.detail {
+        Some(detail) => HandlerOutcome::ErrorWithDetail {
+            code: e.code,
+            message: e.message,
+            detail,
+        },
+        None => HandlerOutcome::Error {
+            code: e.code,
+            message: e.message,
+        },
+    }
+}
+
 #[async_trait]
 impl ModuleHandler for BasalHandler {
     async fn handle(&self, ctx: RequestCtx, body: Vec<u8>) -> HandlerOutcome {
@@ -259,10 +273,7 @@ impl ModuleHandler for BasalHandler {
                     message: e.to_string(),
                 },
             },
-            Ok(Err(e)) => HandlerOutcome::Error {
-                code: e.code,
-                message: e.message,
-            },
+            Ok(Err(e)) => op_error_outcome(e),
             Err(e) => HandlerOutcome::Error {
                 code: "internal".into(),
                 message: format!("the op's thread ended: {e}"),
@@ -322,5 +333,34 @@ impl ModuleHandler for BasalHandler {
                 },
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod error_tests {
+    use super::*;
+
+    #[test]
+    fn refusal_without_detail_keeps_the_plain_error_frame() {
+        let outcome = op_error_outcome(crate::ops::OpError {
+            code: "not_permitted".into(),
+            message: "refused".into(),
+            detail: None,
+        });
+        assert!(
+            matches!(outcome, HandlerOutcome::Error {code,message} if code == "not_permitted" && message == "refused")
+        );
+    }
+
+    #[test]
+    fn stale_generation_detail_uses_a_machine_readable_error_frame() {
+        let outcome = op_error_outcome(crate::ops::OpError {
+            code: "generation_stale".into(),
+            message: "stale".into(),
+            detail: Some(json!({"current":9})),
+        });
+        assert!(
+            matches!(outcome, HandlerOutcome::ErrorWithDetail {code,message,detail} if code == "generation_stale" && message == "stale" && detail == json!({"current":9}))
+        );
     }
 }

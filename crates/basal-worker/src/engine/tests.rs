@@ -63,6 +63,7 @@ fn request(profile: Profile, script: &str) -> ActivationRequest {
         prelude_hash: prelude_hash(),
         script: script.into(),
         trigger: JsonText::null(),
+        self_input: JsonText::null(),
         budgets: Budgets::default(),
         prefix: Vec::new(),
     }
