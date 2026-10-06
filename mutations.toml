@@ -7185,3 +7185,21 @@ platforms = ["macos"]
 timeout_s = 600
 build_timeout_s = 3600
 
+
+[[control]]
+id = "disclaimed-worker-leaves-inherited-descriptors-open"
+guards = "workers close every inherited descriptor above stdio even after the privacy trampoline preserves non-close-on-exec descriptors"
+file = "crates/basal-worker/src/confinement.rs"
+old = "for fd in macos::open_descriptors().map_err(ConfinementError::Descriptors)? {"
+new = "for fd in Vec::<i32>::new() { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-module/tests/privacy_launch.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test privacy_launch"
+expect_red = ["disclaimed_worker_closes_extra_inherited_descriptors_at_startup"]
+only = true
+platforms = ["macos"]
+timeout_s = 600
+build_timeout_s = 3600
+
