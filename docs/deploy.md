@@ -75,7 +75,7 @@ After placement, basal checks that `ck --json provenance basal` names the commit
 Before staging, run the formatting, both clippy configurations, workspace tests and shell checks listed in the [README](../README.md), then validate and replay the safety catalogue with the pinned `ck-mutate` runner:
 
 ```sh
-cargo install --locked --git https://github.com/cortexkit/commons --rev 695c97b6c4d74042011ec0aeeebe966f377353be cortexkit-mutate
+cargo install --locked --git https://github.com/cortexkit/commons --rev 097183a070c6248d8b2d153173aa3f6035aeef86 cortexkit-mutate
 mkdir -p target/mutations
 ck-mutate check
 ck-mutate run --all --report target/mutations/handover.json
