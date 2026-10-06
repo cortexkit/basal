@@ -12,7 +12,7 @@ A package manifest is a flow manifest ([`manifest.md`](manifest.md)) with three 
 
 - `id` is the package id. It must be at most 46 bytes, so that the instance flow id below fits the 63-byte flow id limit. `version` is the package version.
 - Every agent field names `$self` and nothing else: `sinks[].agent`, `status[]`, `claims[].agent` and `facts.targets[]`. `$self` stands for the agent an instance runs as. `$` is outside the agent-name alphabet, so `$self` can never be a real agent's name.
-- `flow.install` refuses a manifest that contains `$self`. A package reaches only its own agent. A flow that must reach other agents is a global flow, installed by the operator.
+- `flow.install` refuses a manifest that contains `$self`, with `self_requires_package`. A package reaches only its own agent. A flow that must reach other agents is a global flow, installed by the operator.
 
 The code hash is the ordinary code hash ([`manifest.md`](manifest.md)), taken over the exact manifest bytes, `$self` included. So one hash, and one approval, covers every instance of a package version.
 

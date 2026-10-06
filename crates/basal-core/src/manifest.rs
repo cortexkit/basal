@@ -423,7 +423,9 @@ impl Manifest {
         Ok(manifest)
     }
 
-    /// Package ids have their own length refusal, before the flow-id bound.
+    /// Decodes a manifest's exact bytes without checking it. Package
+    /// registration decodes first so it can refuse an over-long package id
+    /// with its own code before `check` applies the general flow-id limit.
     pub(crate) fn decode(text: &str) -> Result<Self, ManifestError> {
         if text.len() > MAX_MANIFEST_BYTES {
             return Err(ManifestError::TooLarge {

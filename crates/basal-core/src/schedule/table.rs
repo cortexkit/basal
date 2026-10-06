@@ -194,7 +194,9 @@ pub fn approve(
     approve_inner(tx, flow, now, config, true)
 }
 
-/// Core's generations, rather than version numbers, order instance changes.
+/// Like `approve`, but a package instance may move to a lower version: core
+/// orders instance changes by its own per-instance generation number, and a
+/// persona can legitimately pin an older package version.
 pub(crate) fn approve_instance(
     tx: &Transaction,
     flow: &ScheduledFlow,
