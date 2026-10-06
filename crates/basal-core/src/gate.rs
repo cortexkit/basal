@@ -140,6 +140,26 @@ impl Runtime {
 
     /// The gate for one claimed activation of `run`, held under `lease`.
     pub(crate) fn check_install(&self, lease: &Lease, run: &Run) -> Result<Gate> {
+        if self
+            .store()
+            .read(|c| crate::packages::removed(c, &run.flow_id))?
+        {
+            let detail = "instance removed before activating".to_owned();
+            self.store().write(|tx| {
+                if !lease.holds(tx)? {
+                    return Err(lease.lost());
+                }
+                runs::forget_claim(tx, lease)?;
+                runs::cancel(tx, &lease.run_id, &detail)
+            })?;
+            self.clear_backoff(&lease.run_id);
+            self.shared.signal.bump();
+            return Ok(Gate::Closed(ActivationEnd::Revoked {
+                version: run.flow_version.unwrap_or(0),
+                cause: RevokeCause::Revoked,
+                detail,
+            }));
+        }
         if self.config.install_gate == InstallGate::Off {
             return Ok(Gate::Open);
         }

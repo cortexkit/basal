@@ -272,6 +272,46 @@ impl Fixture {
 const SCRIPT: &str = "return await ops.call('mock','send',{value:7});";
 
 #[test]
+fn instance_provider_uses_the_selector_core_returns_for_its_flow_id() {
+    let f = Fixture::new("instance-scope", SCRIPT, true, true);
+    let agent = "agent_47120287c700722b";
+    f._world.catalog.add_named_agent(agent, "Renamable");
+    let mut m = test_manifest();
+    m["id"] = json!("dark-wake");
+    m["sinks"][0]["agent"] = json!("$self");
+    m["status"] = json!(["$self"]);
+    m["facts"]["targets"] = json!(["$self"]);
+    let registered = f.rt.register_package(SCRIPT, &m.to_string()).unwrap();
+    let id = f.rt.ensure_instance("dark-wake", 1, agent, 1).unwrap()["flow_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut returned = scope(17);
+    returned.selector.scope_ref = format!("flow:{id}");
+    *f.wire.scope.lock().unwrap() = Some(returned.clone());
+    *f.wire.hash.lock().unwrap() = registered["code_hash"].as_str().unwrap().to_owned();
+    let run =
+        f.rt.admit_trigger(&id, "instance", JsonText::null())
+            .unwrap()
+            .run_id()
+            .unwrap()
+            .to_owned();
+    f.activate(&run);
+    assert_eq!(f.rt.run(&run).unwrap().state, RunState::Succeeded);
+    assert_eq!(*f.wire.opens.lock().unwrap(), vec![returned.selector]);
+    let calls = f.wire.calls.lock().unwrap();
+    assert!(calls.iter().any(|(route, _, body)| route.is_none()
+        && body["method"] == "flow.install_status"
+        && body["params"]["flow_id"] == id
+        && body["params"]["version"] == 1));
+    assert!(
+        calls
+            .iter()
+            .any(|(route, _, body)| *route == Some(1) && body["method"] == "send")
+    );
+}
+
+#[test]
 fn only_the_uncaught_readiness_rejection_object_is_exempt_from_failures() {
     for script in [
         "Date.now(); return await ops.call('mock','send',{});",

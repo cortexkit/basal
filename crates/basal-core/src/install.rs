@@ -41,6 +41,7 @@ pub struct InstallRequest {
 /// Why an install was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstallError {
+    SelfRequiresPackage,
     FlowScopeUnsupported {
         module: String,
         op: String,
@@ -191,6 +192,20 @@ pub fn validate(
     denylist: &ShellDenylist,
     loop_override: bool,
 ) -> std::result::Result<Vec<Warning>, InstallError> {
+    if manifest.agents().iter().any(|(_, agent)| *agent == "$self") {
+        return Err(InstallError::SelfRequiresPackage);
+    }
+    validate_inner(manifest, author, catalog, denylist, loop_override, false)
+}
+
+pub(crate) fn validate_inner(
+    manifest: &Manifest,
+    author: &str,
+    catalog: &dyn Catalog,
+    denylist: &ShellDenylist,
+    loop_override: bool,
+    package: bool,
+) -> std::result::Result<Vec<Warning>, InstallError> {
     let mut warnings = Vec::new();
     let mut trigger_modules: Vec<&str> = Vec::new();
     if let Some(events) = &manifest.trigger.events {
@@ -262,6 +277,9 @@ pub fn validate(
         }
     }
     for (field, agent) in manifest.agents() {
+        if package {
+            continue;
+        }
         // Agent-owned flows act only for their owner. Global operator flows
         // and unverified local installs retain their catalog-wide grants.
         if author != "operator" && author != "local:unverified" {
@@ -509,6 +527,9 @@ pub struct Approved {
 }
 
 pub fn approved(conn: &Connection, flow_id: &str) -> Result<Option<Approved>> {
+    if let Some(approved) = crate::packages::approved(conn, flow_id)? {
+        return Ok(Some(approved));
+    }
     let row: Option<(i64, Vec<u8>, String, String)> = conn
         .query_row(
             "SELECT i.version, i.code_hash, i.script, i.manifest FROM flows f \
@@ -533,6 +554,16 @@ pub fn approved(conn: &Connection, flow_id: &str) -> Result<Option<Approved>> {
 /// Why core no longer stands behind `version` of `flow_id`, if basal has
 /// recorded that it does not (see [`revoke`]).
 pub fn revocation(conn: &Connection, flow_id: &str, version: u32) -> Result<Option<String>> {
+    let instance: Option<String> = conn
+        .query_row(
+            "SELECT reason FROM instance_revocations WHERE flow_id=?1 AND version=?2",
+            params![flow_id, version],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if instance.is_some() {
+        return Ok(instance);
+    }
     let reason: Option<Option<String>> = conn
         .query_row(
             "SELECT revoked_reason FROM installs WHERE flow_id = ?1 AND version = ?2 \
@@ -559,6 +590,22 @@ pub fn revoke(
     reason: &str,
     now_ms: i64,
 ) -> Result<bool> {
+    let package: Option<String> = tx
+        .query_row(
+            "SELECT package FROM flows WHERE flow_id=?1",
+            [flow_id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten();
+    if package.is_some() {
+        let changed = tx.execute("INSERT OR IGNORE INTO instance_revocations (flow_id,version,reason,revoked_at) VALUES (?1,?2,?3,?4)", params![flow_id,version,reason,now_ms])?;
+        if changed != 0 && flow(tx, flow_id)?.is_some_and(|f| f.approved_version == Some(version)) {
+            disable(tx, flow_id, &Actor::Core, reason, now_ms)
+                .map_err(|e| CoreError::Corrupt(e.to_string()))?;
+        }
+        return Ok(changed != 0);
+    }
     let row: Option<(String, Option<i64>)> = tx
         .query_row(
             "SELECT state, revoked_at FROM installs WHERE flow_id = ?1 AND version = ?2",

@@ -504,6 +504,7 @@ pub(crate) fn encode_parent(enc: &mut Encoder, m: &ParentMessage) {
             for call in &req.prefix {
                 recorded_call(enc, call);
             }
+            enc.str(req.self_input.as_str());
         }
         ParentMessage::Deliver(o) => {
             enc.u8(TAG_DELIVER);
@@ -537,12 +538,14 @@ pub(crate) fn decode_parent(dec: &mut Decoder<'_>) -> Result<ParentMessage, Deco
             for _ in 0..n {
                 prefix.push(read_recorded_call(dec)?);
             }
+            let self_input = value(dec, "self")?;
             Ok(ParentMessage::Activate(Box::new(ActivationRequest {
                 activation_id,
                 profile,
                 prelude_hash,
                 script,
                 trigger,
+                self_input,
                 budgets,
                 prefix,
             })))

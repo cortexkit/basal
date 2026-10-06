@@ -53,6 +53,7 @@ mod tests {
             prelude_hash: PreludeHash::of("prelude"),
             script: "return 1".into(),
             trigger: text("{\"a\":1}"),
+            self_input: text("{\"agent_id\":\"agent_test\"}"),
             budgets: Budgets::default(),
             prefix: vec![
                 RecordedCall {

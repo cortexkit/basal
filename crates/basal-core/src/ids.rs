@@ -129,6 +129,11 @@ mod tests {
         let hex = |h: [u8; 32]| h.iter().map(|b| format!("{b:02x}")).collect::<String>();
         for (script, manifest, expected) in [
             (
+                "// package script bytes\n",
+                r#"{"format":1,"id":"dark-wake","version":4,"purpose":"Nudge this agent when its session goes quiet.","trigger":{"schedule":{"interval":"15m"}},"sinks":[{"agent":"$self","digest_max":"wake"}],"status":["$self"],"facts":{"targets":["$self"]}}"#,
+                "443a9c90ca55ba548bfb2fc5b496916ac46e96605be0b2be9469de40bd09743c",
+            ),
+            (
                 "",
                 "",
                 "b5377f42c91b9631929ca590092769366de868dd1fc3c217d2abfc6f48382a78",

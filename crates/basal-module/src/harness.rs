@@ -524,7 +524,11 @@ fn command_reply(
             let params = command.get("params").cloned().unwrap_or(Value::Null);
             match module.handle(&caller, method, params) {
                 Ok(v) => ok(v),
-                Err(e) => json!({ "ok": false, "error": { "code": e.code, "message": e.message } }),
+                Err(e) => {
+                    let mut error = json!({ "code": e.code, "message": e.message });
+                    if let Some(detail) = e.detail { error["detail"] = detail; }
+                    json!({ "ok": false, "error": error })
+                },
             }
         }
         Some("clock") => match command.get("set_ms").and_then(Value::as_i64) {

@@ -49,6 +49,7 @@ pub mod kv;
 pub mod manifest;
 pub mod model;
 pub mod ops;
+pub mod packages;
 pub mod rate;
 pub mod reconcile;
 pub mod retention;

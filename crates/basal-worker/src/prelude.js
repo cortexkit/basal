@@ -13,7 +13,7 @@
 // JSON.parse captured here. They are never evaluated as source: evaluating a
 // payload like {"__proto__": {...}} as an object literal would set the
 // prototype of the resulting object.
-(function (native, codemode, triggerText) {
+(function (native, codemode, triggerText, selfText) {
   'use strict';
 
   const issueOp = native.issueOp;
@@ -363,6 +363,9 @@
   for (const key of ReflectOwnKeys(api)) {
     ObjectDefineProperty(G, key, { value: api[key], writable: false, enumerable: false, configurable: false });
   }
+  ObjectDefineProperty(G, 'self', {
+    value: JSONParse(selfText), writable: false, enumerable: false, configurable: false,
+  });
   ObjectDefineProperty(G, 'trigger', {
     value: JSONParse(triggerText), writable: false, enumerable: false, configurable: false,
   });

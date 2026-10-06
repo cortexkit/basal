@@ -770,7 +770,12 @@ impl Activation {
                 let mut options = EvalOptions::default();
                 options.filename = Some("prelude.js".into());
                 let prelude: Function = ctx.eval_with_options(PRELUDE, options)?;
-                let hooks: Object = prelude.call((native, codemode, request.trigger.as_str()))?;
+                let hooks: Object = prelude.call((
+                    native,
+                    codemode,
+                    request.trigger.as_str(),
+                    request.self_input.as_str(),
+                ))?;
                 let deliver: Function = hooks.get("deliver")?;
                 let start: Function = hooks.get("start")?;
                 let status: Function = hooks.get("status")?;

@@ -37,6 +37,8 @@ A duration is a positive whole number followed by one unit: `s`, `m`, `h` or `d`
 
 ### Agent fields
 
+Agent fields also accept the literal `$self` in [package manifests](packages.md). Registration permits only `$self`; activation resolves it to the instance's stable owner id. Ordinary `flow.install` refuses `$self` with `self_requires_package`.
+
 Every agent named by `sinks[].agent`, `status[]`, `claims[].agent` and `facts.targets[]` must be known to the catalog. Fields may use a display name or a stable `agent_id`; the catalog resolves both to that id. For an agent-owned flow, every resolved id must equal its author's stable id: the flow acts only for its owner. Install and dry run refuse a foreign target with `foreign_agent_target`, naming the field and agent, before recording an install or raising a consent card. The author's id comes from the daemon-stamped caller scope for an agent install, not the manifest. An operator installing in an agent's name uses that agent's stable id as the author and follows the same rule. Global flows authored as `operator` and local-caller installs authored as `local:unverified` may still name any known agent.
 
 ### `trigger`

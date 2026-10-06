@@ -408,6 +408,13 @@ fn check_list<T: Ord + Clone + std::fmt::Debug>(
     Ok(())
 }
 
+fn check_agent(field: &'static str, agent: &str) -> Result<(), ManifestError> {
+    if agent == "$self" {
+        return Ok(());
+    }
+    check_name(field, agent, MAX_NAME_BYTES, agent_byte)
+}
+
 impl Manifest {
     /// Decodes and checks a manifest's exact bytes.
     pub fn parse(text: &str) -> Result<Self, ManifestError> {
@@ -475,15 +482,15 @@ impl Manifest {
             }
         }
         for s in &self.sinks {
-            check_name("sinks.agent", &s.agent, MAX_NAME_BYTES, agent_byte)?;
+            check_agent("sinks.agent", &s.agent)?;
         }
         check_list("sinks", self.sinks.iter().map(|s| s.agent.clone()))?;
         for a in &self.status {
-            check_name("status", a, MAX_NAME_BYTES, agent_byte)?;
+            check_agent("status", a)?;
         }
         check_list("status", self.status.iter().cloned())?;
         for c in &self.claims {
-            check_name("claims.agent", &c.agent, MAX_NAME_BYTES, agent_byte)?;
+            check_agent("claims.agent", &c.agent)?;
             check_name(
                 "claims.source_kind",
                 &c.source_kind,
@@ -504,7 +511,7 @@ impl Manifest {
         check_list("ops", self.ops.iter().cloned())?;
         if let Some(facts) = &self.facts {
             for a in &facts.targets {
-                check_name("facts.targets", a, MAX_NAME_BYTES, agent_byte)?;
+                check_agent("facts.targets", a)?;
             }
             check_list("facts.targets", facts.targets.iter().cloned())?;
         }

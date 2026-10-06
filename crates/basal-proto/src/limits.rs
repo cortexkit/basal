@@ -2,7 +2,7 @@
 //! allocates, independent of any per-activation budget.
 
 /// The current protocol version, exchanged in the handshake.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// The largest frame payload either side accepts. A 1000-call prefix of
 /// 16 KiB values is about 16 MiB, so this leaves room for twice that.

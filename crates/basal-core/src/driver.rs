@@ -345,7 +345,14 @@ impl Activation<'_> {
             return Ok(done(end, idle));
         }
         match Manifest::parse(&self.run.manifest) {
-            Ok(manifest) => self.manifest = Some(manifest),
+            Ok(mut manifest) => {
+                let input: Value = serde_json::from_str(self.run.self_input.as_str())
+                    .map_err(|e| CoreError::Corrupt(e.to_string()))?;
+                if let Some(agent) = input["agent_id"].as_str() {
+                    authorize::resolve_self(&mut manifest, agent);
+                }
+                self.manifest = Some(manifest);
+            }
             Err(e) => {
                 return self.fail(
                     "manifest",
@@ -368,6 +375,7 @@ impl Activation<'_> {
             prelude_hash: self.worker.welcome().prelude_hash,
             script: self.run.script.clone(),
             trigger: self.run.trigger.clone(),
+            self_input: self.run.self_input.clone(),
             budgets: self.rt.config.budgets,
             prefix,
         };
@@ -815,6 +823,17 @@ impl Activation<'_> {
         let Some(manifest) = &self.manifest else {
             return Err(Refusal::denied("the run has no approved manifest"));
         };
+        if matches!(
+            call.kind,
+            CallKind::Primitive(Primitive::SinkDigest | Primitive::SinkStatus | Primitive::Facts)
+        ) && args["agent"] == "$self"
+        {
+            let input: Value = serde_json::from_str(self.run.self_input.as_str())
+                .map_err(|e| Refusal::new(codes::INVALID_ARGUMENTS, e.to_string()))?;
+            if let Some(agent) = input["agent_id"].as_str() {
+                args["agent"] = Value::String(agent.to_owned());
+            }
+        }
         if matches!(call.kind, CallKind::Primitive(Primitive::SinkDigest))
             && args.get("action").is_none_or(Value::is_null)
         {

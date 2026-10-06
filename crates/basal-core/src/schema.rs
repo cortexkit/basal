@@ -263,7 +263,50 @@ ALTER TABLE installs ADD COLUMN revoked_reason TEXT;
         version: 9,
         statements: FLOW_DEFERRALS,
     },
+    Migration {
+        version: 10,
+        statements: PACKAGES,
+    },
 ];
+
+const PACKAGES: &str = r#"
+CREATE TABLE package_versions (
+    package TEXT NOT NULL,
+    version INTEGER NOT NULL CHECK (version >= 1),
+    script TEXT NOT NULL,
+    manifest TEXT NOT NULL,
+    code_hash BLOB NOT NULL CHECK (length(code_hash) = 32),
+    registered_at INTEGER NOT NULL,
+    PRIMARY KEY (package, version)
+);
+CREATE TRIGGER package_versions_no_update BEFORE UPDATE ON package_versions
+BEGIN SELECT RAISE(ABORT, 'package versions are immutable'); END;
+CREATE TRIGGER package_versions_no_delete BEFORE DELETE ON package_versions
+BEGIN SELECT RAISE(ABORT, 'package versions are immutable'); END;
+ALTER TABLE flows ADD COLUMN package TEXT;
+ALTER TABLE flows ADD COLUMN removed INTEGER NOT NULL DEFAULT 0 CHECK (removed IN (0,1));
+CREATE TABLE instance_revocations (
+    flow_id TEXT NOT NULL REFERENCES flows(flow_id),
+    version INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    revoked_at INTEGER NOT NULL,
+    PRIMARY KEY(flow_id,version)
+);
+-- Ordering exists even before a flow does. The first reply is durable so a
+-- resend cannot accidentally report the state left by a subsequent call.
+CREATE TABLE instance_generations (
+    package TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    generation INTEGER NOT NULL,
+    operation TEXT NOT NULL CHECK (operation IN ('ensure','remove')),
+    version INTEGER,
+    reply TEXT NOT NULL CHECK (json_valid(reply)),
+    PRIMARY KEY (package, agent_id),
+    CHECK ((operation = 'ensure') = (version IS NOT NULL))
+);
+-- Snapshot the owner as activation input, independently of the flow row.
+ALTER TABLE runs ADD COLUMN self_input TEXT CHECK (self_input IS NULL OR json_valid(self_input));
+"#;
 
 // SQLite cannot widen an existing CHECK with ALTER TABLE. Copy the issue log
 // and its two foreign-key children in the migration transaction, preserving
@@ -578,3 +621,7 @@ CREATE TABLE outbox (
 #[cfg(test)]
 #[path = "schema_flow_deferral_tests.rs"]
 mod flow_deferral_tests;
+
+#[cfg(test)]
+#[path = "schema_package_tests.rs"]
+mod package_tests;

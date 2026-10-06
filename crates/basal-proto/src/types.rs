@@ -385,6 +385,8 @@ pub struct ActivationRequest {
     pub script: String,
     /// The trigger payload, exposed to the script as the frozen `trigger`.
     pub trigger: JsonText,
+    /// Admission-time instance identity, exposed as `self`; null for plain flows.
+    pub self_input: JsonText,
     pub budgets: Budgets,
     /// The run's recorded calls, positions `0..n` in order.
     pub prefix: Vec<RecordedCall>,

@@ -67,6 +67,10 @@ fn the_built_binary_prints_a_manifest_subc_protocol_accepts() {
         .collect();
     assert_eq!(declared, served);
     for name in [
+        "package.register",
+        "package.get",
+        "flow.instance.ensure",
+        "flow.instance.remove",
         "flow.install",
         "flow.dry_run",
         "flow.health",
