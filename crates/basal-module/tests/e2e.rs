@@ -72,7 +72,14 @@ mod privacy {
         }
     }
 
+    /// The module's direct children whose running image is the worker file,
+    /// compared by device and inode. Comparing the path `proc_pidpath` reports
+    /// is not enough: the worker is a hard link to cargo's build output (and to
+    /// any other test's link of it), and macOS reports one cached name for
+    /// every process running a given inode, which can be another link's path.
     fn worker_pids(parent: u32, worker: &Path) -> Vec<u32> {
+        use std::os::unix::fs::MetadataExt;
+        let target = std::fs::metadata(worker).expect("worker file");
         // libproc.h's parent-pid filter is not named by the libc crate.
         const PROC_PPID_ONLY: u32 = 6;
         let mut pids = [0i32; 32];
@@ -92,13 +99,17 @@ mod privacy {
             .filter(|pid| {
                 let mut path = [0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
                 // SAFETY: the buffer remains live and its size is given to
-                // libproc. Verify the exec image, not just a trampoline pid.
+                // libproc. Verify the exec image, not just a trampoline pid:
+                // until the trampoline execs the worker, the child is ck-basal.
                 let len = unsafe {
                     libc::proc_pidpath(*pid, path.as_mut_ptr().cast(), path.len() as u32)
                 };
                 len > 0
                     && std::ffi::CStr::from_bytes_until_nul(&path)
-                        .is_ok_and(|p| p.to_bytes() == worker.as_os_str().as_encoded_bytes())
+                        .ok()
+                        .and_then(|p| p.to_str().ok())
+                        .and_then(|p| std::fs::metadata(p).ok())
+                        .is_some_and(|m| m.dev() == target.dev() && m.ino() == target.ino())
             })
             .map(|pid| pid as u32)
             .collect()
