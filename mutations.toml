@@ -7203,3 +7203,19 @@ platforms = ["macos"]
 timeout_s = 600
 build_timeout_s = 3600
 
+[[control]]
+id = "worker-file-name-follows-parent"
+guards = "sibling worker lookup follows the parent executable file name without changing the production path"
+file = "crates/basal-module/src/pool.rs"
+old = 'name.push("-worker");'
+new = 'name = std::ffi::OsString::from("ck-basal-worker"); // NON-VACUITY BREAK'
+edits = []
+test_file = "crates/basal-module/src/pool.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--lib"
+expect_red = ["pool::names::worker_file_name_follows_parent_in_production_and_development"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
