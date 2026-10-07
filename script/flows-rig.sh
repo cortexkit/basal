@@ -381,8 +381,11 @@ basal_mode() {
   fi
 }
 
-# Basal retains production signing identities even under development file
-# names: code identity is the identifier, not the name Activity Monitor shows.
+# The signing identifier a placed basal binary must carry: always its
+# production one (ck-basal, ck-basal-worker). Only the rig's file names change
+# to ckdev-, so the processes can't be mistaken for the production module;
+# macOS and basal's own checks identify code by its signing identifier, which
+# the file name doesn't affect.
 basal_identifier() {
   printf '%s\n' "$1"
 }
@@ -404,8 +407,10 @@ EOF
 }
 
 # Every placed binary: rig name, repository, cargo binary, placed file name.
-# Basal derives its sibling worker's file name from its own, so both rig
-# executables use development names even when their bytes came from a stage.
+# Every placed file is named ckdev-*, including basal's two even when their
+# bytes come from a production stage. That works because ck-basal looks for
+# its worker beside itself as "<its own file name>-worker", so ckdev-basal
+# finds ckdev-basal-worker.
 binaries() {
   cat <<'EOF'
 subc	subconscious	ck-subc	ckdev-subc

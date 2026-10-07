@@ -44,7 +44,7 @@ else:
     print("ck-" + name[len("ckdev-"):] + " fixture (fixture-sha)")
 ''')
                 binary.chmod(0o755)
-            aliases = SOURCE.split("# Smoke processes must not look like placed production binaries.")[1].split("\n", 1)[1].split("# ---------------------------------------------------------------- smoke")[0]
+            aliases = SOURCE.split("# ---------------------------------------------------------------- dev names")[1].split("# ---------------------------------------------------------------- smoke")[0]
             smoke = SOURCE.split('say "=== smoke tests (on the signed files)"')[1].split("# ---------------------------------------------------------------- marker")[0]
             code = '''set -eu
 SCRATCH=$1

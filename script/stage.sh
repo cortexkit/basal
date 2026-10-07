@@ -194,9 +194,13 @@ for bin in $BINARIES; do
   say "$bin: Identifier=$(codesign_identifier "$SCRATCH/$bin") flags=$(codesign_flags "$SCRATCH/$bin") entitlements: none"
 done
 
-# Smoke processes must not look like placed production binaries. A hard link
-# runs the same signed inode under its development name; a copy is the fallback
-# on filesystems that do not support links. Staging keeps production names.
+# ---------------------------------------------------------------- dev names
+
+# Fleet rule: only binaries placed in ~/.local/share/cortexkit/bin may run
+# under a ck- name, so the smoke checks below run ckdev- names instead. Each is
+# a hard link to the signed file (the same bytes and inode; a copy where links
+# aren't supported), so the checks still test the exact bytes being staged.
+# The staged files themselves keep their production names: SUBC places them.
 for bin in $BINARIES; do
   dev="ckdev-${bin#ck-}"
   ln "$SCRATCH/$bin" "$SCRATCH/$dev" 2>/dev/null || cp "$SCRATCH/$bin" "$SCRATCH/$dev"

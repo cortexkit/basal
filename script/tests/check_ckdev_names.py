@@ -1,4 +1,8 @@
-"""The name fence must reject real planted launches, not documentation."""
+"""Tests for script/check-ckdev-names.py, which fails when code launches a
+production-named basal binary (ck-basal, ck-basal-worker) instead of a ckdev-
+copy. Each "planted" case writes such a launch into a scratch file and
+expects the check to refuse it; documentation and signing inputs that merely
+mention the names must pass."""
 
 from pathlib import Path
 import subprocess
