@@ -108,7 +108,7 @@ as well as normal execution.
 - `cargo test --workspace --locked`: 404 tests passed across 74 targets.
 - `cargo test -p basal-host --lib --features rig-kill-hook --locked`: 24 tests
   passed, including actual scoped/unscoped transport wiring.
-- `ck-mutate check`: 432 catalogue rows validated after merging main.
+- `ckdev-mutate check`: 432 catalogue rows validated after merging main.
 - ShellCheck 0.11.0: `shellcheck -x script/*.sh` passed on four scripts.
 - Python 3.9.6: `python3 -m unittest script.tests.flows_rig script.tests.stage_card`
   passed all 18 tests.

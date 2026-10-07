@@ -72,16 +72,16 @@ After placement, basal checks that `ck --json provenance basal` names the commit
 
 ## The rig run before a handover
 
-Before staging, run the formatting, both clippy configurations, workspace tests and shell checks listed in the [README](../README.md), then validate and replay the safety catalogue with the pinned `ck-mutate` runner:
+Before staging, run the formatting, both clippy configurations, workspace tests and shell checks listed in the [README](../README.md), then validate and replay the safety catalogue with the pinned `ckdev-mutate` runner:
 
 ```sh
-cargo install --locked --git https://github.com/cortexkit/commons --rev 7d08e73722fa3e79bbcc2607753978ab768f1c6b cortexkit-mutate
+cargo install --locked --git https://github.com/cortexkit/commons --rev 46cc166b0df2edcfd14b3eb54ed6eeac588fed69 cortexkit-mutate
 mkdir -p target/mutations
-ck-mutate check
-ck-mutate run --all --report target/mutations/handover.json
+ckdev-mutate check
+ckdev-mutate run --all --report target/mutations/handover.json
 ```
 
-Every row must be `CAUGHT`; a build failure or a red test other than the named guard is not proof of that guard. Keep the JSON report with the handover evidence rather than committing machine output. New safety guards belong in `mutations.toml`: resolve the full libtest path, use `ck-mutate prove` to append only a caught edit, and commit the guard with its proof as described in the README. These source-level proofs complement, rather than replace, the signed-binary and live rig checks below.
+Every row must be `CAUGHT`; a build failure or a red test other than the named guard is not proof of that guard. Keep the JSON report with the handover evidence rather than committing machine output. New safety guards belong in `mutations.toml`: resolve the full libtest path, use `ckdev-mutate prove` to append only a caught edit, and commit the guard with its proof as described in the README. These source-level proofs complement, rather than replace, the signed-binary and live rig checks below.
 
 Run the staged bytes on the ckdev-flows rig, basal's isolated test stack ([`script/flows-rig.sh`](../script/flows-rig.sh) documents it in its header):
 

@@ -61,6 +61,7 @@ impl WorkerProcess {
     }
 
     pub fn spawn_with_args(binary: &Path, args: &[&str]) -> io::Result<Self> {
+        let binary = crate::dev_binary(binary);
         let spawned_at = Instant::now();
         let mut child = Command::new(binary)
             .args(args)

@@ -24,6 +24,58 @@ OPTIONS = ["--basal-marker", "new basal", "--basal-control", "basal control",
            "--worker-marker", "new worker", "--worker-control", "worker control"]
 
 
+class StageSmokeNameChecks(unittest.TestCase):
+    def test_signed_bytes_run_only_under_development_names(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scratch = root / "scratch"
+            controls = root / "controls"
+            scratch.mkdir()
+            controls.mkdir()
+            for name in ("ck-basal", "ck-basal-worker"):
+                binary = scratch / name
+                binary.write_text('''#!/usr/bin/env python3
+import json, pathlib, sys
+name = pathlib.Path(sys.argv[0]).name
+assert name.startswith("ckdev-"), name
+if sys.argv[1] == "--manifest":
+    print(json.dumps({"module_id": "basal", "module_version": "fixture", "provenance": {"build_git_sha": "fixture-sha"}}))
+else:
+    print("ck-" + name[len("ckdev-"):] + " fixture (fixture-sha)")
+''')
+                binary.chmod(0o755)
+            aliases = SOURCE.split("# Smoke processes must not look like placed production binaries.")[1].split("\n", 1)[1].split("# ---------------------------------------------------------------- smoke")[0]
+            smoke = SOURCE.split('say "=== smoke tests (on the signed files)"')[1].split("# ---------------------------------------------------------------- marker")[0]
+            code = '''set -eu
+SCRATCH=$1
+CONTROL_DIR=$2
+ROOT=$3
+SHA=fixture-sha
+BINARIES="ck-basal ck-basal-worker"
+say() { :; }
+die() { echo "$*" >&2; exit 1; }
+codesign() { :; }
+codesign_flags() { case "$1" in */sleep) printf '0x0';; *) printf '0x10000(runtime)';; esac; }
+identity() { python3 -c 'import os, sys; print(os.stat(sys.argv[1]).st_ino)' "$1"; }
+sh() { [ "$3" = "$SCRATCH/ckdev-basal-worker" ] || die "worker verify ran $3"; }
+debugger_probe() {
+  case "$1" in
+    "$CONTROL_DIR/sleep") VERDICT=attached ;;
+    "$SCRATCH/ckdev-basal" | "$SCRATCH/ckdev-basal-worker") VERDICT=refused ;;
+    *) die "debugger ran $1" ;;
+  esac
+}
+''' + aliases + smoke
+            result = subprocess.run(["/bin/sh", "-c", code, str(SCRIPT), str(scratch), str(controls), str(root)],
+                                    text=True, capture_output=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            for name in ("ck-basal", "ck-basal-worker"):
+                original = scratch / name
+                alias = scratch / ("ckdev-" + name[len("ck-"):])
+                self.assertEqual(original.read_bytes(), alias.read_bytes())
+                self.assertEqual(original.stat().st_ino, alias.stat().st_ino)
+
+
 class StageCardChecks(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

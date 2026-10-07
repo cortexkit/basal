@@ -135,13 +135,13 @@ impl WorkerSource for ProcessSource {
     }
 }
 
-/// The worker binary for tests: `BASAL_WORKER_BIN` if set, otherwise the
+/// A development-named copy of `BASAL_WORKER_BIN` if set, otherwise the
 /// workspace's own debug build, built once per test process if needed.
 pub fn worker_binary() -> PathBuf {
     static PATH: OnceLock<PathBuf> = OnceLock::new();
     PATH.get_or_init(|| {
         if let Some(p) = std::env::var_os("BASAL_WORKER_BIN") {
-            return PathBuf::from(p);
+            return crate::dev_binary(PathBuf::from(p));
         }
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
@@ -162,7 +162,7 @@ pub fn worker_binary() -> PathBuf {
         let target = std::env::var_os("CARGO_TARGET_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| root.join("target"));
-        target.join("debug").join("ck-basal-worker")
+        crate::dev_binary(target.join("debug").join("ck-basal-worker"))
     })
     .clone()
 }

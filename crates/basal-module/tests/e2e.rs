@@ -122,13 +122,15 @@ mod privacy {
         assert_ne!(responsible_pid(control.0.id()), control.0.id());
 
         let dir = Directory(scratch("privacy"));
-        let binary = dir.0.join("ck-basal");
-        let worker = dir.0.join("ck-basal-worker");
-        // Use the production binaries in their installed layout, side by side.
+        let source = basal_testkit::dev_binary(env!("CARGO_BIN_EXE_ck-basal"));
+        let source_worker = worker_binary();
+        // Use production bytes side by side, under development file names.
         // Only `ck-basal` implements the trampoline mode that launches workers
         // disclaimed; the harness and this test binary don't.
-        std::fs::copy(env!("CARGO_BIN_EXE_ck-basal"), &binary).expect("copy module");
-        std::fs::copy(worker_binary(), &worker).expect("copy worker");
+        let binaries =
+            basal_testkit::DevBinaries::new(&[&source, &source_worker]).expect("development pair");
+        let binary = binaries.path(&source).expect("module path");
+        let worker = binaries.path(&source_worker).expect("worker path");
         let worker = worker.canonicalize().expect("worker path");
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
@@ -257,17 +259,19 @@ struct Harness {
 
 impl Harness {
     fn start(dir: &Path, extra: &[&str]) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_ck-basal-harness"))
-            .arg("--dir")
-            .arg(dir)
-            .arg("--worker")
-            .arg(worker_binary())
-            .args(extra)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("start the harness");
+        let mut child = Command::new(basal_testkit::dev_binary(env!(
+            "CARGO_BIN_EXE_ck-basal-harness"
+        )))
+        .arg("--dir")
+        .arg(dir)
+        .arg("--worker")
+        .arg(worker_binary())
+        .args(extra)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start the harness");
         let stdin = child.stdin.take().expect("stdin");
         let stdout = BufReader::new(child.stdout.take().expect("stdout"));
         // Drain the child continuously, but print its diagnostics from the

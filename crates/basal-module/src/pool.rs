@@ -23,7 +23,7 @@
 //! worker answered its handshake.
 
 use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
@@ -88,13 +88,38 @@ impl PoolConfig {
     /// no environment or configuration opt-out.
     pub fn beside_current_exe() -> std::io::Result<Self> {
         let exe = std::env::current_exe()?;
-        let dir = exe
-            .parent()
-            .ok_or_else(|| std::io::Error::other("the executable has no directory"))?;
         Ok(Self::new(
-            dir.join("ck-basal-worker"),
+            sibling_worker(&exe)?,
             WorkerLaunch::Disclaimed { trampoline: exe },
         ))
+    }
+}
+
+// The file name, not the signing identifier, distinguishes development copies
+// from the placed fleet. Deriving both names keeps their lookup layouts alike.
+fn sibling_worker(exe: &Path) -> std::io::Result<PathBuf> {
+    let mut name = exe
+        .file_name()
+        .ok_or_else(|| std::io::Error::other("the executable has no file name"))?
+        .to_os_string();
+    name.push("-worker");
+    Ok(exe.with_file_name(name))
+}
+
+#[cfg(test)]
+mod names {
+    use super::*;
+
+    #[test]
+    fn worker_file_name_follows_parent_in_production_and_development() {
+        assert_eq!(
+            sibling_worker(Path::new("/placed/ck-basal")).unwrap(),
+            Path::new("/placed/ck-basal-worker")
+        );
+        assert_eq!(
+            sibling_worker(Path::new("/scratch/ckdev-basal")).unwrap(),
+            Path::new("/scratch/ckdev-basal-worker")
+        );
     }
 }
 

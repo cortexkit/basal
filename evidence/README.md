@@ -4,7 +4,7 @@ Benchmark output that backs basal's performance claims. The measurement JSON fil
 
 ## Mutation controls
 
-Safety proofs are checked in as [`mutations.toml`](../mutations.toml), not as stale machine output. The pinned shared `ck-mutate` runner applies each edit, builds the mutant, requires the exact named test to fail, and restores source bytes. Other tests in the target may also fail: the original proofs tested one named guard, not target-wide exclusivity. See the [README](../README.md#mutation-proofs) for installation, replay and `ck-mutate prove` commands.
+Safety proofs are checked in as [`mutations.toml`](../mutations.toml), not as stale machine output. The pinned shared `ckdev-mutate` runner applies each edit, builds the mutant, requires the exact named test to fail, and restores source bytes. Other tests in the target may also fail: the original proofs tested one named guard, not target-wide exclusivity. See the [README](../README.md#mutation-proofs) for installation, replay and `ckdev-mutate prove` commands.
 
 The catalogue has 386 controls: 385 product controls (worker 32, journal 48, dispatch 47, schedule 35, module 99, Broca 28, hosts 74 and built-ins 22), plus one pool-fixture deadline control. Two controls change dependencies: one adds an older subc-protocol to prove that only one version is ever linked, and one downgrades subc-client-rs to prove the serve loop survives an unknown control field. CI builds with `--locked`, so each also carries the exact `Cargo.lock` edit cargo resolves for its mutant, and the runner restores and byte-verifies that file too.
 

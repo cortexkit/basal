@@ -4,6 +4,7 @@
 //! regression fails here, in the build, rather than at the daemon's
 //! registration.
 
+use basal_testkit::dev_binary;
 use std::collections::BTreeSet;
 use std::process::Command;
 
@@ -16,7 +17,7 @@ use subc_protocol::manifest::{
 
 #[test]
 fn the_built_binary_prints_a_manifest_subc_protocol_accepts() {
-    let output = Command::new(env!("CARGO_BIN_EXE_ck-basal"))
+    let output = Command::new(dev_binary(env!("CARGO_BIN_EXE_ck-basal")))
         .arg("--manifest")
         // Offline inspection must not need supervision.
         .env_remove("SUBC_MODULE_ID")
@@ -95,7 +96,7 @@ fn the_built_binary_prints_a_manifest_subc_protocol_accepts() {
 
 #[test]
 fn the_manifest_and_version_declare_the_embedded_build_revision() {
-    let output = Command::new(env!("CARGO_BIN_EXE_ck-basal"))
+    let output = Command::new(dev_binary(env!("CARGO_BIN_EXE_ck-basal")))
         .arg("--manifest")
         .output()
         .expect("run ck-basal --manifest");
@@ -112,7 +113,7 @@ fn the_manifest_and_version_declare_the_embedded_build_revision() {
         declared.is_none()
     );
 
-    let output = Command::new(env!("CARGO_BIN_EXE_ck-basal"))
+    let output = Command::new(dev_binary(env!("CARGO_BIN_EXE_ck-basal")))
         .arg("--version")
         .output()
         .expect("run ck-basal --version");
@@ -135,7 +136,7 @@ fn anything_but_the_manifest_or_version_flag_or_a_subc_connection_is_refused() {
         vec!["serve"],
         vec!["--version", "x"],
     ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_ck-basal"))
+        let output = Command::new(dev_binary(env!("CARGO_BIN_EXE_ck-basal")))
             .args(&args)
             .output()
             .expect("run ck-basal");

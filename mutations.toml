@@ -1,4 +1,4 @@
-# Safety proofs replayed by the pinned ck-mutate runner.
+# Safety proofs replayed by the pinned ckdev-mutate runner.
 # Names are full libtest paths; the named guard must fail.
 # Other tests in the target may also fail: the original proofs ran
 # only the named test and did not assert target-wide exclusivity.

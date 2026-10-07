@@ -22,6 +22,31 @@ class RigChecks(unittest.TestCase):
             check=False,
         )
 
+    def test_all_rig_files_use_development_names_with_basal_signing_identities(self):
+        with tempfile.TemporaryDirectory() as home:
+            result = self.run_shell('''
+guard_all_paths
+binaries
+DRY=1
+place_one basal /built/ck-basal "$BIN/ckdev-basal"
+place_one basal-worker /built/ck-basal-worker "$BIN/ckdev-basal-worker"
+place_staged basal /stage/ck-basal "$BIN/ckdev-basal" ck-basal
+place_staged basal-worker /stage/ck-basal-worker "$BIN/ckdev-basal-worker" ck-basal-worker
+basal_identifier ck-basal
+basal_identifier ck-basal-worker
+''', home)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            rows = [line.split("\t") for line in result.stdout.splitlines() if "\t" in line]
+            self.assertTrue(rows)
+            self.assertTrue(all(row[3].startswith("ckdev-") for row in rows), rows)
+            placed = {row[0]: row[3] for row in rows}
+            self.assertEqual(placed["basal"], "ckdev-basal")
+            self.assertEqual(placed["basal-worker"], "ckdev-basal-worker")
+            self.assertIn("verify_hardened", result.stdout)
+            self.assertIn("ckdev-basal ck-basal", result.stdout)
+            self.assertIn("ckdev-basal-worker ck-basal-worker", result.stdout)
+            self.assertTrue(result.stdout.endswith("ck-basal\nck-basal-worker\n"))
+
     def test_pin_uses_served_providers_and_refuses_missing_luna(self):
         with tempfile.TemporaryDirectory() as home:
             catalog = Path(home) / "catalog.json"

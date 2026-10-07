@@ -38,7 +38,8 @@
 #             (claustrum builds against ../subconscious by path); the
 #             manifest then records its cargo_lock as sibling-refreshed.
 #   place     sign every binary by script/signing.sh under a ckdev-*
-#             identifier and place it in bin/. The rig's ck-basal is built
+#             identifier (basal keeps its production identifiers) and place it
+#             in bin/. The rig's ck-basal is built
 #             with the rig-kill-hook feature, which the contract suite's
 #             crash case needs.
 #   config    write subc.jsonc, bootstrap the key-file vault and grant only
@@ -380,14 +381,10 @@ basal_mode() {
   fi
 }
 
-# The identifier a placed basal binary must carry: its production one when
-# it came from a stage, the rig's ckdev- one otherwise.
+# Basal retains production signing identities even under development file
+# names: code identity is the identifier, not the name Activity Monitor shows.
 basal_identifier() {
-  if [ "$(basal_mode)" = staged ]; then
-    printf '%s\n' "$1"
-  else
-    printf 'ckdev-%s\n' "${1#ck-}"
-  fi
+  printf '%s\n' "$1"
 }
 
 # The repositories the rig builds from: name, source checkout, Cargo-built.
@@ -407,8 +404,8 @@ EOF
 }
 
 # Every placed binary: rig name, repository, cargo binary, placed file name.
-# ck-basal finds its worker beside itself under the fixed name ck-basal-worker
-# (crates/basal-module/src/pool.rs), so that one file keeps its cargo name.
+# Basal derives its sibling worker's file name from its own, so both rig
+# executables use development names even when their bytes came from a stage.
 binaries() {
   cat <<'EOF'
 subc	subconscious	ck-subc	ckdev-subc
@@ -422,7 +419,7 @@ models	fusiform	ck-models	ckdev-models
 prefrontal-core	prefrontal	ck-prefrontal-core	ckdev-prefrontal-core
 prefrontal-routing	prefrontal	ck-prefrontal-routing	ckdev-prefrontal-routing
 basal	basal	ck-basal	ckdev-basal
-basal-worker	basal	ck-basal-worker	ck-basal-worker
+basal-worker	basal	ck-basal-worker	ckdev-basal-worker
 callosum	basal	ck-callosum-stub	ckdev-callosum
 EOF
 }
@@ -688,17 +685,16 @@ cmd_place() {
   run ln -sf ckdev-auth "$BIN/ck-auth"
   if [ -n "$stage" ]; then
     printf 'staged\t%s\t%s\n' "$stage" "$revision" | write_file "$BASAL_SOURCE"
-    worker_identifier=ck-basal-worker
   else
     printf 'rig-build\n' | write_file "$BASAL_SOURCE"
-    worker_identifier=ckdev-basal-worker
   fi
+  worker_identifier=ck-basal-worker
   # The worker runs flow code, so it must also pass basal's own gate at its
   # final path: hardened runtime, no entitlements, the checked-in Seatbelt
   # profile embedded, and a live probe that confinement denies a file read,
   # a socket connect and a program launch. The gate script comes from the
   # basal clone, so it checks against the profile of the commit that was built.
-  worker="$BIN/ck-basal-worker"
+  worker="$BIN/ckdev-basal-worker"
   if [ "$DRY" = 1 ]; then
     say "+ BASAL_WORKER_IDENTIFIER=$worker_identifier sh $SRC/basal/script/sign-worker.sh verify $worker"
   elif ! BASAL_WORKER_IDENTIFIER=$worker_identifier sh "$SRC/basal/script/sign-worker.sh" verify "$worker"; then
@@ -716,6 +712,9 @@ place_one() {
   built=$2
   dest=$3
   identifier="ckdev-$name"
+  case "$name" in
+    basal | basal-worker) identifier="ck-$name" ;;
+  esac
   guard_path "$dest"
   if [ "$DRY" = 1 ]; then
     say "+ cp $built $BIN/.place.XXXXXX; chmod 0755 $BIN/.place.XXXXXX"
@@ -1112,14 +1111,14 @@ cmd_status() {
     '$2 == parent && $3 == prog { print $1; exit }')
   workers=""
   if [ -n "$basal" ]; then
-    workers=$(printf '%s\n' "$processes" | awk -v parent="$basal" -v prog="$BIN/ck-basal-worker" \
+    workers=$(printf '%s\n' "$processes" | awk -v parent="$basal" -v prog="$BIN/ckdev-basal-worker" \
       '$2 == parent && $3 == prog { print $1 }')
   fi
   if [ -z "$workers" ]; then
     say "basal-worker: none running"
   fi
   for worker in $workers; do
-    (report_process basal-worker "$BIN/ck-basal-worker" "$worker" "$(basal_identifier ck-basal-worker)") || failed=1
+    (report_process basal-worker "$BIN/ckdev-basal-worker" "$worker" "$(basal_identifier ck-basal-worker)") || failed=1
   done
   report_credentials
   [ "$failed" = 0 ] || die "status found a module outside the rig (see above)"

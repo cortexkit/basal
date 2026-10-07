@@ -24,7 +24,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: never
-  CK_MUTATE_REV: 7d08e73722fa3e79bbcc2607753978ab768f1c6b
+  CK_MUTATE_REV: 46cc166b0df2edcfd14b3eb54ed6eeac588fed69
 
 jobs:
   checks:
@@ -46,8 +46,8 @@ jobs:
       - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         id: mutate-cache
         with:
-          path: ~/.cargo/bin/ck-mutate
-          key: ${{ runner.os }}-${{ runner.arch }}-ck-mutate-${{ env.CK_MUTATE_REV }}
+          path: ~/.cargo/bin/ckdev-mutate
+          key: ${{ runner.os }}-${{ runner.arch }}-ckdev-mutate-${{ env.CK_MUTATE_REV }}
       - name: Install pinned mutation runner
         if: steps.mutate-cache.outputs.cache-hit != 'true'
         run: cargo install --locked --git https://github.com/cortexkit/commons --rev "$CK_MUTATE_REV" cortexkit-mutate
@@ -65,11 +65,15 @@ jobs:
         run: |
           python3 script/check-path-deps.py
           python3 -m unittest script.tests.check_path_deps -v
+      - name: Check development executable names
+        run: |
+          python3 script/check-ckdev-names.py
+          python3 -m unittest script.tests.check_ckdev_names -v
       - name: Check offline placement cards
         run: |
           /bin/sh -n script/stage.sh
           python3 -m unittest script.tests.stage_card -v
-      - run: ck-mutate check
+      - run: ckdev-mutate check
 
   mutations-pr:
     if: github.event_name == 'pull_request'
@@ -97,8 +101,8 @@ jobs:
       - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         id: mutate-cache
         with:
-          path: ~/.cargo/bin/ck-mutate
-          key: ${{ runner.os }}-${{ runner.arch }}-ck-mutate-${{ env.CK_MUTATE_REV }}
+          path: ~/.cargo/bin/ckdev-mutate
+          key: ${{ runner.os }}-${{ runner.arch }}-ckdev-mutate-${{ env.CK_MUTATE_REV }}
       - name: Install pinned mutation runner
         if: steps.mutate-cache.outputs.cache-hit != 'true'
         run: cargo install --locked --git https://github.com/cortexkit/commons --rev "$CK_MUTATE_REV" cortexkit-mutate
@@ -106,7 +110,7 @@ jobs:
         run: |
           mkdir -p target/mutations
           rm -f target/mutations/diff.json
-          env -u BASAL_WORKER_BIN -u BASAL_CUT_EXHAUSTIVE ck-mutate run --diff origin/main --report target/mutations/diff.json
+          env -u BASAL_WORKER_BIN -u BASAL_CUT_EXHAUSTIVE ckdev-mutate run --diff origin/main --report target/mutations/diff.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
@@ -143,8 +147,8 @@ jobs:
       - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         id: mutate-cache
         with:
-          path: ~/.cargo/bin/ck-mutate
-          key: ${{ runner.os }}-${{ runner.arch }}-ck-mutate-${{ env.CK_MUTATE_REV }}
+          path: ~/.cargo/bin/ckdev-mutate
+          key: ${{ runner.os }}-${{ runner.arch }}-ckdev-mutate-${{ env.CK_MUTATE_REV }}
       - name: Install pinned mutation runner
         if: steps.mutate-cache.outputs.cache-hit != 'true'
         run: cargo install --locked --git https://github.com/cortexkit/commons --rev "$CK_MUTATE_REV" cortexkit-mutate
@@ -152,7 +156,7 @@ jobs:
         run: |
           mkdir -p target/mutations
           rm -f target/mutations/all.json
-          env -u BASAL_WORKER_BIN -u BASAL_CUT_EXHAUSTIVE ck-mutate run --all --shard ${{ matrix.shard }}/5 ${BROAD:+--broad} --report target/mutations/all.json
+          env -u BASAL_WORKER_BIN -u BASAL_CUT_EXHAUSTIVE ckdev-mutate run --all --shard ${{ matrix.shard }}/5 ${BROAD:+--broad} --report target/mutations/all.json
         env:
           BROAD: ${{ github.event_name != 'push' && 'true' || '' }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

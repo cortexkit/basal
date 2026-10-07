@@ -1,7 +1,6 @@
 #![cfg(target_os = "macos")]
 
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use basal_module::pool::PoolConfig;
@@ -9,11 +8,14 @@ use basal_module::process::{SpawnError, WorkerLaunch, WorkerProcess};
 
 #[test]
 fn real_trampoline_confirms_and_worker_completes_seatbelt_handshake() {
-    let trampoline = PathBuf::from(env!("CARGO_BIN_EXE_ck-basal"));
+    let module = basal_testkit::dev_binary(env!("CARGO_BIN_EXE_ck-basal"));
+    let worker = basal_testkit::worker_binary();
+    let binaries = basal_testkit::DevBinaries::new(&[&module, &worker]).expect("development pair");
+    let trampoline = binaries.path(&module).expect("development trampoline");
     subc_os::privacy_identity::probe(&trampoline, Instant::now() + Duration::from_secs(180))
         .expect("production trampoline probe before runtime startup");
     let worker = WorkerProcess::start(
-        &basal_testkit::channel::worker_binary(),
+        &binaries.path(&worker).expect("development worker"),
         &WorkerLaunch::Disclaimed { trampoline },
         Duration::from_secs(180),
     )
@@ -37,9 +39,12 @@ fn disclaimed_worker_closes_extra_inherited_descriptors_at_startup() {
     // SAFETY: a successful pipe returned two newly owned descriptors.
     let (_read, write) = unsafe { (OwnedFd::from_raw_fd(pipe[0]), OwnedFd::from_raw_fd(pipe[1])) };
     let write_fd = write.as_raw_fd();
+    let module = basal_testkit::dev_binary(env!("CARGO_BIN_EXE_ck-basal"));
+    let worker = basal_testkit::worker_binary();
+    let binaries = basal_testkit::DevBinaries::new(&[&module, &worker]).expect("development pair");
     let mut builder = DisclaimedCommand::new(
-        env!("CARGO_BIN_EXE_ck-basal"),
-        basal_testkit::channel::worker_binary(),
+        binaries.path(&module).expect("development trampoline"),
+        binaries.path(&worker).expect("development worker"),
     );
     builder
         .args(["--confinement-probe", "--no-sandbox"])

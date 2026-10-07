@@ -194,6 +194,14 @@ for bin in $BINARIES; do
   say "$bin: Identifier=$(codesign_identifier "$SCRATCH/$bin") flags=$(codesign_flags "$SCRATCH/$bin") entitlements: none"
 done
 
+# Smoke processes must not look like placed production binaries. A hard link
+# runs the same signed inode under its development name; a copy is the fallback
+# on filesystems that do not support links. Staging keeps production names.
+for bin in $BINARIES; do
+  dev="ckdev-${bin#ck-}"
+  ln "$SCRATCH/$bin" "$SCRATCH/$dev" 2>/dev/null || cp "$SCRATCH/$bin" "$SCRATCH/$dev"
+done
+
 # ---------------------------------------------------------------- smoke
 
 # A file's identity for the smoke run: its inode and its codesign flags.
@@ -277,10 +285,11 @@ debugger_probe() {
 say ""
 say "=== smoke tests (on the signed files)"
 for bin in $BINARIES; do
-  identity "$SCRATCH/$bin" > "$CONTROL_DIR/$bin.before"
+  cmp -s "$SCRATCH/$bin" "$SCRATCH/ckdev-${bin#ck-}" || die "$bin smoke copy differs from the signed file"
+  identity "$SCRATCH/ckdev-${bin#ck-}" > "$CONTROL_DIR/$bin.before"
 done
 
-manifest=$("$SCRATCH/ck-basal" --manifest) || die "ck-basal --manifest failed"
+manifest=$("$SCRATCH/ckdev-basal" --manifest) || die "ck-basal --manifest failed"
 printf '%s' "$manifest" | python3 -c '
 import json, sys
 m = json.load(sys.stdin)
@@ -292,7 +301,7 @@ print("ck-basal --manifest: module_id basal, version %s, provenance build_git_sh
       % (m["module_version"], got))
 ' "$SHA" || die "ck-basal --manifest does not declare this build"
 for bin in $BINARIES; do
-  version=$("$SCRATCH/$bin" --version) || die "$bin --version failed"
+  version=$("$SCRATCH/ckdev-${bin#ck-}" --version) || die "$bin --version failed"
   # "<name> <crate version> (<sha>)": a dirty build would add ", dirty".
   case "$version" in
     "$bin "*" ($SHA)") ;;
@@ -302,7 +311,7 @@ for bin in $BINARIES; do
 done
 
 say "worker sandbox self-check (script/sign-worker.sh verify, as flows-rig.sh place runs it):"
-BASAL_WORKER_IDENTIFIER=ck-basal-worker sh "$ROOT/script/sign-worker.sh" verify "$SCRATCH/ck-basal-worker" \
+BASAL_WORKER_IDENTIFIER=ck-basal-worker sh "$ROOT/script/sign-worker.sh" verify "$SCRATCH/ckdev-basal-worker" \
   || die "the worker failed its confinement gate; nothing staged"
 
 # The control first: an unhardened ad-hoc copy of /bin/sleep must attach,
@@ -318,14 +327,15 @@ debugger_probe "$CONTROL_DIR/sleep" 600
   || die "control: lldb could not attach to an unhardened ad-hoc /bin/sleep, so a refusal would prove nothing"
 say "debugger control: lldb -p attached to an unhardened ad-hoc copy of /bin/sleep (flags=$control_flags)"
 for bin in $BINARIES; do
-  debugger_probe "$SCRATCH/$bin" --version
+  debugger_probe "$SCRATCH/ckdev-${bin#ck-}" --version
   [ "$VERDICT" = refused ] || die "$bin: lldb -p ATTACHED to the signed binary; nothing staged"
   say "debugger: lldb -p refused on $bin (Not allowed to attach to process)"
 done
 
 for bin in $BINARIES; do
   before=$(cat "$CONTROL_DIR/$bin.before")
-  after=$(identity "$SCRATCH/$bin")
+  after=$(identity "$SCRATCH/ckdev-${bin#ck-}")
+  cmp -s "$SCRATCH/$bin" "$SCRATCH/ckdev-${bin#ck-}" || die "$bin smoke copy differs from the staged bytes"
   [ "$before" = "$after" ] || die "$bin changed during the smoke run (inode flags: $before -> $after); the run does not count"
   say "$bin: inode and flags unchanged across the smoke run ($after)"
 done
