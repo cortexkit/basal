@@ -17,6 +17,9 @@ use common::{
     Fixture, GatedSpawner, HOUR, Options, T0, admit, agent, events_manifest, install_approved,
 };
 
+use basal_proto::Budgets;
+use serde_json::{Value, json};
+
 const SCRIPT: &str = "const r = await ops.call('mock', 'echo', { n: 1 }); return r.n;";
 const WAIT: Duration = Duration::from_secs(60);
 const STALLED_WAIT: Duration = Duration::from_secs(3);
@@ -123,6 +126,194 @@ fn workers_of(pool: &Pool, flow: &str) -> Vec<u64> {
         .filter(|h| h.binding == Binding::Flow(flow.to_owned()))
         .map(|h| h.worker)
         .collect()
+}
+
+fn pids_of(pool: &Pool, flow: &str) -> Vec<u32> {
+    pool.handouts()
+        .into_iter()
+        .filter(|h| h.binding == Binding::Flow(flow.to_owned()))
+        .map(|h| h.pid)
+        .collect()
+}
+
+fn budget_retirement(tag: &str, script: &str, budgets: Budgets, kind: &str) {
+    let f = fixture(
+        tag,
+        Options {
+            budgets,
+            ..Options::default()
+        },
+    );
+    let flow = install_approved(&f, &agent("SYNAPSE"), script, &events_manifest(tag));
+    let first = admit(&f, &flow, "first");
+    run_until_idle(&f, &first);
+    let result = f.module.rt.run(&first).expect("exhausted run");
+    assert_eq!(result.state, RunState::Failed, "{result:?}");
+    assert_eq!(result.error_kind.as_deref(), Some("budget_exhausted"));
+    assert_eq!(result.error_detail.as_deref(), Some(kind));
+    let killed_after_first = f.module.metrics.workers_killed.load(Ordering::Relaxed);
+    let bound_after_first = f.module.pool.stats().bound;
+    let second = admit(&f, &flow, "second");
+    run_until_idle(&f, &second);
+    let result = f.module.rt.run(&second).expect("second run");
+    assert_eq!(result.error_kind.as_deref(), Some("budget_exhausted"));
+    assert_eq!(result.error_detail.as_deref(), Some(kind));
+    let pids = pids_of(&f.module.pool, &flow);
+    assert_eq!(pids.len(), 2);
+    assert_ne!(
+        pids[0], pids[1],
+        "a reported budget exhaustion must replace the worker"
+    );
+    assert_eq!(killed_after_first, 1);
+    assert!(
+        bound_after_first.is_empty(),
+        "an exhausted engine must not stay idle"
+    );
+}
+
+#[test]
+fn js_time_exhaustion_retires_the_worker_before_the_next_handout() {
+    budget_retirement(
+        "pool-js-time",
+        "for (;;) {}",
+        Budgets {
+            js_time_micros: 100_000,
+            ..Budgets::default()
+        },
+        "JsTime",
+    );
+}
+
+#[test]
+fn memory_exhaustion_retires_the_worker_before_the_next_handout() {
+    budget_retirement(
+        "pool-memory",
+        "return 'x'.repeat(32 * 1024 * 1024).length;",
+        Budgets {
+            memory_bytes: 2 * 1024 * 1024,
+            ..Budgets::default()
+        },
+        "Memory",
+    );
+}
+
+#[test]
+fn stack_exhaustion_retires_the_worker_before_the_next_handout() {
+    budget_retirement(
+        "pool-stack",
+        "function f(n) { return n ? 1 + f(n - 1) : 0; } return f(50);",
+        Budgets {
+            stack_bytes: 32 * 1024,
+            ..Budgets::default()
+        },
+        "Stack",
+    );
+}
+
+#[test]
+fn a_caught_memory_failure_completes_and_reuses_the_worker() {
+    let f = fixture(
+        "pool-caught-memory",
+        Options {
+            budgets: Budgets {
+                memory_bytes: 2 * 1024 * 1024,
+                ..Budgets::default()
+            },
+            ..Options::default()
+        },
+    );
+    let flow = install_approved(
+        &f,
+        &agent("SYNAPSE"),
+        "try { return 'x'.repeat(32 * 1024 * 1024).length; } catch (e) { return e.message; }",
+        &events_manifest("pool-caught-memory"),
+    );
+    for trigger in ["first", "second"] {
+        let run = admit(&f, &flow, trigger);
+        run_until_idle(&f, &run);
+        let result = f.module.rt.run(&run).expect("completed run");
+        assert_eq!(result.state, RunState::Succeeded, "{result:?}");
+        assert_eq!(result.result.as_deref(), Some("\"out of memory\""));
+    }
+    let pids = pids_of(&f.module.pool, &flow);
+    assert_eq!(pids.len(), 2);
+    assert_eq!(pids[0], pids[1], "caught failures leave a reusable engine");
+    assert_eq!(f.module.metrics.workers_killed.load(Ordering::Relaxed), 0);
+}
+
+fn signal_crash_is_reported(signal: i32, expected_deaths: u64) {
+    use basal_core::channel::WorkerChannel;
+
+    // Cover all three places the pool discovers death: handout, idle
+    // housekeeping, and release after drive has requested a kill.
+    for path in ["acquire", "maintain", "release"] {
+        let f = fixture(&format!("pool-signal-{signal}-{path}"), Options::default());
+        let binding = Binding::Flow("signal-flow".into());
+        let mut lease = Some(f.module.pool.acquire(binding.clone()).expect("worker"));
+        let pid = f.module.pool.handouts().last().expect("handout").pid;
+        if path != "release" {
+            drop(lease.take());
+        }
+        // SAFETY: this live child is owned by the pool and has not been reaped.
+        assert_eq!(unsafe { libc::kill(pid as libc::pid_t, signal) }, 0);
+        let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::uninit();
+        // SAFETY: waitid writes the live buffer. WNOWAIT observes the child's
+        // completed exit without stealing its status from WorkerProcess.
+        assert_eq!(
+            unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    pid as libc::id_t,
+                    info.as_mut_ptr(),
+                    libc::WEXITED | libc::WNOWAIT,
+                )
+            },
+            0
+        );
+        match path {
+            "acquire" => {
+                let replacement = f.module.pool.acquire(binding).expect("replacement");
+                assert_ne!(f.module.pool.handouts().last().expect("handout").pid, pid);
+                drop(replacement);
+            }
+            "maintain" => {
+                f.module.pool.maintain();
+            }
+            "release" => {
+                let mut lease = lease.take().expect("busy lease");
+                lease.kill();
+                drop(lease);
+            }
+            _ => unreachable!(),
+        }
+        let health = f
+            .module
+            .handle(
+                &basal_module::caller::Caller::Operator,
+                "flow.health",
+                Value::Null,
+            )
+            .expect("health");
+        assert_eq!(
+            health["worker_confinement"]["sigsys_deaths"],
+            json!(expected_deaths),
+            "{path}: {health}"
+        );
+        assert_eq!(
+            f.module.metrics.workers_crashed.load(Ordering::Relaxed),
+            u64::from(path != "release" || signal == libc::SIGSYS)
+        );
+    }
+}
+
+#[test]
+fn sigsys_deaths_are_counted_in_flow_health() {
+    signal_crash_is_reported(libc::SIGSYS, 1);
+}
+
+#[test]
+fn sigkill_deaths_are_not_confinement_violations() {
+    signal_crash_is_reported(libc::SIGKILL, 0);
 }
 
 #[test]

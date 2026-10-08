@@ -25,7 +25,10 @@
 //! worker answered its handshake.
 
 use std::collections::{HashMap, VecDeque};
+#[cfg(unix)]
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
+use std::process::ExitStatus;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
@@ -33,9 +36,10 @@ use std::time::{Duration, Instant};
 
 use basal_core::Clock;
 use basal_core::channel::{ChannelError, WorkerChannel};
-use basal_proto::{ParentMessage, Welcome, WorkerMessage};
+use basal_proto::{Confinement, LANDLOCK_ABI, ParentMessage, Welcome, WorkerMessage};
 
 use crate::metrics::Metrics;
+pub use crate::process::LandlockPolicy;
 use crate::process::{SpawnError, WorkerKiller, WorkerLaunch, WorkerProcess};
 
 /// The pool's parameters. The defaults keep two spares (an install's dry
@@ -48,10 +52,14 @@ use crate::process::{SpawnError, WorkerKiller, WorkerLaunch, WorkerProcess};
 pub struct PoolConfig {
     /// `ck-basal-worker`; by default the one beside the running binary.
     pub worker_binary: PathBuf,
-    /// How workers are launched (see `crate::process`). Production launches them
-    /// disclaimed through its own executable; test pools launch them plainly,
-    /// because test binaries don't implement the trampoline mode.
+    /// How workers are launched (see `crate::process`). On macOS the module
+    /// re-executes itself to detach the worker from its parent's privacy grants;
+    /// on Linux it launches the worker directly. Test binaries use direct launch
+    /// because they do not implement the macOS re-execution mode.
     pub worker_launch: WorkerLaunch,
+    /// Required by default. Optional permits seccomp-only Linux workers when
+    /// Landlock is unavailable, but never permits an invalid Landlock report.
+    pub landlock: LandlockPolicy,
     /// Greeted, unbound workers kept ready.
     pub warm_spares: usize,
     /// Live worker processes at most, spares, idle, busy and starting
@@ -75,6 +83,7 @@ impl PoolConfig {
         Self {
             worker_binary: worker_binary.into(),
             worker_launch,
+            landlock: LandlockPolicy::Required,
             warm_spares: 2,
             max_workers: 16,
             max_activations: 256,
@@ -84,16 +93,20 @@ impl PoolConfig {
         }
     }
 
-    /// The worker beside the running executable, which is how the module is
-    /// installed: both binaries in one directory. This production constructor
-    /// always launches workers disclaimed, through the running executable, with
-    /// no environment or configuration opt-out.
+    /// Locates the worker in this executable's directory by appending `-worker`
+    /// to its basename, matching the deploy script's installation layout. It
+    /// detaches workers from the parent's privacy grants through the running
+    /// executable on macOS. Linux launches the worker directly with an explicit
+    /// Landlock policy; the worker installs confinement before reading input.
     pub fn beside_current_exe() -> std::io::Result<Self> {
         let exe = std::env::current_exe()?;
-        Ok(Self::new(
-            sibling_worker(&exe)?,
-            WorkerLaunch::Disclaimed { trampoline: exe },
-        ))
+        #[cfg(target_os = "macos")]
+        let launch = WorkerLaunch::Disclaimed {
+            trampoline: exe.clone(),
+        };
+        #[cfg(not(target_os = "macos"))]
+        let launch = WorkerLaunch::Plain;
+        Ok(Self::new(sibling_worker(&exe)?, launch))
     }
 }
 
@@ -136,6 +149,7 @@ pub struct ProcessSpawner {
     binary: PathBuf,
     launch: WorkerLaunch,
     timeout: Duration,
+    landlock: LandlockPolicy,
 }
 
 impl ProcessSpawner {
@@ -144,21 +158,50 @@ impl ProcessSpawner {
             binary: config.worker_binary.clone(),
             launch: config.worker_launch.clone(),
             timeout: config.handshake_timeout,
+            landlock: config.landlock,
         }
     }
 }
 
 impl Spawn for ProcessSpawner {
     fn spawn(&self) -> Result<WorkerProcess, SpawnError> {
-        let process = WorkerProcess::start(&self.binary, &self.launch, self.timeout)?;
+        let process = WorkerProcess::start_with_policy(
+            &self.binary,
+            &self.launch,
+            self.timeout,
+            self.landlock,
+        )?;
         // A worker that could not sandbox itself would run flow code with
         // file and network access; it is refused, not used.
-        if process.welcome().confinement != basal_proto::Confinement::Seatbelt {
+        if !accepts_welcome(process.welcome(), self.landlock) {
             return Err(SpawnError::Handshake(
-                "the worker reports no OS sandbox; refusing it".into(),
+                "the worker's confinement does not satisfy the OS policy; refusing it".into(),
             ));
         }
         Ok(process)
+    }
+}
+
+/// Require the applied Landlock ABI to equal min(kernel ABI, pinned worker ABI):
+/// a smaller ABI would omit restrictions that both sides support.
+fn accepts_welcome(welcome: &Welcome, landlock: LandlockPolicy) -> bool {
+    match welcome.confinement {
+        Confinement::Seatbelt => cfg!(target_os = "macos"),
+        Confinement::Linux {
+            seccomp,
+            landlock: report,
+        } => {
+            cfg!(target_os = "linux")
+                && seccomp
+                && match report {
+                    None => landlock == LandlockPolicy::Optional,
+                    Some(report) => {
+                        report.runtime_abi >= 1
+                            && report.applied_abi == report.runtime_abi.min(LANDLOCK_ABI)
+                    }
+                }
+        }
+        Confinement::None => false,
     }
 }
 
@@ -354,7 +397,10 @@ impl Pool {
                 let reuse = state.bound.get_mut(flow).and_then(Vec::pop);
                 if let Some(mut idle) = reuse {
                     if idle.process.has_exited() {
-                        self.shared.crashed(&mut state);
+                        let status = idle.process.exit_status().unwrap_or_else(|| {
+                            Err(std::io::Error::other("worker exit status unavailable"))
+                        });
+                        self.shared.crashed(&mut state, status);
                         drop(idle);
                         continue;
                     }
@@ -362,8 +408,8 @@ impl Pool {
                 }
             }
             if let Some((id, mut process)) = state.spares.pop_front() {
-                if process.has_exited() {
-                    self.shared.crashed(&mut state);
+                if let Some(status) = process.exit_status() {
+                    self.shared.crashed(&mut state, status);
                     drop(process);
                     continue;
                 }
@@ -468,13 +514,13 @@ impl Pool {
         let mut doomed = Vec::new();
         {
             let mut state = self.lock();
-            let mut crashed = 0;
+            let mut crashes = Vec::new();
             let mut retired = 0;
             for workers in state.bound.values_mut() {
                 let mut keep = Vec::with_capacity(workers.len());
                 for mut idle in workers.drain(..) {
-                    if idle.process.has_exited() {
-                        crashed += 1;
+                    if let Some(status) = idle.process.exit_status() {
+                        crashes.push(status);
                         doomed.push(idle.process);
                     } else if now.saturating_sub(idle.idle_since_ms) >= idle_ms {
                         retired += 1;
@@ -488,16 +534,17 @@ impl Pool {
             state.bound.retain(|_, w| !w.is_empty());
             let mut spares = VecDeque::new();
             while let Some((id, mut process)) = state.spares.pop_front() {
-                if process.has_exited() {
-                    crashed += 1;
+                if let Some(status) = process.exit_status() {
+                    crashes.push(status);
                     doomed.push(process);
                 } else {
                     spares.push_back((id, process));
                 }
             }
             state.spares = spares;
-            for _ in 0..crashed {
-                self.shared.crashed(&mut state);
+            let crashed = crashes.len();
+            for status in crashes {
+                self.shared.crashed(&mut state, status);
             }
             for _ in 0..retired {
                 self.shared.lost(&mut state, false);
@@ -579,6 +626,19 @@ impl Pool {
         }
     }
 
+    /// The operator's confinement policy and deaths attributed to SIGSYS.
+    pub fn worker_confinement(&self) -> serde_json::Value {
+        serde_json::json!({
+            "os": std::env::consts::OS,
+            "landlock": if cfg!(target_os = "linux") {
+                Some(self.shared.config.landlock.as_str())
+            } else {
+                None
+            },
+            "sigsys_deaths": self.shared.metrics.sigsys_deaths.load(Ordering::Relaxed),
+        })
+    }
+
     /// Stops handing out workers and kills every idle one.
     pub fn stop(&self) {
         let doomed: Vec<WorkerProcess> = {
@@ -607,7 +667,11 @@ impl Pool {
         let mut state = self.lock();
         state.busy.remove(&lease.id);
         let activations = lease.activations.saturating_add(1);
-        let crashed = !lease.killed && process.has_exited();
+        let status = process.exit_status();
+        // A channel failure can make drive request a kill after SIGSYS has
+        // already ended the worker. Retain that death as a confinement crash.
+        let crash_status = status.filter(|status| !lease.killed || is_sigsys(status));
+        let crashed = crash_status.is_some();
         let keep = match (&lease.binding, lease.killed || crashed) {
             (_, true) => None,
             (Binding::DryRun(_), false) => None,
@@ -625,11 +689,11 @@ impl Pool {
                 });
             }
             None => {
-                if lease.killed {
+                if let Some(status) = crash_status {
+                    self.shared.crashed(&mut state, status);
+                } else if lease.killed {
                     Metrics::bump(&self.shared.metrics.workers_killed);
                     self.shared.lost(&mut state, true);
-                } else if crashed {
-                    self.shared.crashed(&mut state);
                 } else {
                     Metrics::bump(&self.shared.metrics.workers_retired);
                     self.shared.lost(&mut state, false);
@@ -683,8 +747,11 @@ impl Shared {
     }
 
     /// Accounts for a worker found dead that nobody killed.
-    fn crashed(&self, state: &mut State) {
+    fn crashed(&self, state: &mut State, status: std::io::Result<ExitStatus>) {
         Metrics::bump(&self.metrics.workers_crashed);
+        if is_sigsys(&status) {
+            Metrics::bump(&self.metrics.sigsys_deaths);
+        }
         self.lost(state, true);
     }
 
@@ -774,6 +841,18 @@ impl Shared {
     }
 }
 
+fn is_sigsys(status: &std::io::Result<ExitStatus>) -> bool {
+    #[cfg(unix)]
+    {
+        matches!(status, Ok(status) if status.signal() == Some(libc::SIGSYS))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = status;
+        false
+    }
+}
+
 /// A worker handed out for one activation. It goes back to the pool (or is
 /// ended) when dropped.
 pub struct Lease {
@@ -848,3 +927,7 @@ fn unreachable_welcome() -> &'static Welcome {
 #[cfg(test)]
 #[path = "pool_tests.rs"]
 mod bookkeeping_tests;
+
+#[cfg(test)]
+#[path = "acceptance_tests.rs"]
+mod acceptance_tests;
