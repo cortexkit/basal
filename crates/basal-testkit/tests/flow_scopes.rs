@@ -144,7 +144,7 @@ fn scope(epoch: u64) -> RegisteredScope {
     }
 }
 struct Fixture {
-    _world: World,
+    world: World,
     wire: Arc<Wire>,
     clock: Clock,
     rt: Runtime,
@@ -208,7 +208,7 @@ impl Fixture {
             .unwrap();
         *wire.hash.lock().unwrap() = basal_core::ids::hex(&installed.code_hash);
         Self {
-            _world: world,
+            world,
             wire,
             clock,
             rt,
@@ -275,7 +275,7 @@ const SCRIPT: &str = "return await ops.call('mock','send',{value:7});";
 fn instance_provider_uses_the_selector_core_returns_for_its_flow_id() {
     let f = Fixture::new("instance-scope", SCRIPT, true, true);
     let agent = "agent_47120287c700722b";
-    f._world.catalog.add_named_agent(agent, "Renamable");
+    f.world.catalog.add_named_agent(agent, "Renamable");
     let mut m = test_manifest();
     m["id"] = json!("dark-wake");
     m["sinks"][0]["agent"] = json!("$self");
@@ -769,7 +769,7 @@ fn a_stalled_scope_activation_deadline_reaps_its_worker() {
         STALLED_ACTIVATION_WAIT,
     );
     let run = f.admit("one");
-    let mut worker = f._world.source.spawn().expect("worker");
+    let mut worker = f.world.source.spawn().expect("worker");
     // Only provider dispatch reads this queue. Holding it withholds a reply
     // without blocking the install gate or the runtime's deadline checks.
     let held_reply = f.wire.refusals.lock().unwrap();

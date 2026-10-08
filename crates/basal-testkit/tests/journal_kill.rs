@@ -10,13 +10,12 @@ use std::sync::{Arc, Mutex};
 
 use basal_core::Config;
 use basal_testkit::harness::{
-    Point, Probe, REPRESENTATIVE, World, drive, is_repeat_prone, scratch, summarize,
+    CUT_PARALLEL, Point, Probe, REPRESENTATIVE, World, drive, is_repeat_prone, scratch, summarize,
 };
 use basal_testkit::worker_binary;
 use serde_json::Value;
 
 const PARENT: &str = env!("CARGO_BIN_EXE_basal-test-parent");
-const PARALLEL: usize = 6;
 
 /// Runs the test parent once. Returns (killed by SIGKILL, printed JSON).
 fn parent(dir: &Path, kill_at: Option<&Point>) -> (bool, Option<Value>, String) {
@@ -26,7 +25,8 @@ fn parent(dir: &Path, kill_at: Option<&Point>) -> (bool, Option<Value>, String) 
     if let Some(p) = kill_at {
         cmd.arg("--kill-at").arg(p.render());
     }
-    let out = cmd.output().expect("run the test parent");
+    let out = basal_testkit::process::output_until(&mut cmd, std::time::Duration::from_secs(950))
+        .expect("test parent must finish within its cleanup deadline");
     let killed = out.status.signal() == Some(libc::SIGKILL);
     let json = String::from_utf8_lossy(&out.stdout)
         .lines()
@@ -61,7 +61,7 @@ fn killing_the_parent_at_every_boundary_recovers_to_the_uncut_state() {
     let fired = std::sync::atomic::AtomicUsize::new(0);
     let missed = Mutex::new(Vec::new());
     std::thread::scope(|s| {
-        for _ in 0..PARALLEL {
+        for _ in 0..CUT_PARALLEL {
             s.spawn(|| {
                 while let Some(point) = queue.lock().ok().and_then(|mut q| q.pop()) {
                     let dir = scratch("kill");
@@ -76,13 +76,13 @@ fn killing_the_parent_at_every_boundary_recovers_to_the_uncut_state() {
                     // The restarted parent recovers and finishes the run.
                     let (_, after, err2) = parent(&dir, None);
                     let summary = after.as_ref().map(|a| a["summary"].clone());
-                    if summary.as_ref() != Some(&expected) {
-                        if let Ok(mut f) = failures.lock() {
-                            f.push(format!(
-                                "{} (killed {killed}): {summary:?}\nfirst: {out:?} {err}\nsecond: {err2}",
-                                point.render()
-                            ));
-                        }
+                    if summary.as_ref() != Some(&expected)
+                        && let Ok(mut f) = failures.lock()
+                    {
+                        f.push(format!(
+                            "{} (killed {killed}): {summary:?}\nfirst: {out:?} {err}\nsecond: {err2}",
+                            point.render()
+                        ));
                     }
                     let _ = std::fs::remove_dir_all(&dir);
                 }
@@ -125,7 +125,7 @@ fn killing_the_worker_at_every_boundary_recovers_to_the_uncut_state() {
     let fired = std::sync::atomic::AtomicUsize::new(0);
     let missed = Mutex::new(Vec::new());
     std::thread::scope(|s| {
-        for _ in 0..PARALLEL {
+        for _ in 0..CUT_PARALLEL {
             s.spawn(|| {
                 while let Some(point) = queue.lock().ok().and_then(|mut q| q.pop()) {
                     let world = World::new("worker-kill");
@@ -154,7 +154,7 @@ fn killing_the_worker_at_every_boundary_recovers_to_the_uncut_state() {
                         .admit(&world.spec(&rt, REPRESENTATIVE).expect("approve"))
                         .expect("admit")
                         .run_id()
-                        .unwrap_or_default()
+                        .expect("representative run was admitted")
                         .to_owned();
                     let outcome = drive(
                         &rt,
@@ -171,10 +171,10 @@ fn killing_the_worker_at_every_boundary_recovers_to_the_uncut_state() {
                         m.push(point.render());
                     }
                     let summary = outcome.and_then(|_| summarize(&rt, &world.mock, &run_id));
-                    if summary.as_ref().ok() != Some(&expected) {
-                        if let Ok(mut f) = failures.lock() {
-                            f.push(format!("{}: {summary:#?}", point.render()));
-                        }
+                    if summary.as_ref().ok() != Some(&expected)
+                        && let Ok(mut f) = failures.lock()
+                    {
+                        f.push(format!("{}: {summary:#?}", point.render()));
                     }
                 }
             });

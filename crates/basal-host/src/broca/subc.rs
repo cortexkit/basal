@@ -173,10 +173,10 @@ impl SubcBrocaTransport {
         });
         let weak = Arc::downgrade(&transport);
         connection.on_connection_state(move |state| {
-            if matches!(state, ConnectionState::Restored { .. }) {
-                if let Some(transport) = weak.upgrade() {
-                    transport.reconnected();
-                }
+            if matches!(state, ConnectionState::Restored { .. })
+                && let Some(transport) = weak.upgrade()
+            {
+                transport.reconnected();
             }
         });
         transport

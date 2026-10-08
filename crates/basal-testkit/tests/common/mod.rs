@@ -12,7 +12,7 @@ pub fn config() -> Config {
     Config {
         // Healthy activations need headroom when cut runs share a loaded host.
         // Short activation budgets belong only to deliberately stalled fixtures.
-        activation_deadline: Duration::from_secs(20),
+        activation_deadline: Duration::from_secs(60),
         install_gate: basal_core::InstallGate::Off,
         ..Config::default()
     }
@@ -30,6 +30,16 @@ pub fn runtime_with(world: &World, hooks: Arc<dyn Hooks>) -> Runtime {
 
 pub fn admit(rt: &Runtime, world: &World, script: &str) -> String {
     rt.admit(&world.spec(rt, script).expect("approve"))
+        .expect("admit")
+        .run_id()
+        .expect("admitted")
+        .to_owned()
+}
+
+pub fn admit_trigger(rt: &Runtime, world: &World, script: &str, trigger: &str) -> String {
+    let mut spec = world.spec(rt, script).expect("approve");
+    spec.trigger_id = trigger.to_owned();
+    rt.admit(&spec)
         .expect("admit")
         .run_id()
         .expect("admitted")

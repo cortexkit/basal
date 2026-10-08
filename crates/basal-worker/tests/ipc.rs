@@ -273,13 +273,15 @@ fn out_of_order_frames_are_refused() {
         unexpected(MessageKind::LongRunning, WorkerState::AwaitingSyncReply)
     );
     worker.send(&deliver(0, "1767225600000", 0)).expect("send");
-    assert!(matches!(
-        worker.recv(WAIT),
+    match worker.recv(WAIT) {
         Ok(WorkerMessage::Finished {
-            result: ActivationResult::Completed { .. },
+            result: ActivationResult::Completed { value },
             ..
-        })
-    ));
+        }) => {
+            assert_eq!(value.as_str(), "\"number\"");
+        }
+        other => panic!("Date.now did not return a number: {other:?}"),
+    }
 
     still_serves(&mut worker, hash);
     worker.send(&ParentMessage::Shutdown).expect("send");

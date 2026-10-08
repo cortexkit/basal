@@ -13,6 +13,62 @@ HELPERS = SCRIPT.read_text().split("# ------------------------------------------
 
 
 class RigChecks(unittest.TestCase):
+    def test_build_preserves_repository_paths_with_spaces(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp).resolve()
+            (home / 'source with spaces').mkdir()
+            result = self.run_shell('''guard_all_paths
+DRY=1
+repos() { printf 'basal\t%s/source with spaces\n' "$HOME"; }
+git() { printf '%040d\n' 0; }
+clone_at() { printf '%s\n' "$2" > "$HOME/cloned"; }
+cargo_build() { :; }
+cmd_build --prefrontal-rev HEAD
+''', home)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual((home / 'cloned').read_text().strip(), str(home / 'source with spaces'))
+
+    def test_dangling_symlink_cannot_redirect_a_rig_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp).resolve()
+            root = home / '.local/share/cortexkit/ckdev-flows'
+            root.mkdir(parents=True)
+            (root / 'bin').symlink_to(home / '.local/share/cortexkit/bin')
+            result = self.run_shell('guard_all_paths', home)
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn('outside', result.stderr)
+
+    def test_bad_staged_copy_leaves_the_placed_binary_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp).resolve()
+            root = home / '.local/share/cortexkit/ckdev-flows'
+            dest = root / 'bin/ckdev-basal'
+            dest.parent.mkdir(parents=True)
+            dest.write_bytes(b'previous verified binary')
+            staged = home / 'staged'
+            staged.write_bytes(b'bad binary')
+            staged.with_suffix('.sha256').write_text('0' * 64 + '  staged\n')
+            result = self.run_shell('''guard_all_paths
+verify_hardened() { return 1; }
+place_staged basal "$HOME/staged" "$BIN/ckdev-basal" ck-basal
+''', home)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(dest.read_bytes(), b'previous verified binary')
+
+    def test_config_failure_stops_its_temporary_daemon(self):
+        with tempfile.TemporaryDirectory() as home:
+            result = self.run_shell('''guard_all_paths
+guard_port_free() { :; }; daemon_pid() { :; }
+write_file() { /bin/cat > /dev/null; }
+rig_auth() { :; }
+cmd_start() { touch "$HOME/running"; }
+cmd_stop() { rm -f "$HOME/running"; }
+configure_live() { die "deliberate fixture failure"; }
+cmd_config
+''', home)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse((Path(home) / 'running').exists())
+
     def run_shell(self, code, home):
         return subprocess.run(
             ["/bin/sh", "-c", HELPERS + "\n" + code, str(SCRIPT)],

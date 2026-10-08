@@ -19,7 +19,7 @@ test = false
 [[bin]]
 name = "basal-rig-contract"
 path = "src/bin/basal-rig-contract.rs"
-test = false
+test = true
 
 [dependencies]
 async-trait.workspace = true

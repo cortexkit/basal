@@ -1,6 +1,7 @@
 """Offline placement cards: real strings and SQLite, isolated homes, no builds."""
 
 import json
+from contextlib import closing
 import os
 from pathlib import Path
 import shlex
@@ -22,6 +23,26 @@ HELPERS = (SOURCE.split("# -----------------------------------------------------
 SHA = "a" * 40
 OPTIONS = ["--basal-marker", "new basal", "--basal-control", "basal control",
            "--worker-marker", "new worker", "--worker-control", "worker control"]
+
+
+class StageBinaryChecks(unittest.TestCase):
+    def test_binary_inspection_fails_closed(self):
+        checks = SOURCE.split('[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]')[1]
+        checks = checks.split('\n', 2)[2].split('# ---------------------------------------------------------------- sign')[0]
+        for reader in ['strings', 'nm']:
+            with self.subTest(reader=reader):
+                code = '''set -eu
+TARGET=/unused
+BINARIES="ck-basal ck-basal-worker"
+KILL_HOOK_NEEDLE=BASAL_RIG_KILL_FILE
+say() { :; }
+die() { echo "$*" >&2; exit 1; }
+strings() { :; }
+nm() { :; }
+''' + reader + '() { return 17; }\n' + checks
+                result = subprocess.run(['/bin/sh', '-c', code], text=True,
+                                        capture_output=True, check=False)
+                self.assertNotEqual(result.returncode, 0, reader + ' failure was accepted')
 
 
 class StageSmokeNameChecks(unittest.TestCase):
@@ -127,14 +148,14 @@ else:
     def store(self, version):
         path = self.share / "basal/store.db"
         path.parent.mkdir(exist_ok=True)
-        with sqlite3.connect(path) as db:
+        with closing(sqlite3.connect(path)) as db, db:
             db.execute("CREATE TABLE cortexkit_schema_version(version INTEGER)")
             db.executemany("INSERT INTO cortexkit_schema_version VALUES (?)", [(1,), (version,)])
             db.execute("CREATE TABLE retained(value TEXT)")
             db.execute("INSERT INTO retained VALUES ('unchanged')")
         return path
 
-    def run_card(self, options=None):
+    def run_card(self, options=None, prepared=False):
         code = HELPERS + '''
 SHA=''' + shlex.quote(SHA) + '''
 DIRTY=false
@@ -146,8 +167,10 @@ git() {
   [ "$*" = "-C $ROOT show HEAD:crates/basal-core/src/schema.rs" ] || exit 90
   /bin/cat "$HOME/schema.rs"
 }
-write_card
-'''
+''' + ('''prepare_card "$STAGE_DIR"
+prepare_card() { die "unexpected second validation after publication"; }
+write_card --prepared
+''' if prepared else 'write_card\n')
         result = subprocess.run(["/bin/sh", "-c", code, str(SCRIPT)]
                                 + (OPTIONS if options is None else options),
                                 env=self.env, text=True, capture_output=True, check=False)
@@ -172,6 +195,12 @@ write_card
         expected = (Path(__file__).parent / "fixtures/first_install_card.md").read_text()
         self.assertEqual(card, expected.replace("@STAGE@", str(self.stage)).replace("@SHA@", SHA))
 
+    def test_prepared_card_does_not_repeat_live_validation(self):
+        self.store(7)
+        result, card = self.run_card(prepared=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNotNone(card)
+
     def test_update_counts_controls_and_post_placement_checks(self):
         path = self.store(7)
         before = path.read_bytes()
@@ -184,14 +213,14 @@ write_card
         for claim in [SHA, "same inode", "sign-worker.sh verify", "schema version 7", "tables intact", "flow.list"]:
             self.assertIn(claim, card)
         self.assertEqual(path.read_bytes(), before)
-        with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as db:
+        with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as db:
             self.assertEqual(db.execute("SELECT * FROM retained").fetchall(), [("unchanged",)])
 
     def test_migrates_exactly_when_schema_rises(self):
         path = self.store(6)
         for live in [6, 7, 8]:
             with self.subTest(live=live):
-                with sqlite3.connect(path) as db:
+                with closing(sqlite3.connect(path)) as db, db:
                     db.execute("UPDATE cortexkit_schema_version SET version = ?", (live,))
                 card = self.success()
                 commands = self.commands(card)
@@ -275,7 +304,7 @@ write_card
 
     def test_live_schema_reads_committed_wal(self):
         path = self.store(6)
-        with sqlite3.connect(path) as db:
+        with closing(sqlite3.connect(path)) as db, db:
             db.execute("PRAGMA journal_mode=WAL")
             db.execute("PRAGMA wal_autocheckpoint=0")
             db.execute("INSERT INTO cortexkit_schema_version VALUES (7)")

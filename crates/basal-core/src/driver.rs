@@ -836,15 +836,13 @@ impl Activation<'_> {
         }
         if matches!(call.kind, CallKind::Primitive(Primitive::SinkDigest))
             && args.get("action").is_none_or(Value::is_null)
-        {
-            if let Some(cap) = args
+            && let Some(cap) = args
                 .get("agent")
                 .and_then(Value::as_str)
                 .and_then(|agent| manifest.digest_cap(agent))
-            {
-                args["action"] = serde_json::to_value(cap)
-                    .map_err(|e| Refusal::new(codes::INVALID_ARGUMENTS, e.to_string()))?;
-            }
+        {
+            args["action"] = serde_json::to_value(cap)
+                .map_err(|e| Refusal::new(codes::INVALID_ARGUMENTS, e.to_string()))?;
         }
         authorize::check(
             manifest,

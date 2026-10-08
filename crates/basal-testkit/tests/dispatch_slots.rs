@@ -12,18 +12,8 @@ use std::time::{Duration, Instant};
 use basal_core::channel::WorkerChannel;
 use basal_core::{ActivationEnd, Clock, Config, NoHooks, RunState, Runtime};
 use basal_testkit::harness::{World, wait_until};
-use common::{config, finish, result};
+use common::{admit_trigger, config, finish, result};
 use serde_json::json;
-
-fn admit_trigger(rt: &Runtime, world: &World, script: &str, trigger: &str) -> String {
-    let mut spec = world.spec(rt, script).expect("approve");
-    spec.trigger_id = trigger.to_owned();
-    rt.admit(&spec)
-        .expect("admit")
-        .run_id()
-        .expect("admitted")
-        .to_owned()
-}
 
 const T0: i64 = 1_798_761_600_000;
 // A driver that is merely slow to finish must not fail on a loaded host.
@@ -219,12 +209,10 @@ fn a_stuck_driver_wait_deadline_releases_and_reaps_its_worker() {
         || driver.is_finished(),
     )
     .expect("driver cleanup");
-    let (_, mut worker) = driver.join().expect("driver thread");
-    worker.kill();
-    assert!(
-        worker.exited(Duration::from_secs(3)),
-        "worker was not reaped"
-    );
+    let (_, worker) = driver.join().expect("driver thread");
+    let pid = worker.pid();
+    drop(worker);
+    basal_testkit::process::assert_reaped(pid);
     rt.quiesce();
     let error = waited
         .expect("the driver wait did not fail within five seconds")

@@ -400,7 +400,7 @@ new = "  if (true || codemode) {\n    api.sh"
 [[control]]
 id = "native-bridge-accepts-sh-in-the-flow-profile"
 guards = "native bridge accepts sh in the flow profile"
-test_file = "crates/basal-worker/src/engine.rs"
+test_file = "crates/basal-worker/src/engine/tests.rs"
 runner = "cargo"
 package = "basal-worker"
 target = "--lib"
@@ -1059,8 +1059,8 @@ new = "if true || self.run.broken + 1 >= self.rt.config.max_broken_activations {
 
 [[control]]
 id = "install-gate-an-activation-does-not-ask-core-first"
-hub = "Every resumed activation refreshes core's install status and scope selector, asserted by install-gate and scope recovery tests"
-hub_targets = ["flow_scope_recovery", "flow_scopes"]
+hub = "Every resumed activation revalidates the frozen install version's core status, scope selector and current package membership before running"
+hub_targets = ["flow_scope_recovery", "flow_scopes", "package_instances"]
 guards = "install gate: an activation does not ask core first"
 test_file = "crates/basal-testkit/tests/install_gate.rs"
 runner = "cargo"
@@ -2291,8 +2291,8 @@ new = "if false && old.state == ScheduleState::Active {"
 
 [[control]]
 id = "a-disabled-schedule-ticks"
-hub = "A disabled schedule plans no fires, asserted by scheduler lifecycle and installed-flow disable/enable tests"
-hub_targets = ["schedule_flows"]
+hub = "An inactive schedule, disabled by the operator or paused for removed package membership, plans no fires"
+hub_targets = ["schedule_flows", "package_instances"]
 guards = "a disabled schedule ticks"
 test_file = "crates/basal-testkit/tests/schedule_tick.rs"
 runner = "cargo"
@@ -2623,8 +2623,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-module/src/ops.rs"
-old = "if !self.owns(owner, &f.flow_id)? {"
-new = "if p.flow_ids.is_none() && !self.owns(owner, &f.flow_id)? {"
+old = "&& !self.owns(owner, &f.flow_id)?"
+new = "&& p.flow_ids.is_none() && !self.owns(owner, &f.flow_id)?"
 
 [[control]]
 id = "flow-list-state-diverges-from-flow-health"
@@ -6023,7 +6023,7 @@ old = "                    == Some(CallClass::Query)"
 new = "                    != None // NON-VACUITY BREAK"
 
 # Test fixture: 1 additional control
-## Flow scopes: 24 additional controls, including uncaught rejection identity.
+## Flow scope controls, including uncaught rejection identity.
 [[control]]
 id = "flow-model-sessions-collapse-to-the-flow"
 guards = "each model call has its own scoped conversation, preserved on recovery"
@@ -7189,6 +7189,8 @@ build_timeout_s = 3600
 
 [[control]]
 id = "production-worker-inherits-parent-privacy-identity"
+hub = "Production workers disclaim the module's privacy identity, asserted by the live responsible-process probe and production trampoline configuration"
+hub_targets = ["privacy_launch"]
 guards = "production workers must be their own macOS responsible processes, not borrow the module privacy grants"
 file = "crates/basal-module/src/pool.rs"
 old = "WorkerLaunch::Disclaimed { trampoline: exe },"
@@ -7199,7 +7201,7 @@ runner = "cargo"
 package = "basal-module"
 target = "--test e2e"
 expect_red = ["privacy::production_worker_is_its_own_responsible_process"]
-only = true
+only = false
 platforms = ["macos"]
 timeout_s = 600
 build_timeout_s = 3600
@@ -7262,6 +7264,98 @@ runner = "cargo"
 package = "basal-host"
 target = "--lib"
 expect_red = ["transport::tests::stale_handle_does_not_leave_a_scope_tombstone"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "stage-strings-inspection-fails-open"
+guards = "failed strings inspection is never evidence that a production binary lacks the kill hook"
+file = "script/stage.sh"
+old = 'hook_table=$(strings "$TARGET/release/ck-basal") || die "cannot inspect the built ck-basal; nothing staged"'
+new = 'hook_table=$(strings "$TARGET/release/ck-basal" || true) # NON-VACUITY BREAK'
+edits = []
+test_file = "script/tests/stage_card.py"
+runner = "command"
+command = ["python3", "-c", 'import subprocess,sys; print("mutation diff stat:\n" + subprocess.run(["git","diff","--stat"], capture_output=True,text=True,check=True).stdout, flush=True); sys.exit(subprocess.run(["python3","-m","unittest",sys.argv[1]]).returncode)', "{test}"]
+test_count_pattern = "Ran {count} test"
+expect_red = ["script.tests.stage_card.StageBinaryChecks.test_binary_inspection_fails_closed"]
+only = false
+timeout_s = 120
+build_timeout_s = 1800
+
+
+[[control]]
+id = "stage-symbol-inspection-fails-open"
+guards = "failed nm inspection is never evidence that a production binary has no debug map"
+file = "script/stage.sh"
+old = 'symbols=$(nm -a "$TARGET/release/$bin")'
+new = 'symbols=$(nm -a "$TARGET/release/$bin" || true) # NON-VACUITY BREAK'
+edits = []
+test_file = "script/tests/stage_card.py"
+runner = "command"
+command = ["python3", "-c", 'import subprocess,sys; print("mutation diff stat:\n" + subprocess.run(["git","diff","--stat"], capture_output=True,text=True,check=True).stdout, flush=True); sys.exit(subprocess.run(["python3","-m","unittest",sys.argv[1]]).returncode)', "{test}"]
+test_count_pattern = "Ran {count} test"
+expect_red = ["script.tests.stage_card.StageBinaryChecks.test_binary_inspection_fails_closed"]
+only = false
+timeout_s = 120
+build_timeout_s = 1800
+
+
+[[control]]
+id = "rig-dangling-symlinks-escape-the-root"
+guards = "a dangling final symlink is resolved before allowing writes under the rig root"
+file = "script/flows-rig.sh"
+old = "print(Path(sys.argv[1]).resolve())"
+new = "print(Path(sys.argv[1]).absolute()) # NON-VACUITY BREAK"
+edits = []
+test_file = "script/tests/flows_rig.py"
+runner = "command"
+command = ["python3", "-c", 'import subprocess,sys; print("mutation diff stat:\n" + subprocess.run(["git","diff","--stat"], capture_output=True,text=True,check=True).stdout, flush=True); sys.exit(subprocess.run(["python3","-m","unittest",sys.argv[1]]).returncode)', "{test}"]
+test_count_pattern = "Ran {count} test"
+expect_red = ["script.tests.flows_rig.RigChecks.test_dangling_symlink_cannot_redirect_a_rig_write"]
+only = false
+timeout_s = 120
+build_timeout_s = 1800
+
+
+[[control]]
+id = "rig-required-store-read-is-treated-as-empty"
+guards = "required journal and receipt reads cannot turn storage errors into evidence of absence"
+file = "crates/basal-rig/src/bin/basal-rig-contract.rs"
+old = 'case.check(what, false, json!({"error": error}));'
+new = "let _ = (case, what, error); // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-rig/src/bin/basal-rig-contract/tests.rs"
+runner = "cargo"
+package = "basal-rig"
+target = "--bin basal-rig-contract"
+expect_red = ["tests::failed_store_read_is_not_empty_evidence"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "rig-status-receipts-ignore-agent-and-revision"
+guards = "status receipts must match the exact agent and requested revision journaled by basal"
+file = "crates/basal-rig/src/bin/basal-rig-contract.rs"
+old = """
+&& r.key
+                                == json!([
+                                    "sink.status",
+                                    flow.id,
+                                    request["agent"],
+                                    request["revision"]
+                                ])"""
+new = '&& r.key[0] == "sink.status" // NON-VACUITY BREAK'
+edits = []
+test_file = "crates/basal-rig/src/bin/basal-rig-contract/tests.rs"
+runner = "cargo"
+package = "basal-rig"
+target = "--bin basal-rig-contract"
+expect_red = ["tests::status_receipts_must_match_the_agent_and_revision"]
 only = true
 timeout_s = 600
 build_timeout_s = 3600
@@ -7484,6 +7578,23 @@ runner = "cargo"
 package = "basal-host"
 target = "--test host_boundary_regressions"
 expect_red = ["stable_agent_id_wins_over_a_display_name_even_on_a_later_page"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "rig-model-abort-drops-unreached-case-reports"
+guards = "a model-suite abort records every named case and retains already completed evidence"
+file = "crates/basal-rig/src/bin/basal-rig-contract.rs"
+old = "if !cases.iter().any(|case| case.name == name) {"
+new = "if false && !cases.iter().any(|case| case.name == name) { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-rig/src/bin/basal-rig-contract/tests.rs"
+runner = "cargo"
+package = "basal-rig"
+target = "--bin basal-rig-contract"
+expect_red = ["tests::model_abort_records_every_named_case_without_losing_completed_evidence"]
 only = true
 timeout_s = 600
 build_timeout_s = 3600

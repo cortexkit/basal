@@ -286,7 +286,7 @@ fn main() {
         let mut commit = Vec::new();
         for fullfsync in [false, true] {
             eprintln!("commit cost, fullfsync {fullfsync}");
-            commit.push(commit_cost(fullfsync, 200)?);
+            commit.push(commit_cost(fullfsync, args.samples)?);
         }
         let mut replays = Vec::new();
         for fullfsync in [false, true] {
@@ -298,7 +298,7 @@ fn main() {
         let mut calls = Vec::new();
         for fullfsync in [false, true] {
             eprintln!("per call, fullfsync {fullfsync}");
-            calls.push(per_call(fullfsync, 200, 10, &args.worker)?);
+            calls.push(per_call(fullfsync, args.samples, 10, &args.worker)?);
         }
         Ok(json!({
             "worker": args.worker,

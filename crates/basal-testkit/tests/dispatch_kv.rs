@@ -6,21 +6,11 @@ mod common;
 
 use std::sync::Arc;
 
-use basal_core::{Config, KvLimits, NoHooks, RunState, Runtime};
+use basal_core::{Config, KvLimits, NoHooks, RunState};
 use basal_proto::Settlement;
 use basal_testkit::harness::{World, run_with_cuts};
-use common::{config, finish, result};
+use common::{admit_trigger, config, finish, result};
 use serde_json::json;
-
-fn admit_trigger(rt: &Runtime, world: &World, script: &str, trigger: &str) -> String {
-    let mut spec = world.spec(rt, script).expect("approve");
-    spec.trigger_id = trigger.to_owned();
-    rt.admit(&spec)
-        .expect("admit")
-        .run_id()
-        .expect("admitted")
-        .to_owned()
-}
 
 #[test]
 fn kv_writes_survive_a_later_failure_of_their_run() {

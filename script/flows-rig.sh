@@ -92,8 +92,9 @@
 # directory script/stage.sh wrote, byte for byte and under their production
 # identifiers, instead of the rig's own build of them; every other binary is
 # the rig's build. The stage must be of the commit the rig built basal at.
-# A staged ck-basal has neither rig-only switch, so test reports the crash and
-# unscoped-send cases as not run; a plain place puts the rig's build back.
+# A staged ck-basal has neither rig-only switch, so test reports the sink crash,
+# pre-send route checkpoint, accepted model crash and unscoped-send cases as
+# not run; a plain place puts the rig's build back.
 #
 # What the rig isolates:
 #   - Everything lives under ~/.local/share/cortexkit/ckdev-flows/: src/ (one
@@ -193,23 +194,18 @@ usage() {
 # The physical form of a path, following symlinks in every existing parent,
 # so a symlink inside the rig cannot point a write at production.
 physical() {
-  p=$1
-  rest=""
-  while [ ! -e "$p" ] && [ "$p" != "/" ]; do
-    rest="/$(basename "$p")$rest"
-    p=$(dirname "$p")
-  done
-  if [ -d "$p" ]; then
-    printf '%s%s\n' "$(cd -P "$p" && pwd -P)" "$rest"
-  else
-    printf '%s/%s%s\n' "$(cd -P "$(dirname "$p")" && pwd -P)" "$(basename "$p")" "$rest"
-  fi
+  # Resolve even a dangling final link: a later write could create its target.
+  # Python also follows chains and refuses loops instead of silently walking
+  # back to a lexical parent as the shell's -e test does for a dangling link.
+  python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve())' "$1" \
+    || die "cannot resolve $1"
 }
 
 # Refuse a path under ~/.local/share/cortexkit/ that is not inside the rig,
 # both as written and after resolving symlinks.
 guard_path() {
-  for form in "$1" "$(physical "$1")"; do
+  resolved=$(physical "$1") || exit 1
+  for form in "$1" "$resolved"; do
     case "$form" in
       "$RIG" | "$RIG"/* | "$RIG_PHYSICAL" | "$RIG_PHYSICAL"/*) ;;
       "$CK_SHARE" | "$CK_SHARE"/* | "$CK_SHARE_PHYSICAL" | "$CK_SHARE_PHYSICAL"/*)
@@ -285,7 +281,7 @@ write_file() {
   mkdir -p "$(dirname "$dest")"
   tmp=$(mktemp "$(dirname "$dest")/.write.XXXXXX")
   cat > "$tmp"
-  mv -f "$tmp" "$dest"
+    mv -f "$tmp" "$dest"
 }
 
 # PATH with every entry under the CortexKit data or config tree removed, so a
@@ -494,9 +490,7 @@ cmd_build() {
   run rm -f "$STACK"
 
   stack=""
-  for line in $(repos | tr '\t' '|'); do
-    name=${line%%|*}
-    source=${line#*|}
+  while IFS='	' read -r name source; do
     case "$name" in
       subconscious) rev=$subc_rev ;;
       commons) rev=$commons_rev ;;
@@ -514,7 +508,9 @@ cmd_build() {
     clone_at "$name" "$source" "$sha"
     stack="$stack$name	$source	$rev	$sha
 "
-  done
+  done <<EOF_REPOS
+$(repos)
+EOF_REPOS
 
   cargo_build subconscious "" -p subc-core --bin ck-subc --bin ck
   cargo_build broca "" -p broca-module-serve --bin ck-broca
@@ -546,8 +542,7 @@ cmd_build() {
   # against a sibling checkout at an earlier revision than the rig's. The
   # change is saved beside the clone, recorded in the stack, and undone.
   locks=""
-  for line in $(repos | tr '\t' '|'); do
-    name=${line%%|*}
+  while IFS='	' read -r name source; do
     [ "$DRY" = 0 ] || continue
     changed=$(git -C "$SRC/$name" status --porcelain --untracked-files=no)
     [ -n "$changed" ] || continue
@@ -564,7 +559,9 @@ cmd_build() {
     esac
     git -C "$SRC/$name" status --short --untracked-files=no >&2
     die "$name: the build changed tracked files in $SRC/$name"
-  done
+  done <<EOF_REPOS
+$(repos)
+EOF_REPOS
   stack=$(printf '%s' "$stack" | while IFS='	' read -r n s r c; do
     # Leading-paren patterns: /bin/sh's bash 3.2 misparses a bare pattern's
     # closing paren inside a command substitution.
@@ -673,11 +670,7 @@ cmd_place() {
     fi
   fi
   run mkdir -p "$BIN"
-  for line in $(binaries | tr '\t' '|'); do
-    name=$(printf '%s' "$line" | cut -d'|' -f1)
-    repo=$(printf '%s' "$line" | cut -d'|' -f2)
-    cargo_bin=$(printf '%s' "$line" | cut -d'|' -f3)
-    file=$(printf '%s' "$line" | cut -d'|' -f4)
+  while IFS='	' read -r name repo cargo_bin file; do
     case "$name" in
       basal | basal-worker)
         if [ -n "$stage" ]; then
@@ -686,7 +679,9 @@ cmd_place() {
         fi ;;
     esac
     place_one "$name" "$TARGETS/$repo/release/$cargo_bin" "$BIN/$file"
-  done
+  done <<EOF_BINARIES
+$(binaries)
+EOF_BINARIES
   run ln -sf ckdev-auth "$BIN/ck-auth"
   if [ -n "$stage" ]; then
     printf 'staged\t%s\t%s\n' "$stage" "$revision" | write_file "$BASAL_SOURCE"
@@ -765,17 +760,19 @@ place_staged() {
   tmp=$(mktemp "$BIN/.place.XXXXXX")
   cp "$staged" "$tmp"
   chmod 0755 "$tmp"
-  mv -f "$tmp" "$dest"
   want=$(awk '{ print $1 }' "$staged.sha256")
-  got=$(shasum -a 256 "$dest" | awk '{ print $1 }')
-  [ "$got" = "$want" ] || die "$name: $dest is $got, but the stage's sidecar says $want"
-  verify_hardened "$dest" "$identifier" || die "$name: $dest fails the signing policy"
+  got=$(shasum -a 256 "$tmp" | awk '{ print $1 }')
+  if [ "$got" != "$want" ] || ! verify_hardened "$tmp" "$identifier"; then
+    rm -f "$tmp"
+    die "$name: staged copy fails its digest or signing policy"
+  fi
+  mv -f "$tmp" "$dest"
   say "placed $dest from the stage ($identifier, sha256 $got)"
 }
 
 # ---------------------------------------------------------------- config
 
-cmd_config() {
+cmd_config() (
   [ $# -eq 0 ] || usage
   guard_port_free
   [ -z "$(daemon_pid)" ] || die "refusing: the rig daemon is running; stop it first"
@@ -877,6 +874,8 @@ EOF
   if [ "$DRY" = 1 ]; then
     say "+ start the temporary rig for authenticated vault grants and its served catalog"
   else
+    trap 'cmd_stop' EXIT
+    trap 'exit 1' INT TERM
     cmd_start
   fi
   # --subc requires a live connection file for grants. Bootstrap is the one
@@ -891,7 +890,7 @@ EOF
   fi
   [ "$config_status" = 0 ] || die "cannot configure the rig's vault grants and served Luna pin"
   say "configured; next: $0 start"
-}
+)
 
 configure_live() {
   # Grants are vault records, not subc JSON fields. The CLI refuses duplicate
@@ -1042,7 +1041,8 @@ cmd_start() {
   done
   check_daemon_identity "$pid"
   # Give the supervisor a moment to spawn and register every module.
-  sleep 10
+  MODULE_REGISTRATION_PAUSE_S=10
+  sleep "$MODULE_REGISTRATION_PAUSE_S"
   rig_ck module list
   say "started (pid $pid, daemon output: $log); check it with: $0 status"
 }
@@ -1286,26 +1286,24 @@ write_manifest() {
   # Each repository's commit is read again from its clone, so the manifest
   # records what is checked out there now, and must agree with the build.
   repos_tsv=""
-  for line in $(tail -n +2 "$STACK" | tr '\t' '|'); do
-    name=$(printf '%s' "$line" | cut -d'|' -f1)
-    commit=$(printf '%s' "$line" | cut -d'|' -f4)
+  while IFS='	' read -r name source requested commit lock; do
     head=$(git -C "$SRC/$name" rev-parse HEAD)
     [ "$head" = "$commit" ] || die "$name: the clone is at $head, but $commit was built"
-    lock=$(printf '%s' "$line" | cut -d'|' -f5)
-    repos_tsv="$repos_tsv$(printf '%s' "$line" | cut -d'|' -f1-4 | tr '|' '\t')	${lock:-committed}
+    repos_tsv="$repos_tsv$name	$source	$requested	$commit	${lock:-committed}
 "
-  done
+  done <<EOF_STACK
+$(tail -n +2 "$STACK")
+EOF_STACK
   bins_tsv=""
-  for line in $(binaries | tr '\t' '|'); do
-    name=$(printf '%s' "$line" | cut -d'|' -f1)
-    repo=$(printf '%s' "$line" | cut -d'|' -f2)
-    file=$(printf '%s' "$line" | cut -d'|' -f4)
+  while IFS='	' read -r name repo cargo_bin file; do
     path="$BIN/$file"
     [ -f "$path" ] || die "$path is not placed"
     sum=$(shasum -a 256 "$path" | awk '{ print $1 }')
     bins_tsv="$bins_tsv$name	$repo	$path	$sum	$(identifier_of "$path")
 "
-  done
+  done <<EOF_BINARIES
+$(binaries)
+EOF_BINARIES
   contract_sum=""
   if [ -f "$CONTRACT" ]; then
     contract_sum=$(shasum -a 256 "$CONTRACT" | awk '{ print $1 }')
@@ -1375,7 +1373,7 @@ PY
 # it is not running, write results/<stamp>/stack.json, run the suite with its
 # output in contract.log and its results in contract.json beside it, and stop
 # the rig again only if this command started it.
-cmd_test() {
+cmd_test() (
   models=0
   if [ $# -eq 1 ] && [ "$1" = --models ]; then models=1; else [ $# -eq 0 ] || usage; fi
   stamp=$(date -u +%Y%m%dT%H%M%SZ)
@@ -1403,6 +1401,8 @@ cmd_test() {
   started=0
   pid=$(daemon_pid)
   if [ -z "$pid" ]; then
+    trap 'rm -f "$KILL_FILE" "$UNSCOPED_FILE"; cmd_stop' EXIT
+    trap 'exit 1' INT TERM
     cmd_start
     started=1
   else
@@ -1417,7 +1417,7 @@ cmd_test() {
   # only way the flag is ever passed: a rig build always runs the case.
   if [ "$(basal_mode)" = staged ]; then
     set -- --no-kill-hook
-    say "ck-basal is a staged production build without rig-only switches; crash and unscoped-send cases will be reported as not run"
+    say "ck-basal is a staged production build without rig-only switches; sink crash, pre-send route checkpoint, accepted model crash and unscoped-send cases will be reported as not run"
   else
     set --
   fi
@@ -1443,7 +1443,7 @@ cmd_test() {
   fi
   [ "$status" = 0 ] || die "the contract suite failed (exit $status); results in $dir"
   say "the contract suite passed; results in $dir"
-}
+)
 
 # ensure_project <stamp>: create the run's project in the rig's entorhinal,
 # so a fresh rig needs no manual step. The suite registers a new head agent

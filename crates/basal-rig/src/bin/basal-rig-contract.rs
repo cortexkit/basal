@@ -819,6 +819,16 @@ fn digest_calls(calls: &[Call]) -> Vec<&Call> {
         .collect()
 }
 
+fn rows<T>(case: &mut Case, what: &str, result: Result<Vec<T>, String>) -> Vec<T> {
+    match result {
+        Ok(rows) => rows,
+        Err(error) => {
+            case.check(what, false, json!({"error": error}));
+            Vec::new()
+        }
+    }
+}
+
 /// Checks that each fulfilled sink write in basal's journal has exactly one
 /// receipt in core, and that core holds no receipt basal did not journal.
 fn check_receipts(case: &mut Case, flow: &Flow, calls: &[Call], receipts: &[Receipt]) {
@@ -836,11 +846,20 @@ fn check_receipts(case: &mut Case, flow: &Flow, calls: &[Call], receipts: &[Rece
                 if call.kind_code == KIND_SINK_DIGEST {
                     r.key == json!(["sink.digest", flow.id, call.run_id, call.position])
                 } else {
-                    r.key[0] == "sink.status"
-                        && call.value.as_ref().is_some_and(|v| {
-                            v["accepted_revision"].is_null()
-                                || r.reply["accepted_revision"] == v["accepted_revision"]
-                        })
+                    call.request.as_ref().is_some_and(|request| {
+                        request["agent"].is_string()
+                            && request["revision"].is_i64()
+                            && r.key
+                                == json!([
+                                    "sink.status",
+                                    flow.id,
+                                    request["agent"],
+                                    request["revision"]
+                                ])
+                            && call.value.as_ref().is_some_and(|v| {
+                                r.reply["accepted_revision"] == v["accepted_revision"]
+                            })
+                    })
                 }
             })
             .collect();
@@ -916,7 +935,7 @@ async fn sinks_and_facts(rig: &Rig, flow: &Flow, agent: &Agent, since: i64) -> V
         .into_iter()
         .filter(|f| f["sourceKey"] == format!("flow:{}", flow.id))
         .collect();
-    let calls = rig.basal.calls(&flow.id).unwrap_or_default();
+    let calls = rows(&mut sinks, "read basal journal", rig.basal.calls(&flow.id));
     let digests = digest_calls(&calls);
     sinks.check(
         "wake.fires_list shows one fire per digest write, the first one carrying the run's fire id",
@@ -975,7 +994,11 @@ async fn sinks_and_facts(rig: &Rig, flow: &Flow, agent: &Agent, since: i64) -> V
             );
         }
     }
-    let receipts = rig.core.receipts(&flow.id).unwrap_or_default();
+    let receipts = rows(
+        &mut sinks,
+        "read core receipts",
+        rig.core.receipts(&flow.id),
+    );
     sinks.record(
         "receipts",
         json!(
@@ -1087,13 +1110,13 @@ async fn revoked(rig: &Rig, flow: &Flow) -> Case {
         json!({ "state": run.state, "error": run.error }),
     );
     let activations = rig.basal.activations(&run.run_id);
-    let calls = rig.basal.calls(&flow.id).unwrap_or_default();
+    let calls = rows(&mut case, "read basal journal", rig.basal.calls(&flow.id));
     case.check(
         "the run was never activated: no activation recorded and no call journaled",
         activations == Ok(0) && calls.is_empty(),
         json!({ "activations": activations, "calls": calls.len() }),
     );
-    let receipts = rig.core.receipts(&flow.id).unwrap_or_default();
+    let receipts = rows(&mut case, "read core receipts", rig.core.receipts(&flow.id));
     case.check(
         "core recorded no receipt for the revoked flow",
         receipts.is_empty(),
@@ -1603,6 +1626,31 @@ async fn models(
     tag: &str,
     cases: &mut Vec<Case>,
 ) -> Result<(), String> {
+    let result = models_inner(rig, args, agent, tag, cases).await;
+    if let Err(error) = &result {
+        report_model_abort(cases, error);
+    }
+    result
+}
+
+fn report_model_abort(cases: &mut Vec<Case>, error: &str) {
+    for name in MODEL_CASES {
+        if !cases.iter().any(|case| case.name == name) {
+            cases.push(Case::skipped(
+                name,
+                &format!("model suite aborted: {error}"),
+            ));
+        }
+    }
+}
+
+async fn models_inner(
+    rig: &Rig,
+    args: &Args,
+    agent: &Agent,
+    tag: &str,
+    cases: &mut Vec<Case>,
+) -> Result<(), String> {
     if !args.models {
         for name in MODEL_CASES {
             cases.push(Case::skipped(
@@ -1865,7 +1913,13 @@ async fn suite(
     reset(&rig, &mut setup).await;
     let agent = register_agent(&rig, &mut setup, &tag, &machine_id, &args.project_id).await;
     cases.push(setup);
-    let agent = agent?;
+    let agent = match agent {
+        Ok(agent) => agent,
+        Err(error) => {
+            rig.client.close().await;
+            return Err(error);
+        }
+    };
     summary.insert(
         "agent".into(),
         json!({ "name": agent.name, "agent_id": agent.id, "session": agent.session }),
@@ -1964,15 +2018,33 @@ async fn suite(
         "model_token_allowance".into(),
         json!(if args.models { 4112 } else { 0 }),
     );
-    models(&rig, args, &agent, &tag, cases).await?;
+    let model_result = models(&rig, args, &agent, &tag, cases).await;
 
     let mut cleanup = Case::new("cleanup");
-    for flow in [&sinks_flow, &scope_flow, &crash_flow, &relayed_flow] {
-        let entry = rig.health(&flow.id).await;
+    let mut cleanup_ids = vec![
+        sinks_flow.id.clone(),
+        scope_flow.id.clone(),
+        crash_flow.id.clone(),
+        relayed_flow.id.clone(),
+        declined_flow.id.clone(),
+    ];
+    for kind in ["first", "classify", "cap", "crash", "unscoped"] {
+        cleanup_ids.push(format!("rig-model-{kind}-{tag}"));
+    }
+    for flow_id in cleanup_ids {
+        if rig.basal.flow_enabled(&flow_id) == Ok(Some(true)) {
+            let disabled = rig.disable(&flow_id).await;
+            cleanup.check(
+                &format!("disable {flow_id}"),
+                disabled.is_ok(),
+                evidence(&disabled),
+            );
+        }
+        let enabled = rig.basal.flow_enabled(&flow_id);
         cleanup.check(
-            &format!("{} is left disabled", flow.id),
-            entry.as_ref().is_none_or(|e| e["state"] != "enabled"),
-            entry.unwrap_or(Value::Null),
+            &format!("{flow_id} is left disabled or was never installed"),
+            enabled.as_ref().is_ok_and(|enabled| *enabled != Some(true)),
+            json!(enabled),
         );
     }
     // The revoked flow is scheduled every minute, and the later cases took
@@ -1995,7 +2067,7 @@ async fn suite(
     );
     cases.push(cleanup);
     rig.client.close().await;
-    Ok(())
+    model_result
 }
 
 fn main() -> std::process::ExitCode {
@@ -2083,3 +2155,7 @@ fn main() -> std::process::ExitCode {
         std::process::ExitCode::FAILURE
     }
 }
+
+#[cfg(test)]
+#[path = "basal-rig-contract/tests.rs"]
+mod tests;

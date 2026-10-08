@@ -24,10 +24,12 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: never
-  CK_MUTATE_REV: 46cc166b0df2edcfd14b3eb54ed6eeac588fed69
+  PYTHONDONTWRITEBYTECODE: 1
+  CK_MUTATE_REV: 0097d269a4c409db13306a11fc2c504057629791
 
 jobs:
   checks:
+    if: github.event_name != 'schedule'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -41,7 +43,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-${{ runner.arch }}-cargo-checks-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-checks-${{ hashFiles('Cargo.lock') }}
           restore-keys: ${{ runner.os }}-${{ runner.arch }}-cargo-checks-
       - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         id: mutate-cache
@@ -55,10 +57,13 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo clippy --workspace --all-targets --features basal-module/rig-kill-hook -- -D warnings
       - run: cargo test --workspace --locked
+      - run: cargo test --workspace --locked --features basal-module/rig-kill-hook
       - name: Check shell scripts
         run: |
-          command -v shellcheck || brew install shellcheck
-          shellcheck -x script/*.sh
+          curl --fail --location --retry 3 https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.darwin.x86_64.tar.xz -o "$RUNNER_TEMP/shellcheck.tar.xz"
+          tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP"
+          "$RUNNER_TEMP/shellcheck-v0.11.0/shellcheck" --version
+          "$RUNNER_TEMP/shellcheck-v0.11.0/shellcheck" -x script/*.sh
       - name: Check offline flow rig contracts
         run: python3 -m unittest script.tests.flows_rig -v
       - name: Check Cargo path dependency boundary
@@ -96,7 +101,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-${{ runner.arch }}-cargo-checks-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-checks-${{ hashFiles('Cargo.lock') }}
           restore-keys: ${{ runner.os }}-${{ runner.arch }}-cargo-checks-
       - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         id: mutate-cache
@@ -120,8 +125,12 @@ jobs:
   # On a push to main: the full catalogue, each row against its own target.
   # Nightly or on demand: the same catalogue with `--broad`.
   mutations-main:
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: always() && ((github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.checks.result == 'success') || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && needs.checks.result == 'success'))
     needs: checks
+    # Scheduled breadth runs deliberately skip the redundant checks job.
+    # A push still requires checks to succeed before replaying mutations.
+    # always() lets the scheduled run proceed past that skipped dependency.
+    # The event filter above remains the boundary for unrelated events.
     runs-on: macos-latest
     strategy:
       fail-fast: false
@@ -142,7 +151,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-${{ runner.arch }}-cargo-checks-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-checks-${{ hashFiles('Cargo.lock') }}
           restore-keys: ${{ runner.os }}-${{ runner.arch }}-cargo-checks-
       - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         id: mutate-cache
@@ -156,7 +165,7 @@ jobs:
         run: |
           mkdir -p target/mutations
           rm -f target/mutations/all.json
-          env -u BASAL_WORKER_BIN -u BASAL_CUT_EXHAUSTIVE ckdev-mutate run --all --shard ${{ matrix.shard }}/5 ${BROAD:+--broad} --report target/mutations/all.json
+          env -u BASAL_WORKER_BIN -u BASAL_CUT_EXHAUSTIVE ckdev-mutate run --all --shard ${{ matrix.shard }}/${{ strategy.job-total }} ${BROAD:+--broad} --report target/mutations/all.json
         env:
           BROAD: ${{ github.event_name != 'push' && 'true' || '' }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -164,3 +173,14 @@ jobs:
         with:
           name: mutations-${{ github.event_name == 'push' && 'main' || 'broad' }}-${{ matrix.shard }}
           path: target/mutations/all.json
+
+  minimum-rust:
+    if: github.event_name != 'schedule'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Build every target with the declared minimum Rust
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal
+          cargo +1.88.0 check --workspace --all-targets --locked
+          cargo +1.88.0 check --workspace --all-targets --locked --features basal-module/rig-kill-hook
