@@ -437,6 +437,14 @@ fn h_value(_: &JOBOBJECT_EXTENDED_LIMIT_INFORMATION) -> &'static str {
     "parent-owned non-inherited handle"
 }
 fn grant_image(path: &str, sid: PSID) -> Result<()> {
+    grant_file(
+        path,
+        sid,
+        FILE_GENERIC_READ | FILE_GENERIC_EXECUTE,
+        SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+    )
+}
+fn grant_file(path: &str, sid: PSID, access: u32, inheritance: u32) -> Result<()> {
     unsafe {
         let mut old = null_mut();
         let mut descriptor = null_mut();
@@ -454,9 +462,9 @@ fn grant_image(path: &str, sid: PSID) -> Result<()> {
             return Err(format!("GetNamedSecurityInfoW: {e}"));
         }
         let ace = EXPLICIT_ACCESS_W {
-            grfAccessPermissions: FILE_GENERIC_READ | FILE_GENERIC_EXECUTE,
+            grfAccessPermissions: access,
             grfAccessMode: GRANT_ACCESS,
-            grfInheritance: SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+            grfInheritance: inheritance,
             Trustee: TRUSTEE_W {
                 pMultipleTrustee: null_mut(),
                 MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
@@ -523,6 +531,69 @@ fn fixture() -> Result<(Handle, Handle)> {
             "CreateEventW(fixture)",
         )?;
         Ok((section, event))
+    }
+}
+
+struct CwdGrant {
+    path: Vec<u16>,
+    original: Vec<usize>,
+}
+impl CwdGrant {
+    unsafe fn new(sid: PSID) -> Result<Self> {
+        unsafe {
+            let path = wide(
+                &std::env::current_dir()
+                    .map_err(|e| e.to_string())?
+                    .to_string_lossy(),
+            );
+            let mut needed = 0;
+            GetFileSecurityW(
+                path.as_ptr(),
+                DACL_SECURITY_INFORMATION,
+                null_mut(),
+                0,
+                &mut needed,
+            );
+            if needed == 0 {
+                return Err(last("GetFileSecurityW(cwd grant size)"));
+            }
+            let mut original = vec![0usize; (needed as usize).div_ceil(size_of::<usize>())];
+            check(
+                GetFileSecurityW(
+                    path.as_ptr(),
+                    DACL_SECURITY_INFORMATION,
+                    original.as_mut_ptr().cast(),
+                    needed,
+                    &mut needed,
+                ),
+                "GetFileSecurityW(cwd grant)",
+            )?;
+            let grant = Self { path, original };
+            // Process Monitor records ACCESS DENIED when the LPAC loader opens
+            // the inherited cwd for traverse/synchronize. Grant exactly those
+            // rights on that directory, without inheritance or ancestor grants.
+            grant_file(
+                &String::from_utf16_lossy(&grant.path[..grant.path.len() - 1]),
+                sid,
+                FILE_TRAVERSE | SYNCHRONIZE,
+                NO_INHERITANCE,
+            )?;
+            Ok(grant)
+        }
+    }
+}
+impl Drop for CwdGrant {
+    fn drop(&mut self) {
+        unsafe {
+            if SetFileSecurityW(
+                self.path.as_ptr(),
+                DACL_SECURITY_INFORMATION,
+                self.original.as_ptr().cast_mut().cast(),
+            ) == 0
+            {
+                std::process::abort();
+            }
+        }
     }
 }
 fn add_directory(path: &str, targets: &mut Vec<Target>, enumeration: &mut Vec<Value>) {
@@ -677,12 +748,21 @@ fn launch_variant(
 ) -> Result<Value> {
     unsafe {
         let full = input.mode == "full";
-        let context_matched =
-            sequence == "chrome-context-control" || sequence == "lpac-context-control";
-        let chrome_token =
-            sequence == "chrome-default-dacl-control" || sequence == "chrome-context-control";
-        let same_primary =
-            sequence == "post-load-primary-control" || sequence == "lpac-context-control";
+        let context_matched = sequence.contains("context");
+        let chrome_token = sequence == "chrome-default-dacl-control"
+            || sequence == "chrome-context-control"
+            || sequence == "chrome-detached-control"
+            || sequence == "chrome-context-detached-control";
+        let same_primary = sequence == "post-load-primary-control"
+            || sequence == "post-load-cwd-grant-control"
+            || sequence == "post-load-detached-control"
+            || sequence == "lpac-context-control"
+            || sequence == "lpac-context-detached-control";
+        let _cwd_grant = if sequence == "post-load-cwd-grant-control" {
+            Some(CwdGrant::new(sid)?)
+        } else {
+            None
+        };
         let lpac = input.mode != "plain"
             && sequence != "chrome-logon-non-lpac-control"
             && sequence != "chrome-loader-privileges-control"
@@ -796,6 +876,12 @@ fn launch_variant(
         } else {
             EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_NO_WINDOW
         };
+        if sequence.contains("detached") {
+            // Process Monitor shows failing workers open/map conhost.exe just
+            // before exit. Starting the worker with DETACHED_PROCESS skips new
+            // console initialization without relaxing any sandbox attributes.
+            flags = (flags & !CREATE_NO_WINDOW) | DETACHED_PROCESS;
+        }
         if debug {
             flags |= DEBUG_ONLY_THIS_PROCESS;
         }
@@ -982,7 +1068,7 @@ fn launch_variant(
             |e| json!({"parse_error":e.to_string(),"stdout":String::from_utf8_lossy(&stdout)}),
         );
         Ok(
-            json!({"sequence":sequence,"pid":pi.dwProcessId,"requested_context":context.as_ref().map(|c|&c.report),"debug":{"requested":debug,"loader_snaps_enablement":loader_snaps_enablement,"setup":debug_setup,"attached_before_resume":attached,"creation_error":debug_creation_error,"trace":debug_events},"exit_code":hex(exit),"timeout":wait!=WAIT_OBJECT_0,"input_write":{"success":write_ok,"error":if write_ok{0}else{write_error},"bytes":written},"stderr":String::from_utf8_lossy(&stderr),"job":job.as_ref().map(|j|&j.1),"constructed_tokens":tokens.as_ref().map(|t|&t.report),"parent_before_resume":{"startup_context":birth_startup,"primary":birth_primary,"assigned_loader":assigned_loader,"initial_handle_closed":initial_closed_before_resume},"stdio_handles":{"stdin":handles[0] as usize,"stdout":handles[1] as usize,"stderr":handles[2] as usize},"child":child}),
+            json!({"sequence":sequence,"pid":pi.dwProcessId,"creation_flags":hex(flags),"requested_context":context.as_ref().map(|c|&c.report),"debug":{"requested":debug,"loader_snaps_enablement":loader_snaps_enablement,"setup":debug_setup,"attached_before_resume":attached,"creation_error":debug_creation_error,"trace":debug_events},"exit_code":hex(exit),"timeout":wait!=WAIT_OBJECT_0,"input_write":{"success":write_ok,"error":if write_ok{0}else{write_error},"bytes":written},"stderr":String::from_utf8_lossy(&stderr),"job":job.as_ref().map(|j|&j.1),"constructed_tokens":tokens.as_ref().map(|t|&t.report),"parent_before_resume":{"startup_context":birth_startup,"primary":birth_primary,"assigned_loader":assigned_loader,"initial_handle_closed":initial_closed_before_resume},"stdio_handles":{"stdin":handles[0] as usize,"stdout":handles[1] as usize,"stderr":handles[2] as usize},"child":child}),
         )
     }
 }
@@ -1463,6 +1549,33 @@ pub fn run() -> Result<()> {
                             sid,
                             token.0,
                             if sequence == "chrome-context-control" {
+                                token.0
+                            } else {
+                                source
+                            },
+                            sequence,
+                            true,
+                            false,
+                            false,
+                            MITIGATIONS,
+                            0xff,
+                        )
+                        .unwrap_or_else(|e| json!({"sequence":sequence,"error":e}));
+                        diagnostics.push(json!({"label":sequence,"result":result}));
+                    }
+                    for sequence in [
+                        "post-load-cwd-grant-control",
+                        "post-load-detached-control",
+                        "chrome-detached-control",
+                        "lpac-context-detached-control",
+                        "chrome-context-detached-control",
+                    ] {
+                        let result = launch_variant(
+                            &input,
+                            &image.to_string_lossy(),
+                            sid,
+                            token.0,
+                            if sequence.starts_with("chrome") {
                                 token.0
                             } else {
                                 source

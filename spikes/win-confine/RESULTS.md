@@ -519,6 +519,129 @@ desktop/station setup, cwd/environment initialization and KernelBase's internal
 object opens remain real differences or coverage gaps requiring another native
 investigation; no install-directory grant or desktop fix is claimed tested.
 
+## Process Monitor and startup-context campaign
+
+The first capture run is [37851610568](https://github.com/cortexkit/basal/actions/runs/37851610568),
+compiled from `a8b40b77e3e678bd98dc3688401c5dd6631cc50e`. Both administrator runners
+downloaded Sysinternals Process Monitor **4.11** from
+`https://download.sysinternals.com/files/ProcessMonitor.zip` and accepted its EULA.
+The archive SHA-256 was
+`80a6442b46af762ed1432f6fec3f7e20366bed62a2522b3486503398a40a1128`; the
+`Procmon64.exe` SHA-256 was
+`fc3af5317c707e0555ad6e7590ad65ceb5c5085b053b41221944ac3ca3492d9c`.
+Capture used `/Quiet /Minimized /BackingFile`, with `/WaitForIdle` before worker
+birth, `/Terminate` after the measurements, and `/OpenLog /SaveAs` for CSV export.
+
+The first run retained PML files, but **did not consume a CSV**: PowerShell did
+not wait for the GUI exporter and its `LASTEXITCODE` still held the measured
+child failure. Neither that stale `1` nor the mere existence of a PML proves
+an exporter failure or a denied operation. Subsequent capture orchestration
+waits for each exact GUI process and reads its own exit code; it also uses
+`/NoFilter`. The first run's birth observations remain valid independently of
+that export error.
+
+### Chrome-like context: measured changes, not ACL equivalence
+
+The parent creates a unique `basal_spike_<pid>_<timestamp>\\worker` station and
+desktop with broker-only dynamic User32 calls, then restores its original
+station. The worker receives the explicit `STARTUPINFO.lpDesktop` value; no
+station/desktop handle is inherited. The station grants read/execute to the
+logon SID, NULL restricting SID and package SID; the desktop grants
+`READ_CONTROL | DESKTOP_READOBJECTS | DESKTOP_WRITEOBJECTS` (`0x20081`) to those
+SIDs. SYSTEM, Administrators and the broker user have full access. Both objects
+have a Low no-write-up label. Requested SDDL and suspended-process station DACL
+readback are retained. These grants are **not claimed to be Chrome's exact
+ACLs**: its desktop ACL was not recovered, and Chromium's public broker code
+copies existing station/desktop DACLs rather than adding a NULL-SID grant.
+
+The disposable install directory grants NULL/package read/execute with a Low
+label; a per-worker TEMP directory grants NULL/package full access with a Low
+label. No ancestor directory ACL is changed. The Unicode environment has only
+the seven observed Chrome names plus `windir`: `CHROME_CRASHPAD_PIPE_NAME`
+(empty, no Crashpad endpoint), `LOCALAPPDATA` (the per-worker directory), `PATH`
+(System32), `SYSTEMDRIVE`, `SYSTEMROOT`, `TEMP`, `TMP`, and `windir`. Suspended
+process-parameter readback confirms these eight names and the install cwd. LPAC
+creation rewrites TEMP/TMP below the supplied directory to
+`Packages\\basal.spike.worker\\AC\\Temp`; that rewriting is retained, not hidden.
+
+| Run 37851610568 attempt | windows-latest PID / exit | windows-2022 PID / exit | Rust entry |
+|---|---|---|---|
+| Enabled-group same-access LPAC; original context | 1440 / `0xc0000142` | 7396 / `0xc0000142` | Neither |
+| Chrome-default-DACL non-AppContainer; original context | 6180 / `0xc0000142` | 2824 / `0xc0000142` | Neither |
+| Same Chrome-style token plus alternate station/desktop, scrubbed environment, install cwd | 1236 / `0xc0000142` | 7012 / `0xc0000142` | Neither |
+| Same enabled-group LPAC token plus the changed context | 9936 / `0xc0000142` | 5376 / `0xc0000142` | Neither |
+
+Both images passed fmt/check, seven native tests, nineteen Python tests,
+static-CRT release build, PE inventory and the live-token mutation witness.
+The acceptance gate requires a completed LPAC child with an actual Untrusted
+primary; it still failed because that child never entered Rust. No empty child
+report is treated as a residual.
+
+### Complete Process Monitor startup windows
+
+The synchronized run is [37852312584](https://github.com/cortexkit/basal/actions/runs/37852312584),
+compiled from `e4442517771c7fad669d3ee036b57fd2fcb1e04e`. Process Monitor produced
+**226 events / 90 non-success rows** on latest and **212 / 82** on 2022 for the
+four requested children. Every PID has `Process Start` and `Process Exit`.
+`/WaitForIdle`, `/Terminate` and CSV export returned 0. The capture instance
+itself returned 1 on latest and is recorded separately; that did not prevent
+complete export. Version and hashes match the first run. WPR fallback was not
+needed for these windows.
+
+**Every non-SUCCESS operation, including reparses, missing optional values,
+buffer-sizing responses and image-mapping responses, is listed in capture order
+with exact path, operation, result and detail in these Process Monitor tables:**
+
+- [Latest: all 90 rows](measurements/procmon/37852312584-windows-latest-procmon-events.md)
+- [2022: all 82 rows](measurements/procmon/37852312584-windows-2022-procmon-events.md)
+- The corresponding `procmon-events.json` files retain those rows and last denial
+  per PID. `procmon-child-rows.json` also retains successes; only successful
+  `Process Start` environment values are omitted to avoid publishing inherited
+  credentials. [manifest.json](measurements/procmon/manifest.json) gives compiled
+  SHAs and raw-artifact/retained-file hashes. Raw PML stays in the run artifacts.
+
+| Recipe | Latest PID / events / last ACCESS DENIED | 2022 PID / events / last ACCESS DENIED |
+|---|---|---|
+| Chrome-default-DACL non-AppContainer | 9860 / 74 / **none** | 5516 / 71 / **none** |
+| Enabled-group same-access LPAC | 5296 / 39 / `CreateFile`, spike cwd | 5904 / 38 / `CreateFile`, spike cwd |
+| Chrome token plus changed context | 2184 / 72 / `CreateFile`, install cwd | 1996 / 65 / `CreateFile`, install cwd |
+| Enabled-group LPAC plus changed context | 2708 / 41 / `RegOpenKey`, IFEO root | 2364 / 38 / `RegOpenKey`, IFEO root |
+
+All eight children exited `0xc0000142` without the Rust-entry marker. There is
+**no universal decisive ACCESS DENIED line**: the original-context
+non-AppContainer has no access denial at all, yet fails identically. The last
+denial for original LPAC is the real open of
+`D:\a\basal\basal\spikes\win-confine`, asking **Execute/Traverse + Synchronize**,
+directory/synchronous non-alert, share read/write, under impersonation. Its DACL
+grants Administrators/SYSTEM full access and Users read/execute, but **no package
+SID**. Full SDDL is in [latest object ACL samples](measurements/procmon/37852312584-windows-latest-denied-object-acls.json)
+and [2022 samples](measurements/procmon/37852312584-windows-2022-denied-object-acls.json).
+That missing package grant is consistent with Low LPAC denial, not proof that
+this earlier cwd failure caused KernelBase attach failure.
+
+The context LPAC loader **does open the install cwd successfully** in Procmon,
+and a real parent-side open under its duplicate succeeds. The actual suspended
+primary's list/traverse open still returns Win32 5. The Chrome-style context
+loader and primary duplicates both return 5; its install DACL omits the logon
+SID and the trace still denies traverse. These grants did not make every token
+able to open cwd; a configured path is not an access witness.
+
+The context LPAC's last denied registry object is
+`HKLM\Software\Microsoft\Windows NT\CurrentVersion\Image File Execution Options`,
+requesting query-value/enumerate-subkeys. Its DACL has Users and ALL APPLICATION
+PACKAGES read grants but no basal package grant. Nls CodePage and Session Manager
+also deny LPAC reads earlier. Original non-AppContainer reads those keys and cwd
+successfully, so none is established as the common attach cause.
+
+One common final activity is visible: **every failing child successfully opens
+`C:\Windows\System32\conhost.exe` for Execute/Traverse + Synchronize**, then records
+`CreateFileMapping` / `FILE LOCKED WITH ONLY READERS`, followed by more registry
+activity and exit. That result is not ACCESS DENIED and is not by itself proof
+of a failed console attach. The suspended console parameter remains
+`0xfffffffffffffffd` from `CREATE_NO_WINDOW`, unlike Chrome's 0. A detached-process
+diagnostic isolates that console path while preserving the exact job,
+child-process ban, mitigations and three stdio pipes.
+
 ## Recommended Windows design changes
 
 1. **Keep Windows unsupported/fail-closed until a runnable primary-token sequence

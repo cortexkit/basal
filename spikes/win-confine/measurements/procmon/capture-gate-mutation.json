@@ -1,0 +1,9 @@
+[
+  {
+    "control": "Neutralized procmon_summary.complete with NON-VACUITY BREAK / return True",
+    "expected_red": "test_procmon.ProcessMonitorTests.test_complete_requires_each_recipe_start_and_exit",
+    "captured_output": "FAIL: test_complete_requires_each_recipe_start_and_exit; AssertionError: True is not false; Ran 4 tests; FAILED (failures=1). test_does_not_substitute_same_name_other_pid, test_expected_miss_after_denial_is_not_called_last_denial, test_retains_all_non_success_and_last_denial_in_capture_order all stayed ok.",
+    "applied_evidence": "spikes/win-confine/procmon_summary.py: staged live state; before git diff --stat empty; during: spikes/win-confine/procmon_summary.py | 4 ++--; 1 file changed, 2 insertions(+), 2 deletions(-); restored with git checkout -- path && touch path; after git diff --stat empty",
+    "outcome": "reddened"
+  }
+]

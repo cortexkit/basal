@@ -6,6 +6,9 @@ from pathlib import Path
 
 RECIPES = ('post-load-primary-control', 'chrome-default-dacl-control',
            'chrome-context-control', 'lpac-context-control')
+FOLLOWUPS = ('post-load-cwd-grant-control', 'post-load-detached-control',
+             'chrome-detached-control', 'lpac-context-detached-control',
+             'chrome-context-detached-control')
 
 
 def attempts(report):
@@ -15,16 +18,25 @@ def attempts(report):
             yield diagnostic['result']
 
 
+def safe_row(row):
+    row = dict(row)
+    if row['Operation'] == 'Process Start' and row['Result'] == 'SUCCESS':
+        # Procmon puts inherited variable values in Process Start details;
+        # omit them rather than publish potential runner credentials.
+        row['Detail'] = row['Detail'].split('Environment:', 1)[0] + 'Environment: [values omitted]'
+    return row
+
+
 def collect(report, rows):
     selected = {str(a['pid']): a for a in attempts(report)
-                if a.get('sequence') in RECIPES and 'pid' in a}
+                if a.get('sequence') in RECIPES + FOLLOWUPS and 'pid' in a}
     events = {pid: [] for pid in selected}
     all_rows = []
     for index, row in enumerate(rows, 1):
         pid = row['PID']
         if pid not in selected:
             continue
-        row = dict(row, capture_order=index)
+        row = dict(safe_row(row), capture_order=index)
         all_rows.append(row)
         events[pid].append(row)
     results = []
@@ -60,7 +72,7 @@ def markdown(results):
 
 
 def complete(results):
-    return (set(r['sequence'] for r in results) == set(RECIPES) and all(
+    return (set(RECIPES).issubset(r['sequence'] for r in results) and all(
         r['process_start_seen'] and r['process_exit_seen'] for r in results))
 
 

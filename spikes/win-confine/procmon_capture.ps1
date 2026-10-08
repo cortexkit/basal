@@ -19,6 +19,18 @@ $metadata = [ordered]@{
 }
 $etl = Join-Path $PWD 'evidence/startup.etl'
 $etw = $false
+$objectTrace = $false
+$session = "BasalStartup-$PID"
+$objectEtl = Join-Path $PWD 'evidence/kernel-objects.etl'
+# Procmon covers files/registry, not every object-manager call. Retain the
+# kernel providers in the same birth window to expose that coverage gap.
+& logman create trace $session -o $objectEtl -p Microsoft-Windows-Kernel-File 0xffffffffffffffff 0xff -p Microsoft-Windows-Kernel-Registry 0xffffffffffffffff 0xff -p Microsoft-Windows-Kernel-Object 0xffffffffffffffff 0xff 2>&1 | Out-File evidence/kernel-trace-setup.txt
+$metadata['logman_create_exit'] = $LASTEXITCODE
+if ($LASTEXITCODE -eq 0) {
+    & logman start $session -ets 2>&1 | Out-File -Append evidence/kernel-trace-setup.txt
+    $metadata['logman_start_exit'] = $LASTEXITCODE
+    $objectTrace = $LASTEXITCODE -eq 0
+}
 function Invoke-Procmon([string[]]$Arguments) {
     # GUI executables do not reliably update PowerShell's LASTEXITCODE. Wait for
     # this exact instance and read its ExitCode before consuming its output.
@@ -44,6 +56,11 @@ try {
     & target/release/win-confine.exe --output evidence/report.json
     $measurementExit = $LASTEXITCODE
 } finally {
+    if ($objectTrace) {
+        & logman stop $session -ets 2>&1 | Out-File -Append evidence/kernel-trace-setup.txt
+        $metadata['logman_stop_exit'] = $LASTEXITCODE
+    }
+    & logman delete $session 2>&1 | Out-File -Append evidence/kernel-trace-setup.txt
     if ($etw) {
         & wpr -stop $etl
         $metadata['wpr_stop_exit'] = $LASTEXITCODE
@@ -51,6 +68,11 @@ try {
         $metadata['terminate_exit'] = Invoke-Procmon @('/Terminate')
         if ($capture) { $capture.WaitForExit(); $metadata['capture_exit'] = $capture.ExitCode }
     }
+    $metadata | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 evidence/procmon-metadata.json
+}
+if ($objectTrace) {
+    & tracerpt $objectEtl -o evidence/kernel-objects.xml -of XML -y 2>&1 | Out-File evidence/kernel-trace-export.txt
+    $metadata['tracerpt_exit'] = $LASTEXITCODE
     $metadata | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 evidence/procmon-metadata.json
 }
 if (Test-Path $pml) {

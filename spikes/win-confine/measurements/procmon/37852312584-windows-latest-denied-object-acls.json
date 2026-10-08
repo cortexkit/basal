@@ -1,0 +1,72 @@
+[
+  {
+    "sequence": "post-load-primary-control",
+    "path": "HKLM\\System\\CurrentControlSet\\Control\\Nls\\CodePage",
+    "operation": "RegOpenKey",
+    "detail": "Desired Access: Read",
+    "sddl": "O:SYG:SYD:AI(A;CIID;KR;;;BU)(A;CIID;KA;;;BA)(A;CIID;KA;;;SY)(A;CIIOID;KA;;;CO)(A;CIID;KR;;;AC)(A;CIID;KR;;;S-1-15-3-1024-1065365936-1281604716-3511738428-1654721687-432734479-3232135806-4053264122-3456934681)"
+  },
+  {
+    "sequence": "post-load-primary-control",
+    "path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+    "operation": "RegOpenKey",
+    "detail": "Desired Access: Query Value",
+    "sddl": "O:SYG:SYD:AI(A;CIID;KR;;;BU)(A;CIID;KA;;;BA)(A;CIID;KA;;;SY)(A;CIIOID;KA;;;CO)(A;CIID;KR;;;AC)(A;CIID;KR;;;S-1-15-3-1024-1065365936-1281604716-3511738428-1654721687-432734479-3232135806-4053264122-3456934681)"
+  },
+  {
+    "sequence": "post-load-primary-control",
+    "path": "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options",
+    "operation": "RegOpenKey",
+    "detail": "Desired Access: Query Value, Enumerate Sub Keys",
+    "sddl": "O:SYG:SYD:PAI(A;CIIO;GA;;;CO)(A;;KA;;;SY)(A;CIIO;GA;;;SY)(A;;KA;;;SY)(A;CIIO;GA;;;BA)(A;;KA;;;BA)(A;CIIO;GR;;;BU)(A;;KR;;;BU)(A;;KR;;;AC)(A;CIIO;GR;;;AC)(A;;KR;;;S-1-15-3-1024-1065365936-1281604716-3511738428-1654721687-432734479-3232135806-4053264122-3456934681)(A;CIIO;GR;;;S-1-15-3-1024-1065365936-1281604716-3511738428-1654721687-432734479-3232135806-4053264122-3456934681)"
+  },
+  {
+    "sequence": "post-load-primary-control",
+    "path": "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options",
+    "operation": "RegOpenKey",
+    "detail": "Desired Access: Query Value, Enumerate Sub Keys",
+    "sddl": "O:SYG:SYD:PAI(A;CIIO;GA;;;CO)(A;;KA;;;SY)(A;CIIO;GA;;;SY)(A;;KA;;;SY)(A;CIIO;GA;;;BA)(A;;KA;;;BA)(A;CIIO;GR;;;BU)(A;;KR;;;BU)(A;;KR;;;AC)(A;CIIO;GR;;;AC)(A;;KR;;;S-1-15-3-1024-1065365936-1281604716-3511738428-1654721687-432734479-3232135806-4053264122-3456934681)(A;CIIO;GR;;;S-1-15-3-1024-1065365936-1281604716-3511738428-1654721687-432734479-3232135806-4053264122-3456934681)"
+  },
+  {
+    "sequence": "post-load-primary-control",
+    "path": "D:\\a\\basal\\basal\\spikes\\win-confine",
+    "operation": "CreateFile",
+    "detail": "Desired Access: Execute/Traverse, Synchronize, Disposition: Open, Options: Directory, Synchronous IO Non-Alert, Attributes: n/a, ShareMode: Read, Write, AllocationSize: n/a, Impersonating: runnervmfi6oq\\runneradmin",
+    "sddl": "O:BAG:S-1-5-21-1643835476-1616584234-1346609752-513D:(A;;FA;;;BA)(A;OICIID;FA;;;BA)(A;OICIID;FA;;;SY)(A;OICIIOID;GA;;;CO)(A;OICIID;0x1200a9;;;BU)(A;CIID;LC;;;BU)(A;CIID;DC;;;BU)"
+  },
+  {
+    "sequence": "chrome-context-control",
+    "path": "D:\\a\\basal\\basal\\spikes\\win-confine\\target\\release\\placed",
+    "operation": "CreateFile",
+    "detail": "Desired Access: Execute/Traverse, Synchronize, Disposition: Open, Options: Directory, Synchronous IO Non-Alert, Attributes: n/a, ShareMode: Read, Write, AllocationSize: n/a, Impersonating: runnervmfi6oq\\runneradmin",
+    "sddl": "O:BAG:S-1-5-21-1643835476-1616584234-1346609752-513D:P(A;OICI;0x1200a9;;;S-1-0-0)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;LA)(A;OICI;0x1200a9;;;S-1-15-2-523749759-298135514-2295813373-2963266676-3438459952-3726307614-2942093161)"
+  },
+  {
+    "sequence": "lpac-context-control",
+    "path": "HKLM\\System\\CurrentControlSet\\Control\\Nls\\CodePage",
+    "operation": "RegOpenKey",
+    "detail": "Desired Access: Read",
+    "sddl": "O:SYG:SYD:AI(A;CIID;KR;;;BU)(A;CIID;KA;;;BA)(A;CIID;KA;;;SY)(A;CIIOID;KA;;;CO)(A;CIID;KR;;;AC)(A;CIID;KR;;;S-1-15-3-1024-1065365936-1281604716-3511738428-1654721687-432734479-3232135806-4053264122-3456934681)"
+  },
+  {
+    "sequence": "lpac-context-control",
+    "path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+    "operation": "RegOpenKey",
+    "detail": "Desired Access: Query Value",
+    "sddl": "O:SYG:SYD:AI(A;CIID;KR;;;BU)(A;CIID;KA;;;BA)(A;CIID;KA;;;SY)(A;CIIOID;KA;;;CO)(A;CIID;KR;;;AC)(A;CIID;KR;;;S-1-15-3-1024-1065365936-1281604716-3511738428-1654721687-432734479-3232135806-4053264122-3456934681)"
+  },
+  {
+    "sequence": "lpac-context-control",
+    "path": "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options",
+    "operation": "RegOpenKey",
+    "detail": "Desired Access: Query Value, Enumerate Sub Keys",
+    "sddl": "O:SYG:SYD:PAI(A;CIIO;GA;;;CO)(A;;KA;;;SY)(A;CIIO;GA;;;SY)(A;;KA;;;SY)(A;CIIO;GA;;;BA)(A;;KA;;;BA)(A;CIIO;GR;;;BU)(A;;KR;;;BU)(A;;KR;;;AC)(A;CIIO;GR;;;AC)(A;;KR;;;S-1-15-3-1024-1065365936-1281604716-3511738428-1654721687-432734479-3232135806-4053264122-3456934681)(A;CIIO;GR;;;S-1-15-3-1024-1065365936-1281604716-3511738428-1654721687-432734479-3232135806-4053264122-3456934681)"
+  },
+  {
+    "sequence": "lpac-context-control",
+    "path": "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options",
+    "operation": "RegOpenKey",
+    "detail": "Desired Access: Query Value, Enumerate Sub Keys",
+    "sddl": "O:SYG:SYD:PAI(A;CIIO;GA;;;CO)(A;;KA;;;SY)(A;CIIO;GA;;;SY)(A;;KA;;;SY)(A;CIIO;GA;;;BA)(A;;KA;;;BA)(A;CIIO;GR;;;BU)(A;;KR;;;BU)(A;;KR;;;AC)(A;CIIO;GR;;;AC)(A;;KR;;;S-1-15-3-1024-1065365936-1281604716-3511738428-1654721687-432734479-3232135806-4053264122-3456934681)(A;CIIO;GR;;;S-1-15-3-1024-1065365936-1281604716-3511738428-1654721687-432734479-3232135806-4053264122-3456934681)"
+  }
+]

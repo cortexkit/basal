@@ -1,0 +1,12 @@
+{
+  "administrator": true,
+  "download_url": "https://download.sysinternals.com/files/ProcessMonitor.zip",
+  "zip_sha256": "80a6442b46af762ed1432f6fec3f7e20366bed62a2522b3486503398a40a1128",
+  "executable_sha256": "fc3af5317c707e0555ad6e7590ad65ceb5c5085b053b41221944ac3ca3492d9c",
+  "version": "4.11",
+  "capture_tool": "Process Monitor",
+  "wait_for_idle_exit": 0,
+  "terminate_exit": 0,
+  "capture_exit": 1,
+  "export_exit": 0
+}

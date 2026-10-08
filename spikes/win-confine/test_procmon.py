@@ -52,6 +52,14 @@ class ProcessMonitorTests(unittest.TestCase):
         self.assertEqual(results[0]['last_denied']['Operation'], 'CreateFile')
         self.assertEqual(len(results[0]['non_success']), 2)
 
+    def test_successful_process_start_omits_environment_values(self):
+        row = self.row('Process Start')
+        row['Detail'] = 'Parent PID: 1, Current directory: C:\\fixture, Environment: TOKEN=secret'
+        results, rows = collect(self.report(), [row])
+        self.assertEqual(rows[0]['Detail'], 'Parent PID: 1, Current directory: C:\\fixture, Environment: [values omitted]')
+        self.assertTrue(results[0]['process_start_seen'])
+        self.assertEqual(results[0]['non_success'], [])
+
 
 if __name__ == '__main__':
     unittest.main()
