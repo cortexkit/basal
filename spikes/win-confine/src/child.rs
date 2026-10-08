@@ -49,6 +49,10 @@ fn file_probe(t: &Target, creation: bool) -> Probe {
     unsafe {
         let access = if creation {
             FILE_WRITE_DATA
+        } else if t.kind.ends_with("_query") {
+            FILE_READ_ATTRIBUTES
+        } else if t.kind.ends_with("_zero") {
+            0
         } else if t.kind == "directory" {
             FILE_LIST_DIRECTORY
         } else {
@@ -60,7 +64,7 @@ fn file_probe(t: &Target, creation: bool) -> Probe {
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             null(),
             if creation { CREATE_NEW } else { OPEN_EXISTING },
-            if t.kind == "directory" {
+            if t.kind.starts_with("directory") {
                 FILE_FLAG_BACKUP_SEMANTICS
             } else {
                 0
@@ -69,10 +73,17 @@ fn file_probe(t: &Target, creation: bool) -> Probe {
         );
         let ok = h != INVALID_HANDLE_VALUE;
         let error = GetLastError();
+        let mut result = Probe::win(t, ok, error);
         if ok {
+            if t.kind.ends_with("_query") || t.kind.ends_with("_zero") {
+                let mut info: BY_HANDLE_FILE_INFORMATION = zeroed();
+                let queried = GetFileInformationByHandle(h, &mut info) != 0;
+                let error = GetLastError();
+                result.result["metadata"] = json!({"success":queried,"error":if queried{0}else{error},"attributes":hex(info.dwFileAttributes),"size_high":info.nFileSizeHigh,"size_low":info.nFileSizeLow});
+            }
             drop(Handle(h));
         }
-        Probe::win(t, ok, error)
+        result
     }
 }
 fn registry_probe(t: &Target) -> Probe {
@@ -173,7 +184,8 @@ pub fn run() -> Result<()> {
         let mut probes = Vec::new();
         for t in &input.targets {
             probes.push(match t.kind.as_str() {
-                "file" | "directory" | "pipe" => file_probe(t, false),
+                "file" | "directory" | "file_query" | "directory_query" | "file_zero"
+                | "directory_zero" | "pipe" => file_probe(t, false),
                 "registry" => registry_probe(t),
                 _ => object_probe(t),
             });

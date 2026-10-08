@@ -5,6 +5,7 @@ use std::{
     mem::{size_of, zeroed},
     ptr::null_mut,
 };
+use windows_sys::Win32::Storage::FileSystem::GetFileType;
 use windows_sys::Win32::{
     Foundation::*, Security::Authorization::*, Security::*, System::Threading::*,
 };
@@ -116,7 +117,13 @@ pub unsafe fn token_buffer(token: HANDLE, class: TOKEN_INFORMATION_CLASS) -> Res
         if bytes == 0 {
             return Err(last("GetTokenInformation(size)"));
         }
-        let mut data = vec![0usize; (bytes as usize).div_ceil(size_of::<usize>())];
+        // Zero-entry variable-length structures can be shorter than their C
+        // one-element declarations. Keep enough backing storage for a Rust
+        // reference to that declaration even when only the count is read.
+        let allocation = (bytes as usize)
+            .max(size_of::<TOKEN_GROUPS>())
+            .max(size_of::<TOKEN_PRIVILEGES>());
+        let mut data = vec![0usize; allocation.div_ceil(size_of::<usize>())];
         check(
             GetTokenInformation(token, class, data.as_mut_ptr().cast(), bytes, &mut bytes),
             "GetTokenInformation",
@@ -421,7 +428,10 @@ pub fn handle_table() -> Result<Vec<Value>> {
         }
         let snapshot = &*buffer.as_ptr().cast::<HandleSnapshot>();
         let entries = std::slice::from_raw_parts(snapshot.handles.as_ptr(), snapshot.count);
-        Ok(entries.iter().map(|h|json!({"handle":h.handle as usize,"type":object_string(h.handle,2),"granted_access":hex(h.access),"attributes":hex(h.attributes)})).collect())
+        Ok(entries.iter().map(|h|{
+            let kind=object_string(h.handle,2);
+            json!({"handle":h.handle as usize,"type":kind,"name":object_string(h.handle,1),"file_type":if kind=="File" {Some(GetFileType(h.handle))}else{None},"granted_access":hex(h.access),"attributes":hex(h.attributes)})
+        }).collect())
     }
 }
 pub fn object_probe(t: &Target) -> Probe {
@@ -590,5 +600,20 @@ mod tests {
         assert_eq!(size_of::<HandleEntry>(), 40);
         assert_eq!(std::mem::offset_of!(HandleSnapshot, handles), 16);
         assert_eq!(size_of::<AlpcAttributes>(), 72);
+    }
+    #[test]
+    fn token_buffer_can_back_a_zero_entry_c_declaration() {
+        unsafe {
+            let mut token = null_mut();
+            check(
+                OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token),
+                "OpenProcessToken(test)",
+            )
+            .unwrap();
+            let token = Handle(token);
+            let data = token_buffer(token.0, TokenType).unwrap();
+            assert_eq!(*data.as_ptr().cast::<u32>(), 1);
+            assert!(data.len() * size_of::<usize>() >= size_of::<TOKEN_GROUPS>());
+        }
     }
 }

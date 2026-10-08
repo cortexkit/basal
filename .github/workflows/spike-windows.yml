@@ -65,7 +65,9 @@ jobs:
         run: |
           if (Test-Path evidence/report.json) {
             python summarize.py evidence/report.json | Tee-Object evidence/summary.md
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
             Get-Content evidence/summary.md >> $env:GITHUB_STEP_SUMMARY
+            python validate.py evidence/report.json
             exit $LASTEXITCODE
           }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

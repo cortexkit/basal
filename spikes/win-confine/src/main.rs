@@ -7,6 +7,12 @@ mod parent;
 
 #[cfg(windows)]
 fn main() {
+    unsafe {
+        use windows_sys::Win32::System::Diagnostics::Debug::{
+            SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX, SetErrorMode,
+        };
+        SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+    }
     let result = if std::env::args().any(|a| a == "--child") {
         child::run()
     } else {

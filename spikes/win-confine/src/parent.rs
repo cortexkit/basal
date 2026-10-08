@@ -24,12 +24,15 @@ const MITIGATIONS: u64 =
     (1 << 24) | (1 << 28) | (1 << 32) | (1 << 36) | (1 << 44) | (1 << 52) | (1 << 56) | (1 << 60);
 struct Profile {
     sid: PSID,
+    deleted: bool,
 }
 impl Drop for Profile {
     fn drop(&mut self) {
         unsafe {
+            if !self.deleted {
+                DeleteAppContainerProfile(wide(PROFILE).as_ptr());
+            }
             FreeSid(self.sid);
-            DeleteAppContainerProfile(wide(PROFILE).as_ptr());
         }
     }
 }
@@ -691,7 +694,10 @@ pub fn run() -> Result<()> {
                 hex(hr as u32)
             ));
         }
-        let profile = Profile { sid };
+        let mut profile = Profile {
+            sid,
+            deleted: false,
+        };
         let sid_text = sid_string(profile.sid);
         let mut folder = null_mut();
         let hr = GetAppContainerFolderPath(wide(&sid_text).as_ptr(), &mut folder);
@@ -741,8 +747,33 @@ pub fn run() -> Result<()> {
             format!("{package}\\SystemAppData\\Helium\\User.dat"),
             "FILE_READ_DATA",
         ));
+        targets.push(Target::new(
+            "file",
+            format!(
+                "{}\\Microsoft\\Windows\\UsrClass.dat",
+                std::env::var("LOCALAPPDATA").map_err(|e| e.to_string())?
+            ),
+            "FILE_READ_DATA",
+        ));
         for key in ["HKLM", "HKCU", &package_registry] {
             targets.push(Target::new("registry", key, "KEY_QUERY_VALUE"));
+        }
+        // Data-read denial alone says nothing about metadata or zero-access opens.
+        // Include these weaker requests before interpreting an open denial as a
+        // filesystem boundary.
+        for target in targets.clone() {
+            if target.kind == "file" || target.kind == "directory" {
+                targets.push(Target::new(
+                    &format!("{}_query", target.kind),
+                    &target.name,
+                    "FILE_READ_ATTRIBUTES / GetFileInformationByHandle",
+                ));
+                targets.push(Target::new(
+                    &format!("{}_zero", target.kind),
+                    &target.name,
+                    "desired access 0 / GetFileInformationByHandle",
+                ));
+            }
         }
         let mut enumeration = Vec::new();
         let namespace_report = match &namespace_initializer {
@@ -890,7 +921,9 @@ pub fn run() -> Result<()> {
         }
         drop(package_object_fixtures);
         drop(namespace_initializer);
-        let report = json!({"schema":1,"profile":PROFILE,"appcontainer_sid":sid_text,"package_folder":package,"package_registry_target":package_registry,"namespace_initializer":namespace_report,"enumeration":enumeration,"targets":targets,"parent_token":token_attestation(token.0)?,"runs":runs,"leaked_fixture_content":String::from_utf8_lossy(&leaked_content),"elapsed_seconds":started.elapsed().as_secs_f64()});
+        let cleanup = DeleteAppContainerProfile(wide(PROFILE).as_ptr());
+        profile.deleted = cleanup >= 0;
+        let report = json!({"schema":1,"profile":PROFILE,"profile_cleanup":{"HRESULT":hex(cleanup as u32),"success":cleanup>=0},"system_root":system,"child_image":image.to_string_lossy(),"appcontainer_sid":sid_text,"package_folder":package,"package_registry_target":package_registry,"namespace_initializer":namespace_report,"enumeration":enumeration,"targets":targets,"parent_token":token_attestation(token.0)?,"runs":runs,"leaked_fixture_content":String::from_utf8_lossy(&leaked_content),"elapsed_seconds":started.elapsed().as_secs_f64()});
         let output = std::env::args()
             .skip_while(|a| a != "--output")
             .nth(1)
@@ -901,6 +934,12 @@ pub fn run() -> Result<()> {
         )
         .map_err(|e| e.to_string())?;
         println!("report: {output}");
+        if cleanup < 0 {
+            return Err(format!(
+                "DeleteAppContainerProfile: {}",
+                hex(cleanup as u32)
+            ));
+        }
         let full = &report["runs"][2]["attempts"][0];
         if full["exit_code"] != "0x00000000" || full["child"]["primary_token"]["lpac"] != true {
             return Err("full-policy child did not complete; inspect report for exact launch or attestation failure".into());

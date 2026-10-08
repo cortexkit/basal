@@ -7,9 +7,46 @@ import unittest
 
 from pe_inventory import inventory
 from summarize import summarize
+from validate import validate
+
+
+def complete_report():
+    sid = 'S-1-15-2-fixture'
+    policies = [('dynamic_code', 1), ('signature', 1), ('image_load', 7), ('win32k', 1), ('strict_handle', 3), ('extension_points', 1), ('child_process', 1)]
+    runs = []
+    for mode in ('plain', 'lpac', 'full'):
+        token = {'token_type': 1, 'lpac': mode != 'plain', 'appcontainer_sid': sid if mode != 'plain' else None, 'capabilities': [], 'integrity': 'S-1-16-0', 'privileges': [], 'restricting_sids': [{'sid': 'S-1-0-0'}], 'groups': [{'sid': 'S-1-1-0', 'attributes': '0x00000010', 'deny_only': True}]}
+        child = {'primary_token': token, 'initial_impersonation': {'present': mode == 'full'}, 'after_revert': {'present': False, 'open_error': 1008}, 'handle_table': [], 'loaded_modules': [{'name': 'kernel32.dll', 'path': 'C:\\Windows\\System32\\kernel32.dll'}], 'mitigations': [{'policy': name, 'flags': f'0x{flags:08x}', 'success': True} for name, flags in policies], 'probes': []}
+        job = {'limit_flags': '0x00002508', 'active_process_limit': 1, 'process_memory_limit': 268435456, 'ui_restrictions': '0x000000ff', 'breakaway': False}
+        runs.append({'mode': mode, 'attempts': [{'exit_code': '0x00000000', 'child': child, 'job': job}]})
+    return {'appcontainer_sid': sid, 'system_root': 'C:\\Windows', 'enumeration': [], 'runs': runs}
 
 
 class EvidenceTests(unittest.TestCase):
+    def test_complete_launch_evidence_is_accepted(self):
+        self.assertEqual(validate(complete_report()), [])
+
+    def test_full_policy_requires_null_restricting_sid(self):
+        report = complete_report()
+        report['runs'][2]['attempts'][0]['child']['primary_token']['restricting_sids'] = [{'sid': 'S-1-1-0'}]
+        self.assertEqual(validate(report), ['full: restricting SIDs are not exactly NULL'])
+
+    def test_full_policy_requires_every_mitigation(self):
+        report = complete_report()
+        report['runs'][2]['attempts'][0]['child']['mitigations'][0]['flags'] = '0x00000000'
+        self.assertEqual(len(validate(report)), 1)
+        self.assertIn('full: mitigation mismatch', validate(report)[0])
+
+    def test_enumeration_error_is_a_coverage_gap(self):
+        report = complete_report()
+        report['enumeration'] = [{'namespace': '\\RPC Control', 'error': 'denied'}]
+        self.assertEqual(validate(report), ['enumeration incomplete: \\RPC Control: denied'])
+
+    def test_attestation_module_path_outside_system32_is_rejected(self):
+        report = complete_report()
+        report['runs'][2]['attempts'][0]['child']['loaded_modules'][0]['path'] = 'C:\\User\\kernel32.dll'
+        self.assertEqual(validate(report), ['full: module loaded outside System32: C:\\User\\kernel32.dll'])
+
     def test_pe_inventory_distinguishes_imports_and_delay_imports(self):
         # A PE32+ fixture with real descriptors, hint/name thunks and two tables.
         data = bytearray(0x1200)
@@ -32,8 +69,9 @@ class EvidenceTests(unittest.TestCase):
         data[0x600:0x60C] = b'USERENV.dll\0'
         data[0x802:0x80A] = b'ExitNow\0'
         data[0x902:0x90B] = b'DelayNow\0'
-        Path('target').mkdir(exist_ok=True)
-        with tempfile.TemporaryDirectory(dir='target') as temp:
+        target = Path(__file__).parent / 'target'
+        target.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=target) as temp:
             path = Path(temp) / 'fixture.exe'
             path.write_bytes(data)
             result = inventory(path)

@@ -45,6 +45,10 @@ not a denial. Endpoints may disappear between enumeration and probing.
 Directory listing access is stronger than merely reading attributes; section
 query is weaker than mapping its bytes. Separate section read/write-map and
 event-modify access requests distinguish read-only authority from IPC channels.
+File and directory probes also request read-attributes and zero access, then
+query metadata: a rejected data-read open must not hide a successful stat.
+`validate.py` rejects missing measurements and mismatched launch-layer
+attestation, but never rejects a measured residual merely because it succeeded.
 Neither a finite endpoint list nor
 one granted-access request proves all stronger access is unavailable.
 
