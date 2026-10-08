@@ -28,7 +28,8 @@ loader token.
 
 The loader token is a same-access approximation, not a literal implementation
 of Chromium's token builder: it retains the source's groups, disables maximum
-privileges and has no restricting SIDs. The parent records both constructed and
+privileges and restricts against the same user's SID and groups so its legacy
+access check is unchanged. The parent records both constructed and
 actually assigned tokens before resume. The initial handle is explicitly
 non-inheritable, excluded from the handle list and closed before resume. The
 worker borrows its own primary's adjustment handle while loading, reverts before
@@ -71,7 +72,11 @@ the child also inventories the actual module paths. Broker-only Userenv/Ole32
 entry points are resolved dynamically in the parent: static imports of those
 libraries load GUI/COM code into the child before any Rust code can revert.
 Native Winsock calls record initialization failures instead of panicking like
-`std::net` does when WSAStartup is denied. The workflow also stages, neutralizes
+`std::net` does when WSAStartup is denied. The raw excluded-handle write runs
+in a separate identically confined child: strict-handle policy can terminate
+that process with STATUS_INVALID_HANDLE instead of returning an error. Its
+exit/error is recorded separately so the other reachability results survive.
+The workflow also stages, neutralizes
 and restores the token-handle fence and proves a native test holding a real
 TOKEN_QUERY handle goes red; restored native tests must pass. The raw mutation
 proof is uploaded with the report.

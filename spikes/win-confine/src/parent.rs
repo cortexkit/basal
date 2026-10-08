@@ -192,6 +192,20 @@ fn restricted_tokens(
         )?;
         // Closest same-access loader token: no restricting SIDs, original groups
         // and integrity, maximum privileges disabled. It is never inherited.
+        let loader_groups = token_buffer(loader_source, TokenGroups)?;
+        let loader_user = token_buffer(loader_source, TokenUser)?;
+        let mut same_access = groups(&loader_groups)
+            .iter()
+            .filter(|g| g.Attributes & SE_GROUP_INTEGRITY == 0)
+            .map(|g| SID_AND_ATTRIBUTES {
+                Sid: g.Sid,
+                Attributes: 0,
+            })
+            .collect::<Vec<_>>();
+        same_access.push(SID_AND_ATTRIBUTES {
+            Sid: (*loader_user.as_ptr().cast::<TOKEN_USER>()).User.Sid,
+            Attributes: 0,
+        });
         let mut loader = null_mut();
         check(
             CreateRestrictedToken(
@@ -201,15 +215,19 @@ fn restricted_tokens(
                 null(),
                 0,
                 null(),
-                0,
-                null(),
+                same_access.len() as u32,
+                same_access.as_ptr(),
                 &mut loader,
             ),
             "CreateRestrictedToken(loader)",
         )?;
         let loader = Handle(loader);
         if start_low {
-            set_integrity(loader.0, WinLowLabelSid)?;
+            let level = token_buffer(loader.0, TokenIntegrityLevel)?;
+            let level = sid_string((*level.as_ptr().cast::<TOKEN_MANDATORY_LABEL>()).Label.Sid);
+            if level != "S-1-16-4096" {
+                set_integrity(loader.0, WinLowLabelSid)?;
+            }
         }
         let loader = if let Some(sid) = lowbox_sid {
             create_lowbox_token(loader.0, sid)?
@@ -529,6 +547,7 @@ fn launch(
     sequence: &str,
     start_low: bool,
     native_lowbox_loader: bool,
+    leak_only: bool,
 ) -> Result<Value> {
     unsafe {
         let full = input.mode == "full";
@@ -603,8 +622,9 @@ fn launch(
         startup.lpAttributeList = attrs.ptr();
         let mut pi: PROCESS_INFORMATION = zeroed();
         let mut command = wide(&format!(
-            "\"{image}\" --child{}",
-            if start_low { " --lower-integrity" } else { "" }
+            "\"{image}\" --child{}{}",
+            if start_low { " --lower-integrity" } else { "" },
+            if leak_only { " --probe-leak" } else { "" }
         ));
         let flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_NO_WINDOW;
         let ok = if full {
@@ -970,6 +990,7 @@ pub fn run() -> Result<()> {
                 sequence,
                 false,
                 false,
+                false,
             ) {
                 Ok(v) => v,
                 Err(e) => json!({"sequence":sequence,"error":e}),
@@ -990,6 +1011,7 @@ pub fn run() -> Result<()> {
                     sequence,
                     true,
                     true,
+                    false,
                 ) {
                     Ok(v) => v,
                     Err(e) => json!({"sequence":sequence,"error":e}),
@@ -1026,6 +1048,7 @@ pub fn run() -> Result<()> {
                             sequence,
                             true,
                             false,
+                            false,
                         ) {
                             Ok(v) => v,
                             Err(e) => json!({"sequence":sequence,"error":e}),
@@ -1034,6 +1057,49 @@ pub fn run() -> Result<()> {
                     attempts.push(result);
                 }
             }
+            // Invalid-handle references may be fatal under strict-handle policy.
+            // Isolate the required raw write so it cannot erase all other probes.
+            let selected = attempts.last().unwrap();
+            let start_low = mode == "full";
+            let native_loader = mode == "full"
+                && !selected["sequence"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("same-package LPAC");
+            let mut source = null_mut();
+            let source_holder = if mode == "full" && !native_loader {
+                if let Ok((holder, _)) = &namespace_initializer {
+                    if OpenProcessToken(
+                        holder.process.0,
+                        TOKEN_QUERY | TOKEN_DUPLICATE,
+                        &mut source,
+                    ) != 0
+                    {
+                        Some(Handle(source))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let source = source_holder.as_ref().map(|h| h.0).unwrap_or(token.0);
+            let isolated = match launch(
+                &input,
+                &image.to_string_lossy(),
+                sid,
+                token.0,
+                source,
+                "isolated leaked-handle write",
+                start_low,
+                native_loader,
+                true,
+            ) {
+                Ok(v) => v,
+                Err(e) => json!({"error":e}),
+            };
             let mut tcp_count = 0;
             while tcp.accept().is_ok() {
                 tcp_count += 1;
@@ -1043,7 +1109,7 @@ pub fn run() -> Result<()> {
             while let Ok((n, from)) = udp.recv_from(&mut buffer) {
                 datagrams.push(json!({"from":from.to_string(),"payload":String::from_utf8_lossy(&buffer[..n])}));
             }
-            runs.push(json!({"mode":mode,"attempts":attempts,"loopback_observed":{"tcp_connections":tcp_count,"udp_datagrams":datagrams}}));
+            runs.push(json!({"mode":mode,"attempts":attempts,"isolated_leaked_handle":isolated,"loopback_observed":{"tcp_connections":tcp_count,"udp_datagrams":datagrams}}));
         }
         drop(leaked);
         let leaked_content = fs::read(&leak_name).map_err(|e| e.to_string())?;

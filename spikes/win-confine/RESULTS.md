@@ -76,6 +76,25 @@ Windows Server 2025 (26100) and Server 2022:
   termination. Inventory now resolves the snapshot's stable type indices
   against ObjectTypesInformation without dereferencing transient handles.
 
+- Run [37827072544](https://github.com/cortexkit/basal/actions/runs/37827072544),
+  source `389438219c37a2c127c03ddcd8a02cde873b2f8e`, passed seven native tests,
+  thirteen Python tests and the live-token mutation witness on both images.
+  Native LPAC classification using `WIN://NOALLAPPPKG` worked.
+  The actual lowbox primary was **Low (4096)** even when its input primary
+  was constructed Untrusted (0): lowbox creation reset the integrity level.
+  Both the High ordinary loader and the native Low non-LPAC lowbox loader
+  were assigned at Identification level 1 and exited `0xc00000a5`.
+  The LPAC-born candidate hit Win32 5 while redundantly setting an already
+  Low loader token's integrity through a query/duplicate-only source handle.
+  That redundant setter is now skipped. Initial same-access restricting SIDs
+  now explicitly include the original user's SID and groups rather than an
+  empty list.
+- The same run's LPAC control still exited `0xc0000008` with race-free type
+  inventory, so a snapshot race is **not established as its cause**. The
+  deliberately invalid-handle write now runs in a separate identically
+  confined worker and carries stage markers, preserving the main report even
+  if strict-handle policy makes that required negative probe fatal.
+
 Pending completed full-policy native reports.
 
 ## Measured residual and risk assessment

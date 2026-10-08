@@ -36,6 +36,7 @@ def summarize(report):
             print('|---|---|---|---|')
             for probe in sorted((p for p in probes if p['success']), key=lambda p: (p['kind'], p['target'], p['access'])):
                 print('| ' + ' | '.join(escape(probe[key]) for key in ('kind', 'target', 'access', 'result')) + ' |')
+        print(f'- Isolated leaked-handle write: `{json.dumps(run.get("isolated_leaked_handle"))}`')
         print(f'- Parent observed loopback: `{json.dumps(run["loopback_observed"])}`')
     print('## Layer comparison')
     modes = {}
