@@ -267,7 +267,7 @@ fn restricted_tokens(
         })
     }
 }
-fn job() -> Result<(Handle, Value)> {
+fn job(ui_flags: u32) -> Result<(Handle, Value)> {
     unsafe {
         let h = Handle::new(CreateJobObjectW(null(), null()), "CreateJobObjectW")?;
         let flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
@@ -288,7 +288,7 @@ fn job() -> Result<(Handle, Value)> {
             "SetInformationJobObject(limits)",
         )?;
         let ui = JOBOBJECT_BASIC_UI_RESTRICTIONS {
-            UIRestrictionsClass: 0xff,
+            UIRestrictionsClass: ui_flags,
         };
         check(
             SetInformationJobObject(
@@ -324,7 +324,7 @@ fn job() -> Result<(Handle, Value)> {
         if actual.BasicLimitInformation.LimitFlags != flags
             || actual.BasicLimitInformation.ActiveProcessLimit != 1
             || actual.ProcessMemoryLimit != MEMORY_LIMIT
-            || actual_ui.UIRestrictionsClass != 0xff
+            || actual_ui.UIRestrictionsClass != ui_flags
         {
             return Err("job limit readback mismatch".into());
         }
@@ -549,6 +549,33 @@ fn launch(
     native_lowbox_loader: bool,
     leak_only: bool,
 ) -> Result<Value> {
+    launch_variant(
+        input,
+        image,
+        sid,
+        parent_token,
+        loader_source,
+        sequence,
+        start_low,
+        native_lowbox_loader,
+        leak_only,
+        MITIGATIONS,
+        0xff,
+    )
+}
+fn launch_variant(
+    input: &Input,
+    image: &str,
+    sid: PSID,
+    parent_token: HANDLE,
+    loader_source: HANDLE,
+    sequence: &str,
+    start_low: bool,
+    native_lowbox_loader: bool,
+    leak_only: bool,
+    mitigation: u64,
+    ui_flags: u32,
+) -> Result<Value> {
     unsafe {
         let full = input.mode == "full";
         let lpac = input.mode != "plain";
@@ -566,7 +593,7 @@ fn launch(
         } else {
             None
         };
-        let mut job = if full { Some(job()?) } else { None };
+        let mut job = if full { Some(job(ui_flags)?) } else { None };
         let (child_in, parent_in) = pipe()?;
         let (parent_out, child_out) = pipe()?;
         let (parent_err, child_err) = pipe()?;
@@ -610,7 +637,7 @@ fn launch(
         let jobs = [job.as_ref().map(|j| j.0.0).unwrap_or(null_mut())];
         if full {
             attrs.add(PROC_THREAD_ATTRIBUTE_JOB_LIST, &jobs)?;
-            attrs.add(PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY, &MITIGATIONS)?;
+            attrs.add(PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY, &mitigation)?;
             attrs.add(PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY, &child_policy)?;
         }
         let mut startup: STARTUPINFOEXW = zeroed();
@@ -1086,6 +1113,42 @@ pub fn run() -> Result<()> {
                 None
             };
             let source = source_holder.as_ref().map(|h| h.0).unwrap_or(token.0);
+            let mut diagnostics = Vec::new();
+            if mode == "full" && selected["exit_code"] == "0xc0000142" {
+                for (label, mitigation, ui_flags) in [
+                    ("all mitigations off", 0, 0xff),
+                    ("dynamic code off", MITIGATIONS & !(1 << 36), 0xff),
+                    ("signature off", MITIGATIONS & !(1 << 44), 0xff),
+                    ("win32k off", MITIGATIONS & !(1 << 28), 0xff),
+                    ("strict handles off", MITIGATIONS & !(1 << 24), 0xff),
+                    ("extension points off", MITIGATIONS & !(1 << 32), 0xff),
+                    (
+                        "image load mitigations off",
+                        MITIGATIONS & !((1 << 52) | (1 << 56) | (1 << 60)),
+                        0xff,
+                    ),
+                    ("UI restrictions off", MITIGATIONS, 0),
+                    ("mitigations and UI off", 0, 0),
+                ] {
+                    let result = match launch_variant(
+                        &input,
+                        &image.to_string_lossy(),
+                        sid,
+                        token.0,
+                        source,
+                        label,
+                        true,
+                        native_loader,
+                        false,
+                        mitigation,
+                        ui_flags,
+                    ) {
+                        Ok(v) => v,
+                        Err(e) => json!({"error":e}),
+                    };
+                    diagnostics.push(json!({"label":label,"mitigation_mask":format!("0x{mitigation:016x}"),"ui_flags":hex(ui_flags),"result":result}));
+                }
+            }
             let isolated = match launch(
                 &input,
                 &image.to_string_lossy(),
@@ -1109,7 +1172,7 @@ pub fn run() -> Result<()> {
             while let Ok((n, from)) = udp.recv_from(&mut buffer) {
                 datagrams.push(json!({"from":from.to_string(),"payload":String::from_utf8_lossy(&buffer[..n])}));
             }
-            runs.push(json!({"mode":mode,"attempts":attempts,"isolated_leaked_handle":isolated,"loopback_observed":{"tcp_connections":tcp_count,"udp_datagrams":datagrams}}));
+            runs.push(json!({"mode":mode,"attempts":attempts,"diagnostics":diagnostics,"isolated_leaked_handle":isolated,"loopback_observed":{"tcp_connections":tcp_count,"udp_datagrams":datagrams}}));
         }
         drop(leaked);
         let leaked_content = fs::read(&leak_name).map_err(|e| e.to_string())?;
