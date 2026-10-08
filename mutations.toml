@@ -1998,8 +1998,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/install.rs"
-old = "if flow(tx, flow_id)?.and_then(|f| f.disabled_by).as_deref() == Some(CORE_ACTOR) {"
-new = "if false {"
+old = "if flow(tx, flow_id)?.is_some_and(|f| {\n        f.disabled_by.as_deref() == Some(CORE_ACTOR)\n            && f.disabled_reason.as_deref() != Some(\"agent_retired\")\n    }) {"
+new = "if false { // NON-VACUITY BREAK"
 
 # schedule: 35 controls
 [[control]]
@@ -3457,8 +3457,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/install.rs"
-old = "Some(RUNTIME_ACTOR) => return Err(refused()),"
-new = "Some(RUNTIME_ACTOR) => {}"
+old = "match record.disabled_by.as_deref() {\n                Some(by) if by == own => {}\n                _ => return Err(refused()),\n            }"
+new = "match record.disabled_by.as_deref() {\n                Some(by) if by == own => {}\n                Some(RUNTIME_ACTOR) => {} // NON-VACUITY BREAK\n                _ => return Err(refused()),\n            }"
 
 [[control]]
 id = "an-operator-disable-of-a-flow-the-owner-disabled-changes-nothing"
