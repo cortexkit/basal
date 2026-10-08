@@ -861,10 +861,9 @@ impl Activation<'_> {
             call.kind,
             CallKind::Primitive(Primitive::SinkDigest | Primitive::SinkStatus | Primitive::Facts)
         ) && args["agent"] == "$self"
+            && let Some(agent) = self.input["agent_id"].as_str()
         {
-            if let Some(agent) = self.input["agent_id"].as_str() {
-                args["agent"] = Value::String(agent.to_owned());
-            }
+            args["agent"] = Value::String(agent.to_owned());
         }
         if matches!(call.kind, CallKind::Primitive(Primitive::SinkDigest))
             && args.get("action").is_none_or(Value::is_null)
