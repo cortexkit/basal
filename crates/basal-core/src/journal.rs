@@ -59,6 +59,13 @@ pub fn row(conn: &Connection, run_id: &str, position: u64) -> Result<Option<Call
 /// How many calls a run has journaled and how many bytes its journal holds
 /// (arguments, requests sent and outcomes, the mailbox included).
 pub fn run_size(conn: &Connection, run_id: &str) -> Result<(u64, u64)> {
+    if let Some(size) = cached_size(conn, run_id)? {
+        return Ok(size);
+    }
+    scan_size(conn, run_id)
+}
+
+fn scan_size(conn: &Connection, run_id: &str) -> Result<(u64, u64)> {
     let (calls, journal_bytes): (i64, i64) = conn.query_row(
         "SELECT COUNT(*), COALESCE(SUM(length(CAST(args AS BLOB)) \
          + COALESCE(length(CAST(value AS BLOB)), 0) \
@@ -79,11 +86,71 @@ pub fn run_size(conn: &Connection, run_id: &str) -> Result<(u64, u64)> {
 
 pub fn call_count(conn: &Connection, run_id: &str) -> Result<u64> {
     let n: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM journal WHERE run_id = ?1",
+        "SELECT COALESCE(MAX(position)+1,0) FROM journal WHERE run_id = ?1",
         [run_id],
         |r| r.get(0),
     )?;
     to_u64(n, "call count")
+}
+
+fn size_keys(run_id: &str) -> (String, String) {
+    (
+        format!("journal_calls:{run_id}"),
+        format!("journal_bytes:{run_id}"),
+    )
+}
+
+fn cached_size(conn: &Connection, run_id: &str) -> Result<Option<(u64, u64)>> {
+    let (calls_key, bytes_key) = size_keys(run_id);
+    let (calls, bytes): (Option<String>, Option<String>) = conn.query_row(
+        "SELECT (SELECT value FROM meta WHERE key=?1),(SELECT value FROM meta WHERE key=?2)",
+        params![calls_key, bytes_key],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    match (calls, bytes) {
+        (Some(calls), Some(bytes)) => Ok(Some((
+            calls
+                .parse()
+                .map_err(|_| CoreError::Corrupt("journal call counter".into()))?,
+            bytes
+                .parse()
+                .map_err(|_| CoreError::Corrupt("journal byte counter".into()))?,
+        ))),
+        (None, None) => Ok(None),
+        _ => Err(CoreError::Corrupt("partial journal counters".into())),
+    }
+}
+
+// Existing stores are counted once on their first write. Thereafter the
+// counters commit/roll back with every added byte, including mailbox arrivals.
+// Releasing a mailbox value just moves bytes already counted, not new bytes.
+fn ensure_size(tx: &Transaction, run_id: &str) -> Result<()> {
+    if cached_size(tx, run_id)?.is_none() {
+        let (calls, bytes) = scan_size(tx, run_id)?;
+        let (calls_key, bytes_key) = size_keys(run_id);
+        tx.execute(
+            "INSERT INTO meta(key,value) VALUES (?1,?2),(?3,?4)",
+            params![calls_key, calls.to_string(), bytes_key, bytes.to_string()],
+        )?;
+    }
+    Ok(())
+}
+
+fn bump_size(tx: &Transaction, run_id: &str, calls: u64, bytes: usize) -> Result<()> {
+    let (calls_key, bytes_key) = size_keys(run_id);
+    tx.execute(
+        "UPDATE meta SET value=CAST(value AS INTEGER)+?2 WHERE key=?1",
+        params![calls_key, pos(calls)?],
+    )?;
+    tx.execute(
+        "UPDATE meta SET value=CAST(value AS INTEGER)+?2 WHERE key=?1",
+        params![
+            bytes_key,
+            i64::try_from(bytes)
+                .map_err(|_| CoreError::Invalid("journal byte count exceeds i64".into()))?
+        ],
+    )?;
+    Ok(())
 }
 
 /// The prefix a worker replays: every issued call, with the outcomes that
@@ -123,12 +190,14 @@ pub fn insert_call(
         StoredClass::Sync | StoredClass::Local => (DispatchState::None, 0),
         _ => (DispatchState::Sent, 1),
     };
+    let next = call_count(tx, &lease.run_id)?;
+    ensure_size(tx, &lease.run_id)?;
     let changed = tx.execute(
         &format!(
             "INSERT INTO journal (run_id, position, kind_code, module, op, args, args_digest, \
              idempotency_key, class, dispatch, attempts, issued_generation, request) \
              SELECT ?1, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?3, ?14 \
-             WHERE {FENCE} AND ?4 = (SELECT COUNT(*) FROM journal WHERE run_id = ?1)"
+             WHERE {FENCE} AND ?4 = ?15"
         ),
         params![
             lease.run_id,
@@ -145,6 +214,7 @@ pub fn insert_call(
             dispatch.as_str(),
             attempts,
             call.request.map(JsonText::as_str),
+            pos(next)?,
         ],
     )?;
     if changed == 0 {
@@ -157,6 +227,12 @@ pub fn insert_call(
             )),
         ));
     }
+    bump_size(
+        tx,
+        &lease.run_id,
+        1,
+        call.args.len() + call.request.map_or(0, JsonText::len),
+    )?;
     Ok(key)
 }
 
@@ -165,8 +241,8 @@ const NEXT_ORDER: &str =
     "(SELECT COALESCE(MAX(delivery_order) + 1, 0) FROM journal WHERE run_id = ?1)";
 
 /// Records a synchronous call's value together with its delivery order,
-/// fenced. Done in the transaction that journals the call (or, for a row
-/// journaled without its value, before the value is sent).
+/// fenced. Done in the transaction that journals the call, before the value
+/// is sent, so recovery can never find a synchronous row without its value.
 pub fn record_sync(
     tx: &Transaction,
     lease: &Lease,
@@ -175,6 +251,7 @@ pub fn record_sync(
     value: &JsonText,
     clock_ms: Option<f64>,
 ) -> Result<Outcome> {
+    ensure_size(tx, &lease.run_id)?;
     let hash = payload_hash(settlement, value);
     let changed = tx.execute(
         &format!(
@@ -204,6 +281,7 @@ pub fn record_sync(
         params![lease.run_id, pos(position)?],
         |r| r.get(0),
     )?;
+    bump_size(tx, &lease.run_id, 0, value.len())?;
     Ok(Outcome {
         position,
         settlement,
@@ -264,8 +342,18 @@ pub fn defer(
     retry_at: i64,
 ) -> Result<()> {
     let detail = serde_json::to_string(refusal).map_err(|e| CoreError::Invalid(e.to_string()))?;
-    tx.execute("UPDATE journal SET dispatch = 'deferred', refusal = ?3, retry_not_before = ?4, refusal_detail = ?5 WHERE run_id = ?1 AND position = ?2 AND settlement IS NULL AND dispatch IN ('sent', 'deferred')",
-        params![run_id, pos(position)?, refusal.reason.as_str(), retry_at, detail])?;
+    tx.execute(
+        "UPDATE journal SET dispatch = 'deferred', refusal = ?3, retry_not_before = ?4, \
+         refusal_detail = ?5 WHERE run_id = ?1 AND position = ?2 AND settlement IS NULL \
+         AND dispatch IN ('sent', 'deferred')",
+        params![
+            run_id,
+            pos(position)?,
+            refusal.reason.as_str(),
+            retry_at,
+            detail
+        ],
+    )?;
     Ok(())
 }
 
@@ -281,36 +369,110 @@ pub fn deferred_until(conn: &Connection, run_id: &str, position: u64) -> Result<
 /// Make suspended runs with due, provably unsent calls runnable again so
 /// their next activation can retry the calls already recorded in the journal.
 pub fn wake_deferred(tx: &Transaction, now: i64, only: Option<&str>) -> Result<()> {
-    tx.execute("UPDATE runs SET state = 'pending', awaited = NULL WHERE state = 'suspended' AND (?2 IS NULL OR run_id = ?2) AND EXISTS (SELECT 1 FROM journal WHERE journal.run_id = runs.run_id AND dispatch = 'deferred' AND retry_not_before <= ?1)", params![now, only])?;
+    tx.execute(
+        "UPDATE runs SET state = 'pending', awaited = NULL WHERE state = 'suspended' \
+         AND (?2 IS NULL OR run_id = ?2) AND EXISTS (SELECT 1 FROM journal \
+         WHERE journal.run_id = runs.run_id AND dispatch = 'deferred' AND retry_not_before <= ?1)",
+        params![now, only],
+    )?;
     Ok(())
 }
 
-/// Expiry closes every known-unsent obligation atomically with the run. No
-/// worker activation is allowed after the deadline merely to deliver it.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct SavedRefusal {
+    flow_id: String,
+    run_id: String,
+    position: i64,
+    kind_code: i64,
+    module: Option<String>,
+    op: Option<String>,
+    args: String,
+    key: String,
+    attempt: u32,
+    detail: String,
+}
+
+impl SavedRefusal {
+    pub(crate) fn request(&self) -> Result<basal_host::CallRequest> {
+        Ok(basal_host::CallRequest {
+            flow_id: self.flow_id.clone(),
+            run_id: self.run_id.clone(),
+            position: to_u64(self.position, "position")?,
+            kind: crate::model::kind_from_columns(
+                self.kind_code,
+                self.module.clone(),
+                self.op.clone(),
+            )?,
+            args: json(self.args.clone(), "dispatch args")?,
+            idempotency_key: self.key.clone(),
+            attempt: self.attempt,
+        })
+    }
+
+    pub(crate) fn refusal(&self) -> Result<basal_host::flow_refusal::FlowRefusal> {
+        match serde_json::from_str(&self.detail) {
+            Ok(refusal) => Ok(refusal),
+            Err(error) => {
+                // The database checks the refusal's reason, provider and
+                // action at insertion. Optional display/retry fields must
+                // not prevent closing an already proven-unsent obligation.
+                tracing::warn!(run_id=%self.run_id, position=self.position, %error, "ignoring malformed optional refusal fields");
+                let mut value: serde_json::Value = serde_json::from_str(&self.detail)
+                    .map_err(|e| CoreError::Corrupt(e.to_string()))?;
+                value["retry_after_ms"] = serde_json::Value::Null;
+                value["detail"] = serde_json::Value::Null;
+                serde_json::from_value(value).map_err(|e| CoreError::Corrupt(e.to_string()))
+            }
+        }
+    }
+}
+
+/// Closes known-unsent obligations whenever a run becomes terminal. The
+/// acknowledgement intent commits with the outcome, so a restart between
+/// commit and notification cannot strand a provider's durable snapshot.
 pub fn expire_deferred(tx: &Transaction, run_id: &str) -> Result<()> {
-    let mut stmt=tx.prepare("SELECT position,refusal_detail FROM journal WHERE run_id=?1 AND dispatch='deferred' ORDER BY position")?;
+    let mut stmt = tx.prepare(
+        "SELECT r.flow_id,j.position,j.kind_code,j.module,j.op,COALESCE(j.request,j.args),\
+         j.idempotency_key,j.attempts,j.refusal_detail FROM journal j JOIN runs r USING(run_id) \
+         WHERE j.run_id=?1 AND j.dispatch='deferred' ORDER BY j.position",
+    )?;
     let rows = stmt
         .query_map([run_id], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            Ok(SavedRefusal {
+                flow_id: r.get(0)?,
+                run_id: run_id.to_owned(),
+                position: r.get(1)?,
+                kind_code: r.get(2)?,
+                module: r.get(3)?,
+                op: r.get(4)?,
+                args: r.get(5)?,
+                key: r.get(6)?,
+                attempt: r.get(7)?,
+                detail: r.get(8)?,
+            })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     drop(stmt);
-    let flow: String = tx.query_row("SELECT flow_id FROM runs WHERE run_id=?1", [run_id], |r| {
-        r.get(0)
-    })?;
-    for (position, detail) in rows {
-        let refusal: basal_host::flow_refusal::FlowRefusal =
-            serde_json::from_str(&detail).map_err(|e| CoreError::Corrupt(e.to_string()))?;
-        tx.execute("UPDATE journal SET dispatch='sent',refusal=NULL,retry_not_before=NULL,refusal_detail=NULL WHERE run_id=?1 AND position=?2",params![run_id,position])?;
+    for saved in rows {
+        let refusal = saved.refusal()?;
+        tx.execute(
+            "UPDATE journal SET dispatch='sent',refusal=NULL,retry_not_before=NULL,refusal_detail=NULL \
+             WHERE run_id=?1 AND position=?2", params![run_id,saved.position],
+        )?;
         accept_outcome(
             tx,
             run_id,
-            crate::model::to_u64(position, "position")?,
+            to_u64(saved.position, "position")?,
             None,
             &refusal.outcome(),
             Source::Host,
         )?;
-        crate::flow_scope::health(tx, &flow, &refusal)?;
+        crate::flow_scope::health(tx, &saved.flow_id, &refusal)?;
+        let body = serde_json::to_string(&saved).map_err(|e| CoreError::Corrupt(e.to_string()))?;
+        tx.execute(
+            "INSERT INTO outbox(at,kind,flow_id,body) VALUES (?1,'refusal_committed',?2,?3)",
+            params![now_ms(), saved.flow_id, body],
+        )?;
     }
     Ok(())
 }
@@ -334,26 +496,30 @@ pub fn release_next(
         |r| r.get(0),
     )?;
     let readiness = to_u64(readiness, "readiness")?;
-    let mut stmt = tx.prepare(
-        "SELECT seq, position, settlement, value, payload_hash FROM mailbox \
-         WHERE run_id = ?1 ORDER BY seq",
-    )?;
-    let entries = stmt
-        .query_map([&lease.run_id], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, i64>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, Vec<u8>>(4)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    drop(stmt);
-    let Some((seq, position, settlement, value, hash)) = entries
-        .into_iter()
-        .find(|e| u64::try_from(e.1).is_ok_and(|p| awaiting.contains(&p)))
-    else {
+    let positions = awaiting
+        .iter()
+        .copied()
+        .map(pos)
+        .collect::<Result<Vec<_>>>()?;
+    let positions =
+        serde_json::to_string(&positions).map_err(|e| CoreError::Invalid(e.to_string()))?;
+    let entry = tx
+        .query_row(
+            "SELECT seq, position, settlement, value, payload_hash FROM mailbox \
+         WHERE run_id=?1 AND position IN (SELECT value FROM json_each(?2)) ORDER BY seq LIMIT 1",
+            params![lease.run_id, positions],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, Vec<u8>>(4)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((seq, position, settlement, value, hash)) = entry else {
         return Ok((None, readiness));
     };
     let changed = tx.execute(
@@ -526,6 +692,7 @@ pub fn accept_outcome(
         quarantine(tx, run_id, p, handle, outcome, &hash, "run_cancelled")?;
         return Ok(not_woken(CompletionAck::Refused));
     }
+    ensure_size(tx, run_id)?;
     tx.execute(
         "INSERT INTO mailbox (run_id, position, handle, settlement, value, payload_hash, \
          source, arrived_generation) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -540,6 +707,7 @@ pub fn accept_outcome(
             generation
         ],
     )?;
+    bump_size(tx, run_id, 0, outcome.value.len())?;
     if handle.is_some() && row_handle.is_none() {
         tx.execute(
             "UPDATE journal SET handle = ?3 WHERE run_id = ?1 AND position = ?2",
@@ -585,13 +753,16 @@ pub fn record_unknown(
     position: u64,
     reason: UnknownReason,
 ) -> Result<()> {
-    tx.execute(
+    let changed = tx.execute(
         "UPDATE journal SET dispatch = 'unknown', unknown_reason = ?3 \
          WHERE run_id = ?1 AND position = ?2 \
          AND settlement IS NULL AND NOT EXISTS \
          (SELECT 1 FROM mailbox WHERE run_id = ?1 AND position = ?2)",
         params![run_id, pos(position)?, reason.as_str()],
     )?;
+    if changed == 0 {
+        return Ok(());
+    }
     tx.execute(
         "UPDATE runs SET state = 'needs_reconcile', awaited = NULL, \
          error_kind = 'unknown_outcome', error_detail = ?2 \

@@ -188,7 +188,7 @@ impl Fixture {
                 activation_deadline,
                 install_gate: InstallGate::Core,
                 clock: clock.clone(),
-                retry_backoff: Duration::from_millis(100),
+                deferral_retry: Duration::from_millis(100),
                 auto_resume: false,
                 ..Config::default()
             },

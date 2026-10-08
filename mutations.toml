@@ -576,8 +576,8 @@ build_timeout_s = 3600
 # 20- or 60-second activation budget. Allow their failures to finish under load.
 timeout_s = 7200
 file = "crates/basal-core/src/journal.rs"
-old = "payload_hash FROM mailbox \\\n         WHERE run_id = ?1 ORDER BY seq\","
-new = "payload_hash FROM mailbox \\\n         WHERE run_id = ?1 AND arrived_generation < (SELECT generation FROM runs WHERE run_id = ?1) ORDER BY seq\", // NON-VACUITY BREAK"
+old = "WHERE run_id=?1 AND position IN (SELECT value FROM json_each(?2)) ORDER BY seq LIMIT 1"
+new = "WHERE run_id=?1 AND position IN (SELECT value FROM json_each(?2)) AND arrived_generation < (SELECT generation FROM runs WHERE run_id=?1) ORDER BY seq LIMIT 1"
 
 [[control]]
 id = "rejections-journaled-as-fulfilments-caught-rejection"
@@ -694,7 +694,6 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 edits = [
-  { file = "crates/basal-core/src/driver.rs", old = "let value = last.map_or(now, |last| now.max(last));", new = "let value = last.map_or(now, |_| now);" },
   { file = "crates/basal-core/src/driver.rs", old = "(Some(c), Some(last)) => Some(c.max(last)),", new = "(Some(c), Some(_)) => Some(c)," },
 ]
 
@@ -710,8 +709,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/journal.rs"
-old = "WHERE {FENCE} AND ?4 = (SELECT COUNT(*) FROM journal WHERE run_id = ?1)"
-new = "WHERE (1 OR {FENCE}) AND ?4 = (SELECT COUNT(*) FROM journal WHERE run_id = ?1)"
+old = "WHERE {FENCE} AND ?4 = ?15"
+new = "WHERE (1 OR {FENCE}) AND ?4 = ?15"
 
 [[control]]
 id = "recovery-resends-a-call-this-process-is-still-dispatching"
@@ -758,7 +757,7 @@ timeout_s = 600
 file = "crates/basal-core/src/driver.rs"
 # Dispatch only on a failed commit: successful calls must not be sent twice.
 old = "                    self.on_host_call(call)?"
-new = "                    let flow = self.on_host_call(call.clone());\n                    if flow.is_err() && self.rt.store().read(|_| Ok(())).is_err()\n                        && matches!(self.rt.class_of(&call.kind, &call.args), StoredClass::Query | StoredClass::KeyedMutation | StoredClass::Mutation)\n                        && let Ok(prepared) = self.prepare(&call) { // NON-VACUITY BREAK\n                        let flow_id = self.run.flow_id.clone();\n                        let run_id = self.lease.run_id.clone();\n                        let _ = self.rt.shared.host.dispatch(&basal_host::CallRequest { flow_id: flow_id.clone(), run_id: run_id.clone(), position: call.position, kind: call.kind, args: prepared.request.unwrap_or(call.args), idempotency_key: crate::ids::idempotency_key(&flow_id, &run_id, call.position), attempt: 1 });\n                    }\n                    flow?"
+new = "                    let flow = self.on_host_call(call.clone());\n                    if flow.is_err() && self.rt.store().read(|_| Ok(())).is_err()\n                        && matches!(self.rt.class_of(&call.kind, serde_json::from_str::<serde_json::Value>(call.args.as_str()).ok().as_ref()), StoredClass::Query | StoredClass::KeyedMutation | StoredClass::Mutation)\n                        && let Ok(prepared) = self.prepare(&call) { // NON-VACUITY BREAK\n                        let flow_id = self.run.flow_id.clone();\n                        let run_id = self.lease.run_id.clone();\n                        let _ = self.rt.shared.host.dispatch(&basal_host::CallRequest { flow_id: flow_id.clone(), run_id: run_id.clone(), position: call.position, kind: call.kind, args: prepared.request.unwrap_or(call.args), idempotency_key: crate::ids::idempotency_key(&flow_id, &run_id, call.position), attempt: 1 });\n                    }\n                    flow?"
 
 [[control]]
 id = "recovery-resends-a-mutation-that-ignores-idempotency-keys"
@@ -943,8 +942,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/retention.rs"
-old = "if !journal::unsettled_positions(tx, &run_id)?.is_empty() {"
-new = "if false && !journal::unsettled_positions(tx, &run_id)?.is_empty() {"
+old = 'const OBLIGATIONS: &str = "EXISTS (SELECT 1 FROM journal'
+new = 'const OBLIGATIONS: &str = "0 AND EXISTS (SELECT 1 FROM journal'
 
 [[control]]
 id = "pruning-touches-runs-that-have-not-ended"
@@ -957,9 +956,10 @@ expect_red = ["pruning_spares_unfinished_runs_and_open_obligations"]
 only = false
 build_timeout_s = 3600
 timeout_s = 600
-file = "crates/basal-core/src/retention.rs"
-old = "WHERE state IN ('succeeded', 'failed', 'engine_mismatch', 'cancelled') \\\n         AND ended_at IS NOT NULL AND ended_at <= ?1"
-new = "WHERE state IN ('succeeded', 'failed', 'engine_mismatch', 'cancelled', 'pending', 'suspended') \\\n         AND (ended_at IS NULL OR ended_at <= ?1)"
+edits = [
+  { file = "crates/basal-core/src/retention.rs", old = "WHERE r.state IN ('succeeded','failed','engine_mismatch','cancelled') \\\n         AND r.ended_at<=?1 AND {predicate}", new = "WHERE r.state IN ('succeeded','failed','engine_mismatch','cancelled','pending','suspended') \\\n         AND (r.ended_at IS NULL OR r.ended_at<=?1) AND {predicate}" },
+  { file = "crates/basal-core/src/retention.rs", old = "WHERE r.state IN ('succeeded','failed','engine_mismatch','cancelled') \\\n         AND r.ended_at<=?1 AND r.run_id=?2", new = "WHERE r.state IN ('succeeded','failed','engine_mismatch','cancelled','pending','suspended') \\\n         AND (r.ended_at IS NULL OR r.ended_at<=?1) AND r.run_id=?2" },
+]
 
 [[control]]
 id = "store-runs-synchronous-normal"
@@ -1998,8 +1998,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/install.rs"
-old = "if flow(tx, flow_id)?.and_then(|f| f.disabled_by).as_deref() == Some(CORE_ACTOR) {"
-new = "if false {"
+old = "if flow(tx, flow_id)?.is_some_and(|f| {\n        f.disabled_by.as_deref() == Some(CORE_ACTOR)\n            && f.disabled_reason.as_deref() != Some(\"agent_retired\")\n    }) {"
+new = "if false { // NON-VACUITY BREAK"
 
 # schedule: 35 controls
 [[control]]
@@ -3457,8 +3457,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/install.rs"
-old = "Some(RUNTIME_ACTOR) => return Err(refused()),"
-new = "Some(RUNTIME_ACTOR) => {}"
+old = "match record.disabled_by.as_deref() {\n                Some(by) if by == own => {}\n                _ => return Err(refused()),\n            }"
+new = "match record.disabled_by.as_deref() {\n                Some(by) if by == own => {}\n                Some(RUNTIME_ACTOR) => {} // NON-VACUITY BREAK\n                _ => return Err(refused()),\n            }"
 
 [[control]]
 id = "an-operator-disable-of-a-flow-the-owner-disabled-changes-nothing"
@@ -6361,8 +6361,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/runs.rs"
-old = "crate::journal::expire_deferred(tx, run_id)?;"
-new = "let _ = run_id; // NON-VACUITY BREAK"
+old = "for (run_id, _) in &expired {\n        crate::journal::expire_deferred(tx, run_id)?;"
+new = "for (run_id, _) in &expired { // NON-VACUITY BREAK"
 
 [[control]]
 id = "flow-busy-wait-exceeds-run-deadline"
@@ -6841,8 +6841,8 @@ hub = "Agent targets and install_refuses_what_an_agent_may_not_do both assert th
 hub_targets = ["ops"]
 guards = "agent-owned flows cannot target another agent"
 file = "crates/basal-core/src/install.rs"
-old = 'if author != "operator" && author != "local:unverified" {'
-new = 'if false && author != "operator" && author != "local:unverified" { // NON-VACUITY BREAK'
+old = 'if author != crate::decisions::OPERATOR_ACTOR && author != "local:unverified" {'
+new = 'if false && author != crate::decisions::OPERATOR_ACTOR && author != "local:unverified" { // NON-VACUITY BREAK'
 edits = []
 test_file = "crates/basal-module/tests/agent_targets.rs"
 runner = "cargo"
@@ -7287,6 +7287,23 @@ build_timeout_s = 3600
 
 
 [[control]]
+id = "audit-b-ambiguous-send-is-not-a-scope-refusal"
+guards = "An ambiguous mutation send stays unknown when its resend is scope-refused"
+file = "crates/basal-core/src/runtime.rs"
+old = "if let Some(reason) = maybe_sent {"
+new = "if let Some(reason) = maybe_sent.filter(|_| refusal.reason != RefusalReason::FlowScopeRequired) { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-core/src/runtime_regressions.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+expect_red = ["runtime::regressions::scope_refusal_after_an_ambiguous_send_stays_unknown"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
 id = "worker-stack-trace-hook-exposes-private-functions"
 guards = "worker stack trace hook exposes private functions"
 file = "crates/basal-worker/src/prelude.js"
@@ -7332,6 +7349,23 @@ runner = "cargo"
 package = "basal-core"
 target = "--lib"
 expect_red = ["audit_regression_tests::facts_include_must_be_an_array"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "audit-b-terminal-deferred-settlement"
+guards = "terminal transitions settle every deferred call"
+file = "crates/basal-core/src/runs.rs"
+old = "if state.is_terminal() {"
+new = "if state.is_terminal() && state != RunState::EngineMismatch { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-core/src/runtime_regressions.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+expect_red = ["runtime::regressions::terminal_transitions_settle_every_deferred_call"]
 only = true
 timeout_s = 600
 build_timeout_s = 3600
@@ -7616,6 +7650,25 @@ build_timeout_s = 3600
 
 
 [[control]]
+id = "audit-b-claim-flushes-refusal-intents"
+guards = "claim expiry acknowledges the deferred snapshot after commit"
+file = "crates/basal-core/src/driver.rs"
+old = """
+Ok(Err(end)) => {
+                self.flush_refusals()?;"""
+new = "Ok(Err(end)) => { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-core/src/runtime_regressions.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+expect_red = ["runtime::regressions::claim_expiry_acknowledges_the_deferred_snapshot_after_commit"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
 id = "worker-rejection-orphans-outstanding-outcomes"
 guards = "worker rejection orphans outstanding outcomes"
 file = "crates/basal-worker/src/engine.rs"
@@ -7654,6 +7707,33 @@ build_timeout_s = 3600
 
 
 [[control]]
+id = "audit-b-mailbox-winner-prevents-reconcile"
+guards = "a mailbox winner prevents a false reconcile transition"
+file = "crates/basal-core/src/journal.rs"
+old = """
+if changed == 0 {
+        return Ok(());
+    }
+    tx.execute(
+        "UPDATE runs SET state = 'needs_reconcile'"""
+new = """
+if false && changed == 0 { // NON-VACUITY BREAK
+        return Ok(());
+    }
+    tx.execute(
+        "UPDATE runs SET state = 'needs_reconcile'"""
+edits = []
+test_file = "crates/basal-core/src/runtime_regressions.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+expect_red = ["runtime::regressions::a_mailbox_winner_prevents_a_false_reconcile_transition"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
 id = "corrupt-schedule-stops-all-planning"
 guards = "invalid persisted schedules must be isolated while healthy schedules keep ticking"
 file = "crates/basal-core/src/schedule/mod.rs"
@@ -7665,6 +7745,27 @@ runner = "cargo"
 package = "basal-core"
 target = "--lib"
 expect_red = ["audit_regression_tests::corrupt_schedule_does_not_block_healthy_schedules"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "audit-b-domain-error-retires-claim"
+guards = "a non storage driver error exits the claim and frees the slot"
+file = "crates/basal-core/src/driver.rs"
+old = """
+Err(e)
+                if !matches!("""
+new = """
+Err(e)
+                if false && !matches!( // NON-VACUITY BREAK"""
+edits = []
+test_file = "crates/basal-core/src/runtime_regressions.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+expect_red = ["runtime::regressions::a_non_storage_driver_error_exits_the_claim_and_frees_the_slot"]
 only = true
 timeout_s = 600
 build_timeout_s = 3600
@@ -7689,6 +7790,23 @@ runner = "cargo"
 package = "basal-core"
 target = "--lib"
 expect_red = ["audit_regression_tests::corrupt_oldest_fire_does_not_block_healthy_fires"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "audit-b-production-retention-prunes-runs"
+guards = "retention runs from the production deadline pass"
+file = "crates/basal-core/src/retention.rs"
+old = "let runs = self.prune(now, millis(config.runs))?;"
+new = "let runs = PruneReport::default(); // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-core/src/runtime_regressions.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+expect_red = ["runtime::regressions::retention_runs_from_the_production_deadline_pass"]
 only = true
 timeout_s = 600
 build_timeout_s = 3600
@@ -7769,6 +7887,23 @@ runner = "cargo"
 package = "basal-core"
 target = "--lib"
 expect_red = ["schema::health_tests::additive_health_indexes_preserve_populated_tables_in_every_state"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "audit-b-malformed-optional-refusal-is-tolerated"
+guards = "malformed optional refusal detail does not halt deadline enforcement"
+file = "crates/basal-core/src/journal.rs"
+old = 'value["retry_after_ms"] = serde_json::Value::Null;'
+new = '// NON-VACUITY BREAK: value["retry_after_ms"] = serde_json::Value::Null;'
+edits = []
+test_file = "crates/basal-core/src/runtime_regressions.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+expect_red = ["runtime::regressions::malformed_optional_refusal_detail_does_not_halt_deadline_enforcement"]
 only = true
 timeout_s = 600
 build_timeout_s = 3600
@@ -8010,6 +8145,23 @@ build_timeout_s = 3600
 
 
 [[control]]
+id = "audit-b-retirement-is-not-version-disapproval"
+guards = "retirement fails through the terminal transition and blocks approval reenable"
+file = "crates/basal-core/src/install.rs"
+old = '&& f.disabled_reason.as_deref() != Some("agent_retired")'
+new = "&& true // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-core/src/runtime_regressions.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+expect_red = ["runtime::regressions::retirement_fails_through_the_terminal_transition_and_blocks_approval_reenable"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
 id = "module-kill-signals-reaped-worker-pid"
 guards = "a reaped worker pid is never signalled after its lease is gone"
 file = "crates/basal-module/src/process.rs"
@@ -8022,6 +8174,23 @@ package = "basal-module"
 target = "--lib"
 expect_red = ["process::buffer_tests::a_reaped_worker_handle_never_signals_a_recycled_pid"]
 only = false
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "audit-b-retention-keeps-unacknowledged-broca"
+guards = "pruning keeps unacknowledged broca snapshots and open cards"
+file = "crates/basal-core/src/retention.rs"
+old = "b.run_id=r.run_id AND COALESCE(json_extract(b.snapshot,'$.acknowledged'),0)=0"
+new = "b.run_id=r.run_id AND COALESCE(json_extract(b.snapshot,'$.acknowledged'),0)=0 AND 0 /* NON-VACUITY BREAK */"
+edits = []
+test_file = "crates/basal-core/src/runtime_regressions.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+expect_red = ["runtime::regressions::pruning_keeps_unacknowledged_broca_snapshots_and_open_cards"]
+only = true
 timeout_s = 600
 build_timeout_s = 3600
 
@@ -8048,6 +8217,23 @@ build_timeout_s = 3600
 
 
 [[control]]
+id = "audit-b-retention-keeps-refusal-intents"
+guards = "pruning preserves a terminal run until its refusal acknowledgement is delivered"
+file = "crates/basal-core/src/retention.rs"
+old = "o.kind='refusal_committed' AND json_extract(o.body,'$.run_id')=r.run_id"
+new = "o.kind='refusal_committed' AND json_extract(o.body,'$.run_id')=r.run_id AND 0 /* NON-VACUITY BREAK */"
+edits = []
+test_file = "crates/basal-core/src/runtime_regressions.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+expect_red = ["runtime::regressions::pruning_preserves_a_terminal_run_until_its_refusal_acknowledgement_is_delivered"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
 id = "module-replay-count-masks-store-failure"
 guards = "reading the replay count cannot turn a storage failure into zero calls"
 file = "crates/basal-module/src/engine.rs"
@@ -8060,6 +8246,23 @@ package = "basal-module"
 target = "--lib"
 expect_red = ["engine::lifecycle_tests::journal_count_failure_is_fatal_not_zero_replayed_calls"]
 only = false
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "audit-b-production-retention-prunes-history"
+guards = "retention prunes old history but keeps live obligations and card episodes"
+file = "crates/basal-core/src/retention.rs"
+old = "let history_full = self.prune_history(now, now.saturating_sub(millis(config.history)))?;"
+new = "let history_full = false; // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-core/src/runtime_regressions.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+expect_red = ["runtime::regressions::retention_prunes_old_history_but_keeps_live_obligations_and_card_episodes"]
+only = true
 timeout_s = 600
 build_timeout_s = 3600
 
@@ -8083,6 +8286,27 @@ package = "basal-module"
 target = "--test module_lifecycle"
 expect_red = ["health_uses_the_same_owner_disable_kind_as_list"]
 only = false
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "audit-b-wait-timeout-is-not-success"
+guards = "wait for reports unsatisfied predicates as timeouts"
+file = "crates/basal-core/src/runtime.rs"
+old = """
+return Err(CoreError::Timeout {
+                    run_id: run_id.to_owned(),
+                    state,
+                });"""
+new = "return Ok(state); // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-core/src/runtime_regressions.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+expect_red = ["runtime::regressions::wait_for_reports_unsatisfied_predicates_as_timeouts"]
+only = true
 timeout_s = 600
 build_timeout_s = 3600
 
@@ -8114,6 +8338,23 @@ package = "basal-module"
 target = "--test module_lifecycle"
 expect_red = ["failed_start_does_not_bind_or_retain_the_store"]
 only = false
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "audit-b-spawn-reaps-completed-handles"
+guards = "completed thread handles are reaped during normal spawning"
+file = "crates/basal-core/src/runtime.rs"
+old = "threads.retain(|h| !h.is_finished());"
+new = "// NON-VACUITY BREAK: threads.retain(|h| !h.is_finished());"
+edits = []
+test_file = "crates/basal-core/src/runtime_regressions.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+expect_red = ["runtime::regressions::completed_thread_handles_are_reaped_during_normal_spawning"]
+only = true
 timeout_s = 600
 build_timeout_s = 3600
 
@@ -8435,4 +8676,38 @@ expect_red = ["saved_params_are_compact_and_read_legacy_byte_arrays"]
 only = true
 timeout_s = 600
 build_timeout_s = 7200
+
+
+[[control]]
+id = "audit-b-retention-full-batches-catch-up"
+guards = "Full retention batches prompt another bounded pass rather than impose an hourly throughput ceiling"
+file = "crates/basal-core/src/retention.rs"
+old = "let backlog = runs.pruned.len() == BATCH || history_full;"
+new = "let backlog = false && (runs.pruned.len() == BATCH || history_full); // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-core/tests/retention_backlog.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--test retention_backlog"
+expect_red = ["production_retention_catches_up_full_batches_without_waiting_a_whole_interval"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "audit-b-retention-history-only-backlogs-catch-up"
+guards = "A full history batch schedules catch-up even when there are no terminal runs to prune"
+file = "crates/basal-core/src/retention.rs"
+old = "let backlog = runs.pruned.len() == BATCH || history_full;"
+new = "let backlog = runs.pruned.len() == BATCH || false; // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-core/tests/retention_backlog.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--test retention_backlog"
+expect_red = ["production_retention_catches_up_full_batches_without_waiting_a_whole_interval"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
 

@@ -81,7 +81,9 @@ struct Activation<'a> {
     long_reported: BTreeSet<u64>,
     /// The run's readiness sequence as of the last mailbox check.
     readiness_seen: u64,
-    deadline: Instant,
+    deadline: Option<Instant>,
+    input: Value,
+    trigger: Value,
     /// The run's approved manifest, decoded once per activation; every new
     /// call is authorized against it.
     manifest: Option<Manifest>,
@@ -95,6 +97,7 @@ struct Prepared {
     request: Option<JsonText>,
     /// Tokens to reserve for a model call.
     tokens: Option<u64>,
+    args: Option<Value>,
 }
 
 impl Runtime {
@@ -161,6 +164,7 @@ impl Runtime {
         });
         let claimed = match claimed {
             Ok(Err(end)) => {
+                self.flush_refusals()?;
                 if let ActivationEnd::NotRunnable { .. } = end
                     && let Ok(run) = self.run(run_id)
                 {
@@ -197,17 +201,18 @@ impl Runtime {
         let (end, idle) = match self.store().read(|c| runs::load(c, &run_id)) {
             Err(e) => (Err(e), false),
             Ok(run) => {
-                let deadline = Instant::now() + self.config.activation_deadline;
                 let mut activation = Activation {
                     rt: self,
                     next_position: 0,
                     long_reported: BTreeSet::new(),
                     readiness_seen: run.readiness,
-                    lease,
+                    lease: lease.clone(),
                     run,
                     worker,
-                    deadline,
+                    deadline: None,
                     manifest: None,
+                    input: Value::Null,
+                    trigger: Value::Null,
                 };
                 match activation.run() {
                     Ok(Flow::Done { end, idle }) => (Ok(end), idle),
@@ -219,6 +224,36 @@ impl Runtime {
                 }
             }
         };
+        // A domain error is local to this run, not a dead store. Retire its
+        // claim under the same fence so a dead activation cannot hold a slot.
+        let end = match end {
+            Err(e)
+                if !matches!(
+                    e,
+                    CoreError::Store(_) | CoreError::Cut | CoreError::OwnerLost { .. }
+                ) =>
+            {
+                let detail = e.to_string();
+                match self.store().write(|tx| {
+                    runs::exit(
+                        tx,
+                        &lease,
+                        &Exit::Failed {
+                            kind: "core".into(),
+                            detail: detail.clone(),
+                        },
+                    )
+                }) {
+                    Ok(_) => Ok(ActivationEnd::Failed {
+                        kind: "core".into(),
+                        detail,
+                    }),
+                    Err(error) => Err(error),
+                }
+            }
+            other => other,
+        };
+        let end = self.flush_refusals().and(end);
         if !idle {
             worker.kill();
         }
@@ -346,9 +381,11 @@ impl Activation<'_> {
         }
         match Manifest::parse(&self.run.manifest) {
             Ok(mut manifest) => {
-                let input: Value = serde_json::from_str(self.run.self_input.as_str())
+                self.input = serde_json::from_str(self.run.self_input.as_str())
                     .map_err(|e| CoreError::Corrupt(e.to_string()))?;
-                if let Some(agent) = input["agent_id"].as_str() {
+                self.trigger = serde_json::from_str(self.run.trigger.as_str())
+                    .map_err(|e| CoreError::Corrupt(e.to_string()))?;
+                if let Some(agent) = self.input["agent_id"].as_str() {
                     authorize::resolve_self(&mut manifest, agent);
                 }
                 self.manifest = Some(manifest);
@@ -385,20 +422,21 @@ impl Activation<'_> {
         self.at(Boundary::ActivateSent {
             generation: self.lease.generation,
         })?;
-        self.deadline = Instant::now() + self.rt.config.activation_deadline;
+        let deadline = Instant::now() + self.rt.config.activation_deadline;
+        self.deadline = Some(deadline);
         loop {
             if self.run_deadline_passed() {
                 return self.fail("deadline", RUN_DEADLINE.into(), false);
             }
             let now = Instant::now();
-            if now >= self.deadline {
+            if now >= deadline {
                 return self.fail(
                     "deadline",
                     "the activation ran out of wall time".into(),
                     false,
                 );
             }
-            let message = match self.worker.recv((self.deadline - now).min(WAIT_SLICE)) {
+            let message = match self.worker.recv((deadline - now).min(WAIT_SLICE)) {
                 Ok(m) => m,
                 Err(ChannelError::Timeout) => {
                     // Between frames, notice a run failed or taken from
@@ -519,8 +557,8 @@ impl Activation<'_> {
                 }
                 (StoredClass::Sync, _) | (_, DispatchState::Accepted) => {}
                 (StoredClass::Local, _) => {
-                    // A local call's effect commits with its outcome, so a
-                    // row without one never took effect; run it now.
+                    // Normally a local call and its outcome commit together.
+                    // If only the row remains, recovery completes that intent.
                     let flow_id = self.run.flow_id.clone();
                     let limits = self.rt.config.kv;
                     self.rt.store().write(|tx| {
@@ -599,12 +637,7 @@ impl Activation<'_> {
         match kind {
             CallKind::Primitive(Primitive::Now) => {
                 let now = self.rt.shared.host.now_ms();
-                let last = self
-                    .rt
-                    .store()
-                    .read(|c| journal::last_clock(c, &self.lease.run_id))?;
-                let value = last.map_or(now, |last| now.max(last));
-                Ok((Settlement::Fulfilled, number_text(value), Some(value)))
+                Ok((Settlement::Fulfilled, number_text(now), Some(now)))
             }
             _ => {
                 let sample = self.rt.shared.host.random();
@@ -641,14 +674,14 @@ impl Activation<'_> {
                 false,
             );
         }
-        let class = self.rt.class_of(&call.kind, &call.args);
         let flow_id = self.run.flow_id.clone();
         // Clock reads and random samples need no grant. Every other call is
         // checked against the approved manifest first; a refusal is still
         // journaled, as a rejection, below.
-        let prepared = match class {
-            StoredClass::Sync => Ok(Prepared::default()),
-            _ => self.prepare(&call),
+        let prepared = if call.kind.is_synchronous() {
+            Ok(Prepared::default())
+        } else {
+            self.prepare(&call)
         };
         let request = prepared.as_ref().ok().and_then(|p| p.request.as_ref());
         if let Some(flow) = self.check_run_limits(&call, request)? {
@@ -658,6 +691,7 @@ impl Activation<'_> {
             Ok(prepared) => prepared,
             Err(refusal) => return self.refuse(&call, &flow_id, &refusal),
         };
+        let class = self.rt.class_of(&call.kind, prepared.args.as_ref());
         if matches!(
             call.kind,
             CallKind::Primitive(Primitive::Llm | Primitive::Classify)
@@ -828,9 +862,7 @@ impl Activation<'_> {
             CallKind::Primitive(Primitive::SinkDigest | Primitive::SinkStatus | Primitive::Facts)
         ) && args["agent"] == "$self"
         {
-            let input: Value = serde_json::from_str(self.run.self_input.as_str())
-                .map_err(|e| Refusal::new(codes::INVALID_ARGUMENTS, e.to_string()))?;
-            if let Some(agent) = input["agent_id"].as_str() {
+            if let Some(agent) = self.input["agent_id"].as_str() {
                 args["agent"] = Value::String(agent.to_owned());
             }
         }
@@ -860,7 +892,7 @@ impl Activation<'_> {
                 rejected.module = Some(refusal.provider);
                 rejected
             })?;
-        match &call.kind {
+        let prepared: std::result::Result<Prepared, Refusal> = match &call.kind {
             CallKind::Primitive(p @ (Primitive::Llm | Primitive::Classify)) => {
                 let Some(grant) = &manifest.llm else {
                     return Err(Refusal::denied("the manifest grants no model calls"));
@@ -910,6 +942,7 @@ impl Activation<'_> {
                 Ok(Prepared {
                     request: Some(request),
                     tokens: Some(clamped.reserve),
+                    args: None,
                 })
             }
             CallKind::Primitive(
@@ -919,9 +952,7 @@ impl Activation<'_> {
                     .run
                     .flow_version
                     .ok_or_else(|| Refusal::denied("core calls require an installed version"))?;
-                let trigger: Value = serde_json::from_str(self.run.trigger.as_str())
-                    .map_err(|_| Refusal::new(codes::INVALID_ARGUMENTS, "invalid trigger JSON"))?;
-                let due_at = match trigger.get("due").and_then(Value::as_str) {
+                let due_at = match self.trigger.get("due").and_then(Value::as_str) {
                     Some(due) => due
                         .parse::<jiff::Timestamp>()
                         .map_err(|_| {
@@ -949,6 +980,7 @@ impl Activation<'_> {
                 Ok(Prepared {
                     request: Some(request),
                     tokens: None,
+                    args: None,
                 })
             }
             CallKind::Primitive(p) if p.is_builtin() => {
@@ -962,10 +994,15 @@ impl Activation<'_> {
                 Ok(Prepared {
                     request: Some(request),
                     tokens: None,
+                    args: None,
                 })
             }
             _ => Ok(Prepared::default()),
-        }
+        };
+        Ok(Prepared {
+            args: Some(args),
+            ..prepared?
+        })
     }
 
     /// Checks the run's host-call and journal-size limits. Passing either
@@ -1151,9 +1188,8 @@ impl Activation<'_> {
         Ok(Some(inserted))
     }
 
-    /// A synchronous call journaled without its value comes back at its
-    /// old position. Anything else at an old position is a divergence or a
-    /// broken worker.
+    /// A synchronous row whose value is missing can be recovered at its old
+    /// position. Any other old-position call indicates worker divergence.
     fn on_reissued_sync(&mut self, call: HostCall) -> Result<Flow> {
         let row = self
             .rt
@@ -1185,6 +1221,14 @@ impl Activation<'_> {
         }
         let (settlement, value, clock) = self.sync_value(&call.kind)?;
         let outcome = self.rt.store().write(|tx| {
+            // Recovery must use the same monotonic clock rule as a new call.
+            let clock = match clock {
+                Some(sample) => {
+                    Some(sample.max(journal::last_clock(tx, &self.lease.run_id)?.unwrap_or(sample)))
+                }
+                None => None,
+            };
+            let value = clock.map_or(value.clone(), number_text);
             journal::record_sync(tx, &self.lease, call.position, settlement, &value, clock)
         })?;
         self.at(Boundary::SyncCommitted {
@@ -1197,6 +1241,9 @@ impl Activation<'_> {
     /// Answer with exactly one outcome (committed with its order first), or
     /// with the long-running ones it has not been told about, or wait.
     fn on_blocked(&mut self, awaiting: &[u64]) -> Result<Flow> {
+        let deadline = self
+            .deadline
+            .ok_or_else(|| CoreError::Corrupt("blocked before activation".into()))?;
         let run_id = self.lease.run_id.clone();
         loop {
             let seen = self.rt.shared.signal.current();
@@ -1258,7 +1305,7 @@ impl Activation<'_> {
                 return self.fail("deadline", RUN_DEADLINE.into(), false);
             }
             let now = Instant::now();
-            if now >= self.deadline {
+            if now >= deadline {
                 return self.fail(
                     "deadline",
                     format!("still waiting on {awaiting:?} when the activation ran out of time"),
@@ -1268,7 +1315,7 @@ impl Activation<'_> {
             self.rt
                 .shared
                 .signal
-                .wait(seen, (self.deadline - now).min(WAIT_SLICE));
+                .wait(seen, (deadline - now).min(WAIT_SLICE));
         }
     }
 

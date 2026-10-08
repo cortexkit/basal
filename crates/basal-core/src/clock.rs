@@ -8,7 +8,33 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
-use crate::store::now_ms;
+use crate::store::system_now_ms;
+use std::cell::Cell;
+
+thread_local! {
+    // A transaction samples its store's clock once. Keeping the scope on the
+    // calling thread also lets low-level state transitions share that sample
+    // without giving a second store or another thread the wrong clock.
+    static WRITE_TIME: Cell<Option<i64>> = const { Cell::new(None) };
+}
+
+pub(crate) fn write_time() -> Option<i64> {
+    WRITE_TIME.with(Cell::get)
+}
+
+pub(crate) struct WriteTime(Option<i64>);
+
+impl WriteTime {
+    pub(crate) fn enter(now: i64) -> Self {
+        Self(WRITE_TIME.with(|time| time.replace(Some(now))))
+    }
+}
+
+impl Drop for WriteTime {
+    fn drop(&mut self) {
+        WRITE_TIME.with(|time| time.set(self.0));
+    }
+}
 
 /// Wall time in milliseconds since the Unix epoch, or a manual time a test
 /// sets. Cloning shares the same manual time.
@@ -33,7 +59,7 @@ impl Clock {
     pub fn now_ms(&self) -> i64 {
         match &self.manual {
             Some(t) => t.load(Ordering::SeqCst),
-            None => now_ms(),
+            None => system_now_ms(),
         }
     }
 
