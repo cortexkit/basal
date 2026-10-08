@@ -1,6 +1,7 @@
 use crate::native::*;
 use serde_json::{Value, json};
 use std::{mem::zeroed, time::Instant};
+use windows_sys::Win32::Security::TOKEN_QUERY;
 use windows_sys::Win32::{
     Foundation::*,
     Storage::FileSystem::*,
@@ -97,6 +98,25 @@ pub unsafe fn enable_loader_snaps(process: HANDLE) -> Value {
     }
 }
 
+unsafe fn thread_token(tid: u32) -> Value {
+    unsafe {
+        let thread = match Handle::new(
+            OpenThread(THREAD_QUERY_INFORMATION, 0, tid),
+            "OpenThread(loader event)",
+        ) {
+            Ok(h) => h,
+            Err(e) => return json!({"error":e}),
+        };
+        let mut token = std::ptr::null_mut();
+        if OpenThreadToken(thread.0, TOKEN_QUERY, 1, &mut token) == 0 {
+            let error = GetLastError();
+            return json!({"present":false,"no_token":error == ERROR_NO_TOKEN,"error":error});
+        }
+        let token = Handle(token);
+        json!({"present":true,"attestation":token_attestation(token.0).unwrap_or_else(|e|json!({"error":e}))})
+    }
+}
+
 // The creating thread must pump debug events. Pipe readers run independently
 // because a child that reaches entry can write more than one pipe buffer.
 pub unsafe fn collect(process: HANDLE, pid: u32) -> Value {
@@ -127,7 +147,7 @@ pub unsafe fn collect(process: HANDLE, pid: u32) -> Value {
                 }
                 LOAD_DLL_DEBUG_EVENT => {
                     let info = event.u.LoadDll;
-                    json!({"kind":"load_dll","base":info.lpBaseOfDll as usize,"path":image_path(info.hFile),"loader_flag":loader_flag(process)})
+                    json!({"kind":"load_dll","base":info.lpBaseOfDll as usize,"path":image_path(info.hFile),"loader_flag":loader_flag(process),"thread_token":thread_token(event.dwThreadId)})
                 }
                 UNLOAD_DLL_DEBUG_EVENT => {
                     json!({"kind":"unload_dll","base":event.u.UnloadDll.lpBaseOfDll as usize})
@@ -156,7 +176,15 @@ pub unsafe fn collect(process: HANDLE, pid: u32) -> Value {
                     } else {
                         String::from_utf8_lossy(&bytes).into_owned()
                     };
-                    json!({"kind":"debug_string","unicode":unicode,"text":text.trim_end_matches('\0'),"read_success":ok,"read_error":error,"bytes_read":read,"bytes_requested":info.nDebugStringLength as usize * if unicode {2} else {1}})
+                    let context = if text.contains("ThreadTokenSetMainThreadToken")
+                        || text.contains("ThreadTokenUnsetMainThreadToken")
+                        || text.contains("Calling init routine")
+                    {
+                        thread_token(event.dwThreadId)
+                    } else {
+                        Value::Null
+                    };
+                    json!({"kind":"debug_string","thread_token_at_event":context,"unicode":unicode,"text":text.trim_end_matches('\0'),"read_success":ok,"read_error":error,"bytes_read":read,"bytes_requested":info.nDebugStringLength as usize * if unicode {2} else {1}})
                 }
                 EXCEPTION_DEBUG_EVENT => {
                     let info = event.u.Exception;

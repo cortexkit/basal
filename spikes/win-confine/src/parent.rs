@@ -148,6 +148,7 @@ fn restricted_tokens(
     same_primary: bool,
     enabled_groups: bool,
     keep_logon: bool,
+    keep_loader_privileges: bool,
 ) -> Result<Tokens> {
     unsafe {
         let data = token_buffer(parent, TokenGroups)?;
@@ -278,7 +279,11 @@ fn restricted_tokens(
         check(
             CreateRestrictedToken(
                 loader_source,
-                DISABLE_MAX_PRIVILEGE,
+                if keep_loader_privileges {
+                    0
+                } else {
+                    DISABLE_MAX_PRIVILEGE
+                },
                 0,
                 null(),
                 0,
@@ -665,7 +670,9 @@ fn launch_variant(
 ) -> Result<Value> {
     unsafe {
         let full = input.mode == "full";
-        let lpac = input.mode != "plain" && sequence != "chrome-logon-non-lpac-control";
+        let lpac = input.mode != "plain"
+            && sequence != "chrome-logon-non-lpac-control"
+            && sequence != "chrome-loader-privileges-control";
         let bare = sequence == "bare-token-control";
         let debug = sequence == "loader-trace";
         let mut tokens = if full {
@@ -681,7 +688,10 @@ fn launch_variant(
                 sequence == "same-access-primary-control"
                     || sequence == "post-load-primary-control",
                 sequence == "post-load-primary-control",
-                sequence == "chrome-logon-control" || sequence == "chrome-logon-non-lpac-control",
+                sequence == "chrome-logon-control"
+                    || sequence == "chrome-logon-non-lpac-control"
+                    || sequence == "chrome-loader-privileges-control",
+                sequence == "chrome-loader-privileges-control",
             )?)
         } else {
             None
@@ -1317,6 +1327,24 @@ pub fn run() -> Result<()> {
                     )
                     .unwrap_or_else(|e| json!({"error":e}));
                     diagnostics.push(json!({"label":"Chrome-matched enabled logon SID / non-AppContainer Low birth / job and mitigations retained","result":matched}));
+                    // Chrome's observed startup thread retains disabled source
+                    // privileges. Measure whether deleting those privileges,
+                    // rather than leaving them disabled, prevents DLL attach.
+                    let matched = launch_variant(
+                        &input,
+                        &image.to_string_lossy(),
+                        sid,
+                        token.0,
+                        token.0,
+                        "chrome-loader-privileges-control",
+                        true,
+                        false,
+                        false,
+                        MITIGATIONS,
+                        0xff,
+                    )
+                    .unwrap_or_else(|e| json!({"error":e}));
+                    diagnostics.push(json!({"label":"Chrome-matched non-AppContainer birth / retain source loader privileges / job and mitigations retained","result":matched}));
                     let result = match launch_variant(
                         &input,
                         &image.to_string_lossy(),

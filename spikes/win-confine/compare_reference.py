@@ -4,7 +4,8 @@ from pathlib import Path
 import sys
 
 FIELDS = ('token_type', 'impersonation_level', 'user_sid', 'integrity', 'appcontainer',
-          'appcontainer_sid', 'lpac', 'capabilities', 'restricting_sids', 'groups', 'privileges')
+          'appcontainer_sid', 'lpac', 'capabilities', 'restricting_sids', 'groups', 'privileges',
+          'default_dacl')
 
 
 def token_diff(reference, candidate):

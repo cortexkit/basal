@@ -158,6 +158,46 @@ pub unsafe fn groups(data: &[usize]) -> &[SID_AND_ATTRIBUTES] {
         std::slice::from_raw_parts(g.Groups.as_ptr(), g.GroupCount as usize)
     }
 }
+unsafe fn default_dacl(token: HANDLE) -> Result<Value> {
+    unsafe {
+        let data = token_buffer(token, TokenDefaultDacl)?;
+        let dacl = (*data.as_ptr().cast::<TOKEN_DEFAULT_DACL>()).DefaultDacl;
+        if dacl.is_null() {
+            return Ok(json!({"null_dacl":true}));
+        }
+        // TokenDefaultDacl protects newly created objects. It is distinct from
+        // the token object's own DACL, which controls opening that token.
+        let mut descriptor: SECURITY_DESCRIPTOR = zeroed();
+        check(
+            InitializeSecurityDescriptor((&mut descriptor as *mut SECURITY_DESCRIPTOR).cast(), 1),
+            "InitializeSecurityDescriptor(default DACL)",
+        )?;
+        check(
+            SetSecurityDescriptorDacl(
+                (&mut descriptor as *mut SECURITY_DESCRIPTOR).cast(),
+                1,
+                dacl,
+                0,
+            ),
+            "SetSecurityDescriptorDacl(default DACL)",
+        )?;
+        let mut text = null_mut();
+        check(
+            ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                (&mut descriptor as *mut SECURITY_DESCRIPTOR).cast(),
+                SDDL_REVISION_1,
+                DACL_SECURITY_INFORMATION,
+                &mut text,
+                null_mut(),
+            ),
+            "ConvertSecurityDescriptorToStringSecurityDescriptorW(default DACL)",
+        )?;
+        let rendered = utf16_ptr(text);
+        LocalFree(text.cast());
+        Ok(json!({"sddl":rendered}))
+    }
+}
+
 pub unsafe fn token_attestation(token: HANDLE) -> Result<Value> {
     unsafe {
         let group_data = token_buffer(token, TokenGroups)?;
@@ -241,6 +281,7 @@ pub unsafe fn token_attestation(token: HANDLE) -> Result<Value> {
             "appcontainer_sid":if app_sid.is_null() {Value::Null} else {json!(sid_string(app_sid))},
             "capabilities":capability_data.as_ref().map(|data|render(groups(data))).unwrap_or_default(), "restricting_sids":render(groups(&restrict_data)),
             "groups":render(groups(&group_data)), "integrity":sid_string(mandatory.Label.Sid),
+            "default_dacl":default_dacl(token).unwrap_or_else(|e|json!({"error":e})),
             "privileges":entries.iter().map(|p|json!({"name":privilege_name(&p.Luid),"luid_low":p.Luid.LowPart,"luid_high":p.Luid.HighPart,"attributes":hex(p.Attributes)})).collect::<Vec<_>>()
         }))
     }

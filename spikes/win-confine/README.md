@@ -98,14 +98,20 @@ The workflow enables image-specific loader snaps (`GlobalFlag=2`) for
 `loader-trace` diagnostic requests `DEBUG_ONLY_THIS_PROCESS`; if creation refuses
 that flag, it retries suspended and attaches before resuming. The creating thread
 records every debug string, DLL load/unload and exception event while separate
-threads drain the pipes. It does not treat a debugger-assisted startup as a
-production confinement result.
+threads drain the pipes. The x64 child PEB's `NtGlobalFlag` is read back: if the
+registry setting did not set bit `0x2`, the parent sets only that diagnostic bit
+before resuming and records the before/after values. This fallback changes no
+token, ACL or mitigation and is not a production launch sequence. Debugger-assisted
+startup is not accepted as a production confinement result.
 
 `chrome_reference.ps1` launches installed Chrome headless with a fresh profile
 and no sandbox-disabling switches. It records the observed descendant command
 lines and invokes `win-confine.exe --observe <pid> --broker <browser-pid> --output
 <file>` for renderer, GPU, network and browser processes. Inspection is from the
-parent, using the same token and handle-table routines as the worker. The
+parent, using the same token and handle-table routines as the worker. A second
+process-tree sample is taken ten seconds after the first renderer observation to
+avoid presenting its startup impersonation token as the settled state. A timer
+alone does not prove every transition completed. The
 selected thread is the earliest surviving thread by creation time: Windows
 Toolhelp does not identify a main thread. Exact Chrome job limits are queried
 through duplicated browser-owned Job handles after checking target membership;
@@ -117,3 +123,11 @@ a census of every process or transient handle during startup.
 renderer primary-token field with the failing actual birth token and a separately
 labelled intended final token. It retains raw lists and flags; failed queries
 produce unknown comparisons rather than an equality or a denial result.
+
+Two additional diagnostics retain the enabled session logon SID observed in
+Chrome while keeping the NULL restricting SID, removed primary privileges,
+job, mitigations, child-process restriction and handle list. One retains LPAC;
+the other omits lowbox attributes and uses a non-AppContainer Low loader token.
+Both run the ordinary complete probe path if they pass entry, self-lowering and
+handle attestation. They remain diagnostics: retaining an access group or
+omitting LPAC is not the intended deny-all final token.
