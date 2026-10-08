@@ -7460,3 +7460,37 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
+
+[[control]]
+id = "audit-b-retention-full-batches-catch-up"
+guards = "Full retention batches prompt another bounded pass rather than impose an hourly throughput ceiling"
+file = "crates/basal-core/src/retention.rs"
+old = "let backlog = runs.pruned.len() == BATCH || history_full;"
+new = "let backlog = false && (runs.pruned.len() == BATCH || history_full); // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-core/tests/retention_backlog.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--test retention_backlog"
+expect_red = ["production_retention_catches_up_full_batches_without_waiting_a_whole_interval"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "audit-b-retention-history-only-backlogs-catch-up"
+guards = "A full history batch schedules catch-up even when there are no terminal runs to prune"
+file = "crates/basal-core/src/retention.rs"
+old = "let backlog = runs.pruned.len() == BATCH || history_full;"
+new = "let backlog = runs.pruned.len() == BATCH || false; // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-core/tests/retention_backlog.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--test retention_backlog"
+expect_red = ["production_retention_catches_up_full_batches_without_waiting_a_whole_interval"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
