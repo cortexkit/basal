@@ -538,8 +538,11 @@ fn classify_exception<'js>(value: Value<'js>) -> ActivationResult {
         }
     };
     let message = own_string("message").unwrap_or_default();
-    // QuickJS has no public origin flag for stack overflow. Keep the existing
-    // stack contract until the engine can report that origin independently.
+    // QuickJS has no public origin flag for stack overflow, so a script that
+    // throws this exact RangeError itself is also reported as stack
+    // exhaustion. That changes only the label: the run fails the same way,
+    // and memory and CPU exhaustion come from signals no script can raise.
+    // See docs/script.md.
     let range: Option<Object> = ctx
         .globals()
         .get::<_, Object>("RangeError")
@@ -858,7 +861,10 @@ impl Activation {
         self.hooks = Some(hooks);
 
         // Evaluation is an engine entry under the activation's budgets and
-        // lockdown, including any top-level code accepted by the parser.
+        // lockdown, including any top-level code accepted by the parser. The
+        // wrapper is joined as text, so a script can close it early and run
+        // statements outside it; those get the same confinement, budgets and
+        // checked host calls. See docs/script.md.
         let source = format!("(async function () {{{}\n}})", request.script);
         let started = self.enter(|ctx| {
             let start = start.clone().restore(ctx)?;

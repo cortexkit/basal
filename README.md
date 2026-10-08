@@ -74,6 +74,7 @@ ckdev-mutate prove --id worker-closes-descriptors-proof \
 ## Documentation
 
 - [docs/manifest.md](docs/manifest.md): the flow manifest schema: triggers, grants, limits and the code hash.
+- [docs/script.md](docs/script.md): how a flow script runs, and two deliberate limits of the script runtime.
 - [docs/ops.md](docs/ops.md): the operations agents reach through prefrontal-core's relay, with their request and reply shapes.
 - [docs/deploy.md](docs/deploy.md): staging, signing and placing the two binaries, and rolling them back.
 
