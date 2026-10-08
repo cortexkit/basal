@@ -73,6 +73,7 @@ fn file_probe(t: &Target, creation: bool) -> Probe {
         let error = GetLastError();
         let mut result = Probe::win(t, ok, error);
         if ok {
+            result.result["granted_access"] = granted_access(h);
             if t.kind.ends_with("_query") || t.kind.ends_with("_zero") {
                 let mut info: BY_HANDLE_FILE_INFORMATION = zeroed();
                 let queried = GetFileInformationByHandle(h, &mut info) != 0;
@@ -98,10 +99,12 @@ fn registry_probe(t: &Target) -> Probe {
         };
         let mut h = null_mut();
         let error = RegOpenKeyExW(root, wide(&path).as_ptr(), 0, KEY_QUERY_VALUE, &mut h);
+        let mut probe = Probe::win(t, error == 0, error);
         if error == 0 {
+            probe.result["granted_access"] = granted_access(h);
             RegCloseKey(h);
         }
-        Probe::win(t, error == 0, error)
+        probe
     }
 }
 unsafe extern "system" fn thread_entry(_: *mut std::ffi::c_void) -> u32 {
@@ -113,21 +116,22 @@ fn win_probe(kind: &str, name: &str, access: &str, ok: bool, error: u32) -> Prob
 pub fn run() -> Result<()> {
     unsafe {
         // No untrusted input is consumed under the loader's more permissive token.
-        let mut initial = null_mut();
-        // Query with the effective loader token. OpenAsSelf would ask the
-        // already locked-down primary token to open the loader's token DACL.
-        let initially_impersonating =
-            OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, 0, &mut initial) != 0;
-        let initial_error = if initially_impersonating {
-            0
+        let lower_requested = std::env::args().any(|a| a == "--lower-integrity");
+        // Borrow only the primary's adjustment right under the loader token.
+        // No token handle with that right may survive into the input phase.
+        let adjustment = if lower_requested {
+            let mut h = null_mut();
+            check(
+                OpenProcessToken(
+                    GetCurrentProcess(),
+                    TOKEN_QUERY | TOKEN_ADJUST_DEFAULT,
+                    &mut h,
+                ),
+                "OpenProcessToken(self-lower before revert)",
+            )?;
+            Some(Handle(h))
         } else {
-            GetLastError()
-        };
-        let initial_report = if initially_impersonating {
-            let h = Handle(initial);
-            token_attestation(h.0).unwrap_or_else(|e| json!({"error":e}))
-        } else {
-            Value::Null
+            None
         };
         check(RevertToSelf(), "RevertToSelf")?;
         let mut thread_token = null_mut();
@@ -144,6 +148,15 @@ pub fn run() -> Result<()> {
                 "lockdown incomplete: OpenThreadToken={no_token_error}"
             ));
         }
+        let self_lowering = if let Some(h) = adjustment {
+            let before = token_buffer(h.0, TokenIntegrityLevel)?;
+            let before = sid_string((*before.as_ptr().cast::<TOKEN_MANDATORY_LABEL>()).Label.Sid);
+            set_integrity(h.0, WinUntrustedLabelSid)?;
+            drop(h);
+            json!({"requested":true,"integrity_before":before,"set_error":0,"adjustment_handle_closed_before_input":true})
+        } else {
+            json!({"requested":false})
+        };
         let mut token = null_mut();
         let token_opened = OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) != 0;
         let token_open_error = if token_opened { 0 } else { GetLastError() };
@@ -157,9 +170,11 @@ pub fn run() -> Result<()> {
         }
         .unwrap_or_else(|e| json!({"error":e}));
         // Snapshot before input and all probes: probe-created sockets must not masquerade as inherited authority.
-        let handles = handle_table()
-            .map(|v| json!(v))
-            .unwrap_or_else(|e| json!({"error":e}));
+        let handles = handle_table()?;
+        let no_token_handles = token_handles_absent(&handles);
+        if !no_token_handles {
+            return Err("token handle or unidentified handle survived lockdown".into());
+        }
         let modules = loaded_modules()
             .map(|v| json!(v))
             .unwrap_or_else(|e| json!({"error":e}));
@@ -343,7 +358,7 @@ pub fn run() -> Result<()> {
             ok,
             error,
         ));
-        let report = json!({"mode":input.mode,"initial_impersonation":{"present":initially_impersonating,"open_error":initial_error,"token":initial_report},"after_revert":{"present":still_impersonating,"open_error":no_token_error},"primary_token_open":{"success":token_opened,"error":token_open_error,"pseudo_handle_fallback":!token_opened},"primary_token":attestation,"mitigations":policies,"handle_table":handles,"loaded_modules":modules,"probes":probes});
+        let report = json!({"mode":input.mode,"self_lowering":self_lowering,"token_handles_absent":no_token_handles,"after_revert":{"present":still_impersonating,"open_error":no_token_error},"primary_token_open":{"success":token_opened,"error":token_open_error,"pseudo_handle_fallback":!token_opened},"primary_token":attestation,"mitigations":policies,"handle_table":handles,"loaded_modules":modules,"probes":probes});
         serde_json::to_writer(std::io::stdout().lock(), &report).map_err(|e| e.to_string())?;
         std::io::stdout().flush().map_err(|e| e.to_string())?;
         Ok(())

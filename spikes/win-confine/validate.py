@@ -42,6 +42,9 @@ def validate(report):
                 errors.append(f'{mode}: capabilities not empty')
         if not isinstance(child.get('handle_table'), list) or not isinstance(child.get('loaded_modules'), list):
             errors.append(f'{mode}: handle/module inventory incomplete')
+        handles=child.get('handle_table')
+        if child.get('token_handles_absent') is not True or not isinstance(handles,list) or any(h.get('type')=='Token' or not isinstance(h.get('type'),str) for h in handles):
+            errors.append(f'{mode}: token handle absence was not attested')
         for probe in child['probes']:
             if 'not_attempted' in probe['result']:
                 errors.append(f'{mode}: unsupported target: {probe["target"]} ({probe["kind"]})')
@@ -56,11 +59,13 @@ def validate(report):
             errors.append('full: restricting SIDs are not exactly NULL')
         if not token.get('groups') or any(not entry['deny_only'] for entry in token['groups'] if not int(entry['attributes'], 16) & 32):
             errors.append('full: access groups are not all deny-only')
-        if child['initial_impersonation']['present'] is not True:
-            errors.append('full: loader impersonation was absent')
-        loader=child['initial_impersonation'].get('token') or {}
+        before=attempt.get('parent_before_resume') or {}
+        loader=before.get('assigned_loader') or {}
         if (loader.get('token_type'),loader.get('impersonation_level'))!=(2,2):
             errors.append('full: loader token is not SecurityImpersonation')
+        constructed=attempt.get('constructed_tokens') or {}
+        if before.get('initial_handle_closed') is not True or constructed.get('initial_handle_not_in_list') is not True or int(constructed.get('initial_handle_flags','0x1'),16)&1:
+            errors.append('full: initial token handle lifecycle was not attested')
         actual = {p['policy']: int(p['flags'], 16) if p['success'] else None for p in child['mitigations']}
         if actual != EXPECTED_POLICIES:
             errors.append(f'full: mitigation mismatch: {actual}')

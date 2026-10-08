@@ -300,6 +300,17 @@ struct AlpcAttributes {
 }
 #[link(name = "ntdll")]
 unsafe extern "system" {
+    fn NtCreateLowBoxToken(
+        out: *mut HANDLE,
+        existing: HANDLE,
+        access: u32,
+        attrs: *mut ObjectAttributes,
+        package: PSID,
+        capability_count: u32,
+        capabilities: *const SID_AND_ATTRIBUTES,
+        handle_count: u32,
+        handles: *const HANDLE,
+    ) -> i32;
     fn NtQueryInformationToken(
         token: HANDLE,
         class: TOKEN_INFORMATION_CLASS,
@@ -500,6 +511,25 @@ pub fn handle_table() -> Result<Vec<Value>> {
         }).collect())
     }
 }
+pub fn granted_access(handle: HANDLE) -> Value {
+    unsafe {
+        // OBJECT_BASIC_INFORMATION is 56 bytes on 64-bit Windows; its second
+        // DWORD is GrantedAccess, independent of the operation's requested mask.
+        let mut data = [0usize; 7];
+        let mut returned = 0;
+        let status = NtQueryObject(handle, 0, data.as_mut_ptr().cast(), 56, &mut returned);
+        if status != 0 {
+            json!({"NTSTATUS":hex(status as u32)})
+        } else {
+            json!(hex(*data.as_ptr().cast::<u32>().add(1)))
+        }
+    }
+}
+pub fn token_handles_absent(handles: &[Value]) -> bool {
+    handles
+        .iter()
+        .all(|h| matches!(h["type"].as_str(),Some(kind) if kind!="Token"))
+}
 pub fn object_probe(t: &Target) -> Probe {
     unsafe {
         let mut w = wide(&t.name);
@@ -554,10 +584,12 @@ pub fn object_probe(t: &Target) -> Probe {
                 };
             }
         };
-        if status >= 0 {
+        let mut probe = Probe::nt(t, status);
+        if status == 0 {
+            probe.result["granted_access"] = granted_access(handle);
             drop(Handle(handle));
         }
-        Probe::nt(t, status)
+        probe
     }
 }
 pub fn registry_name(h: HANDLE) -> Value {
@@ -602,6 +634,69 @@ pub fn registry_write_native(path: &str) -> Probe {
         Probe::nt(
             &target,
             NtSetValueKey(key.0, &mut name, 0, 3, [1u8].as_ptr().cast(), 1),
+        )
+    }
+}
+pub fn create_lowbox_token(source: HANDLE, package: PSID) -> Result<Handle> {
+    unsafe {
+        let mut attrs = ObjectAttributes {
+            length: size_of::<ObjectAttributes>() as u32,
+            root: null_mut(),
+            name: null_mut(),
+            attributes: 0,
+            descriptor: null_mut(),
+            qos: null_mut(),
+        };
+        let mut token = null_mut();
+        let status = NtCreateLowBoxToken(
+            &mut token,
+            source,
+            TOKEN_ALL_ACCESS,
+            &mut attrs,
+            package,
+            0,
+            std::ptr::null(),
+            0,
+            std::ptr::null(),
+        );
+        if status != 0 {
+            Err(format!(
+                "NtCreateLowBoxToken(initial, zero capabilities): {}",
+                hex(status as u32)
+            ))
+        } else {
+            Ok(Handle(token))
+        }
+    }
+}
+pub fn set_integrity(token: HANDLE, level: WELL_KNOWN_SID_TYPE) -> Result<()> {
+    unsafe {
+        let mut sid = [0u32; 17];
+        let mut bytes = (sid.len() * 4) as u32;
+        check(
+            CreateWellKnownSid(
+                level,
+                std::ptr::null_mut(),
+                sid.as_mut_ptr().cast(),
+                &mut bytes,
+            ),
+            "CreateWellKnownSid(integrity)",
+        )?;
+        let label = TOKEN_MANDATORY_LABEL {
+            Label: SID_AND_ATTRIBUTES {
+                Sid: sid.as_mut_ptr().cast(),
+                Attributes: SE_GROUP_INTEGRITY,
+            },
+        };
+        check(
+            SetTokenInformation(
+                token,
+                TokenIntegrityLevel,
+                (&label as *const TOKEN_MANDATORY_LABEL).cast(),
+                (size_of::<TOKEN_MANDATORY_LABEL>() + GetLengthSid(label.Label.Sid) as usize)
+                    as u32,
+            ),
+            "SetTokenInformation(TokenIntegrityLevel)",
         )
     }
 }
@@ -675,6 +770,33 @@ pub fn package_fixtures(directory: &str) -> Result<(Handle, Handle, Handle)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn token_handle_inventory_rejects_token_and_unknown_types() {
+        assert!(token_handles_absent(&[json!({"type":"File"})]));
+        assert!(!token_handles_absent(&[json!({"type":"Token"})]));
+        assert!(!token_handles_absent(&[
+            json!({"type":{"error":"0xc0000008"}})
+        ]));
+    }
+    #[test]
+    fn live_token_handle_is_visible_to_handle_inventory() {
+        unsafe {
+            let mut token = null_mut();
+            check(
+                OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token),
+                "OpenProcessToken(live inventory test)",
+            )
+            .unwrap();
+            let token = Handle(token);
+            let snapshot = handle_table().unwrap();
+            assert!(
+                snapshot
+                    .iter()
+                    .any(|h| h["handle"] == token.0 as usize && h["type"] == "Token")
+            );
+            assert!(!token_handles_absent(&snapshot));
+        }
+    }
     #[test]
     fn wide_string_has_one_trailing_terminator() {
         assert_eq!(wide("a😀"), vec![97, 0xd83d, 0xde00, 0]);

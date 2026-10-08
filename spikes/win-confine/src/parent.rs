@@ -23,6 +23,11 @@ const MEMORY_LIMIT: usize = 256 * 1024 * 1024;
 // PROCESS_CREATION_MITIGATION_POLICY_*_ALWAYS_ON values from winnt.h.
 const MITIGATIONS: u64 =
     (1 << 24) | (1 << 28) | (1 << 32) | (1 << 36) | (1 << 44) | (1 << 52) | (1 << 56) | (1 << 60);
+struct Tokens {
+    primary: Handle,
+    initial: Option<Handle>,
+    report: Value,
+}
 struct Profile {
     sid: PSID,
     deleted: bool,
@@ -108,7 +113,12 @@ fn pipe() -> Result<(Handle, Handle)> {
         Ok((Handle(read), Handle(write)))
     }
 }
-fn restricted_tokens(parent: HANDLE, loader_source: HANDLE) -> Result<(Handle, Handle, Value)> {
+fn restricted_tokens(
+    parent: HANDLE,
+    loader_source: HANDLE,
+    start_low: bool,
+    lowbox_sid: Option<PSID>,
+) -> Result<Tokens> {
     unsafe {
         let data = token_buffer(parent, TokenGroups)?;
         // Integrity labels are not access groups. Every actual group is disabled,
@@ -172,32 +182,13 @@ fn restricted_tokens(parent: HANDLE, loader_source: HANDLE) -> Result<(Handle, H
                 return Err(last("AdjustTokenPrivileges(remove)"));
             }
         }
-        let mut untrusted = [0u32; 17];
-        let mut bytes = (untrusted.len() * 4) as u32;
-        check(
-            CreateWellKnownSid(
-                WinUntrustedLabelSid,
-                null_mut(),
-                untrusted.as_mut_ptr().cast(),
-                &mut bytes,
-            ),
-            "CreateWellKnownSid(Untrusted)",
-        )?;
-        let label = TOKEN_MANDATORY_LABEL {
-            Label: SID_AND_ATTRIBUTES {
-                Sid: untrusted.as_mut_ptr().cast(),
-                Attributes: SE_GROUP_INTEGRITY,
+        set_integrity(
+            lockdown.0,
+            if start_low {
+                WinLowLabelSid
+            } else {
+                WinUntrustedLabelSid
             },
-        };
-        check(
-            SetTokenInformation(
-                lockdown.0,
-                TokenIntegrityLevel,
-                (&label as *const TOKEN_MANDATORY_LABEL).cast(),
-                (size_of::<TOKEN_MANDATORY_LABEL>() + GetLengthSid(label.Label.Sid) as usize)
-                    as u32,
-            ),
-            "SetTokenInformation(Untrusted)",
         )?;
         // Closest same-access loader token: no restricting SIDs, original groups
         // and integrity, maximum privileges disabled. It is never inherited.
@@ -217,6 +208,14 @@ fn restricted_tokens(parent: HANDLE, loader_source: HANDLE) -> Result<(Handle, H
             "CreateRestrictedToken(loader)",
         )?;
         let loader = Handle(loader);
+        if start_low {
+            set_integrity(loader.0, WinLowLabelSid)?;
+        }
+        let loader = if let Some(sid) = lowbox_sid {
+            create_lowbox_token(loader.0, sid)?
+        } else {
+            loader
+        };
         let mut impersonation = null_mut();
         check(
             DuplicateTokenEx(
@@ -230,8 +229,24 @@ fn restricted_tokens(parent: HANDLE, loader_source: HANDLE) -> Result<(Handle, H
             "DuplicateTokenEx(loader)",
         )?;
         let initial = Handle(impersonation);
-        let attestation = json!({"lockdown":token_attestation(lockdown.0)?,"initial":token_attestation(initial.0)?});
-        Ok((lockdown, initial, attestation))
+        check(
+            SetHandleInformation(initial.0, HANDLE_FLAG_INHERIT, 0),
+            "SetHandleInformation(initial token)",
+        )?;
+        let mut flags = 0;
+        check(
+            GetHandleInformation(initial.0, &mut flags),
+            "GetHandleInformation(initial token)",
+        )?;
+        if flags & HANDLE_FLAG_INHERIT != 0 {
+            return Err("initial token handle remained inheritable".into());
+        }
+        let attestation = json!({"lockdown":token_attestation(lockdown.0)?,"initial":token_attestation(initial.0)?,"initial_handle_flags":hex(flags)});
+        Ok(Tokens {
+            primary: lockdown,
+            initial: Some(initial),
+            report: attestation,
+        })
     }
 }
 fn job() -> Result<(Handle, Value)> {
@@ -512,12 +527,23 @@ fn launch(
     parent_token: HANDLE,
     loader_source: HANDLE,
     sequence: &str,
+    start_low: bool,
+    native_lowbox_loader: bool,
 ) -> Result<Value> {
     unsafe {
         let full = input.mode == "full";
         let lpac = input.mode != "plain";
-        let tokens = if full {
-            Some(restricted_tokens(parent_token, loader_source)?)
+        let mut tokens = if full {
+            Some(restricted_tokens(
+                parent_token,
+                loader_source,
+                start_low,
+                if native_lowbox_loader {
+                    Some(sid)
+                } else {
+                    None
+                },
+            )?)
         } else {
             None
         };
@@ -539,6 +565,13 @@ fn launch(
             1
         })?;
         let handles = [child_in.0, child_out.0, child_err.0];
+        if let Some(tokens) = &mut tokens {
+            let excluded = !handles.contains(&tokens.initial.as_ref().unwrap().0);
+            tokens.report["initial_handle_not_in_list"] = json!(excluded);
+            if !excluded {
+                return Err("initial token is in the handle list".into());
+            }
+        }
         attrs.add(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &handles)?;
         let security = SECURITY_CAPABILITIES {
             AppContainerSid: sid,
@@ -569,11 +602,14 @@ fn launch(
         startup.StartupInfo.hStdError = child_err.0;
         startup.lpAttributeList = attrs.ptr();
         let mut pi: PROCESS_INFORMATION = zeroed();
-        let mut command = wide(&format!("\"{image}\" --child"));
+        let mut command = wide(&format!(
+            "\"{image}\" --child{}",
+            if start_low { " --lower-integrity" } else { "" }
+        ));
         let flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_NO_WINDOW;
         let ok = if full {
             CreateProcessAsUserW(
-                tokens.as_ref().unwrap().0.0,
+                tokens.as_ref().unwrap().primary.0,
                 wide(image).as_ptr(),
                 command.as_mut_ptr(),
                 null(),
@@ -618,7 +654,10 @@ fn launch(
         };
         if full {
             if let Err(e) = check(
-                SetThreadToken(&main_thread.0, tokens.as_ref().unwrap().1.0),
+                SetThreadToken(
+                    &main_thread.0,
+                    tokens.as_ref().unwrap().initial.as_ref().unwrap().0,
+                ),
                 "SetThreadToken(suspended main thread)",
             ) {
                 TerminateProcess(process.0, 1);
@@ -635,6 +674,18 @@ fn launch(
             }
         } else {
             Value::Null
+        };
+        let initial_closed_before_resume = if let Some(tokens) = &mut tokens {
+            let mut initial = tokens.initial.take().unwrap();
+            if CloseHandle(initial.0) == 0 {
+                TerminateProcess(process.0, 1);
+                return Err(last("CloseHandle(initial before resume)"));
+            }
+            initial.0 = null_mut();
+            drop(initial);
+            true
+        } else {
+            false
         };
         if ResumeThread(main_thread.0) == u32::MAX {
             TerminateProcess(process.0, 1);
@@ -672,7 +723,7 @@ fn launch(
             |e| json!({"parse_error":e.to_string(),"stdout":String::from_utf8_lossy(&stdout)}),
         );
         Ok(
-            json!({"sequence":sequence,"exit_code":hex(exit),"timeout":wait!=WAIT_OBJECT_0,"input_write":{"success":write_ok,"error":if write_ok{0}else{write_error},"bytes":written},"stderr":String::from_utf8_lossy(&stderr),"job":job.as_ref().map(|j|&j.1),"constructed_tokens":tokens.as_ref().map(|t|&t.2),"parent_before_resume":{"primary":birth_primary,"assigned_loader":assigned_loader},"stdio_handles":{"stdin":handles[0] as usize,"stdout":handles[1] as usize,"stderr":handles[2] as usize},"child":child}),
+            json!({"sequence":sequence,"exit_code":hex(exit),"timeout":wait!=WAIT_OBJECT_0,"input_write":{"success":write_ok,"error":if write_ok{0}else{write_error},"bytes":written},"stderr":String::from_utf8_lossy(&stderr),"job":job.as_ref().map(|j|&j.1),"constructed_tokens":tokens.as_ref().map(|t|&t.report),"parent_before_resume":{"primary":birth_primary,"assigned_loader":assigned_loader,"initial_handle_closed":initial_closed_before_resume},"stdio_handles":{"stdin":handles[0] as usize,"stdout":handles[1] as usize,"stderr":handles[2] as usize},"child":child}),
         )
     }
 }
@@ -917,19 +968,46 @@ pub fn run() -> Result<()> {
                 token.0,
                 token.0,
                 sequence,
+                false,
+                false,
             ) {
                 Ok(v) => v,
                 Err(e) => json!({"sequence":sequence,"error":e}),
             };
             let mut attempts = vec![result];
-            if mode == "full" && attempts[0]["exit_code"] == "0xc00000a5" {
-                // A lowbox loader can reject an ordinary impersonation token.
-                // Keep the same complete launch policy and try a same-package
-                // LPAC loader token, recording both outcomes rather than
-                // silently weakening the primary token or its mitigations.
+            if mode == "full" {
+                // Keep all birth attributes, but avoid an impersonation token
+                // outranking the primary at startup. Only trusted loader code
+                // runs at Low; the child must self-lower before reading input.
+                let sequence =
+                    "CreateProcessAsUserW / Low primary / NtCreateLowBoxToken loader / self-lower";
+                let result = match launch(
+                    &input,
+                    &image.to_string_lossy(),
+                    sid,
+                    token.0,
+                    token.0,
+                    sequence,
+                    true,
+                    true,
+                ) {
+                    Ok(v) => v,
+                    Err(e) => json!({"sequence":sequence,"error":e}),
+                };
+                attempts.push(result);
+            }
+            if mode == "full"
+                && (attempts.last().unwrap()["exit_code"] != "0x00000000"
+                    || attempts.last().unwrap()["child"]["primary_token"]["integrity"]
+                        != "S-1-16-0"
+                    || attempts.last().unwrap()["parent_before_resume"]["assigned_loader"]["impersonation_level"]
+                        != 2)
+            {
+                // An LPAC-born source also measures whether the initial
+                // lowbox's all-application-packages policy must match.
                 if let Ok((holder, _)) = &namespace_initializer {
                     let mut source = null_mut();
-                    let sequence = "CreateProcessAsUserW / same-package LPAC loader";
+                    let sequence = "CreateProcessAsUserW / Low primary / same-package LPAC loader / self-lower";
                     let result = if OpenProcessToken(
                         holder.process.0,
                         TOKEN_QUERY | TOKEN_DUPLICATE,
@@ -946,6 +1024,8 @@ pub fn run() -> Result<()> {
                             token.0,
                             source.0,
                             sequence,
+                            true,
+                            false,
                         ) {
                             Ok(v) => v,
                             Err(e) => json!({"sequence":sequence,"error":e}),
@@ -1009,7 +1089,10 @@ pub fn run() -> Result<()> {
             .unwrap()
             .last()
             .unwrap();
-        if full["exit_code"] != "0x00000000" || full["child"]["primary_token"]["lpac"] != true {
+        if full["exit_code"] != "0x00000000"
+            || full["child"]["primary_token"]["lpac"] != true
+            || full["child"]["primary_token"]["integrity"] != "S-1-16-0"
+        {
             return Err("full-policy child did not complete; inspect report for exact launch or attestation failure".into());
         }
         Ok(())

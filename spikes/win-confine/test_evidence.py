@@ -16,13 +16,30 @@ def complete_report():
     runs = []
     for mode in ('plain', 'lpac', 'full'):
         token = {'token_type': 1, 'lpac': mode != 'plain', 'appcontainer_sid': sid if mode != 'plain' else None, 'capabilities': [], 'integrity': 'S-1-16-0', 'privileges': [], 'restricting_sids': [{'sid': 'S-1-0-0'}], 'groups': [{'sid': 'S-1-1-0', 'attributes': '0x00000010', 'deny_only': True}]}
-        child = {'primary_token': token, 'initial_impersonation': {'present': mode == 'full', 'token': {'token_type': 2, 'impersonation_level': 2}}, 'after_revert': {'present': False, 'open_error': 1008}, 'handle_table': [], 'loaded_modules': [{'name': 'kernel32.dll', 'path': 'C:\\Windows\\System32\\kernel32.dll'}], 'mitigations': [{'policy': name, 'flags': f'0x{flags:08x}', 'success': True} for name, flags in policies], 'probes': []}
+        child = {'primary_token': token, 'token_handles_absent': True, 'after_revert': {'present': False, 'open_error': 1008}, 'handle_table': [], 'loaded_modules': [{'name': 'kernel32.dll', 'path': 'C:\\Windows\\System32\\kernel32.dll'}], 'mitigations': [{'policy': name, 'flags': f'0x{flags:08x}', 'success': True} for name, flags in policies], 'probes': []}
         job = {'member_at_birth': True, 'limit_flags': '0x00002508', 'active_process_limit': 1, 'process_memory_limit': 268435456, 'ui_restrictions': '0x000000ff', 'breakaway': False}
-        runs.append({'mode': mode, 'attempts': [{'exit_code': '0x00000000', 'child': child, 'job': job}]})
+        runs.append({'mode': mode, 'attempts': [{'exit_code': '0x00000000', 'child': child, 'job': job, 'parent_before_resume': {'assigned_loader': {'token_type': 2, 'impersonation_level': 2}, 'initial_handle_closed': True}, 'constructed_tokens': {'initial_handle_flags': '0x00000000', 'initial_handle_not_in_list': True}}]})
     return {'appcontainer_sid': sid, 'system_root': 'C:\\Windows', 'enumeration': [], 'runs': runs}
 
 
 class EvidenceTests(unittest.TestCase):
+    def test_no_token_handles_after_revert(self):
+        report = complete_report()
+        report['runs'][2]['attempts'][0]['child']['handle_table'] = [{'type': 'Token', 'granted_access': '0x0000000e'}]
+        self.assertEqual(validate(report), ['full: token handle absence was not attested'])
+
+    def test_initial_handle_must_close_before_resume(self):
+        report = complete_report()
+        report['runs'][2]['attempts'][0]['parent_before_resume']['initial_handle_closed'] = False
+        self.assertEqual(validate(report), ['full: initial token handle lifecycle was not attested'])
+
+    def test_initial_handle_must_not_be_inheritable_or_listed(self):
+        for key, value in [('initial_handle_flags', '0x00000001'), ('initial_handle_not_in_list', False)]:
+            with self.subTest(key=key):
+                report = complete_report()
+                report['runs'][2]['attempts'][0]['constructed_tokens'][key] = value
+                self.assertEqual(validate(report), ['full: initial token handle lifecycle was not attested'])
+
     def test_complete_launch_evidence_is_accepted(self):
         self.assertEqual(validate(complete_report()), [])
 
@@ -33,7 +50,7 @@ class EvidenceTests(unittest.TestCase):
 
     def test_loader_identification_token_is_rejected(self):
         report = complete_report()
-        report['runs'][2]['attempts'][0]['child']['initial_impersonation']['token']['impersonation_level'] = 1
+        report['runs'][2]['attempts'][0]['parent_before_resume']['assigned_loader']['impersonation_level'] = 1
         self.assertEqual(validate(report), ['full: loader token is not SecurityImpersonation'])
 
     def test_full_policy_requires_null_restricting_sid(self):

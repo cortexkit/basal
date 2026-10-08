@@ -18,15 +18,23 @@ The executable has parent and `--child` roles. The parent owns the profile,
 fixtures and job. All three modes use an explicit three-pipe handle list as
 transport plumbing. `plain` has no security layers; `lpac` adds only the
 zero-capability LPAC identity; `full` adds the restricted primary token,
-loader impersonation, job, mitigations and child-process prohibition. If the
-ordinary loader exits with STATUS_BAD_IMPERSONATION_LEVEL, the parent retries
-that same full policy with a duplicated same-package LPAC loader token and
-records both attempts. It never replaces the lockdown primary with the loader.
+loader impersonation, job, mitigations and child-process prohibition. The
+original Untrusted-at-birth recipe is recorded first. The next candidate starts
+with a restricted Low primary and a Low, same-package, zero-capability lowbox
+loader created by `NtCreateLowBoxToken`. If that fails, the same delayed-integrity
+candidate uses an LPAC-born loader source. No birth mitigation or job limit is
+removed in either candidate, and the lockdown primary is never replaced by the
+loader token.
 
 The loader token is a same-access approximation, not a literal implementation
-of Chromium's token builder: it retains groups and integrity, disables maximum
-privileges and has no restricting SIDs. The child records it, reverts before
-input, and measures the primary token. The package-SID read/execute ACE is
+of Chromium's token builder: it retains the source's groups, disables maximum
+privileges and has no restricting SIDs. The parent records both constructed and
+actually assigned tokens before resume. The initial handle is explicitly
+non-inheritable, excluded from the handle list and closed before resume. The
+worker borrows its own primary's adjustment handle while loading, reverts before
+any attestation, self-lowers to Untrusted when requested, closes the adjustment
+handle, and refuses before input if any token handle remains. The package-SID
+read/execute ACE is
 confined to a copy of this binary in `target/release/placed`, never a user or
 system directory. The deliberately permissive named section/event have a NULL
 DACL and are not inherited. The deliberately inheritable writable file is
@@ -63,7 +71,10 @@ the child also inventories the actual module paths. Broker-only Userenv/Ole32
 entry points are resolved dynamically in the parent: static imports of those
 libraries load GUI/COM code into the child before any Rust code can revert.
 Native Winsock calls record initialization failures instead of panicking like
-`std::net` does when WSAStartup is denied.
+`std::net` does when WSAStartup is denied. The workflow also stages, neutralizes
+and restores the token-handle fence and proves a native test holding a real
+TOKEN_QUERY handle goes red; restored native tests must pass. The raw mutation
+proof is uploaded with the report.
 
 Use an isolated runner. This intentionally launches an unsandboxed control,
 probes public IPC endpoints, creates temporary fixtures and creates/deletes

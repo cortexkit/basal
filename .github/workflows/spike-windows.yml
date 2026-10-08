@@ -43,6 +43,10 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           cargo build --release --locked
           exit $LASTEXITCODE
+      - name: Witness token-handle fence on a live token
+        run: |
+          python mutation_witness.py
+          exit $LASTEXITCODE
       - name: Import and delay-import inventory
         run: |
           New-Item -ItemType Directory -Force evidence | Out-Null
