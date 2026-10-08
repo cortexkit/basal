@@ -179,6 +179,9 @@ impl Runtime {
         };
         match claimed {
             Ok(lease) => {
+                // The first claim arms the run's wall-clock deadline. The
+                // engine may already be asleep on an older timer snapshot.
+                self.shared.signal.bump();
                 self.at(
                     run_id,
                     Boundary::Claimed {

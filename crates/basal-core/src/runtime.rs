@@ -202,6 +202,7 @@ pub enum ActivationEnd {
 pub(crate) struct Signal {
     epoch: Mutex<u64>,
     cond: Condvar,
+    listener: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl Signal {
@@ -216,6 +217,10 @@ impl Signal {
     pub(crate) fn bump(&self) {
         *self.lock() += 1;
         self.cond.notify_all();
+        let listener = lock(&self.listener).clone();
+        if let Some(listener) = listener {
+            listener();
+        }
     }
 
     /// Waits until the counter moves past `seen` or `timeout` passes.
@@ -333,6 +338,7 @@ impl Runtime {
             signal: Signal {
                 epoch: Mutex::new(0),
                 cond: Condvar::new(),
+                listener: Mutex::new(None),
             },
             threads: Mutex::new(Vec::new()),
             retention_next: Mutex::new(None),
@@ -368,6 +374,12 @@ impl Runtime {
         &self.config
     }
 
+    /// Attaches the engine's coalescing wake signal. The callback must not
+    /// read the store: commits may notify while holding other runtime locks.
+    pub fn on_work(&self, notify: Arc<dyn Fn() + Send + Sync>) {
+        *lock(&self.shared.signal.listener) = Some(notify);
+    }
+
     /// Calls `hooks` at a boundary; a crash cuts the store.
     pub(crate) fn at(&self, run_id: &str, boundary: Boundary) -> Result<()> {
         match self.shared.hooks.at(run_id, &boundary) {
@@ -395,9 +407,12 @@ impl Runtime {
     pub fn admit(&self, spec: &TriggerSpec) -> Result<Admission> {
         let store_id = self.shared.store.store_id().to_owned();
         let ctx = self.admit_context()?;
-        self.shared
+        let admitted = self
+            .shared
             .store
-            .write(|tx| admission::admit(tx, &store_id, spec, &ctx))
+            .write(|tx| admission::admit(tx, &store_id, spec, &ctx))?;
+        self.shared.signal.bump();
+        Ok(admitted)
     }
 
     /// Admits a trigger under the flow's currently approved version.
@@ -409,9 +424,11 @@ impl Runtime {
     ) -> Result<Admission> {
         let store_id = self.shared.store.store_id().to_owned();
         let ctx = self.admit_context()?;
-        self.shared
-            .store
-            .write(|tx| admission::admit_current(tx, &store_id, flow_id, trigger_id, trigger, &ctx))
+        let admitted = self.shared.store.write(|tx| {
+            admission::admit_current(tx, &store_id, flow_id, trigger_id, trigger, &ctx)
+        })?;
+        self.shared.signal.bump();
+        Ok(admitted)
     }
 
     /// A scheduler over this runtime's store that reads this runtime's
@@ -432,9 +449,12 @@ impl Runtime {
     pub fn retrigger(&self, run_id: &str) -> Result<Admission> {
         let store_id = self.shared.store.store_id().to_owned();
         let ctx = self.admit_context()?;
-        self.shared
+        let admitted = self
+            .shared
             .store
-            .write(|tx| admission::retrigger(tx, &store_id, run_id, &ctx))
+            .write(|tx| admission::retrigger(tx, &store_id, run_id, &ctx))?;
+        self.shared.signal.bump();
+        Ok(admitted)
     }
 
     // ---- Reading -----------------------------------------------------------
@@ -1018,7 +1038,9 @@ impl Runtime {
         self.flush_refusals()?;
         self.retention_due(now)?;
         self.reap_threads();
-        self.shared.signal.bump();
+        if !expired.is_empty() {
+            self.shared.signal.bump();
+        }
         for (_, flow_id) in &expired {
             self.wake_flow(flow_id);
         }

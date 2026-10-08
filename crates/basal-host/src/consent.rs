@@ -227,6 +227,12 @@ impl std::error::Error for ConsentError {}
 /// Where decisions are delivered. An error means the decision was not
 /// recorded; the consent plane keeps it and delivers it again.
 pub trait DecisionSink: Send + Sync {
+    /// Whether this owner has cards whose answers still need polling. Sinks
+    /// without a durable card inventory retain their existing polling policy.
+    fn has_open_cards(&self) -> Result<bool, SinkError> {
+        Ok(true)
+    }
+
     fn decide(&self, decision: &DecisionEvent) -> Result<(), SinkError>;
 
     /// Applies an answer to a decision card. An error means it was not

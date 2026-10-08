@@ -165,6 +165,11 @@ struct DecisionApplier {
 }
 
 impl DecisionSink for DecisionApplier {
+    fn has_open_cards(&self) -> Result<bool, SinkError> {
+        self.rt
+            .has_open_cards()
+            .map_err(|e| SinkError(e.to_string()))
+    }
     fn decide(&self, event: &DecisionEvent) -> Result<(), SinkError> {
         let decision = match event.decision {
             CardDecision::Approve => Decision::Approve,
@@ -245,5 +250,12 @@ impl DecisionSink for DecisionApplier {
                 Ok(())
             }
         }
+    }
+}
+
+impl Drop for Module {
+    fn drop(&mut self) {
+        self.engine.stop();
+        self.pool.stop();
     }
 }

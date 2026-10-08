@@ -9253,3 +9253,47 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
+
+
+[[control]]
+id = "admission-does-not-wake-the-idle-engine"
+guards = "A newly admitted trigger wakes the sleeping engine without its ten-minute fallback"
+file = "crates/basal-core/src/runtime.rs"
+old = """
+admission::admit_current(tx, &store_id, flow_id, trigger_id, trigger, &ctx)
+        })?;
+        self.shared.signal.bump();"""
+new = """
+admission::admit_current(tx, &store_id, flow_id, trigger_id, trigger, &ctx)
+        })?;
+        // NON-VACUITY BREAK: admission no longer signals the engine."""
+edits = []
+test_file = "crates/basal-module/src/engine_tests.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--lib"
+expect_red = ["engine::lifecycle_tests::admission_wakes_the_sleeping_engine"]
+only = true
+platforms = ["macos"]
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "consent-polls-without-owned-open-cards"
+guards = "Steady-state idle consent makes zero answer or acknowledgement RPCs"
+file = "crates/basal-host/src/core_consent.rs"
+old = "Ok(state.retry_page.load(Ordering::Acquire)"
+new = "Ok(true || state.retry_page.load(Ordering::Acquire) /* NON-VACUITY BREAK: poll while idle */"
+edits = []
+test_file = "crates/basal-host/src/core_consent_tests.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--lib"
+select = "expected"
+expect_red = ["core_consent::polling_tests::idle_consent_makes_zero_rpcs"]
+only = false
+platforms = ["linux"]
+timeout_s = 600
+build_timeout_s = 3600
+

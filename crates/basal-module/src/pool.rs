@@ -254,6 +254,7 @@ struct Shared {
     state: Mutex<State>,
     cond: Condvar,
     next_id: AtomicU64,
+    notify: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 /// The pool. Cloning shares it.
@@ -304,12 +305,39 @@ impl Pool {
                 state: Mutex::new(State::default()),
                 cond: Condvar::new(),
                 next_id: AtomicU64::new(1),
+                notify: Mutex::new(None),
             }),
         }
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
         self.shared.lock()
+    }
+
+    pub(crate) fn on_change(&self, notify: Arc<dyn Fn() + Send + Sync>) {
+        *self.shared.notify.lock().unwrap_or_else(|p| p.into_inner()) = Some(notify);
+    }
+
+    /// Retirement and failed-spawn retry use the same clock as run timers.
+    /// Dead idle children are discovered by the engine's slow fallback.
+    pub(crate) fn next_maintenance_at(&self) -> Option<i64> {
+        let state = self.lock();
+        if state.stopped {
+            return None;
+        }
+        let idle_ms = i64::try_from(self.shared.config.idle_retire.as_millis()).unwrap_or(i64::MAX);
+        let retirement = state
+            .bound
+            .values()
+            .flatten()
+            .map(|w| w.idle_since_ms.saturating_add(idle_ms))
+            .min();
+        let retry = state
+            .spawn_error
+            .as_ref()
+            .map(|_| state.retry_at_ms)
+            .filter(|at| *at > self.shared.clock.now_ms());
+        retirement.into_iter().chain(retry).min()
     }
 
     /// Hands out a greeted worker for `binding`: an idle one already bound to
@@ -477,6 +505,7 @@ impl Pool {
             }
             if crashed + retired > 0 {
                 self.shared.cond.notify_all();
+                self.shared.changed();
             }
         }
         // Killed outside the lock: reaping can take a moment.
@@ -564,6 +593,7 @@ impl Pool {
         };
         drop(doomed);
         self.shared.cond.notify_all();
+        self.shared.changed();
     }
 
     /// Takes a lease back. A worker that was killed, died, served a dry run
@@ -607,12 +637,14 @@ impl Pool {
                 drop(state);
                 process.kill();
                 self.shared.cond.notify_all();
+                self.shared.changed();
                 self.replenish();
                 return;
             }
         }
         drop(state);
         self.shared.cond.notify_all();
+        self.shared.changed();
     }
 
     fn set_run(&self, id: u64, run_id: &str) {
@@ -623,6 +655,16 @@ impl Pool {
 }
 
 impl Shared {
+    fn changed(&self) {
+        let notify = self
+            .notify
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        if let Some(notify) = notify {
+            notify();
+        }
+    }
     fn lock(&self) -> MutexGuard<'_, State> {
         // A panic on another thread must not make the pool unusable.
         self.state.lock().unwrap_or_else(|p| p.into_inner())
@@ -696,6 +738,7 @@ impl Shared {
                     .min(SPAWN_RETRY_MAX_MS);
                 state.retry_at_ms = self.clock.now_ms().saturating_add(delay);
                 state.spawn_error = Some(e.to_string());
+                self.changed();
                 tracing::warn!(target: "pool", "spawning a worker failed: {e}");
                 Err(e)
             }
@@ -718,6 +761,7 @@ impl Shared {
                 drop(state);
                 drop(process);
                 self.cond.notify_all();
+                self.changed();
                 return;
             }
             Err(_) => {
@@ -726,6 +770,7 @@ impl Shared {
         }
         drop(state);
         self.cond.notify_all();
+        self.changed();
     }
 }
 

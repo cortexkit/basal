@@ -75,7 +75,7 @@ pub enum RevokeCause {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Backoff {
     /// On the runtime's clock (`Config::clock`), which tests set by hand.
-    retry_at_ms: i64,
+    pub(crate) retry_at_ms: i64,
     /// Consecutive unanswered checks.
     failures: u32,
 }

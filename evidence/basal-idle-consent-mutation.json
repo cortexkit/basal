@@ -1,0 +1,34 @@
+[
+  {
+    "id": "consent-polls-without-owned-open-cards",
+    "outcome": "CAUGHT",
+    "timed_out_phase": null,
+    "red": [
+      "core_consent::polling_tests::idle_consent_makes_zero_rpcs"
+    ],
+    "green": [],
+    "failures": {
+      "core_consent::polling_tests::idle_consent_makes_zero_rpcs": "\nthread 'core_consent::polling_tests::idle_consent_makes_zero_rpcs' (108839211) panicked at crates/basal-host/src/core_consent_tests.rs:82:5:\nassertion `left == right` failed\n  left: 5\n right: 0\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\n"
+    },
+    "baseline_failures": {},
+    "collateral": {
+      "count": 0,
+      "targets": []
+    },
+    "breadth_observed": false,
+    "build_ms": 32945,
+    "test_ms": 471,
+    "baseline_build_ms": 109201,
+    "baseline_test_ms": 115,
+    "baseline_red": {},
+    "prebuild_ms": 0,
+    "prebuild_tail": "",
+    "baseline_prebuild_ms": 0,
+    "baseline_prebuild_tail": "",
+    "restore_prebuild_ms": 0,
+    "restore_prebuild_tail": "",
+    "build_tail": "   Compiling basal-host v0.1.0 (/Users/ufukaltinok/.local/share/cortexkit/alfonso/worktrees/adddb770875f5a2d/bg_1b8da7c6c5ddefd5/crates/basal-host)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 32.90s\n  Executable unittests src/lib.rs (target/debug/deps/basal_host-989b188d15cf07f2)\n",
+    "test_tail": "    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on package cache\n    Blocking waiting for file lock on package cache\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.15s\n     Running unittests src/lib.rs (target/debug/deps/basal_host-989b188d15cf07f2)\n\nrunning 1 test\ntest core_consent::polling_tests::idle_consent_makes_zero_rpcs ... FAILED\n\nfailures:\n\n---- core_consent::polling_tests::idle_consent_makes_zero_rpcs stdout ----\n\nthread 'core_consent::polling_tests::idle_consent_makes_zero_rpcs' (108839211) panicked at crates/basal-host/src/core_consent_tests.rs:82:5:\nassertion `left == right` failed\n  left: 5\n right: 0\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\nfailures:\n    core_consent::polling_tests::idle_consent_makes_zero_rpcs\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 46 filtered out; finished in 0.00s\n\nerror: test failed, to rerun pass `-p basal-host --lib`\nerror: 1 target failed:\n    `-p basal-host --lib`\n",
+    "reason": "selection was expected-only; breadth not observed"
+  }
+]

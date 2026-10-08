@@ -7,7 +7,8 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 /// Core's refusal of a scope author whose scope it does not own, or that
 /// carries no agent.
@@ -332,6 +333,28 @@ struct State {
     transport: Arc<dyn Transport>,
     sink: Mutex<Option<Arc<dyn DecisionSink>>>,
     poll_started: AtomicBool,
+    retry_page: AtomicBool,
+    wake: Mutex<(u64, bool)>,
+    cond: Condvar,
+}
+
+const POLL_MIN: Duration = Duration::from_millis(250);
+const POLL_MAX: Duration = Duration::from_secs(5);
+
+fn next_poll_delay(delay: Duration, raised: bool) -> Duration {
+    if raised {
+        POLL_MIN
+    } else {
+        delay.saturating_mul(2).min(POLL_MAX)
+    }
+}
+
+impl State {
+    fn raised(&self) {
+        let mut wake = self.wake.lock().unwrap_or_else(|p| p.into_inner());
+        wake.0 = wake.0.wrapping_add(1);
+        self.cond.notify_all();
+    }
 }
 pub struct CoreConsent {
     state: Arc<State>,
@@ -344,6 +367,9 @@ impl CoreConsent {
                 transport,
                 sink: Mutex::new(None),
                 poll_started: AtomicBool::new(false),
+                retry_page: AtomicBool::new(false),
+                wake: Mutex::new((0, false)),
+                cond: Condvar::new(),
             }),
             polling: false,
         }
@@ -357,7 +383,35 @@ impl CoreConsent {
         poll(&self.state)
     }
 }
+
+fn poll_allowed(state: &State) -> Result<bool, ConsentError> {
+    let sink = state
+        .sink
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone()
+        .ok_or_else(|| ConsentError::Unavailable("decision sink is not attached".into()))?;
+    Ok(state.retry_page.load(Ordering::Acquire)
+        || sink
+            .has_open_cards()
+            .map_err(|e| ConsentError::Unavailable(format!("reading owned decision cards: {e}")))?)
+}
+
 fn poll(state: &State) -> Result<(), ConsentError> {
+    if !poll_allowed(state)? {
+        return Ok(());
+    }
+    // A failed apply or acknowledgement must keep polling even if applying
+    // the page closed the last card. Only a successful ack clears the debt.
+    state.retry_page.store(true, Ordering::Release);
+    let result = poll_page(state);
+    if result.is_ok() {
+        state.retry_page.store(false, Ordering::Release);
+    }
+    result
+}
+
+fn poll_page(state: &State) -> Result<(), ConsentError> {
     let sink = state
         .sink
         .lock()
@@ -480,6 +534,7 @@ impl Consent for CoreConsent {
         if !reply["elicitation_id"].is_string() {
             return Err(ConsentError::Unavailable("missing elicitation id".into()));
         }
+        self.state.raised();
         Ok(())
     }
     fn raise_decision(&self, card: &DecisionCard) -> Result<String, ConsentError> {
@@ -488,26 +543,59 @@ impl Consent for CoreConsent {
             .transport
             .management(CORE, "elicitation.request", decision_request(card)?)
             .map_err(error)?;
-        reply["elicitation_id"]
+        let id = reply["elicitation_id"]
             .as_str()
             .filter(|id| !id.is_empty())
             .map(str::to_owned)
-            .ok_or_else(|| ConsentError::Unavailable("missing elicitation id".into()))
+            .ok_or_else(|| ConsentError::Unavailable("missing elicitation id".into()))?;
+        self.state.raised();
+        Ok(id)
     }
     fn attach(&self, sink: Arc<dyn DecisionSink>) {
         *self.state.sink.lock().unwrap_or_else(|p| p.into_inner()) = Some(sink);
         if self.polling && !self.state.poll_started.swap(true, Ordering::AcqRel) {
-            let weak = Arc::downgrade(&self.state);
+            // Reconcile once at startup even if the last answer already
+            // closed its card before a crash between apply and ack.
+            self.state.retry_page.store(true, Ordering::Release);
+            let state = self.state.clone();
             std::thread::spawn(move || {
+                let mut delay = POLL_MIN;
                 loop {
-                    let Some(state) = weak.upgrade() else { break };
+                    let (seen, stopped) = *state.wake.lock().unwrap_or_else(|p| p.into_inner());
+                    if stopped {
+                        break;
+                    }
+                    let allowed = poll_allowed(&state);
+                    if matches!(allowed, Ok(false)) {
+                        // No timer while idle. A card raised between the
+                        // inventory read and this wait changes the epoch.
+                        let wake = state.wake.lock().unwrap_or_else(|p| p.into_inner());
+                        drop(state.cond.wait_while(wake, |w| w.0 == seen && !w.1));
+                        delay = POLL_MIN;
+                        continue;
+                    }
                     if let Err(error) = poll(&state) {
                         tracing::warn!(%error, "consent polling failed; retrying without acknowledging answers");
                     }
-                    drop(state);
-                    std::thread::sleep(std::time::Duration::from_millis(250));
+                    let wake = state.wake.lock().unwrap_or_else(|p| p.into_inner());
+                    let (wake, _) = state
+                        .cond
+                        .wait_timeout_while(wake, delay, |w| w.0 == seen && !w.1)
+                        .unwrap_or_else(|p| p.into_inner());
+                    delay = next_poll_delay(delay, wake.0 != seen);
                 }
             });
         }
     }
 }
+
+impl Drop for CoreConsent {
+    fn drop(&mut self) {
+        self.state.wake.lock().unwrap_or_else(|p| p.into_inner()).1 = true;
+        self.state.cond.notify_all();
+    }
+}
+
+#[cfg(test)]
+#[path = "core_consent_tests.rs"]
+mod polling_tests;
