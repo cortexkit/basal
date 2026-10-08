@@ -208,7 +208,7 @@ pub fn run() -> Result<()> {
             "OpenProcess(external attestation)",
         ) {
             Ok(h) => {
-                json!({"pid":pid,"primary_token":primary(h.0),"main_thread":main_thread(pid),"mitigations":mitigations(h.0),"job":jobs(h.0, broker_pid),"handles":handle_table_for(h.0).unwrap_or_else(|e|vec![json!({"error":e})])})
+                json!({"pid":pid,"primary_token":primary(h.0),"main_thread":main_thread(pid),"startup_context":crate::startup::inspect(h.0),"mitigations":mitigations(h.0),"job":jobs(h.0, broker_pid),"handles":handle_table_for(h.0).unwrap_or_else(|e|vec![json!({"error":e})])})
             }
             Err(e) => json!({"pid":pid,"error":e}),
         }

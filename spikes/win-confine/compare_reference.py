@@ -34,6 +34,8 @@ def compare(directory):
         observed = json.loads((directory / Path(process['attestation']).name).read_text(encoding='utf-8-sig'))
         token = observed.get('primary_token', {})
         comparisons.append({'pid': process['pid'], 'observed': observed,
+                            'startup_context_diff': {'chrome': observed.get('startup_context'),
+                                'basal_before_resume': full['attempts'][-1]['parent_before_resume'].get('startup_context')},
                             'against_birth': token_diff(token, birth),
                             'against_intended_final': token_diff(token, intended)})
     return {'schema': 1, 'chrome_inventory': inventory, 'basal_birth': birth,

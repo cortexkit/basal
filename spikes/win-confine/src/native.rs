@@ -198,6 +198,109 @@ unsafe fn default_dacl(token: HANDLE) -> Result<Value> {
     }
 }
 
+pub unsafe fn set_user_default_dacl(token: HANDLE) -> Result<()> {
+    unsafe {
+        let user = token_buffer(token, TokenUser)?;
+        let sid = sid_string((*user.as_ptr().cast::<TOKEN_USER>()).User.Sid);
+        let mut descriptor = null_mut();
+        check(
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                wide(&format!("D:(A;;GA;;;{sid})(A;;GA;;;BA)(A;;GA;;;SY)")).as_ptr(),
+                SDDL_REVISION_1,
+                &mut descriptor,
+                null_mut(),
+            ),
+            "ConvertStringSecurityDescriptorToSecurityDescriptorW(Chrome default DACL)",
+        )?;
+        let mut present = 0;
+        let mut defaulted = 0;
+        let mut dacl = null_mut();
+        let result = (|| {
+            check(
+                GetSecurityDescriptorDacl(descriptor, &mut present, &mut dacl, &mut defaulted),
+                "GetSecurityDescriptorDacl(Chrome default DACL)",
+            )?;
+            let info = TOKEN_DEFAULT_DACL { DefaultDacl: dacl };
+            check(
+                SetTokenInformation(
+                    token,
+                    TokenDefaultDacl,
+                    (&info as *const TOKEN_DEFAULT_DACL).cast(),
+                    size_of::<TOKEN_DEFAULT_DACL>() as u32,
+                ),
+                "SetTokenInformation(Chrome default DACL)",
+            )
+        })();
+        LocalFree(descriptor);
+        result
+    }
+}
+
+pub unsafe fn descriptor_attestation(
+    descriptor: *mut c_void,
+    token: HANDLE,
+    mapping: &mut GENERIC_MAPPING,
+) -> Value {
+    unsafe {
+        let mut text = null_mut();
+        let rendered = if ConvertSecurityDescriptorToStringSecurityDescriptorW(
+            descriptor,
+            SDDL_REVISION_1,
+            DACL_SECURITY_INFORMATION,
+            &mut text,
+            null_mut(),
+        ) == 0
+        {
+            json!({"error":last("ConvertSecurityDescriptorToStringSecurityDescriptorW(object)")})
+        } else {
+            let rendered = utf16_ptr(text);
+            LocalFree(text.cast());
+            json!(rendered)
+        };
+        let checks = [1u32, 2, 0x20000].iter().map(|desired| {
+            if token.is_null() { return json!({"desired_access":hex(*desired),"error":"primary impersonation duplicate unavailable"}); }
+            let mut privileges = [0usize;128];
+            let mut bytes = std::mem::size_of_val(&privileges) as u32;
+            let mut granted = 0;
+            let mut allowed = 0;
+            let ok = AccessCheck(descriptor, token, *desired, mapping, privileges.as_mut_ptr().cast(), &mut bytes, &mut granted, &mut allowed) != 0;
+            json!({"desired_access":hex(*desired),"query_success":ok,"allowed":ok && allowed != 0,"granted_access":hex(granted),"error":if ok {0} else {GetLastError()}})
+        }).collect::<Vec<_>>();
+        json!({"dacl_sddl":rendered,"primary_dacl_only_access_checks":checks,"coverage":"DACL evaluation only, not an operation or mandatory-integrity check; access bits have object-specific meanings"})
+    }
+}
+
+pub unsafe fn directory_attestation(path: &str, token: HANDLE) -> Value {
+    unsafe {
+        let mut w = wide(path);
+        let mut name = us(&mut w);
+        let mut attrs = oa(&mut name);
+        let mut h = null_mut();
+        let status = NtOpenDirectoryObject(&mut h, 0x20000, &mut attrs);
+        if status < 0 {
+            return json!({"path":path,"open_ntstatus":hex(status as u32)});
+        }
+        let h = Handle(h);
+        let mut bytes = 0;
+        NtQuerySecurityObject(h.0, 7, null_mut(), 0, &mut bytes);
+        if bytes == 0 {
+            return json!({"path":path,"error":"no security descriptor size"});
+        }
+        let mut buffer = vec![0usize; (bytes as usize).div_ceil(size_of::<usize>())];
+        let status = NtQuerySecurityObject(h.0, 7, buffer.as_mut_ptr().cast(), bytes, &mut bytes);
+        if status < 0 {
+            return json!({"path":path,"query_ntstatus":hex(status as u32)});
+        }
+        let mut mapping = GENERIC_MAPPING {
+            GenericRead: 0x20001,
+            GenericWrite: 0x2000c,
+            GenericExecute: 0x20002,
+            GenericAll: 0xf000f,
+        };
+        json!({"path":path,"security":descriptor_attestation(buffer.as_mut_ptr().cast(), token, &mut mapping)})
+    }
+}
+
 pub unsafe fn token_attestation(token: HANDLE) -> Result<Value> {
     unsafe {
         let group_data = token_buffer(token, TokenGroups)?;
@@ -482,6 +585,13 @@ unsafe extern "system" {
         class: TOKEN_INFORMATION_CLASS,
         buffer: *mut c_void,
         size: u32,
+        returned: *mut u32,
+    ) -> i32;
+    fn NtQuerySecurityObject(
+        handle: HANDLE,
+        information: u32,
+        descriptor: *mut c_void,
+        bytes: u32,
         returned: *mut u32,
     ) -> i32;
     fn NtOpenDirectoryObject(out: *mut HANDLE, access: u32, attrs: *mut ObjectAttributes) -> i32;

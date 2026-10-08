@@ -149,6 +149,7 @@ fn restricted_tokens(
     enabled_groups: bool,
     keep_logon: bool,
     keep_loader_privileges: bool,
+    chrome_default_dacl: bool,
 ) -> Result<Tokens> {
     unsafe {
         let data = token_buffer(parent, TokenGroups)?;
@@ -257,6 +258,12 @@ fn restricted_tokens(
                     WinUntrustedLabelSid
                 },
             )?;
+        }
+        // Chrome's measured primary default DACL grants the user full access,
+        // in addition to Administrators and SYSTEM. Match that object-creation
+        // default without changing the existing token object's security.
+        if chrome_default_dacl {
+            set_user_default_dacl(lockdown.0)?;
         }
         // Same-access restricting SIDs retain the source user and groups;
         // unlike the primary's NULL SID, they permit trusted loader operations.
@@ -672,7 +679,8 @@ fn launch_variant(
         let full = input.mode == "full";
         let lpac = input.mode != "plain"
             && sequence != "chrome-logon-non-lpac-control"
-            && sequence != "chrome-loader-privileges-control";
+            && sequence != "chrome-loader-privileges-control"
+            && sequence != "chrome-default-dacl-control";
         let bare = sequence == "bare-token-control";
         let debug = sequence == "loader-trace";
         let mut tokens = if full {
@@ -690,8 +698,11 @@ fn launch_variant(
                 sequence == "post-load-primary-control",
                 sequence == "chrome-logon-control"
                     || sequence == "chrome-logon-non-lpac-control"
-                    || sequence == "chrome-loader-privileges-control",
-                sequence == "chrome-loader-privileges-control",
+                    || sequence == "chrome-loader-privileges-control"
+                    || sequence == "chrome-default-dacl-control",
+                sequence == "chrome-loader-privileges-control"
+                    || sequence == "chrome-default-dacl-control",
+                sequence == "chrome-default-dacl-control",
             )?)
         } else {
             None
@@ -840,6 +851,7 @@ fn launch_variant(
             info["member_at_birth"] = json!(ok && member != 0);
             info["membership_query_error"] = json!(if ok { 0 } else { error });
         }
+        let birth_startup = crate::startup::inspect(process.0);
         let mut birth_primary = null_mut();
         let birth_primary = if OpenProcessToken(process.0, TOKEN_QUERY, &mut birth_primary) == 0 {
             json!({"error":last("OpenProcessToken(suspended child)")})
@@ -937,7 +949,7 @@ fn launch_variant(
             |e| json!({"parse_error":e.to_string(),"stdout":String::from_utf8_lossy(&stdout)}),
         );
         Ok(
-            json!({"sequence":sequence,"debug":{"requested":debug,"loader_snaps_enablement":loader_snaps_enablement,"setup":debug_setup,"attached_before_resume":attached,"creation_error":debug_creation_error,"trace":debug_events},"exit_code":hex(exit),"timeout":wait!=WAIT_OBJECT_0,"input_write":{"success":write_ok,"error":if write_ok{0}else{write_error},"bytes":written},"stderr":String::from_utf8_lossy(&stderr),"job":job.as_ref().map(|j|&j.1),"constructed_tokens":tokens.as_ref().map(|t|&t.report),"parent_before_resume":{"primary":birth_primary,"assigned_loader":assigned_loader,"initial_handle_closed":initial_closed_before_resume},"stdio_handles":{"stdin":handles[0] as usize,"stdout":handles[1] as usize,"stderr":handles[2] as usize},"child":child}),
+            json!({"sequence":sequence,"debug":{"requested":debug,"loader_snaps_enablement":loader_snaps_enablement,"setup":debug_setup,"attached_before_resume":attached,"creation_error":debug_creation_error,"trace":debug_events},"exit_code":hex(exit),"timeout":wait!=WAIT_OBJECT_0,"input_write":{"success":write_ok,"error":if write_ok{0}else{write_error},"bytes":written},"stderr":String::from_utf8_lossy(&stderr),"job":job.as_ref().map(|j|&j.1),"constructed_tokens":tokens.as_ref().map(|t|&t.report),"parent_before_resume":{"startup_context":birth_startup,"primary":birth_primary,"assigned_loader":assigned_loader,"initial_handle_closed":initial_closed_before_resume},"stdio_handles":{"stdin":handles[0] as usize,"stdout":handles[1] as usize,"stderr":handles[2] as usize},"child":child}),
         )
     }
 }
@@ -1345,6 +1357,21 @@ pub fn run() -> Result<()> {
                     )
                     .unwrap_or_else(|e| json!({"error":e}));
                     diagnostics.push(json!({"label":"Chrome-matched non-AppContainer birth / retain source loader privileges / job and mitigations retained","result":matched}));
+                    let matched = launch_variant(
+                        &input,
+                        &image.to_string_lossy(),
+                        sid,
+                        token.0,
+                        token.0,
+                        "chrome-default-dacl-control",
+                        true,
+                        false,
+                        false,
+                        MITIGATIONS,
+                        0xff,
+                    )
+                    .unwrap_or_else(|e| json!({"error":e}));
+                    diagnostics.push(json!({"label":"Chrome-matched non-AppContainer birth / primary user default-DACL grant / job and mitigations retained","result":matched}));
                     let result = match launch_variant(
                         &input,
                         &image.to_string_lossy(),

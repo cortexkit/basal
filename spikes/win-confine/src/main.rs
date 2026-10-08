@@ -11,6 +11,8 @@ mod parent;
 #[cfg(windows)]
 mod profile;
 #[cfg(windows)]
+mod startup;
+#[cfg(windows)]
 mod trace;
 
 #[cfg(windows)]
