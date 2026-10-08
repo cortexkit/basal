@@ -576,8 +576,8 @@ build_timeout_s = 3600
 # 20- or 60-second activation budget. Allow their failures to finish under load.
 timeout_s = 7200
 file = "crates/basal-core/src/journal.rs"
-old = "payload_hash FROM mailbox \\\n         WHERE run_id = ?1 ORDER BY seq\","
-new = "payload_hash FROM mailbox \\\n         WHERE run_id = ?1 AND arrived_generation < (SELECT generation FROM runs WHERE run_id = ?1) ORDER BY seq\", // NON-VACUITY BREAK"
+old = "WHERE run_id=?1 AND position IN (SELECT value FROM json_each(?2)) ORDER BY seq LIMIT 1"
+new = "WHERE run_id=?1 AND position IN (SELECT value FROM json_each(?2)) AND arrived_generation < (SELECT generation FROM runs WHERE run_id=?1) ORDER BY seq LIMIT 1"
 
 [[control]]
 id = "rejections-journaled-as-fulfilments-caught-rejection"
@@ -694,7 +694,6 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 edits = [
-  { file = "crates/basal-core/src/driver.rs", old = "let value = last.map_or(now, |last| now.max(last));", new = "let value = last.map_or(now, |_| now);" },
   { file = "crates/basal-core/src/driver.rs", old = "(Some(c), Some(last)) => Some(c.max(last)),", new = "(Some(c), Some(_)) => Some(c)," },
 ]
 
@@ -710,8 +709,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/journal.rs"
-old = "WHERE {FENCE} AND ?4 = (SELECT COUNT(*) FROM journal WHERE run_id = ?1)"
-new = "WHERE (1 OR {FENCE}) AND ?4 = (SELECT COUNT(*) FROM journal WHERE run_id = ?1)"
+old = "WHERE {FENCE} AND ?4 = ?15"
+new = "WHERE (1 OR {FENCE}) AND ?4 = ?15"
 
 [[control]]
 id = "recovery-resends-a-call-this-process-is-still-dispatching"
@@ -758,7 +757,7 @@ timeout_s = 600
 file = "crates/basal-core/src/driver.rs"
 # Dispatch only on a failed commit: successful calls must not be sent twice.
 old = "                    self.on_host_call(call)?"
-new = "                    let flow = self.on_host_call(call.clone());\n                    if flow.is_err() && self.rt.store().read(|_| Ok(())).is_err()\n                        && matches!(self.rt.class_of(&call.kind, &call.args), StoredClass::Query | StoredClass::KeyedMutation | StoredClass::Mutation)\n                        && let Ok(prepared) = self.prepare(&call) { // NON-VACUITY BREAK\n                        let flow_id = self.run.flow_id.clone();\n                        let run_id = self.lease.run_id.clone();\n                        let _ = self.rt.shared.host.dispatch(&basal_host::CallRequest { flow_id: flow_id.clone(), run_id: run_id.clone(), position: call.position, kind: call.kind, args: prepared.request.unwrap_or(call.args), idempotency_key: crate::ids::idempotency_key(&flow_id, &run_id, call.position), attempt: 1 });\n                    }\n                    flow?"
+new = "                    let flow = self.on_host_call(call.clone());\n                    if flow.is_err() && self.rt.store().read(|_| Ok(())).is_err()\n                        && matches!(self.rt.class_of(&call.kind, serde_json::from_str::<serde_json::Value>(call.args.as_str()).ok().as_ref()), StoredClass::Query | StoredClass::KeyedMutation | StoredClass::Mutation)\n                        && let Ok(prepared) = self.prepare(&call) { // NON-VACUITY BREAK\n                        let flow_id = self.run.flow_id.clone();\n                        let run_id = self.lease.run_id.clone();\n                        let _ = self.rt.shared.host.dispatch(&basal_host::CallRequest { flow_id: flow_id.clone(), run_id: run_id.clone(), position: call.position, kind: call.kind, args: prepared.request.unwrap_or(call.args), idempotency_key: crate::ids::idempotency_key(&flow_id, &run_id, call.position), attempt: 1 });\n                    }\n                    flow?"
 
 [[control]]
 id = "recovery-resends-a-mutation-that-ignores-idempotency-keys"
@@ -943,8 +942,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/retention.rs"
-old = "if !journal::unsettled_positions(tx, &run_id)?.is_empty() {"
-new = "if false && !journal::unsettled_positions(tx, &run_id)?.is_empty() {"
+old = 'const OBLIGATIONS: &str = "EXISTS (SELECT 1 FROM journal'
+new = 'const OBLIGATIONS: &str = "0 AND EXISTS (SELECT 1 FROM journal'
 
 [[control]]
 id = "pruning-touches-runs-that-have-not-ended"
@@ -957,9 +956,10 @@ expect_red = ["pruning_spares_unfinished_runs_and_open_obligations"]
 only = false
 build_timeout_s = 3600
 timeout_s = 600
-file = "crates/basal-core/src/retention.rs"
-old = "WHERE state IN ('succeeded', 'failed', 'engine_mismatch', 'cancelled') \\\n         AND ended_at IS NOT NULL AND ended_at <= ?1"
-new = "WHERE state IN ('succeeded', 'failed', 'engine_mismatch', 'cancelled', 'pending', 'suspended') \\\n         AND (ended_at IS NULL OR ended_at <= ?1)"
+edits = [
+  { file = "crates/basal-core/src/retention.rs", old = "WHERE r.state IN ('succeeded','failed','engine_mismatch','cancelled') \\\n         AND r.ended_at<=?1 AND {predicate}", new = "WHERE r.state IN ('succeeded','failed','engine_mismatch','cancelled','pending','suspended') \\\n         AND (r.ended_at IS NULL OR r.ended_at<=?1) AND {predicate}" },
+  { file = "crates/basal-core/src/retention.rs", old = "WHERE r.state IN ('succeeded','failed','engine_mismatch','cancelled') \\\n         AND r.ended_at<=?1 AND r.run_id=?2", new = "WHERE r.state IN ('succeeded','failed','engine_mismatch','cancelled','pending','suspended') \\\n         AND (r.ended_at IS NULL OR r.ended_at<=?1) AND r.run_id=?2" },
+]
 
 [[control]]
 id = "store-runs-synchronous-normal"
@@ -6342,8 +6342,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/runs.rs"
-old = "crate::journal::expire_deferred(tx, run_id)?;"
-new = "let _ = run_id; // NON-VACUITY BREAK"
+old = "for (run_id, _) in &expired {\n        crate::journal::expire_deferred(tx, run_id)?;"
+new = "for (run_id, _) in &expired { // NON-VACUITY BREAK"
 
 [[control]]
 id = "flow-busy-wait-exceeds-run-deadline"
@@ -6822,8 +6822,8 @@ hub = "Agent targets and install_refuses_what_an_agent_may_not_do both assert th
 hub_targets = ["ops"]
 guards = "agent-owned flows cannot target another agent"
 file = "crates/basal-core/src/install.rs"
-old = 'if author != "operator" && author != "local:unverified" {'
-new = 'if false && author != "operator" && author != "local:unverified" { // NON-VACUITY BREAK'
+old = 'if author != crate::decisions::OPERATOR_ACTOR && author != "local:unverified" {'
+new = 'if false && author != crate::decisions::OPERATOR_ACTOR && author != "local:unverified" { // NON-VACUITY BREAK'
 edits = []
 test_file = "crates/basal-module/tests/agent_targets.rs"
 runner = "cargo"

@@ -523,8 +523,7 @@ impl Activation<'_> {
     /// - a call this process is still dispatching, a long-running call the
     ///   host accepted, or one whose outcome waits in the mailbox: nothing
     ///   to do;
-    /// - a local call without an outcome: corruption, since its row and
-    ///   outcome always commit atomically;
+    /// - a clock read or random sample: the worker asks again;
     /// - a query, or a mutation whose op honours idempotency keys, or one an
     ///   operator reconciled as not applied: sent again with the same key;
     /// - any other mutation: its outcome cannot be proven, so the run stops
@@ -556,13 +555,27 @@ impl Activation<'_> {
                         resend.push(row.clone());
                     }
                 }
-                (StoredClass::Sync | StoredClass::Local, _) => {
-                    return Err(CoreError::Corrupt(format!(
-                        "atomic local call at position {} lacks its outcome",
-                        row.position
-                    )));
+                (StoredClass::Sync, _) | (_, DispatchState::Accepted) => {}
+                (StoredClass::Local, _) => {
+                    // Normally a local call and its outcome commit together.
+                    // If only the row remains, recovery completes that intent.
+                    let flow_id = self.run.flow_id.clone();
+                    let limits = self.rt.config.kv;
+                    self.rt.store().write(|tx| {
+                        let outcome = kv::apply(tx, &flow_id, &row.kind, &row.args, &limits)?;
+                        journal::accept_outcome(
+                            tx,
+                            &run_id,
+                            row.position,
+                            None,
+                            &outcome,
+                            Source::Local,
+                        )
+                    })?;
+                    self.at(Boundary::LocalCommitted {
+                        position: row.position,
+                    })?;
                 }
-                (_, DispatchState::Accepted) => {}
                 (_, DispatchState::NotApplied) => resend.push(row.clone()),
                 (class, _) if class.safe_to_resend() => resend.push(row.clone()),
                 _ => unknown.push(row.position),
@@ -1177,9 +1190,8 @@ impl Activation<'_> {
         Ok(Some(inserted))
     }
 
-    /// An old-position call cannot be issued again: synchronous values commit
-    /// atomically with their rows and are included in the replay prefix. Keep
-    /// the signature check to diagnose a compromised worker's divergence.
+    /// A synchronous row whose value is missing can be recovered at its old
+    /// position. Any other old-position call indicates worker divergence.
     fn on_reissued_sync(&mut self, call: HostCall) -> Result<Flow> {
         let row = self
             .rt
@@ -1209,10 +1221,22 @@ impl Activation<'_> {
                 call.position
             ));
         }
-        self.broken(format!(
-            "the worker issued recorded position {} again",
-            call.position
-        ))
+        let (settlement, value, clock) = self.sync_value(&call.kind)?;
+        let outcome = self.rt.store().write(|tx| {
+            // Recovery must use the same monotonic clock rule as a new call.
+            let clock = match clock {
+                Some(sample) => {
+                    Some(sample.max(journal::last_clock(tx, &self.lease.run_id)?.unwrap_or(sample)))
+                }
+                None => None,
+            };
+            let value = clock.map_or(value.clone(), number_text);
+            journal::record_sync(tx, &self.lease, call.position, settlement, &value, clock)
+        })?;
+        self.at(Boundary::SyncCommitted {
+            position: call.position,
+        })?;
+        self.reply(outcome)
     }
 
     /// The worker can make no progress until one of `awaiting` settles.
