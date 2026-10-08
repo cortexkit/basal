@@ -4,8 +4,8 @@
 
 mod common;
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use basal_core::{ActivationEnd, Boundary, RunState, Step};
@@ -356,7 +356,6 @@ fn concurrent_resumes_start_one_activation() {
         "const x = await ops.call('mock', 'echo', { n: 1, gate: 'resume' }); return x.n;",
     );
     let barrier = std::sync::Barrier::new(2);
-    let ends: OnceLock<Vec<ActivationEnd>> = OnceLock::new();
     let collected = std::sync::Mutex::new(Vec::new());
     std::thread::scope(|s| {
         for _ in 0..2 {
@@ -382,8 +381,7 @@ fn concurrent_resumes_start_one_activation() {
             world.mock.open_gate("resume");
         });
     });
-    let _ = ends.set(collected.into_inner().unwrap_or_default());
-    let ends = ends.get().expect("ends");
+    let ends = collected.into_inner().expect("activation results");
     let started = ends
         .iter()
         .filter(|e| !matches!(e, ActivationEnd::NotRunnable { .. }))

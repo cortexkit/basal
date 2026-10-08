@@ -15,7 +15,9 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
+use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use basal_module::fatal::EXIT_STORE_FAILURE;
 use basal_testkit::channel::worker_binary;
@@ -263,9 +265,10 @@ mod privacy {
 
 struct Harness {
     child: Child,
-    stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
-    stderr: std::thread::JoinHandle<Vec<u8>>,
+    stdin: Option<ChildStdin>,
+    stdout: mpsc::Receiver<String>,
+    stdout_reader: Option<std::thread::JoinHandle<()>>,
+    stderr: Option<std::thread::JoinHandle<Vec<u8>>>,
 }
 
 impl Harness {
@@ -285,6 +288,15 @@ impl Harness {
         .expect("start the harness");
         let stdin = child.stdin.take().expect("stdin");
         let stdout = BufReader::new(child.stdout.take().expect("stdout"));
+        let (tx, incoming) = mpsc::channel();
+        let stdout_reader = std::thread::spawn(move || {
+            for line in stdout.lines() {
+                let Ok(line) = line else { break };
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
         // Drain the child continuously, but print its diagnostics from the
         // test thread so libtest captures them instead of corrupting status
         // lines consumed by mutation reports.
@@ -296,21 +308,20 @@ impl Harness {
         });
         Self {
             child,
-            stdin,
-            stdout,
-            stderr,
+            stdin: Some(stdin),
+            stdout: incoming,
+            stdout_reader: Some(stdout_reader),
+            stderr: Some(stderr),
         }
     }
 
     /// Sends a command; `None` when the process died before answering.
     fn send(&mut self, command: Value) -> Option<Value> {
-        writeln!(self.stdin, "{command}").ok()?;
-        self.stdin.flush().ok()?;
-        let mut line = String::new();
-        match self.stdout.read_line(&mut line) {
-            Ok(0) | Err(_) => None,
-            Ok(_) => serde_json::from_str(&line).ok(),
-        }
+        let stdin = self.stdin.as_mut()?;
+        writeln!(stdin, "{command}").ok()?;
+        stdin.flush().ok()?;
+        let line = self.stdout.recv_timeout(Duration::from_secs(60)).ok()?;
+        serde_json::from_str(&line).ok()
     }
 
     fn ok(&mut self, command: Value) -> Value {
@@ -320,9 +331,25 @@ impl Harness {
     }
 
     fn wait(mut self) -> ExitStatus {
-        drop(self.stdin);
-        let status = self.child.wait().expect("wait");
-        let stderr = self.stderr.join().expect("harness diagnostics thread");
+        drop(self.stdin.take());
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let status = loop {
+            if let Some(status) = self.child.try_wait().expect("wait") {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                self.child.kill().expect("kill stalled harness");
+                let _ = self.child.wait();
+                panic!("timed out waiting for harness exit");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let stderr = self
+            .stderr
+            .take()
+            .unwrap()
+            .join()
+            .expect("harness diagnostics thread");
         if !stderr.is_empty() {
             eprintln!("{}", String::from_utf8_lossy(&stderr));
         }
@@ -336,11 +363,50 @@ impl Harness {
     }
 }
 
+impl Drop for Harness {
+    fn drop(&mut self) {
+        drop(self.stdin.take());
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        if let Some(reader) = self.stdout_reader.take() {
+            let _ = reader.join();
+        }
+        if let Some(reader) = self.stderr.take() {
+            let _ = reader.join();
+        }
+    }
+}
+
+struct Directory(PathBuf);
+impl Drop for Directory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn scratch(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("basal-e2e-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("dir");
-    dir
+    basal_testkit::harness::scratch(&format!("e2e-{tag}"))
+}
+
+#[test]
+fn e2e_fixture_drop_reaps_its_child() {
+    let dir = scratch("drop-reaps");
+    let _directory = Directory(dir.clone());
+    let h = Harness::start(&dir, &[]);
+    let pid: i32 = h.child.id().try_into().unwrap();
+    drop(h);
+    let mut status = 0;
+    // SAFETY: this child was created by this test; the status pointer is valid.
+    let waited = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+    if waited == 0 {
+        // Reap the baseline's leaked child before reporting the failed guard.
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
+            libc::waitpid(pid, &mut status, 0);
+        }
+    }
+    let _ = std::fs::remove_dir_all(dir);
+    assert_eq!(waited, -1, "dropping the fixture left an unreaped child");
 }
 
 const SCRIPT: &str = "const before = (await kv.get('fires')) ?? 0;\n\
@@ -415,6 +481,7 @@ fn a_schedule_flow_reads_a_file_and_a_git_log_fetches_and_writes_a_digest() {
     use basal_testkit::https::{Reply, TestServer};
 
     let dir = scratch("builtins");
+    let _directory = Directory(dir.clone());
     let files = dir.join("files");
     std::fs::create_dir_all(&files).expect("files");
     std::fs::write(files.join("watch.txt"), "watched text").expect("file");
@@ -512,6 +579,7 @@ fn a_schedule_flow_reads_a_file_and_a_git_log_fetches_and_writes_a_digest() {
 #[test]
 fn a_schedule_flow_survives_a_catch_up_a_worker_kill_and_a_module_kill_with_each_write_once() {
     let dir = scratch("catch-up");
+    let _directory = Directory(dir.clone());
 
     // Install, approve, and sleep through five due times.
     let mut h = Harness::start(&dir, &["--routing-fake"]);
@@ -617,6 +685,7 @@ fn a_schedule_flow_survives_a_catch_up_a_worker_kill_and_a_module_kill_with_each
 #[test]
 fn a_store_error_ends_the_process_non_zero_and_the_restart_recovers() {
     let dir = scratch("store-error");
+    let _directory = Directory(dir.clone());
     let mut h = Harness::start(&dir, &["--cut-store-at", "CallCommitted { position: 1 }#1"]);
     install_and_approve(&mut h, "flow-cut", json!({ "interval": "1h" }));
     h.ok(json!({ "cmd": "clock", "set_ms": T0 + HOUR + 10_000 }));
@@ -645,6 +714,7 @@ fn a_store_error_ends_the_process_non_zero_and_the_restart_recovers() {
 #[test]
 fn a_broca_llm_suspends_survives_module_kill_and_settles_after_restart() {
     let dir = scratch("broca-restart");
+    let _directory = Directory(dir.clone());
     let mut h = Harness::start(&dir, &["--broca"]);
     let manifest = json!({
         "id": "flow-model", "version": 1, "purpose": "Obtain one model answer.",

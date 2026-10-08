@@ -14,9 +14,7 @@ use std::thread;
 use serde_json::Value;
 
 fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("basal-confinement-{}-{name}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
+    basal_testkit::harness::scratch(&format!("confinement-{name}"))
 }
 
 fn probe(extra: &[&str], read: &Path, write: &Path, connect: &str) -> Value {
@@ -50,6 +48,13 @@ fn probe(extra: &[&str], read: &Path, write: &Path, connect: &str) -> Value {
 #[test]
 fn sandbox_denies_files_sockets_and_exec() {
     let dir = scratch("probe");
+    struct Cleanup(PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(dir.clone());
     let secret = dir.join("secret.txt");
     std::fs::write(&secret, "outside the worker's allowance").expect("write secret");
     let listener = TcpListener::bind("127.0.0.1:0").expect("listen");

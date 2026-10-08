@@ -30,6 +30,9 @@ use serde_json::{Value, json};
 
 use crate::channel::{ProcessSource, worker_binary};
 
+/// Bound parallel real-process crash scenarios on a shared test machine.
+pub const CUT_PARALLEL: usize = 6;
+
 /// The representative run: a race whose loser is long-running and still
 /// outstanding long after the winner was released, a synchronous clock read,
 /// a caught rejection, a call the manifest does not allow (refused in the
@@ -183,7 +186,7 @@ pub fn scratch(tag: &str) -> PathBuf {
         SEQ.fetch_add(1, Ordering::SeqCst)
     ));
     let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::create_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create scratch directory");
     dir
 }
 
@@ -275,7 +278,7 @@ impl Probe {
 }
 
 impl Hooks for Probe {
-    fn at(&self, _run_id: &str, boundary: &Boundary) -> Step {
+    fn at(&self, run_id: &str, boundary: &Boundary) -> Step {
         let name = point_name(boundary);
         let point = {
             let Ok(mut seen) = self.seen.lock() else {
@@ -293,7 +296,7 @@ impl Hooks for Probe {
         }
         if self.target.as_ref() == Some(&point) && !self.fired.swap(true, Ordering::SeqCst) {
             if let Some(action) = &self.action {
-                action(_run_id, boundary);
+                action(run_id, boundary);
                 return Step::Continue;
             }
             return Step::Crash;
@@ -573,7 +576,11 @@ pub fn drive(
             return Ok(run);
         }
         mock.complete_all();
-        rt.wait_for(run_id, Duration::from_secs(5), |s| s != RunState::Suspended)?;
+        rt.wait_for(
+            run_id,
+            deadline.saturating_duration_since(Instant::now()),
+            |s| s != RunState::Suspended,
+        )?;
     }
 }
 

@@ -14,13 +14,12 @@ members = [
 edition = "2024"
 license = "MIT"
 publish = false
-rust-version = "1.85"
+rust-version = "1.88"
 
 [workspace.dependencies]
 # Dependencies do not require sibling checkouts.
 basal-core = { path = "crates/basal-core" }
 basal-host = { path = "crates/basal-host" }
-basal-module = { path = "crates/basal-module" }
 basal-proto = { path = "crates/basal-proto" }
 basal-testkit = { path = "crates/basal-testkit" }
 blake3 = "1.8"
@@ -48,8 +47,8 @@ libc = "0.2.180"
 rquickjs = { version = "=0.14.0", default-features = false, features = ["std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# Tests only: checks the SHA-256 of test vectors copied from other
-# repositories against the digests their owners published.
+# Checks SHA-256 of contract evidence and test vectors against the digests
+# published by their owners.
 sha2 = "0.10"
 # The module shell. subc-client-rs owns HELLO, route binding, health and the
 # frame lifecycle; subc-protocol is the manifest and route vocabulary it

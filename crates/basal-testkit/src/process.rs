@@ -50,7 +50,6 @@ pub struct WorkerProcess {
     stdin: Option<ChildStdin>,
     incoming: Receiver<Incoming>,
     stderr: Arc<Mutex<Vec<u8>>>,
-    pub spawned_at: Instant,
 }
 
 impl WorkerProcess {
@@ -62,7 +61,6 @@ impl WorkerProcess {
 
     pub fn spawn_with_args(binary: &Path, args: &[&str]) -> io::Result<Self> {
         let binary = crate::dev_binary(binary);
-        let spawned_at = Instant::now();
         let mut child = Command::new(binary)
             .args(args)
             .env_clear()
@@ -122,7 +120,6 @@ impl WorkerProcess {
             stdin,
             incoming,
             stderr,
-            spawned_at,
         })
     }
 
@@ -203,10 +200,39 @@ impl WorkerProcess {
             .unwrap_or_default()
     }
 
-    /// Resident set size in KiB, read with `ps`.
+    /// Resident set size in KiB, sampled without starting a child on macOS.
     pub fn rss_kib(&self) -> Option<u64> {
+        rss_kib(self.child.id())
+    }
+}
+
+/// Read process memory directly so sampling does not add fork/exec load to
+/// the activation whose memory is being measured.
+pub fn rss_kib(pid: u32) -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut info = std::mem::MaybeUninit::<libc::proc_taskinfo>::uninit();
+        let size = std::mem::size_of::<libc::proc_taskinfo>();
+        // SAFETY: the buffer is exactly the size required by PROC_PIDTASKINFO;
+        // it is read only if the kernel reports the full initialized struct.
+        let read = unsafe {
+            libc::proc_pidinfo(
+                pid.try_into().ok()?,
+                libc::PROC_PIDTASKINFO,
+                0,
+                info.as_mut_ptr().cast(),
+                size.try_into().ok()?,
+            )
+        };
+        if usize::try_from(read).ok()? != size {
+            return None;
+        }
+        Some(unsafe { info.assume_init() }.pti_resident_size / 1024)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
         let out = Command::new("ps")
-            .args(["-o", "rss=", "-p", &self.child.id().to_string()])
+            .args(["-o", "rss=", "-p", &pid.to_string()])
             .output()
             .ok()?;
         String::from_utf8_lossy(&out.stdout).trim().parse().ok()
@@ -216,5 +242,103 @@ impl WorkerProcess {
 impl Drop for WorkerProcess {
     fn drop(&mut self) {
         self.kill();
+    }
+}
+
+/// Probe the operating system without waiting for an exit. A successful
+/// process-exit wait can hide a missing reap in the cleanup path.
+pub fn assert_reaped(pid: u32) {
+    let mut status = 0;
+    // SAFETY: waitpid writes only to this status and the caller's child pid.
+    let result = unsafe {
+        libc::waitpid(
+            pid.try_into().expect("child pid"),
+            &mut status,
+            libc::WNOHANG,
+        )
+    };
+    assert_eq!(result, -1, "worker {pid} was not reaped");
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ECHILD)
+    );
+}
+
+/// Capture a subprocess with a deadline, draining both pipes concurrently.
+/// Timeout kills the process group, so inherited pipes cannot keep a reader
+/// alive after the parent has been reaped.
+pub fn output_until(command: &mut Command, timeout: Duration) -> io::Result<std::process::Output> {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: setpgid is async-signal-safe and touches no Rust-owned memory.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setpgid(0, 0) == 0 {
+                Ok(())
+            } else {
+                Err(io::Error::last_os_error())
+            }
+        });
+    }
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let mut stdout = child.stdout.take().expect("stdout");
+    let mut stderr = child.stderr.take().expect("stderr");
+    let out = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let err = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stderr.read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let deadline = Instant::now() + timeout;
+    let mut timed_out = false;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
+            result => {
+                timed_out = result.is_ok();
+                // SAFETY: the process group was created for this unreaped child.
+                unsafe {
+                    libc::kill(-(child.id() as i32), libc::SIGKILL);
+                }
+                break child.wait();
+            }
+        }
+    };
+    let stdout = out
+        .join()
+        .map_err(|_| io::Error::other("stdout reader panicked"))??;
+    let stderr = err
+        .join()
+        .map_err(|_| io::Error::other("stderr reader panicked"))??;
+    if timed_out {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "subprocess deadline expired; process group killed and reaped",
+        ));
+    }
+    Ok(std::process::Output {
+        status: status?,
+        stdout,
+        stderr,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn subprocess_deadline_reaps_descendants_holding_output_pipes() {
+        let error = output_until(
+            Command::new("/bin/sh").args(["-c", "sleep 600 & wait"]),
+            Duration::ZERO,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
     }
 }

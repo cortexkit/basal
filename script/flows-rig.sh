@@ -92,8 +92,9 @@
 # directory script/stage.sh wrote, byte for byte and under their production
 # identifiers, instead of the rig's own build of them; every other binary is
 # the rig's build. The stage must be of the commit the rig built basal at.
-# A staged ck-basal has neither rig-only switch, so test reports the crash and
-# unscoped-send cases as not run; a plain place puts the rig's build back.
+# A staged ck-basal has neither rig-only switch, so test reports the sink crash,
+# pre-send route checkpoint, accepted model crash and unscoped-send cases as
+# not run; a plain place puts the rig's build back.
 #
 # What the rig isolates:
 #   - Everything lives under ~/.local/share/cortexkit/ckdev-flows/: src/ (one
@@ -1040,7 +1041,8 @@ cmd_start() {
   done
   check_daemon_identity "$pid"
   # Give the supervisor a moment to spawn and register every module.
-  sleep 10
+  MODULE_REGISTRATION_PAUSE_S=10
+  sleep "$MODULE_REGISTRATION_PAUSE_S"
   rig_ck module list
   say "started (pid $pid, daemon output: $log); check it with: $0 status"
 }
@@ -1415,7 +1417,7 @@ cmd_test() (
   # only way the flag is ever passed: a rig build always runs the case.
   if [ "$(basal_mode)" = staged ]; then
     set -- --no-kill-hook
-    say "ck-basal is a staged production build without rig-only switches; crash and unscoped-send cases will be reported as not run"
+    say "ck-basal is a staged production build without rig-only switches; sink crash, pre-send route checkpoint, accepted model crash and unscoped-send cases will be reported as not run"
   else
     set --
   fi

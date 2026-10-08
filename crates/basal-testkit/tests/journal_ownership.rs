@@ -226,12 +226,10 @@ fn a_stuck_ownership_driver_wait_deadline_releases_and_reaps_its_worker() {
         || driver.is_finished(),
     )
     .expect("driver cleanup");
-    let (_, mut worker) = driver.join().expect("driver thread");
-    worker.kill();
-    assert!(
-        worker.exited(Duration::from_secs(3)),
-        "worker was not reaped"
-    );
+    let (_, worker) = driver.join().expect("driver thread");
+    let pid = worker.pid();
+    drop(worker);
+    basal_testkit::process::assert_reaped(pid);
     rt.quiesce();
     let error = waited
         .expect("the ownership driver wait did not fail within five seconds")

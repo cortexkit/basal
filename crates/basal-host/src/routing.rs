@@ -125,10 +125,10 @@ impl Host for ModuleOpsHost {
         self.transport.configure_flow(flow_id, agent_owned, scope);
     }
     fn classify(&self, kind: &CallKind) -> CallClass {
-        if let CallKind::Op { module, op } = kind {
-            if let Some(decl) = self.catalog.resolve(module, op).ok().flatten() {
-                return self.declared_class(module, op, &decl);
-            }
+        if let CallKind::Op { module, op } = kind
+            && let Some(decl) = self.catalog.resolve(module, op).ok().flatten()
+        {
+            return self.declared_class(module, op, &decl);
         }
         CallClass::Mutation {
             honours_idempotency_keys: false,

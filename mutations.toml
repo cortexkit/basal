@@ -400,7 +400,7 @@ new = "  if (true || codemode) {\n    api.sh"
 [[control]]
 id = "native-bridge-accepts-sh-in-the-flow-profile"
 guards = "native bridge accepts sh in the flow profile"
-test_file = "crates/basal-worker/src/engine.rs"
+test_file = "crates/basal-worker/src/engine/tests.rs"
 runner = "cargo"
 package = "basal-worker"
 target = "--lib"
@@ -6023,7 +6023,7 @@ old = "                    == Some(CallClass::Query)"
 new = "                    != None // NON-VACUITY BREAK"
 
 # Test fixture: 1 additional control
-## Flow scopes: 24 additional controls, including uncaught rejection identity.
+## Flow scope controls, including uncaught rejection identity.
 [[control]]
 id = "flow-model-sessions-collapse-to-the-flow"
 guards = "each model call has its own scoped conversation, preserved on recovery"
@@ -7170,6 +7170,8 @@ build_timeout_s = 3600
 
 [[control]]
 id = "production-worker-inherits-parent-privacy-identity"
+hub = "Production workers disclaim the module's privacy identity, asserted by the live responsible-process probe and production trampoline configuration"
+hub_targets = ["privacy_launch"]
 guards = "production workers must be their own macOS responsible processes, not borrow the module privacy grants"
 file = "crates/basal-module/src/pool.rs"
 old = "WorkerLaunch::Disclaimed { trampoline: exe },"
@@ -7180,7 +7182,7 @@ runner = "cargo"
 package = "basal-module"
 target = "--test e2e"
 expect_red = ["privacy::production_worker_is_its_own_responsible_process"]
-only = true
+only = false
 platforms = ["macos"]
 timeout_s = 600
 build_timeout_s = 3600

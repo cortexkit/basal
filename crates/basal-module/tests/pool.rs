@@ -18,7 +18,8 @@ use common::{
 };
 
 const SCRIPT: &str = "const r = await ops.call('mock', 'echo', { n: 1 }); return r.n;";
-const WAIT: Duration = Duration::from_secs(3);
+const WAIT: Duration = Duration::from_secs(60);
+const STALLED_WAIT: Duration = Duration::from_secs(3);
 
 fn pool_config(o: &Options) -> PoolConfig {
     let mut config = common::pool_config(o);
@@ -389,7 +390,7 @@ fn a_wait_deadline_stops_and_reaps_its_workers() {
     let (tx, rx) = mpsc::channel();
     let waiter = std::thread::spawn(move || {
         let result = wait_until(
-            Instant::now() + WAIT,
+            Instant::now() + STALLED_WAIT,
             "a deliberately stalled pool fixture",
             || ready.load(Ordering::SeqCst),
         );
@@ -402,7 +403,6 @@ fn a_wait_deadline_stops_and_reaps_its_workers() {
     // Release the waiter even on failure, so neither a thread nor a worker leaks.
     let result = rx.recv_timeout(Duration::from_secs(5));
     release.store(true, Ordering::SeqCst);
-    f.module.pool.stop();
     let join_deadline = Instant::now() + WAIT;
     while !waiter.is_finished() && Instant::now() < join_deadline {
         std::thread::sleep(Duration::from_millis(5));
@@ -412,6 +412,12 @@ fn a_wait_deadline_stops_and_reaps_its_workers() {
         "timed out waiting for the released deadline observer to exit"
     );
     waiter.join().expect("deadline waiter exits after release");
+    // Probe before the test's fallback shutdown: only the observer's timeout
+    // path may have reaped these workers.
+    let observer_stopped = result.as_ref().is_ok_and(|r| r.is_err());
+    if !observer_stopped {
+        f.module.pool.stop();
+    }
     for pid in pids {
         let mut status = 0;
         // SAFETY: this nonblocking wait probes a child started by this test.

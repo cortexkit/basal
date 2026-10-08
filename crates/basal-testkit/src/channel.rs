@@ -15,10 +15,8 @@ use crate::process::{ParentError, WorkerProcess};
 /// Counters shared by every channel a source hands out.
 #[derive(Debug, Default)]
 pub struct FrameCounts {
-    pub spawned: AtomicUsize,
     pub activate: AtomicUsize,
     pub deliver: AtomicUsize,
-    pub long_running: AtomicUsize,
     /// The pid of the most recently spawned worker, while it is alive and
     /// owned by a channel (0 once the channel killed or dropped it).
     pub live_pid: AtomicU32,
@@ -59,7 +57,6 @@ impl WorkerChannel for ProcessChannel {
         let counter = match message.kind() {
             MessageKind::Activate => Some(&self.counts.activate),
             MessageKind::Deliver => Some(&self.counts.deliver),
-            MessageKind::LongRunning => Some(&self.counts.long_running),
             _ => None,
         };
         self.process.send(message).map_err(channel_error)?;
@@ -98,6 +95,8 @@ impl Drop for ProcessChannel {
 /// Spawns and greets a fresh worker process for every activation.
 pub struct ProcessSource {
     binary: PathBuf,
+    /// Bound a test's worker startup separately from its activation budget.
+    pub handshake_timeout: Duration,
     pub counts: Arc<FrameCounts>,
     /// Replaces the engine string the worker reports, to stand in for a
     /// worker built with a different engine.
@@ -108,6 +107,7 @@ impl ProcessSource {
     pub fn new(binary: impl AsRef<Path>) -> Self {
         Self {
             binary: binary.as_ref().to_path_buf(),
+            handshake_timeout: Duration::from_secs(60),
             counts: Arc::new(FrameCounts::default()),
             engine_override: None,
         }
@@ -115,11 +115,10 @@ impl ProcessSource {
 
     pub fn spawn(&self) -> Result<ProcessChannel, ChannelError> {
         let (process, mut welcome) =
-            WorkerProcess::start(&self.binary, Duration::from_secs(120)).map_err(channel_error)?;
+            WorkerProcess::start(&self.binary, self.handshake_timeout).map_err(channel_error)?;
         if let Some(engine) = &self.engine_override {
             welcome.engine = engine.clone();
         }
-        self.counts.spawned.fetch_add(1, Ordering::SeqCst);
         self.counts.live_pid.store(process.pid(), Ordering::SeqCst);
         Ok(ProcessChannel {
             process,
@@ -138,10 +137,10 @@ impl WorkerSource for ProcessSource {
 /// A development-named copy of `BASAL_WORKER_BIN` if set, otherwise the
 /// workspace's own debug build, built once per test process if needed.
 pub fn worker_binary() -> PathBuf {
-    static PATH: OnceLock<PathBuf> = OnceLock::new();
+    static PATH: OnceLock<Result<PathBuf, String>> = OnceLock::new();
     PATH.get_or_init(|| {
         if let Some(p) = std::env::var_os("BASAL_WORKER_BIN") {
-            return crate::dev_binary(PathBuf::from(p));
+            return Ok(crate::dev_binary(PathBuf::from(p)));
         }
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
@@ -149,20 +148,38 @@ pub fn worker_binary() -> PathBuf {
         // reports parse. A failed build must never select a stale worker.
         let output = Command::new(cargo)
             .current_dir(&root)
-            .args(["build", "-p", "basal-worker", "--bin", "ck-basal-worker"])
+            .args([
+                "build",
+                "-p",
+                "basal-worker",
+                "--bin",
+                "ck-basal-worker",
+                "--message-format=json",
+            ])
             .output()
-            .expect("launch Cargo to build ck-basal-worker");
-        assert!(
-            output.status.success(),
-            "building ck-basal-worker failed: {}\n{}\n{}",
-            output.status,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
-        );
-        let target = std::env::var_os("CARGO_TARGET_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| root.join("target"));
-        crate::dev_binary(target.join("debug").join("ck-basal-worker"))
+            .map_err(|e| format!("launch Cargo to build ck-basal-worker: {e}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "building ck-basal-worker failed: {}\n{}\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        // Cargo resolves relative target directories and profile layouts. Its
+        // artifact message also prevents a successful build selecting old bytes.
+        let binary = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .find_map(|v| {
+                (v["reason"] == "compiler-artifact" && v["target"]["name"] == "ck-basal-worker")
+                    .then(|| v["executable"].as_str().map(PathBuf::from))
+                    .flatten()
+            })
+            .ok_or("Cargo did not report a ck-basal-worker executable")?;
+        Ok(crate::dev_binary(binary))
     })
+    .as_ref()
+    .unwrap_or_else(|e| panic!("{e}"))
     .clone()
 }

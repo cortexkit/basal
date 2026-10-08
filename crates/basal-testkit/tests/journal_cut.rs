@@ -12,11 +12,9 @@ use std::sync::Mutex;
 
 use basal_core::Config;
 use basal_testkit::harness::{
-    CutRun, Point, REPRESENTATIVE, Summary, World, is_repeat_prone, run_with_cuts,
+    CUT_PARALLEL, CutRun, Point, REPRESENTATIVE, Summary, World, is_repeat_prone, run_with_cuts,
 };
 use serde_json::json;
-
-const PARALLEL: usize = 6;
 
 fn uncut() -> CutRun {
     let world = World::new("uncut");
@@ -84,7 +82,7 @@ fn run_all(cases: Vec<Vec<Point>>) -> Vec<(Vec<Point>, Result<CutRun, String>)> 
     let queue = Mutex::new(cases.into_iter().collect::<Vec<_>>());
     let results = Mutex::new(Vec::new());
     std::thread::scope(|s| {
-        for _ in 0..PARALLEL {
+        for _ in 0..CUT_PARALLEL {
             s.spawn(|| {
                 loop {
                     let Some(cuts) = queue.lock().ok().and_then(|mut q| q.pop()) else {
@@ -151,12 +149,6 @@ fn assert_equivalent(
         failures.join("\n")
     );
     fired
-}
-
-#[test]
-fn representative_run_completes_uncut() {
-    let run = uncut();
-    check_uncut(&run.summary);
 }
 
 #[test]

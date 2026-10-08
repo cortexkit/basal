@@ -47,14 +47,7 @@ fn with_trigger(spec: &TriggerSpec, trigger: &str) -> TriggerSpec {
     }
 }
 
-fn admit_trigger(rt: &Runtime, world: &World, script: &str, trigger: &str) -> String {
-    let spec = world.spec(rt, script).expect("approve");
-    rt.admit(&with_trigger(&spec, trigger))
-        .expect("admit")
-        .run_id()
-        .expect("admitted")
-        .to_owned()
-}
+use common::admit_trigger;
 
 #[test]
 fn run_rate_limit_and_auto_disable_after_k_saturated_windows() {

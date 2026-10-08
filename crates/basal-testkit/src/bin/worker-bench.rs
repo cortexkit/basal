@@ -28,6 +28,8 @@ use basal_testkit::{TestParent, WorkerProcess, fuzz};
 use serde_json::{Value, json};
 
 const HANDSHAKE: Duration = Duration::from_secs(30);
+const FUZZ_SEED: u64 = 0xBA5A1;
+const FUZZ_JS_TIME_MICROS: u64 = 200_000;
 
 fn micros(d: Duration) -> f64 {
     d.as_secs_f64() * 1e6
@@ -42,7 +44,7 @@ fn summary(samples: &[f64]) -> Value {
     }
     let median = sorted[n / 2];
     let p95 = sorted[((n as f64 * 0.95).ceil() as usize).clamp(1, n) - 1];
-    json!({"runs": n, "median": median, "p95": p95, "min": sorted[0], "max": sorted[n - 1], "samples": samples})
+    json!({"runs": n, "median": median, "p95": p95, "min": sorted[0], "max": sorted[n - 1], "samples": sorted})
 }
 
 fn shell(cmd: &str, args: &[&str]) -> String {
@@ -210,9 +212,7 @@ fn rss(worker: &PathBuf) -> Value {
             let peak = peak.clone();
             thread::spawn(move || {
                 while !stop.load(Ordering::Relaxed) {
-                    let kib = shell("ps", &["-o", "rss=", "-p", &pid.to_string()])
-                        .parse::<u64>()
-                        .unwrap_or(0);
+                    let kib = basal_testkit::process::rss_kib(pid).unwrap_or(0);
                     peak.fetch_max(kib, Ordering::Relaxed);
                     thread::sleep(Duration::from_millis(2));
                 }
@@ -255,13 +255,23 @@ fn main() {
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
-            "--worker" => worker = args.next().map(PathBuf::from),
-            "--out" => out = args.next().map(PathBuf::from),
+            "--worker" => {
+                worker = Some(PathBuf::from(
+                    args.next()
+                        .unwrap_or_else(|| argument_error("--worker needs a path")),
+                ))
+            }
+            "--out" => {
+                out = Some(PathBuf::from(
+                    args.next()
+                        .unwrap_or_else(|| argument_error("--out needs a path")),
+                ))
+            }
             "--fuzz" => {
                 fuzz_count = args
                     .next()
                     .and_then(|s| s.parse().ok())
-                    .unwrap_or(fuzz_count)
+                    .unwrap_or_else(|| argument_error("--fuzz needs an unsigned count"))
             }
             other => {
                 eprintln!("unknown argument {other}");
@@ -290,10 +300,10 @@ fn main() {
     let rss = rss(&worker);
     eprintln!("fuzz");
     let mut parent = TestParent::new(&worker);
-    parent.budgets.js_time_micros = 200_000;
+    parent.budgets.js_time_micros = FUZZ_JS_TIME_MICROS;
     parent.deadline = Duration::from_secs(30);
     let fuzz_started = Instant::now();
-    let tally = fuzz::run(&mut parent, 0xBA5A1, fuzz_count);
+    let tally = fuzz::run(&mut parent, FUZZ_SEED, fuzz_count);
     let fuzz_wall = fuzz_started.elapsed();
 
     let report = json!({
@@ -307,10 +317,10 @@ fn main() {
         "replay": [replay_small, replay_large],
         "rss": rss,
         "fuzz": {
-            "seed": 0xBA5A1,
+            "seed": FUZZ_SEED,
             "payloads": fuzz_count,
             "regex_cases": fuzz::regex_cases().len(),
-            "js_time_budget_us": 200_000,
+            "js_time_budget_us": FUZZ_JS_TIME_MICROS,
             "wall_seconds": fuzz_wall.as_secs_f64(),
             "completed": tally.completed,
             "invalid_host_value": tally.invalid_value,
@@ -333,4 +343,9 @@ fn main() {
         }
         None => println!("{text}"),
     }
+}
+
+fn argument_error(message: &str) -> ! {
+    eprintln!("worker-bench: {message}");
+    std::process::exit(64)
 }

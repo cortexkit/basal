@@ -278,7 +278,7 @@ fn clock(ms: i64, pattern: &str) -> String {
 }
 
 fn window(ms: u64) -> String {
-    if ms % 1000 == 0 {
+    if ms.is_multiple_of(1000) {
         format!("{}-second", ms / 1000)
     } else {
         format!("{ms}-millisecond")

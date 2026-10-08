@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use basal_rig::stores::{BasalStore, BrocaStore, CoreStore};
 use rusqlite::{Connection, params};
@@ -8,19 +7,60 @@ use serde_json::{Value, json};
 struct Scratch(PathBuf);
 impl Scratch {
     fn new() -> Self {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "basal-rig-store-{}-{}.db",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        Self(path)
+        let output = std::process::Command::new("mktemp")
+            .arg("-d")
+            .arg(std::env::temp_dir().join("basal-rig-store.XXXXXXXX"))
+            .output()
+            .expect("create isolated store directory");
+        assert!(output.status.success(), "{output:?}");
+        let dir = PathBuf::from(String::from_utf8(output.stdout).unwrap().trim());
+        Self(dir.join("store.db"))
     }
 }
 impl Drop for Scratch {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        let _ = std::fs::remove_dir_all(self.0.parent().unwrap());
     }
+}
+
+#[test]
+fn journal_evidence_rejects_negative_positions() {
+    let scratch = Scratch::new();
+    let c = Connection::open(&scratch.0).unwrap();
+    c.execute_batch(
+        "CREATE TABLE runs(run_id TEXT, flow_id TEXT);
+        CREATE TABLE journal(run_id TEXT, position INTEGER, kind_code INTEGER, dispatch TEXT,
+            attempts INTEGER, settlement TEXT, value TEXT, request TEXT);
+        INSERT INTO runs VALUES ('run', 'flow');
+        INSERT INTO journal VALUES ('run', -1, 7, 'sent', 1, 'fulfilled', '{}', '{}');",
+    )
+    .unwrap();
+    assert!(
+        BasalStore {
+            path: scratch.0.clone()
+        }
+        .calls("flow")
+        .is_err()
+    );
+}
+
+#[test]
+fn transcript_evidence_rejects_ambiguous_session_keys() {
+    let scratch = Scratch::new();
+    Connection::open(&scratch.0)
+        .unwrap()
+        .execute_batch("CREATE TABLE message(session TEXT, ord INTEGER, json TEXT);")
+        .unwrap();
+    let store = BrocaStore {
+        path: scratch.0.clone(),
+    };
+    assert!(
+        store
+            .final_text(
+                &json!({"project_root":"/rig", "harness":"basal", "session":"bad\u{1f}session"})
+            )
+            .is_err()
+    );
 }
 
 #[test]

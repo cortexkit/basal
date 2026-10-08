@@ -11,6 +11,7 @@
 //! - [`client`]: management calls over the rig's daemon, scoped or not.
 //! - [`stores`]: read-only views of core's and basal's stores.
 //! - [`flows`]: the manifests and scripts the suite installs.
+//! - [`models`]: independent model result, tool and usage evidence checks.
 
 pub mod client;
 pub mod flows;

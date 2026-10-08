@@ -114,7 +114,6 @@ pub struct BasalStore {
 
 /// The journal's kind codes for the primitives the suite checks
 /// (`basal_proto::types::Primitive::code`).
-pub const KIND_FACTS: i64 = 3;
 pub const KIND_SINK_DIGEST: i64 = 6;
 pub const KIND_SINK_STATUS: i64 = 7;
 
@@ -128,9 +127,20 @@ pub struct Call {
     pub attempts: i64,
     pub settlement: Option<String>,
     pub value: Option<Value>,
+    pub request: Option<Value>,
 }
 
 impl BasalStore {
+    pub fn flow_enabled(&self, flow_id: &str) -> Result<Option<bool>, String> {
+        let c = open(&self.path)?;
+        c.query_row(
+            "SELECT enabled FROM flows WHERE flow_id = ?1",
+            [flow_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    }
     /// The selected request is journaled before dispatch; the Broca snapshot
     /// holds the separate frozen send and terminal result/usage it read.
     pub fn model_call(&self, run_id: &str) -> Result<Option<Value>, String> {
@@ -186,7 +196,7 @@ impl BasalStore {
         let mut statement = c
             .prepare(
                 "SELECT j.run_id, j.position, j.kind_code, j.dispatch, j.attempts,
-                        j.settlement, j.value
+                        j.settlement, j.value, j.request
                    FROM journal j JOIN runs r ON r.run_id = j.run_id
                   WHERE r.flow_id = ?1
                   ORDER BY r.rowid, j.position",
@@ -201,21 +211,27 @@ impl BasalStore {
                     r.get::<_, i64>(4)?,
                     r.get::<_, Option<String>>(5)?,
                     r.get::<_, Option<String>>(6)?,
+                    r.get::<_, Option<String>>(7)?,
                 ))
             })
             .map_err(|e| e.to_string())?;
         let mut calls = Vec::new();
         for row in rows {
-            let ((run_id, position), kind_code, dispatch, attempts, settlement, value) =
+            let ((run_id, position), kind_code, dispatch, attempts, settlement, value, request) =
                 row.map_err(|e| e.to_string())?;
             calls.push(Call {
                 run_id,
-                position: u64::try_from(position).unwrap_or(0),
+                position: u64::try_from(position)
+                    .map_err(|_| format!("negative journal position {position}"))?,
                 kind_code,
                 dispatch,
                 attempts,
                 settlement,
                 value: value.map(|v| serde_json::from_str(&v).unwrap_or(Value::String(v))),
+                request: request
+                    .map(|v| serde_json::from_str(&v))
+                    .transpose()
+                    .map_err(|e| e.to_string())?,
             });
         }
         Ok(calls)
@@ -311,26 +327,26 @@ impl BrocaStore {
         if bytes.is_empty() {
             return Ok(true);
         }
-        Ok(bytes.len() == 69
-            && bytes[..4] == 16_u32.to_le_bytes()
-            && bytes[4] == 2
-            && bytes[5..21] == [0; 16]
-            && Sha256::digest([&bytes[4..21], &bytes[53..]].concat()).as_slice() == &bytes[21..53])
+        const LENGTH_BYTES: usize = 4;
+        const ENVELOPE_BYTES: usize = 17; // version, sequence and fence
+        const CHECKSUM_BYTES: usize = 32;
+        const BODY_BYTES: usize = 16;
+        const CHECKSUM_AT: usize = LENGTH_BYTES + ENVELOPE_BYTES;
+        const BODY_AT: usize = CHECKSUM_AT + CHECKSUM_BYTES;
+        Ok(bytes.len() == BODY_AT + BODY_BYTES
+            && bytes[..LENGTH_BYTES] == (BODY_BYTES as u32).to_le_bytes()
+            && bytes[LENGTH_BYTES] == 2
+            && bytes[LENGTH_BYTES + 1..CHECKSUM_AT] == [0; 16]
+            && Sha256::digest([&bytes[LENGTH_BYTES..CHECKSUM_AT], &bytes[BODY_AT..]].concat())
+                .as_slice()
+                == &bytes[CHECKSUM_AT..BODY_AT])
     }
 
     /// The daemon-attested principal and scope Broca retained, rather than an
     /// assumption derived from the session's caller-chosen harness label.
     pub fn ownership(&self, route: &Value) -> Result<Value, String> {
         let c = open(&self.path)?;
-        let key = ["project_root", "harness", "session"]
-            .iter()
-            .map(|k| {
-                route[k]
-                    .as_str()
-                    .ok_or_else(|| format!("missing route {k}"))
-            })
-            .collect::<Result<Vec<_>, _>>()?
-            .join("\u{1f}");
+        let key = session_key(route)?;
         let checkpoint: String = c
             .query_row(
                 "SELECT admission_checkpoint_json FROM meta WHERE session = ?1",
@@ -386,15 +402,7 @@ impl BrocaStore {
     /// transcript. Each flow call has its own session and exactly one run.
     pub fn final_text(&self, route: &Value) -> Result<Option<String>, String> {
         let c = open(&self.path)?;
-        let key = ["project_root", "harness", "session"]
-            .iter()
-            .map(|k| {
-                route[k]
-                    .as_str()
-                    .ok_or_else(|| format!("missing route {k}"))
-            })
-            .collect::<Result<Vec<_>, _>>()?
-            .join("\u{1f}");
+        let key = session_key(route)?;
         let mut s = c
             .prepare("SELECT json FROM message WHERE session = ?1 ORDER BY ord DESC")
             .map_err(|e| e.to_string())?;

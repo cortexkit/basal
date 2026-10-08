@@ -24,6 +24,13 @@ fn scratch(name: &str) -> PathBuf {
     dir
 }
 
+struct Cleanup(PathBuf);
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
 fn mode(path: &PathBuf) -> u32 {
     fs::metadata(path).unwrap().permissions().mode() & 0o777
 }
@@ -31,6 +38,7 @@ fn mode(path: &PathBuf) -> u32 {
 #[test]
 fn opening_the_store_creates_its_directory_private() {
     let root = scratch("fresh");
+    let _cleanup = Cleanup(root.clone());
     let dir = root.join("basal");
     let _store = Store::open(dir.join("store.db"), Durability::default()).expect("open");
     assert_eq!(mode(&dir), 0o700, "a new store directory must be 0700");
@@ -40,6 +48,7 @@ fn opening_the_store_creates_its_directory_private() {
 #[test]
 fn opening_the_store_narrows_an_existing_open_directory() {
     let root = scratch("existing");
+    let _cleanup = Cleanup(root.clone());
     let dir = root.join("basal");
     fs::create_dir(&dir).unwrap();
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
