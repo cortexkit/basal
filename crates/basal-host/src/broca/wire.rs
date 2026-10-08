@@ -20,7 +20,8 @@ pub struct ModelParams {
     pub variant: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GenerationConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u32>,
@@ -210,6 +211,9 @@ pub enum SubscribeEvent {
 }
 
 pub const OP_RUN_RESULT: &str = "run.result";
+pub const OP_RUN_STATUS: &str = "run.status";
+pub const OP_SESSION_SEND: &str = "session.send";
+pub const OP_SESSION_SUBSCRIBE: &str = "session.subscribe";
 /// The refusal code `run.result` answers when the session has no run with
 /// the requested run id.
 pub const UNKNOWN_RUN: &str = "unknown_run";

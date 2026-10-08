@@ -182,6 +182,7 @@ impl Hooks for HarnessHooks {
 
 /// The built-ins' settings from the command line: production's unless a
 /// test points `net.fetch` at its own server.
+#[cfg(feature = "rig-kill-hook")]
 fn builtins_config(args: &Args) -> Result<basal_host::builtins::BuiltinConfig, String> {
     let mut config = basal_host::builtins::BuiltinConfig::default();
     if let Some(path) = &args.builtins_trust_der {
@@ -200,6 +201,14 @@ fn builtins_config(args: &Args) -> Result<basal_host::builtins::BuiltinConfig, S
         config.net.resolver = Arc::new(basal_host::builtins::StaticResolver(table));
     }
     Ok(config)
+}
+
+#[cfg(not(feature = "rig-kill-hook"))]
+fn builtins_config(args: &Args) -> Result<basal_host::builtins::BuiltinConfig, String> {
+    if args.builtins_trust_der.is_some() || !args.builtins_resolve.is_empty() {
+        return Err("network fixtures require the rig-kill-hook test feature".into());
+    }
+    Ok(basal_host::builtins::BuiltinConfig::default())
 }
 
 fn read_clock(dir: &Path) -> i64 {

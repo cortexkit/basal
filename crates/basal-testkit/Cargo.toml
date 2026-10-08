@@ -19,5 +19,6 @@ rcgen.workspace = true
 rustls.workspace = true
 
 [dev-dependencies]
+basal-host = { workspace = true, features = ["rig-kill-hook"] }
 jiff.workspace = true
 subc-protocol.workspace = true

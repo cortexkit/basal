@@ -24,7 +24,12 @@
 //! basal speaks HTTP/1.1 itself, one request per connection, so each of
 //! those steps is in this file rather than inside a client library.
 
-use std::collections::{BTreeMap, BTreeSet};
+#[cfg(test)]
+mod tests;
+
+use std::collections::BTreeMap;
+#[cfg(any(test, feature = "rig-kill-hook"))]
+use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::{Arc, OnceLock, mpsc};
@@ -45,7 +50,7 @@ pub const DEFAULT_METHODS: [&str; 2] = ["GET", "HEAD"];
 /// The most redirects one fetch follows.
 pub const MAX_REDIRECTS: usize = 5;
 /// The default cap on a response body.
-pub const DEFAULT_BODY_BYTES: usize = 1024 * 1024;
+pub const DEFAULT_BODY_BYTES: usize = super::MAX_TEXT_RESULT_BYTES;
 /// The cap on a response's status line and headers.
 pub const MAX_HEAD_BYTES: usize = 64 * 1024;
 /// The largest request body a script may send.
@@ -54,10 +59,16 @@ pub const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
 pub const MAX_REQUEST_HEADERS: usize = 32;
 /// How many of a host's addresses are tried in turn.
 const MAX_ADDRESS_ATTEMPTS: usize = 4;
+const MAX_HEADER_VALUE_BYTES: usize = 8 * 1024;
+const MAX_CHUNK_LINE_BYTES: u64 = 1024;
+const MAX_TRAILER_LINE_BYTES: u64 = 8 * 1024;
+const MAX_DNS_NAME_BYTES: usize = 253;
+const MAX_DNS_LABEL_BYTES: usize = 63;
+const DNS_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Headers a script may not set: the ones that frame the request (basal
 /// writes those itself) and the ones that carry cookies or credentials.
-const FORBIDDEN_HEADERS: [&str; 14] = [
+const FORBIDDEN_HEADERS: [&str; 19] = [
     "host",
     "content-length",
     "transfer-encoding",
@@ -72,6 +83,11 @@ const FORBIDDEN_HEADERS: [&str; 14] = [
     "cookie2",
     "authorization",
     "proxy-authorization",
+    "x-http-method-override",
+    "x-http-method",
+    "x-method-override",
+    "accept-encoding",
+    "user-agent",
 ];
 
 /// One approved host and the methods approved for it.
@@ -97,7 +113,7 @@ pub fn host_problem(host: &str) -> Option<&'static str> {
     if host.contains(':') || host.contains('[') || host.parse::<Ipv4Addr>().is_ok() {
         return Some("an IP-literal host is not allowed");
     }
-    if host.is_empty() || host.len() > 253 {
+    if host.is_empty() || host.len() > MAX_DNS_NAME_BYTES {
         return Some("a host name is 1 to 253 bytes");
     }
     let labels: Vec<&str> = host.split('.').collect();
@@ -110,7 +126,7 @@ pub fn host_problem(host: &str) -> Option<&'static str> {
     }
     let label_ok = |l: &&str| {
         !l.is_empty()
-            && l.len() <= 63
+            && l.len() <= MAX_DNS_LABEL_BYTES
             && !l.starts_with('-')
             && !l.ends_with('-')
             && l.bytes()
@@ -196,20 +212,30 @@ pub fn parse_url(text: &str) -> Result<Url, Denial> {
 /// Resolves a redirect's `Location` against the URL that answered it.
 fn resolve_location(base: &Url, location: &str) -> Result<Url, Denial> {
     let location = location.trim();
-    if location.contains("://") {
+    // A scheme exists only before the first path, query or fragment delimiter.
+    if location
+        .split(['/', '?', '#'])
+        .next()
+        .is_some_and(|s| s.contains(':'))
+    {
         return parse_url(location);
     }
     if let Some(rest) = location.strip_prefix("//") {
         return parse_url(&format!("https://{rest}"));
     }
     let location = location.split('#').next().unwrap_or("");
-    let target = if location.starts_with('/') {
+    let target = if location.is_empty() {
+        base.target.clone()
+    } else if location.starts_with('?') {
+        format!("{}{location}", base.target.split('?').next().unwrap_or("/"))
+    } else if location.starts_with('/') {
         location.to_owned()
     } else {
         let path = base.target.split('?').next().unwrap_or("/");
         let dir = &path[..path.rfind('/').map_or(0, |i| i + 1)];
         format!("{dir}{location}")
     };
+    let target = remove_dot_segments(&target);
     if !target_ok(&target) {
         return Err(Denial::new(
             codes::NET,
@@ -221,6 +247,48 @@ fn resolve_location(base: &Url, location: &str) -> Result<Url, Denial> {
         port: base.port,
         target,
     })
+}
+
+fn remove_dot_segments(target: &str) -> String {
+    let (path, query) = target
+        .split_once('?')
+        .map_or((target, None), |(p, q)| (p, Some(q)));
+    let mut parts = Vec::new();
+    for part in path.split('/').skip(1) {
+        match part {
+            "." => {}
+            ".." => {
+                parts.pop();
+            }
+            _ => parts.push(part),
+        }
+    }
+    let mut path = format!("/{}", parts.join("/"));
+    if (target.ends_with("/.") || target.ends_with("/..")) && !path.ends_with('/') {
+        path.push('/');
+    }
+    if let Some(query) = query {
+        path.push('?');
+        path.push_str(query);
+    }
+    path
+}
+
+/// A DNS-name grant approves its normal HTTPS endpoint, never another service
+/// on an arbitrary port. URL parsing already enforces the HTTPS scheme.
+pub fn allowed_url(rules: &[HostRule], url: &Url, method: &str) -> Result<(), Denial> {
+    if url.port != 443 {
+        return Err(Denial::denied(format!(
+            "HTTPS port {} is not approved; hosts grant only port 443",
+            url.port
+        )));
+    }
+    allowed(rules, &url.host, method)
+}
+
+fn same_origin(a: &Url, b: &Url) -> bool {
+    // Every Url is HTTPS, so scheme equality is guaranteed by parsing.
+    a.host == b.host && a.port == b.port
 }
 
 /// Requires `host` to be approved, and `method` approved for it.
@@ -318,6 +386,9 @@ pub struct Request {
 
 /// The method a `net.fetch` call asks for: `GET` when it names none.
 pub fn method_of(args: &Value) -> Result<String, Denial> {
+    if !args.is_object() {
+        return Err(Denial::invalid("net.fetch arguments must be an object"));
+    }
     let options = options(args, "options", &["method", "headers", "body"])?;
     match options.and_then(|o| o.get("method")) {
         None | Some(Value::Null) => Ok("GET".to_owned()),
@@ -369,7 +440,7 @@ pub fn parse_request(args: &Value) -> Result<Request, Denial> {
                         "a flow may not set the {name} header"
                     )));
                 }
-                if value.len() > 8192
+                if value.len() > MAX_HEADER_VALUE_BYTES
                     || value.bytes().any(|b| (b < 0x20 && b != b'\t') || b == 0x7f)
                 {
                     return Err(Denial::invalid(format!(
@@ -408,6 +479,14 @@ pub fn parse_request(args: &Value) -> Result<Request, Denial> {
 /// Turns a host name into addresses.
 pub trait Resolve: Send + Sync {
     fn resolve(&self, host: &str, port: u16) -> std::io::Result<Vec<SocketAddr>>;
+    fn resolve_until(
+        &self,
+        host: &str,
+        port: u16,
+        _deadline: Instant,
+    ) -> std::io::Result<Vec<SocketAddr>> {
+        self.resolve(host, port)
+    }
 }
 
 /// The system resolver, bounded by a timeout.
@@ -419,27 +498,68 @@ pub struct SystemResolver {
 impl Default for SystemResolver {
     fn default() -> Self {
         Self {
-            timeout: Duration::from_secs(5),
+            timeout: DNS_TIMEOUT,
         }
     }
 }
 
 impl Resolve for SystemResolver {
     fn resolve(&self, host: &str, port: u16) -> std::io::Result<Vec<SocketAddr>> {
-        // getaddrinfo cannot be cancelled, so it runs on its own thread and
-        // is abandoned if it outlives the timeout.
-        let (tx, rx) = mpsc::channel();
-        let name = host.to_owned();
-        std::thread::spawn(move || {
-            let _ = tx.send((name.as_str(), port).to_socket_addrs().map(Vec::from_iter));
-        });
-        rx.recv_timeout(self.timeout).unwrap_or_else(|_| {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "DNS resolution timed out",
-            ))
-        })
+        self.resolve_until(host, port, Instant::now() + self.timeout)
     }
+    fn resolve_until(
+        &self,
+        host: &str,
+        port: u16,
+        deadline: Instant,
+    ) -> std::io::Result<Vec<SocketAddr>> {
+        // getaddrinfo cannot be cancelled. A single reusable worker and one
+        // queued job bound the resources even if the OS resolver gets stuck.
+        let deadline = deadline.min(Instant::now() + self.timeout);
+        let (reply, receiver) = mpsc::sync_channel(1);
+        let job = DnsJob {
+            host: host.into(),
+            port,
+            deadline,
+            reply,
+        };
+        dns_worker().try_send(job).map_err(|_| dns_timeout())?;
+        receiver
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .map_err(|_| dns_timeout())?
+    }
+}
+
+struct DnsJob {
+    host: String,
+    port: u16,
+    deadline: Instant,
+    reply: mpsc::SyncSender<std::io::Result<Vec<SocketAddr>>>,
+}
+fn dns_timeout() -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        "DNS resolution timed out or busy",
+    )
+}
+fn dns_worker() -> &'static mpsc::SyncSender<DnsJob> {
+    static WORKER: OnceLock<mpsc::SyncSender<DnsJob>> = OnceLock::new();
+    WORKER.get_or_init(|| {
+        let (sender, receiver) = mpsc::sync_channel::<DnsJob>(1);
+        std::thread::spawn(move || {
+            while let Ok(job) = receiver.recv() {
+                let result = if Instant::now() >= job.deadline {
+                    Err(dns_timeout())
+                } else {
+                    (job.host.as_str(), job.port)
+                        .to_socket_addrs()
+                        .map(Vec::from_iter)
+                };
+                let _ = job.reply.send(result);
+            }
+        });
+        sender
+    })
 }
 
 /// A fixed table of host names to addresses, for tests. The port each
@@ -469,6 +589,7 @@ pub struct NetConfig {
     pub trust_anchors: Option<Vec<Vec<u8>>>,
     /// Hosts allowed to resolve to non-public addresses (a test server on
     /// the loopback interface).
+    #[cfg(any(test, feature = "rig-kill-hook"))]
     pub private_hosts: BTreeSet<String>,
     pub connect_timeout: Duration,
     /// The deadline over a whole fetch, every redirect included.
@@ -481,6 +602,7 @@ impl Default for NetConfig {
         Self {
             resolver: Arc::new(SystemResolver::default()),
             trust_anchors: None,
+            #[cfg(any(test, feature = "rig-kill-hook"))]
             private_hosts: BTreeSet::new(),
             connect_timeout: Duration::from_secs(10),
             total_timeout: Duration::from_secs(30),
@@ -514,6 +636,16 @@ fn unsent(detail: String) -> Failure {
 }
 
 impl Client {
+    fn private_host(&self, _host: &str) -> bool {
+        #[cfg(any(test, feature = "rig-kill-hook"))]
+        {
+            self.config.private_hosts.contains(_host)
+        }
+        #[cfg(not(any(test, feature = "rig-kill-hook")))]
+        {
+            false
+        }
+    }
     pub fn new(config: NetConfig) -> Self {
         Self {
             config,
@@ -563,11 +695,12 @@ impl Client {
         let mut redirected: Option<Response> = None;
         let mut redirects = 0;
         loop {
-            if let Err(refusal) = allowed(rules, &url.host, &method) {
+            let approval = allowed_url(rules, &url, &method);
+            if let Err(refusal) = approval {
                 return stop(redirected, refusal);
             }
-            // A script's headers go only to the host it named.
-            let headers: &[(String, String)] = if url.host == first.host {
+            // A script's headers go only to the HTTPS origin it named.
+            let headers: &[(String, String)] = if same_origin(&url, &first) {
                 &request.headers
             } else {
                 &[]
@@ -623,16 +756,16 @@ impl Client {
     }
 
     /// The checked addresses of `url`'s host.
-    fn addresses(&self, url: &Url) -> Result<Vec<SocketAddr>, Failure> {
+    fn addresses(&self, url: &Url, deadline: Instant) -> Result<Vec<SocketAddr>, Failure> {
         let addrs = self
             .config
             .resolver
-            .resolve(&url.host, url.port)
+            .resolve_until(&url.host, url.port, deadline)
             .map_err(|e| unsent(format!("resolving {}: {e}", url.host)))?;
         if addrs.is_empty() {
             return Err(unsent(format!("{} resolved to no address", url.host)));
         }
-        if !self.config.private_hosts.contains(&url.host)
+        if !self.private_host(&url.host)
             && let Some(bad) = addrs.iter().find(|a| !is_public(a.ip()))
         {
             return Err(Denial::denied(format!(
@@ -669,10 +802,12 @@ impl Client {
                 unsent(detail)
             }
         };
-        let addrs = self.addresses(url).map_err(|failure| match failure {
-            Failure::Transport(TransportError::Unavailable { detail, .. }) => before(detail),
-            refused => refused,
-        })?;
+        let addrs = self
+            .addresses(url, deadline)
+            .map_err(|failure| match failure {
+                Failure::Transport(TransportError::Unavailable { detail, .. }) => before(detail),
+                refused => refused,
+            })?;
         let mut last_error = String::new();
         let mut tcp = None;
         for addr in addrs.iter().take(MAX_ADDRESS_ATTEMPTS) {
@@ -775,8 +910,13 @@ impl Client {
             }
             break (status, headers);
         };
-        let no_body = method == "HEAD" || status == 204 || status == 304;
-        let cap = self.config.max_body_bytes;
+        // Query redirects are followed using only the head. Do not let an
+        // irrelevant body (including broken framing) prevent the next hop.
+        // After a mutation, keep the small body for the answer returned when
+        // a later hop is refused, since that effect must not become a refusal.
+        let skip_redirect_body = !effect_possible && matches!(status, 301 | 302 | 303 | 307 | 308);
+        let no_body = method == "HEAD" || status == 204 || status == 304 || skip_redirect_body;
+        let cap = self.config.max_body_bytes.min(DEFAULT_BODY_BYTES);
         // `None` when the body is over the cap; it is not read further.
         let body = if no_body {
             Some(Vec::new())
@@ -810,7 +950,12 @@ impl Client {
             Some(body) => (body, None),
             None => (
                 Vec::new(),
-                Some(refuse_body(effect_possible, too_large(cap))?),
+                Some(if matches!(status, 301 | 302 | 303 | 307 | 308) {
+                    // A redirect is decided from its headers, not its body.
+                    codes::TOO_LARGE
+                } else {
+                    refuse_body(effect_possible, too_large(cap))?
+                }),
             ),
         };
         Ok(Response {
@@ -853,12 +998,9 @@ struct Deadlined {
 impl Read for Deadlined {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         set_timeouts(&self.stream.sock, self.deadline)?;
-        match self.stream.read(buf) {
-            // A server that closes without TLS close_notify ends the body
-            // just the same for a response framed by the connection.
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(0),
-            other => other,
-        }
+        // Without authenticated TLS EOF a connection-framed body may be
+        // truncated; preserve rustls's UnexpectedEof instead of inventing EOF.
+        self.stream.read(buf)
     }
 }
 
@@ -890,7 +1032,8 @@ fn read_head(reader: &mut impl BufRead) -> std::io::Result<Vec<u8>> {
 }
 
 fn parse_head(raw: &[u8]) -> Result<(u16, Vec<(String, String)>), Denial> {
-    let mut slots = [httparse::EMPTY_HEADER; 128];
+    // Every header occupies at least one line; the byte cap bounds allocation.
+    let mut slots = vec![httparse::EMPTY_HEADER; raw.iter().filter(|b| **b == b'\n').count()];
     let mut response = httparse::Response::new(&mut slots);
     match response.parse(raw) {
         Ok(httparse::Status::Complete(_)) => {}
@@ -936,7 +1079,7 @@ fn read_chunked(
     loop {
         let mut line = Vec::new();
         (&mut *reader)
-            .take(1024)
+            .take(MAX_CHUNK_LINE_BYTES)
             .read_until(b'\n', &mut line)
             .map_err(lost)?;
         let text = String::from_utf8_lossy(&line);
@@ -953,7 +1096,7 @@ fn read_chunked(
             loop {
                 let mut trailer = Vec::new();
                 let n = (&mut *reader)
-                    .take(8192)
+                    .take(MAX_TRAILER_LINE_BYTES)
                     .read_until(b'\n', &mut trailer)
                     .map_err(lost)?;
                 if n == 0 || trailer == b"\r\n" || trailer == b"\n" {

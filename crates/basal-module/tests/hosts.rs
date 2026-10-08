@@ -1259,9 +1259,17 @@ fn routing_host_model_selection_and_digest_sink_share_the_journal_store() {
         1,
         "accepted model call must begin watching its session after its handle commits"
     );
+    // The journal retains the full envelope; the snapshot needs only its
+    // identity digest and the exact frozen send bytes, not another prompt copy.
+    let saved = snapshots.load().unwrap().remove(0);
+    assert_eq!(saved.params, fake.sends()[0].1);
     assert_eq!(
-        snapshots.load().unwrap()[0].envelope,
-        call.request.unwrap().as_str()
+        saved.envelope,
+        format!(
+            "blake3:{}",
+            serde_json::to_string(&basal_proto::ArgsDigest::of(call.request.as_ref().unwrap()).0)
+                .unwrap()
+        )
     );
     fake.finish(
         &call.idempotency_key,

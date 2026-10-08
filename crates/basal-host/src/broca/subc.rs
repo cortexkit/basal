@@ -55,6 +55,16 @@ type Wake = Arc<dyn Fn() + Send + Sync>;
 /// `run.result` reports it ended, a run still owned by an activation), so a
 /// failure is retried on its own rather than waiting for the next event.
 const RETRY_AFTER_FAILURE: Duration = Duration::from_secs(5);
+const MAX_RETRY_AFTER_FAILURE: Duration = Duration::from_secs(300);
+
+fn retry_delay(failures: u32) -> Duration {
+    RETRY_AFTER_FAILURE
+        .saturating_mul(
+            1u32.checked_shl(failures.saturating_sub(1).min(6))
+                .unwrap_or(u32::MAX),
+        )
+        .min(MAX_RETRY_AFTER_FAILURE)
+}
 
 /// Coalesce stream/reconnect notifications and poll on a blocking thread.
 /// Polling from a Tokio callback would nest the consumer's blocking runtime.
@@ -88,15 +98,26 @@ impl PollWake {
             return;
         };
         let weak = Arc::downgrade(host);
-        let retry = self.callback();
         std::thread::spawn(move || {
-            while receiver.recv().is_ok() {
+            let mut failures = 0;
+            loop {
+                let wake = if failures == 0 {
+                    receiver
+                        .recv()
+                        .map_err(|_| mpsc::RecvTimeoutError::Disconnected)
+                } else {
+                    receiver.recv_timeout(retry_delay(failures))
+                };
+                if matches!(wake, Err(mpsc::RecvTimeoutError::Disconnected)) {
+                    break;
+                }
                 let Some(host) = weak.upgrade() else { break };
-                if let Err(error) = host.poll() {
-                    tracing::warn!(%error, "Broca calls remain pending; polling again shortly");
-                    drop(host);
-                    std::thread::sleep(RETRY_AFTER_FAILURE);
-                    retry();
+                match host.poll() {
+                    Err(error) => {
+                        failures = failures.saturating_add(1);
+                        tracing::warn!(%error, failures, retry_after_s = retry_delay(failures).as_secs(), "Broca calls remain pending; backing off polling");
+                    }
+                    Ok(()) => failures = 0,
                 }
             }
         });
@@ -162,6 +183,13 @@ pub struct SubcBrocaTransport {
 #[cfg(feature = "rig-kill-hook")]
 type UnscopedSendHook = Arc<dyn Fn(&Route) -> bool + Send + Sync>;
 impl SubcBrocaTransport {
+    fn no_flow_scope(&self, method: &str) -> WireError {
+        WireError::Typed(crate::flow_refusal::FlowRefusal::new(
+            crate::flow_refusal::RefusalReason::NoFlowScope,
+            &self.module,
+            method,
+        ))
+    }
     pub fn new(connection: Arc<SubcTransport>, module: String, wake: Wake) -> Arc<Self> {
         let transport = Arc::new(Self {
             connection: connection.clone(),
@@ -204,11 +232,7 @@ impl SubcBrocaTransport {
                 method,
                 params,
             ),
-            None => Err(WireError::Typed(crate::flow_refusal::FlowRefusal::new(
-                crate::flow_refusal::RefusalReason::NoFlowScope,
-                &self.module,
-                method,
-            ))),
+            None => Err(self.no_flow_scope(method)),
         }
         .map_err(error)?;
         serde_json::from_value(value).map_err(|e| BrocaError::Wire(e.to_string()))
@@ -221,14 +245,10 @@ impl SubcBrocaTransport {
                 flow,
                 identity(route),
                 &self.module,
-                "session.subscribe",
+                OP_SESSION_SUBSCRIBE,
                 &bytes,
             ),
-            None => Err(WireError::Typed(crate::flow_refusal::FlowRefusal::new(
-                crate::flow_refusal::RefusalReason::NoFlowScope,
-                &self.module,
-                "session.subscribe",
-            ))),
+            None => Err(self.no_flow_scope(OP_SESSION_SUBSCRIBE)),
         }
         .map_err(error)?;
         let stream = Arc::new(Stream::default());
@@ -315,7 +335,7 @@ impl Transport for SubcBrocaTransport {
                 .map_err(error)?;
             return serde_json::from_value(value).map_err(|e| BrocaError::Wire(e.to_string()));
         }
-        self.call(route, "session.send", params)
+        self.call(route, OP_SESSION_SEND, params)
     }
     fn watch(&self, route: &Route) -> Result<(), BrocaError> {
         let k = key(route);
@@ -346,7 +366,7 @@ impl Transport for SubcBrocaTransport {
     ) -> Result<RunStatusResponse, BrocaError> {
         self.call(
             route,
-            "run.status",
+            OP_RUN_STATUS,
             &serde_json::to_vec(params).map_err(|e| BrocaError::Invalid(e.to_string()))?,
         )
     }
@@ -363,6 +383,14 @@ impl Transport for SubcBrocaTransport {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn failed_polls_back_off_exponentially_to_a_cap() {
+        assert_eq!(retry_delay(1), Duration::from_secs(5));
+        assert_eq!(retry_delay(2), Duration::from_secs(10));
+        assert_eq!(retry_delay(3), Duration::from_secs(20));
+        assert_eq!(retry_delay(100), Duration::from_secs(300));
+    }
 
     fn counter() -> (Arc<AtomicUsize>, Wake) {
         let count = Arc::new(AtomicUsize::new(0));

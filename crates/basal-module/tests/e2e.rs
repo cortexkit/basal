@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 
 use basal_module::fatal::EXIT_STORE_FAILURE;
 use basal_testkit::channel::worker_binary;
+#[cfg(feature = "rig-kill-hook")]
 use basal_testkit::git::git_command;
 use serde_json::{Value, json};
 
@@ -456,6 +457,7 @@ fn digests(effects: &Value) -> Vec<Value> {
 }
 
 /// Builds a fixture repository with one commit.
+#[cfg(feature = "rig-kill-hook")]
 fn git_repo(dir: &Path) {
     std::fs::create_dir_all(dir).expect("repo dir");
     std::fs::write(dir.join("CHANGELOG.md"), "v1\n").expect("file");
@@ -476,6 +478,8 @@ fn git_repo(dir: &Path) {
 /// A schedule-triggered flow, through the real module process and worker,
 /// reads a file and a git log, fetches from a local HTTPS server and writes
 /// a digest of all three through the mock core.
+// Local HTTPS fixtures require network exemptions excluded from production.
+#[cfg(feature = "rig-kill-hook")]
 #[test]
 fn a_schedule_flow_reads_a_file_and_a_git_log_fetches_and_writes_a_digest() {
     use basal_testkit::https::{Reply, TestServer};
@@ -512,7 +516,8 @@ fn a_schedule_flow_reads_a_file_and_a_git_log_fetches_and_writes_a_digest() {
          return {{ body, status: page.status }};",
         file = files.join("watch.txt").display().to_string(),
         repo = repo.display().to_string(),
-        url = server.url("api.test", "/release"),
+        // The resolver seam maps the approved HTTPS:443 URL to the local socket.
+        url = "https://api.test/release",
     );
     let manifest = json!({
         "id": "flow-builtins",

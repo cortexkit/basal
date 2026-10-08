@@ -139,11 +139,9 @@ fn stat_of_a_missing_path_is_exists_false_only_when_its_parent_is_in_scope() {
     // what exists beyond its roots.
     let outside_missing = t.outside.join("missing").display().to_string();
     assert_eq!(code(fs::stat(&outside_missing, &roots)), codes::DENIED);
-    // The parent does not exist either: an error, not `exists: false`.
-    assert_eq!(
-        code(fs::stat(&t.p("nodir/missing"), &roots)),
-        codes::NOT_FOUND
-    );
+    // An unresolved parent uses the same privacy refusal, not an existence
+    // signal that could distinguish outside missing paths from outside files.
+    assert_eq!(code(fs::stat(&t.p("nodir/missing"), &roots)), codes::DENIED);
     let file = fs::stat(&t.p("a.txt"), &roots).expect("stat");
     assert_eq!(file["exists"], true);
     assert_eq!(file["kind"], "file");
@@ -294,7 +292,14 @@ fn a_directory_swapped_for_a_symlink_after_the_check_is_caught_after_the_open() 
     symlink(t.outside.join("sub"), t.root.join("sub")).expect("swap");
     let refused = fs::open_checked(&real, &roots, false).expect_err("refused");
     assert_eq!(refused.code, codes::DENIED);
-    assert!(refused.message.contains("moved outside"), "{refused:?}");
+    assert_eq!(
+        refused.message,
+        "path is outside the manifest's roots or missing"
+    );
+    assert!(
+        !refused.message.contains(t.outside.to_str().unwrap()),
+        "{refused:?}"
+    );
 }
 
 /// The host checks the scope carried with the call, not anything the

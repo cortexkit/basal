@@ -363,6 +363,16 @@ pub struct MemoryStore {
     calls: Mutex<BTreeMap<String, StoredCall>>,
 }
 impl StateStore for MemoryStore {
+    fn get(&self, send_id: &str) -> Result<Option<StoredCall>, BrocaError> {
+        Ok(lock(&self.calls).get(send_id).cloned())
+    }
+    fn pending_ids(&self) -> Result<Vec<String>, BrocaError> {
+        Ok(lock(&self.calls)
+            .values()
+            .filter(|call| !call.acknowledged && !call.deferred)
+            .map(|call| call.send_id.clone())
+            .collect())
+    }
     fn load(&self) -> Result<Vec<StoredCall>, BrocaError> {
         Ok(lock(&self.calls).values().cloned().collect())
     }

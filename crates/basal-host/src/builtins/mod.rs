@@ -91,7 +91,9 @@ impl Denial {
 
     /// The rejection a script sees.
     pub fn outcome(&self) -> HostOutcome {
-        HostOutcome::rejected(text(&json!({ "message": self.message, "code": self.code })))
+        HostOutcome::rejected(text(&json!({ "message": self.message, "code": self.code })).unwrap_or_else(|_| {
+            JsonText::new(json!({"message":"built-in result exceeds the encoded limit", "code":codes::TOO_LARGE}).to_string()).expect("small host-owned refusal")
+        }))
     }
 }
 
@@ -111,9 +113,19 @@ impl From<Denial> for Failure {
     }
 }
 
-fn text(value: &Value) -> JsonText {
-    JsonText::new(value.to_string()).unwrap_or_else(|_| JsonText::null())
+fn text(value: &Value) -> Result<JsonText, Denial> {
+    JsonText::new(value.to_string()).map_err(|_| {
+        Denial::new(
+            codes::TOO_LARGE,
+            "built-in result exceeds the encoded limit",
+        )
+    })
 }
+
+// A JSON control character expands to six bytes. Reserve room for a response's
+// escaped headers and framing before assigning the body or file-text budget.
+pub const MAX_TEXT_RESULT_BYTES: usize =
+    (basal_proto::MAX_VALUE_BYTES - 6 * net::MAX_HEAD_BYTES - 4096) / 6;
 
 /// What the approved manifest grants one call, carried with it from the
 /// parent's check to the host. For the `fs` built-ins `roots` holds the
@@ -264,16 +276,7 @@ pub fn parse(primitive: Primitive, args: &Value) -> Result<Call, Denial> {
         Primitive::FsWrite => {
             let path = string_arg(args, "path")?;
             let text = string_arg(args, "text")?;
-            if text.len() > fs::MAX_WRITE_BYTES {
-                return Err(Denial::new(
-                    codes::TOO_LARGE,
-                    format!(
-                        "{} bytes exceed the write cap of {}",
-                        text.len(),
-                        fs::MAX_WRITE_BYTES
-                    ),
-                ));
-            }
+            fs::check_write_size(text.len())?;
             Ok(Call::FsWrite { path, text })
         }
         Primitive::GitLog
@@ -307,7 +310,7 @@ pub fn authorize(call: &Call, grant: &Grant) -> Result<(), Denial> {
         Call::Git { repo, .. } => git::repo(repo, &grant.roots).map(|_| ()),
         Call::NetFetch(request) => {
             let url = net::parse_url(&request.url)?;
-            net::allowed(&grant.hosts, &url.host, &request.method)
+            net::allowed_url(&grant.hosts, &url, &request.method)
         }
     }
 }
@@ -344,7 +347,8 @@ impl BuiltinHost {
             serde_json::from_value(envelope.get("grant").cloned().unwrap_or(Value::Null))
                 .map_err(|e| Denial::invalid(format!("the call's grant does not decode: {e}")))?;
         let call = parse(primitive, args)?;
-        authorize(&call, &grant)?;
+        // Each implementation checks its grant at the descriptor or connection
+        // it acts on; resolving it here as well doubles filesystem traversal.
         match call {
             Call::FsRead { path, max_bytes } => Ok(fs::read(&path, &grant.roots, max_bytes)?),
             Call::FsList { path } => Ok(fs::list(&path, &grant.roots)?),
@@ -388,7 +392,10 @@ impl BuiltinHost {
             ));
         }
         match self.run(p, &envelope) {
-            Ok(value) => Ok(Dispatched::Completed(HostOutcome::fulfilled(text(&value)))),
+            Ok(value) => Ok(Dispatched::Completed(match text(&value) {
+                Ok(value) => HostOutcome::fulfilled(value),
+                Err(denial) => denial.outcome(),
+            })),
             Err(Failure::Refused(d)) => Ok(Dispatched::Completed(d.outcome())),
             Err(Failure::Transport(e)) => Err(e),
         }
@@ -425,4 +432,17 @@ impl Host for BuiltinHost {
     }
 
     fn attach(&self, _: Arc<dyn CompletionSink>) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn encoded_result_limit_never_fulfills_null() {
+        assert_eq!(
+            text(&json!("\u{0001}".repeat(200_000))).unwrap_err().code,
+            codes::TOO_LARGE
+        );
+        assert!(text(&json!({"text":"\u{0001}".repeat(MAX_TEXT_RESULT_BYTES)})).is_ok());
+    }
 }
