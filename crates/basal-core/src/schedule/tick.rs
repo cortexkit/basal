@@ -263,7 +263,7 @@ pub fn admit_next(
                 let CoreError::Corrupt(detail) = error else {
                     return Err(error);
                 };
-                tx.execute("INSERT INTO schedule_dropped(flow_id,trigger_id,due_ms,payload,reason,at) SELECT flow_id,trigger_id,due_ms,payload,'not_approved',?1 FROM schedule_fires ORDER BY seq LIMIT 1", [ctx.now_ms])?;
+                tx.execute("INSERT INTO schedule_dropped(flow_id,trigger_id,due_ms,payload,reason,at) SELECT flow_id,trigger_id,due_ms,payload,'not_approved',?1 FROM schedule_fires ORDER BY seq ASC LIMIT 1", [ctx.now_ms])?;
                 tx.execute("INSERT INTO audit(at,actor,action,detail) VALUES (?1,'runtime','schedule.corrupt',?2)", params![ctx.now_ms, serde_json::json!({"error":detail}).to_string()])?;
                 tx.execute(
                     "DELETE FROM schedule_fires WHERE seq=(SELECT MIN(seq) FROM schedule_fires)",
