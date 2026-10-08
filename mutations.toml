@@ -3715,8 +3715,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-module/src/ops.rs"
-old = "\"as_of\": as_of,\n            \"flows\": entries,"
-new = "\"as_of_ms\": now,\n            \"flows\": entries,"
+old = "\"as_of\": as_of,\n            \"worker_confinement\": self.pool.worker_confinement(),"
+new = "\"as_of_ms\": now,\n            \"worker_confinement\": self.pool.worker_confinement(),"
 
 [[control]]
 id = "health-ignores-flow-ids"
@@ -7619,8 +7619,8 @@ hub = "Production workers disclaim the module's privacy identity, asserted by th
 hub_targets = ["privacy_launch"]
 guards = "production workers must be their own macOS responsible processes, not borrow the module privacy grants"
 file = "crates/basal-module/src/pool.rs"
-old = "WorkerLaunch::Disclaimed { trampoline: exe },"
-new = "WorkerLaunch::Plain, // NON-VACUITY BREAK"
+old = "let launch = WorkerLaunch::Disclaimed {\n            trampoline: exe.clone(),\n        };"
+new = "let launch = WorkerLaunch::Plain; // NON-VACUITY BREAK"
 edits = []
 test_file = "crates/basal-module/tests/e2e.rs"
 runner = "cargo"

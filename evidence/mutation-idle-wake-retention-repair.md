@@ -96,27 +96,9 @@ showed `SCAN o` instead of the required index search. Separate exact-filter
 runs failed each named test independently (one failure and 62 filtered tests
 per run).
 
-## Replay and restoration
+## Replay
 
-For each row, the replay command was:
-
-```sh
-ckdev-mutate run --allow-dirty --only <row-id> --report target/mutations/<row-id>.json
-```
-
-The retention command ran on Linux; the two decision-card commands ran on
-macOS. `--allow-dirty` allowed the staged test/catalogue repairs to be tested
-before committing. Baselines were green in every successful reported replay.
-The first failed-answer replay caught its mutant but could not write a report
-because `target/mutations` did not yet exist; creating that directory and
-replaying produced the successful report.
-
-For every additional exact-filter proof, the live files were staged and
-`git diff --stat` was empty before mutation. Each mutant was marked
-`NON-VACUITY BREAK` and produced a nonempty diff: one source file, one insertion
-and one deletion. After the check, `git checkout -- <mutated-path>` followed by
-`touch <mutated-path>` restored the indexed live state; `git diff --stat` was
-empty again. The mutated paths were `crates/basal-host/src/core_consent.rs`,
-`crates/basal-core/src/decisions.rs`, and `crates/basal-core/src/retention.rs`.
-The retention mutation was kept in place for its two independent filtered
-checks, then restored. No mutant remains in the delivered sources.
+Each row was replayed with
+`ckdev-mutate run --only <row-id> --report target/mutations/<row-id>.json`:
+the retention row on Linux, the two decision-card rows on macOS. Each named test
+was also run alone under its mutant with `--exact`, and failed on its own.
