@@ -7,6 +7,12 @@ use basal_host::broca::{BrocaError, StateStore, StoredCall};
 use rusqlite::OptionalExtension;
 use std::sync::{Arc, Mutex};
 
+/// Lists calls still awaiting Broca's answer. Its WHERE clause repeats the
+/// `broca_calls_pending` partial index's predicate byte for byte, because
+/// SQLite uses a partial index only when the query states its exact
+/// condition; a test checks the plan with this same text.
+pub const PENDING_IDS_SQL: &str = "SELECT send_id FROM broca_calls WHERE json_extract(snapshot, '$.acknowledged') = 0 AND COALESCE(json_extract(snapshot, '$.deferred'), 0) = 0 ORDER BY send_id";
+
 /// Can be constructed before the module shell opens SQLite, then bound to
 /// that same store. The shared connection keeps every write under the runtime's
 /// single-writer lease instead of opening a competing writer.
@@ -70,9 +76,7 @@ impl StateStore for BrocaStore {
     fn pending_ids(&self) -> Result<Vec<String>, BrocaError> {
         self.store()?
             .read(|c| {
-                let mut statement = c.prepare(
-                    "SELECT send_id FROM broca_calls WHERE json_extract(snapshot, '$.acknowledged') = 0 AND COALESCE(json_extract(snapshot, '$.deferred'), 0) = 0 ORDER BY send_id",
-                )?;
+                let mut statement = c.prepare(PENDING_IDS_SQL)?;
                 let rows = statement.query_map([], |row| row.get(0))?;
                 Ok(rows.collect::<Result<Vec<_>, _>>()?)
             })

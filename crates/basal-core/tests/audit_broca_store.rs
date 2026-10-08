@@ -56,18 +56,32 @@ fn keyed_snapshot_lookup_ignores_unrelated_corruption_and_migrates_legacy_params
     let adapter = BrocaStore::new(store.clone());
     assert_eq!(adapter.get("key").unwrap().unwrap().params, call.params);
     assert!(adapter.get("missing").unwrap().is_none());
-    store.read(|c| {
-        let snapshot: String = c.query_row("SELECT snapshot FROM broca_calls WHERE send_id = 'key'", [], |r| r.get(0))?;
-        assert!(serde_json::from_str::<serde_json::Value>(&snapshot).unwrap()["params"].is_string());
-        c.execute("DELETE FROM broca_calls WHERE send_id = 'unrelated'", [])?;
-        let has_index: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = 'broca_calls_pending')", [], |r| r.get(0))?;
-        if has_index {
-            let mut stmt = c.prepare("EXPLAIN QUERY PLAN SELECT send_id FROM broca_calls WHERE json_extract(snapshot, '$.acknowledged') = 0 AND COALESCE(json_extract(snapshot, '$.deferred'), 0) = 0 ORDER BY send_id")?;
-            let plan = stmt.query_map([], |r| r.get::<_, String>(3))?.collect::<Result<Vec<_>, _>>()?;
-            assert!(plan.iter().any(|row| row.contains("broca_calls_pending")), "{plan:?}");
-        }
-        Ok(())
-    }).unwrap();
+    store
+        .read(|c| {
+            let snapshot: String = c.query_row(
+                "SELECT snapshot FROM broca_calls WHERE send_id = 'key'",
+                [],
+                |r| r.get(0),
+            )?;
+            assert!(
+                serde_json::from_str::<serde_json::Value>(&snapshot).unwrap()["params"].is_string()
+            );
+            c.execute("DELETE FROM broca_calls WHERE send_id = 'unrelated'", [])?;
+            // The adapter's own query must be able to use the partial index.
+            let mut stmt = c.prepare(&format!(
+                "EXPLAIN QUERY PLAN {}",
+                basal_core::broca::PENDING_IDS_SQL
+            ))?;
+            let plan = stmt
+                .query_map([], |r| r.get::<_, String>(3))?
+                .collect::<Result<Vec<_>, _>>()?;
+            assert!(
+                plan.iter().any(|row| row.contains("broca_calls_pending")),
+                "{plan:?}"
+            );
+            Ok(())
+        })
+        .unwrap();
     assert_eq!(adapter.pending_ids().unwrap(), vec!["key"]);
     let mut settled = call.clone();
     settled.acknowledged = true;
