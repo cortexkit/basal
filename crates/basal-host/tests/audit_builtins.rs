@@ -158,7 +158,7 @@ fn git_reaps_descendants_that_keep_its_output_pipe_open() {
     let result = receiver.recv_timeout(Duration::from_secs(30));
     // The deadline is only a hang stopper. On either path, explicitly reap the
     // test's descendant before asserting so a broken implementation leaks none.
-    if result.is_err()
+    if !matches!(result, Ok(Ok(ref ran)) if ran.success)
         && let Ok(pid) = std::fs::read_to_string(&pid_file)
             .and_then(|s| s.trim().parse::<i32>().map_err(std::io::Error::other))
     {

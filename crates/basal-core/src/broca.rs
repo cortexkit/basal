@@ -68,10 +68,15 @@ impl StateStore for BrocaStore {
         Ok(Some(call))
     }
     fn pending_ids(&self) -> Result<Vec<String>, BrocaError> {
-        self.store()?.read(|c| {
-            let mut statement = c.prepare("SELECT send_id FROM broca_calls WHERE json_extract(snapshot, '$.acknowledged') = 0 AND COALESCE(json_extract(snapshot, '$.deferred'), 0) = 0 ORDER BY send_id")?;
-            Ok(statement.query_map([], |row| row.get(0))?.collect::<Result<Vec<_>, _>>()?)
-        }).map_err(|e| BrocaError::Store(e.to_string()))
+        self.store()?
+            .read(|c| {
+                let mut statement = c.prepare(
+                    "SELECT send_id FROM broca_calls WHERE json_extract(snapshot, '$.acknowledged') = 0 AND COALESCE(json_extract(snapshot, '$.deferred'), 0) = 0 ORDER BY send_id",
+                )?;
+                let rows = statement.query_map([], |row| row.get(0))?;
+                Ok(rows.collect::<Result<Vec<_>, _>>()?)
+            })
+            .map_err(|e| BrocaError::Store(e.to_string()))
     }
     fn identity(
         &self,
@@ -106,10 +111,16 @@ impl StateStore for BrocaStore {
     }
     fn save(&self, call: &StoredCall) -> Result<(), BrocaError> {
         let snapshot = serde_json::to_string(call).map_err(|e| BrocaError::Store(e.to_string()))?;
-        self.store()?.write(|tx| {
-            tx.execute("INSERT INTO broca_calls (send_id, run_id, position, snapshot) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(send_id) DO UPDATE SET snapshot = excluded.snapshot",
-                rusqlite::params![call.send_id, call.basal_run_id, i64::try_from(call.position).map_err(|_| CoreError::Invalid("Broca call position".into()))?, snapshot])?;
-            Ok(())
-        }).map_err(|e| BrocaError::Store(e.to_string()))
+        let position = i64::try_from(call.position)
+            .map_err(|_| BrocaError::Store("Broca call position".into()))?;
+        self.store()?
+            .write(|tx| {
+                tx.execute(
+                    "INSERT INTO broca_calls (send_id, run_id, position, snapshot) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(send_id) DO UPDATE SET snapshot = excluded.snapshot",
+                    rusqlite::params![call.send_id, call.basal_run_id, position, snapshot],
+                )?;
+                Ok(())
+            })
+            .map_err(|e| BrocaError::Store(e.to_string()))
     }
 }
