@@ -1,8 +1,13 @@
-//! Hard size limits. They bound what either side will read before it
-//! allocates, independent of any per-activation budget.
+//! Protocol constants and hard size limits. The limits bound what either
+//! side will read before it allocates, independent of any activation budget.
 
 /// The current protocol version, exchanged in the handshake.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
+
+/// The highest Landlock ABI supported by the worker's pinned `landlock`
+/// crate, version `=0.4.7`. Update this together with the worker's crate pin
+/// so both sides agree on the ABI that must be applied.
+pub const LANDLOCK_ABI: u32 = 9;
 
 /// The largest aggregate frame payload either side accepts. A run may have
 /// 10,000 calls; their combined outcomes, script and metadata must still fit

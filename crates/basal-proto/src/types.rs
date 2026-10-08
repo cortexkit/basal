@@ -406,8 +406,20 @@ pub struct Outcome {
 pub enum Confinement {
     /// The deny-by-default Seatbelt profile applied through `sandbox_init`.
     Seatbelt,
+    /// Linux syscall filtering, with a Landlock report when that layer applied.
+    Linux {
+        seccomp: bool,
+        landlock: Option<LandlockReport>,
+    },
     /// No OS sandbox. A production parent refuses such a worker.
     None,
+}
+
+/// The Landlock ABI available at runtime and the ABI the worker applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LandlockReport {
+    pub runtime_abi: u32,
+    pub applied_abi: u32,
 }
 
 /// The worker's reply to the handshake.

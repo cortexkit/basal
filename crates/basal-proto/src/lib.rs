@@ -197,6 +197,109 @@ mod tests {
         }
     }
 
+    fn confinement_welcome(confinement: Confinement) -> WorkerMessage {
+        WorkerMessage::Welcome(Welcome {
+            protocol_version: PROTOCOL_VERSION,
+            engine: String::new(),
+            prelude_hash: PreludeHash([0; 32]),
+            confinement,
+        })
+    }
+
+    fn confinement_payload(suffix: &[u8]) -> Vec<u8> {
+        // A version-3 Welcome with an empty engine name and a zero prelude hash.
+        let mut payload = vec![101, 0, 0, 0, 3, 0, 0, 0, 0];
+        payload.extend_from_slice(&[0; 32]);
+        payload.extend_from_slice(suffix);
+        payload
+    }
+
+    #[test]
+    fn linux_confinement_round_trips() {
+        for seccomp in [false, true] {
+            for landlock in [
+                None,
+                Some(LandlockReport {
+                    runtime_abi: LANDLOCK_ABI + 2,
+                    applied_abi: LANDLOCK_ABI,
+                }),
+            ] {
+                let message = confinement_welcome(Confinement::Linux { seccomp, landlock });
+                let frame = encode_worker_frame(&message).expect("encodes");
+                let back = read_worker_message(&mut frame.as_slice()).expect("decodes");
+                assert_eq!(back, message);
+            }
+        }
+    }
+
+    #[test]
+    fn confinement_wire_tags_and_linux_fields_are_stable() {
+        let cases: &[(Confinement, &[u8])] = &[
+            (Confinement::None, &[0]),
+            (Confinement::Seatbelt, &[1]),
+            (
+                Confinement::Linux {
+                    seccomp: false,
+                    landlock: None,
+                },
+                &[2, 0, 0],
+            ),
+            (
+                Confinement::Linux {
+                    seccomp: true,
+                    landlock: None,
+                },
+                &[2, 1, 0],
+            ),
+            (
+                Confinement::Linux {
+                    seccomp: true,
+                    landlock: Some(LandlockReport {
+                        runtime_abi: 11,
+                        applied_abi: 9,
+                    }),
+                },
+                &[2, 1, 1, 0, 0, 0, 11, 0, 0, 0, 9],
+            ),
+        ];
+        for &(confinement, suffix) in cases {
+            let message = confinement_welcome(confinement);
+            let payload = confinement_payload(suffix);
+            let frame = encode_worker_frame(&message).expect("encodes");
+            assert_eq!(&frame[4..], payload);
+            assert_eq!(decode_worker_payload(&payload), Ok(message));
+        }
+    }
+
+    #[test]
+    fn unknown_confinement_tags_are_refused() {
+        for (suffix, field) in [
+            (&[99][..], "confinement"),
+            (&[2, 99, 0][..], "seccomp"),
+            (&[2, 1, 99][..], "landlock"),
+        ] {
+            assert_eq!(
+                decode_worker_payload(&confinement_payload(suffix)),
+                Err(DecodeError::UnknownTag { field, tag: 99 })
+            );
+        }
+    }
+
+    #[test]
+    fn truncated_linux_confinement_is_refused() {
+        for (suffix, field) in [
+            (&[2][..], "seccomp"),
+            (&[2, 1][..], "landlock"),
+            (&[2, 1, 1][..], "runtime ABI"),
+            (&[2, 1, 1, 0, 0, 0, 9][..], "applied ABI"),
+        ] {
+            assert!(matches!(
+                decode_worker_payload(&confinement_payload(suffix)),
+                Err(DecodeError::Truncated { field: actual, .. }) if actual == field
+            ));
+        }
+    }
+
     #[test]
     fn script_host_rejection_is_additive_and_pins_its_position_on_the_wire() {
         let legacy = WorkerMessage::Finished {

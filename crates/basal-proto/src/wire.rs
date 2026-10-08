@@ -615,10 +615,18 @@ pub(crate) fn encode_worker(enc: &mut Encoder, m: &WorkerMessage) {
             enc.u32(w.protocol_version);
             detail(enc, &w.engine);
             enc.fixed(&w.prelude_hash.0);
-            enc.u8(match w.confinement {
-                Confinement::None => 0,
-                Confinement::Seatbelt => 1,
-            });
+            match w.confinement {
+                Confinement::None => enc.u8(0),
+                Confinement::Seatbelt => enc.u8(1),
+                Confinement::Linux { seccomp, landlock } => {
+                    enc.u8(2);
+                    enc.u8(u8::from(seccomp));
+                    enc.option(landlock.as_ref(), |enc, report| {
+                        enc.u32(report.runtime_abi);
+                        enc.u32(report.applied_abi);
+                    });
+                }
+            }
         }
         WorkerMessage::HostCall(c) => {
             encode_host_call(enc, c);
@@ -658,6 +666,24 @@ pub(crate) fn decode_worker(dec: &mut Decoder<'_>) -> Result<WorkerMessage, Deco
             confinement: match dec.u8("confinement")? {
                 0 => Confinement::None,
                 1 => Confinement::Seatbelt,
+                2 => Confinement::Linux {
+                    seccomp: match dec.u8("seccomp")? {
+                        0 => false,
+                        1 => true,
+                        tag => {
+                            return Err(DecodeError::UnknownTag {
+                                field: "seccomp",
+                                tag,
+                            });
+                        }
+                    },
+                    landlock: dec.option("landlock", |dec| {
+                        Ok(LandlockReport {
+                            runtime_abi: dec.u32("runtime ABI")?,
+                            applied_abi: dec.u32("applied ABI")?,
+                        })
+                    })?,
+                },
                 tag => {
                     return Err(DecodeError::UnknownTag {
                         field: "confinement",
