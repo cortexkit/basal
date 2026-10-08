@@ -178,3 +178,76 @@ fn global_model_call_rejects_without_scope_then_uses_registered_scope() {
     assert_eq!(world.selector.requests.lock().unwrap().len(), 1);
     assert_eq!(world.selector.reports.lock().unwrap().len(), 1);
 }
+
+/// kv, now and random never reach a provider, so a flow whose scope has no
+/// Broca, because its manifest grants no model calls, still gets them.
+#[test]
+fn local_primitives_need_no_model_scope() {
+    let world = World::new("local-primitives-scope");
+    let gate = Arc::new(Gate::default());
+    let models = Arc::new(Models::default());
+    let broca = Arc::new(BrocaHost::new(
+        models.clone(),
+        Arc::new(basal_host::broca::fake::MemoryStore::default()),
+        "/".into(),
+        "basal".into(),
+        world.selector.clone(),
+    ));
+    let host = Arc::new(RoutingHost::new(
+        Arc::new(world.mock.clone()),
+        gate.clone(),
+        broca,
+    ));
+    let rt = Runtime::new(
+        Arc::new(Store::open(world.store_path(), world.durability).unwrap()),
+        host,
+        Arc::new(world.catalog.clone()),
+        Arc::new(NoHooks),
+        Some(world.source.clone()),
+        Config {
+            selector: world.selector.clone(),
+            install_gate: InstallGate::Core,
+            ..Config::default()
+        },
+    );
+    let installed = rt
+        .install(&InstallRequest {
+            script: "await kv.set('n', 1); const n = await kv.get('n'); \
+                     const t = Date.now(); const r = Math.random(); \
+                     return {n, clock: typeof t, random: typeof r};"
+                .into(),
+            manifest: test_manifest().to_string(),
+            author: "operator".into(),
+            loop_override: false,
+        })
+        .unwrap();
+    rt.approve("flow-test", 1, &installed.code_hash, "approval")
+        .unwrap();
+    *gate.hash.lock().unwrap() = basal_core::ids::hex(&installed.code_hash);
+    // A registered scope that names no Broca: the flow can reach no model.
+    *gate.scope.lock().unwrap() = Some(RegisteredScope {
+        selector: FlowScope {
+            owner: Principal::Reserved {
+                module_id: "prefrontal-core".into(),
+            },
+            scope_ref: "no-model-flow".into(),
+            epoch: 1,
+        },
+        targets: Default::default(),
+    });
+    let run = rt
+        .admit_trigger("flow-test", "local", JsonText::null())
+        .unwrap()
+        .run_id()
+        .unwrap()
+        .to_owned();
+    rt.resume(&run).unwrap();
+    rt.quiesce();
+    let ran = rt.run(&run).unwrap();
+    assert_eq!(ran.state, RunState::Succeeded, "{:?}", ran.result);
+    let result: serde_json::Value = serde_json::from_str(ran.result.as_ref().unwrap()).unwrap();
+    assert_eq!(result["n"], 1);
+    assert_eq!(result["clock"], "number");
+    assert_eq!(result["random"], "number");
+    assert!(models.sends.lock().unwrap().is_empty());
+}

@@ -9253,3 +9253,27 @@ expect_red = ["maintenance::tests::timer_plans_use_the_ordered_wake_indexes"]
 only = false
 timeout_s = 600
 build_timeout_s = 3600
+
+
+[[control]]
+id = "local-primitives-ask-the-model-host-for-a-scope"
+platforms = ["macos"]
+guards = "kv, clock and random calls need no flow scope, so a flow without a model grant can use them"
+file = "crates/basal-host/src/routing.rs"
+old = """
+            return Ok(());
+        }
+        self.target(kind).provider_ready(flow_id, kind)"""
+new = """
+            // NON-VACUITY BREAK: local primitives fall through to the model host.
+        }
+        self.target(kind).provider_ready(flow_id, kind)"""
+edits = []
+test_file = "crates/basal-testkit/tests/global_model_scope.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test global_model_scope"
+expect_red = ["local_primitives_need_no_model_scope"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600

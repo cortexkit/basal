@@ -200,6 +200,22 @@ impl Host for RoutingHost {
         flow_id: &str,
         kind: &CallKind,
     ) -> Result<(), crate::flow_refusal::FlowRefusal> {
+        // kv, now and random are answered inside basal and reach no provider,
+        // so they never need a flow scope. Without this, a flow with no model
+        // grant (and so no Broca in its scope) would be refused its own kv.
+        if let CallKind::Primitive(p) = kind
+            && !p.is_builtin()
+            && !matches!(
+                p,
+                Primitive::Llm
+                    | Primitive::Classify
+                    | Primitive::SinkDigest
+                    | Primitive::SinkStatus
+                    | Primitive::Facts
+            )
+        {
+            return Ok(());
+        }
         self.target(kind).provider_ready(flow_id, kind)
     }
     fn refusal_committed(&self, request: &CallRequest, refusal: &crate::flow_refusal::FlowRefusal) {
