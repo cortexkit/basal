@@ -13,6 +13,7 @@ use windows_sys::Win32::{
 pub type Result<T> = std::result::Result<T, String>;
 pub const SE_GROUP_INTEGRITY: u32 = 32;
 pub const SE_GROUP_USE_FOR_DENY_ONLY: u32 = 16;
+pub const SE_GROUP_LOGON_ID: u32 = 0xc0000000;
 pub fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
@@ -452,7 +453,7 @@ unsafe extern "system" {
         context: *mut u32,
         returned: *mut u32,
     ) -> i32;
-    fn NtQueryInformationProcess(
+    pub fn NtQueryInformationProcess(
         process: HANDLE,
         class: u32,
         buffer: *mut c_void,

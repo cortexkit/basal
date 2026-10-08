@@ -147,14 +147,18 @@ fn restricted_tokens(
     lowbox_sid: Option<PSID>,
     same_primary: bool,
     enabled_groups: bool,
+    keep_logon: bool,
 ) -> Result<Tokens> {
     unsafe {
         let data = token_buffer(parent, TokenGroups)?;
-        // Integrity labels are not access groups. Every actual group is disabled,
-        // including the logon SID; no restricting SID can match a normal user ACL.
+        // Integrity labels are not access groups. The Chrome comparison
+        // optionally preserves the group marked SE_GROUP_LOGON_ID: sampled
+        // Chrome renderer primaries enable it while denying other groups.
+        // The deny-all primary configuration disables every access group.
         let disabled = groups(&data)
             .iter()
             .filter(|g| g.Attributes & SE_GROUP_INTEGRITY == 0)
+            .filter(|g| !keep_logon || g.Attributes & SE_GROUP_LOGON_ID != SE_GROUP_LOGON_ID)
             .map(|g| SID_AND_ATTRIBUTES {
                 Sid: g.Sid,
                 Attributes: 0,
@@ -677,6 +681,7 @@ fn launch_variant(
                 sequence == "same-access-primary-control"
                     || sequence == "post-load-primary-control",
                 sequence == "post-load-primary-control",
+                sequence == "chrome-logon-control",
             )?)
         } else {
             None
@@ -1273,6 +1278,25 @@ pub fn run() -> Result<()> {
                     )
                     .unwrap_or_else(|e| json!({"error":e}));
                     diagnostics.push(json!({"label":"full-policy loader snaps / debug event loop","result":result}));
+                    // Sampled Chrome renderer primaries enable the session logon SID
+                    // (SE_GROUP_LOGON_ID) while other access groups are deny-only.
+                    // Keep LPAC, job, mitigations, handle list and NULL restricting
+                    // SID unchanged to isolate that one group difference.
+                    let matched = launch_variant(
+                        &input,
+                        &image.to_string_lossy(),
+                        sid,
+                        token.0,
+                        source,
+                        "chrome-logon-control",
+                        true,
+                        false,
+                        false,
+                        MITIGATIONS,
+                        0xff,
+                    )
+                    .unwrap_or_else(|e| json!({"error":e}));
+                    diagnostics.push(json!({"label":"Chrome-matched enabled logon SID / all full-policy attributes retained","result":matched}));
                     let result = match launch_variant(
                         &input,
                         &image.to_string_lossy(),

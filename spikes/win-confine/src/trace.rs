@@ -24,6 +24,35 @@ unsafe fn image_path(file: HANDLE) -> Value {
     }
 }
 
+pub unsafe fn loader_flag(process: HANDLE) -> Value {
+    unsafe {
+        // The spike is an x64 image. Reading the suspended PEB verifies that the
+        // image-specific registry setting reached this process, not just HKLM.
+        let mut basic = [0usize; 6];
+        let mut returned = 0;
+        let status = NtQueryInformationProcess(
+            process,
+            0,
+            basic.as_mut_ptr().cast(),
+            std::mem::size_of_val(&basic) as u32,
+            &mut returned,
+        );
+        if status < 0 {
+            return json!({"error":hex(status as u32)});
+        }
+        let mut flags = 0u32;
+        let mut read = 0;
+        let ok = ReadProcessMemory(
+            process,
+            (basic[1] + 0xbc) as *const _,
+            (&mut flags as *mut u32).cast(),
+            4,
+            &mut read,
+        ) != 0;
+        json!({"architecture":"x64","peb_ntglobalflag_offset":"0xbc","read_success":ok,"error":if ok {0} else {GetLastError()},"flags":hex(flags),"loader_snaps_enabled":ok && read == 4 && flags & 2 != 0})
+    }
+}
+
 // The creating thread must pump debug events. Pipe readers run independently
 // because a child that reaches entry can write more than one pipe buffer.
 pub unsafe fn collect(process: HANDLE, pid: u32) -> Value {
@@ -31,6 +60,7 @@ pub unsafe fn collect(process: HANDLE, pid: u32) -> Value {
         let started = Instant::now();
         let mut events = Vec::new();
         let mut completed = false;
+        let initial_loader_flag = loader_flag(process);
         let mut startup_breakpoint_seen = false;
         let mut errors = Vec::new();
         while started.elapsed().as_secs() < 180 {
@@ -53,7 +83,7 @@ pub unsafe fn collect(process: HANDLE, pid: u32) -> Value {
                 }
                 LOAD_DLL_DEBUG_EVENT => {
                     let info = event.u.LoadDll;
-                    json!({"kind":"load_dll","base":info.lpBaseOfDll as usize,"path":image_path(info.hFile)})
+                    json!({"kind":"load_dll","base":info.lpBaseOfDll as usize,"path":image_path(info.hFile),"loader_flag":loader_flag(process)})
                 }
                 UNLOAD_DLL_DEBUG_EVENT => {
                     json!({"kind":"unload_dll","base":event.u.UnloadDll.lpBaseOfDll as usize})
@@ -120,6 +150,6 @@ pub unsafe fn collect(process: HANDLE, pid: u32) -> Value {
             DebugActiveProcessStop(pid);
             WaitForSingleObject(process, 5000);
         }
-        json!({"completed":completed,"errors":errors,"events":events})
+        json!({"completed":completed,"initial_loader_flag":initial_loader_flag,"errors":errors,"events":events})
     }
 }

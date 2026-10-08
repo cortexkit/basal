@@ -119,6 +119,7 @@ fn win_probe(kind: &str, name: &str, access: &str, ok: bool, error: u32) -> Prob
 }
 pub fn run() -> Result<()> {
     unsafe {
+        eprintln!("probe-stage: Rust entry");
         // No untrusted input is consumed under the loader's more permissive token.
         let lower_requested = std::env::args().any(|a| a == "--lower-integrity");
         let replacement_requested = std::env::args().any(|a| a == "--replace-primary");

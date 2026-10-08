@@ -39,7 +39,7 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           cargo test --locked
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          python -m unittest -v test_evidence
+          python -m unittest -v test_evidence test_reference
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           cargo build --release --locked
           exit $LASTEXITCODE
@@ -68,7 +68,7 @@ jobs:
           if (Test-Path $ifeo) { throw 'Refusing to overwrite an existing image-specific IFEO key' }
           try {
             New-Item $ifeo -Force | Out-Null
-            New-ItemProperty $ifeo -Name GlobalFlag -PropertyType DWord -Value 2 | Out-Null
+            New-ItemProperty $ifeo -Name GlobalFlag -PropertyType String -Value '0x00000002' | Out-Null
             Get-ItemProperty $ifeo | Out-File evidence/loader-snaps-setting.txt
             & target\release\win-confine.exe --output evidence/report.json
             $measurementExit = $LASTEXITCODE
@@ -81,6 +81,8 @@ jobs:
         if: always()
         run: |
           if (Test-Path evidence/report.json) {
+            python compare_reference.py evidence evidence/reference-diff.json
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
             python summarize.py evidence/report.json | Tee-Object evidence/summary.md
             if ($LASTEXITCODE) { exit $LASTEXITCODE }
             Get-Content evidence/summary.md >> $env:GITHUB_STEP_SUMMARY

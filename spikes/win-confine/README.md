@@ -90,3 +90,30 @@ Use an isolated runner. This intentionally launches an unsandboxed control,
 probes public IPC endpoints, creates temporary fixtures and creates/deletes
 the fixed `basal.spike.worker` profile. Concurrent runs under the same account
 would race. A stale profile is an error, not silently deleted at startup.
+
+## Loader and Chrome reference measurements
+
+The workflow enables image-specific loader snaps (`GlobalFlag=2`) for
+`win-confine.exe` and removes the IFEO key in a `finally` block. The full-policy
+`loader-trace` diagnostic requests `DEBUG_ONLY_THIS_PROCESS`; if creation refuses
+that flag, it retries suspended and attaches before resuming. The creating thread
+records every debug string, DLL load/unload and exception event while separate
+threads drain the pipes. It does not treat a debugger-assisted startup as a
+production confinement result.
+
+`chrome_reference.ps1` launches installed Chrome headless with a fresh profile
+and no sandbox-disabling switches. It records the observed descendant command
+lines and invokes `win-confine.exe --observe <pid> --broker <browser-pid> --output
+<file>` for renderer, GPU, network and browser processes. Inspection is from the
+parent, using the same token and handle-table routines as the worker. The
+selected thread is the earliest surviving thread by creation time: Windows
+Toolhelp does not identify a main thread. Exact Chrome job limits are queried
+through duplicated browser-owned Job handles after checking target membership;
+outer runner jobs may remain unavailable. Query errors are coverage gaps, not
+evidence of absent authority. Process and handle observations are snapshots, not
+a census of every process or transient handle during startup.
+
+`compare_reference.py evidence evidence/reference-diff.json` compares every
+renderer primary-token field with the failing actual birth token and a separately
+labelled intended final token. It retains raw lists and flags; failed queries
+produce unknown comparisons rather than an equality or a denial result.
