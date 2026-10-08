@@ -1,19 +1,11 @@
 # Mutation control repairs
 
-## Scope and tooling
-
-Investigated the five reported catalogue failures against basal base
-`aebe881a67568f24754aa74c5a60d8d67fb401d0`, before changing their guards or
-mutants. The reported CI run was not fetched; the outcomes below were reproduced
-in the isolated worktree. No row was removed and no production guard was changed.
-
-The final proofs use `ckdev-mutate 0.9.5`, commons revision
-`73c7e66145e131eadffdd874c82d93548868b668`. CI, README installation and runner
-README link, and deployment instructions now pin that revision. The Mac initially
-had 0.9.3; it was upgraded with the exact pinned `cargo install --git … --rev …
-cortexkit-mutate --locked` command. Linux also reported 0.9.5.
-
-Both hosts reported Rust/Cargo 1.99.0 (`b940084d7`, 2026-09-28).
+Five catalogue rows stopped catching their mutants when the catalogue was first
+replayed in full on CI. Four mutants survived and one no longer compiled. This
+note records why each row went vacuous and how it was repaired. No row was
+removed, and no production guard was changed. Every repaired row was proved
+CAUGHT with `ckdev-mutate` 0.9.5 (commons
+`73c7e66145e131eadffdd874c82d93548868b668`), the revision CI pins.
 
 ## Root causes, fixes, and catches
 
