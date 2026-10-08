@@ -1,8 +1,19 @@
 import unittest
-from procmon_summary import collect, markdown
+from procmon_summary import RECIPES, collect, complete, markdown
 
 
 class ProcessMonitorTests(unittest.TestCase):
+    def test_complete_requires_each_recipe_start_and_exit(self):
+        results = [{'sequence': s, 'process_start_seen': True, 'process_exit_seen': True} for s in RECIPES]
+        self.assertTrue(complete(results))
+        self.assertFalse(complete([]))
+        self.assertFalse(complete(results[:-1]))
+        self.assertFalse(complete([results[0]] * len(RECIPES)))
+        for field in ['process_start_seen', 'process_exit_seen']:
+            incomplete = [dict(r) for r in results]
+            incomplete[0][field] = False
+            self.assertFalse(complete(incomplete))
+
     def report(self):
         return {'runs': [{'attempts': [], 'diagnostics': [{'result': {
             'sequence': 'post-load-primary-control', 'pid': 42,

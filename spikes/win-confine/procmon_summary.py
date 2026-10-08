@@ -59,6 +59,11 @@ def markdown(results):
     return '\n'.join(lines)
 
 
+def complete(results):
+    return (set(r['sequence'] for r in results) == set(RECIPES) and all(
+        r['process_start_seen'] and r['process_exit_seen'] for r in results))
+
+
 if __name__ == '__main__':
     report, source, output, text = map(Path, sys.argv[1:])
     with source.open(encoding='utf-8-sig', newline='') as f:
@@ -68,8 +73,6 @@ if __name__ == '__main__':
     source.with_name('procmon-child-rows.json').write_text(json.dumps(rows, indent=2), encoding='utf-8')
     print(f"Process Monitor: {len(results)} children, {len(rows)} events, "
           f"{sum(len(r['non_success']) for r in results)} non-success events")
-    complete = (len(results) == len(RECIPES) and all(
-        r['process_start_seen'] and r['process_exit_seen'] for r in results))
-    if not complete:
+    if not complete(results):
         print('Incomplete early capture: no empty result is accepted as denial evidence', file=sys.stderr)
         sys.exit(1)

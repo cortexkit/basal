@@ -878,6 +878,20 @@ fn launch_variant(
             let h = Handle(birth_primary);
             token_attestation(h.0).unwrap_or_else(|e| json!({"error":e}))
         };
+        if let Some(context) = &mut context {
+            let mut actual = null_mut();
+            context.report["actual_primary_cwd_open"] =
+                if OpenProcessToken(process.0, TOKEN_QUERY | TOKEN_DUPLICATE, &mut actual) != 0 {
+                    let actual = Handle(actual);
+                    crate::context::cwd_open(actual.0, &context.cwd)
+                } else {
+                    json!({"error":last("OpenProcessToken(cwd witness)")})
+                };
+            context.report["loader_cwd_open"] = crate::context::cwd_open(
+                tokens.as_ref().unwrap().initial.as_ref().unwrap().0,
+                &context.cwd,
+            );
+        }
         if full {
             if let Err(e) = check(
                 SetThreadToken(

@@ -8,8 +8,51 @@ use std::{
 use windows_sys::Win32::{
     Foundation::*,
     Security::{Authorization::*, *},
+    Storage::FileSystem::*,
     System::LibraryLoader::*,
 };
+
+pub unsafe fn cwd_open(token: HANDLE, cwd: &[u16]) -> Value {
+    unsafe {
+        let mut duplicate = null_mut();
+        if DuplicateTokenEx(
+            token,
+            TOKEN_QUERY | TOKEN_IMPERSONATE,
+            null(),
+            SecurityImpersonation,
+            TokenImpersonation,
+            &mut duplicate,
+        ) == 0
+        {
+            return json!({"error":last("DuplicateTokenEx(cwd witness)")});
+        }
+        let duplicate = Handle(duplicate);
+        if ImpersonateLoggedOnUser(duplicate.0) == 0 {
+            return json!({"error":last("ImpersonateLoggedOnUser(cwd witness)")});
+        }
+        let h = CreateFileW(
+            cwd.as_ptr(),
+            FILE_LIST_DIRECTORY | FILE_TRAVERSE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            null_mut(),
+        );
+        let error = if h == INVALID_HANDLE_VALUE {
+            GetLastError()
+        } else {
+            0
+        };
+        if h != INVALID_HANDLE_VALUE {
+            drop(Handle(h));
+        }
+        if RevertToSelf() == 0 {
+            std::process::abort();
+        }
+        json!({"success":error == 0,"win32_error":error,"desired_access":"FILE_LIST_DIRECTORY | FILE_TRAVERSE"})
+    }
+}
 
 struct Descriptor(PSECURITY_DESCRIPTOR);
 impl Descriptor {
