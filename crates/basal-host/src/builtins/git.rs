@@ -297,7 +297,11 @@ pub struct Ran {
 
 /// Runs a git command under [`TIMEOUT`], refusing output over
 /// [`MAX_OUTPUT_BYTES`].
-pub fn run_command(mut command: Command) -> Result<Ran, Denial> {
+pub fn run_command(command: Command) -> Result<Ran, Denial> {
+    run_command_until(command, None)
+}
+
+fn run_command_until(mut command: Command, max_lines: Option<usize>) -> Result<Ran, Denial> {
     command.process_group(0);
     let child = command
         .spawn()
@@ -324,9 +328,24 @@ pub fn run_command(mut command: Command) -> Result<Ran, Denial> {
     let mut stderr = Vec::new();
     let deadline = Instant::now() + TIMEOUT;
     let mut status = None;
+    let mut limit_reached = false;
     let status = loop {
         drain_pipe(&mut out, &mut stdout, MAX_OUTPUT_BYTES + 1)?;
         drain_pipe(&mut err, &mut stderr, STDERR_BYTES)?;
+        if let Some(limit) = max_lines
+            && let Some((last, _)) = stdout
+                .iter()
+                .enumerate()
+                .filter(|(_, byte)| **byte == b'\n')
+                .nth(limit - 1)
+        {
+            // git tag owns pattern matching (including slashes). Bound its
+            // output as it is read, instead of materializing the full list or
+            // changing pattern semantics to those of for-each-ref.
+            stdout.truncate(last + 1);
+            limit_reached = true;
+            guard.kill();
+        }
         if stdout.len() > MAX_OUTPUT_BYTES {
             return Err(Denial::new(
                 codes::TOO_LARGE,
@@ -358,8 +377,12 @@ pub fn run_command(mut command: Command) -> Result<Ran, Denial> {
     };
     let stderr = String::from_utf8_lossy(&stderr).into_owned();
     Ok(Ran {
-        success: status.success(),
-        code: status.code(),
+        success: status.success() || limit_reached,
+        code: if limit_reached {
+            Some(0)
+        } else {
+            status.code()
+        },
         stdout,
         stderr,
     })
@@ -410,6 +433,10 @@ fn git(repo: &Path, args: &[&str]) -> Result<Ran, Denial> {
     let mut command = hardened_command(repo);
     command.args(args);
     run_command(command)
+}
+
+fn run_tags_command(command: Command) -> Result<Ran, Denial> {
+    run_command_until(command, Some(MAX_TAGS))
 }
 
 fn failed(ran: &Ran) -> Denial {
@@ -537,21 +564,13 @@ pub fn run(repo_arg: &str, repos: &[String], op: &Op) -> Result<Value, Denial> {
             } else {
                 return Err(failed(&ran));
             };
-            let count = format!("--count={MAX_TAGS}");
-            let mut list = vec![
-                "for-each-ref",
-                "--sort=-creatordate",
-                "--format=%(refname:strip=2)",
-                &count,
-            ];
-            let filter;
+            let mut list = vec!["tag", "--list", "--sort=-creatordate"];
             if let Some(p) = pattern {
-                filter = format!("refs/tags/{p}");
-                list.push(&filter);
-            } else {
-                list.push("refs/tags/");
+                list.push(p);
             }
-            let ran = git(&dir, &list)?;
+            let mut command = hardened_command(&dir);
+            command.args(&list);
+            let ran = run_tags_command(command)?;
             if !ran.success {
                 return Err(failed(&ran));
             }

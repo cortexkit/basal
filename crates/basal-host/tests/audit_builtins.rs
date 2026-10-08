@@ -63,6 +63,45 @@ fn escaped_800kb_file_is_a_typed_refusal_not_successful_null() {
 }
 
 #[test]
+fn escaped_listing_exceeds_encoded_cap_as_a_typed_refusal() {
+    let tree = Tree::new();
+    let dir = tree.0.join("root");
+    // Fewer than the entry cap, but valid filenames whose JSON escaping alone
+    // exceeds the encoded-result cap. This reaches the dispatch encoder rather
+    // than a raw file/body byte cap.
+    for n in 0..800 {
+        std::fs::write(dir.join(format!("{}{n:04}", "\u{0001}".repeat(248))), "").unwrap();
+    }
+    let request = CallRequest {
+        flow_id: "f".into(),
+        run_id: "r".into(),
+        position: 0,
+        kind: CallKind::Primitive(Primitive::FsList),
+        args: JsonText::new(
+            envelope(
+                &json!({"path":dir}),
+                &Grant {
+                    roots: tree.roots(),
+                    hosts: vec![],
+                },
+            )
+            .to_string(),
+        )
+        .unwrap(),
+        idempotency_key: "k".into(),
+        attempt: 1,
+    };
+    let Dispatched::Completed(outcome) = BuiltinHost::default().dispatch(&request).unwrap() else {
+        panic!("not completed")
+    };
+    assert_eq!(outcome.settlement, Settlement::Rejected);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(outcome.value.as_str()).unwrap()["code"],
+        codes::TOO_LARGE
+    );
+}
+
+#[test]
 fn outside_missing_and_symlink_targets_have_identical_refusals() {
     let tree = Tree::new();
     let existing = tree.0.join("secret");
@@ -173,5 +212,54 @@ fn git_reaps_descendants_that_keep_its_output_pipe_open() {
             .expect("git exceeded its command and pipe deadline")
             .unwrap()
             .success
+    );
+}
+
+#[test]
+fn tag_patterns_use_git_globs_including_hierarchical_names() {
+    let tree = Tree::new();
+    let repo = tree.0.join("root");
+    let git_command = |args: &[&str]| {
+        let result = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(args)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "Fixture")
+            .env("GIT_AUTHOR_EMAIL", "fixture@example.invalid")
+            .env("GIT_COMMITTER_NAME", "Fixture")
+            .env("GIT_COMMITTER_EMAIL", "fixture@example.invalid")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    };
+    git_command(&["init", "--quiet"]);
+    git_command(&["commit", "--quiet", "--allow-empty", "-m", "initial"]);
+    git_command(&["tag", "v1/child"]);
+    let tags = |pattern: &str| {
+        git::run(
+            repo.to_str().unwrap(),
+            &tree.roots(),
+            &git::Op::DescribeTags {
+                pattern: Some(pattern.into()),
+            },
+        )
+        .unwrap()["tags"]
+            .clone()
+    };
+    assert_eq!(
+        tags("v1"),
+        json!([]),
+        "a literal tag name is not a directory prefix"
+    );
+    assert_eq!(
+        tags("v*"),
+        json!(["v1/child"]),
+        "git tag globs match across slashes"
     );
 }

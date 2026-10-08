@@ -5749,7 +5749,7 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/builtins/fs.rs"
-old = "verify(file.as_raw_fd(), None, &real_roots(roots))?;"
+old = "verify(file.as_raw_fd(), None, roots)?;"
 new = "// NON-VACUITY BREAK"
 
 [[control]]
@@ -5809,8 +5809,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/builtins/net.rs"
-old = "if let Err(refusal) = allowed(rules, &url.host, &method) {"
-new = "if let Err(refusal) = allowed(rules, &url.host, &method).or_else(|d| if redirects == 0 { Err(d) } else { Ok(()) }) { // NON-VACUITY BREAK"
+old = "let approval = allowed_url(rules, &url, &method);"
+new = "let approval = allowed_url(rules, &url, &method).or_else(|d| if redirects == 0 || !is_query_method(&method) { Err(d) } else { Ok(()) }); // NON-VACUITY BREAK"
 
 [[control]]
 id = "net-a-redirect-not-followed-after-a-mutation-is-reported-as-refused"

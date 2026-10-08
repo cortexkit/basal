@@ -20,3 +20,22 @@ fn show_distinguishes_missing_blob_from_broken_repository() {
     };
     assert_eq!(show_failure(&ran).code, codes::GIT);
 }
+
+#[test]
+fn tag_output_is_bounded_while_reading_not_after_completion() {
+    let mut command = Command::new("/bin/sh");
+    command
+        .args([
+            "-c",
+            "i=0; while [ \"$i\" -lt 4000 ]; do printf 'tag-%080d\\n' \"$i\"; i=$((i+1)); done",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .stdin(Stdio::null());
+    let result = run_tags_command(command).unwrap();
+    assert!(result.success);
+    assert_eq!(
+        String::from_utf8(result.stdout).unwrap().lines().count(),
+        MAX_TAGS
+    );
+}
