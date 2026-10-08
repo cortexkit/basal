@@ -99,12 +99,15 @@ fn decide<T>(
     rt: &Runtime,
     f: impl FnOnce(&Transaction) -> Result<T, PackageError>,
 ) -> Result<T, PackageError> {
-    rt.store()
+    let result = rt
+        .store()
         .write(|tx| match f(tx) {
             Err(PackageError::Store(e)) => Err(e),
             other => Ok(other),
         })
-        .map_err(PackageError::Store)?
+        .map_err(PackageError::Store)?;
+    rt.shared.signal.bump();
+    result
 }
 
 fn generation(

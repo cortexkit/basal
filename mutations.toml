@@ -548,6 +548,7 @@ old = "    apply_seatbelt()?;\n"
 new = "    // sandbox skipped\n"
 
 # journal: 48 controls
+
 [[control]]
 id = "late-outcome-shipped-in-the-prefix-with-a-higher-order-replay-barrier-removed"
 hub = "An earlier unresolved call cannot join a replay prefix after a later call has already been released; race, token and crash recovery tests assert this barrier"
@@ -1358,6 +1359,7 @@ old = "        CHECK (dispatch <> 'unknown' OR unknown_reason IS NOT NULL),"
 new = "        , -- NON-VACUITY BREAK"
 
 # dispatch: 47 controls
+
 [[control]]
 id = "manifest-accepts-unknown-fields"
 guards = "manifest accepts unknown fields"
@@ -2133,6 +2135,7 @@ old = "if flow(tx, flow_id)?.is_some_and(|f| {\n        f.disabled_by.as_deref()
 new = "if false { // NON-VACUITY BREAK"
 
 # schedule: 35 controls
+
 [[control]]
 id = "a-gap-time-fires-at-the-compatible-reading-shifted-by-the-gap-s-length-instead-of-at-the-transition"
 guards = "a gap time fires at the compatible reading (shifted by the gap's length) instead of at the transition"
@@ -2732,6 +2735,7 @@ old = "if let Some(reason) = dropped_reason(&admission) {"
 new = "if let Some(reason) = dropped_reason(&admission).filter(|_| false) {"
 
 # module: 99 controls
+
 [[control]]
 id = "pool-startup-boundary-precedes-nonce-consumption"
 guards = "pool startup boundary precedes nonce consumption"
@@ -4390,6 +4394,7 @@ old = "Self::Unreadable(_) => Some(UnknownReason::ReplyUnreadable),"
 new = "Self::Unreadable(_) => Some(UnknownReason::ConnectionLost),"
 
 # broca: 28 controls
+
 [[control]]
 id = "broca-absent-usage-becomes-zero"
 guards = "Broca absent usage becomes zero"
@@ -4850,6 +4855,7 @@ old = "reason: UnknownReason::ProviderLostRun,"
 new = "reason: UnknownReason::ConnectionLost,"
 
 # hosts: 74 controls
+
 [[control]]
 id = "selector-unconfigured-selector-chooses-a-default"
 guards = "selector: unconfigured selector chooses a default"
@@ -6413,6 +6419,7 @@ new = "                    != None // NON-VACUITY BREAK"
 
 # Flow scope controls: scoped routes, per-call model sessions, readiness
 # refusals, and the identity of an uncaught host rejection.
+
 [[control]]
 id = "flow-model-sessions-collapse-to-the-flow"
 guards = "each model call has its own scoped conversation, preserved on recovery"
@@ -6825,6 +6832,7 @@ new = "if false && module == basal_host::subc_catalog::CORE && !catalog.supports
 # A test-fixture control: the pool test harness must stop waiting at its own
 # deadline and reap the workers it started, so a stalled pool test fails by
 # name instead of hanging the suite.
+
 [[control]]
 id = "pool-fixture-wait-has-no-deadline"
 guards = "a stalled pool fixture fails within its own deadline and reaps its workers"
@@ -6859,7 +6867,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "rig-model-selection-missing-decision-identity"
 guards = "A Luna selection must carry a nonempty routing decision id"
@@ -6880,7 +6887,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "rig-model-usage-fabricates-zero-unreported-charge"
 guards = "Missing capped usage retains the unmeasured reservation"
@@ -6897,7 +6903,6 @@ expect_red = ["models::tests::usage_evidence_distinguishes_fresh_input_and_reser
 only = true
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "rig-model-result-rejects-completed-empty-text"
@@ -6916,7 +6921,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "rig-broca-evidence-ignores-bind-project-root"
 guards = "Independent Broca run evidence must match the complete bind identity"
@@ -6933,7 +6937,6 @@ expect_red = ["independent_broca_evidence_matches_the_entire_bind_and_counts_dup
 only = true
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "rig-model-journal-reader-discards-clamped-request"
@@ -6952,7 +6955,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "rig-ownership-evidence-invents-principal-from-harness"
 guards = "Broca ownership evidence must retain the daemon-attested principal"
@@ -6969,7 +6971,6 @@ expect_red = ["ownership_reads_brocas_attestation_not_the_callers_harness_label"
 only = true
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "rig-crash-checkpoint-discards-clamped-request"
@@ -7005,7 +7006,6 @@ only = false
 timeout_s = 120
 build_timeout_s = 1800
 
-
 [[control]]
 id = "rig-credential-check-accepts-extra-credentials"
 guards = "the rig vault must hold exactly one active apikey:openai credential"
@@ -7023,7 +7023,6 @@ only = false
 timeout_s = 120
 build_timeout_s = 1800
 
-
 [[control]]
 id = "rig-grant-plan-tolerates-unexpected-grants"
 guards = "the rig vault may hold no grants beyond Broca's read and routing's list"
@@ -7040,7 +7039,6 @@ expect_red = ["script.tests.flows_rig.RigChecks.test_grant_plan_is_exact_and_ide
 only = false
 timeout_s = 120
 build_timeout_s = 1800
-
 
 [[control]]
 id = "rig-auth-omits-the-explicit-key-path"
@@ -7076,7 +7074,6 @@ only = false
 timeout_s = 120
 build_timeout_s = 1800
 
-
 [[control]]
 id = "rig-scope-ref-mismatch-accepted"
 guards = "Broca scope ref must equal core registration"
@@ -7093,7 +7090,6 @@ expect_red = ["models::tests::scope_evidence_rejects_mismatched_ref_epoch_owner_
 only = true
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "rig-scope-epoch-mismatch-accepted"
@@ -7112,7 +7108,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "rig-successful-non-carrier-open-accepted"
 guards = "the direct carrier probe must be refused by the daemon"
@@ -7129,7 +7124,6 @@ expect_red = ["models::tests::carrier_evidence_requires_the_daemons_exact_non_ca
 only = true
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "rig-unrefused-unscoped-send-accepted"
@@ -7153,7 +7147,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "rig-unscoped-hook-fires-for-unarmed-flow"
 guards = "only the flow named by the arming file can send unscoped once"
@@ -7171,7 +7164,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "stage-schema-rise-condition"
 guards = "the update requests a store backup exactly when its schema rises"
@@ -7188,7 +7180,6 @@ expect_red = ["script.tests.stage_card.StageCardChecks.test_migrates_exactly_whe
 only = false
 timeout_s = 120
 build_timeout_s = 1800
-
 
 [[control]]
 id = "stage-worker-first-order"
@@ -7215,7 +7206,6 @@ only = false
 timeout_s = 120
 build_timeout_s = 1800
 
-
 [[control]]
 id = "stage-marker-refusal"
 guards = "invalid staged or live markers refuse the update card"
@@ -7234,7 +7224,6 @@ expect_red = ["script.tests.stage_card.StageCardChecks.test_marker_refusal_write
 only = false
 timeout_s = 120
 build_timeout_s = 1800
-
 
 [[control]]
 id = "stage-push-event-ci-filter"
@@ -7255,7 +7244,6 @@ only = false
 timeout_s = 120
 build_timeout_s = 1800
 
-
 [[control]]
 id = "dispatch-driver-wait-loses-its-short-deadline"
 guards = "a deliberately stalled activation driver reaches its short wait deadline and returns its worker for reaping"
@@ -7273,7 +7261,6 @@ only = true
 # The broad runner covers the whole package; the guard keeps its own short deadline.
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "install-agent-owned-foreign-targets"
@@ -7295,7 +7282,6 @@ only = false
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "flow-scope-fixture-keeps-the-production-activation-deadline"
 guards = "a deliberately stalled scope activation reaches its short deadline and reaps its worker"
@@ -7314,7 +7300,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "install-agent-owned-foreign-facts-targets"
 guards = "agent ownership restriction includes facts targets"
@@ -7331,7 +7316,6 @@ expect_red = ["agent_owned_manifests_reject_foreign_targets_before_install_and_d
 only = true
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "ownership-driver-wait-loses-its-short-deadline"
@@ -7351,7 +7335,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "install-reserved-package-instance-id"
 guards = "plain installs cannot squat on package instance flow ids"
@@ -7368,7 +7351,6 @@ expect_red = ["plain_install_cannot_occupy_package_instance_ids"]
 only = true
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "cargo-path-dependency-outside-workspace-is-accepted"
@@ -7387,7 +7369,6 @@ only = false
 timeout_s = 120
 build_timeout_s = 1800
 
-
 [[control]]
 id = "package-self-only"
 guards = "package agent fields must name only self"
@@ -7404,7 +7385,6 @@ expect_red = ["packages_require_self_in_every_agent_field"]
 only = true
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "install-self-requires-package"
@@ -7423,7 +7403,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "instance-stale-generation"
 guards = "lower generations cannot change an instance"
@@ -7440,7 +7419,6 @@ expect_red = ["generations_fence_stale_calls_and_record_absent_removals"]
 only = true
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "instance-absent-removal-generation"
@@ -7459,7 +7437,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "instance-removal-preserves-enable"
 guards = "instance removal never changes enable state or disable actor"
@@ -7476,7 +7453,6 @@ expect_red = ["removal_and_reensure_never_change_enable_state_or_actor"]
 only = true
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "package-core-only-callers"
@@ -7495,7 +7471,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "package-version-immutable"
 guards = "a registered version refuses different code bytes"
@@ -7513,7 +7488,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "instance-self-owner-resolution"
 guards = "self grants resolve to the stable instance owner before dispatch"
@@ -7530,7 +7504,6 @@ expect_red = ["self_grants_resolve_to_the_owner_and_sink_calls_carry_stable_id"]
 only = true
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "instance-agent-lookup-outside-writer"
@@ -7553,7 +7526,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "instance-removal-pauses-schedule"
 guards = "removed instances must neither plan fires nor accumulate rejection rows"
@@ -7571,7 +7543,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "instance-reensure-resumes-schedule"
 guards = "re-ensure must resume enabled removed instances after now without catch-up"
@@ -7588,7 +7559,6 @@ expect_red = ["removed_instance_schedule_pauses_and_resumes_without_catch_up"]
 only = true
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "instance-revocation-preserves-enable"
@@ -7609,7 +7579,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "instance-removal-cancellation-recheck"
 guards = "a stale removal observation must be rechecked in the cancellation transaction"
@@ -7627,7 +7596,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "fixture-git-helper-clears-inherited-environment"
 guards = "fixture git commands ignore injected caller git configuration"
@@ -7644,8 +7612,6 @@ expect_red = ["git::tests::fixture_git_commands_ignore_injected_global_hooks"]
 only = true
 timeout_s = 600
 build_timeout_s = 3600
-
-
 
 [[control]]
 id = "production-worker-inherits-parent-privacy-identity"
@@ -7665,7 +7631,6 @@ expect_red = ["privacy::production_worker_is_its_own_responsible_process"]
 only = false
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "disclaimed-worker-leaves-inherited-descriptors-open"
@@ -7701,8 +7666,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
-
-
 [[control]]
 id = "stale-connection-handle-becomes-scope-tombstone"
 guards = "Only a daemon scope close blocks reopening under the same selector"
@@ -7730,7 +7693,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "manifest-duration-splits-multibyte-unit"
 guards = "untrusted duration units must not panic at a UTF-8 byte boundary"
@@ -7747,7 +7709,6 @@ expect_red = ["manifest::tests::multibyte_durations_are_refused_without_panickin
 only = true
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "ambiguous-send-is-not-a-scope-refusal"
@@ -7766,7 +7727,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "worker-stack-trace-hook-exposes-private-functions"
 guards = "worker stack trace hook exposes private functions"
@@ -7783,7 +7743,6 @@ expect_red = ["stack_trace_hooks_cannot_recover_private_prelude_functions"]
 only = true
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "worker-replay-sync-orders-regress"
@@ -7802,7 +7761,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "facts-non-array-include-is-allowed"
 guards = "facts include shape must fail closed before private text can reach core"
@@ -7819,7 +7777,6 @@ expect_red = ["runtime_authorization_regressions::facts_include_must_be_an_array
 only = true
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "terminal-deferred-settlement"
@@ -7838,7 +7795,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "stage-strings-inspection-fails-open"
 guards = "failed strings inspection is never evidence that a production binary lacks the kill hook"
@@ -7855,7 +7811,6 @@ expect_red = ["script.tests.stage_card.StageBinaryChecks.test_binary_inspection_
 only = false
 timeout_s = 120
 build_timeout_s = 1800
-
 
 [[control]]
 id = "stage-symbol-inspection-fails-open"
@@ -7874,7 +7829,6 @@ only = false
 timeout_s = 120
 build_timeout_s = 1800
 
-
 [[control]]
 id = "rig-dangling-symlinks-escape-the-root"
 guards = "a dangling final symlink is resolved before allowing writes under the rig root"
@@ -7892,7 +7846,6 @@ only = false
 timeout_s = 120
 build_timeout_s = 1800
 
-
 [[control]]
 id = "rig-required-store-read-is-treated-as-empty"
 guards = "required journal and receipt reads cannot turn storage errors into evidence of absence"
@@ -7909,7 +7862,6 @@ expect_red = ["tests::failed_store_read_is_not_empty_evidence"]
 only = true
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "rig-status-receipts-ignore-agent-and-revision"
@@ -7935,7 +7887,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "catalog-outage-finalizes-conservative-call-class"
 guards = "A transient catalog outage cannot finalize a conservative classification as op_kind_changed"
@@ -7952,7 +7903,6 @@ expect_red = ["transient_classification_failure_does_not_finalize_a_query"]
 only = true
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "catalog-transport-failure-is-final-scope-refusal"
@@ -7973,7 +7923,6 @@ expect_red = ["catalog_unavailability_does_not_become_a_final_core_scope_refusal
 only = true
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "worker-memory-budget-classified-from-script-text"
@@ -7996,7 +7945,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "absent-catalog-provider-is-definite-op-removal"
 guards = "A disconnected provider is not proof its operation was removed"
@@ -8017,7 +7965,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "poison-consent-answer-blocks-valid-decisions"
 guards = "Malformed consent answers are retained without blocking independent valid records in the page"
@@ -8034,7 +7981,6 @@ expect_red = ["bad_answer_does_not_block_later_valid_decisions_or_acknowledge_th
 only = true
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "production-random-restarts-a-predictable-counter"
@@ -8068,7 +8014,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "worker-exception-description-invokes-getters"
 guards = "worker exception description invokes getters"
@@ -8089,7 +8034,6 @@ expect_red = ["forged_memory_errors_are_script_failures_and_description_does_not
 only = true
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "model-envelope-refusal-loses-provider-context"
@@ -8112,7 +8056,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "package-instance-overwrites-regular-flow"
 guards = "ensure_instance must preserve a non-instance flow with the deterministic instance id"
@@ -8129,7 +8072,6 @@ expect_red = ["runtime_authorization_regressions::instance_collision_cannot_chan
 only = true
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "claim-flushes-refusal-intents"
@@ -8149,7 +8091,6 @@ expect_red = ["runtime::regressions::claim_expiry_acknowledges_the_deferred_snap
 only = true
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "worker-rejection-orphans-outstanding-outcomes"
@@ -8172,7 +8113,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "huge-token-usage-aborts-settlement"
 guards = "provider usage above signed storage range must not prevent an outcome from settling"
@@ -8189,7 +8129,6 @@ expect_red = ["runtime_authorization_regressions::huge_usage_settles_and_keeps_w
 only = true
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "mailbox-winner-prevents-reconcile"
@@ -8218,7 +8157,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "corrupt-schedule-stops-all-planning"
 guards = "invalid persisted schedules must be isolated while healthy schedules keep ticking"
@@ -8235,7 +8173,6 @@ expect_red = ["runtime_authorization_regressions::corrupt_schedule_does_not_bloc
 only = true
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "domain-error-retires-claim"
@@ -8257,7 +8194,6 @@ expect_red = ["runtime::regressions::a_non_storage_driver_error_exits_the_claim_
 only = true
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "corrupt-oldest-fire-stops-all-admission"
@@ -8283,7 +8219,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "production-retention-prunes-runs"
 guards = "retention runs from the production deadline pass"
@@ -8300,7 +8235,6 @@ expect_red = ["runtime::regressions::retention_runs_from_the_production_deadline
 only = true
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "scoped-route-open-reply-ignores-authority-generation"
@@ -8325,7 +8259,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "protocol-list-count-ignores-element-wire-size"
 guards = "protocol list count ignores element wire size"
@@ -8342,7 +8275,6 @@ expect_red = ["codec::tests::list_counts_require_the_complete_minimum_wire_size"
 only = true
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "stale-model-subscription-keeps-dead-handle"
@@ -8365,7 +8297,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "health-index-migration-deletes-existing-rows"
 guards = "additive health and decision indexes must preserve populated stores in every existing state"
@@ -8385,7 +8316,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "malformed-optional-refusal-is-tolerated"
 guards = "malformed optional refusal detail does not halt deadline enforcement"
@@ -8402,7 +8332,6 @@ expect_red = ["runtime::regressions::malformed_optional_refusal_detail_does_not_
 only = true
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "malformed-management-error-claims-connection-loss"
@@ -8421,7 +8350,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "nullable-routing-model-variant-is-refused"
 guards = "A routing reply with a null optional model variant decodes as no variant"
@@ -8438,7 +8366,6 @@ expect_red = ["nullable_model_variant_is_the_absent_variant"]
 only = true
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "agent-display-name-shadows-stable-id"
@@ -8457,7 +8384,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "rig-model-abort-drops-unreached-case-reports"
 guards = "a model-suite abort records every named case and retains already completed evidence"
@@ -8474,7 +8400,6 @@ expect_red = ["tests::model_abort_records_every_named_case_without_losing_comple
 only = true
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "protocol-encoder-allows-empty-names"
@@ -8493,7 +8418,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "worker-shutdown-is-an-unexpected-frame-during-activation"
 guards = "worker shutdown is an unexpected frame during activation"
@@ -8511,7 +8435,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "worker-prelude-primitive-code-diverges"
 guards = "worker prelude primitive code diverges"
@@ -8528,7 +8451,6 @@ expect_red = ["engine::tests::prelude_primitive_calls_match_the_rust_wire_codes"
 only = true
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "worker-top-level-evaluation-skips-js-time-metering"
@@ -8551,7 +8473,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "dry-run-multibyte-window-panics"
 guards = "flow.dry_run must reject multibyte windows through the public operation rather than panic"
@@ -8568,7 +8489,6 @@ expect_red = ["dry_run_multibyte_windows_are_typed_refusals"]
 only = true
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "module-worker-frames-unbounded"
@@ -8587,10 +8507,6 @@ only = false
 timeout_s = 600
 build_timeout_s = 3600
 
-
-
-
-
 [[control]]
 id = "health-index-predicate-selects-deferred"
 guards = "migration 11 must retain the exact pending Broca predicate on populated stores"
@@ -8608,7 +8524,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 7200
 
-
 [[control]]
 id = "builtin-encoded-result-becomes-null"
 guards = "builtin encoded result becomes null"
@@ -8625,7 +8540,6 @@ expect_red = ["builtins::tests::encoded_result_limit_never_fulfills_null"]
 only = true
 timeout_s = 600
 build_timeout_s = 7200
-
 
 [[control]]
 id = "module-panic-retains-activation-slot"
@@ -8651,7 +8565,6 @@ only = false
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "retirement-is-not-version-disapproval"
 guards = "retirement fails through the terminal transition and blocks approval reenable"
@@ -8668,7 +8581,6 @@ expect_red = ["runtime::regressions::retirement_fails_through_the_terminal_trans
 only = true
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "module-kill-signals-reaped-worker-pid"
@@ -8687,7 +8599,6 @@ only = false
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "retention-keeps-unacknowledged-broca"
 guards = "pruning keeps unacknowledged broca snapshots and open cards"
@@ -8704,7 +8615,6 @@ expect_red = ["runtime::regressions::pruning_keeps_unacknowledged_broca_snapshot
 only = true
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "module-invalid-descriptor-does-not-exit"
@@ -8727,7 +8637,6 @@ only = false
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "retention-keeps-refusal-intents"
 guards = "pruning preserves a terminal run until its refusal acknowledgement is delivered"
@@ -8744,7 +8653,6 @@ expect_red = ["runtime::regressions::pruning_preserves_a_terminal_run_until_its_
 only = true
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "module-replay-count-masks-store-failure"
@@ -8763,7 +8671,6 @@ only = false
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "production-retention-prunes-history"
 guards = "retention prunes old history but keeps live obligations and card episodes"
@@ -8780,7 +8687,6 @@ expect_red = ["runtime::regressions::retention_prunes_old_history_but_keeps_live
 only = true
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "module-owner-disable-leaks-raw-actor-kind"
@@ -8805,7 +8711,6 @@ only = false
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "wait-timeout-is-not-success"
 guards = "wait for reports unsatisfied predicates as timeouts"
@@ -8826,7 +8731,6 @@ expect_red = ["runtime::regressions::wait_for_reports_unsatisfied_predicates_as_
 only = true
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "module-start-binds-before-preparation"
@@ -8859,7 +8763,6 @@ only = false
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "spawn-reaps-completed-handles"
 guards = "completed thread handles are reaped during normal spawning"
@@ -8876,7 +8779,6 @@ expect_red = ["runtime::regressions::completed_thread_handles_are_reaped_during_
 only = true
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "builtin-outside-path-leaks-resolved-target"
@@ -8895,7 +8797,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 7200
 
-
 [[control]]
 id = "builtin-method-override-header-is-admitted"
 guards = "builtin method override header is admitted"
@@ -8912,7 +8813,6 @@ expect_red = ["method_override_and_compression_headers_are_denied"]
 only = true
 timeout_s = 600
 build_timeout_s = 7200
-
 
 [[control]]
 id = "broca-initial-store-failure-is-maybe-sent"
@@ -8934,7 +8834,6 @@ expect_red = ["first_snapshot_failure_is_provably_unsent"]
 only = true
 timeout_s = 600
 build_timeout_s = 7200
-
 
 [[control]]
 id = "broca-one-corrupt-snapshot-aborts-the-poll"
@@ -8962,7 +8861,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 7200
 
-
 [[control]]
 id = "builtin-nonstandard-redirect-port-is-approved"
 guards = "builtin nonstandard redirect port is approved"
@@ -8979,7 +8877,6 @@ expect_red = ["nonstandard_redirect_port_is_refused_before_a_second_connection"]
 only = true
 timeout_s = 600
 build_timeout_s = 7200
-
 
 [[control]]
 id = "builtin-unclean-tls-eof-is-clean"
@@ -9002,7 +8899,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 7200
 
-
 [[control]]
 id = "builtin-query-redirect-reads-irrelevant-body"
 guards = "builtin query redirect reads irrelevant body"
@@ -9020,7 +8916,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 7200
 
-
 [[control]]
 id = "builtin-write-carries-special-permission-bits"
 guards = "builtin write carries special permission bits"
@@ -9037,7 +8932,6 @@ expect_red = ["builtins::fs::tests::replacement_mode_never_carries_setuid_or_set
 only = true
 timeout_s = 600
 build_timeout_s = 7200
-
 
 [[control]]
 id = "broca-generation-accepts-unknown-keys"
@@ -9064,7 +8958,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 7200
 
-
 [[control]]
 id = "broca-unsent-refusal-penalizes-model"
 guards = "broca unsent refusal penalizes model"
@@ -9081,7 +8974,6 @@ expect_red = ["an_unsent_refusal_does_not_penalize_the_selected_model"]
 only = true
 timeout_s = 600
 build_timeout_s = 7200
-
 
 [[control]]
 id = "builtin-dispatch-skips-result-encoding"
@@ -9104,7 +8996,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 7200
 
-
 [[control]]
 id = "broca-legacy-snapshot-discards-frozen-bytes"
 guards = "broca legacy snapshot discards frozen bytes"
@@ -9121,7 +9012,6 @@ expect_red = ["saved_params_are_compact_and_read_legacy_byte_arrays"]
 only = true
 timeout_s = 600
 build_timeout_s = 7200
-
 
 [[control]]
 id = "broca-global-gate-blocks-independent-send"
@@ -9145,7 +9035,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 7200
 
-
 [[control]]
 id = "builtin-dns-ignores-the-fetch-deadline"
 guards = "builtin dns ignores the fetch deadline"
@@ -9162,7 +9051,6 @@ expect_red = ["builtins::net::tests::dns_receives_the_fetch_deadline"]
 only = true
 timeout_s = 600
 build_timeout_s = 7200
-
 
 [[control]]
 id = "builtin-git-leaves-descendant-pipes-open"
@@ -9181,7 +9069,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 7200
 
-
 [[control]]
 id = "builtin-tags-are-truncated-only-after-reading-everything"
 guards = "builtin tags are truncated only after reading everything"
@@ -9198,7 +9085,6 @@ expect_red = ["builtins::git::tests::tag_output_is_bounded_while_reading_not_aft
 only = true
 timeout_s = 600
 build_timeout_s = 7200
-
 
 [[control]]
 id = "broca-compact-snapshot-discards-frozen-bytes"
@@ -9217,7 +9103,6 @@ only = true
 timeout_s = 600
 build_timeout_s = 7200
 
-
 [[control]]
 id = "retention-full-batches-catch-up"
 guards = "Full retention batches prompt another bounded pass rather than impose an hourly throughput ceiling"
@@ -9234,7 +9119,6 @@ expect_red = ["production_retention_catches_up_full_batches_without_waiting_a_wh
 only = true
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "retention-history-only-backlogs-catch-up"
@@ -9271,8 +9155,6 @@ only = false
 timeout_s = 600
 build_timeout_s = 3600
 
-
-
 [[control]]
 id = "management-fixture-default-starts-a-spare"
 guards = "management fixtures start no worker unless explicitly requested"
@@ -9289,7 +9171,6 @@ only = true
 platforms = ["macos"]
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "git-waiter-timeout-omits-group-cleanup"
@@ -9313,3 +9194,62 @@ platforms = ["linux"]
 timeout_s = 600
 build_timeout_s = 3600
 
+[[control]]
+id = "admission-does-not-wake-the-idle-engine"
+guards = "A newly admitted trigger wakes the sleeping engine without its ten-minute fallback"
+file = "crates/basal-core/src/runtime.rs"
+old = """
+admission::admit_current(tx, &store_id, flow_id, trigger_id, trigger, &ctx)
+        })?;
+        self.shared.signal.bump();"""
+new = """
+admission::admit_current(tx, &store_id, flow_id, trigger_id, trigger, &ctx)
+        })?;
+        // NON-VACUITY BREAK: admission no longer signals the engine."""
+edits = []
+test_file = "crates/basal-module/src/engine_tests.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--lib"
+expect_red = ["engine::lifecycle_tests::admission_wakes_the_sleeping_engine"]
+only = true
+platforms = ["macos"]
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "consent-polls-without-owned-open-cards"
+guards = "Steady-state idle consent makes zero answer or acknowledgement RPCs"
+file = "crates/basal-host/src/core_consent.rs"
+old = "Ok(state.retry_page.load(Ordering::Acquire)"
+new = "Ok(true || state.retry_page.load(Ordering::Acquire) /* NON-VACUITY BREAK: poll while idle */"
+edits = []
+test_file = "crates/basal-host/src/core_consent_tests.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--lib"
+select = "expected"
+expect_red = ["core_consent::polling_tests::idle_consent_makes_zero_rpcs"]
+only = false
+platforms = ["linux"]
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "wake-migration-omits-the-deadline-order-index"
+platforms = ["linux"]
+guards = "The next-wake deadline query stops at the first live deadline through an ordered index"
+file = "crates/basal-core/src/schema.rs"
+old = "CREATE INDEX runs_state_deadline ON runs(state,deadline_at) WHERE deadline_at IS NOT NULL;"
+new = "-- NON-VACUITY BREAK: deadline order index omitted."
+edits = []
+test_file = "crates/basal-core/src/maintenance.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+select = "expected"
+expect_red = ["maintenance::tests::timer_plans_use_the_ordered_wake_indexes"]
+only = false
+timeout_s = 600
+build_timeout_s = 3600

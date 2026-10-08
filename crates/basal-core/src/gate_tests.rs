@@ -1,6 +1,21 @@
 use super::*;
 
 #[test]
+fn next_wake_includes_the_install_gate_retry() {
+    let fixture = crate::runtime_authorization_regressions::TestRuntime::new();
+    let rt = &fixture.rt;
+    rt.store().write(|tx| {
+        tx.execute("INSERT INTO flows(flow_id,created_at) VALUES ('waiting',0)", [])?;
+        tx.execute("INSERT INTO runs(run_id,flow_id,trigger_id,attempt,trigger,script,manifest,code_hash,state,admitted_at) VALUES ('waiting','waiting','trigger',1,'null','return 1','{}',zeroblob(32),'pending',0)", [])?;
+        Ok(())
+    }).unwrap();
+    *rt.shared.retention_next.lock().unwrap() = Some(i64::MAX);
+    rt.back_off("waiting").unwrap();
+    let at = rt.shared.gate_backoff.lock().unwrap()["waiting"].retry_at_ms;
+    assert_eq!(rt.next_wake_at(None).unwrap(), Some(at));
+}
+
+#[test]
 fn new_gate_backoffs_reap_terminal_and_pruned_runs() {
     let fixture = crate::runtime_authorization_regressions::TestRuntime::new();
     let rt = &fixture.rt;

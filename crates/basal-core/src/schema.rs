@@ -275,7 +275,20 @@ ALTER TABLE installs ADD COLUMN revoked_reason TEXT;
         version: 12,
         statements: RETENTION_INDEXES,
     },
+    Migration {
+        version: 13,
+        statements: WAKE_INDEXES,
+    },
 ];
+
+// The idle engine sleeps until its earliest timer. Finding that timer takes the
+// smallest live run deadline and the smallest deferred-call retry time; these
+// ordered indexes let each MIN stop at its first entry instead of visiting
+// every live run or every deferred call.
+const WAKE_INDEXES: &str = r#"
+CREATE INDEX runs_state_deadline ON runs(state,deadline_at) WHERE deadline_at IS NOT NULL;
+CREATE INDEX journal_deferred_retry ON journal(retry_not_before,run_id) WHERE dispatch='deferred' AND retry_not_before IS NOT NULL;
+"#;
 
 // Bounded cleanup searches age ranges and checks the obligations that can keep
 // a run or a refundable window alive. The trigger inbox's unique run_id index

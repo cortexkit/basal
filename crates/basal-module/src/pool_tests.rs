@@ -60,3 +60,21 @@ fn spawn_backoff_is_exponential_capped_and_visible() {
         at += delay;
     }
 }
+
+#[test]
+fn spawn_failure_notifies_the_engine_and_arms_the_pool_retry() {
+    let pool = pool();
+    let (tx, rx) = std::sync::mpsc::channel();
+    pool.on_change(Arc::new(move || {
+        tx.send(()).unwrap();
+    }));
+    assert!(pool.acquire(Binding::Flow("flow".into())).is_err());
+    rx.recv_timeout(Duration::from_secs(60)).unwrap();
+    assert_eq!(pool.next_maintenance_at(), Some(250));
+    pool.shared.clock.set(250);
+    assert_eq!(
+        pool.next_maintenance_at(),
+        None,
+        "an unused expired retry cannot spin the loop"
+    );
+}

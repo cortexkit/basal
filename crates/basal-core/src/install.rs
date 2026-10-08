@@ -862,12 +862,15 @@ fn decide<T>(
     rt: &Runtime,
     f: impl FnOnce(&Transaction) -> std::result::Result<T, InstallError>,
 ) -> std::result::Result<T, InstallError> {
-    rt.store()
+    let result = rt
+        .store()
         .write(|tx| match f(tx) {
             Err(InstallError::Store(e)) => Err(e),
             other => Ok(other),
         })
-        .map_err(InstallError::Store)?
+        .map_err(InstallError::Store)?;
+    rt.shared.signal.bump();
+    result
 }
 
 impl Runtime {

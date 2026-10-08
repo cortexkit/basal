@@ -1,0 +1,63 @@
+[
+  {
+    "id": "admission-does-not-wake-the-idle-engine",
+    "outcome": "CAUGHT",
+    "timed_out_phase": null,
+    "red": [
+      "engine::lifecycle_tests::admission_wakes_the_sleeping_engine"
+    ],
+    "green": [
+      "caller::tests::identity_comes_only_from_the_stamp",
+      "engine::lifecycle_tests::a_decision_answer_wakes_the_sleeping_engine",
+      "engine::lifecycle_tests::a_deferred_call_retry_wakes_before_the_fallback",
+      "engine::lifecycle_tests::a_run_deadline_wakes_before_the_fallback",
+      "engine::lifecycle_tests::a_schedule_wakes_at_its_due_time_before_the_fallback",
+      "engine::lifecycle_tests::an_install_gate_retry_wakes_before_the_fallback",
+      "engine::lifecycle_tests::idle_engine_runs_only_startup_and_fallback_passes",
+      "engine::lifecycle_tests::install_approval_enable_and_disable_wake_the_engine",
+      "engine::lifecycle_tests::journal_count_failure_is_fatal_not_zero_replayed_calls",
+      "engine::lifecycle_tests::panicking_activation_releases_run_and_flow_slots",
+      "engine::lifecycle_tests::retention_wakes_on_its_own_cadence_before_the_fallback",
+      "engine::lifecycle_tests::shutdown_wakes_a_parked_loop",
+      "pool::bookkeeping_tests::handout_history_keeps_a_bounded_recent_tail",
+      "pool::bookkeeping_tests::replacement_debt_never_exceeds_pool_capacity",
+      "pool::bookkeeping_tests::spawn_backoff_is_exponential_capped_and_visible",
+      "pool::bookkeeping_tests::spawn_failure_notifies_the_engine_and_arms_the_pool_retry",
+      "pool::names::worker_file_name_follows_parent_in_production_and_development",
+      "process::buffer_tests::a_reaped_worker_handle_never_signals_a_recycled_pid",
+      "process::buffer_tests::expired_launch_budget_cannot_accept_a_queued_welcome",
+      "process::buffer_tests::incoming_frames_have_bounded_capacity",
+      "rig_kill::position_tests::evidence_reads_the_position_named_by_the_boundary",
+      "rig_kill::tests::crash_evidence_records_the_unsent_journal_not_a_later_outcome",
+      "rig_kill::tests::only_the_armed_flow_at_the_armed_boundary_matches",
+      "rig_kill::tests::the_arming_file_is_closed",
+      "rig_kill::tests::unscoped_send_arming_file_is_closed_and_malformed_arms_do_not_fire",
+      "rig_kill::tests::unscoped_send_fires_only_for_the_armed_flow_once",
+      "serve::error_tests::refusal_without_detail_keeps_the_plain_error_frame",
+      "serve::error_tests::stale_generation_detail_uses_a_machine_readable_error_frame"
+    ],
+    "failures": {
+      "engine::lifecycle_tests::admission_wakes_the_sleeping_engine": "\nthread 'engine::lifecycle_tests::admission_wakes_the_sleeping_engine' (108589765) panicked at crates/basal-module/src/engine_tests.rs:152:5:\nthe work signal never started the due activation\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\n"
+    },
+    "baseline_failures": {},
+    "collateral": {
+      "count": 0,
+      "targets": []
+    },
+    "breadth_observed": false,
+    "build_ms": 122530,
+    "test_ms": 62609,
+    "baseline_build_ms": 217308,
+    "baseline_test_ms": 59986,
+    "baseline_red": {},
+    "prebuild_ms": 0,
+    "prebuild_tail": "",
+    "baseline_prebuild_ms": 0,
+    "baseline_prebuild_tail": "",
+    "restore_prebuild_ms": 0,
+    "restore_prebuild_tail": "",
+    "build_tail": "   Compiling basal-core v0.1.0 (/Users/ufukaltinok/.local/share/cortexkit/alfonso/worktrees/adddb770875f5a2d/bg_1b8da7c6c5ddefd5/crates/basal-core)\n   Compiling basal-testkit v0.1.0 (/Users/ufukaltinok/.local/share/cortexkit/alfonso/worktrees/adddb770875f5a2d/bg_1b8da7c6c5ddefd5/crates/basal-testkit)\n   Compiling basal-module v0.1.0 (/Users/ufukaltinok/.local/share/cortexkit/alfonso/worktrees/adddb770875f5a2d/bg_1b8da7c6c5ddefd5/crates/basal-module)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 02s\n  Executable unittests src/lib.rs (target/debug/deps/basal_module-f709dbdbbc147a17)\n",
+    "test_tail": "    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.52s\n     Running unittests src/lib.rs (target/debug/deps/basal_module-f709dbdbbc147a17)\n\nrunning 29 tests\ntest caller::tests::identity_comes_only_from_the_stamp ... ok\ntest engine::lifecycle_tests::a_decision_answer_wakes_the_sleeping_engine ... ok\ntest engine::lifecycle_tests::a_deferred_call_retry_wakes_before_the_fallback ... ok\ntest engine::lifecycle_tests::a_run_deadline_wakes_before_the_fallback ... ok\ntest engine::lifecycle_tests::a_schedule_wakes_at_its_due_time_before_the_fallback ... ok\ntest engine::lifecycle_tests::admission_wakes_the_sleeping_engine ... FAILED\ntest engine::lifecycle_tests::an_install_gate_retry_wakes_before_the_fallback ... ok\ntest engine::lifecycle_tests::idle_engine_runs_only_startup_and_fallback_passes ... ok\ntest engine::lifecycle_tests::install_approval_enable_and_disable_wake_the_engine ... ok\ntest engine::lifecycle_tests::journal_count_failure_is_fatal_not_zero_replayed_calls ... ok\ntest engine::lifecycle_tests::panicking_activation_releases_run_and_flow_slots ... ok\ntest engine::lifecycle_tests::retention_wakes_on_its_own_cadence_before_the_fallback ... ok\ntest engine::lifecycle_tests::shutdown_wakes_a_parked_loop ... ok\ntest pool::bookkeeping_tests::handout_history_keeps_a_bounded_recent_tail ... ok\ntest pool::bookkeeping_tests::replacement_debt_never_exceeds_pool_capacity ... ok\ntest pool::bookkeeping_tests::spawn_backoff_is_exponential_capped_and_visible ... ok\ntest pool::bookkeeping_tests::spawn_failure_notifies_the_engine_and_arms_the_pool_retry ... ok\ntest pool::names::worker_file_name_follows_parent_in_production_and_development ... ok\ntest process::buffer_tests::a_reaped_worker_handle_never_signals_a_recycled_pid ... ok\ntest process::buffer_tests::expired_launch_budget_cannot_accept_a_queued_welcome ... ok\ntest process::buffer_tests::incoming_frames_have_bounded_capacity ... ok\ntest rig_kill::position_tests::evidence_reads_the_position_named_by_the_boundary ... ok\ntest rig_kill::tests::crash_evidence_records_the_unsent_journal_not_a_later_outcome ... ok\ntest rig_kill::tests::only_the_armed_flow_at_the_armed_boundary_matches ... ok\ntest rig_kill::tests::the_arming_file_is_closed ... ok\ntest rig_kill::tests::unscoped_send_arming_file_is_closed_and_malformed_arms_do_not_fire ... ok\ntest rig_kill::tests::unscoped_send_fires_only_for_the_armed_flow_once ... ok\ntest serve::error_tests::refusal_without_detail_keeps_the_plain_error_frame ... ok\ntest serve::error_tests::stale_generation_detail_uses_a_machine_readable_error_frame ... ok\n\nfailures:\n\n---- engine::lifecycle_tests::admission_wakes_the_sleeping_engine stdout ----\n\nthread 'engine::lifecycle_tests::admission_wakes_the_sleeping_engine' (108589765) panicked at crates/basal-module/src/engine_tests.rs:152:5:\nthe work signal never started the due activation\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\nfailures:\n    engine::lifecycle_tests::admission_wakes_the_sleeping_engine\n\ntest result: FAILED. 28 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 60.66s\n\nerror: test failed, to rerun pass `-p basal-module --lib`\nerror: 1 target failed:\n    `-p basal-module --lib`\n",
+    "reason": null
+  }
+]

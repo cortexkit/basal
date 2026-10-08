@@ -46,6 +46,7 @@ pub mod ids;
 pub mod install;
 pub mod journal;
 pub mod kv;
+pub mod maintenance;
 pub mod manifest;
 pub mod model;
 pub mod ops;

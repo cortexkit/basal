@@ -2,7 +2,7 @@
 //! runs on pool workers.
 //!
 //! All decisions about time read the runtime's clock, which a test sets; the
-//! production loop only uses wall time to decide how often to look. Each
+//! production loop waits for a timer or a coalesced work signal. Each
 //! pass:
 //! 1. ticks the scheduler, which plans due fires and admits them as runs;
 //! 2. fails runs past their wall-clock deadline;
@@ -30,11 +30,40 @@ use crate::fatal::Fatal;
 use crate::metrics::Metrics;
 use crate::pool::{Binding, Pool, PoolError};
 
+/// A missed notification must not strand work indefinitely. This is a safety
+/// net, not the normal scheduler cadence: idle stores need no frequent writes.
+pub const FALLBACK_INTERVAL: Duration = Duration::from_secs(30);
+
+#[derive(Default)]
+struct Wake {
+    state: Mutex<(u64, bool)>,
+    cond: Condvar,
+}
+
+impl Wake {
+    fn notify(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        state.0 = state.0.wrapping_add(1);
+        self.cond.notify_all();
+    }
+
+    fn snapshot(&self) -> (u64, bool) {
+        *self.state.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn wait(&self, seen: u64, timeout: Duration) {
+        let state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        let _ = self
+            .cond
+            .wait_timeout_while(state, timeout, |s| s.0 == seen && !s.1);
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
     /// Activations running at once, across all flows.
     pub max_concurrent_activations: usize,
-    /// How often the production loop runs a pass.
+    /// Maximum silence between passes. Timers and work signals wake earlier.
     pub pass_interval: Duration,
 }
 
@@ -42,7 +71,7 @@ impl Default for EngineConfig {
     fn default() -> Self {
         Self {
             max_concurrent_activations: 4,
-            pass_interval: Duration::from_millis(200),
+            pass_interval: FALLBACK_INTERVAL,
         }
     }
 }
@@ -78,6 +107,7 @@ struct Inner {
     /// not pending or its flow's slot held by an earlier run, the two that
     /// leave everything as it was.
     progress: AtomicU64,
+    wake: Arc<Wake>,
 }
 
 /// Release both reservations even if a host, hook or spawner unwinds. A panic
@@ -86,6 +116,7 @@ struct ActivationSlot<'a> {
     engine: &'a Engine,
     run_id: &'a str,
     flow_id: &'a str,
+    notify: bool,
 }
 
 impl Drop for ActivationSlot<'_> {
@@ -100,6 +131,9 @@ impl Drop for ActivationSlot<'_> {
         active.runs.remove(self.run_id);
         active.flows.remove(self.flow_id);
         self.engine.inner.cond.notify_all();
+        if self.notify {
+            self.engine.inner.wake.notify();
+        }
     }
 }
 
@@ -135,6 +169,15 @@ impl Engine {
         fatal: Fatal,
         scheduler: Scheduler,
     ) -> Self {
+        let wake = Arc::new(Wake::default());
+        let weak = Arc::downgrade(&wake);
+        let notify: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            if let Some(wake) = weak.upgrade() {
+                wake.notify();
+            }
+        });
+        rt.on_work(notify.clone());
+        pool.on_change(notify);
         Self {
             inner: Arc::new(Inner {
                 rt,
@@ -147,6 +190,7 @@ impl Engine {
                 active: Mutex::new(Active::default()),
                 cond: Condvar::new(),
                 progress: AtomicU64::new(0),
+                wake,
             }),
         }
     }
@@ -231,10 +275,11 @@ impl Engine {
 
     /// One activation of `run_id`, on its own thread.
     fn activate(&self, run_id: String, flow_id: String) {
-        let _slot = ActivationSlot {
+        let mut slot = ActivationSlot {
             engine: self,
             run_id: &run_id,
             flow_id: &flow_id,
+            notify: true,
         };
         let inner = &self.inner;
         let replayed = match journal_rows(&inner.rt, &run_id) {
@@ -248,7 +293,13 @@ impl Engine {
         };
         let started = Instant::now();
         let changed = match self.drive_on_pool(&run_id, &flow_id) {
-            None => false,
+            None => {
+                // No worker was available. A failed spawn has already signalled
+                // its retry time, and a pool that is backing off has no new
+                // capacity, so waking the loop now would only spin.
+                slot.notify = false;
+                false
+            }
             Some(Err(e)) => {
                 // `Runtime::activate` returns an error only when claiming
                 // the run failed in the store; everything after the claim
@@ -417,18 +468,62 @@ impl Engine {
         }
     }
 
-    /// The production loop: a pass every `pass_interval` until a fatal error.
+    /// Stops the loop even when no timer or store work is due.
+    pub fn stop(&self) {
+        let mut state = self
+            .inner
+            .wake
+            .state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        state.1 = true;
+        self.inner.wake.cond.notify_all();
+    }
+
+    fn next_wait(&self) -> Result<Duration, CoreError> {
+        let next = self
+            .inner
+            .rt
+            .next_wake_at(self.inner.pool.next_maintenance_at())?;
+        // Querying can wait behind a writer; do not add that wait to the
+        // remaining time of a deadline that was already armed.
+        let now = self.inner.rt.config().clock.now_ms();
+        Ok(next.map_or(self.inner.config.pass_interval, |at| {
+            Duration::from_millis(at.saturating_sub(now).max(0) as u64)
+                .min(self.inner.config.pass_interval)
+        }))
+    }
+
+    /// The production loop: work signals and the earliest timer, with a slow
+    /// fallback. Capture the epoch before the pass so a commit between the
+    /// scan and the wait cannot be lost.
     pub fn spawn_loop(&self) -> thread::JoinHandle<()> {
         let engine = self.clone();
-        thread::spawn(move || {
-            loop {
-                if let Err(why) = engine.pass() {
-                    tracing::error!(target: "engine", "the engine stopped: {why}");
+        thread::spawn(move || engine.run_loop(|seen, wait| engine.inner.wake.wait(seen, wait)))
+    }
+
+    fn run_loop(&self, mut wait: impl FnMut(u64, Duration)) {
+        let engine = self;
+        loop {
+            let (seen, stopped) = engine.inner.wake.snapshot();
+            if stopped {
+                return;
+            }
+            if let Err(why) = engine.pass() {
+                tracing::error!(target: "engine", "the engine stopped: {why}");
+                return;
+            }
+            match engine.next_wait() {
+                Ok(timeout) => wait(seen, timeout),
+                Err(e) => {
+                    engine
+                        .inner
+                        .fatal
+                        .raise(format!("reading the next engine wake: {e}"));
                     return;
                 }
-                thread::sleep(engine.inner.config.pass_interval);
             }
-        })
+        }
     }
 }
 

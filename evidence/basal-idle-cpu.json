@@ -1,0 +1,19 @@
+{
+  "method": "ps -p PID -o time=; production ck-basal, wire-shaped empty core, zero flows",
+  "samples": [
+    {
+      "consent_answer_rpcs": 470,
+      "label": "before",
+      "ps_time_end": "0:00.62",
+      "ps_time_start": "0:00.09",
+      "sample_seconds": 120
+    },
+    {
+      "consent_answer_rpcs": 0,
+      "label": "after",
+      "ps_time_end": "0:00.07",
+      "ps_time_start": "0:00.07",
+      "sample_seconds": 120
+    }
+  ]
+}
