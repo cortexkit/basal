@@ -5174,8 +5174,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/routing.rs"
-old = "expected.is_some_and(|class| class != self.declared_class(module, op, &decl))"
-new = "false"
+old = "expected.is_some_and(|class| {\n                class.safe_to_repeat() && class != self.declared_class(module, op, &decl)\n            })"
+new = "false /* NON-VACUITY BREAK */"
 
 [[control]]
 id = "hosts-consent-provider-refusal-treated-as-outage"
@@ -5265,8 +5265,8 @@ build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/subc_catalog.rs"
 # Invent a declaration only for a missing op, without changing existing ones.
-old = "        Ok(found)"
-new = "        Ok(found.or_else(|| Some(CatalogOp { // NON-VACUITY BREAK\n            declaration: OpDecl { kind: Some(OpKind::Query), cause_echo: false, shell_capable: false },\n            surface: Surface::Management, execution_mode: None,\n        })))"
+old = "        Ok((found, flow_capable))"
+new = "        Ok((found.or_else(|| Some(CatalogOp { // NON-VACUITY BREAK\n            declaration: OpDecl { kind: Some(OpKind::Query), cause_echo: false, shell_capable: false },\n            surface: Surface::Management, execution_mode: None,\n        })), flow_capable))"
 
 [[control]]
 id = "hosts-undeclared-events-fabricated"
@@ -5525,8 +5525,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/core_consent.rs"
-old = ".map_err(|e| ConsentError::Unavailable(e.to_string()))?;"
-new = ".ok();"
+old = ".map_err(|e| ConsentError::Unavailable(e.to_string()))"
+new = ".or(Ok(())) // NON-VACUITY BREAK"
 
 [[control]]
 id = "hosts-approval-decoded-as-rejection"
@@ -6036,8 +6036,8 @@ only = true
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/transport.rs"
-old = "let bind = identity;"
-new = "let bind = BindIdentity::new(\"/\", \"basal\", format!(\"basal:flow:{flow}\")); // NON-VACUITY BREAK"
+old = "self.open_scoped_handle(flow, target, Some(&identity), identity.clone())"
+new = "let identity = BindIdentity::new(\"/\", \"basal\", format!(\"basal:flow:{flow}\")); // NON-VACUITY BREAK\n        self.open_scoped_handle(flow, target, Some(&identity), identity.clone())"
 
 [[control]]
 id = "flow-readiness-rejection-identity-is-not-tracked"
@@ -6066,8 +6066,27 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/transport.rs"
-old = ".block_on(self.consumer.open_route_scoped(\n                        target.clone(),\n                        BindIdentity::new(\"/\", \"basal\", format!(\"basal:flow:{flow}\")),\n                        scope.selector(),"
-new = ".block_on(self.consumer.open_route( // NON-VACUITY BREAK\n                        target.clone(),\n                        BindIdentity::new(\"/\", \"basal\", format!(\"basal:flow:{flow}\")),"
+old = """
+let handle = self
+                .consumer
+                .open_route_scoped(
+                    target.clone(),
+                    bind,
+                    plan.scope.selector(),
+                    CallOptions {
+                        timeout: self.timeout,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .map_err(map_error)?;"""
+new = """
+let options = CallOptions { timeout:self.timeout, ..Default::default() };
+            let handle = if identity.is_none() { // NON-VACUITY BREAK
+                self.consumer.open_route(target.clone(), bind, options).await
+            } else {
+                self.consumer.open_route_scoped(target.clone(), bind, plan.scope.selector(), options).await
+            }.map_err(map_error)?;"""
 
 [[control]]
 id = "flow-route-cache-is-not-reused"
@@ -6100,8 +6119,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/flow_scope.rs"
-old = "self.flows.insert(flow.into(), scope);"
-new = "let scope = self.flows.get(flow).cloned().flatten().or(scope); // NON-VACUITY BREAK\n        self.flows.insert(flow.into(), scope);"
+old = "if let Some((_, key)) = self.flows.remove(flow) {"
+new = "let scope = self.flows.get(flow).map(|(registered, _)| registered.clone()).or(scope); // NON-VACUITY BREAK\n        if let Some((_, key)) = self.flows.remove(flow) {"
 
 [[control]]
 id = "flow-scope-close-is-not-recorded"
@@ -7215,6 +7234,256 @@ runner = "cargo"
 package = "basal-module"
 target = "--lib"
 expect_red = ["pool::names::worker_file_name_follows_parent_in_production_and_development"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+
+[[control]]
+id = "stale-connection-handle-becomes-scope-tombstone"
+guards = "Only a daemon scope close blocks reopening under the same selector"
+file = "crates/basal-host/src/transport.rs"
+old = """
+// Only a daemon scope-close push may leave a tombstone.
+                    self.routes
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .closed(handle, false);"""
+new = """
+// Only a daemon scope-close push may leave a tombstone.
+                    self.routes
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .closed(handle, true); // NON-VACUITY BREAK"""
+edits = []
+test_file = "crates/basal-host/src/transport.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--lib"
+expect_red = ["transport::tests::stale_handle_does_not_leave_a_scope_tombstone"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "catalog-outage-finalizes-conservative-call-class"
+guards = "A transient catalog outage cannot finalize a conservative classification as op_kind_changed"
+file = "crates/basal-host/src/routing.rs"
+old = "class.safe_to_repeat() && class != self.declared_class(module, op, &decl)"
+new = "class != self.declared_class(module, op, &decl) // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-host/tests/host_boundary_regressions.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--test host_boundary_regressions"
+expect_red = ["transient_classification_failure_does_not_finalize_a_query"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "catalog-transport-failure-is-final-scope-refusal"
+guards = "A failed catalog fetch is not proof of missing core scope support"
+file = "crates/basal-host/src/routing.rs"
+old = 'WireError::NeverSent(format!("catalog lookup before dispatch: {e:?}"))'
+new = """
+if module == crate::subc_catalog::CORE { // NON-VACUITY BREAK
+                        WireError::Refused {code:"basal_scope_bug".into(), message:format!("catalog lookup before dispatch: {e:?}")}
+                    } else { WireError::NeverSent(format!("catalog lookup before dispatch: {e:?}")) }"""
+edits = []
+test_file = "crates/basal-host/tests/host_boundary_regressions.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--test host_boundary_regressions"
+expect_red = ["catalog_unavailability_does_not_become_a_final_core_scope_refusal"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "absent-catalog-provider-is-definite-op-removal"
+guards = "A disconnected provider is not proof its operation was removed"
+file = "crates/basal-host/src/subc_catalog.rs"
+old = """
+return Err(WireError::NeverSent(format!(
+                "provider {module} is not currently catalogued"
+            )));"""
+new = "return Ok((None, false)); // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-host/tests/host_boundary_regressions.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--test host_boundary_regressions"
+expect_red = ["temporarily_absent_module_is_retryable"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "poison-consent-answer-blocks-valid-decisions"
+guards = "Malformed consent answers are retained without blocking independent valid records in the page"
+file = "crates/basal-host/src/core_consent.rs"
+old = "problem.get_or_insert(error);"
+new = "return Err(error); // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-host/tests/host_boundary_regressions.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--test host_boundary_regressions"
+expect_red = ["bad_answer_does_not_block_later_valid_decisions_or_acknowledge_the_bad_one"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "production-random-restarts-a-predictable-counter"
+guards = "Fresh production processes draw unpredictable random values while replay uses the journal"
+file = "crates/basal-host/src/core_host.rs"
+old = """
+let mut x = 0u64;
+    // Live draws use OS entropy, not shared predictable process state. The
+    // runtime journals each draw and replay serves that saved value instead.
+    // There is deliberately no fallback when the OS cannot supply entropy.
+    let rc = unsafe { libc::getentropy((&mut x as *mut u64).cast(), std::mem::size_of::<u64>()) };
+    assert_eq!(
+        rc,
+        0,
+        "OS entropy unavailable: {}",
+        std::io::Error::last_os_error()
+    );"""
+new = """
+// NON-VACUITY BREAK
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQUENCE: AtomicU64 = AtomicU64::new(1);
+    let x = SEQUENCE.fetch_add(1, Ordering::Relaxed).wrapping_mul(0x9e3779b97f4a7c15);"""
+edits = []
+test_file = "crates/basal-host/tests/host_boundary_regressions.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--test host_boundary_regressions"
+expect_red = ["production_random_is_not_the_same_first_draw_after_restart"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "model-envelope-refusal-loses-provider-context"
+guards = "Typed model refusals decoded from envelopes retain the provider and action"
+file = "crates/basal-host/src/transport.rs"
+old = """
+.and_then(|bytes| decode_response(&bytes, true))
+            .map_err(|e| contextual(e, module, op))"""
+new = """
+.map_err(|e| contextual(e, module, op))
+            .and_then(|bytes| decode_response(&bytes, true)) // NON-VACUITY BREAK"""
+edits = []
+test_file = "crates/basal-host/src/transport.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--lib"
+expect_red = ["transport::tests::model_refusal_has_provider_and_action_after_envelope_decoding"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "scoped-route-open-reply-ignores-authority-generation"
+guards = "An unlocked scoped open may install only under unchanged scope and connection authority"
+file = "crates/basal-host/src/flow_scope.rs"
+old = """
+if self.connection_generation != plan.generation
+            || self
+                .flows
+                .get(flow)
+                .is_none_or(|(_, key)| key != &plan.key.scope)
+        {"""
+new = "if false { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-host/src/flow_scope.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--lib"
+expect_red = ["flow_scope::tests::an_open_reply_cannot_install_after_scope_or_connection_changes"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "stale-model-subscription-keeps-dead-handle"
+guards = "A stale scoped model subscription evicts its dead connection handle"
+file = "crates/basal-host/src/transport.rs"
+old = """
+.block_on(self.consumer.subscribe_route(&handle, bytes, opts));
+        if let Err(CallError::StaleRouteHandle(_)) = &result {"""
+new = """
+.block_on(self.consumer.subscribe_route(&handle, bytes, opts));
+        if false { // NON-VACUITY BREAK"""
+edits = []
+test_file = "crates/basal-host/src/transport.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--lib"
+expect_red = ["transport::tests::stale_model_subscription_evicts_its_dead_handle"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "malformed-management-error-claims-connection-loss"
+guards = "An unreadable management error envelope is recorded as reply_unreadable"
+file = "crates/basal-host/src/transport.rs"
+old = '.map_err(|e| WireError::Unreadable(format!("invalid error envelope: {e}")))?;'
+new = '.map_err(|e| WireError::Unknown(format!("invalid error envelope: {e}")))?; // NON-VACUITY BREAK'
+edits = []
+test_file = "crates/basal-host/src/transport.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--lib"
+expect_red = ["transport::tests::malformed_management_errors_are_unreadable_not_connection_loss"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "nullable-routing-model-variant-is-refused"
+guards = "A routing reply with a null optional model variant decodes as no variant"
+file = "crates/basal-host/src/selector.rs"
+old = ".filter(|v| !v.is_null())"
+new = "// NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-host/tests/host_boundary_regressions.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--test host_boundary_regressions"
+expect_red = ["nullable_model_variant_is_the_absent_variant"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "agent-display-name-shadows-stable-id"
+guards = "A display name on an earlier registry page cannot shadow an exact stable agent ID"
+file = "crates/basal-host/src/subc_catalog.rs"
+old = "named.insert(id.to_owned());"
+new = "return Ok(Some(id.to_owned())); // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-host/tests/host_boundary_regressions.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--test host_boundary_regressions"
+expect_red = ["stable_agent_id_wins_over_a_display_name_even_on_a_later_page"]
 only = true
 timeout_s = 600
 build_timeout_s = 3600

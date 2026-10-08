@@ -38,7 +38,7 @@ pub fn intent(kind: Primitive, args: &Value, ctx: IntentContext<'_>) -> Value {
         }
         Primitive::SinkStatus => {
             json!({"flow_id":flow_id,"flow_version":version,"agent":args["agent"],
-            "text":args["value"],"ttl_ms":1800000,"revision":created_at})
+            "text":args["value"],"ttl_ms":STATUS_TTL_MS,"revision":created_at})
         }
         Primitive::Facts => json!({"flow_id":flow_id,"flow_version":version,"agent":args["agent"],
             "fields":args["options"].get("fields").cloned().unwrap_or(json!(["identity","residence","activity","attention"])),
@@ -132,7 +132,7 @@ pub fn validate_reply(kind: Primitive, value: Value) -> Result<Value, WireError>
     }
 }
 /// Whether `value` is a code hash as core writes it: 64 lowercase hex digits.
-fn is_code_hash(value: &str) -> bool {
+pub(crate) fn is_code_hash(value: &str) -> bool {
     value.len() == 64
         && value
             .bytes()
@@ -236,10 +236,19 @@ pub(crate) fn system_now() -> f64 {
         .map_or(0.0, |d| d.as_millis() as f64)
 }
 pub(crate) fn sample() -> f64 {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static SEQUENCE: AtomicU64 = AtomicU64::new(1);
-    let x = SEQUENCE
-        .fetch_add(1, Ordering::Relaxed)
-        .wrapping_mul(0x9e3779b97f4a7c15);
+    let mut x = 0u64;
+    // Live draws use OS entropy, not shared predictable process state. The
+    // runtime journals each draw and replay serves that saved value instead.
+    // There is deliberately no fallback when the OS cannot supply entropy.
+    let rc = unsafe { libc::getentropy((&mut x as *mut u64).cast(), std::mem::size_of::<u64>()) };
+    assert_eq!(
+        rc,
+        0,
+        "OS entropy unavailable: {}",
+        std::io::Error::last_os_error()
+    );
     (x >> 11) as f64 / ((1u64 << 53) as f64)
 }
+
+/// A published status lasts half an hour unless core supersedes its revision.
+const STATUS_TTL_MS: u64 = 30 * 60 * 1_000;

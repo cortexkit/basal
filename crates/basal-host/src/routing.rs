@@ -54,31 +54,32 @@ impl ModuleOpsHost {
             return outcome(Err(WireError::NeverSent("not a module op".into())));
         };
         let result = (|| {
-            if module == crate::subc_catalog::CORE
-                && !crate::Catalog::supports_flow_scopes(self.catalog.as_ref(), module)
-            {
+            let (decl, flow_capable) =
+                self.catalog.resolve_for_dispatch(module, op).map_err(|e| {
+                    WireError::NeverSent(format!("catalog lookup before dispatch: {e:?}"))
+                })?;
+            if module == crate::subc_catalog::CORE && !flow_capable {
                 return Err(WireError::Refused {
                     code: "basal_scope_bug".into(),
                     message: format!("core flow op {op} cannot use the carrier route"),
                 });
             }
-            let decl = self
-                .catalog
-                .resolve(module, op)
-                .map_err(|e| {
-                    WireError::NeverSent(format!("catalog lookup before dispatch: {e:?}"))
-                })?
-                .ok_or_else(|| WireError::Refused {
-                    code: "op_missing".into(),
-                    message: "operation is not catalogued".into(),
-                })?;
+            let decl = decl.ok_or_else(|| WireError::Refused {
+                code: "op_missing".into(),
+                message: "operation is not catalogued".into(),
+            })?;
             if decl.declaration.shell_capable {
                 return Err(WireError::Refused {
                     code: "shell_forbidden".into(),
                     message: "flows cannot run shell operations".into(),
                 });
             }
-            if expected.is_some_and(|class| class != self.declared_class(module, op, &decl)) {
+            // An unavailable catalog may have journaled the conservative,
+            // non-repeatable class. A stricter retry policy is always safe;
+            // only losing the safety the saved policy relied on is refused.
+            if expected.is_some_and(|class| {
+                class.safe_to_repeat() && class != self.declared_class(module, op, &decl)
+            }) {
                 return Err(WireError::Refused {
                     code: "op_kind_changed".into(),
                     message: "catalog declaration changed after the retry policy was journaled"

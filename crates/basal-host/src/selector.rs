@@ -43,7 +43,10 @@ pub enum SelectionError {
 }
 impl fmt::Display for SelectionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{self:?}")
+        match self {
+            Self::Refused { code, detail } => write!(f, "model selection refused {code}: {detail}"),
+            Self::Unavailable { detail } => write!(f, "model selection unavailable: {detail}"),
+        }
     }
 }
 impl std::error::Error for SelectionError {}
@@ -127,6 +130,7 @@ pub fn decode_selection(reply: Value) -> Result<ModelSelection, SelectionError> 
     let selected = &reply["selected"]["model"];
     let variant = selected
         .get("variant")
+        .filter(|v| !v.is_null())
         .map(|v| {
             v.as_str()
                 .map(str::to_owned)

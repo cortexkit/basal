@@ -17,7 +17,7 @@
 //! usage as metadata, in Broca's canonical fields (see [`USAGE_FIELDS`]),
 //! separate from the value delivered to the script.
 //!
-//! A dispatched call ends in one of three ways:
+//! A dispatched call ends in one of four ways:
 //! - it completes now, fulfilled or rejected ([`Dispatched::Completed`]);
 //! - the host accepts it as long-running and completes it later through the
 //!   [`CompletionSink`] the runtime attached ([`Dispatched::Accepted`]);
@@ -25,6 +25,8 @@
 //!   the request provably never left. That distinction decides whether the
 //!   runtime may retry a mutation: a request that left may have taken effect
 //!   even though its reply was lost.
+//! - the provider returns a typed unsent refusal ([`TransportError::Refused`]);
+//!   the runtime can defer readiness failures without inventing an outcome.
 
 pub mod broca;
 pub mod builtins;
@@ -439,11 +441,11 @@ pub trait Host: Send + Sync {
         self.dispatch(request)
     }
 
-    /// The current time in milliseconds since the Unix epoch, for a clock
-    /// read. The runtime keeps the value monotonic within a run.
     /// Invoked after the accepted handle or immediate outcome is durable, so
     /// a fast model completion cannot arrive before its handle is journaled.
     fn dispatch_committed(&self, _request: &CallRequest) {}
+    /// The current time in milliseconds since the Unix epoch, for a clock
+    /// read. The runtime keeps the value monotonic within a run.
     fn now_ms(&self) -> f64;
 
     /// A sample in `[0, 1)`, for `Math.random()` and `random()`.

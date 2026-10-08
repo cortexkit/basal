@@ -6,6 +6,7 @@ use crate::{
     DecisionEvent, DecisionKind, DecisionSink, InstallCard,
 };
 use serde_json::{Value, json};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Core's refusal of a scope author whose scope it does not own, or that
@@ -53,7 +54,7 @@ pub fn request(card: &InstallCard) -> Result<Value, ConsentError> {
         "default":"decline","urgency":"normal","on_expiry":"deny","material_damage":false,"late_execution":"notify_only",
         "args_digest":hash,"dedup_key":format!("flow_install:{}:{}",card.flow_id,card.version),
         "target":{"kind":"flow","label":format!("{} v{}",card.flow_id,card.version)},"facts":[],
-        "preview":{"label":"Code","text":script},"expires_in_ms":86400000,
+        "preview":{"label":"Code","text":script},"expires_in_ms":DECISION_EXPIRES_IN_MS,
         "flow_install":{"flow_id":card.flow_id,"version":card.version,"code_hash":hash,"script":script,"manifest_json":manifest,
             "author":author,"warnings":f["warnings"].as_array().map(|warnings| warnings.iter().map(|w| json!({"code":w["kind"],"detail":w["text"]})).collect::<Vec<_>>()).unwrap_or_default(),"dry_run_summary":f["dry_run_summary"],"token_usage":{"window":f["token_cap"]["window"].as_str().unwrap_or("1d"),"fresh_input":f["token_window"]["input_tokens"].as_u64().unwrap_or(0),"cache_write":f["token_window"]["cache_write_tokens"].as_u64().unwrap_or(0),"output":f["token_window"]["output_tokens"].as_u64().unwrap_or(0),"cache_read":f["token_window"]["cached_input_tokens"].as_u64().unwrap_or(0)}}});
     let mut result = result;
@@ -330,6 +331,7 @@ pub fn author_kind(author: &Value) -> Result<AuthorKind, ConsentError> {
 struct State {
     transport: Arc<dyn Transport>,
     sink: Mutex<Option<Arc<dyn DecisionSink>>>,
+    poll_started: AtomicBool,
 }
 pub struct CoreConsent {
     state: Arc<State>,
@@ -341,6 +343,7 @@ impl CoreConsent {
             state: Arc::new(State {
                 transport,
                 sink: Mutex::new(None),
+                poll_started: AtomicBool::new(false),
             }),
             polling: false,
         }
@@ -374,71 +377,21 @@ fn poll(state: &State) -> Result<(), ConsentError> {
         .as_i64()
         .filter(|c| *c >= 0)
         .ok_or_else(|| ConsentError::Unavailable("answer cursor is invalid".into()))?;
+    // Keep poison records unacknowledged, but still apply independent valid
+    // decisions later in the page. Re-delivery is safe because sinks commit
+    // by card identity. Discarding a malformed record could lose consent.
+    let mut problem = None;
     for record in records {
-        // Old expired answers omit the install payload. Fetch the owned full
-        // record before deciding so the decision keeps its flow identity.
-        let full;
-        let record =
-            if record.get("flow_install").is_none() && record.get("flow_decision").is_none() {
-                let id = field(record, "elicitation_id")?;
-                full = state
-                    .transport
-                    .management(
-                        CORE,
-                        "elicitation.await",
-                        json!({"elicitation_id":id,"timeout_ms":0}),
-                    )
-                    .map_err(error)?;
-                &full
-            } else {
-                record
-            };
-        if record.get("flow_decision").is_some() {
-            // A decision card's answer. The page stays unacknowledged until
-            // the sink has applied it, like an install decision.
-            let answer = decision_answer(record)?;
-            if let Err(e) = sink.answer(&answer) {
-                return Err(ConsentError::Unavailable(format!(
-                    "applying the answer to {}: {e}",
-                    answer.elicitation_id
-                )));
-            }
-            continue;
+        if let Err(error) = apply_record(state, sink.as_ref(), record) {
+            tracing::warn!(elicitation_id = ?record.get("elicitation_id"), %error, "consent answer was not applied; retaining page for retry");
+            problem.get_or_insert(error);
         }
-        let decision = match (
-            record["state"].as_str(),
-            record["answered_choice_id"].as_str(),
-        ) {
-            (Some("answered"), Some("approve")) => CardDecision::Approve,
-            (Some("answered"), Some("decline")) | (Some("expired"), _) => CardDecision::Reject,
-            _ => {
-                return Err(ConsentError::Unavailable(
-                    "unrecognised card decision".into(),
-                ));
-            }
-        };
-        let f = &record["flow_install"];
-        let flow = field(f, "flow_id")?;
-        let version = f["version"]
-            .as_u64()
-            .filter(|v| *v > 0 && *v <= u32::MAX as u64)
-            .ok_or_else(|| ConsentError::Unavailable("decision version is invalid".into()))?;
-        let hash = field(f, "code_hash")?;
-        if hash.len() != 64
-            || !hash
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-        {
-            return Err(ConsentError::Unavailable("decision hash is invalid".into()));
-        }
-        // Card identity is derived from the approved bytes, not an in-memory
-        // elicitation-id map that would be lost on process restart.
-        sink.decide(&DecisionEvent {
-            card_id: format!("card:{flow}:v{version}:{}", &hash[..16]),
-            decision,
-            decided_by: "core:elicitation".into(),
-        })
-        .map_err(|e| ConsentError::Unavailable(e.to_string()))?;
+    }
+    if let Some(problem) = problem {
+        return Err(problem);
+    }
+    if records.is_empty() {
+        return Ok(());
     }
     let ack = state
         .transport
@@ -450,6 +403,72 @@ fn poll(state: &State) -> Result<(), ConsentError> {
         ));
     }
     Ok(())
+}
+
+fn apply_record(
+    state: &State,
+    sink: &dyn DecisionSink,
+    record: &Value,
+) -> Result<(), ConsentError> {
+    // Old expired answers omit the install payload. Fetch the owned full
+    // record before deciding so the decision keeps its flow identity.
+    let full;
+    let record = if record.get("flow_install").is_none() && record.get("flow_decision").is_none() {
+        let id = field(record, "elicitation_id")?;
+        full = state
+            .transport
+            .management(
+                CORE,
+                "elicitation.await",
+                json!({"elicitation_id":id,"timeout_ms":0}),
+            )
+            .map_err(error)?;
+        &full
+    } else {
+        record
+    };
+    if record.get("flow_decision").is_some() {
+        // A decision card's answer. The page stays unacknowledged until
+        // the sink has applied it, like an install decision.
+        let answer = decision_answer(record)?;
+        if let Err(e) = sink.answer(&answer) {
+            return Err(ConsentError::Unavailable(format!(
+                "applying the answer to {}: {e}",
+                answer.elicitation_id
+            )));
+        }
+        return Ok(());
+    }
+    let decision = match (
+        record["state"].as_str(),
+        record["answered_choice_id"].as_str(),
+    ) {
+        (Some("answered"), Some("approve")) => CardDecision::Approve,
+        (Some("answered"), Some("decline")) | (Some("expired"), _) => CardDecision::Reject,
+        _ => {
+            return Err(ConsentError::Unavailable(
+                "unrecognised card decision".into(),
+            ));
+        }
+    };
+    let f = &record["flow_install"];
+    let flow = field(f, "flow_id")?;
+    let version = f["version"]
+        .as_u64()
+        .filter(|v| *v > 0 && *v <= u32::MAX as u64)
+        .ok_or_else(|| ConsentError::Unavailable("decision version is invalid".into()))?;
+    let hash = field(f, "code_hash")?;
+    if !crate::core_host::is_code_hash(hash) {
+        return Err(ConsentError::Unavailable("decision hash is invalid".into()));
+    }
+    // Card identity is derived from the approved bytes, not an in-memory
+    // elicitation-id map that would be lost on process restart.
+    sink.decide(&DecisionEvent {
+        card_id: format!("card:{flow}:v{version}:{}", &hash[..16]),
+        decision,
+        decided_by: "core:elicitation".into(),
+    })
+    .map_err(|e| ConsentError::Unavailable(e.to_string()))
 }
 impl Consent for CoreConsent {
     fn raise(&self, card: &InstallCard) -> Result<(), ConsentError> {
@@ -477,12 +496,14 @@ impl Consent for CoreConsent {
     }
     fn attach(&self, sink: Arc<dyn DecisionSink>) {
         *self.state.sink.lock().unwrap_or_else(|p| p.into_inner()) = Some(sink);
-        if self.polling {
+        if self.polling && !self.state.poll_started.swap(true, Ordering::AcqRel) {
             let weak = Arc::downgrade(&self.state);
             std::thread::spawn(move || {
                 loop {
                     let Some(state) = weak.upgrade() else { break };
-                    let _ = poll(&state);
+                    if let Err(error) = poll(&state) {
+                        tracing::warn!(%error, "consent polling failed; retrying without acknowledging answers");
+                    }
                     drop(state);
                     std::thread::sleep(std::time::Duration::from_millis(250));
                 }
