@@ -167,7 +167,7 @@ async fn sample(source: &Path, label: &str) -> Value {
 async fn production_idle_cpu_before_and_after() {
     let before =
         PathBuf::from(std::env::var_os("BASAL_IDLE_BEFORE_BIN").expect("baseline ck-basal path"));
-    let after = PathBuf::from(env!("CARGO_BIN_EXE_ck-basal"));
+    let after = basal_testkit::dev_binary(env!("CARGO_BIN_EXE_ck-basal"));
     let samples = tokio::time::timeout(Duration::from_secs(600), async {
         let before = sample(&before, "before").await;
         let after = sample(&after, "after").await;
