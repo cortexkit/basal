@@ -144,6 +144,14 @@ fn flow_health_decodes_as_core_decodes_it() {
 
     for params in [Value::Null, json!({})] {
         let raw = health(&f, &Caller::Core, params);
+        assert_eq!(
+            raw["worker_confinement"],
+            json!({
+                "os": std::env::consts::OS,
+                "landlock": if cfg!(target_os = "linux") { json!("required") } else { Value::Null },
+                "sigsys_deaths": 0,
+            })
+        );
         let reply = decode(&raw);
         assert_eq!(reply.as_of.0.as_millisecond(), T0 + 5_000);
         assert_eq!(reply.flows.len(), 7);

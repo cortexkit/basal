@@ -1418,7 +1418,11 @@ impl Activation<'_> {
                 true,
             ),
             ActivationResult::BudgetExhausted(kind) => {
-                self.fail("budget_exhausted", format!("{kind:?}"), true)
+                // Retire workers that report exhausting their CPU, memory or
+                // stack budget rather than reuse potentially unhealthy engine
+                // state. A caught memory or stack error ending in Completed
+                // does not enter this path.
+                self.fail("budget_exhausted", format!("{kind:?}"), false)
             }
         }
     }

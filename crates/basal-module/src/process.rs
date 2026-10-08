@@ -1,6 +1,7 @@
 //! One `ck-basal-worker` child process, spoken to over its stdio frames.
 //!
-//! The worker receives an empty environment, three pipes and no arguments.
+//! The worker receives an empty environment and three pipes. On Linux its
+//! sole argument selects whether Landlock is required or optional.
 //! Rust's descriptors are close-on-exec; the worker also closes every inherited
 //! descriptor above stdio and confines itself before reading its first frame.
 //!
@@ -17,8 +18,10 @@
 
 use std::fmt;
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::path::Path;
+#[cfg(target_os = "macos")]
+use std::path::PathBuf;
+use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -29,14 +32,36 @@ use basal_proto::{
     FrameError, PROTOCOL_VERSION, ParentMessage, Welcome, WorkerMessage, encode_parent_frame,
     read_worker_message,
 };
+#[cfg(target_os = "macos")]
 use subc_os::privacy_identity::DisclaimedCommand;
+
+/// Linux workers require Landlock unless the caller explicitly permits a
+/// seccomp-only worker on kernels where Landlock is unavailable.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum LandlockPolicy {
+    #[default]
+    Required,
+    Optional,
+}
+
+impl LandlockPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Required => "required",
+            Self::Optional => "optional",
+        }
+    }
+}
 
 /// How to execute a worker. `Disclaimed` runs it through a trampoline
 /// executable (see the module comment); only `ck-basal` implements that hidden
 /// mode, handling it first thing in `main`, so test binaries use `Plain`.
 #[derive(Debug, Clone)]
 pub enum WorkerLaunch {
-    Disclaimed { trampoline: PathBuf },
+    #[cfg(target_os = "macos")]
+    Disclaimed {
+        trampoline: PathBuf,
+    },
     Plain,
 }
 
@@ -138,6 +163,17 @@ impl WorkerProcess {
         launch: &WorkerLaunch,
         timeout: Duration,
     ) -> Result<Self, SpawnError> {
+        Self::start_with_policy(binary, launch, timeout, LandlockPolicy::Required)
+    }
+
+    /// Starts a worker with the caller's explicit Linux Landlock policy.
+    pub fn start_with_policy(
+        binary: &Path,
+        launch: &WorkerLaunch,
+        timeout: Duration,
+        landlock: LandlockPolicy,
+    ) -> Result<Self, SpawnError> {
+        #[cfg(target_os = "macos")]
         let (mut command, confirmation) = match launch {
             WorkerLaunch::Disclaimed { trampoline } => {
                 let mut builder = DisclaimedCommand::new(trampoline, binary);
@@ -161,6 +197,22 @@ impl WorkerProcess {
                 (command, None)
             }
         };
+        #[cfg(not(target_os = "macos"))]
+        let mut command = match launch {
+            WorkerLaunch::Plain => {
+                let mut command = Command::new(binary);
+                command
+                    .env_clear()
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped());
+                command
+            }
+        };
+        #[cfg(target_os = "linux")]
+        command.arg(format!("--landlock={}", landlock.as_str()));
+        #[cfg(not(target_os = "linux"))]
+        let _ = landlock;
         let deadline = Instant::now() + timeout;
         let mut child = command
             .spawn()
@@ -169,6 +221,7 @@ impl WorkerProcess {
         // pipe. The confirmation reads that pipe to end-of-file, which never comes
         // while a copy stays open here, so drop it before confirming.
         drop(command);
+        #[cfg(target_os = "macos")]
         if let Some(confirmation) = confirmation
             && let Err(error) = confirmation.confirm(deadline)
         {
@@ -316,13 +369,18 @@ impl WorkerProcess {
 
     /// Whether the process has exited (crashed, or was killed from outside).
     pub fn has_exited(&mut self) -> bool {
-        !matches!(
-            self.child
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .try_wait(),
-            Ok(None)
-        )
+        self.exit_status().is_some()
+    }
+
+    /// An observed exit, retaining its status so the pool can distinguish a
+    /// confinement violation from other deaths. An observation error also
+    /// retires the worker: its liveness can no longer be established.
+    pub fn exit_status(&mut self) -> Option<std::io::Result<ExitStatus>> {
+        self.child
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .try_wait()
+            .transpose()
     }
 
     pub fn kill(&mut self) {

@@ -60,6 +60,7 @@ pub struct Options {
     pub max_activations: u32,
     pub idle_retire: Duration,
     pub activation_deadline: Duration,
+    pub budgets: basal_proto::Budgets,
     pub pool_wait_timeout: Option<Duration>,
     /// Off unless a test is about the install gate: the mock consent plane
     /// is not core, so no core approved these tests' flows.
@@ -79,6 +80,7 @@ impl Default for Options {
             max_activations: 256,
             idle_retire: Duration::from_secs(600),
             activation_deadline: Duration::from_secs(60),
+            budgets: basal_proto::Budgets::default(),
             pool_wait_timeout: None,
             install_gate: InstallGate::Off,
         }
@@ -132,6 +134,7 @@ pub fn fixture_with_store(
         selector: o.selector.clone(),
         clock: clock.clone(),
         activation_deadline: o.activation_deadline,
+        budgets: o.budgets,
         install_gate: o.install_gate,
         ..Config::default()
     };

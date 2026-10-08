@@ -17,6 +17,8 @@ pub struct Metrics {
     pub workers_killed: AtomicU64,
     /// Workers found dead that nobody killed.
     pub workers_crashed: AtomicU64,
+    /// Deaths with exit signal SIGSYS, counted apart from other worker crashes.
+    pub sigsys_deaths: AtomicU64,
     /// Workers ended on purpose after their idle period or activation count.
     pub workers_retired: AtomicU64,
     /// Spawns that replaced a killed or crashed worker.

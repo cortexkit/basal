@@ -802,6 +802,7 @@ impl Module {
         let pool = self.pool.stats();
         Ok(json!({
             "as_of": as_of,
+            "worker_confinement": self.pool.worker_confinement(),
             "flows": entries,
             "runs": {
                 "by_state": health.runs,
