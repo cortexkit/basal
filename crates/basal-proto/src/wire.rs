@@ -572,7 +572,10 @@ pub(crate) fn decode_parent(dec: &mut Decoder<'_>) -> Result<ParentMessage, Deco
             let budgets = read_budgets(dec)?;
             // position (8), primitive tag (1), digest (32), absent outcome (1).
             let n = dec.count("prefix", MAX_LIST_ENTRIES, 42)?;
-            let mut prefix = Vec::with_capacity(n);
+            // Rust records are larger than their minimum wire representation.
+            // Grow only after each record has decoded successfully, not from
+            // an untrusted count before validating any record fields.
+            let mut prefix = Vec::new();
             for _ in 0..n {
                 prefix.push(read_recorded_call(dec)?);
             }

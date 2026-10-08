@@ -7384,3 +7384,24 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
+
+[[control]]
+id = "worker-top-level-evaluation-skips-js-time-metering"
+guards = "worker top level evaluation skips js time metering"
+file = "crates/basal-worker/src/engine.rs"
+old = """
+self.shared.clock.enter();
+        let result = self.ctx.with(|ctx| f(&ctx));"""
+new = """
+// NON-VACUITY BREAK: engine entry is not metered
+        let result = self.ctx.with(|ctx| f(&ctx));"""
+edits = []
+test_file = "crates/basal-worker/tests/sandbox_integrity.rs"
+runner = "cargo"
+package = "basal-worker"
+target = "--test sandbox_integrity"
+expect_red = ["top_level_wrapper_code_has_activation_budgets"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
