@@ -6,8 +6,9 @@ use crate::retention::{
 use rusqlite::{Connection, types::Value};
 use std::collections::BTreeMap;
 
-// Independent expectations: removing or altering a migration statement must not
-// change the inventory or SQL these tests require.
+// Written out here rather than read from the migration, so removing or
+// changing a migration statement makes these tests fail instead of changing
+// what they expect.
 const EXPECTED_INDEXES: &[(&str, &str)] = &[
     (
         "runs_retention",

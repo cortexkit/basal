@@ -66,7 +66,8 @@ pub(crate) const OBLIGATIONS: &str = "EXISTS (SELECT 1 FROM journal j WHERE j.ru
 
 // Unary + leaves the ordering unchanged, but prevents SQLite from choosing an
 // ordered full-table scan just to satisfy LIMIT. Search the age range first.
-// The literals also expose the exact format templates to query-plan tests.
+// The templates are public constants so the query-plan tests check the exact
+// SQL this module runs, and fail if the two drift apart.
 macro_rules! candidates_sql {
     () => {
         "SELECT r.run_id FROM runs r WHERE r.state IN ('succeeded','failed','engine_mismatch','cancelled') \
