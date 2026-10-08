@@ -95,6 +95,38 @@ fn handshake_reports_version_engine_and_confinement() {
     assert!(welcome.engine.contains("quickjs"), "{}", welcome.engine);
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn required_linux_welcome_activation_and_shutdown() {
+    let mut worker =
+        WorkerProcess::spawn_with_args(&common::worker_binary(), &["--landlock=required"])
+            .expect("required Linux worker launch");
+    let welcome = hello(&mut worker);
+    assert_eq!(welcome.protocol_version, PROTOCOL_VERSION);
+    match welcome.confinement {
+        Confinement::Linux {
+            seccomp: true,
+            landlock: Some(report),
+        } => {
+            assert!(report.runtime_abi >= 1, "{report:?}");
+            assert_eq!(
+                report.applied_abi,
+                report.runtime_abi.min(basal_proto::LANDLOCK_ABI)
+            );
+            eprintln!("required-mode Welcome Landlock readback: {report:?}");
+        }
+        other => panic!("required Linux confinement missing from Welcome: {other:?}"),
+    }
+    still_serves(&mut worker, welcome.prelude_hash);
+    worker
+        .send(&ParentMessage::Shutdown)
+        .expect("send shutdown");
+    assert_eq!(
+        worker.wait_exit(WAIT).expect("worker exits").code(),
+        Some(0)
+    );
+}
+
 #[test]
 fn malformed_frames_are_refused_and_the_worker_survives() {
     let mut worker = spawn();

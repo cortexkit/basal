@@ -23,6 +23,28 @@ fn command(args: &[&str]) -> Command {
         .stderr(Stdio::piped());
     cmd
 }
+
+struct HeldChild(std::process::Child);
+impl std::ops::Deref for HeldChild {
+    type Target = std::process::Child;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl std::ops::DerefMut for HeldChild {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+impl Drop for HeldChild {
+    fn drop(&mut self) {
+        // Failed attestation must not leave an engine waiting forever on stdin.
+        if self.0.try_wait().ok().flatten().is_none() {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+}
 fn refusal(output: Output, token: &str) {
     assert_eq!(
         output.status.code(),
@@ -95,6 +117,9 @@ fn engine_arguments_are_closed_and_probe_options_need_probe_mode() {
         vec!["--attest-descriptors"],
         vec!["--fixture-random-result=-1"],
         vec!["--engine-stack-fixture=32768"],
+        vec!["--landlock=required", "--path=/dev/null"],
+        vec!["--landlock=required", "--port=12345"],
+        vec!["--landlock=required", "--pid=1"],
     ] {
         let out = command(&args).output().unwrap();
         assert_eq!(out.status.code(), Some(64), "{args:?}: {out:?}");
@@ -309,7 +334,11 @@ fn landlock_only_denies_raw_open_and_reports_its_applied_abi() {
     assert!(out.status.success(), "{out:?}");
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.contains("ready: open"), "{text}");
-    assert!(text.contains("applied_abi"), "{text}");
+    let report: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+    assert!(
+        report["landlock"]["applied_abi"].as_u64().unwrap() >= 4,
+        "landlock-tcp-scoping-unavailable: ABI 4 required: {text}"
+    );
     assert!(
         text.contains("result: -1 errno: 13") || text.contains("result: -1 errno: 1"),
         "{text}"
@@ -415,6 +444,11 @@ fn engine_is_single_threaded_no_new_privs_and_seccomp_before_first_read() {
         assert_eq!(out.status.signal(), Some(libc::SIGSYS), "{out:?}");
         return;
     }
+    let mut child = confined_engine_before_first_read();
+    finish_engine_with_landlock_readback(&mut child);
+}
+
+fn confined_engine_before_first_read() -> HeldChild {
     let inherited = std::fs::read_to_string("/proc/self/status").unwrap();
     let count = |status: &str| {
         status
@@ -425,7 +459,7 @@ fn engine_is_single_threaded_no_new_privs_and_seccomp_before_first_read() {
             .unwrap()
     };
     let before = count(&inherited);
-    let mut child = command(&["--landlock=required"]).spawn().unwrap();
+    let mut child = HeldChild(command(&["--landlock=required"]).spawn().unwrap());
     // The additional filter is installed last, so its count is a readiness condition
     // even when the test runner already inherited a seccomp policy.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -448,8 +482,52 @@ fn engine_is_single_threaded_no_new_privs_and_seccomp_before_first_read() {
         }
         std::thread::yield_now();
     }
-    drop(child.stdin.take());
-    assert!(child.wait().unwrap().success());
+    child
+}
+
+fn finish_engine_with_landlock_readback(child: &mut std::process::Child) {
+    use basal_proto::*;
+    let mut input = child.stdin.take().unwrap();
+    write_parent_message(
+        &mut input,
+        &ParentMessage::Hello {
+            protocol_version: PROTOCOL_VERSION,
+        },
+    )
+    .unwrap();
+    let welcome = read_worker_message(&mut child.stdout.take().unwrap()).unwrap();
+    match welcome {
+        WorkerMessage::Welcome(Welcome {
+            confinement:
+                Confinement::Linux {
+                    seccomp: true,
+                    landlock: Some(report),
+                },
+            ..
+        }) => {
+            assert!(report.runtime_abi >= 1, "{report:?}");
+            assert_eq!(report.applied_abi, report.runtime_abi.min(LANDLOCK_ABI));
+            eprintln!("engine Landlock readback: {report:?}");
+        }
+        other => panic!("required Linux confinement readback missing: {other:?}"),
+    }
+    write_parent_message(&mut input, &ParentMessage::Shutdown).unwrap();
+    drop(input);
+    assert_eq!(child.wait().unwrap().code(), Some(0));
+}
+
+#[test]
+fn engine_landlock_readback_is_required_after_blocked_first_read() {
+    if let Some(option) = hidden_proc() {
+        eprintln!(
+            "Landlock readback fallback ({option}): engine Welcome after checked installation; supervisor status is unavailable"
+        );
+        let mut child = HeldChild(command(&["--landlock=required"]).spawn().unwrap());
+        finish_engine_with_landlock_readback(&mut child);
+    } else {
+        let mut child = confined_engine_before_first_read();
+        finish_engine_with_landlock_readback(&mut child);
+    }
 }
 
 #[test]
@@ -461,21 +539,25 @@ fn dumpable_denies_parent_ptrace_and_proc_mem_with_unconfined_control() {
         );
     }
     for confined in [false, true] {
-        let mut args = vec!["--confinement-probe"];
-        if !confined {
-            args.push("--no-sandbox");
-        }
-        // Hold the probe at a raw stdin read after its installation report.
-        args.push("--wait");
-        let mut child = command(&args).spawn().unwrap();
-        let mut reader = std::io::BufReader::new(child.stdout.take().unwrap());
-        let mut line = String::new();
-        use std::io::BufRead;
-        reader.read_line(&mut line).unwrap();
-        assert!(
-            line.contains("open_descriptors"),
-            "missing confinement readiness: {line}"
-        );
+        let engine = confined && hidden.is_none();
+        let mut child = if engine {
+            confined_engine_before_first_read()
+        } else {
+            let mut args = vec!["--confinement-probe", "--wait"];
+            if !confined {
+                args.push("--no-sandbox");
+            }
+            let mut child = HeldChild(command(&args).spawn().unwrap());
+            let mut reader = std::io::BufReader::new(child.stdout.take().unwrap());
+            let mut line = String::new();
+            use std::io::BufRead;
+            reader.read_line(&mut line).unwrap();
+            assert!(
+                line.contains("open_descriptors"),
+                "missing confinement readiness: {line}"
+            );
+            child
+        };
         let pid = child.id() as i32;
         let rc = unsafe { libc::ptrace(libc::PTRACE_ATTACH, pid, 0, 0) };
         if confined {
@@ -508,7 +590,11 @@ fn dumpable_denies_parent_ptrace_and_proc_mem_with_unconfined_control() {
             }
             File::open(format!("/proc/{pid}/mem")).expect("unconfined proc mem control");
         }
-        drop(child.stdin.take());
-        assert!(child.wait().unwrap().success());
+        if engine {
+            finish_engine_with_landlock_readback(&mut child);
+        } else {
+            drop(child.stdin.take());
+            assert_eq!(child.wait().unwrap().code(), Some(0));
+        }
     }
 }

@@ -1,6 +1,7 @@
 //! One raw forbidden syscall per Linux child; readiness distinguishes denial from setup failure.
 use crate::confinement::linux::{self, LandlockMode, Options};
 use basal_proto::Confinement;
+use std::ffi::CString;
 use std::io::Write;
 
 struct Parsed {
@@ -11,6 +12,9 @@ struct Parsed {
     wait: bool,
     induce_personality: bool,
     engine_stack_fixture: Option<u64>,
+    path: CString,
+    port: u16,
+    pid: libc::pid_t,
 }
 fn parse(args: &[String]) -> Result<Parsed, ()> {
     let mut parsed = Parsed {
@@ -21,6 +25,9 @@ fn parse(args: &[String]) -> Result<Parsed, ()> {
         wait: false,
         induce_personality: false,
         engine_stack_fixture: None,
+        path: c"/dev/null".to_owned(),
+        port: 0,
+        pid: unsafe { libc::getppid() },
     };
     for arg in args {
         if let Some(value) = arg.strip_prefix("--landlock=") {
@@ -47,14 +54,42 @@ fn parse(args: &[String]) -> Result<Parsed, ()> {
                 return Err(());
             }
             parsed.engine_stack_fixture = Some(stack);
+        } else if let Some(value) = arg.strip_prefix("--path=") {
+            parsed.path = CString::new(value).map_err(|_| ())?;
+        } else if let Some(value) = arg.strip_prefix("--port=") {
+            parsed.port = value.parse().map_err(|_| ())?;
+        } else if let Some(value) = arg.strip_prefix("--pid=") {
+            parsed.pid = value.parse().map_err(|_| ())?;
+            if parsed.pid <= 0 {
+                return Err(());
+            }
         } else if let Some(value) = arg.strip_prefix("--syscall=") {
             if ![
                 "open",
                 "create",
                 "socket",
+                "stat",
+                "list",
+                "readlink",
+                "tcp",
+                "udp",
+                "unix",
+                "netlink",
+                "connect",
+                "udp-send",
+                "unix-connect",
                 "exec",
                 "clone",
+                "fork",
+                "pthread-create",
+                "signal-parent",
+                "ptrace",
+                "process-vm-readv",
                 "mmap-exec",
+                "mprotect-exec",
+                "mmap-shared",
+                "io-uring",
+                "userfaultfd",
                 "panic",
                 "abort",
             ]
@@ -103,11 +138,15 @@ pub fn run(args: &[String]) -> u8 {
     }
     // Install before the filter. KILL_PROCESS cannot be caught by this handler.
     if parsed.handler {
-        unsafe {
+        let previous = unsafe {
             libc::signal(
                 libc::SIGSYS,
                 sigsys_handler as *const () as libc::sighandler_t,
-            );
+            )
+        };
+        if previous == libc::SIG_ERR {
+            eprintln!("confinement probe: could not install SIGSYS handler");
+            return 70;
         }
     }
     let (confinement, descriptors) = if parsed.sandbox {
@@ -136,10 +175,14 @@ pub fn run(args: &[String]) -> u8 {
                 })
                 .unwrap_or_else(|| "null".into());
             println!(
-                "{{\"confinement\":\"linux\",\"seccomp\":{seccomp},\"landlock\":{report},\"open_descriptors\":{descriptors:?}}}"
+                "{{\"confinement\":\"linux\",\"seccomp\":{seccomp},\"landlock\":{report},\"open_descriptors\":{descriptors:?},\"sigsys_handler\":{}}}",
+                parsed.handler
             );
         }
-        None => println!("{{\"confinement\":\"none\",\"open_descriptors\":{descriptors:?}}}"),
+        None => println!(
+            "{{\"confinement\":\"none\",\"open_descriptors\":{descriptors:?},\"sigsys_handler\":{}}}",
+            parsed.handler
+        ),
         _ => unreachable!(),
     }
     if let Some(stack) = parsed.engine_stack_fixture {
@@ -158,54 +201,257 @@ pub fn run(args: &[String]) -> u8 {
             libc::read(0, (&mut byte as *mut u8).cast(), 1);
         }
     }
-    if let Some(call) = parsed.call {
-        println!("ready: {call}");
-        if std::io::stdout().flush().is_err() {
-            return 70;
-        }
-        let rc = unsafe {
-            match call.as_str() {
-                "open" => libc::syscall(
-                    libc::SYS_openat,
-                    libc::AT_FDCWD,
-                    c"/dev/null".as_ptr(),
-                    libc::O_RDONLY,
-                    0,
-                ),
-                "create" => libc::syscall(
-                    libc::SYS_openat,
-                    libc::AT_FDCWD,
-                    c"/tmp/basal-probe-create".as_ptr(),
-                    libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
-                    0o600,
-                ),
-                "socket" => libc::syscall(libc::SYS_socket, libc::AF_INET, libc::SOCK_STREAM, 0),
-                "exec" => {
-                    let argv = [c"/bin/true".as_ptr(), std::ptr::null()];
-                    let envp: [*const libc::c_char; 1] = [std::ptr::null()];
-                    libc::syscall(libc::SYS_execve, argv[0], argv.as_ptr(), envp.as_ptr())
-                }
-                "clone" => libc::syscall(libc::SYS_clone, libc::SIGCHLD, 0, 0, 0, 0),
-                "mmap-exec" => libc::syscall(
-                    libc::SYS_mmap,
-                    0,
-                    4096,
-                    libc::PROT_READ | libc::PROT_EXEC,
-                    libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
-                    -1,
-                    0,
-                ),
-                "panic" => panic!("probe panic"),
-                "abort" => std::process::abort(),
-                _ => unreachable!(),
-            }
-        };
-        println!(
-            "result: {rc} errno: {}",
-            std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-        );
+    if let Some(call) = &parsed.call {
+        return attempt(call, &parsed);
     }
     0
+}
+
+fn attempt(call: &str, parsed: &Parsed) -> u8 {
+    let mut buffer = [0u8; 4096];
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    let mut ring_params = [0u64; 32];
+    let mut tcp_addr: libc::sockaddr_in = unsafe { std::mem::zeroed() };
+    tcp_addr.sin_family = libc::AF_INET as _;
+    tcp_addr.sin_port = parsed.port.to_be();
+    tcp_addr.sin_addr.s_addr = u32::from_ne_bytes([127, 0, 0, 1]);
+    let mut unix_addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    unix_addr.sun_family = libc::AF_UNIX as _;
+    if call == "unix-connect" {
+        let path = parsed.path.as_bytes_with_nul();
+        if path.len() > unix_addr.sun_path.len() {
+            eprintln!("probe setup: Unix socket path too long");
+            return 70;
+        }
+        for (dst, src) in unix_addr.sun_path.iter_mut().zip(path) {
+            *dst = *src as _;
+        }
+    }
+    // Connect and send controls need a socket, and mprotect needs a writable page.
+    // Do that setup before readiness so an unrelated setup death cannot count as denial.
+    let fd = if ["connect", "udp-send", "unix-connect"].contains(&call) {
+        let domain = if call == "unix-connect" {
+            libc::AF_UNIX
+        } else {
+            libc::AF_INET
+        };
+        let kind = if call == "udp-send" {
+            libc::SOCK_DGRAM
+        } else {
+            libc::SOCK_STREAM
+        };
+        let fd = unsafe { libc::syscall(libc::SYS_socket, domain, kind, 0) };
+        if fd < 0 {
+            eprintln!("probe setup: socket: {}", std::io::Error::last_os_error());
+            return 70;
+        }
+        fd
+    } else {
+        -1
+    };
+    let page = if call == "mprotect-exec" {
+        let page = unsafe {
+            libc::syscall(
+                libc::SYS_mmap,
+                0,
+                buffer.len(),
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        if page == -1 {
+            eprintln!("probe setup: mmap: {}", std::io::Error::last_os_error());
+            return 70;
+        }
+        page
+    } else {
+        0
+    };
+    let raw_call = match call {
+        "open" | "create" => "openat",
+        "stat" => "newfstatat",
+        "list" => "getdents64",
+        "readlink" => "readlinkat",
+        "socket" | "tcp" | "udp" | "unix" | "netlink" => "socket",
+        "udp-send" => "sendto",
+        "unix-connect" => "connect",
+        "exec" => "execve",
+        "pthread-create" => "pthread_create",
+        "signal-parent" => "kill",
+        "process-vm-readv" => "process_vm_readv",
+        "mmap-exec" | "mmap-shared" => "mmap",
+        "mprotect-exec" => "mprotect",
+        "io-uring" => "io_uring_setup",
+        other => other,
+    };
+    println!("ready: {call} syscall: {raw_call}");
+    if std::io::stdout().flush().is_err() {
+        return 70;
+    }
+    let rc = unsafe {
+        *libc::__errno_location() = 0;
+        match call {
+            "open" | "create" => libc::syscall(
+                libc::SYS_openat,
+                libc::AT_FDCWD,
+                parsed.path.as_ptr(),
+                if call == "create" {
+                    libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL
+                } else {
+                    libc::O_RDONLY
+                },
+                0o600,
+            ),
+            "stat" => libc::syscall(
+                libc::SYS_newfstatat,
+                libc::AT_FDCWD,
+                parsed.path.as_ptr(),
+                stat.as_mut_ptr(),
+                0,
+            ),
+            // No directory fd survives confinement. Even a listing on the stdin pipe
+            // must be killed at entry, before the kernel can return ENOTDIR.
+            "list" => libc::syscall(libc::SYS_getdents64, 0, buffer.as_mut_ptr(), buffer.len()),
+            "readlink" => libc::syscall(
+                libc::SYS_readlinkat,
+                libc::AT_FDCWD,
+                parsed.path.as_ptr(),
+                buffer.as_mut_ptr(),
+                buffer.len(),
+            ),
+            "socket" | "tcp" => {
+                libc::syscall(libc::SYS_socket, libc::AF_INET, libc::SOCK_STREAM, 0)
+            }
+            "udp" => libc::syscall(libc::SYS_socket, libc::AF_INET, libc::SOCK_DGRAM, 0),
+            "unix" => libc::syscall(libc::SYS_socket, libc::AF_UNIX, libc::SOCK_STREAM, 0),
+            "netlink" => libc::syscall(
+                libc::SYS_socket,
+                libc::AF_NETLINK,
+                libc::SOCK_RAW,
+                libc::NETLINK_ROUTE,
+            ),
+            "connect" => libc::syscall(
+                libc::SYS_connect,
+                fd,
+                &tcp_addr,
+                std::mem::size_of_val(&tcp_addr),
+            ),
+            "unix-connect" => libc::syscall(
+                libc::SYS_connect,
+                fd,
+                &unix_addr,
+                std::mem::size_of_val(&unix_addr),
+            ),
+            "udp-send" => libc::syscall(
+                libc::SYS_sendto,
+                fd,
+                c"probe".as_ptr(),
+                5,
+                0,
+                &tcp_addr,
+                std::mem::size_of_val(&tcp_addr),
+            ),
+            "exec" => {
+                let argv = [c"/bin/true".as_ptr(), std::ptr::null()];
+                let envp: [*const libc::c_char; 1] = [std::ptr::null()];
+                libc::syscall(libc::SYS_execve, argv[0], argv.as_ptr(), envp.as_ptr())
+            }
+            "clone" | "fork" => {
+                let pid = if call == "clone" {
+                    libc::syscall(libc::SYS_clone, libc::SIGCHLD, 0, 0, 0, 0)
+                } else {
+                    libc::fork() as libc::c_long
+                };
+                if pid == 0 {
+                    libc::_exit(0);
+                }
+                if pid > 0 {
+                    let mut status = 0;
+                    if libc::waitpid(pid as _, &mut status, 0) != pid as _ || status != 0 {
+                        eprintln!("probe setup: forked child did not exit cleanly");
+                        return 70;
+                    }
+                }
+                pid
+            }
+            "pthread-create" => {
+                let mut thread = std::mem::MaybeUninit::uninit();
+                let rc = libc::pthread_create(
+                    thread.as_mut_ptr(),
+                    std::ptr::null(),
+                    thread_return,
+                    std::ptr::null_mut(),
+                );
+                if rc == 0 {
+                    libc::pthread_join(thread.assume_init(), std::ptr::null_mut());
+                }
+                *libc::__errno_location() = rc;
+                if rc == 0 { 0 } else { -1 }
+            }
+            // Use SIGCONT so a seccomp regression allowing kill cannot terminate the supervisor.
+            "signal-parent" => libc::syscall(libc::SYS_kill, parsed.pid, libc::SIGCONT),
+            "ptrace" => libc::syscall(libc::SYS_ptrace, libc::PTRACE_ATTACH, parsed.pid, 0, 0),
+            "process-vm-readv" => {
+                let local = libc::iovec {
+                    iov_base: buffer.as_mut_ptr().cast(),
+                    iov_len: 1,
+                };
+                let remote = libc::iovec {
+                    iov_base: buffer.as_mut_ptr().cast(),
+                    iov_len: 1,
+                };
+                libc::syscall(
+                    libc::SYS_process_vm_readv,
+                    parsed.pid,
+                    &local,
+                    1,
+                    &remote,
+                    1,
+                    0,
+                )
+            }
+            "mmap-exec" | "mmap-shared" => libc::syscall(
+                libc::SYS_mmap,
+                0,
+                buffer.len(),
+                if call == "mmap-exec" {
+                    libc::PROT_READ | libc::PROT_EXEC
+                } else {
+                    libc::PROT_READ | libc::PROT_WRITE
+                },
+                libc::MAP_ANONYMOUS
+                    | if call == "mmap-shared" {
+                        libc::MAP_SHARED
+                    } else {
+                        libc::MAP_PRIVATE
+                    },
+                -1,
+                0,
+            ),
+            "mprotect-exec" => libc::syscall(
+                libc::SYS_mprotect,
+                page,
+                buffer.len(),
+                libc::PROT_READ | libc::PROT_EXEC,
+            ),
+            "io-uring" => libc::syscall(libc::SYS_io_uring_setup, 1, ring_params.as_mut_ptr()),
+            "userfaultfd" => {
+                libc::syscall(libc::SYS_userfaultfd, libc::O_CLOEXEC | libc::O_NONBLOCK)
+            }
+            "panic" => panic!("probe panic"),
+            "abort" => std::process::abort(),
+            _ => unreachable!(),
+        }
+    };
+    let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+    println!("result: {rc} errno: {errno}");
+    0
+}
+
+extern "C" fn thread_return(_: *mut libc::c_void) -> *mut libc::c_void {
+    std::ptr::null_mut()
 }
 
 fn engine_stack_fixture(stack: u64) -> basal_proto::ActivationResult {
@@ -238,6 +484,11 @@ mod tests {
             "--fixture-tasks=no",
             "--syscall=unknown",
             "--engine-stack-fixture=1",
+            "--port=not-a-port",
+            "--port=65536",
+            "--pid=0",
+            "--pid=-1",
+            "--path=a\0b",
         ] {
             assert!(parse(&[arg.into()]).is_err());
         }
