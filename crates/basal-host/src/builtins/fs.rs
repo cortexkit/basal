@@ -28,10 +28,13 @@
 mod tests;
 
 use std::ffi::{CString, OsStr, OsString};
-use std::fs::{File, OpenOptions};
+use std::fs::File;
+#[cfg(not(target_os = "linux"))]
+use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
+#[cfg(not(target_os = "linux"))]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -39,6 +42,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde_json::{Value, json};
 
 use super::{Denial, codes, expand_home};
+
+#[cfg(target_os = "linux")]
+pub use linux::{
+    KernelCapability, ResolvedPath, Target, open_checked, open_checked_with_capability, resolve,
+    stat,
+};
 
 /// `fs.read`'s default cap.
 pub const DEFAULT_READ_BYTES: u64 = super::MAX_TEXT_RESULT_BYTES as u64;
@@ -61,6 +70,7 @@ pub enum Purpose {
 
 /// Where a path resolved to.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(not(target_os = "linux"))]
 pub enum Target {
     /// It exists; this is its real path.
     Existing(PathBuf),
@@ -71,6 +81,7 @@ pub enum Target {
 
 /// The roots, each resolved to its real path. A root that does not exist
 /// now grants nothing.
+#[cfg(not(target_os = "linux"))]
 fn real_roots(roots: &[String]) -> Vec<PathBuf> {
     roots
         .iter()
@@ -110,11 +121,13 @@ fn absolute(path: &str) -> Result<PathBuf, Denial> {
 }
 
 /// Resolves `path` and requires it to lie under one of `roots`.
+#[cfg(not(target_os = "linux"))]
 pub fn resolve(path: &str, roots: &[String], purpose: Purpose) -> Result<Target, Denial> {
     let roots = real_roots(roots);
     resolve_real(path, &roots, purpose)
 }
 
+#[cfg(not(target_os = "linux"))]
 fn resolve_real(path: &str, roots: &[PathBuf], purpose: Purpose) -> Result<Target, Denial> {
     let path = absolute(path)?;
     if purpose == Purpose::Read {
@@ -153,6 +166,7 @@ fn resolve_real(path: &str, roots: &[PathBuf], purpose: Purpose) -> Result<Targe
 }
 
 /// Where the kernel says an open descriptor's file is.
+#[cfg(not(target_os = "linux"))]
 fn fd_path(fd: RawFd) -> std::io::Result<PathBuf> {
     #[cfg(target_os = "macos")]
     {
@@ -176,6 +190,7 @@ fn fd_path(fd: RawFd) -> std::io::Result<PathBuf> {
 
 /// Requires the file behind `fd` (or, with `name`, the entry `name` in the
 /// directory behind `fd`) to lie under one of `roots`.
+#[cfg(not(target_os = "linux"))]
 fn verify(fd: RawFd, name: Option<&OsStr>, roots: &[PathBuf]) -> Result<(), Denial> {
     let mut real = fd_path(fd).map_err(|e| Denial::new(codes::IO, e.to_string()))?;
     if let Some(name) = name {
@@ -195,10 +210,12 @@ fn verify(fd: RawFd, name: Option<&OsStr>, roots: &[PathBuf]) -> Result<(), Deni
 /// it was resolved against. A symlink swapped into the last component
 /// since resolution fails the open; one swapped in higher up is caught by
 /// the check after it.
+#[cfg(not(target_os = "linux"))]
 pub fn open_checked(resolved: &Path, roots: &[String], directory: bool) -> Result<File, Denial> {
     open_checked_real(resolved, &real_roots(roots), directory)
 }
 
+#[cfg(not(target_os = "linux"))]
 fn open_checked_real(resolved: &Path, roots: &[PathBuf], directory: bool) -> Result<File, Denial> {
     let mut flags = libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK;
     if directory {
@@ -224,9 +241,14 @@ fn open_checked_real(resolved: &Path, roots: &[PathBuf], directory: bool) -> Res
 
 /// `fs.read`: the file's text, refused over `max_bytes` or when not UTF-8.
 pub fn read(path: &str, roots: &[String], max_bytes: u64) -> Result<Value, Denial> {
+    #[cfg(not(target_os = "linux"))]
     let roots = real_roots(roots);
     let max_bytes = max_bytes.min(MAX_READ_BYTES);
-    let real = match resolve_real(path, &roots, Purpose::Read)? {
+    #[cfg(not(target_os = "linux"))]
+    let target = resolve_real(path, &roots, Purpose::Read)?;
+    #[cfg(target_os = "linux")]
+    let target = resolve(path, roots, Purpose::Read)?;
+    let real = match target {
         Target::Existing(real) => real,
         Target::Entry { parent, name } => {
             return Err(Denial::new(
@@ -235,7 +257,10 @@ pub fn read(path: &str, roots: &[String], max_bytes: u64) -> Result<Value, Denia
             ));
         }
     };
+    #[cfg(not(target_os = "linux"))]
     let file = open_checked_real(&real, &roots, false)?;
+    #[cfg(target_os = "linux")]
+    let file = open_checked(&real, roots, false)?;
     let meta = file.metadata().map_err(|e| io_denial(&real, &e))?;
     if !meta.is_file() {
         return Err(Denial::invalid(format!(
@@ -303,6 +328,7 @@ fn stat_at(dir: RawFd, name: &OsStr) -> Result<Option<libc::stat>, Denial> {
 }
 
 /// Opens the parent of an entry and checks the entry's real path.
+#[cfg(not(target_os = "linux"))]
 fn open_parent(parent: &Path, name: &OsStr, roots: &[PathBuf]) -> Result<File, Denial> {
     let file = OpenOptions::new()
         .read(true)
@@ -317,6 +343,7 @@ fn open_parent(parent: &Path, name: &OsStr, roots: &[PathBuf]) -> Result<File, D
 /// answers `{exists: false}` when its parent lies under a root.
 /// Existing symlinks are followed by resolution; only a dangling symlink is
 /// reported as `kind: "symlink"` by the descriptor-relative metadata lookup.
+#[cfg(not(target_os = "linux"))]
 pub fn stat(path: &str, roots: &[String]) -> Result<Value, Denial> {
     let roots = real_roots(roots);
     let (parent, name) = match resolve_real(path, &roots, Purpose::Read)? {
@@ -344,8 +371,13 @@ pub fn stat(path: &str, roots: &[String]) -> Result<Value, Denial> {
 /// `fs.list`: the directory's entries, sorted by name, refused over
 /// [`MAX_LIST_ENTRIES`] or when a name is not UTF-8.
 pub fn list(path: &str, roots: &[String]) -> Result<Value, Denial> {
+    #[cfg(not(target_os = "linux"))]
     let roots = real_roots(roots);
-    let real = match resolve_real(path, &roots, Purpose::Read)? {
+    #[cfg(not(target_os = "linux"))]
+    let target = resolve_real(path, &roots, Purpose::Read)?;
+    #[cfg(target_os = "linux")]
+    let target = resolve(path, roots, Purpose::Read)?;
+    let real = match target {
         Target::Existing(real) => real,
         Target::Entry { parent, name } => {
             return Err(Denial::new(
@@ -354,7 +386,10 @@ pub fn list(path: &str, roots: &[String]) -> Result<Value, Denial> {
             ));
         }
     };
+    #[cfg(not(target_os = "linux"))]
     let dir = open_checked_real(&real, &roots, true)?;
+    #[cfg(target_os = "linux")]
+    let dir = open_checked(&real, roots, true)?;
     let names = read_dir_fd(dir.as_raw_fd()).map_err(|e| io_denial(&real, &e))?;
     if names.len() > MAX_LIST_ENTRIES {
         return Err(Denial::new(
@@ -468,11 +503,19 @@ pub fn write(path: &str, roots: &[String], text: &str) -> Result<Value, Denial> 
     // Public callers may bypass the argument parser, so enforce the shared
     // write limit here as well as before authorization.
     check_write_size(text.len())?;
+    #[cfg(not(target_os = "linux"))]
     let roots = real_roots(roots);
-    let Target::Entry { parent, name } = resolve_real(path, &roots, Purpose::Write)? else {
+    #[cfg(not(target_os = "linux"))]
+    let target = resolve_real(path, &roots, Purpose::Write)?;
+    #[cfg(target_os = "linux")]
+    let target = resolve(path, roots, Purpose::Write)?;
+    let Target::Entry { parent, name } = target else {
         return Err(Denial::invalid("a write resolves to a directory entry"));
     };
+    #[cfg(not(target_os = "linux"))]
     let dir = open_parent(&parent, &name, &roots)?;
+    #[cfg(target_os = "linux")]
+    let dir = linux::open_parent(&parent, &name, roots, KernelCapability::Openat2)?;
     let dirfd = dir.as_raw_fd();
     let mode = match stat_at(dirfd, &name)? {
         Some(st) if st.st_mode & libc::S_IFMT == libc::S_IFLNK => {
@@ -539,4 +582,439 @@ pub fn write(path: &str, roots: &[String], text: &str) -> Result<Value, Denial> 
     // in place, so it is not an error.
     let _ = dir.sync_all();
     Ok(json!({ "bytes": text.len() }))
+}
+
+/// Linux opens the canonical component list beneath a descriptor whose identity
+/// was captured during resolution. Renames after acquisition keep acting on the
+/// held object; they cannot redirect a later operation through a symlink.
+#[cfg(target_os = "linux")]
+mod linux {
+    use super::*;
+    use std::os::unix::fs::MetadataExt;
+
+    /// Whether to try openat2 or force the component walk used before Linux 5.6.
+    /// Even when openat2 is selected, ENOSYS alone selects the walk.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum KernelCapability {
+        Openat2,
+        NoOpenat2,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct Identity {
+        dev: u64,
+        ino: u64,
+    }
+
+    impl Identity {
+        fn of(meta: &std::fs::Metadata) -> Self {
+            Self {
+                dev: meta.dev(),
+                ino: meta.ino(),
+            }
+        }
+
+        fn check(&self, file: &File, path: &Path) -> Result<(), Denial> {
+            let meta = file.metadata().map_err(|_| outside(path))?;
+            if *self == Self::of(&meta) {
+                Ok(())
+            } else {
+                Err(outside(path))
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct Root {
+        manifest: String,
+        path: PathBuf,
+        identity: Identity,
+        directory: bool,
+        // A file grant permits replacement of only its own basename, even
+        // though atomic replacement needs a descriptor for the parent.
+        parent_identity: Option<Identity>,
+    }
+
+    /// A canonical path and the selected grant's identity snapshot. The private
+    /// snapshot prevents callers from opening a path without first resolving it.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ResolvedPath {
+        path: PathBuf,
+        root: Root,
+    }
+
+    impl AsRef<Path> for ResolvedPath {
+        fn as_ref(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl std::ops::Deref for ResolvedPath {
+        type Target = Path;
+        fn deref(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    /// A resolved path carries the identity of the root used to authorize it.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum Target {
+        Existing(ResolvedPath),
+        Entry {
+            parent: ResolvedPath,
+            name: OsString,
+        },
+    }
+
+    fn snapshot_roots(roots: &[String]) -> Vec<Root> {
+        roots
+            .iter()
+            .filter_map(|manifest| {
+                let path = std::fs::canonicalize(expand_home(manifest)?).ok()?;
+                let meta = std::fs::metadata(&path).ok()?;
+                let directory = meta.is_dir();
+                let parent_identity = if directory {
+                    None
+                } else {
+                    Some(Identity::of(&std::fs::metadata(path.parent()?).ok()?))
+                };
+                Some(Root {
+                    manifest: manifest.clone(),
+                    path,
+                    identity: Identity::of(&meta),
+                    directory,
+                    parent_identity,
+                })
+            })
+            .collect()
+    }
+
+    fn select(path: &Path, roots: &[Root]) -> Result<Root, Denial> {
+        roots
+            .iter()
+            .find(|root| path.starts_with(&root.path) && (root.directory || path == root.path))
+            .cloned()
+            .ok_or_else(|| outside(path))
+    }
+
+    pub fn resolve(path: &str, roots: &[String], purpose: Purpose) -> Result<Target, Denial> {
+        let path = absolute(path)?;
+        let roots = snapshot_roots(roots);
+        if purpose == Purpose::Read {
+            match std::fs::canonicalize(&path) {
+                Ok(real) => {
+                    let root = select(&real, &roots)?;
+                    return Ok(Target::Existing(ResolvedPath { path: real, root }));
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return Err(outside(&path)),
+            }
+        }
+        let name = match path.components().next_back() {
+            Some(Component::Normal(name)) => name.to_owned(),
+            _ => {
+                return Err(Denial::invalid(format!(
+                    "{} does not name an entry in a directory",
+                    path.display()
+                )));
+            }
+        };
+        let parent = std::fs::canonicalize(path.parent().unwrap_or(Path::new("/")))
+            .map_err(|_| outside(&path))?;
+        let root = select(&parent.join(&name), &roots)?;
+        Ok(Target::Entry {
+            parent: ResolvedPath { path: parent, root },
+            name,
+        })
+    }
+
+    fn flags(directory: bool) -> libc::c_int {
+        let mut flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK;
+        if directory {
+            flags |= libc::O_DIRECTORY;
+        }
+        flags
+    }
+
+    fn owned(raw: libc::c_int) -> std::io::Result<File> {
+        if raw == -1 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: a successful open returned a new descriptor owned by this call.
+        Ok(File::from(unsafe { OwnedFd::from_raw_fd(raw) }))
+    }
+
+    fn walk(dir: RawFd, path: &Path, directory: bool) -> std::io::Result<File> {
+        let mut current = None;
+        let mut components = path.components().peekable();
+        while let Some(component) = components.next() {
+            let name = match component {
+                Component::RootDir => OsStr::new("/"),
+                Component::Normal(name) => name,
+                _ => return Err(std::io::Error::from_raw_os_error(libc::EINVAL)),
+            };
+            let name = CString::new(name.as_bytes())
+                .map_err(|_| std::io::Error::from_raw_os_error(libc::EINVAL))?;
+            let fd = current.as_ref().map_or(dir, AsRawFd::as_raw_fd);
+            // SAFETY: the name is NUL-terminated and fd is either AT_FDCWD or
+            // a held directory. Every component rejects symlinks, not just the last.
+            let raw = unsafe {
+                libc::openat(
+                    fd,
+                    name.as_ptr(),
+                    flags(directory || components.peek().is_some()),
+                )
+            };
+            current = Some(owned(raw)?);
+        }
+        current.ok_or_else(|| std::io::Error::from_raw_os_error(libc::EINVAL))
+    }
+
+    fn open_path(
+        dir: RawFd,
+        path: &Path,
+        directory: bool,
+        capability: KernelCapability,
+    ) -> std::io::Result<File> {
+        if capability == KernelCapability::Openat2 {
+            let name = CString::new(path.as_os_str().as_bytes())
+                .map_err(|_| std::io::Error::from_raw_os_error(libc::EINVAL))?;
+            // SAFETY: open_how contains only integer fields; zero selects no
+            // creation mode and no additional resolution flags.
+            let mut how: libc::open_how = unsafe { std::mem::zeroed() };
+            how.flags = flags(directory) as u64;
+            how.resolve = libc::RESOLVE_NO_SYMLINKS | libc::RESOLVE_NO_MAGICLINKS;
+            if !path.is_absolute() {
+                how.resolve |= libc::RESOLVE_BENEATH;
+            }
+            // RESOLVE_NO_XDEV is deliberately absent: mounts under a grant
+            // remain reachable, just as they are on the other platforms.
+            // SAFETY: name and how are valid for the syscall, with the exact
+            // open_how size; ownership of a successful result is taken below.
+            let raw = unsafe {
+                libc::syscall(
+                    libc::SYS_openat2,
+                    dir,
+                    name.as_ptr(),
+                    &how,
+                    std::mem::size_of::<libc::open_how>(),
+                )
+            } as libc::c_int;
+            match owned(raw) {
+                Ok(file) => return Ok(file),
+                Err(e) if e.raw_os_error() == Some(libc::ENOSYS) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        walk(dir, path, directory)
+    }
+
+    fn acquire_root(
+        resolved: &ResolvedPath,
+        roots: &[String],
+        capability: KernelCapability,
+    ) -> Result<File, Denial> {
+        let root = &resolved.root;
+        if !roots.contains(&root.manifest) {
+            return Err(outside(&resolved.path));
+        }
+        let file = open_path(libc::AT_FDCWD, &root.path, root.directory, capability)
+            .map_err(|_| outside(&resolved.path))?;
+        root.identity.check(&file, &resolved.path)?;
+        Ok(file)
+    }
+
+    pub fn open_checked(
+        resolved: &ResolvedPath,
+        roots: &[String],
+        directory: bool,
+    ) -> Result<File, Denial> {
+        open_checked_with_capability(resolved, roots, directory, KernelCapability::Openat2)
+    }
+
+    /// The capability is explicit so the old-kernel walk can be exercised on a
+    /// new kernel without environment variables or a timing-dependent race.
+    pub fn open_checked_with_capability(
+        resolved: &ResolvedPath,
+        roots: &[String],
+        directory: bool,
+        capability: KernelCapability,
+    ) -> Result<File, Denial> {
+        let root = acquire_root(resolved, roots, capability)?;
+        let relative = resolved
+            .path
+            .strip_prefix(&resolved.root.path)
+            .map_err(|_| outside(&resolved.path))?;
+        if relative.as_os_str().is_empty() {
+            if directory && !resolved.root.directory {
+                return Err(outside(&resolved.path));
+            }
+            return Ok(root);
+        }
+        let parent = relative.parent().ok_or_else(|| outside(&resolved.path))?;
+        let dir = if parent.as_os_str().is_empty() {
+            root
+        } else {
+            open_path(root.as_raw_fd(), parent, true, capability)
+                .map_err(|_| outside(&resolved.path))?
+        };
+        let name = relative
+            .file_name()
+            .ok_or_else(|| outside(&resolved.path))?;
+        open_path(dir.as_raw_fd(), Path::new(name), directory, capability).map_err(|e| {
+            if e.raw_os_error() == Some(libc::ELOOP) {
+                Denial::denied(format!(
+                    "{} became a symlink while it was being opened",
+                    resolved.display()
+                ))
+            } else {
+                outside(&resolved.path)
+            }
+        })
+    }
+
+    pub(super) fn open_parent(
+        parent: &ResolvedPath,
+        name: &OsStr,
+        roots: &[String],
+        capability: KernelCapability,
+    ) -> Result<File, Denial> {
+        let root = acquire_root(parent, roots, capability)?;
+        if parent.root.directory {
+            let relative = parent
+                .path
+                .strip_prefix(&parent.root.path)
+                .map_err(|_| outside(&parent.path))?;
+            if relative.as_os_str().is_empty() {
+                return Ok(root);
+            }
+            open_path(root.as_raw_fd(), relative, true, capability)
+                .map_err(|_| outside(&parent.path))
+        } else {
+            // Acquiring the parent grants no authority over its other names.
+            if parent.path.join(name) != parent.root.path {
+                return Err(outside(&parent.path));
+            }
+            let dir = open_path(libc::AT_FDCWD, &parent.path, true, capability)
+                .map_err(|_| outside(&parent.path))?;
+            parent
+                .root
+                .parent_identity
+                .as_ref()
+                .ok_or_else(|| outside(&parent.path))?
+                .check(&dir, &parent.path)?;
+            Ok(dir)
+        }
+    }
+
+    pub fn stat(path: &str, roots: &[String]) -> Result<Value, Denial> {
+        let target = resolve(path, roots, Purpose::Read)?;
+        let (parent, name) = match target {
+            Target::Existing(real) if real.path == real.root.path => {
+                let file = acquire_root(&real, roots, KernelCapability::Openat2)?;
+                let mut st = std::mem::MaybeUninit::<libc::stat>::uninit();
+                // SAFETY: file is held open and fstat initializes st on success.
+                if unsafe { libc::fstat(file.as_raw_fd(), st.as_mut_ptr()) } != 0 {
+                    return Err(outside(&real.path));
+                }
+                // SAFETY: fstat succeeded, so st is initialized.
+                return Ok(stat_value(unsafe { st.assume_init() }));
+            }
+            Target::Existing(real) => {
+                let name = real
+                    .path
+                    .file_name()
+                    .ok_or_else(|| outside(&real.path))?
+                    .to_owned();
+                let parent = ResolvedPath {
+                    path: real
+                        .path
+                        .parent()
+                        .ok_or_else(|| outside(&real.path))?
+                        .to_owned(),
+                    root: real.root,
+                };
+                (parent, name)
+            }
+            Target::Entry { parent, name } => (parent, name),
+        };
+        let dir = open_parent(&parent, &name, roots, KernelCapability::Openat2)?;
+        Ok(match stat_at(dir.as_raw_fd(), &name)? {
+            Some(st) => stat_value(st),
+            None => json!({ "exists": false }),
+        })
+    }
+
+    fn stat_value(st: libc::stat) -> Value {
+        let mtime_ms = st.st_mtime * 1000 + st.st_mtime_nsec / 1_000_000;
+        json!({ "exists": true, "kind": kind_of(st.st_mode), "size": st.st_size, "mtime_ms": mtime_ms })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        struct FileRoot(PathBuf);
+
+        impl FileRoot {
+            fn new() -> Self {
+                let base = std::env::temp_dir().join(format!(
+                    "basal-fs-file-parent-{}-{}",
+                    std::process::id(),
+                    TEMP_SEQ.fetch_add(1, Ordering::Relaxed)
+                ));
+                std::fs::create_dir_all(base.join("parent")).expect("parent");
+                std::fs::write(base.join("parent/file"), "inside").expect("file");
+                Self(base)
+            }
+
+            fn resolved(&self) -> (ResolvedPath, OsString, Vec<String>) {
+                let file = self.0.join("parent/file");
+                let roots = vec![file.display().to_string()];
+                let Target::Entry { parent, name } =
+                    resolve(file.to_str().unwrap(), &roots, Purpose::Write)
+                        .expect("resolve file-root write")
+                else {
+                    panic!("write entry");
+                };
+                (parent, name, roots)
+            }
+        }
+
+        impl Drop for FileRoot {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+
+        #[test]
+        fn file_root_parent_identity_is_checked_even_when_the_file_inode_is_unchanged() {
+            let t = FileRoot::new();
+            let (parent, name, roots) = t.resolved();
+            std::fs::rename(t.0.join("parent"), t.0.join("parent-moved")).expect("move parent");
+            std::fs::create_dir(t.0.join("parent")).expect("replacement parent");
+            // Retain the granted file's inode so only the parent identity check
+            // can distinguish the replacement directory from the original.
+            std::fs::hard_link(t.0.join("parent-moved/file"), t.0.join("parent/file"))
+                .expect("same file inode");
+            for capability in [KernelCapability::Openat2, KernelCapability::NoOpenat2] {
+                let denial = open_parent(&parent, &name, &roots, capability)
+                    .expect_err("replacement parent");
+                assert_eq!(denial.code, codes::DENIED);
+            }
+        }
+
+        #[test]
+        fn file_root_parent_descriptor_cannot_authorize_a_sibling_name() {
+            let t = FileRoot::new();
+            let (parent, name, roots) = t.resolved();
+            for capability in [KernelCapability::Openat2, KernelCapability::NoOpenat2] {
+                let dir = open_parent(&parent, &name, &roots, capability).expect("own basename");
+                assert!(dir.metadata().expect("parent metadata").is_dir());
+                let denial = open_parent(&parent, OsStr::new("sibling"), &roots, capability)
+                    .expect_err("sibling basename");
+                assert_eq!(denial.code, codes::DENIED);
+            }
+        }
+    }
 }
