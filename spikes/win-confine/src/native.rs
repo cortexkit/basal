@@ -597,11 +597,14 @@ pub fn enumerate_directory(path: &str) -> Result<Vec<(String, String)>> {
 }
 
 pub fn handle_table() -> Result<Vec<Value>> {
+    handle_table_for(unsafe { GetCurrentProcess() })
+}
+pub fn handle_table_for(process: HANDLE) -> Result<Vec<Value>> {
     unsafe {
         let mut buffer = vec![0usize; 16384];
         let mut returned = 0;
         let status = NtQueryInformationProcess(
-            GetCurrentProcess(),
+            process,
             51,
             buffer.as_mut_ptr().cast(),
             (buffer.len() * size_of::<usize>()) as u32,

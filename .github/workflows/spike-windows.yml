@@ -58,12 +58,25 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python pe_inventory.py target/release/win-confine.exe evidence/imports.json
           exit $LASTEXITCODE
-      - name: Measure all three modes
+      - name: Measure sandbox-enabled Chrome from the parent
+        run: ./chrome_reference.ps1
+      - name: Measure all three modes with image-specific loader snaps
         run: |
           systeminfo | Out-File evidence/host.txt
           whoami /all | Out-File -Append evidence/host.txt
-          & target\release\win-confine.exe --output evidence/report.json
-          exit $LASTEXITCODE
+          $ifeo = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\win-confine.exe'
+          if (Test-Path $ifeo) { throw 'Refusing to overwrite an existing image-specific IFEO key' }
+          try {
+            New-Item $ifeo -Force | Out-Null
+            New-ItemProperty $ifeo -Name GlobalFlag -PropertyType DWord -Value 2 | Out-Null
+            Get-ItemProperty $ifeo | Out-File evidence/loader-snaps-setting.txt
+            & target\release\win-confine.exe --output evidence/report.json
+            $measurementExit = $LASTEXITCODE
+          } finally {
+            Remove-Item $ifeo -Recurse -Force
+            "IFEO exists after cleanup: $(Test-Path $ifeo)" | Out-File evidence/loader-snaps-cleanup.txt
+          }
+          exit $measurementExit
       - name: Print residual and comparison
         if: always()
         run: |

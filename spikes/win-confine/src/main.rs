@@ -5,9 +5,13 @@ mod native;
 #[cfg(windows)]
 mod network;
 #[cfg(windows)]
+mod observe;
+#[cfg(windows)]
 mod parent;
 #[cfg(windows)]
 mod profile;
+#[cfg(windows)]
+mod trace;
 
 #[cfg(windows)]
 fn main() {
@@ -19,6 +23,8 @@ fn main() {
     }
     let result = if std::env::args().any(|a| a == "--child") {
         child::run()
+    } else if std::env::args().any(|a| a == "--observe") {
+        observe::run()
     } else {
         parent::run()
     };

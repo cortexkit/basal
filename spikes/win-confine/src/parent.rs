@@ -14,7 +14,13 @@ use windows_sys::Win32::{
     Security::{Authorization::*, Isolation::*},
     Storage::FileSystem::*,
     System::{
-        JobObjects::*, Memory::*, Pipes::*, RemoteDesktop::*, Threading::*, WindowsProgramming::*,
+        Diagnostics::Debug::{DebugActiveProcess, DebugSetProcessKillOnExit},
+        JobObjects::*,
+        Memory::*,
+        Pipes::*,
+        RemoteDesktop::*,
+        Threading::*,
+        WindowsProgramming::*,
     },
 };
 
@@ -657,6 +663,7 @@ fn launch_variant(
         let full = input.mode == "full";
         let lpac = input.mode != "plain";
         let bare = sequence == "bare-token-control";
+        let debug = sequence == "loader-trace";
         let mut tokens = if full {
             Some(restricted_tokens(
                 parent_token,
@@ -746,40 +753,69 @@ fn launch_variant(
                 ""
             }
         ));
-        let flags = if bare {
+        let mut flags = if bare {
             CREATE_SUSPENDED | CREATE_NO_WINDOW
         } else {
             EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_NO_WINDOW
         };
-        let ok = if full {
-            CreateProcessAsUserW(
-                tokens.as_ref().unwrap().primary.0,
-                wide(image).as_ptr(),
-                command.as_mut_ptr(),
-                null(),
-                null(),
-                1,
-                flags,
-                null(),
-                null(),
-                &startup.StartupInfo,
-                &mut pi,
-            )
-        } else {
-            CreateProcessW(
-                wide(image).as_ptr(),
-                command.as_mut_ptr(),
-                null(),
-                null(),
-                1,
-                flags,
-                null(),
-                null(),
-                &startup.StartupInfo,
-                &mut pi,
-            )
+        if debug {
+            flags |= DEBUG_ONLY_THIS_PROCESS;
+        }
+        let mut debug_creation_error = Value::Null;
+        let mut create = |flags, pi: &mut PROCESS_INFORMATION| {
+            if full {
+                CreateProcessAsUserW(
+                    tokens.as_ref().unwrap().primary.0,
+                    wide(image).as_ptr(),
+                    command.as_mut_ptr(),
+                    null(),
+                    null(),
+                    1,
+                    flags,
+                    null(),
+                    null(),
+                    &startup.StartupInfo,
+                    pi,
+                )
+            } else {
+                CreateProcessW(
+                    wide(image).as_ptr(),
+                    command.as_mut_ptr(),
+                    null(),
+                    null(),
+                    1,
+                    flags,
+                    null(),
+                    null(),
+                    &startup.StartupInfo,
+                    pi,
+                )
+            }
         };
+        let mut ok = create(flags, &mut pi);
+        let mut attached = false;
+        if debug && ok == 0 {
+            debug_creation_error = json!(last("CreateProcessAsUserW(DEBUG_ONLY_THIS_PROCESS)"));
+            flags &= !DEBUG_ONLY_THIS_PROCESS;
+            ok = create(flags, &mut pi);
+            if ok != 0 {
+                if DebugActiveProcess(pi.dwProcessId) == 0 {
+                    let error = last("DebugActiveProcess(before resume)");
+                    TerminateProcess(pi.hProcess, 1);
+                    CloseHandle(pi.hThread);
+                    CloseHandle(pi.hProcess);
+                    return Err(format!("{debug_creation_error}; {error}"));
+                }
+                attached = true;
+            }
+        }
         check(ok, sequence)?;
+        let debug_setup = if debug {
+            let ok = DebugSetProcessKillOnExit(1) != 0;
+            json!({"success":ok,"error":if ok {0} else {GetLastError()}})
+        } else {
+            Value::Null
+        };
         let process = Handle(pi.hProcess);
         let main_thread = Handle(pi.hThread);
         if let Some((h, info)) = &mut job {
@@ -844,16 +880,28 @@ fn launch_variant(
         let reader = thread::spawn(move || read_pipe(out_value as HANDLE));
         let err_reader = thread::spawn(move || read_pipe(err_value as HANDLE));
         let payload = serde_json::to_vec(input).map_err(|e| e.to_string())?;
-        let mut written = 0;
-        let write_ok = WriteFile(
-            parent_in.0,
-            payload.as_ptr(),
-            payload.len() as u32,
-            &mut written,
-            null_mut(),
-        ) != 0;
-        let write_error = GetLastError();
-        drop(parent_in);
+        let input_handle = parent_in.0 as usize;
+        std::mem::forget(parent_in);
+        // A debug stop suspends the reader before entry. Write on another thread
+        // so a payload larger than the pipe buffer cannot stall the event pump.
+        let writer = thread::spawn(move || {
+            let parent_in = Handle(input_handle as HANDLE);
+            let mut written = 0;
+            let ok = WriteFile(
+                parent_in.0,
+                payload.as_ptr(),
+                payload.len() as u32,
+                &mut written,
+                null_mut(),
+            ) != 0;
+            let error = if ok { 0 } else { GetLastError() };
+            (ok, error, written)
+        });
+        let debug_events = if debug {
+            crate::trace::collect(process.0, pi.dwProcessId)
+        } else {
+            Value::Null
+        };
         let wait = WaitForSingleObject(process.0, 180_000);
         if wait != WAIT_OBJECT_0 {
             TerminateProcess(process.0, 124);
@@ -861,13 +909,15 @@ fn launch_variant(
         }
         let mut exit = 0;
         GetExitCodeProcess(process.0, &mut exit);
+        let (write_ok, write_error, written) =
+            writer.join().map_err(|_| "stdin writer panicked")?;
         let stdout = reader.join().map_err(|_| "stdout reader panicked")??;
         let stderr = err_reader.join().map_err(|_| "stderr reader panicked")??;
         let child: Value = serde_json::from_slice(&stdout).unwrap_or_else(
             |e| json!({"parse_error":e.to_string(),"stdout":String::from_utf8_lossy(&stdout)}),
         );
         Ok(
-            json!({"sequence":sequence,"exit_code":hex(exit),"timeout":wait!=WAIT_OBJECT_0,"input_write":{"success":write_ok,"error":if write_ok{0}else{write_error},"bytes":written},"stderr":String::from_utf8_lossy(&stderr),"job":job.as_ref().map(|j|&j.1),"constructed_tokens":tokens.as_ref().map(|t|&t.report),"parent_before_resume":{"primary":birth_primary,"assigned_loader":assigned_loader,"initial_handle_closed":initial_closed_before_resume},"stdio_handles":{"stdin":handles[0] as usize,"stdout":handles[1] as usize,"stderr":handles[2] as usize},"child":child}),
+            json!({"sequence":sequence,"debug":{"requested":debug,"setup":debug_setup,"attached_before_resume":attached,"creation_error":debug_creation_error,"trace":debug_events},"exit_code":hex(exit),"timeout":wait!=WAIT_OBJECT_0,"input_write":{"success":write_ok,"error":if write_ok{0}else{write_error},"bytes":written},"stderr":String::from_utf8_lossy(&stderr),"job":job.as_ref().map(|j|&j.1),"constructed_tokens":tokens.as_ref().map(|t|&t.report),"parent_before_resume":{"primary":birth_primary,"assigned_loader":assigned_loader,"initial_handle_closed":initial_closed_before_resume},"stdio_handles":{"stdin":handles[0] as usize,"stdout":handles[1] as usize,"stderr":handles[2] as usize},"child":child}),
         )
     }
 }
@@ -1208,6 +1258,21 @@ pub fn run() -> Result<()> {
             let mut diagnostics = Vec::new();
             if mode == "full" && selected["exit_code"] == "0xc0000142" {
                 if source_holder.is_some() {
+                    let result = launch_variant(
+                        &input,
+                        &image.to_string_lossy(),
+                        sid,
+                        token.0,
+                        source,
+                        "loader-trace",
+                        true,
+                        false,
+                        false,
+                        MITIGATIONS,
+                        0xff,
+                    )
+                    .unwrap_or_else(|e| json!({"error":e}));
+                    diagnostics.push(json!({"label":"full-policy loader snaps / debug event loop","result":result}));
                     let result = match launch_variant(
                         &input,
                         &image.to_string_lossy(),
