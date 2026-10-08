@@ -184,10 +184,13 @@ impl WorkerProcess {
     /// Waits for the worker to exit on its own.
     pub fn wait_exit(&mut self, timeout: Duration) -> Option<ExitStatus> {
         let deadline = Instant::now() + timeout;
+        // Retain Child ownership so a timed-out wait can still kill and reap it.
+        // std::process has no timed wait that leaves the Child available.
+        let mut backoff = crate::backoff::Backoff::new();
         loop {
             match self.child.try_wait() {
                 Ok(Some(status)) => return Some(status),
-                Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(5)),
+                Ok(None) if Instant::now() < deadline => backoff.sleep(deadline),
                 _ => return None,
             }
         }

@@ -7,6 +7,7 @@
 //! The mutation controls proving these tests catch broken rules are listed in
 //! `mutations.toml` at the repository root, and `ckdev-mutate` replays them.
 
+mod backoff;
 pub mod binaries;
 pub mod channel;
 pub mod fuzz;

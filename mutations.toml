@@ -9168,8 +9168,8 @@ build_timeout_s = 7200
 id = "builtin-git-leaves-descendant-pipes-open"
 guards = "builtin git leaves descendant pipes open"
 file = "crates/basal-host/src/builtins/git.rs"
-old = "            libc::kill(-(self.0.id() as i32), libc::SIGKILL);"
-new = "            let _ = self.0.id(); // NON-VACUITY BREAK"
+old = "            libc::kill(-(self.pid as i32), libc::SIGKILL);"
+new = "            let _ = self.pid; // NON-VACUITY BREAK"
 edits = []
 test_file = "crates/basal-host/tests/builtin_host_regressions.rs"
 runner = "cargo"
@@ -9268,6 +9268,48 @@ target = "--lib"
 select = "expected"
 expect_red = ["schema::retention_tests::additive_retention_indexes_preserve_populated_tables_in_every_state"]
 only = false
+timeout_s = 600
+build_timeout_s = 3600
+
+
+
+[[control]]
+id = "management-fixture-default-starts-a-spare"
+guards = "management fixtures start no worker unless explicitly requested"
+file = "crates/basal-module/tests/common/mod.rs"
+old = "warm_spares: 0,"
+new = "warm_spares: 1, // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-module/tests/list_contract.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test list_contract"
+expect_red = ["management_fixture_starts_no_worker"]
+only = true
+platforms = ["macos"]
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "git-waiter-timeout-omits-group-cleanup"
+guards = "git completion-channel timeout kills the process group and reaps the child"
+file = "crates/basal-host/src/builtins/git.rs"
+old = """
+self.kill();
+        if let Some(child) = &mut self.child"""
+new = """
+// NON-VACUITY BREAK: omit timeout cleanup.
+        if let Some(child) = &mut self.child"""
+edits = []
+test_file = "crates/basal-host/src/builtins/git/tests.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--lib"
+select = "expected"
+expect_red = ["builtins::git::tests::git_waiter_timeout_kills_the_process_group_and_reaps_the_child"]
+only = false
+platforms = ["linux"]
 timeout_s = 600
 build_timeout_s = 3600
 

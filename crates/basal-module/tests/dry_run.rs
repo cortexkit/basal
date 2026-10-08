@@ -286,7 +286,7 @@ fn real_runs(f: &Fixture) -> i64 {
 
 #[test]
 fn each_dry_run_has_its_own_scratch_store_and_the_real_kv_and_runs_are_untouched() {
-    let f = fixture("dry-scratch", Options::default());
+    let f = fixture("dry-scratch", Options::with_worker());
     let flow = install_approved(
         &f,
         &agent("SYNAPSE"),

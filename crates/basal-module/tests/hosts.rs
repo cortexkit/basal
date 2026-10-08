@@ -217,11 +217,22 @@ fn hosts(f: Arc<Fake>, consent: Arc<CoreConsent>) -> Hosts {
     }
 }
 fn fixture(f: Arc<Fake>, consent: Arc<CoreConsent>, tag: &str) -> common::Fixture {
+    fixture_with_options(f, consent, tag, common::Options::default())
+}
+fn worker_fixture(f: Arc<Fake>, consent: Arc<CoreConsent>, tag: &str) -> common::Fixture {
+    fixture_with_options(f, consent, tag, common::Options::with_worker())
+}
+fn fixture_with_options(
+    f: Arc<Fake>,
+    consent: Arc<CoreConsent>,
+    tag: &str,
+    options: common::Options,
+) -> common::Fixture {
     common::fixture(
         tag,
         common::Options {
             hosts: Some(hosts(f, consent)),
-            ..Default::default()
+            ..options
         },
     )
 }
@@ -537,7 +548,7 @@ fn decisions_ack_only_after_sink_commit_and_survive_restart() {
 fn routing_host_runs_install_decision_facts_ops_and_sinks_end_to_end() {
     let fake = Fake::new();
     let consent = Arc::new(CoreConsent::new(fake.clone()));
-    let f = fixture(fake.clone(), consent.clone(), "routing-e2e");
+    let f = worker_fixture(fake.clone(), consent.clone(), "routing-e2e");
     common::install(
         &f,
         &agent_on_scope("ag_synapse", "scope-live"),
@@ -578,7 +589,7 @@ fn transport_failures_reach_journal_with_safe_retries_only() {
     ] {
         let fake = Fake::new();
         let consent = Arc::new(CoreConsent::new(fake.clone()));
-        let f = fixture(fake.clone(), consent.clone(), op);
+        let f = worker_fixture(fake.clone(), consent.clone(), op);
         common::install(
             &f,
             &Caller::Operator,
@@ -600,7 +611,7 @@ fn transport_failures_reach_journal_with_safe_retries_only() {
     }
     let fake = Fake::new();
     let consent = Arc::new(CoreConsent::new(fake.clone()));
-    let f = fixture(fake.clone(), consent.clone(), "sink-retry");
+    let f = worker_fixture(fake.clone(), consent.clone(), "sink-retry");
     common::install(
         &f,
         &Caller::Operator,
@@ -997,7 +1008,7 @@ fn operator_keyed_tools_retry_but_unfenceable_tools_do_not() {
                 consent: consent.clone(),
                 hooks: Arc::new(NoHooks),
             }),
-            ..Default::default()
+            ..common::Options::with_worker()
         },
     );
     common::install(
@@ -1107,7 +1118,7 @@ fn catalog_changes_cannot_execute_mutations_under_a_query_retry_policy() {
         "catalog-change",
         common::Options {
             hosts: Some(dependencies),
-            ..Default::default()
+            ..common::Options::with_worker()
         },
     );
     common::install(
@@ -1202,7 +1213,7 @@ fn model_fixture(
         common::Options {
             hosts: Some(dependencies),
             selector,
-            ..Default::default()
+            ..common::Options::with_worker()
         },
         |shared| snapshots.bind(shared).map_err(|e| e.to_string()),
     );
@@ -1519,7 +1530,7 @@ fn omitted_digest_action_uses_each_recipient_approved_cap() {
     for cap in ["silent", "piggyback", "wake"] {
         let wire = Fake::new();
         let consent = Arc::new(CoreConsent::new(wire.clone()));
-        let f = fixture(wire.clone(), consent.clone(), "digest-default");
+        let f = worker_fixture(wire.clone(), consent.clone(), "digest-default");
         let mut m = manifest();
         m["sinks"][0]["digest_max"] = json!(cap);
         common::install(

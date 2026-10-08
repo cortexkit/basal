@@ -465,7 +465,7 @@ fn install_refuses_what_an_agent_may_not_do() {
 
 #[test]
 fn install_keeps_the_version_when_the_consent_plane_is_down_and_raises_on_retry() {
-    let f = fixture("ops-consent-down", Options::default());
+    let f = fixture("ops-consent-down", Options::with_worker());
     f.consent.set_unavailable(true);
     let r = call(
         &f,
@@ -581,7 +581,7 @@ fn health_lists_a_flow_with_no_approved_version_as_unapproved() {
 
 #[test]
 fn reconcile_resolves_an_unknown_call_for_the_operator() {
-    let f = fixture("ops-reconcile", Options::default());
+    let f = fixture("ops-reconcile", Options::with_worker());
     let mut manifest = events_manifest("flow-post");
     manifest["ops"] = json!([{ "module": "mock", "op": "post" }]);
     let flow = install_approved(

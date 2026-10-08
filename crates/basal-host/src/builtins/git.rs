@@ -19,8 +19,9 @@ use std::io::Read;
 use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::thread;
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::mpsc::{self, Sender};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use basal_proto::Primitive;
@@ -31,7 +32,6 @@ use super::{Denial, codes, expand_home, options, string_arg};
 /// How long one git command may run.
 pub const TIMEOUT: Duration = Duration::from_secs(20);
 const STDERR_BYTES: usize = 4096;
-const PROCESS_POLL: Duration = Duration::from_millis(2);
 /// The most output one git command may produce: a log, a blob or a diff.
 pub const MAX_OUTPUT_BYTES: usize = super::MAX_TEXT_RESULT_BYTES;
 /// `git.log`'s default and largest entry counts.
@@ -306,127 +306,214 @@ fn run_command_until(mut command: Command, max_lines: Option<usize>) -> Result<R
     let child = command
         .spawn()
         .map_err(|e| Denial::new(codes::GIT, format!("git could not start: {e}")))?;
-    let mut guard = ProcessGroup(child);
-    let mut out = guard.0.stdout.take();
-    let mut err = guard.0.stderr.take();
-    for fd in out
-        .as_ref()
-        .map(AsRawFd::as_raw_fd)
-        .into_iter()
-        .chain(err.as_ref().map(AsRawFd::as_raw_fd))
-    {
-        // SAFETY: the pipes remain owned by this call; only their nonblocking
-        // status is changed so descendant-held pipes cannot bypass the deadline.
-        if unsafe { libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK) } == -1 {
-            return Err(Denial::new(
-                codes::GIT,
-                std::io::Error::last_os_error().to_string(),
-            ));
-        }
-    }
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    let deadline = Instant::now() + TIMEOUT;
-    let mut status = None;
-    let mut limit_reached = false;
-    let status = loop {
-        drain_pipe(&mut out, &mut stdout, MAX_OUTPUT_BYTES + 1)?;
-        drain_pipe(&mut err, &mut stderr, STDERR_BYTES)?;
-        if let Some(limit) = max_lines
-            && let Some((last, _)) = stdout
-                .iter()
-                .enumerate()
-                .filter(|(_, byte)| **byte == b'\n')
-                .nth(limit - 1)
+    thread::scope(|scope| {
+        let mut guard = ProcessGroup::new(child);
+        let out = guard.child.as_mut().unwrap().stdout.take();
+        let err = guard.child.as_mut().unwrap().stderr.take();
+        for fd in out
+            .as_ref()
+            .map(AsRawFd::as_raw_fd)
+            .into_iter()
+            .chain(err.as_ref().map(AsRawFd::as_raw_fd))
         {
-            // git tag owns pattern matching (including slashes). Bound its
-            // output as it is read, instead of materializing the full list or
-            // changing pattern semantics to those of for-each-ref.
-            stdout.truncate(last + 1);
-            limit_reached = true;
-            guard.kill();
-        }
-        if stdout.len() > MAX_OUTPUT_BYTES {
-            return Err(Denial::new(
-                codes::TOO_LARGE,
-                format!("git's output is larger than {MAX_OUTPUT_BYTES} bytes"),
-            ));
-        }
-        if status.is_none() {
-            status = guard
-                .0
-                .try_wait()
-                .map_err(|e| Denial::new(codes::GIT, e.to_string()))?;
-            if status.is_some() {
-                guard.kill();
+            // SAFETY: these pipes remain owned by this call. Nonblocking reads
+            // and a timed poll keep descendant-held pipes within the deadline.
+            if unsafe { libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK) } == -1 {
+                return Err(Denial::new(
+                    codes::GIT,
+                    std::io::Error::last_os_error().to_string(),
+                ));
             }
         }
-        if let Some(status) = status
-            && out.is_none()
-            && err.is_none()
-        {
-            break status;
+        let deadline = Instant::now() + TIMEOUT;
+        let (tx, completed) = mpsc::channel();
+        guard.waiter(tx.clone());
+        let output_tx = tx.clone();
+        scope.spawn(move || {
+            let _ = output_tx.send(Completion::Stdout(drain_pipe(
+                out,
+                MAX_OUTPUT_BYTES + 1,
+                max_lines,
+                deadline,
+            )));
+        });
+        scope.spawn(move || {
+            let _ = tx.send(Completion::Stderr(drain_pipe(
+                err,
+                STDERR_BYTES,
+                None,
+                deadline,
+            )));
+        });
+        let (mut status, mut stdout, mut stderr) = (None, None, None);
+        let mut limit_reached = false;
+        while status.is_none() || stdout.is_none() || stderr.is_none() {
+            match completed.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok(Completion::Exit(result)) => {
+                    status = Some(result.map_err(|e| Denial::new(codes::GIT, e.to_string()))?);
+                    // A finished parent can leave descendants holding its pipes.
+                    guard.kill();
+                }
+                Ok(Completion::Stdout(result)) => {
+                    let output = result?;
+                    limit_reached = output.limit_reached;
+                    if limit_reached {
+                        guard.kill();
+                    }
+                    stdout = Some(output.bytes);
+                }
+                Ok(Completion::Stderr(result)) => stderr = Some(result?.bytes),
+                Err(mpsc::RecvTimeoutError::Timeout) => return Err(timeout_denial()),
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(Denial::new(codes::GIT, "git waiter disconnected"));
+                }
+            }
         }
-        if Instant::now() >= deadline {
-            return Err(Denial::new(
-                codes::TIMEOUT,
-                format!("git ran longer than {} s", TIMEOUT.as_secs()),
-            ));
-        }
-        thread::sleep(PROCESS_POLL);
-    };
-    let stderr = String::from_utf8_lossy(&stderr).into_owned();
-    Ok(Ran {
-        success: status.success() || limit_reached,
-        code: if limit_reached {
-            Some(0)
-        } else {
-            status.code()
-        },
-        stdout,
-        stderr,
+        let status = status.unwrap();
+        Ok(Ran {
+            success: status.success() || limit_reached,
+            code: if limit_reached {
+                Some(0)
+            } else {
+                status.code()
+            },
+            stdout: stdout.unwrap(),
+            stderr: String::from_utf8_lossy(&stderr.unwrap()).into_owned(),
+        })
     })
 }
 
-struct ProcessGroup(std::process::Child);
+fn timeout_denial() -> Denial {
+    Denial::new(
+        codes::TIMEOUT,
+        format!("git ran longer than {} s", TIMEOUT.as_secs()),
+    )
+}
+
+enum Completion {
+    Exit(std::io::Result<ExitStatus>),
+    Stdout(Result<PipeOutput, Denial>),
+    Stderr(Result<PipeOutput, Denial>),
+}
+
+struct ProcessGroup {
+    pid: u32,
+    child: Option<Child>,
+    waiter: Option<JoinHandle<()>>,
+}
 impl ProcessGroup {
+    fn new(child: Child) -> Self {
+        Self {
+            pid: child.id(),
+            child: Some(child),
+            waiter: None,
+        }
+    }
+
+    fn waiter(&mut self, completed: Sender<Completion>) {
+        let mut child = self.child.take().unwrap();
+        self.waiter = Some(thread::spawn(move || {
+            let _ = completed.send(Completion::Exit(child.wait()));
+        }));
+    }
+
     fn kill(&mut self) {
         // SAFETY: process_group(0) made the spawned child's pid its private
         // group id. Negative pid addresses that entire group, not the parent.
         unsafe {
-            libc::kill(-(self.0.id() as i32), libc::SIGKILL);
+            libc::kill(-(self.pid as i32), libc::SIGKILL);
         }
     }
 }
 impl Drop for ProcessGroup {
     fn drop(&mut self) {
         self.kill();
-        let _ = self.0.wait();
+        if let Some(child) = &mut self.child {
+            let _ = child.wait();
+        }
+        if let Some(waiter) = self.waiter.take() {
+            let _ = waiter.join();
+        }
     }
 }
-fn drain_pipe<R: Read>(pipe: &mut Option<R>, kept: &mut Vec<u8>, cap: usize) -> Result<(), Denial> {
-    let Some(reader) = pipe.as_mut() else {
-        return Ok(());
+
+struct PipeOutput {
+    bytes: Vec<u8>,
+    limit_reached: bool,
+}
+
+fn drain_pipe<R: Read + AsRawFd>(
+    mut pipe: Option<R>,
+    cap: usize,
+    max_lines: Option<usize>,
+    deadline: Instant,
+) -> Result<PipeOutput, Denial> {
+    let mut output = PipeOutput {
+        bytes: Vec::new(),
+        limit_reached: false,
     };
-    // Bound each turn so a continuously writing process cannot starve the
-    // deadline or the other pipe; stderr is drained even after its keep cap.
-    for _ in 0..16 {
+    let Some(reader) = pipe.as_mut() else {
+        return Ok(output);
+    };
+    loop {
+        if Instant::now() >= deadline {
+            return Err(timeout_denial());
+        }
         let mut chunk = [0u8; STDERR_BYTES];
         match reader.read(&mut chunk) {
-            Ok(0) => {
-                *pipe = None;
-                break;
-            }
+            Ok(0) => return Ok(output),
             Ok(n) => {
-                let room = cap.saturating_sub(kept.len());
-                kept.extend_from_slice(&chunk[..n.min(room)]);
+                let room = cap.saturating_sub(output.bytes.len());
+                output.bytes.extend_from_slice(&chunk[..n.min(room)]);
+                if let Some(limit) = max_lines
+                    && let Some((last, _)) = output
+                        .bytes
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, byte)| **byte == b'\n')
+                        .nth(limit - 1)
+                {
+                    // Bound tag output while reading, retaining git's pattern
+                    // matching semantics without materializing the entire list.
+                    output.bytes.truncate(last + 1);
+                    output.limit_reached = true;
+                    return Ok(output);
+                }
+                if cap > STDERR_BYTES && output.bytes.len() > MAX_OUTPUT_BYTES {
+                    return Err(Denial::new(
+                        codes::TOO_LARGE,
+                        format!("git's output is larger than {MAX_OUTPUT_BYTES} bytes"),
+                    ));
+                }
             }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                let mut fd = libc::pollfd {
+                    fd: reader.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                let timeout = remaining
+                    .as_millis()
+                    .saturating_add(1)
+                    .min(i32::MAX as u128) as i32;
+                // SAFETY: fd names the live reader owned by this thread, and
+                // poll receives one initialized pollfd for at most the deadline.
+                let result = unsafe { libc::poll(&mut fd, 1, timeout) };
+                if result == 0 {
+                    return Err(timeout_denial());
+                }
+                if result < 0 {
+                    let error = std::io::Error::last_os_error();
+                    if error.kind() != std::io::ErrorKind::Interrupted {
+                        return Err(Denial::new(codes::GIT, error.to_string()));
+                    }
+                }
+            }
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(error) => return Err(Denial::new(codes::GIT, error.to_string())),
         }
     }
-    Ok(())
 }
 
 fn git(repo: &Path, args: &[&str]) -> Result<Ran, Denial> {

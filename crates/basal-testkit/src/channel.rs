@@ -2,7 +2,6 @@
 //! basal-core's activation driver in tests and in the test parent.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -135,51 +134,15 @@ impl WorkerSource for ProcessSource {
 }
 
 /// A development-named copy of `BASAL_WORKER_BIN` if set, otherwise the
-/// workspace's own debug build, built once per test process if needed.
+/// workspace's worker built by Cargo alongside basal-testkit. Test processes
+/// never invoke Cargo, and a worker source edit invalidates the build script.
 pub fn worker_binary() -> PathBuf {
-    static PATH: OnceLock<Result<PathBuf, String>> = OnceLock::new();
+    static PATH: OnceLock<PathBuf> = OnceLock::new();
     PATH.get_or_init(|| {
         if let Some(p) = std::env::var_os("BASAL_WORKER_BIN") {
-            return Ok(crate::dev_binary(PathBuf::from(p)));
+            return crate::dev_binary(PathBuf::from(p));
         }
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-        // Keep build chatter out of libtest's status lines, which mutation
-        // reports parse. A failed build must never select a stale worker.
-        let output = Command::new(cargo)
-            .current_dir(&root)
-            .args([
-                "build",
-                "-p",
-                "basal-worker",
-                "--bin",
-                "ck-basal-worker",
-                "--message-format=json",
-            ])
-            .output()
-            .map_err(|e| format!("launch Cargo to build ck-basal-worker: {e}"))?;
-        if !output.status.success() {
-            return Err(format!(
-                "building ck-basal-worker failed: {}\n{}\n{}",
-                output.status,
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            ));
-        }
-        // Cargo resolves relative target directories and profile layouts. Its
-        // artifact message also prevents a successful build selecting old bytes.
-        let binary = String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-            .find_map(|v| {
-                (v["reason"] == "compiler-artifact" && v["target"]["name"] == "ck-basal-worker")
-                    .then(|| v["executable"].as_str().map(PathBuf::from))
-                    .flatten()
-            })
-            .ok_or("Cargo did not report a ck-basal-worker executable")?;
-        Ok(crate::dev_binary(binary))
+        crate::dev_binary(env!("BASAL_TEST_WORKER_BIN"))
     })
-    .as_ref()
-    .unwrap_or_else(|e| panic!("{e}"))
     .clone()
 }

@@ -71,7 +71,7 @@ impl Default for Options {
         Self {
             hosts: None,
             selector: Arc::new(basal_host::selector::FakeSelector::default()),
-            warm_spares: 1,
+            warm_spares: 0,
             max_concurrent: 4,
             spawner: None,
             hooks: Arc::new(NoHooks),
@@ -81,6 +81,18 @@ impl Default for Options {
             activation_deadline: Duration::from_secs(60),
             pool_wait_timeout: None,
             install_gate: InstallGate::Off,
+        }
+    }
+}
+
+impl Options {
+    /// Options with one worker already started and handshaken, for tests that
+    /// run flows or exercise the pool. The default starts no worker, because
+    /// tests that only install or inspect flows never need one.
+    pub fn with_worker() -> Self {
+        Self {
+            warm_spares: 1,
+            ..Self::default()
         }
     }
 }

@@ -32,6 +32,18 @@ fn manifest() -> Value {
 /// A module whose host reaches the fake core over the wire, with the
 /// install gate on, as production runs.
 fn gated(fake: &Arc<Fake>, tag: &str) -> (common::Fixture, Arc<CoreConsent>) {
+    gated_with_options(fake, tag, common::Options::default())
+}
+
+fn gated_with_worker(fake: &Arc<Fake>, tag: &str) -> (common::Fixture, Arc<CoreConsent>) {
+    gated_with_options(fake, tag, common::Options::with_worker())
+}
+
+fn gated_with_options(
+    fake: &Arc<Fake>,
+    tag: &str,
+    options: common::Options,
+) -> (common::Fixture, Arc<CoreConsent>) {
     let consent = Arc::new(CoreConsent::new(fake.clone()));
     let catalog = Arc::new(SubcCatalog::new(fake.clone()));
     let hosts = Hosts {
@@ -49,7 +61,7 @@ fn gated(fake: &Arc<Fake>, tag: &str) -> (common::Fixture, Arc<CoreConsent>) {
         common::Options {
             hosts: Some(hosts),
             install_gate: InstallGate::Core,
-            ..Default::default()
+            ..options
         },
     );
     (f, consent)
@@ -117,7 +129,7 @@ fn list_entry(f: &common::Fixture) -> Value {
 #[test]
 fn active_with_the_runs_code_hash_activates() {
     let fake = Fake::new();
-    let (f, consent) = gated(&fake, "gate-wire-active");
+    let (f, consent) = gated_with_worker(&fake, "gate-wire-active");
     install_approved(&f, &fake, &consent, true);
     let run_id = common::admit(&f, FLOW, "one");
     f.module.engine.run_until_idle(20).expect("idle");
@@ -153,7 +165,7 @@ fn active_with_another_code_hash_is_revoked() {
 #[test]
 fn revoked_in_core_the_next_scheduled_run_never_activates() {
     let fake = Fake::new();
-    let (f, consent) = gated(&fake, "gate-wire-revoked");
+    let (f, consent) = gated_with_worker(&fake, "gate-wire-revoked");
     install_approved(&f, &fake, &consent, true);
     fake.revoke_install(FLOW, 1);
     f.clock.advance(common::HOUR);
@@ -181,7 +193,7 @@ fn revoked_in_core_the_next_scheduled_run_never_activates() {
 #[test]
 fn a_core_revoke_raises_no_reenable_card_and_a_new_approval_brings_the_flow_back() {
     let fake = Fake::new();
-    let (f, consent) = gated(&fake, "gate-wire-back");
+    let (f, consent) = gated_with_worker(&fake, "gate-wire-back");
     install_approved(&f, &fake, &consent, true);
     fake.revoke_install(FLOW, 1);
     let run_id = common::admit(&f, FLOW, "one");
@@ -239,7 +251,7 @@ fn unknown_in_core_cancels_the_run() {
 #[test]
 fn unreachable_core_keeps_the_run_pending_without_a_hot_loop() {
     let fake = Fake::new();
-    let (f, consent) = gated(&fake, "gate-wire-unreachable");
+    let (f, consent) = gated_with_worker(&fake, "gate-wire-unreachable");
     install_approved(&f, &fake, &consent, true);
     fake.enqueue(
         "flow.install_status",

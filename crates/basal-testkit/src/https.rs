@@ -98,6 +98,8 @@ pub struct TestServer {
     connections: Arc<AtomicUsize>,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
+    #[cfg(test)]
+    blocking_accept: bool,
 }
 
 impl TestServer {
@@ -119,7 +121,14 @@ impl TestServer {
             .expect("server certificate");
         let config = Arc::new(config);
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-        listener.set_nonblocking(true).expect("nonblocking");
+        #[cfg(test)]
+        let blocking_accept = {
+            use std::os::fd::AsRawFd;
+            // SAFETY: listener owns this live socket; F_GETFL only reads flags.
+            let flags = unsafe { libc::fcntl(listener.as_raw_fd(), libc::F_GETFL) };
+            assert_ne!(flags, -1);
+            flags & libc::O_NONBLOCK == 0
+        };
         let addr = listener.local_addr().expect("addr");
         let seen = Arc::new(Mutex::new(Vec::new()));
         let connections = Arc::new(AtomicUsize::new(0));
@@ -131,6 +140,11 @@ impl TestServer {
                 while !stop.load(Ordering::SeqCst) {
                     match listener.accept() {
                         Ok((tcp, _)) => {
+                            // Drop wakes accept with a local connection, not an
+                            // HTTPS request. Do not count or serve that wakeup.
+                            if stop.load(Ordering::SeqCst) {
+                                break;
+                            }
                             connections.fetch_add(1, Ordering::SeqCst);
                             let (config, routes, seen) =
                                 (config.clone(), routes.clone(), seen.clone());
@@ -138,7 +152,8 @@ impl TestServer {
                                 let _ = serve(tcp, config, &routes, &seen);
                             });
                         }
-                        Err(_) => thread::sleep(Duration::from_millis(2)),
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(e) => panic!("accept test HTTPS connection: {e}"),
                     }
                 }
             })
@@ -150,6 +165,8 @@ impl TestServer {
             connections,
             stop,
             thread: Some(thread),
+            #[cfg(test)]
+            blocking_accept,
         }
     }
 
@@ -186,6 +203,7 @@ impl TestServer {
 impl Drop for TestServer {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
+        let _ = TcpStream::connect(self.addr);
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
@@ -270,4 +288,23 @@ fn serve(
     stream.conn.send_close_notify();
     let _ = stream.conn.complete_io(&mut stream.sock);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn idle_https_accept_blocks_and_shutdown_wakes_it_without_a_request() {
+        let server = TestServer::start(|_| BTreeMap::new());
+        let connections = server.connections.clone();
+        let seen = server.seen.clone();
+        assert!(
+            server.blocking_accept,
+            "the accept loop must block instead of polling"
+        );
+        drop(server);
+        assert_eq!(connections.load(Ordering::SeqCst), 0);
+        assert!(seen.lock().unwrap().is_empty());
+    }
 }
