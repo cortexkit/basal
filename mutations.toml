@@ -7538,3 +7538,20 @@ only = true
 timeout_s = 600
 build_timeout_s = 7200
 
+
+[[control]]
+id = "broca-compact-snapshot-discards-frozen-bytes"
+guards = "broca compact snapshot discards frozen bytes"
+file = "crates/basal-host/src/broca/mod.rs"
+old = "        serializer.serialize_str(text)"
+new = '        serializer.serialize_str("") // NON-VACUITY BREAK'
+edits = []
+test_file = "crates/basal-host/tests/audit_broca.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--test audit_broca"
+expect_red = ["saved_params_are_compact_and_read_legacy_byte_arrays"]
+only = true
+timeout_s = 600
+build_timeout_s = 7200
+

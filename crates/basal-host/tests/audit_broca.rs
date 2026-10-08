@@ -73,6 +73,11 @@ fn saved_params_are_compact_and_read_legacy_byte_arrays() {
     let mut value = serde_json::to_value(&call).unwrap();
     assert!(value["params"].is_string());
     assert!(!value["envelope"].as_str().unwrap().contains("hello"));
+    let compact: StoredCall = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(
+        compact.params, call.params,
+        "compact storage must retain the exact frozen send bytes"
+    );
     value["params"] = json!(call.params);
     value["envelope"] = json!(request().args.as_str());
     let legacy: StoredCall = serde_json::from_value(value).unwrap();
