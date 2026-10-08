@@ -271,7 +271,34 @@ ALTER TABLE installs ADD COLUMN revoked_reason TEXT;
         version: 11,
         statements: HEALTH_INDEXES,
     },
+    Migration {
+        version: 12,
+        statements: RETENTION_INDEXES,
+    },
 ];
+
+// Bounded cleanup searches age ranges and checks the obligations that can keep
+// a run or a refundable window alive. Existing unique indexes already cover
+// trigger_inbox(run_id) and quarantine(run_id, position).
+// The refusal expression uses TEXT affinity to match runs.run_id; otherwise
+// SQLite scans the partial index instead of looking up an individual run.
+// Leading with state lets the run age search beat runs_state even before the
+// store has planner statistics.
+const RETENTION_INDEXES: &str = r#"
+CREATE INDEX runs_retention ON runs(state,ended_at,run_id) WHERE state IN ('succeeded','failed','engine_mismatch','cancelled');
+CREATE INDEX outbox_refusal_run ON outbox(CAST(json_extract(body,'$.run_id') AS TEXT)) WHERE kind='refusal_committed';
+CREATE INDEX call_audit_refund_window ON call_audit(flow_id,at,run_id);
+CREATE INDEX token_ledger_retention_window ON token_ledger(flow_id,window_ms,window_start,run_id,state);
+CREATE INDEX quarantine_retention ON quarantine(at);
+CREATE INDEX call_audit_retention ON call_audit(at);
+CREATE INDEX audit_retention ON audit(at);
+CREATE INDEX outbox_retention ON outbox(delivered_at) WHERE delivered_at IS NOT NULL AND kind<>'refusal_committed';
+CREATE INDEX schedule_dropped_retention ON schedule_dropped(at);
+CREATE INDEX token_ledger_retention ON token_ledger(settled_at) WHERE state='settled';
+CREATE INDEX token_windows_retention ON token_windows(window_start+window_ms);
+CREATE INDEX rate_windows_retention ON rate_windows(window_start+window_ms);
+CREATE INDEX decision_cards_retention ON decision_cards(answered_at) WHERE state<>'open';
+"#;
 
 // Health reads the finished suffix and pending work of each flow. Decision
 // lookups need the latest episode and open cards, not every historical card.
@@ -648,3 +675,7 @@ mod package_tests;
 #[cfg(test)]
 #[path = "schema_health_tests.rs"]
 mod health_tests;
+
+#[cfg(test)]
+#[path = "schema_retention_tests.rs"]
+mod retention_tests;

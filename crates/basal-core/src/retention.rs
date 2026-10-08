@@ -31,7 +31,7 @@ pub struct PruneReport {
     pub kept_unsettled: Vec<String>,
 }
 
-const BATCH: usize = 128;
+pub(crate) const BATCH: usize = 128;
 
 #[derive(Debug, Clone)]
 pub struct RetentionConfig {
@@ -56,19 +56,72 @@ fn millis(duration: Duration) -> i64 {
 
 // Kept in SQL so permanently unsettled old runs do not consume every slot
 // of the bounded candidate batch and starve later, prunable runs.
-const OBLIGATIONS: &str = "EXISTS (SELECT 1 FROM journal j WHERE j.run_id=r.run_id AND j.settlement IS NULL \
+pub(crate) const OBLIGATIONS: &str = "EXISTS (SELECT 1 FROM journal j WHERE j.run_id=r.run_id AND j.settlement IS NULL \
     AND NOT EXISTS (SELECT 1 FROM mailbox m WHERE m.run_id=j.run_id AND m.position=j.position) \
     AND NOT EXISTS (SELECT 1 FROM quarantine q WHERE q.run_id=j.run_id AND q.position=j.position AND q.reason='run_cancelled')) \
     OR EXISTS (SELECT 1 FROM token_ledger t WHERE t.run_id=r.run_id AND t.state='reserved') \
     OR EXISTS (SELECT 1 FROM decision_cards d WHERE d.run_id=r.run_id AND d.state='open') \
     OR EXISTS (SELECT 1 FROM broca_calls b WHERE b.run_id=r.run_id AND COALESCE(json_extract(b.snapshot,'$.acknowledged'),0)=0) \
-    OR EXISTS (SELECT 1 FROM outbox o WHERE o.kind='refusal_committed' AND json_extract(o.body,'$.run_id')=r.run_id)";
+    OR EXISTS (SELECT 1 FROM outbox o WHERE o.kind='refusal_committed' AND CAST(json_extract(o.body,'$.run_id') AS TEXT)=r.run_id)";
+
+// Unary + leaves the ordering unchanged, but prevents SQLite from choosing an
+// ordered full-table scan just to satisfy LIMIT. Search the age range first.
+// The literals also expose the exact format templates to query-plan tests.
+macro_rules! candidates_sql {
+    () => {
+        "SELECT r.run_id FROM runs r WHERE r.state IN ('succeeded','failed','engine_mismatch','cancelled') \
+         AND r.ended_at<=?1 AND {predicate} ({OBLIGATIONS}) ORDER BY +r.run_id LIMIT {BATCH}"
+    };
+}
+/// Run candidate query template; substitutes `predicate`, `OBLIGATIONS` and `BATCH`.
+pub const CANDIDATES_SQL: &str = candidates_sql!();
+
+macro_rules! history_batch_sql {
+    () => {
+        "DELETE FROM {table} WHERE rowid IN (SELECT rowid FROM {table} WHERE {predicate} ORDER BY +rowid LIMIT {BATCH})"
+    };
+}
+/// Bounded history deletion template; substitutes `table`, `predicate` and `BATCH`.
+pub const HISTORY_BATCH_SQL: &str = history_batch_sql!();
+
+pub(crate) const HISTORY_PREDICATES: &[(&str, &str)] = &[
+    (
+        "quarantine",
+        "at<=?1 AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.run_id=quarantine.run_id)",
+    ),
+    (
+        "call_audit",
+        "at<=?1 AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.run_id=call_audit.run_id)",
+    ),
+    (
+        "audit",
+        "at<=?1 AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.run_id=audit.run_id) AND NOT EXISTS (SELECT 1 FROM decision_cards d WHERE d.elicitation_id=audit.elicitation_id AND d.state='open')",
+    ),
+    ("outbox", "delivered_at<=?1 AND kind<>'refusal_committed'"),
+    ("schedule_dropped", "at<=?1"),
+    (
+        "token_ledger",
+        "state='settled' AND settled_at<=?1 AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.run_id=token_ledger.run_id)",
+    ),
+    (
+        "token_windows",
+        "window_start + window_ms<=?1 AND NOT EXISTS (SELECT 1 FROM token_ledger t WHERE t.flow_id=token_windows.flow_id AND t.window_ms=token_windows.window_ms AND t.window_start=token_windows.window_start AND (t.state='reserved' OR EXISTS (SELECT 1 FROM runs r WHERE r.run_id=t.run_id)))",
+    ),
+    (
+        "decision_cards",
+        "state<>'open' AND answered_at<=?1 AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.run_id=decision_cards.run_id) AND (kind<>'reenable' OR EXISTS (SELECT 1 FROM decision_cards newer WHERE newer.kind='reenable' AND newer.flow_id=decision_cards.flow_id AND newer.instance>decision_cards.instance))",
+    ),
+];
+
+pub(crate) const RATE_WINDOWS_PREDICATE: &str = "window_start + window_ms<=?1 AND NOT EXISTS (SELECT 1 FROM call_audit a JOIN runs r USING(run_id) WHERE a.flow_id=rate_windows.flow_id AND a.at>=rate_windows.window_start AND a.at<rate_windows.window_start+rate_windows.window_ms)";
 
 fn candidates(conn: &Connection, cutoff: i64, unsettled: bool) -> Result<Vec<String>> {
     let predicate = if unsettled { "" } else { "NOT" };
     let mut stmt = conn.prepare(&format!(
-        "SELECT r.run_id FROM runs r WHERE r.state IN ('succeeded','failed','engine_mismatch','cancelled') \
-         AND r.ended_at<=?1 AND {predicate} ({OBLIGATIONS}) ORDER BY r.run_id LIMIT {BATCH}",
+        candidates_sql!(),
+        predicate = predicate,
+        OBLIGATIONS = OBLIGATIONS,
+        BATCH = BATCH,
     ))?;
     Ok(stmt
         .query_map([cutoff], |r| r.get(0))?
@@ -179,49 +232,32 @@ impl Runtime {
 
     fn prune_history(&self, now: i64, cutoff: i64) -> Result<bool> {
         let mut full = false;
-        for (table, predicate) in [
-            (
-                "quarantine",
-                "at<=?1 AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.run_id=quarantine.run_id)",
-            ),
-            (
-                "call_audit",
-                "at<=?1 AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.run_id=call_audit.run_id)",
-            ),
-            (
-                "audit",
-                "at<=?1 AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.run_id=audit.run_id) AND NOT EXISTS (SELECT 1 FROM decision_cards d WHERE d.elicitation_id=audit.elicitation_id AND d.state='open')",
-            ),
-            ("outbox", "delivered_at<=?1 AND kind<>'refusal_committed'"),
-            ("schedule_dropped", "at<=?1"),
-            (
-                "token_ledger",
-                "state='settled' AND settled_at<=?1 AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.run_id=token_ledger.run_id)",
-            ),
-            (
-                "token_windows",
-                "window_start + window_ms<=?1 AND NOT EXISTS (SELECT 1 FROM token_ledger t WHERE t.flow_id=token_windows.flow_id AND t.window_ms=token_windows.window_ms AND t.window_start=token_windows.window_start AND (t.state='reserved' OR EXISTS (SELECT 1 FROM runs r WHERE r.run_id=t.run_id)))",
-            ),
-            (
-                "decision_cards",
-                "state<>'open' AND answered_at<=?1 AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.run_id=decision_cards.run_id) AND (kind<>'reenable' OR EXISTS (SELECT 1 FROM decision_cards newer WHERE newer.kind='reenable' AND newer.flow_id=decision_cards.flow_id AND newer.instance>decision_cards.instance))",
-            ),
-        ] {
+        for &(table, predicate) in HISTORY_PREDICATES {
             full |= self.delete_history_batch(table, predicate, cutoff)? == BATCH;
         }
         let streak = millis(self.config.rate.window).saturating_mul(i64::from(
             self.config.rate.saturated_windows_to_disable.max(1),
         ));
-        full |= self.delete_history_batch("rate_windows",
-            "window_start + window_ms<=?1 AND NOT EXISTS (SELECT 1 FROM call_audit a JOIN runs r USING(run_id) WHERE a.flow_id=rate_windows.flow_id AND a.at>=rate_windows.window_start AND a.at<rate_windows.window_start+rate_windows.window_ms)",
-            cutoff.min(now.saturating_sub(streak)))? == BATCH;
+        full |= self.delete_history_batch(
+            "rate_windows",
+            RATE_WINDOWS_PREDICATE,
+            cutoff.min(now.saturating_sub(streak)),
+        )? == BATCH;
         Ok(full)
     }
 
     fn delete_history_batch(&self, table: &str, predicate: &str, cutoff: i64) -> Result<usize> {
         // The names/predicates are private constants, never caller input.
         self.store().write(|tx| {
-            Ok(tx.execute(&format!("DELETE FROM {table} WHERE rowid IN (SELECT rowid FROM {table} WHERE {predicate} ORDER BY rowid LIMIT {BATCH})"),[cutoff])?)
+            Ok(tx.execute(
+                &format!(
+                    history_batch_sql!(),
+                    table = table,
+                    predicate = predicate,
+                    BATCH = BATCH
+                ),
+                [cutoff],
+            )?)
         })
     }
 }

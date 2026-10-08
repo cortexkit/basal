@@ -8223,8 +8223,8 @@ build_timeout_s = 3600
 id = "retention-keeps-refusal-intents"
 guards = "pruning preserves a terminal run until its refusal acknowledgement is delivered"
 file = "crates/basal-core/src/retention.rs"
-old = "o.kind='refusal_committed' AND json_extract(o.body,'$.run_id')=r.run_id"
-new = "o.kind='refusal_committed' AND json_extract(o.body,'$.run_id')=r.run_id AND 0 /* NON-VACUITY BREAK */"
+old = "o.kind='refusal_committed' AND CAST(json_extract(o.body,'$.run_id') AS TEXT)=r.run_id"
+new = "o.kind='refusal_committed' AND CAST(json_extract(o.body,'$.run_id') AS TEXT)=r.run_id AND 0 /* NON-VACUITY BREAK */"
 edits = []
 test_file = "crates/basal-core/src/runtime_regressions.rs"
 runner = "cargo"
@@ -8715,6 +8715,24 @@ package = "basal-core"
 target = "--test retention_backlog"
 expect_red = ["production_retention_catches_up_full_batches_without_waiting_a_whole_interval"]
 only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "retention-index-migration-omits-audit-age-index"
+platforms = ["linux"]
+guards = "Retention index migration preserves the exact query-backed index inventory and stored SQL"
+file = "crates/basal-core/src/schema.rs"
+old = "CREATE INDEX audit_retention ON audit(at);"
+new = "-- NON-VACUITY BREAK: audit age index omitted."
+edits = []
+test_file = "crates/basal-core/src/schema_retention_tests.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+select = "expected"
+expect_red = ["schema::retention_tests::additive_retention_indexes_preserve_populated_tables_in_every_state"]
+only = false
 timeout_s = 600
 build_timeout_s = 3600
 
