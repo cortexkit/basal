@@ -55,6 +55,29 @@ impl DecisionSink for Detached {
     }
 }
 
+/// Keeps the inventory readable until the poller reaches answer application.
+/// Cutting earlier would only test the inventory read, not a failed apply.
+struct CutOnAnswer(basal_core::Runtime);
+impl DecisionSink for CutOnAnswer {
+    fn has_open_cards(&self) -> Result<bool, SinkError> {
+        self.0
+            .has_open_cards()
+            .map_err(|e| SinkError(e.to_string()))
+    }
+
+    fn decide(&self, _: &DecisionEvent) -> Result<(), SinkError> {
+        Err(SinkError("only a decision answer is expected".into()))
+    }
+
+    fn answer(&self, answer: &DecisionAnswer) -> Result<(), SinkError> {
+        self.0.store().cut();
+        self.0
+            .answer_decision(answer)
+            .map(|_| ())
+            .map_err(|e| SinkError(e.to_string()))
+    }
+}
+
 /// A module over one store that can be crashed and started again, against
 /// the fake core.
 struct Rig {
@@ -530,13 +553,26 @@ fn a_duplicate_answer_changes_nothing() {
         let run = rig.lost_post(POST);
         let key = decisions::reconcile_key(FLOW, &run, 0);
         let answer = rig.fake.answer_decision(&key, Some(choice));
-        rig.poll();
+        // A lost acknowledgement leaves retry debt even after this answer
+        // closes the last card. The next poll must fetch the redelivered page.
+        rig.fake.enqueue(
+            "elicitation.ack",
+            vec![Err(WireError::NeverSent(
+                "the acknowledgement was lost".into(),
+            ))],
+        );
+        assert!(rig.consent.poll_once().is_err());
+        assert_ne!(rig.card(&key).state, CardState::Open);
         rig.pass();
         let posts = rig.posts();
         let before = rig.m().rt.run(&run).unwrap();
         rig.fake.deliver(answer.clone());
         rig.fake.deliver(answer.clone());
+        let pages = rig.fake.calls("elicitation.answers").len();
+        let acks = rig.fake.calls("elicitation.ack").len();
         rig.poll();
+        assert_eq!(rig.fake.calls("elicitation.answers").len(), pages + 1);
+        assert_eq!(rig.fake.calls("elicitation.ack").len(), acks + 1);
         rig.pass();
         assert_eq!(rig.posts(), posts, "{choice}");
         assert_eq!(rig.m().rt.run(&run).unwrap().state, before.state);
@@ -706,19 +742,38 @@ fn a_crash_between_receiving_an_answer_and_applying_it_applies_it_exactly_once()
     let key = decisions::reconcile_key(FLOW, &run, 0);
     let answer = rig.fake.answer_decision(&key, Some("not_applied"));
     let acks = rig.fake.calls("elicitation.ack").len();
+    let pages = rig.fake.calls("elicitation.answers").len();
     // The store fails under the answer: nothing is recorded, and the page
     // is not acknowledged, so core keeps the answer.
-    rig.m().rt.store().cut();
-    assert!(rig.consent.poll_once().is_err());
+    rig.consent
+        .attach(Arc::new(CutOnAnswer(rig.m().rt.clone())));
+    let error = rig.consent.poll_once().unwrap_err();
+    assert!(error.to_string().contains("applying the answer"), "{error}");
+    assert!(
+        rig.m().rt.store().is_cut(),
+        "answer application was reached"
+    );
+    assert_eq!(rig.fake.calls("elicitation.answers").len(), pages + 1);
     assert_eq!(rig.fake.calls("elicitation.ack").len(), acks);
     rig.crash();
     rig.start(Arc::new(NoHooks));
     assert_eq!(rig.card(&key).state, CardState::Open);
-    rig.poll();
+    // Keep retry debt after applying the answer so a duplicate page is
+    // actually read, even though no card remains open.
+    rig.fake.enqueue(
+        "elicitation.ack",
+        vec![Err(WireError::NeverSent(
+            "the acknowledgement was lost".into(),
+        ))],
+    );
+    assert!(rig.consent.poll_once().is_err());
+    assert_eq!(rig.card(&key).state, CardState::Applied);
     rig.pass();
     // Core delivering the same page again changes nothing.
     rig.fake.deliver(answer.clone());
+    let pages = rig.fake.calls("elicitation.answers").len();
     rig.poll();
+    assert_eq!(rig.fake.calls("elicitation.answers").len(), pages + 1);
     rig.pass();
     assert_eq!(rig.state(&run), RunState::Succeeded);
     assert_eq!(rig.posts(), 2, "sent again exactly once");

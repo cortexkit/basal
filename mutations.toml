@@ -8649,7 +8649,8 @@ runner = "cargo"
 package = "basal-core"
 platforms = ["linux"]
 target = "--lib"
-expect_red = ["runtime::regressions::pruning_preserves_a_terminal_run_until_its_refusal_acknowledgement_is_delivered"]
+# Constant false also removes the indexed lookup from the shared query plan.
+expect_red = ["runtime::regressions::pruning_preserves_a_terminal_run_until_its_refusal_acknowledgement_is_delivered", "schema::retention_tests::outbox_refusal_run_plan"]
 only = true
 timeout_s = 600
 build_timeout_s = 3600
