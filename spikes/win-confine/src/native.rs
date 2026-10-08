@@ -1,11 +1,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
+    collections::BTreeMap,
     ffi::c_void,
     mem::{size_of, zeroed},
     ptr::null_mut,
 };
-use windows_sys::Win32::Storage::FileSystem::GetFileType;
 use windows_sys::Win32::{
     Foundation::*, Security::Authorization::*, Security::*, System::Threading::*,
 };
@@ -217,16 +217,14 @@ pub unsafe fn token_attestation(token: HANDLE) -> Result<Value> {
                         4,
                         &mut returned,
                     );
-                    if status != 0 {
-                        return Err(format!(
-                            "{error}; NtQueryInformationToken(class={}): {}",
-                            TokenIsLessPrivilegedAppContainer,
-                            hex(status as u32)
-                        ));
-                    }
+                    let (effective, attributes) = if status == 0 {
+                        (value != 0, Value::Null)
+                    } else {
+                        lpac_claim(token)?
+                    };
                     (
-                        value != 0,
-                        json!({"api":"NtQueryInformationToken","class":TokenIsLessPrivilegedAppContainer,"Win32_failure":error,"NTSTATUS":hex(status as u32)}),
+                        effective,
+                        json!({"api":if status==0 {"NtQueryInformationToken"}else{"TokenSecurityAttributes / WIN://NOALLAPPPKG"},"class":TokenIsLessPrivilegedAppContainer,"Win32_failure":error,"NTSTATUS":hex(status as u32),"attributes":attributes}),
                     )
                 }
             }
@@ -286,6 +284,54 @@ struct HandleSnapshot {
     handles: [HandleEntry; 1],
 }
 #[repr(C)]
+struct ObjectTypeInfo {
+    name: UnicodeString,
+    counters: [u32; 13],
+    mapping: [u32; 4],
+    access: u32,
+    security: u8,
+    maintain: u8,
+    index: u8,
+    reserved: u8,
+    pool: [u32; 3],
+}
+fn object_types() -> Result<BTreeMap<u32, String>> {
+    unsafe {
+        let mut buffer = vec![0usize; 32768];
+        let mut returned = 0;
+        let status = NtQueryObject(
+            null_mut(),
+            3,
+            buffer.as_mut_ptr().cast(),
+            (buffer.len() * size_of::<usize>()) as u32,
+            &mut returned,
+        );
+        if status != 0 {
+            return Err(format!(
+                "NtQueryObject(ObjectTypesInformation): {}",
+                hex(status as u32)
+            ));
+        }
+        let count = *buffer.as_ptr().cast::<u32>();
+        let mut offset = 8;
+        let mut types = BTreeMap::new();
+        for _ in 0..count {
+            if offset + size_of::<ObjectTypeInfo>() > returned as usize {
+                return Err("truncated ObjectTypesInformation".into());
+            }
+            let info = &*buffer
+                .as_ptr()
+                .cast::<u8>()
+                .add(offset)
+                .cast::<ObjectTypeInfo>();
+            types.insert(info.index as u32, us_text(&info.name));
+            offset = (offset + size_of::<ObjectTypeInfo>() + info.name.maximum_length as usize)
+                .next_multiple_of(8);
+        }
+        Ok(types)
+    }
+}
+#[repr(C)]
 struct AlpcAttributes {
     flags: u32,
     qos: SECURITY_QUALITY_OF_SERVICE,
@@ -297,6 +343,78 @@ struct AlpcAttributes {
     max_total: usize,
     dup_types: u32,
     reserved: u32,
+}
+#[repr(C)]
+struct SecurityAttribute {
+    name: UnicodeString,
+    kind: u16,
+    reserved: u16,
+    flags: u32,
+    count: u32,
+    values: *mut c_void,
+}
+#[repr(C)]
+struct SecurityAttributes {
+    version: u16,
+    reserved: u16,
+    count: u32,
+    attributes: *mut SecurityAttribute,
+}
+
+fn lpac_claim(token: HANDLE) -> Result<(bool, Value)> {
+    unsafe {
+        let mut bytes = 0;
+        let status =
+            NtQueryInformationToken(token, TokenSecurityAttributes, null_mut(), 0, &mut bytes);
+        if bytes == 0 {
+            return Err(format!(
+                "NtQueryInformationToken(TokenSecurityAttributes,size): {}",
+                hex(status as u32)
+            ));
+        }
+        let mut data = vec![0usize; (bytes as usize).div_ceil(size_of::<usize>())];
+        let status = NtQueryInformationToken(
+            token,
+            TokenSecurityAttributes,
+            data.as_mut_ptr().cast(),
+            bytes,
+            &mut bytes,
+        );
+        if status != 0 {
+            return Err(format!(
+                "NtQueryInformationToken(TokenSecurityAttributes): {}",
+                hex(status as u32)
+            ));
+        }
+        let header = &*data.as_ptr().cast::<SecurityAttributes>();
+        if header.version != 1 {
+            return Err(format!(
+                "unsupported token security attributes version {}",
+                header.version
+            ));
+        }
+        let entries = if header.count == 0 {
+            &[][..]
+        } else {
+            std::slice::from_raw_parts(header.attributes, header.count as usize)
+        };
+        let mut less = false;
+        let mut attributes = Vec::new();
+        for entry in entries {
+            let name = us_text(&entry.name);
+            let values = if entry.kind == 2 && entry.count != 0 {
+                std::slice::from_raw_parts(entry.values.cast::<u64>(), entry.count as usize)
+                    .to_vec()
+            } else {
+                Vec::new()
+            };
+            if name == "WIN://NOALLAPPPKG" {
+                less = entry.kind == 2 && values.first().is_some_and(|v| *v != 0);
+            }
+            attributes.push(json!({"name":name,"value_type":entry.kind,"flags":hex(entry.flags),"uint64_values":values}));
+        }
+        Ok((less, json!(attributes)))
+    }
 }
 #[link(name = "ntdll")]
 unsafe extern "system" {
@@ -471,24 +589,7 @@ pub fn enumerate_directory(path: &str) -> Result<Vec<(String, String)>> {
         Ok(result)
     }
 }
-unsafe fn object_string(handle: HANDLE, class: u32) -> Value {
-    unsafe {
-        let mut buffer = vec![0usize; 8192];
-        let mut returned = 0;
-        let status = NtQueryObject(
-            handle,
-            class,
-            buffer.as_mut_ptr().cast(),
-            (buffer.len() * size_of::<usize>()) as u32,
-            &mut returned,
-        );
-        if status < 0 {
-            json!({"error":hex(status as u32)})
-        } else {
-            json!(us_text(&*buffer.as_ptr().cast::<UnicodeString>()))
-        }
-    }
-}
+
 pub fn handle_table() -> Result<Vec<Value>> {
     unsafe {
         let mut buffer = vec![0usize; 16384];
@@ -505,10 +606,11 @@ pub fn handle_table() -> Result<Vec<Value>> {
         }
         let snapshot = &*buffer.as_ptr().cast::<HandleSnapshot>();
         let entries = std::slice::from_raw_parts(snapshot.handles.as_ptr(), snapshot.count);
-        Ok(entries.iter().map(|h|{
-            let kind=object_string(h.handle,2);
-            json!({"handle":h.handle as usize,"type":kind,"name":object_string(h.handle,1),"file_type":if kind=="File" {Some(GetFileType(h.handle))}else{None},"granted_access":hex(h.access),"attributes":hex(h.attributes)})
-        }).collect())
+        // A snapshot handle can close on a DLL-owned background thread before
+        // querying its type. Strict-handle policy makes that race fatal. Resolve
+        // stable kernel type indices from the global type list instead.
+        let types = object_types()?;
+        Ok(entries.iter().map(|h|json!({"handle":h.handle as usize,"type_index":h.type_index,"type":types.get(&h.type_index),"granted_access":hex(h.access),"attributes":hex(h.attributes)})).collect())
     }
 }
 pub fn granted_access(handle: HANDLE) -> Value {
@@ -813,6 +915,10 @@ mod tests {
         assert_eq!(size_of::<HandleEntry>(), 40);
         assert_eq!(std::mem::offset_of!(HandleSnapshot, handles), 16);
         assert_eq!(size_of::<AlpcAttributes>(), 72);
+        assert_eq!(size_of::<ObjectTypeInfo>(), 104);
+        assert_eq!(std::mem::offset_of!(ObjectTypeInfo, index), 90);
+        assert_eq!(size_of::<SecurityAttribute>(), 40);
+        assert_eq!(size_of::<SecurityAttributes>(), 16);
     }
     #[test]
     fn token_buffer_can_back_a_zero_entry_c_declaration() {

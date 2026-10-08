@@ -101,7 +101,11 @@ fn registry_probe(t: &Target) -> Probe {
         let error = RegOpenKeyExW(root, wide(&path).as_ptr(), 0, KEY_QUERY_VALUE, &mut h);
         let mut probe = Probe::win(t, error == 0, error);
         if error == 0 {
-            probe.result["granted_access"] = granted_access(h);
+            probe.result["granted_access"] = if h as isize > 0 && h as usize % 4 == 0 {
+                granted_access(h)
+            } else {
+                json!({"not_queried":"predefined or tagged Win32 registry handle"})
+            };
             RegCloseKey(h);
         }
         probe

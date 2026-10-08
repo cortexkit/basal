@@ -56,6 +56,26 @@ Windows Server 2025 (26100) and Server 2022:
   minimal child loader; it does not establish the cause of the earlier
   full child's exit until the next report.
 
+- Run [37814149975](https://github.com/cortexkit/basal/actions/runs/37814149975),
+  source `049675cdf42bc5ab26a48bce68d66f70ea2058fd`, confirmed on both images
+  that the assigned ordinary loader token's actual level was **1
+  (SecurityIdentification)** even though DuplicateTokenEx requested level 2.
+  Its integrity remained High, above the Untrusted primary recipe. The
+  original child again exited `0xc00000a5`. The Low/lowbox and self-lowering
+  sequence is now an explicit alternative, not an assumed fix.
+- Both images rejected token information class 46 via Win32 (`87`) and NT
+  (`0xc0000003`, STATUS_INVALID_INFO_CLASS). Effective LPAC classification
+  now falls back to the token's native security attribute `WIN://NOALLAPPPKG`
+  (UINT64), while preserving both class-46 failures in the report. This is
+  the classification used by native token inspection tooling; the query
+  failure must not erase all other token fields.
+- With broker-only DLLs removed, the plain startup inventory fell to 70/72
+  handles. LPAC-only exited `0xc0000008` during measurement. Per-handle type
+  and name queries can race DLL-owned background threads closing a snapshot
+  handle; strict-handle policy can turn that invalid handle into process
+  termination. Inventory now resolves the snapshot's stable type indices
+  against ObjectTypesInformation without dereferencing transient handles.
+
 Pending completed full-policy native reports.
 
 ## Measured residual and risk assessment
