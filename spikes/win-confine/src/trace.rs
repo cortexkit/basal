@@ -53,6 +53,50 @@ pub unsafe fn loader_flag(process: HANDLE) -> Value {
     }
 }
 
+pub unsafe fn enable_loader_snaps(process: HANDLE) -> Value {
+    unsafe {
+        let before = loader_flag(process);
+        if before["loader_snaps_enabled"] == true {
+            return json!({"before":before,"already_enabled":true});
+        }
+        if before["read_success"] != true {
+            return json!({"before":before,"error":"cannot verify the child loader flag"});
+        }
+        // The child readback can lack the loader-snap bit even with an
+        // Image File Execution Options registry setting. Enable verbose loader
+        // diagnostics only in this child's PEB, preserving other flag bits;
+        // no token, ACL, mitigation or application instruction is changed.
+        let mut basic = [0usize; 6];
+        let mut returned = 0;
+        let status = NtQueryInformationProcess(
+            process,
+            0,
+            basic.as_mut_ptr().cast(),
+            std::mem::size_of_val(&basic) as u32,
+            &mut returned,
+        );
+        if status < 0 {
+            return json!({"before":before,"error":hex(status as u32)});
+        }
+        let old = u32::from_str_radix(
+            before["flags"].as_str().unwrap().trim_start_matches("0x"),
+            16,
+        )
+        .unwrap();
+        let flags = old | 2;
+        let mut written = 0;
+        let ok = WriteProcessMemory(
+            process,
+            (basic[1] + 0xbc) as *mut _,
+            (&flags as *const u32).cast(),
+            4,
+            &mut written,
+        ) != 0;
+        let error = if ok { 0 } else { GetLastError() };
+        json!({"before":before,"fallback":"parent sets FLG_SHOW_LDR_SNAPS in the suspended x64 PEB","write_success":ok,"write_error":error,"bytes_written":written,"after":loader_flag(process)})
+    }
+}
+
 // The creating thread must pump debug events. Pipe readers run independently
 // because a child that reaches entry can write more than one pipe buffer.
 pub unsafe fn collect(process: HANDLE, pid: u32) -> Value {

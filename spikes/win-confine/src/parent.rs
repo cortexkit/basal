@@ -665,7 +665,7 @@ fn launch_variant(
 ) -> Result<Value> {
     unsafe {
         let full = input.mode == "full";
-        let lpac = input.mode != "plain";
+        let lpac = input.mode != "plain" && sequence != "chrome-logon-non-lpac-control";
         let bare = sequence == "bare-token-control";
         let debug = sequence == "loader-trace";
         let mut tokens = if full {
@@ -681,7 +681,7 @@ fn launch_variant(
                 sequence == "same-access-primary-control"
                     || sequence == "post-load-primary-control",
                 sequence == "post-load-primary-control",
-                sequence == "chrome-logon-control",
+                sequence == "chrome-logon-control" || sequence == "chrome-logon-non-lpac-control",
             )?)
         } else {
             None
@@ -872,6 +872,11 @@ fn launch_variant(
         } else {
             false
         };
+        let loader_snaps_enablement = if debug {
+            crate::trace::enable_loader_snaps(process.0)
+        } else {
+            Value::Null
+        };
         if ResumeThread(main_thread.0) == u32::MAX {
             TerminateProcess(process.0, 1);
             return Err(last("ResumeThread"));
@@ -922,7 +927,7 @@ fn launch_variant(
             |e| json!({"parse_error":e.to_string(),"stdout":String::from_utf8_lossy(&stdout)}),
         );
         Ok(
-            json!({"sequence":sequence,"debug":{"requested":debug,"setup":debug_setup,"attached_before_resume":attached,"creation_error":debug_creation_error,"trace":debug_events},"exit_code":hex(exit),"timeout":wait!=WAIT_OBJECT_0,"input_write":{"success":write_ok,"error":if write_ok{0}else{write_error},"bytes":written},"stderr":String::from_utf8_lossy(&stderr),"job":job.as_ref().map(|j|&j.1),"constructed_tokens":tokens.as_ref().map(|t|&t.report),"parent_before_resume":{"primary":birth_primary,"assigned_loader":assigned_loader,"initial_handle_closed":initial_closed_before_resume},"stdio_handles":{"stdin":handles[0] as usize,"stdout":handles[1] as usize,"stderr":handles[2] as usize},"child":child}),
+            json!({"sequence":sequence,"debug":{"requested":debug,"loader_snaps_enablement":loader_snaps_enablement,"setup":debug_setup,"attached_before_resume":attached,"creation_error":debug_creation_error,"trace":debug_events},"exit_code":hex(exit),"timeout":wait!=WAIT_OBJECT_0,"input_write":{"success":write_ok,"error":if write_ok{0}else{write_error},"bytes":written},"stderr":String::from_utf8_lossy(&stderr),"job":job.as_ref().map(|j|&j.1),"constructed_tokens":tokens.as_ref().map(|t|&t.report),"parent_before_resume":{"primary":birth_primary,"assigned_loader":assigned_loader,"initial_handle_closed":initial_closed_before_resume},"stdio_handles":{"stdin":handles[0] as usize,"stdout":handles[1] as usize,"stderr":handles[2] as usize},"child":child}),
         )
     }
 }
@@ -1297,6 +1302,21 @@ pub fn run() -> Result<()> {
                     )
                     .unwrap_or_else(|e| json!({"error":e}));
                     diagnostics.push(json!({"label":"Chrome-matched enabled logon SID / all full-policy attributes retained","result":matched}));
+                    let matched = launch_variant(
+                        &input,
+                        &image.to_string_lossy(),
+                        sid,
+                        token.0,
+                        token.0,
+                        "chrome-logon-non-lpac-control",
+                        true,
+                        false,
+                        false,
+                        MITIGATIONS,
+                        0xff,
+                    )
+                    .unwrap_or_else(|e| json!({"error":e}));
+                    diagnostics.push(json!({"label":"Chrome-matched enabled logon SID / non-AppContainer Low birth / job and mitigations retained","result":matched}));
                     let result = match launch_variant(
                         &input,
                         &image.to_string_lossy(),
@@ -1430,7 +1450,7 @@ pub fn run() -> Result<()> {
         drop(namespace_initializer);
         let cleanup = profile.api.delete(PROFILE);
         profile.deleted = cleanup >= 0;
-        let report = json!({"schema":1,"profile":PROFILE,"profile_cleanup":{"HRESULT":hex(cleanup as u32),"success":cleanup>=0},"system_root":system,"child_image":image.to_string_lossy(),"appcontainer_sid":sid_text,"package_folder":package,"package_registry_target":package_registry,"namespace_initializer":namespace_report,"enumeration":enumeration,"targets":targets,"parent_token":token_attestation(token.0)?,"runs":runs,"leaked_fixture_content":String::from_utf8_lossy(&leaked_content),"elapsed_seconds":started.elapsed().as_secs_f64()});
+        let report = json!({"schema":1,"profile":PROFILE,"profile_cleanup":{"HRESULT":hex(cleanup as u32),"success":cleanup>=0},"system_root":system,"child_image":image.to_string_lossy(),"appcontainer_sid":sid_text,"package_folder":package,"package_registry_target":package_registry,"namespace_initializer":namespace_report,"enumeration":enumeration,"targets":targets,"parent_token":token_attestation(token.0)?,"parent_loader_flag":crate::trace::loader_flag(GetCurrentProcess()),"runs":runs,"leaked_fixture_content":String::from_utf8_lossy(&leaked_content),"elapsed_seconds":started.elapsed().as_secs_f64()});
         let output = std::env::args()
             .skip_while(|a| a != "--output")
             .nth(1)
