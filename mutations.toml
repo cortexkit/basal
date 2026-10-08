@@ -996,12 +996,12 @@ new = "if let Some(run_id) = existing.filter(|_| false) {"
 [[control]]
 id = "pruning-ignores-open-obligations"
 guards = "pruning ignores open obligations"
-test_file = "crates/basal-testkit/tests/journal_admin.rs"
+test_file = "crates/basal-core/src/runtime_regressions.rs"
 runner = "cargo"
-package = "basal-testkit"
-platforms = ["macos"]
-target = "--test journal_admin"
-expect_red = ["pruning_spares_unfinished_runs_and_open_obligations"]
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["runtime::regressions::pruning_keeps_a_terminal_run_with_an_unsettled_journal_call"]
 only = false
 build_timeout_s = 3600
 timeout_s = 600
@@ -4459,7 +4459,7 @@ build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/tokens.rs"
 old = "let report = match outcome.usage {"
-new = "let report = match outcome.usage.or_else(|| value.get(\"usage\").cloned().and_then(|u| serde_json::from_value(u).ok())) {"
+new = "let report = match outcome.usage.or_else(|| serde_json::from_str::<Value>(outcome.value.as_str()).ok().and_then(|value| value.get(\"usage\").cloned()).and_then(|usage| serde_json::from_value(usage).ok())) { // NON-VACUITY BREAK"
 
 [[control]]
 id = "broca-tools-are-not-explicitly-empty"
@@ -4767,8 +4767,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/broca/mod.rs"
-old = "if call.acknowledged || call.deferred {"
-new = "if false && call.acknowledged || call.deferred {"
+old = "call.acknowledged = true;\n        self.store.save(call)?;"
+new = "call.acknowledged = false; // NON-VACUITY BREAK\n        self.store.save(call)?;"
 
 [[control]]
 id = "broca-usage-metadata-is-ignored-by-the-ledger"

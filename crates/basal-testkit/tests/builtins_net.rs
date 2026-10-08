@@ -204,7 +204,9 @@ fn only_https_urls_are_fetched() {
     let server = server();
     let client = client(&server);
     let rules = rules(&[("api.test", GET_HEAD)]);
-    let url = format!("http://api.test:{}/hello", server.port());
+    // Use the otherwise-approved port so the independent port policy cannot
+    // mask a missing HTTPS-only check. The resolver still points to the server.
+    let url = "http://api.test/hello";
     assert_eq!(
         refused(fetch(&client, &rules, json!({ "url": url }))),
         codes::DENIED

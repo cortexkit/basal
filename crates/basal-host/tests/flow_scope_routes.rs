@@ -29,7 +29,11 @@ fn route_cache_reuses_handles_and_replaces_changed_selectors() {
         Some(7)
     );
     assert_eq!(
-        routes.route("flow-a", &target, |_| Ok(11)).unwrap(),
+        routes
+            .route("flow-a", &target, |_| {
+                panic!("a cached route must not be opened again")
+            })
+            .unwrap(),
         Some(7)
     );
     scope.epoch = 2;
