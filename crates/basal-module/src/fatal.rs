@@ -9,7 +9,6 @@
 //! restarts it and recovery runs before anything else.
 
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
-use std::time::Duration;
 
 use basal_core::{CoreError, InstallError};
 
@@ -57,27 +56,8 @@ impl Fatal {
         }
     }
 
-    /// Raises `e` if it is a storage error, and returns it unchanged.
-    pub fn check(&self, e: CoreError) -> CoreError {
-        if is_storage(&e) {
-            self.raise(e.to_string());
-        }
-        e
-    }
-
     pub fn get(&self) -> Option<String> {
         self.lock().clone()
-    }
-
-    /// Waits up to `timeout` for a fatal error.
-    pub fn wait_timeout(&self, timeout: Duration) -> Option<String> {
-        let guard = self.lock();
-        let (guard, _) = self
-            .inner
-            .1
-            .wait_timeout_while(guard, timeout, |slot| slot.is_none())
-            .unwrap_or_else(|p| p.into_inner());
-        guard.clone()
     }
 
     /// Waits for a fatal error, however long it takes.

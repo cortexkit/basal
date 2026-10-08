@@ -17,7 +17,7 @@ use crate::dryrun::{DryRunConfig, DryRunner};
 use crate::engine::{Engine, EngineConfig};
 use crate::fatal::{Fatal, install_is_storage, is_storage};
 use crate::metrics::Metrics;
-use crate::pool::{Pool, PoolConfig, PoolSource, Spawn};
+use crate::pool::{Pool, PoolConfig, Spawn};
 
 /// Everything the module is configured with, apart from its hosts.
 #[derive(Debug, Clone)]
@@ -68,9 +68,10 @@ impl Module {
         Self::start_with_store(config, hosts, spawner, |_| Ok(()))
     }
 
-    /// Bind adapters to the SQLite Store used by Runtime before attaching
-    /// completion sinks or recovering calls. Broca must not save completions
-    /// through an unbound store or a second writer.
+    /// Prepare the store, recovery, scheduler and scratch directory before
+    /// binding adapters. Attaching completion sinks only records weak runtime
+    /// references; no polling or workers may start until this returns success.
+    /// A preparation failure therefore cannot retain an adapter's writer lease.
     pub fn start_with_store(
         config: ModuleConfig,
         hosts: Hosts,
@@ -80,7 +81,6 @@ impl Module {
         let store = Store::open(&config.store_path, config.durability)
             .map_err(|e| format!("opening the store at {}: {e}", config.store_path.display()))?;
         let store = Arc::new(store);
-        initialize(store.clone())?;
         let runtime_config = Config {
             auto_resume: false,
             ..config.runtime
@@ -90,18 +90,17 @@ impl Module {
         let fatal = Fatal::new();
         let pool = Pool::new(config.pool.clone(), spawner, clock, metrics.clone());
         let rt = Runtime::new(
-            store,
+            store.clone(),
             hosts.host.clone(),
             hosts.catalog.clone(),
             hosts.hooks,
-            Some(Arc::new(PoolSource { pool: pool.clone() })),
+            None,
             runtime_config.clone(),
         );
         let recovered = rt.recover().map_err(|e| format!("recovering runs: {e}"))?;
         if !recovered.is_empty() {
             tracing::info!(target: "engine", "recovered {} runs left running", recovered.len());
         }
-        pool.replenish();
         let engine = Engine::new(
             rt.clone(),
             pool.clone(),
@@ -117,6 +116,8 @@ impl Module {
                 config.dry_run.scratch_root.display()
             )
         })?;
+        initialize(store)?;
+        pool.replenish();
         let dry = DryRunner::new(
             hosts.catalog.clone(),
             hosts.host,

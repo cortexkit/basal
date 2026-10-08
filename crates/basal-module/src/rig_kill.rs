@@ -91,11 +91,27 @@ impl RigKillHook {
     /// restart basal. This distinguishes a selected-but-unsent call from an
     /// accepted call whose result has not reached the journal.
     fn evidence(&self, run_id: &str, boundary: &Boundary) -> Option<String> {
+        let position = match boundary {
+            Boundary::ResendAuthorized { position }
+            | Boundary::HostCallReceived { position }
+            | Boundary::ModelSelected { position }
+            | Boundary::CallCommitted { position }
+            | Boundary::SyncCommitted { position }
+            | Boundary::SyncReplied { position }
+            | Boundary::LocalCommitted { position }
+            | Boundary::RefusalCommitted { position }
+            | Boundary::HostAnswered { position }
+            | Boundary::OutcomeCommitted { position }
+            | Boundary::AcceptedCommitted { position }
+            | Boundary::OrderCommitted { position, .. }
+            | Boundary::Delivered { position } => *position,
+            _ => return None,
+        };
         let c = Connection::open_with_flags(self.store.get()?, OpenFlags::SQLITE_OPEN_READ_ONLY)
             .ok()?;
         let row = c.query_row(
-            "SELECT COALESCE(request, args), dispatch, attempts, settlement FROM journal WHERE run_id = ?1 AND position = 0",
-            [run_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, Option<String>>(3)?)),
+            "SELECT COALESCE(request, args), dispatch, attempts, settlement FROM journal WHERE run_id = ?1 AND position = ?2",
+            rusqlite::params![run_id, position], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, Option<String>>(3)?)),
         ).ok()?;
         let snapshots: i64 = c
             .query_row(
@@ -157,9 +173,10 @@ impl Hooks for RigKillHook {
         };
         // The cheap comparison first: the store is read only at the armed
         // boundary.
-        if armed.boundary != format!("{boundary:?}")
-            || !matches(&armed, self.flow_of(run_id).as_deref(), boundary)
-        {
+        if armed.boundary != format!("{boundary:?}") {
+            return Step::Continue;
+        }
+        if self.flow_of(run_id).as_deref() != Some(armed.flow_id.as_str()) {
             return Step::Continue;
         }
         if let Some(evidence) = self.evidence(run_id, boundary) {
@@ -285,5 +302,38 @@ mod tests {
         assert!(hook.evidence("other", &at).is_none());
         drop(c);
         std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod position_tests {
+    use super::*;
+
+    #[test]
+    fn evidence_reads_the_position_named_by_the_boundary() {
+        let dir =
+            std::env::temp_dir().join(format!("basal-position-evidence-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("store.db");
+        let c = Connection::open(&path).unwrap();
+        c.execute_batch("CREATE TABLE journal (run_id TEXT, position INTEGER, args TEXT, request TEXT, dispatch TEXT, attempts INTEGER, settlement TEXT);
+            CREATE TABLE broca_calls (run_id TEXT);
+            INSERT INTO journal VALUES ('r',0,'0',NULL,'sent',1,NULL), ('r',3,'3',NULL,'answered',2,'fulfilled');").unwrap();
+        let store = Arc::new(OnceLock::new());
+        store.set(path).unwrap();
+        let hook = RigKillHook {
+            path: dir.join("arm"),
+            store,
+        };
+        let evidence: serde_json::Value = serde_json::from_str(
+            &hook
+                .evidence("r", &Boundary::HostAnswered { position: 3 })
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(evidence["args"], 3);
+        assert_eq!(evidence["attempts"], 2);
+        drop(c);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

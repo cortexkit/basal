@@ -11,6 +11,8 @@
 //! | `flow.drain` | yes | no | no | no | no |
 //! | `flow.disable` | yes | no | yes | no | no |
 //! | `flow.enable` | yes | no | only to undo a disable it made itself | no | no |
+//! | `package.register` | yes | no | no | no | yes |
+//! | `package.get`, `flow.instance.ensure`, `flow.instance.remove` | no | no | no | no | yes |
 //!
 //! The operator is the daemon-attested `reserved:callosum`; a local caller
 //! is an unscoped `direct` key-holder, which any local process can be (see
@@ -219,10 +221,7 @@ impl Module {
         let permitted = *caller == Caller::Core
             || (method == "package.register" && *caller == Caller::Operator);
         if !permitted {
-            return Err(OpError::new(
-                "not_permitted",
-                format!("{} may not call {method}", caller.label()),
-            ));
+            return Err(OpError::not_permitted(method, caller));
         }
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
@@ -381,14 +380,15 @@ impl Module {
             }
         };
 
+        let request = InstallRequest {
+            script: p.script,
+            manifest: p.manifest,
+            author,
+            loop_override: p.loop_override,
+        };
         let installed = self
             .rt
-            .install(&InstallRequest {
-                script: p.script.clone(),
-                manifest: p.manifest.clone(),
-                author: author.clone(),
-                loop_override: p.loop_override,
-            })
+            .install(&request)
             .map_err(|e| self.install_error(e))?;
 
         let existing = self
@@ -401,15 +401,12 @@ impl Module {
             Some(card) => card,
             None => {
                 let now = self.rt.config().clock.now_ms();
-                let dry_run = match self.dry.run(&DryRunRequest {
-                    script: p.script.clone(),
-                    manifest: p.manifest.clone(),
-                    author: author.clone(),
-                    loop_override: p.loop_override,
-                    mode: Mode::Capture,
-                    trigger: DryTrigger::Schedule { window: None },
-                    now_ms: now,
-                }) {
+                let dry_run = match self.dry.run_install(
+                    &request,
+                    Mode::Capture,
+                    &DryTrigger::Schedule { window: None },
+                    now,
+                ) {
                     Ok(summary) => summary,
                     // The card says the dry run failed rather than holding
                     // the install back: the operator decides with that known.
@@ -433,9 +430,9 @@ impl Module {
                     });
                 let mut fields = card::fields(&CardInput {
                     manifest: &manifest,
-                    script: &p.script,
-                    manifest_text: &p.manifest,
-                    author: &author,
+                    script: &request.script,
+                    manifest_text: &request.manifest,
+                    author: &request.author,
                     installed: &installed,
                     catalog: self.catalog.as_ref(),
                     token_window,
@@ -447,7 +444,7 @@ impl Module {
                         &installed.flow_id,
                         installed.version,
                         &installed.code_hash,
-                        &author,
+                        &request.author,
                         &fields.to_string(),
                     )
                     .map_err(|e| self.core_error(e))?
@@ -650,54 +647,48 @@ impl Module {
         }
         let p: Params = serde_json::from_value(params).map_err(invalid_params)?;
         let as_of = self.rt.config().clock.now_ms();
-        let mut entries = Vec::new();
-        for f in self.rt.flow_health().map_err(|e| self.core_error(e))? {
-            // Apply visibility even when the caller explicitly requests an id:
-            // absent and invisible flows must be indistinguishable.
-            if let Some(owner) = owner {
-                if !self.owns(owner, &f.flow_id)? {
-                    continue;
-                }
-            }
-            if p.flow_ids
-                .as_ref()
-                .is_some_and(|ids| !ids.contains(&f.flow_id))
-            {
-                continue;
-            }
-            let pending_version = self
-                .rt
-                .cards(&f.flow_id)
-                .map_err(|e| self.core_error(e))?
-                .into_iter()
-                .filter(|c| c.state == CardState::Pending)
-                .map(|c| c.version)
-                .max();
-            let disabled_at: Option<i64> = self
-                .rt
-                .store()
-                .read(|c| {
-                    Ok(c.query_row(
-                        "SELECT disabled_at FROM flows WHERE flow_id = ?1",
-                        [&f.flow_id],
-                        |r| r.get(0),
-                    )?)
-                })
-                .map_err(|e| self.core_error(e))?;
-            entries.push(json!({
-                "flow_id": f.flow_id,
-                "state": flow_state(f.approved_version, f.enabled),
-                "approved_version": f.approved_version,
-                "pending_version": pending_version,
-                "disabled": f.disabled_by.as_deref().map(|by| json!({
-                    "by": match disabled_kind(by) { "operator" => "operator", "auto" => "auto", "core" => "core", _ => "owner" },
-                    "reason": f.disabled_reason,
-                    "at": disabled_at,
-                })),
-                "last_run": f.last_run.map(|r| json!({"run_id": r.run_id, "state": r.state, "ended_at": r.ended_at})),
-                "needs_reconcile": !f.needs_reconcile.is_empty(),
-            }));
-        }
+        // List has a smaller projection than health. Filter requested and
+        // visible flows before reading their cards or runs, and keep the whole
+        // reply on one store snapshot rather than issuing per-flow reads.
+        let ids = p.flow_ids.map(|ids| serde_json::json!(ids).to_string());
+        let entries = self.rt.store().read(|c| {
+            let mut stmt = c.prepare(
+                "SELECT f.flow_id, f.approved_version, f.state='enabled',
+                    f.disabled_by, f.disabled_reason, f.disabled_at,
+                    (SELECT MAX(version) FROM install_cards WHERE flow_id=f.flow_id AND state='pending'),
+                    r.run_id, r.state, COALESCE(r.ended_at,r.admitted_at),
+                    EXISTS(SELECT 1 FROM runs WHERE flow_id=f.flow_id AND state='needs_reconcile')
+                 FROM flows f LEFT JOIN runs r ON r.run_id=(
+                    SELECT run_id FROM runs WHERE flow_id=f.flow_id
+                    AND state IN ('succeeded','failed','engine_mismatch','cancelled')
+                    ORDER BY admit_seq DESC, run_id DESC LIMIT 1)
+                 WHERE (?1 IS NULL OR f.flow_id IN (SELECT value FROM json_each(?1)))
+                 AND (?2 IS NULL OR f.owner=?2 OR (f.owner IS NULL
+                    AND EXISTS(SELECT 1 FROM installs WHERE flow_id=f.flow_id AND author=?2)
+                    AND NOT EXISTS(SELECT 1 FROM installs WHERE flow_id=f.flow_id AND author<>?2)))
+                 ORDER BY f.flow_id")?;
+            let rows = stmt.query_map(rusqlite::params![ids, owner], |r| {
+                let approved: Option<u32> = r.get(1)?;
+                let disabled_by: Option<String> = r.get(3)?;
+                let run_id: Option<String> = r.get(7)?;
+                Ok(json!({
+                    "flow_id": r.get::<_, String>(0)?,
+                    "state": flow_state(approved, r.get(2)?),
+                    "approved_version": approved,
+                    "pending_version": r.get::<_, Option<u32>>(6)?,
+                    "disabled": match disabled_by {
+                        Some(by) => json!({"by": disabled_kind(&by), "reason":r.get::<_, Option<String>>(4)?, "at":r.get::<_, Option<i64>>(5)?}),
+                        None => Value::Null,
+                    },
+                    "last_run": match run_id {
+                        Some(run_id) => json!({"run_id":run_id,"state":r.get::<_, String>(8)?,"ended_at":r.get::<_, i64>(9)?}),
+                        None => Value::Null,
+                    },
+                    "needs_reconcile": r.get::<_, bool>(10)?,
+                }))
+            })?.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        }).map_err(|e| self.core_error(e))?;
         Ok(json!({"as_of": as_of, "flows": entries}))
     }
 
@@ -707,8 +698,8 @@ impl Module {
     /// whether a flow's claim on a source still holds, and treats any reply
     /// it cannot decode as unhealthy. So the fields of that contract are
     /// always present with fixed types: `as_of` (RFC 3339, UTC) and, per
-    /// flow, `flow_id`, `state` (`enabled`, `disabled`, or `shadow` once
-    /// shadow mode exists), `last_run` (`{outcome, at}` or null),
+    /// flow, `flow_id`, `state` (`enabled`, `disabled`, or `unapproved`),
+    /// `last_run` (`{outcome, at}` or null),
     /// `oldest_overdue_age_ms` (0 when nothing is overdue),
     /// `consecutive_failures`, and the booleans `needs_reconcile`,
     /// `overflowed` and `auto_disabled`. Everything else in the reply is for
@@ -827,6 +818,8 @@ impl Module {
                 "spares": pool.spares,
                 "spawning": pool.spawning,
                 "busy": pool.busy,
+                "spawn_error": pool.spawn_error,
+                "spawn_retry_in_ms": pool.spawn_retry_in_ms,
                 "bound": pool.bound.iter().map(|(f, n)| json!({"flow_id": f, "idle": n})).collect::<Vec<_>>(),
             },
             "metrics": self.metrics.to_json(),
@@ -1008,7 +1001,8 @@ fn rfc3339(ms: i64) -> Result<String, OpError> {
 /// The kind of actor a recorded `disabled_by` names: `operator`, `auto`
 /// for the runtime's own disable, `core` when core no longer stands behind
 /// the flow's approved version (`basal_core::install::revoke`), or the
-/// agent label as recorded.
+/// `owner` for the agent that disabled its own flow. The raw actor is
+/// reported separately rather than becoming another kind in the wire contract.
 fn disabled_kind(by: &str) -> &str {
     if by.starts_with(basal_core::install::OPERATOR_ACTOR_PREFIX) {
         "operator"
@@ -1017,7 +1011,7 @@ fn disabled_kind(by: &str) -> &str {
     } else if by == basal_core::install::CORE_ACTOR {
         "core"
     } else {
-        by
+        "owner"
     }
 }
 

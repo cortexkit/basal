@@ -132,6 +132,13 @@ pub struct DryRunRequest {
     pub now_ms: i64,
 }
 
+struct BorrowedRequest<'a> {
+    install: &'a InstallRequest,
+    mode: Mode,
+    trigger: &'a DryTrigger,
+    now_ms: i64,
+}
+
 #[derive(Debug)]
 pub enum DryRunError {
     /// An agent-owned manifest names another agent. Preserve the install
@@ -192,13 +199,33 @@ impl DryRunner {
         }
     }
 
-    pub fn config(&self) -> &DryRunConfig {
-        &self.config
-    }
-
     /// Runs one dry run and returns its summary.
     pub fn run(&self, request: &DryRunRequest) -> Result<Value, DryRunError> {
-        let manifest = Manifest::parse(&request.manifest)
+        let install = InstallRequest {
+            script: request.script.clone(),
+            manifest: request.manifest.clone(),
+            author: request.author.clone(),
+            loop_override: request.loop_override,
+        };
+        self.run_install(&install, request.mode, &request.trigger, request.now_ms)
+    }
+
+    /// The install path already owns exact source bytes; borrow them for both
+    /// the capture and scratch install instead of copying whole scripts again.
+    pub(crate) fn run_install(
+        &self,
+        install: &InstallRequest,
+        mode: Mode,
+        trigger: &DryTrigger,
+        now_ms: i64,
+    ) -> Result<Value, DryRunError> {
+        let request = &BorrowedRequest {
+            install,
+            mode,
+            trigger,
+            now_ms,
+        };
+        let manifest = Manifest::parse(&request.install.manifest)
             .map_err(|e| DryRunError::Invalid(format!("manifest: {e}")))?;
         let (fires, window) = self.fires(&manifest, request)?;
         Metrics::bump(&self.metrics.dry_runs);
@@ -230,7 +257,7 @@ impl DryRunner {
     fn fires(
         &self,
         manifest: &Manifest,
-        request: &DryRunRequest,
+        request: &BorrowedRequest<'_>,
     ) -> Result<(Vec<(String, Value)>, Value), DryRunError> {
         match &request.trigger {
             DryTrigger::Synthetic(payload) => Ok((
@@ -319,7 +346,7 @@ impl DryRunner {
         &self,
         dir: &std::path::Path,
         manifest: &Manifest,
-        request: &DryRunRequest,
+        request: &BorrowedRequest<'_>,
         fires: &[(String, Value)],
     ) -> Result<Vec<Value>, DryRunError> {
         let store =
@@ -353,19 +380,12 @@ impl DryRunner {
             None,
             config,
         );
-        let installed = rt
-            .install(&InstallRequest {
-                script: request.script.clone(),
-                manifest: request.manifest.clone(),
-                author: request.author.clone(),
-                loop_override: request.loop_override,
-            })
-            .map_err(|e| match e {
-                e @ basal_core::InstallError::ForeignAgentTarget { .. } => {
-                    DryRunError::InstallRefused(e)
-                }
-                other => DryRunError::Invalid(format!("install into the scratch store: {other}")),
-            })?;
+        let installed = rt.install(request.install).map_err(|e| match e {
+            e @ basal_core::InstallError::ForeignAgentTarget { .. } => {
+                DryRunError::InstallRefused(e)
+            }
+            other => DryRunError::Invalid(format!("install into the scratch store: {other}")),
+        })?;
         rt.approve(
             &installed.flow_id,
             installed.version,
@@ -640,6 +660,11 @@ struct CaptureHost {
 }
 
 impl CaptureHost {
+    fn live_query_op(&self, kind: &CallKind) -> bool {
+        self.mode == Mode::Live
+            && matches!(kind, CallKind::Op { module, op } if self.catalog.op(module, op)
+                .is_some_and(|d| d.kind == Some(OpKind::Query) && !d.shell_capable))
+    }
     /// Whether a call goes to the real host: in live mode only, and only a
     /// catalogued query op or a built-in that only reads (the file and git
     /// reads, and `net.fetch` with `GET` or `HEAD`). A built-in's request
@@ -650,10 +675,7 @@ impl CaptureHost {
             return false;
         }
         match &request.kind {
-            CallKind::Op { module, op } => self
-                .catalog
-                .op(module, op)
-                .is_some_and(|d| d.kind == Some(OpKind::Query) && !d.shell_capable),
+            CallKind::Op { .. } => self.live_query_op(&request.kind),
             kind if basal_host::builtins::is_builtin(kind) => {
                 serde_json::from_str::<Value>(request.args.as_str())
                     .ok()
@@ -693,12 +715,7 @@ impl Host for CaptureHost {
     fn classify(&self, kind: &CallKind) -> CallClass {
         // A built-in is classed by the runtime from its arguments and never
         // asks this; a module op's class is the catalog's.
-        let live_op = self.mode == Mode::Live
-            && matches!(kind, CallKind::Op { module, op } if self
-                .catalog
-                .op(module, op)
-                .is_some_and(|d| d.kind == Some(OpKind::Query) && !d.shell_capable));
-        if live_op {
+        if self.live_query_op(kind) {
             CallClass::Query
         } else {
             // Captured calls are answered at once by this host, so the class
