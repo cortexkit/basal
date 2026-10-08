@@ -107,6 +107,7 @@ struct Shared {
     halted: Cell<bool>,
     bridge: RefCell<Bridge>,
     link: Rc<RefCell<dyn HostLink>>,
+    memory_exhausted: Rc<Cell<bool>>,
 }
 
 enum Issued {
@@ -126,10 +127,7 @@ fn failed(failure: Failure) -> ActivationResult {
 
 fn truncate(mut text: String) -> String {
     if text.len() > MAX_DETAIL_BYTES {
-        let mut end = MAX_DETAIL_BYTES;
-        while !text.is_char_boundary(end) {
-            end -= 1;
-        }
+        let end = basal_proto::utf8_prefix(&text, MAX_DETAIL_BYTES).len();
         text.truncate(end);
     }
     text
@@ -218,12 +216,7 @@ impl Shared {
                 cap: bridge.max_value as u64,
             }));
         }
-        let args = JsonText::new(args).map_err(|e| {
-            failed(Failure::ArgumentsTooLarge {
-                bytes: e.bytes as u64,
-                cap: e.cap as u64,
-            })
-        })?;
+        let args = JsonText::new(args).expect("arguments were checked against the hard value cap");
         let position = bridge.next_position;
         if position >= MAX_POSITION {
             return Err(failed(Failure::Engine {
@@ -234,7 +227,7 @@ impl Shared {
         let digest = ArgsDigest::of(&args);
         let synchronous = kind.is_synchronous();
 
-        let Some(recorded) = bridge.prefix.get(position as usize) else {
+        let Some(recorded) = bridge.prefix.get_mut(position as usize) else {
             // A call beyond the recorded prefix. In a replay that matches the
             // journal, every recorded outcome has been released before the
             // script reaches such a call: the parent journals each call when
@@ -283,7 +276,7 @@ impl Shared {
             bridge.outstanding.insert(position);
             return Ok(Prepared::Done(Issued::Async(position)));
         }
-        match recorded.outcome.clone() {
+        match recorded.outcome.take() {
             Some(outcome) => {
                 // A recorded clock read or random sample is answered at once,
                 // which is only consistent if every asynchronous outcome
@@ -420,10 +413,14 @@ fn native_bridge<'js>(ctx: &Ctx<'js>, shared: &Rc<Shared>) -> rquickjs::Result<O
                   op: String,
                   args: String|
                   -> rquickjs::Result<f64> {
-                if module.len() > MAX_NAME_BYTES || op.len() > MAX_NAME_BYTES {
+                if module.is_empty()
+                    || op.is_empty()
+                    || module.len() > MAX_NAME_BYTES
+                    || op.len() > MAX_NAME_BYTES
+                {
                     return Err(Exception::throw_range(
                         &ctx,
-                        "module and op names are limited to 128 bytes",
+                        "module and op names must contain 1 to 128 bytes",
                     ));
                 }
                 match s.issue(CallKind::Op { module, op }, args) {
@@ -504,42 +501,63 @@ enum ScriptState {
     },
 }
 
-/// Classifies an exception that escaped into Rust.
+/// Classifies an exception that escaped into Rust without calling its getters.
 fn classify_exception<'js>(value: Value<'js>) -> ActivationResult {
-    let Some(object) = value.as_object() else {
-        let text = value
-            .as_string()
-            .and_then(|s| s.to_string().ok())
-            .unwrap_or_else(|| format!("uncaught {}", value.type_name()));
+    // Only native Error objects are inspected here. A proxy or an arbitrary
+    // thrown object could execute code even while reading a descriptor.
+    // SAFETY: value is a live handle; this only checks the engine's class tag.
+    if !unsafe { qjs::JS_IsError(value.as_raw()) } {
         return failed(Failure::Script {
-            message: truncate(text),
+            message: truncate(
+                value
+                    .as_string()
+                    .and_then(|s| s.to_string().ok())
+                    .unwrap_or_else(|| format!("uncaught {}", value.type_name())),
+            ),
         });
-    };
-    let name: Option<String> = object.get("name").ok().flatten();
-    let message: Option<String> = object.get("message").ok().flatten();
-    match (name.as_deref(), message.as_deref()) {
-        (Some("InternalError"), Some("out of memory")) => {
-            ActivationResult::BudgetExhausted(BudgetKind::Memory)
-        }
-        (Some("RangeError"), Some("Maximum call stack size exceeded")) => {
-            ActivationResult::BudgetExhausted(BudgetKind::Stack)
-        }
-        _ => {
-            let stack: Option<String> = object.get("stack").ok().flatten();
-            let mut text = format!(
-                "{}: {}",
-                name.unwrap_or_else(|| "Error".into()),
-                message.unwrap_or_default()
-            );
-            if let Some(stack) = stack.filter(|s| !s.is_empty()) {
-                text.push('\n');
-                text.push_str(&stack);
-            }
-            failed(Failure::Script {
-                message: truncate(text),
-            })
-        }
     }
+    let ctx = value.ctx();
+    let own_string = |key: &str| -> Option<String> {
+        let key = std::ffi::CString::new(key).ok()?;
+        // SAFETY: ctx and value remain live, and found descriptors transfer
+        // ownership of value/getter/setter references to the caller.
+        unsafe {
+            let raw_ctx = ctx.as_raw().as_ptr();
+            let atom = qjs::JS_NewAtom(raw_ctx, key.as_ptr());
+            let mut desc = std::mem::MaybeUninit::<qjs::JSPropertyDescriptor>::uninit();
+            let found = qjs::JS_GetOwnProperty(raw_ctx, desc.as_mut_ptr(), value.as_raw(), atom);
+            qjs::JS_FreeAtom(raw_ctx, atom);
+            if found != 1 {
+                return None;
+            }
+            let desc = desc.assume_init();
+            let data = Value::from_raw(ctx.clone(), desc.value);
+            drop(Value::from_raw(ctx.clone(), desc.getter));
+            drop(Value::from_raw(ctx.clone(), desc.setter));
+            data.as_string().and_then(|s| s.to_string().ok())
+        }
+    };
+    let message = own_string("message").unwrap_or_default();
+    // QuickJS has no public origin flag for stack overflow. Keep the existing
+    // stack contract until the engine can report that origin independently.
+    let range: Option<Object> = ctx
+        .globals()
+        .get::<_, Object>("RangeError")
+        .ok()
+        .and_then(|ctor| ctor.get("prototype").ok());
+    let is_range = value.as_object().and_then(|obj| obj.get_prototype()) == range;
+    if is_range && message == "Maximum call stack size exceeded" {
+        return ActivationResult::BudgetExhausted(BudgetKind::Stack);
+    }
+    let name = own_string("name").unwrap_or_else(|| "Error".into());
+    let mut text = format!("{name}: {message}");
+    if let Some(stack) = own_string("stack").filter(|s| !s.is_empty()) {
+        text.push('\n');
+        text.push_str(&stack);
+    }
+    failed(Failure::Script {
+        message: truncate(text),
+    })
 }
 
 struct Activation {
@@ -558,7 +576,16 @@ pub fn run_activation(
     request: &ActivationRequest,
     link: Rc<RefCell<dyn HostLink>>,
 ) -> ActivationResult {
-    run(request, link, false)
+    run(request, link, false, request.prefix.clone())
+}
+
+/// Runs an owned IPC request without copying its recorded values.
+pub fn run_activation_owned(
+    mut request: ActivationRequest,
+    link: Rc<RefCell<dyn HostLink>>,
+) -> ActivationResult {
+    let prefix = std::mem::take(&mut request.prefix);
+    run(&request, link, false, prefix)
 }
 
 /// Runs an activation with the raw native bridge exposed to the script as
@@ -569,15 +596,16 @@ pub(crate) fn run_activation_with_raw_bridge(
     request: &ActivationRequest,
     link: Rc<RefCell<dyn HostLink>>,
 ) -> ActivationResult {
-    run(request, link, true)
+    run(request, link, true, request.prefix.clone())
 }
 
 fn run(
     request: &ActivationRequest,
     link: Rc<RefCell<dyn HostLink>>,
     #[allow(unused_variables)] expose_raw_bridge: bool,
+    prefix: Vec<RecordedCall>,
 ) -> ActivationResult {
-    let bridge = match plan(request) {
+    let bridge = match plan(request, prefix) {
         Ok(bridge) => bridge,
         Err(result) => return result,
     };
@@ -586,16 +614,24 @@ fn run(
         halted: Cell::new(false),
         bridge: RefCell::new(bridge),
         link,
+        memory_exhausted: Rc::new(Cell::new(false)),
     });
-    let rt = match Runtime::new() {
+    let rt = match Runtime::new_with_alloc(allocator::BudgetAllocator::new(
+        request.budgets.memory_bytes as usize,
+        shared.memory_exhausted.clone(),
+    )) {
         Ok(rt) => rt,
+        Err(rquickjs::Error::Allocation) => {
+            return ActivationResult::BudgetExhausted(BudgetKind::Memory);
+        }
         Err(e) => {
             return failed(Failure::Engine {
                 detail: format!("creating the runtime: {e}"),
             });
         }
     };
-    rt.set_memory_limit(request.budgets.memory_bytes as usize);
+    // The allocator owns the cap so refusal has an unforgeable native signal.
+    rt.set_memory_limit(0);
     rt.set_max_stack_size(request.budgets.stack_bytes as usize);
     let interrupt = shared.clone();
     rt.set_interrupt_handler(Some(Box::new(move || {
@@ -628,7 +664,10 @@ fn run(
 }
 
 /// Checks the request and builds the replay state.
-fn plan(request: &ActivationRequest) -> Result<Bridge, ActivationResult> {
+fn plan(
+    request: &ActivationRequest,
+    prefix: Vec<RecordedCall>,
+) -> Result<Bridge, ActivationResult> {
     let invalid = |detail: String| Err(failed(Failure::InvalidRequest { detail }));
     let actual = prelude_hash();
     if request.prelude_hash != actual {
@@ -654,7 +693,8 @@ fn plan(request: &ActivationRequest) -> Result<Bridge, ActivationResult> {
         ));
     }
     let max_value = b.max_value_bytes as usize;
-    if !(4..=MAX_VALUE_BYTES).contains(&max_value) {
+    // Even the absent result is encoded as the four-byte JSON literal null.
+    if !("null".len()..=MAX_VALUE_BYTES).contains(&max_value) {
         return invalid(format!(
             "value cap {max_value} outside 4..={MAX_VALUE_BYTES}"
         ));
@@ -663,7 +703,8 @@ fn plan(request: &ActivationRequest) -> Result<Bridge, ActivationResult> {
     let mut orders = BTreeSet::new();
     let mut release = Vec::new();
     let mut pending_sync = BTreeSet::new();
-    for (index, call) in request.prefix.iter().enumerate() {
+    let mut last_sync_order = None;
+    for (index, call) in prefix.iter().enumerate() {
         if call.position != index as u64 {
             return invalid(format!(
                 "prefix entry {index} has position {}; positions must run 0, 1, 2, ...",
@@ -678,6 +719,10 @@ fn plan(request: &ActivationRequest) -> Result<Bridge, ActivationResult> {
                 ));
             }
             if call.kind.is_synchronous() {
+                if last_sync_order.is_some_and(|last| outcome.delivery_order <= last) {
+                    return invalid("synchronous delivery orders must strictly increase".into());
+                }
+                last_sync_order = Some(outcome.delivery_order);
                 pending_sync.insert((outcome.delivery_order, call.position));
             } else {
                 release.push(Release {
@@ -692,7 +737,7 @@ fn plan(request: &ActivationRequest) -> Result<Bridge, ActivationResult> {
     Ok(Bridge {
         profile: request.profile,
         max_value,
-        prefix: request.prefix.clone(),
+        prefix,
         release: release.into(),
         pending_sync,
         next_position: 0,
@@ -712,6 +757,9 @@ impl Activation {
         }
         if self.shared.clock.exhausted() {
             return ActivationResult::BudgetExhausted(BudgetKind::JsTime);
+        }
+        if self.shared.memory_exhausted.get() {
+            return ActivationResult::BudgetExhausted(BudgetKind::Memory);
         }
         match error {
             rquickjs::Error::Exception => self.ctx.with(|ctx| classify_exception(ctx.catch())),
@@ -805,9 +853,8 @@ impl Activation {
         };
         self.hooks = Some(hooks);
 
-        // The script is the body of an async function, so it can `await`
-        // and `return` its result. It runs in strict mode. The wrapper opens
-        // on the script's first line so error line numbers match the source.
+        // Evaluation is an engine entry under the activation's budgets and
+        // lockdown, including any top-level code accepted by the parser.
         let source = format!("(async function () {{{}\n}})", request.script);
         let started = self.enter(|ctx| {
             let start = start.clone().restore(ctx)?;
@@ -942,7 +989,7 @@ impl Activation {
                         }
                         bridge.release.pop_front();
                         bridge.last_order = Some(next.order);
-                        let outcome = bridge.prefix[next.position as usize].outcome.clone();
+                        let outcome = bridge.prefix[next.position as usize].outcome.take();
                         Some((next.position, outcome))
                     }
                 }
@@ -982,9 +1029,11 @@ impl Activation {
                     kind,
                     text,
                     host_position,
-                } => {
+                } if outstanding.is_empty() => {
+                    if self.shared.memory_exhausted.get() {
+                        return Ok(ActivationResult::BudgetExhausted(BudgetKind::Memory));
+                    }
                     return Ok(match kind.as_str() {
-                        "memory" => ActivationResult::BudgetExhausted(BudgetKind::Memory),
                         "stack" => ActivationResult::BudgetExhausted(BudgetKind::Stack),
                         "unserializable" => failed(Failure::ResultNotSerializable {
                             detail: truncate(text),
@@ -1008,13 +1057,9 @@ impl Activation {
                             cap: cap as u64,
                         }));
                     }
-                    return Ok(match JsonText::new(text) {
-                        Ok(value) => ActivationResult::Completed { value },
-                        Err(e) => failed(Failure::ResultTooLarge {
-                            bytes: e.bytes as u64,
-                            cap: e.cap as u64,
-                        }),
-                    });
+                    let value =
+                        JsonText::new(text).expect("result was checked against the hard value cap");
+                    return Ok(ActivationResult::Completed { value });
                 }
                 ScriptState::Pending if outstanding.is_empty() => {
                     return Ok(ActivationResult::Stalled);
@@ -1055,5 +1100,6 @@ impl Activation {
     }
 }
 
+mod allocator;
 #[cfg(test)]
 mod tests;

@@ -11,10 +11,6 @@ use std::process::ExitCode;
 use basal_worker::{confinement, probe, serve};
 
 fn main() -> ExitCode {
-    if let Err(error) = confinement::close_inherited_descriptors() {
-        eprintln!("ck-basal-worker: refusing inherited descriptors: {error}");
-        return ExitCode::from(70);
-    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         None => {}

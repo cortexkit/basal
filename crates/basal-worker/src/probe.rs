@@ -68,6 +68,10 @@ pub fn run(args: &[String]) -> u8 {
             }
         }
     } else {
+        if let Err(e) = confinement::close_inherited_descriptors() {
+            eprintln!("confinement probe: {e}");
+            return 70;
+        }
         ("none", confinement::open_descriptors())
     };
 

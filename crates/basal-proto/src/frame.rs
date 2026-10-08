@@ -34,13 +34,6 @@ pub enum FrameError {
     Decode(DecodeError),
 }
 
-impl FrameError {
-    /// Whether the byte stream is still usable after this error.
-    pub fn stream_intact(&self) -> bool {
-        matches!(self, Self::Decode(_))
-    }
-}
-
 impl fmt::Display for FrameError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -103,8 +96,18 @@ pub fn read_frame(r: &mut impl Read) -> Result<Vec<u8>, FrameError> {
             max: MAX_FRAME_BYTES as u64,
         });
     }
-    let mut payload = vec![0u8; len];
-    let received = read_full(r, &mut payload)?;
+    let mut payload = Vec::new();
+    // Grow only after bytes arrive; a header alone must not pin a full frame.
+    let mut chunk = [0u8; 8192];
+    while payload.len() < len {
+        let want = chunk.len().min(len - payload.len());
+        let received = read_full(r, &mut chunk[..want])?;
+        payload.extend_from_slice(&chunk[..received]);
+        if received < want {
+            break;
+        }
+    }
+    let received = payload.len();
     if received != len {
         return Err(FrameError::Truncated {
             expected: len,
@@ -123,17 +126,15 @@ pub fn write_raw_frame(w: &mut impl Write, payload: &[u8]) -> Result<(), FrameEr
             max: MAX_FRAME_BYTES as u64,
         });
     }
-    let mut frame = Vec::with_capacity(payload.len() + 4);
-    frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
-    frame.extend_from_slice(payload);
-    w.write_all(&frame)?;
+    w.write_all(&(payload.len() as u32).to_be_bytes())?;
+    w.write_all(payload)?;
     w.flush()?;
     Ok(())
 }
 
 /// Turns an encoder holding a header placeholder and a payload into a frame.
 fn seal(enc: Encoder) -> Result<Vec<u8>, FrameError> {
-    let mut frame = enc.into_inner();
+    let mut frame = enc.finish().map_err(FrameError::Decode)?;
     let len = frame.len() - 4;
     if len > MAX_FRAME_BYTES {
         return Err(FrameError::Oversized {
@@ -147,14 +148,14 @@ fn seal(enc: Encoder) -> Result<Vec<u8>, FrameError> {
 
 /// Encodes a parent message as a complete frame, header included.
 pub fn encode_parent_frame(m: &ParentMessage) -> Result<Vec<u8>, FrameError> {
-    let mut enc = Encoder::with_header_room();
+    let mut enc = Encoder::with_header_room(wire::parent_hint(m));
     wire::encode_parent(&mut enc, m);
     seal(enc)
 }
 
 /// Encodes a worker message as a complete frame, header included.
 pub fn encode_worker_frame(m: &WorkerMessage) -> Result<Vec<u8>, FrameError> {
-    let mut enc = Encoder::with_header_room();
+    let mut enc = Encoder::with_header_room(wire::worker_hint(m));
     wire::encode_worker(&mut enc, m);
     seal(enc)
 }
@@ -185,6 +186,19 @@ pub fn write_parent_message(w: &mut impl Write, m: &ParentMessage) -> Result<(),
 pub fn write_worker_message(w: &mut impl Write, m: &WorkerMessage) -> Result<(), FrameError> {
     let frame = encode_worker_frame(m)?;
     w.write_all(&frame)?;
+    w.flush()?;
+    Ok(())
+}
+
+/// Writes a borrowed call without cloning its potentially large arguments.
+pub fn write_host_call(w: &mut impl Write, call: &crate::HostCall) -> Result<(), FrameError> {
+    let mut enc = Encoder::with_header_room(
+        call.args
+            .len()
+            .saturating_add(2 * crate::MAX_NAME_BYTES + 32),
+    );
+    wire::encode_host_call(&mut enc, call);
+    w.write_all(&seal(enc)?)?;
     w.flush()?;
     Ok(())
 }

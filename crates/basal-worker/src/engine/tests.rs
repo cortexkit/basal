@@ -127,3 +127,116 @@ fn raw_bridge_issues_sh_in_codemode_profile() {
     );
     assert!(shell_issued(&link.borrow()));
 }
+
+#[test]
+fn replayed_sync_delivery_orders_must_increase() {
+    let link = Rc::new(RefCell::new(EchoLink::default()));
+    let mut req = request(Profile::Flow, "Date.now(); return Math.random();");
+    for (position, primitive, order) in [(0, Primitive::Now, 5), (1, Primitive::Random, 2)] {
+        req.prefix.push(basal_proto::RecordedCall {
+            position,
+            kind: CallKind::Primitive(primitive),
+            args_digest: basal_proto::ArgsDigest::of(&JsonText::null()),
+            outcome: Some(basal_proto::RecordedOutcome {
+                settlement: Settlement::Fulfilled,
+                value: JsonText::new("0.5").unwrap(),
+                delivery_order: order,
+            }),
+        });
+    }
+    let result = run_activation(&req, link.clone());
+    assert!(
+        matches!(
+            result,
+            ActivationResult::Failed(Failure::InvalidRequest { .. })
+        ),
+        "{result:?}"
+    );
+    assert!(link.borrow().issued.is_empty());
+}
+
+#[test]
+fn raw_bridge_rejects_empty_op_names_before_sending() {
+    for script in [
+        "__rawBridge.issueOp('', 'echo', 'null');",
+        "__rawBridge.issueOp('mock', '', 'null');",
+    ] {
+        let link = Rc::new(RefCell::new(EchoLink::default()));
+        let result = run_activation_with_raw_bridge(&request(Profile::Flow, script), link.clone());
+        assert!(
+            matches!(result, ActivationResult::Failed(Failure::Script { .. })),
+            "{result:?}"
+        );
+        assert!(link.borrow().issued.is_empty());
+    }
+}
+
+#[test]
+fn script_rejection_drains_outstanding_calls_before_finishing() {
+    let link = Rc::new(RefCell::new(EchoLink::default()));
+    let result = run_activation(
+        &request(
+            Profile::Flow,
+            "ops.call('mock', 'echo', 1); throw new Error('failed');",
+        ),
+        link.clone(),
+    );
+    assert!(matches!(
+        result,
+        ActivationResult::Failed(Failure::Script { .. })
+    ));
+    assert!(link.borrow().waiting.is_empty(), "unsettled calls remain");
+}
+
+#[test]
+fn prelude_primitive_calls_match_the_rust_wire_codes() {
+    let link = Rc::new(RefCell::new(EchoLink::default()));
+    let script = r#"
+        Date.now(); Math.random();
+        await facts('a', {}); await classify('t', []); await llm({});
+        await sink.digest('a', {}, 'add'); await sink.status('a', {});
+        await kv.get('k'); await kv.set('k', 1); await kv.delete('k');
+        await sh('true', {}); await fs.read('p', {}); await fs.list('p');
+        await fs.stat('p'); await fs.write('p', 't'); await git.log('r', {});
+        await git.revParse('r', 'HEAD'); await git.describeTags('r', {});
+        await git.show('r', 'HEAD', 'p'); await git.diff('r', 'a', 'b', {});
+        await net.fetch('https://example.com', {});
+        return null;
+    "#;
+    let result = run_activation(&request(Profile::Codemode, script), link.clone());
+    assert!(
+        matches!(result, ActivationResult::Completed { .. }),
+        "{result:?}"
+    );
+    let expected = [
+        Primitive::Now,
+        Primitive::Random,
+        Primitive::Facts,
+        Primitive::Classify,
+        Primitive::Llm,
+        Primitive::SinkDigest,
+        Primitive::SinkStatus,
+        Primitive::KvGet,
+        Primitive::KvSet,
+        Primitive::KvDelete,
+        Primitive::Sh,
+        Primitive::FsRead,
+        Primitive::FsList,
+        Primitive::FsStat,
+        Primitive::FsWrite,
+        Primitive::GitLog,
+        Primitive::GitRevParse,
+        Primitive::GitDescribeTags,
+        Primitive::GitShow,
+        Primitive::GitDiff,
+        Primitive::NetFetch,
+    ];
+    assert_eq!(
+        link.borrow()
+            .issued
+            .iter()
+            .map(|c| c.kind.clone())
+            .collect::<Vec<_>>(),
+        expected.map(CallKind::Primitive)
+    );
+}

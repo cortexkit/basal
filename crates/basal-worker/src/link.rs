@@ -5,7 +5,7 @@ use std::io::{Read, Write};
 
 use basal_proto::{
     FrameError, HostCall, MAX_FRAME_BYTES, Outcome, ParentMessage, Refusal, WorkerMessage,
-    WorkerState, read_parent_message, write_worker_message,
+    WorkerState, read_parent_message, write_host_call, write_worker_message,
 };
 
 /// The channel to the parent broke; the activation cannot continue.
@@ -64,6 +64,7 @@ pub struct Channel<R: Read, W: Write> {
     reader: R,
     writer: W,
     broken: bool,
+    shutdown: bool,
 }
 
 impl<R: Read, W: Write> Channel<R, W> {
@@ -72,12 +73,17 @@ impl<R: Read, W: Write> Channel<R, W> {
             reader,
             writer,
             broken: false,
+            shutdown: false,
         }
     }
 
     /// Whether the channel has failed and the worker should exit.
     pub fn is_broken(&self) -> bool {
         self.broken
+    }
+
+    pub fn shutdown_requested(&self) -> bool {
+        self.shutdown
     }
 
     pub fn send(&mut self, message: &WorkerMessage) -> Result<(), LinkError> {
@@ -138,6 +144,10 @@ impl<R: Read, W: Write> Channel<R, W> {
     ) -> Result<T, LinkError> {
         loop {
             match self.receive() {
+                Received::Message(ParentMessage::Shutdown) => {
+                    self.shutdown = true;
+                    return Err(LinkError("parent requested shutdown".into()));
+                }
                 Received::Message(message) => match accept(message) {
                     Ok(value) => return Ok(value),
                     Err(refusal) => {
@@ -175,7 +185,13 @@ fn unexpected(message: &ParentMessage) -> Refusal {
 
 impl<R: Read, W: Write> HostLink for Channel<R, W> {
     fn issue(&mut self, call: &HostCall) -> Result<(), LinkError> {
-        self.send(&WorkerMessage::HostCall(call.clone()))
+        if self.broken {
+            return Err(LinkError("channel already broken".into()));
+        }
+        write_host_call(&mut self.writer, call).map_err(|e| {
+            self.broken = true;
+            LinkError(format!("writing to parent: {e}"))
+        })
     }
 
     fn issue_sync(
@@ -183,7 +199,7 @@ impl<R: Read, W: Write> HostLink for Channel<R, W> {
         call: &HostCall,
         last_order: Option<u64>,
     ) -> Result<Outcome, LinkError> {
-        self.send(&WorkerMessage::HostCall(call.clone()))?;
+        self.issue(call)?;
         let position = call.position;
         self.receive_expected(WorkerState::AwaitingSyncReply, |message| match message {
             ParentMessage::Deliver(outcome) if outcome.position == position => {

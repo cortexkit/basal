@@ -74,8 +74,8 @@ fn pruning_spares_unfinished_runs_and_open_obligations() {
         matches!(ended, basal_core::ActivationEnd::Suspended { .. }),
         "{ended:?}"
     );
-    // The script throws with two calls in flight: the run fails at once,
-    // and both calls remain obligations.
+    // A rejection still waits for every dispatched outcome. The run stays
+    // suspended and unprunable while its long call remains an obligation.
     let failed = admit_as(
         &rt,
         &world,
@@ -89,18 +89,18 @@ fn pruning_spares_unfinished_runs_and_open_obligations() {
     let run = rt
         .run_to_rest(&failed, Duration::from_secs(30))
         .expect("run");
-    assert_eq!(run.state, RunState::Failed, "{run:#?}");
-    assert_eq!(run.error_kind.as_deref(), Some("script"));
+    assert_eq!(run.state, RunState::Suspended, "{run:#?}");
+    assert_eq!(run.error_kind, None);
 
     let report = rt.prune(far_future(), 0).expect("prune");
     assert!(report.pruned.is_empty(), "{report:?}");
-    assert_eq!(report.kept_unsettled, vec![failed.clone()]);
+    assert!(report.kept_unsettled.is_empty());
     for id in [&pending, &suspended, &failed] {
         assert!(rt.run(id).is_ok(), "{id} was pruned");
     }
 
-    // The obligations still settle after the run failed: the send
-    // completes by itself, the long call when the host finishes it.
+    // The send completes by itself, then the host completes the long call.
+    // Only after both outcomes are consumed may the rejection end the run.
     rt.wait_for(&failed, Duration::from_secs(10), |_| {
         rt.health()
             .map(|h| {
@@ -119,6 +119,11 @@ fn pruning_spares_unfinished_runs_and_open_obligations() {
         basal_host::HostOutcome::fulfilled(basal_proto::JsonText::null()),
     );
     rt.quiesce();
+    let ended = rt.resume(&failed).expect("resume after long call settles");
+    assert!(
+        matches!(ended, basal_core::ActivationEnd::Failed { ref kind, .. } if kind == "script"),
+        "{ended:?}"
+    );
     assert!(
         !rt.health()
             .expect("health")
