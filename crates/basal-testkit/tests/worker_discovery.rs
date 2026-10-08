@@ -1,7 +1,20 @@
 //! Cargo owns the build-time worker path; runtime discovery never invokes it.
 
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::ExitStatusExt;
 use std::process::Command;
+
+fn child_exit(status: &std::process::ExitStatus) -> String {
+    match status.code() {
+        Some(code) => format!("exit code {code}"),
+        None => format!(
+            "terminated by signal {}",
+            status
+                .signal()
+                .map_or_else(|| "unknown".to_owned(), |signal| signal.to_string())
+        ),
+    }
+}
 
 #[path = "../src/worker_artifact.rs"]
 mod worker_artifact;
@@ -59,7 +72,8 @@ fn every_test_process_uses_the_built_worker_without_invoking_cargo() {
             .unwrap();
         assert!(
             result.status.success(),
-            "{}\n{}",
+            "child {}\n{}\n{}",
+            child_exit(&result.status),
             String::from_utf8_lossy(&result.stdout),
             String::from_utf8_lossy(&result.stderr)
         );
@@ -101,7 +115,8 @@ fn explicit_worker_override_preserves_the_selected_bytes() {
             .unwrap();
         assert!(
             result.status.success(),
-            "{}\n{}",
+            "child {}\n{}\n{}",
+            child_exit(&result.status),
             String::from_utf8_lossy(&result.stdout),
             String::from_utf8_lossy(&result.stderr)
         );
