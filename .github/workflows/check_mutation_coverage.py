@@ -12,7 +12,6 @@ import tomllib
 
 
 PLATFORMS = ("linux", "macos")
-MACOS_PACKAGES = {"basal-worker", "basal-module", "basal-testkit", "basal-rig"}
 PORTABLE_PACKAGES = {"basal-proto", "basal-core", "basal-host"}
 SUCCESS = {"CAUGHT", "CAUGHT_BROADLY", "HUB", "EQUIVALENT", "UNREACHABLE"}
 
@@ -27,8 +26,6 @@ def partition(rows):
             raise ValueError(f"{row['id']}: expected exactly one CI platform, got {sorted(hosts)}")
         host = hosts.pop()
         package = row.get("package")
-        if package in MACOS_PACKAGES and host != "macos":
-            raise ValueError(f"{row['id']}: {package} proofs require macOS")
         if package in PORTABLE_PACKAGES and host != "linux":
             raise ValueError(f"{row['id']}: {package} proofs belong on Linux")
         if row["id"] in seen:

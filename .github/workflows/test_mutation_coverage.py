@@ -1,6 +1,6 @@
 """Tests for check_mutation_coverage.py: every catalogue row is assigned to
-exactly one CI host (Linux or macOS, by package), and the shards' replay
-reports together contain exactly one successful replay of every row."""
+exactly one CI host (Linux or macOS), with portable packages kept on Linux,
+and the shards' replay reports contain one successful replay of every row."""
 
 import unittest
 
@@ -24,23 +24,32 @@ class MutationCoverageChecks(unittest.TestCase):
         self.assertEqual(partition(self.rows), {"linux": {"portable"}, "macos": {"worker"}})
 
     def test_partition_rejects_rows_selected_by_no_job_or_both(self):
-        for platforms in (["windows"], ["linux", "macos"], None):
-            with self.subTest(platforms=platforms):
-                row = {"id": "unassigned", "runner": "command"}
-                if platforms is not None:
-                    row["platforms"] = platforms
-                with self.assertRaisesRegex(ValueError, "exactly one CI platform"):
-                    partition([row])
+        for package in (None, "basal-worker", "basal-module", "basal-testkit", "basal-rig"):
+            for platforms in ([], ["windows"], ["linux", "macos"], None):
+                with self.subTest(package=package, platforms=platforms):
+                    row = {"id": "unassigned", "runner": "command", "package": package}
+                    if platforms is not None:
+                        row["platforms"] = platforms
+                    with self.assertRaisesRegex(ValueError, "exactly one CI platform"):
+                        partition([row])
 
-    def test_partition_keeps_worker_packages_on_macos(self):
-        self.rows[1]["platforms"] = ["linux"]
-        with self.assertRaisesRegex(ValueError, "require macOS"):
-            partition(self.rows)
+    def test_partition_accepts_worker_packages_on_either_host(self):
+        for package in ("basal-worker", "basal-module", "basal-testkit", "basal-rig"):
+            for host in ("linux", "macos"):
+                with self.subTest(package=package, host=host):
+                    row = {"id": "worker", "package": package, "platforms": [host]}
+                    expected = {"linux": set(), "macos": set()}
+                    expected[host] = {"worker"}
+                    self.assertEqual(partition([row]), expected)
 
     def test_partition_keeps_portable_packages_on_linux(self):
-        self.rows[0]["platforms"] = ["macos"]
-        with self.assertRaisesRegex(ValueError, "belong on Linux"):
-            partition(self.rows)
+        for package in ("basal-proto", "basal-core", "basal-host"):
+            with self.subTest(package=package):
+                row = {"id": "portable", "package": package, "platforms": ["linux"]}
+                self.assertEqual(partition([row]), {"linux": {"portable"}, "macos": set()})
+                row["platforms"] = ["macos"]
+                with self.assertRaisesRegex(ValueError, "belong on Linux"):
+                    partition([row])
 
     def test_partition_rejects_duplicate_ids(self):
         for duplicate in (self.rows[0], {"id": "portable", "platforms": ["macos"]}):
