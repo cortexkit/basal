@@ -257,11 +257,18 @@ fn production_random_is_not_the_same_first_draw_after_restart() {
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
-        String::from_utf8(output.stdout)
-            .unwrap()
+        // With --nocapture, libtest may print its test-name prefix on the same
+        // line as the draw. Locate the marker rather than requiring a new line.
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        stdout
             .lines()
-            .find_map(|line| line.strip_prefix("ENTROPY_BITS=").map(str::to_owned))
-            .expect("child draw")
+            .find_map(|line| {
+                line.split_once("ENTROPY_BITS=")
+                    .and_then(|(_, bits)| bits.parse::<u64>().ok())
+            })
+            .unwrap_or_else(|| {
+                panic!("child draw missing from successful child output: {stdout:?}")
+            })
     };
     assert_ne!(
         draw(),

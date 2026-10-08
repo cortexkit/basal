@@ -786,6 +786,47 @@ fn provider_deferral_uses_its_own_backoff_not_transport_or_install_gate_settings
 }
 
 #[test]
+fn pruning_keeps_a_terminal_run_with_an_unsettled_journal_call() {
+    let f = Fixture::new(100);
+    let lease = f.call("run", StoredClass::Query);
+    // Terminal status and outstanding calls are independent retention checks.
+    // Construct a terminal run directly so suspension cannot hide the call.
+    f.rt.store()
+        .write(|tx| {
+            runs::exit(
+                tx,
+                &lease,
+                &runs::Exit::Failed {
+                    kind: "script".into(),
+                    detail: "boom".into(),
+                },
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(f.rt.run("run").unwrap().state, RunState::Failed);
+    let report = f.rt.prune(i64::MAX / 2, 0).unwrap();
+    assert!(report.pruned.is_empty(), "{report:?}");
+    assert_eq!(report.kept_unsettled, vec!["run"]);
+    assert_eq!(f.rt.run("run").unwrap().state, RunState::Failed);
+
+    f.rt.store()
+        .write(|tx| {
+            journal::accept_outcome(
+                tx,
+                "run",
+                0,
+                None,
+                &HostOutcome::fulfilled(JsonText::null()),
+                Source::Host,
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(f.rt.prune(i64::MAX / 2, 0).unwrap().pruned, vec!["run"]);
+}
+
+#[test]
 fn pruning_keeps_unacknowledged_broca_snapshots_and_open_cards() {
     let f = Fixture::new(100);
     for id in ["broca", "card", "done"] {
