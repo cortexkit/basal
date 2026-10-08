@@ -88,6 +88,10 @@ pub struct Config {
     pub unavailable_retries: u32,
     pub selector: Arc<dyn basal_host::selector::ModelSelector>,
     pub retry_backoff: Duration,
+    /// Backoff for a provider's known-unsent refusal when it supplies no hint.
+    /// These retries replay an activation, rather than retrying a transport send.
+    pub deferral_retry: Duration,
+    pub deferral_retry_max: Duration,
     /// After this many activations end with a broken worker, the run fails.
     pub max_broken_activations: u32,
     /// A run made runnable by a completion is resumed at once on a worker
@@ -123,6 +127,8 @@ impl Default for Config {
             unavailable_retries: 3,
             selector: Arc::new(basal_host::selector::UnconfiguredSelector),
             retry_backoff: Duration::from_millis(5),
+            deferral_retry: Duration::from_secs(1),
+            deferral_retry_max: Duration::from_secs(60),
             max_broken_activations: 3,
             auto_resume: false,
             clock: Clock::system(),
@@ -822,9 +828,9 @@ impl Runtime {
                         let now = self.config.clock.now_ms();
                         let backoff = self
                             .config
-                            .retry_backoff
+                            .deferral_retry
                             .saturating_mul(1u32 << (request.attempt.saturating_sub(1)).min(16))
-                            .min(self.config.install_gate_retry_max);
+                            .min(self.config.deferral_retry_max);
                         let delay = refusal.retry_after_ms.unwrap_or_else(|| {
                             u64::try_from(backoff.as_millis()).unwrap_or(u64::MAX)
                         });

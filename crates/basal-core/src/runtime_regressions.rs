@@ -763,3 +763,71 @@ fn pruning_preserves_a_terminal_run_until_its_refusal_acknowledgement_is_deliver
     assert_eq!(lock(&f.host.refusals).len(), 1);
     assert_eq!(f.rt.prune(100, 0).unwrap().pruned, vec!["run"]);
 }
+
+#[test]
+fn provider_deferral_uses_its_own_backoff_not_transport_or_install_gate_settings() {
+    let mut f = Fixture::new(100);
+    Arc::make_mut(&mut f.rt.config).retry_backoff = Duration::from_millis(7);
+    Arc::make_mut(&mut f.rt.config).install_gate_retry_max = Duration::from_millis(9);
+    f.call("run", StoredClass::KeyedMutation);
+    lock(&f.host.replies).push_back(Err(TransportError::Refused(FlowRefusal::new(
+        RefusalReason::ResourceBusy,
+        "provider",
+        "act",
+    ))));
+    f.rt.dispatch(f.request("run"), StoredClass::KeyedMutation, true)
+        .unwrap();
+    assert_eq!(
+        f.rt.store()
+            .read(|c| journal::deferred_until(c, "run", 0))
+            .unwrap(),
+        Some(1100)
+    );
+}
+
+#[test]
+fn pruning_keeps_unacknowledged_broca_snapshots_and_open_cards() {
+    let f = Fixture::new(100);
+    for id in ["broca", "card", "done"] {
+        let lease = f.call(id, StoredClass::KeyedMutation);
+        f.rt.store()
+            .write(|tx| {
+                journal::accept_outcome(
+                    tx,
+                    id,
+                    0,
+                    None,
+                    &HostOutcome::fulfilled(JsonText::null()),
+                    Source::Host,
+                )?;
+                runs::exit(
+                    tx,
+                    &lease,
+                    &runs::Exit::Failed {
+                        kind: "script".into(),
+                        detail: "boom".into(),
+                    },
+                )?;
+                Ok(())
+            })
+            .unwrap();
+    }
+    f.rt.store().write(|tx| {
+        tx.execute("INSERT INTO broca_calls(send_id,run_id,position,snapshot) VALUES ('broca','broca',0,'{\"acknowledged\":false}'),('done','done',0,'{\"acknowledged\":true}')", [])?;
+        tx.execute("INSERT INTO decision_cards(dedup_key,kind,flow_id,version,run_id,position,call_key,instance,card,state,created_at) VALUES ('card','reconcile','flow',1,'card',0,'card',1,'{}','open',0)", [])?;
+        Ok(())
+    }).unwrap();
+    let report = f.rt.prune(100, 0).unwrap();
+    assert_eq!(report.pruned, vec!["done"]);
+    assert_eq!(report.kept_unsettled, vec!["broca", "card"]);
+    f.rt.store()
+        .read(|c| {
+            let count: i64 = c.query_row("SELECT count(*) FROM broca_calls", [], |r| r.get(0))?;
+            assert_eq!(
+                count, 1,
+                "only acknowledged snapshots may cascade with their run"
+            );
+            Ok(())
+        })
+        .unwrap();
+}

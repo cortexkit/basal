@@ -60,6 +60,7 @@ const OBLIGATIONS: &str = "EXISTS (SELECT 1 FROM journal j WHERE j.run_id=r.run_
     AND NOT EXISTS (SELECT 1 FROM quarantine q WHERE q.run_id=j.run_id AND q.position=j.position AND q.reason='run_cancelled')) \
     OR EXISTS (SELECT 1 FROM token_ledger t WHERE t.run_id=r.run_id AND t.state='reserved') \
     OR EXISTS (SELECT 1 FROM decision_cards d WHERE d.run_id=r.run_id AND d.state='open') \
+    OR EXISTS (SELECT 1 FROM broca_calls b WHERE b.run_id=r.run_id AND COALESCE(json_extract(b.snapshot,'$.acknowledged'),0)=0) \
     OR EXISTS (SELECT 1 FROM outbox o WHERE o.kind='refusal_committed' AND json_extract(o.body,'$.run_id')=r.run_id)";
 
 fn candidates(conn: &Connection, cutoff: i64, unsettled: bool) -> Result<Vec<String>> {
@@ -100,7 +101,7 @@ fn prune_in(tx: &Transaction, cutoff: i64, now: i64, run_id: &str) -> Result<Pru
         // what the flow did and spent, and outlive the journal.
         if crate::tokens::open_reservations(tx, &run_id)? > 0
             || tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM decision_cards WHERE run_id=?1 AND state='open') OR EXISTS(SELECT 1 FROM outbox WHERE kind='refusal_committed' AND json_extract(body,'$.run_id')=?1)",
+                "SELECT EXISTS(SELECT 1 FROM decision_cards WHERE run_id=?1 AND state='open') OR EXISTS(SELECT 1 FROM outbox WHERE kind='refusal_committed' AND json_extract(body,'$.run_id')=?1) OR EXISTS(SELECT 1 FROM broca_calls WHERE run_id=?1 AND COALESCE(json_extract(snapshot,'$.acknowledged'),0)=0)",
                 [&run_id],
                 |r| r.get::<_, bool>(0),
             )?

@@ -523,7 +523,8 @@ impl Activation<'_> {
     /// - a call this process is still dispatching, a long-running call the
     ///   host accepted, or one whose outcome waits in the mailbox: nothing
     ///   to do;
-    /// - a clock read or random sample: the worker asks again;
+    /// - a local call without an outcome: corruption, since its row and
+    ///   outcome always commit atomically;
     /// - a query, or a mutation whose op honours idempotency keys, or one an
     ///   operator reconciled as not applied: sent again with the same key;
     /// - any other mutation: its outcome cannot be proven, so the run stops

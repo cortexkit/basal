@@ -241,8 +241,8 @@ const NEXT_ORDER: &str =
     "(SELECT COALESCE(MAX(delivery_order) + 1, 0) FROM journal WHERE run_id = ?1)";
 
 /// Records a synchronous call's value together with its delivery order,
-/// fenced. Done in the transaction that journals the call (or, for a row
-/// journaled without its value, before the value is sent).
+/// fenced. Done in the transaction that journals the call, before the value
+/// is sent, so recovery can never find a synchronous row without its value.
 pub fn record_sync(
     tx: &Transaction,
     lease: &Lease,
