@@ -174,9 +174,23 @@ impl Scheduler {
         self.admit_planned(now, &mut report.admitted)?;
         let due = self.store.read(|c| tick::due_flows(c, now))?;
         for flow_id in due {
-            let planned = self
+            let planned = match self
                 .store
-                .write(|tx| tick::plan_flow(tx, &flow_id, now, &self.config))?;
+                .write(|tx| tick::plan_flow(tx, &flow_id, now, &self.config))
+            {
+                Ok(planned) => planned,
+                Err(CoreError::Corrupt(detail)) => {
+                    // A persisted schedule that no longer validates must not
+                    // starve unrelated flows. Keep its bytes and the diagnostic.
+                    self.store.write(|tx| {
+                            tx.execute("UPDATE schedules SET state='disabled', updated_at=?2 WHERE flow_id=?1", rusqlite::params![flow_id, now.as_millisecond()])?;
+                            tx.execute("INSERT INTO audit(at,actor,action,detail) VALUES (?1,'runtime','schedule.corrupt',?2)", rusqlite::params![now.as_millisecond(), serde_json::json!({"flow_id":flow_id,"error":detail}).to_string()])?;
+                            Ok(())
+                        })?;
+                    None
+                }
+                Err(error) => return Err(error),
+            };
             if let Some(planned) = planned {
                 report.planned.push(planned);
                 self.at(TickPoint::Planned {

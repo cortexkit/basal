@@ -333,10 +333,10 @@ pub fn settle(tx: &Transaction, key: Key<'_>, report: Report, now_ms: i64) -> Re
         Report::Unreported => (basal_host::TokenUsage::default(), reserved),
     };
     let (input, cache_write, output, cached) = (
-        usage.input_tokens.map(to_i64).transpose()?,
-        usage.cache_write_tokens.map(to_i64).transpose()?,
-        usage.output_tokens.map(to_i64).transpose()?,
-        usage.cached_input_tokens.map(to_i64).transpose()?,
+        usage.input_tokens.map(saturate_usage),
+        usage.cache_write_tokens.map(saturate_usage),
+        usage.output_tokens.map(saturate_usage),
+        usage.cached_input_tokens.map(saturate_usage),
     );
     // Missing capped measurements retain the unmeasured part of the upper
     // bound. Nullable ledger columns still distinguish absence from zero.
@@ -372,9 +372,9 @@ pub fn settle(tx: &Transaction, key: Key<'_>, report: Report, now_ms: i64) -> Re
     // was counted.
     tx.execute(
         "UPDATE token_windows SET reserved = reserved - ?4, \
-         input_tokens = input_tokens + ?5, cache_write_tokens = cache_write_tokens + ?6, \
-         output_tokens = output_tokens + ?7, cached_input_tokens = cached_input_tokens + ?8, \
-         unreported_tokens = unreported_tokens + ?9 \
+          input_tokens = MIN(9223372036854775807, input_tokens + ?5), cache_write_tokens = MIN(9223372036854775807, cache_write_tokens + ?6), \
+          output_tokens = MIN(9223372036854775807, output_tokens + ?7), cached_input_tokens = MIN(9223372036854775807, cached_input_tokens + ?8), \
+          unreported_tokens = MIN(9223372036854775807, unreported_tokens + ?9) \
          WHERE flow_id = ?1 AND window_ms = ?2 AND window_start = ?3",
         params![
             flow_id,
@@ -389,6 +389,12 @@ pub fn settle(tx: &Transaction, key: Key<'_>, report: Report, now_ms: i64) -> Re
         ],
     )?;
     Ok(true)
+}
+
+// Usage is provider-controlled. Keep an over-cap charge without preventing
+// the outcome from committing or letting SQLite promote overflowing totals to REAL.
+fn saturate_usage(tokens: u64) -> i64 {
+    i64::try_from(tokens).unwrap_or(i64::MAX)
 }
 
 /// Settles the reservation of the call at (run, position), if it has one

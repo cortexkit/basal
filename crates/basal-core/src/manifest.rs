@@ -324,7 +324,7 @@ impl std::error::Error for ManifestError {}
 /// Parses a duration such as `"90s"`, `"10m"`, `"6h"` or `"1d"` into
 /// milliseconds. A positive whole number and one unit, nothing else.
 pub fn duration_ms(text: &str) -> Option<i64> {
-    let unit_at = text.len().checked_sub(1)?;
+    let (unit_at, _) = text.char_indices().last()?;
     let (digits, unit) = text.split_at(unit_at);
     if digits.is_empty() || digits.len() > 9 || !digits.bytes().all(|b| b.is_ascii_digit()) {
         return None;
@@ -725,6 +725,34 @@ impl Manifest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn multibyte_durations_are_refused_without_panicking() {
+        for text in ["é", "10é", "10中", "10🦀", "é1s", "١s", "1sé"] {
+            // dry_run uses this same parser for its window.
+            assert_eq!(duration_ms(text), None, "window {text:?}");
+            for field in ["deadline", "token_window", "schedule_interval"] {
+                let mut value = serde_json::json!({
+                    "id":"unicode", "version":1, "purpose":"test",
+                    "trigger":{"events":[{"module":"echo","name":"tick","version":1}]}
+                });
+                match field {
+                    "deadline" => value["deadline"] = text.into(),
+                    "token_window" => {
+                        value["llm"] = serde_json::json!({
+                            "iq":0,"eq":0,"max_output":1,
+                            "token_cap":{"tokens":10,"window":text}
+                        })
+                    }
+                    _ => value["trigger"] = serde_json::json!({"schedule":{"interval":text}}),
+                }
+                assert!(
+                    Manifest::parse(&value.to_string()).is_err(),
+                    "{field}: {text:?}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn durations_parse_only_whole_positive_numbers_with_one_unit() {

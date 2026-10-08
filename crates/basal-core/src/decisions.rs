@@ -320,7 +320,7 @@ pub fn prompt(flow_id: &str, context: &DecisionContext) -> String {
             ..
         } => format!(
             "Run {} of {flow_id} may not have finished: its call to {op} was sent and then {}.",
-            clock(*run_admitted_at_ms, "%H:%M UTC"),
+            clock(*run_admitted_at_ms, "%Y-%m-%d %H:%M UTC"),
             what_happened(*unknown_reason)
         ),
         DecisionContext::Reenable {
@@ -332,7 +332,7 @@ pub fn prompt(flow_id: &str, context: &DecisionContext) -> String {
         } => format!(
             "basal disabled {flow_id} at {}: it reached its limit of {limit} {} per {} window \
              in {saturated_windows} windows in a row.",
-            clock(*disabled_at_ms, "%H:%M UTC"),
+            clock(*disabled_at_ms, "%Y-%m-%d %H:%M UTC"),
             unit(*disabled_reason),
             window(*window_ms)
         ),

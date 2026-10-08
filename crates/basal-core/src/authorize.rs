@@ -217,9 +217,14 @@ pub fn check(
                         "facts of {agent} are not in the manifest's targets"
                     )));
                 }
-                let wants_text = args
-                    .get("options")
-                    .and_then(|o| o.get("include"))
+                let include = args.get("options").and_then(|o| o.get("include"));
+                if include.is_some_and(|v| !v.is_array()) {
+                    return Err(Refusal::new(
+                        codes::INVALID_ARGUMENTS,
+                        "facts options.include must be an array",
+                    ));
+                }
+                let wants_text = include
                     .and_then(Value::as_array)
                     .is_some_and(|inc| inc.iter().any(|v| v.as_str() == Some("text")));
                 if wants_text && !grant.text {

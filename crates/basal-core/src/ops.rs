@@ -5,7 +5,6 @@ use std::collections::BTreeMap;
 use rusqlite::{Connection, OptionalExtension};
 
 use crate::error::Result;
-use crate::journal;
 use crate::model::to_u64;
 
 /// A snapshot of the runtime's state.
@@ -94,6 +93,18 @@ pub struct FlowHealth {
 
 pub fn flow_health(conn: &Connection, now_ms: i64) -> Result<Vec<FlowHealth>> {
     let mut flows = Vec::new();
+    // Fetch rejected readiness evidence once, not once per deadline failure.
+    let mut rejections = conn.prepare_cached(
+        "SELECT r.run_id, m.value FROM runs r JOIN mailbox m USING(run_id) WHERE r.state='failed' AND r.error_kind='deadline' AND m.settlement='rejected' \
+         UNION ALL SELECT r.run_id, j.value FROM runs r JOIN journal j USING(run_id) WHERE r.state='failed' AND r.error_kind='deadline' AND j.settlement='rejected'"
+    )?;
+    let mut readiness_failures = std::collections::BTreeSet::new();
+    for row in rejections.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+        let (run_id, value) = row?;
+        if typed_scope_rejection(&value, false) {
+            readiness_failures.insert(run_id);
+        }
+    }
     let ids: Vec<String> = conn
         .prepare("SELECT flow_id FROM flows ORDER BY flow_id")?
         .query_map([], |r| r.get(0))?
@@ -105,32 +116,28 @@ pub fn flow_health(conn: &Connection, now_ms: i64) -> Result<Vec<FlowHealth>> {
         let mut last_run = None;
         let mut consecutive_failures = 0;
         let mut counting = true;
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             "SELECT run_id, state, error_kind, COALESCE(ended_at, admitted_at) FROM runs \
              WHERE flow_id = ?1 \
              AND state IN ('succeeded', 'failed', 'engine_mismatch', 'cancelled') \
              ORDER BY admit_seq DESC, run_id DESC",
         )?;
-        let finished = stmt
-            .query_map([&flow_id], |r| {
-                Ok(LastRun {
-                    run_id: r.get(0)?,
-                    state: r.get(1)?,
-                    error_kind: r.get(2)?,
-                    ended_at: r.get(3)?,
-                })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let finished = stmt.query_map([&flow_id], |r| {
+            Ok(LastRun {
+                run_id: r.get(0)?,
+                state: r.get(1)?,
+                error_kind: r.get(2)?,
+                ended_at: r.get(3)?,
+            })
+        })?;
         for run in finished {
+            let run = run?;
             if counting {
                 let readiness_failure = if run.error_kind.as_deref() == Some("readiness_rejection")
                 {
                     true
                 } else if run.error_kind.as_deref() == Some("deadline") {
-                    let values:Vec<String>=conn.prepare("SELECT value FROM mailbox WHERE run_id=?1 AND settlement='rejected' UNION ALL SELECT value FROM journal WHERE run_id=?1 AND settlement='rejected'")?.query_map([&run.run_id],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?;
-                    values
-                        .iter()
-                        .any(|value| typed_scope_rejection(value, false))
+                    readiness_failures.contains(&run.run_id)
                 } else {
                     false
                 };
@@ -150,7 +157,7 @@ pub fn flow_health(conn: &Connection, now_ms: i64) -> Result<Vec<FlowHealth>> {
             }
         }
         let needs_reconcile: Vec<String> = conn
-            .prepare(
+            .prepare_cached(
                 "SELECT run_id FROM runs WHERE flow_id = ?1 AND state = 'needs_reconcile' \
                  ORDER BY admit_seq",
             )?
@@ -180,8 +187,17 @@ pub fn flow_health(conn: &Connection, now_ms: i64) -> Result<Vec<FlowHealth>> {
             .filter(|since| *since <= now_ms)
             .map(|since| now_ms - since)
             .max();
+        let waiting_reason = conn.query_row("SELECT refusal_detail FROM journal JOIN runs USING (run_id) WHERE runs.flow_id = ?1 AND journal.dispatch = 'deferred' AND runs.state IN ('running','pending','suspended') ORDER BY admit_seq, position LIMIT 1", [&flow_id], |r| r.get::<_, String>(0)).optional()?;
+        let waiting_reason = match waiting_reason {
+            Some(reason) => Some(reason),
+            None => conn.query_row(
+                "SELECT scope_health FROM flows WHERE flow_id=?1",
+                [&flow_id],
+                |r| r.get(0),
+            )?,
+        };
         flows.push(FlowHealth {
-            waiting_reason: conn.query_row("SELECT refusal_detail FROM journal JOIN runs USING (run_id) WHERE runs.flow_id = ?1 AND journal.dispatch = 'deferred' AND runs.state IN ('running','pending','suspended') ORDER BY admit_seq, position LIMIT 1", [&flow_id], |r| r.get(0)).optional()?.or(conn.query_row("SELECT scope_health FROM flows WHERE flow_id=?1",[&flow_id],|r|r.get::<_,Option<String>>(0))?),
+            waiting_reason,
             auto_disabled: record.disabled_by.as_deref() == Some(crate::install::RUNTIME_ACTOR),
             disabled_reason: record.disabled_reason,
             flow_id,
@@ -224,32 +240,41 @@ pub(crate) fn typed_scope_rejection(value: &str, readiness_only: bool) -> bool {
 
 pub(crate) fn health(conn: &Connection) -> Result<Health> {
     let mut h = Health::default();
-    let mut stmt = conn.prepare("SELECT run_id, state FROM runs ORDER BY run_id")?;
-    let runs = stmt
-        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    for (run_id, state) in runs {
-        *h.runs.entry(state.clone()).or_insert(0) += 1;
-        if matches!(
-            state.as_str(),
-            "pending" | "running" | "suspended" | "needs_reconcile"
-        ) {
-            h.unfinished.entry(state).or_default().push(run_id.clone());
-        }
-        for p in journal::unknown_positions(conn, &run_id)? {
-            h.unknown_calls.push((run_id.clone(), p));
-        }
-        for p in journal::unsettled_positions(conn, &run_id)? {
-            h.open_obligations.push((run_id.clone(), p));
-        }
+    let mut counts = conn.prepare("SELECT state, COUNT(*) FROM runs GROUP BY state")?;
+    for row in counts.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
+        let (state, count) = row?;
+        h.runs.insert(state, to_u64(count, "run count")?);
     }
+    let mut unfinished = conn.prepare("SELECT run_id, state FROM runs WHERE state IN ('pending','running','suspended','needs_reconcile') ORDER BY run_id")?;
+    for row in unfinished.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+        let (run_id, state) = row?;
+        h.unfinished.entry(state).or_default().push(run_id);
+    }
+    let calls = |filter: &str| -> Result<Vec<(String, u64)>> {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT j.run_id, j.position FROM journal j JOIN runs r ON r.run_id=j.run_id \
+             WHERE j.settlement IS NULL AND NOT EXISTS \
+             (SELECT 1 FROM mailbox m WHERE m.run_id=j.run_id AND m.position=j.position) \
+             {filter} ORDER BY j.run_id, j.position"
+        ))?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+        rows.map(|row| {
+            let (run, position) = row?;
+            Ok((run, to_u64(position, "position")?))
+        })
+        .collect()
+    };
+    h.unknown_calls = calls("AND j.dispatch='unknown'")?;
+    h.open_obligations = calls(
+        "AND NOT EXISTS (SELECT 1 FROM quarantine q WHERE q.run_id=j.run_id AND q.position=j.position AND q.reason='run_cancelled')",
+    )?;
     let q: i64 = conn.query_row("SELECT COUNT(*) FROM quarantine", [], |r| r.get(0))?;
     h.quarantined = to_u64(q, "quarantine count")?;
     let draining: Option<String> = conn
         .query_row("SELECT value FROM meta WHERE key = 'draining'", [], |r| {
             r.get(0)
         })
-        .ok();
+        .optional()?;
     h.draining = draining.as_deref() == Some("1");
     Ok(h)
 }

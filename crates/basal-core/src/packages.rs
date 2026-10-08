@@ -10,6 +10,9 @@ use crate::manifest::Manifest;
 use crate::schedule::{self, ScheduledFlow};
 use crate::{CoreError, InstallError, Runtime};
 
+const INSTANCE_SUFFIX_BYTES: usize = 16;
+const MAX_PACKAGE_ID_BYTES: usize = crate::manifest::MAX_FLOW_ID_BYTES - 1 - INSTANCE_SUFFIX_BYTES;
+
 #[derive(Debug)]
 pub enum PackageError {
     Refused {
@@ -46,7 +49,10 @@ pub fn instance_id(package: &str, agent_id: &str) -> String {
         h.update(&(value.len() as u64).to_le_bytes());
         h.update(value.as_bytes());
     }
-    format!("{package}_{}", &h.finalize().to_hex()[..16])
+    format!(
+        "{package}_{}",
+        &h.finalize().to_hex()[..INSTANCE_SUFFIX_BYTES]
+    )
 }
 
 pub fn get(conn: &Connection, package: &str, version: u32) -> crate::Result<Option<Approved>> {
@@ -156,7 +162,7 @@ impl Runtime {
         }
         let manifest =
             Manifest::decode(text).map_err(|e| PackageError::Install(InstallError::Manifest(e)))?;
-        if manifest.id.len() > 46 {
+        if manifest.id.len() > MAX_PACKAGE_ID_BYTES {
             return Err(refused("package_id_too_long"));
         }
         manifest
@@ -211,6 +217,19 @@ impl Runtime {
         // before holding the store's writer, so journal commits do not wait on core.
         let known_agent = self.catalog().agent_id(agent).as_deref() == Some(agent);
         decide(self, |tx| {
+            let id = instance_id(package, agent);
+            let identity: Option<(Option<String>, Option<String>)> = tx
+                .query_row(
+                    "SELECT package, owner FROM flows WHERE flow_id=?1",
+                    [&id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            if identity.is_some_and(|(p, owner)| {
+                p.as_deref() != Some(package) || owner.as_deref() != Some(agent)
+            }) {
+                return Err(refused("instance_id_conflict"));
+            }
             if let Some(reply) = generation(tx, package, agent, incoming, "ensure", Some(version))?
             {
                 return Ok(reply);
@@ -219,7 +238,6 @@ impl Runtime {
             if !known_agent {
                 return Err(refused("agent_unknown"));
             }
-            let id = instance_id(package, agent);
             // The pointer remains even when approval is revoked, so removal
             // and re-ensure can report the selected version without losing state.
             let previous: Option<u32> = tx

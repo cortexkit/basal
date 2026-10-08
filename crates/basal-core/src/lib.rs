@@ -78,3 +78,6 @@ pub use runtime::RunLimits;
 pub use runtime::{ActivationEnd, Config, Runtime};
 pub use schedule::{ScheduleSpec, Scheduler, SchedulerConfig};
 pub use store::{Durability, Pragmas, Store};
+
+#[cfg(test)]
+mod audit_regression_tests;
