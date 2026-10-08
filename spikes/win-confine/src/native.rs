@@ -115,7 +115,7 @@ pub unsafe fn token_buffer(token: HANDLE, class: TOKEN_INFORMATION_CLASS) -> Res
         let mut bytes = 0;
         GetTokenInformation(token, class, null_mut(), 0, &mut bytes);
         if bytes == 0 {
-            return Err(last("GetTokenInformation(size)"));
+            return Err(last(&format!("GetTokenInformation(class={class}, size)")));
         }
         // Zero-entry variable-length structures can be shorter than their C
         // one-element declarations. Keep enough backing storage for a Rust
@@ -126,7 +126,7 @@ pub unsafe fn token_buffer(token: HANDLE, class: TOKEN_INFORMATION_CLASS) -> Res
         let mut data = vec![0usize; allocation.div_ceil(size_of::<usize>())];
         check(
             GetTokenInformation(token, class, data.as_mut_ptr().cast(), bytes, &mut bytes),
-            "GetTokenInformation",
+            &format!("GetTokenInformation(class={class})"),
         )?;
         Ok(data)
     }
@@ -164,9 +164,22 @@ pub unsafe fn token_attestation(token: HANDLE) -> Result<Value> {
         let user = &*user_data.as_ptr().cast::<TOKEN_USER>();
         let token_type = token_buffer(token, TokenType)?;
         let restrict_data = token_buffer(token, TokenRestrictedSids)?;
-        let capability_data = token_buffer(token, TokenCapabilities)?;
-        let app = token_buffer(token, TokenAppContainerSid)?;
-        let app_sid = (*app.as_ptr().cast::<TOKEN_APPCONTAINER_INFORMATION>()).TokenAppContainer;
+        let is_app = token_buffer(token, TokenIsAppContainer)?;
+        let is_app = *is_app.as_ptr().cast::<u32>() != 0;
+        let capability_data = if is_app {
+            Some(token_buffer(token, TokenCapabilities)?)
+        } else {
+            None
+        };
+        let app = if is_app {
+            Some(token_buffer(token, TokenAppContainerSid)?)
+        } else {
+            None
+        };
+        let app_sid = app
+            .as_ref()
+            .map(|data| (*data.as_ptr().cast::<TOKEN_APPCONTAINER_INFORMATION>()).TokenAppContainer)
+            .unwrap_or(null_mut());
         let integrity = token_buffer(token, TokenIntegrityLevel)?;
         let mandatory = &*integrity.as_ptr().cast::<TOKEN_MANDATORY_LABEL>();
         let privs = token_buffer(token, TokenPrivileges)?;
@@ -181,16 +194,46 @@ pub unsafe fn token_attestation(token: HANDLE) -> Result<Value> {
                 last("LookupPrivilegeNameW")
             }
         };
-        let less = token_buffer(token, TokenIsLessPrivilegedAppContainer)?;
-        let is_app = token_buffer(token, TokenIsAppContainer)?;
+        let (less, lpac_query) = if is_app {
+            match token_buffer(token, TokenIsLessPrivilegedAppContainer) {
+                Ok(data) => (
+                    *data.as_ptr().cast::<u32>() != 0,
+                    json!({"api":"GetTokenInformation","class":TokenIsLessPrivilegedAppContainer}),
+                ),
+                Err(error) => {
+                    let mut value = 0u32;
+                    let mut returned = 0;
+                    let status = NtQueryInformationToken(
+                        token,
+                        TokenIsLessPrivilegedAppContainer,
+                        (&mut value as *mut u32).cast(),
+                        4,
+                        &mut returned,
+                    );
+                    if status != 0 {
+                        return Err(format!(
+                            "{error}; NtQueryInformationToken(class={}): {}",
+                            TokenIsLessPrivilegedAppContainer,
+                            hex(status as u32)
+                        ));
+                    }
+                    (
+                        value != 0,
+                        json!({"api":"NtQueryInformationToken","class":TokenIsLessPrivilegedAppContainer,"Win32_failure":error,"NTSTATUS":hex(status as u32)}),
+                    )
+                }
+            }
+        } else {
+            (false, json!({"not_queried":"not an AppContainer"}))
+        };
         let render = |list: &[SID_AND_ATTRIBUTES]| {
             list.iter().map(|s| json!({"sid":sid_string(s.Sid),"attributes":hex(s.Attributes),"deny_only":s.Attributes & SE_GROUP_USE_FOR_DENY_ONLY != 0})).collect::<Vec<_>>()
         };
         Ok(json!({
             "token_type":*token_type.as_ptr().cast::<u32>(),"user_sid":sid_string(user.User.Sid),
-            "lpac": *less.as_ptr().cast::<u32>() != 0, "appcontainer":*is_app.as_ptr().cast::<u32>() != 0,
+            "lpac": less, "lpac_query":lpac_query, "appcontainer":is_app,
             "appcontainer_sid":if app_sid.is_null() {Value::Null} else {json!(sid_string(app_sid))},
-            "capabilities":render(groups(&capability_data)), "restricting_sids":render(groups(&restrict_data)),
+            "capabilities":capability_data.as_ref().map(|data|render(groups(data))).unwrap_or_default(), "restricting_sids":render(groups(&restrict_data)),
             "groups":render(groups(&group_data)), "integrity":sid_string(mandatory.Label.Sid),
             "privileges":entries.iter().map(|p|json!({"name":privilege_name(&p.Luid),"luid_low":p.Luid.LowPart,"luid_high":p.Luid.HighPart,"attributes":hex(p.Attributes)})).collect::<Vec<_>>()
         }))
@@ -250,6 +293,13 @@ struct AlpcAttributes {
 }
 #[link(name = "ntdll")]
 unsafe extern "system" {
+    fn NtQueryInformationToken(
+        token: HANDLE,
+        class: TOKEN_INFORMATION_CLASS,
+        buffer: *mut c_void,
+        size: u32,
+        returned: *mut u32,
+    ) -> i32;
     fn NtOpenDirectoryObject(out: *mut HANDLE, access: u32, attrs: *mut ObjectAttributes) -> i32;
     fn NtQueryDirectoryObject(
         handle: HANDLE,
@@ -614,6 +664,23 @@ mod tests {
             let data = token_buffer(token.0, TokenType).unwrap();
             assert_eq!(*data.as_ptr().cast::<u32>(), 1);
             assert!(data.len() * size_of::<usize>() >= size_of::<TOKEN_GROUPS>());
+        }
+    }
+    #[test]
+    fn normal_token_attestation_records_absent_package_identity() {
+        unsafe {
+            let mut token = null_mut();
+            check(
+                OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token),
+                "OpenProcessToken(test)",
+            )
+            .unwrap();
+            let token = Handle(token);
+            let report = token_attestation(token.0).unwrap();
+            assert_eq!(report["appcontainer"], false);
+            assert_eq!(report["lpac"], false);
+            assert_eq!(report["appcontainer_sid"], Value::Null);
+            assert_eq!(report["capabilities"], json!([]));
         }
     }
 }
