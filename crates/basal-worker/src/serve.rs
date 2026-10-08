@@ -8,7 +8,7 @@ use basal_proto::{
     Confinement, PROTOCOL_VERSION, ParentMessage, Refusal, Welcome, WorkerMessage, WorkerState,
 };
 
-use crate::engine::{ENGINE, prelude_hash, run_activation};
+use crate::engine::{ENGINE, prelude_hash, run_activation_owned};
 use crate::link::{Channel, Received};
 
 /// Why the loop ended. The binary turns this into its exit code.
@@ -64,9 +64,13 @@ pub fn serve<R: Read + 'static, W: Write + 'static>(
                 }
             }
             (WorkerState::Idle, ParentMessage::Activate(request)) => {
-                let result = run_activation(&request, channel.clone());
+                let activation_id = request.activation_id;
+                let result = run_activation_owned(*request, channel.clone());
+                if channel.borrow().shutdown_requested() {
+                    return ServeExit::Done;
+                }
                 WorkerMessage::Finished {
-                    activation_id: request.activation_id,
+                    activation_id,
                     result,
                 }
             }

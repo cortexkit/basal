@@ -143,8 +143,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-worker/src/engine.rs"
-old = "match recorded.outcome.clone() {"
-new = "match recorded.outcome.clone().filter(|_| false) {"
+old = "match recorded.outcome.take() {"
+new = "match recorded.outcome.take().filter(|_| false) {"
 
 [[control]]
 id = "math-random-is-not-a-host-call"
@@ -346,9 +346,9 @@ expect_red = ["memory_limit_holds"]
 only = false
 build_timeout_s = 3600
 timeout_s = 600
-file = "crates/basal-worker/src/engine.rs"
-old = "rt.set_memory_limit(request.budgets.memory_bytes as usize);"
-new = "// memory limit skipped"
+file = "crates/basal-worker/src/engine/allocator.rs"
+old = "if !self.permits(size, 0) {"
+new = "if false && !self.permits(size, 0) { // NON-VACUITY BREAK"
 
 [[control]]
 id = "stack-limit-not-applied"

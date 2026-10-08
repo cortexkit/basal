@@ -60,6 +60,15 @@
   const TypeErrorCtor = TypeError;
   const RangeErrorCtor = RangeError;
 
+  // QuickJS stores these accessor values in context state: freezing the
+  // constructor does not disable their setters. Stack frames must never
+  // reveal functions that hold the private host bridge.
+  for (const key of ['prepareStackTrace', 'stackTraceLimit']) {
+    ObjectDefineProperty(ErrorCtor, key, {
+      value: undefined, writable: false, enumerable: false, configurable: false,
+    });
+  }
+
   // ---- The bridge -------------------------------------------------------
 
   // Position -> {resolve, reject} for every asynchronous call not yet
@@ -441,27 +450,32 @@
   let failureText = '';
   let failureHostPosition = null;
 
-  // Classifies a rejection. Memory and stack exhaustion surface as ordinary
-  // exceptions in QuickJS, so they are recognised by their engine messages.
+  // Exception text is untrusted output. Only string-valued data properties
+  // are described; getters and object-to-string coercions could run code.
+  const errorPrototypes = [Error, EvalError, RangeError, ReferenceError, SyntaxError,
+    TypeError, URIError, AggregateError, InternalError].map(ctor => [ctor.prototype, ctor.name]);
+  function ownString(object, key) {
+    const desc = ObjectGetOwnPropertyDescriptor(object, key);
+    return desc !== undefined && typeof desc.value === 'string' ? desc.value : undefined;
+  }
   function describe(error) {
     try {
       if (error !== null && (typeof error === 'object' || typeof error === 'function')) {
-        const name = error.name;
-        const message = error.message;
-        if (name === 'InternalError' && message === 'out of memory') {
-          return ['memory', 'out of memory'];
-        }
+        const proto = ObjectGetPrototypeOf(error);
+        const known = errorPrototypes.find(entry => entry[0] === proto);
+        const name = ownString(error, 'name') || (known === undefined ? 'Error' : known[1]);
+        const message = ownString(error, 'message') || '';
         if (name === 'RangeError' && message === 'Maximum call stack size exceeded') {
           return ['stack', message];
         }
-        let text = StringCtor(name) + ': ' + StringCtor(message);
-        const stack = error.stack;
+        let text = name + ': ' + message;
+        const stack = ownString(error, 'stack');
         if (typeof stack === 'string' && stack.length > 0) {
           text += '\n' + stack;
         }
         return ['script', text];
       }
-      return ['script', 'uncaught ' + StringCtor(error)];
+      return ['script', 'uncaught ' + (typeof error === 'string' ? error : typeof error)];
     } catch (_) {
       return ['script', 'uncaught exception that could not be described'];
     }

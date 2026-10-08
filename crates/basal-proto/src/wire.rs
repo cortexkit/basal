@@ -20,27 +20,54 @@ const TAG_BLOCKED: u8 = 103;
 const TAG_FINISHED: u8 = 104;
 const TAG_REFUSED: u8 = 105;
 
+// Hints include the large variable fields; small fixed metadata may grow the
+// buffer once. They are capped by Encoder before reserving any memory.
+pub(crate) fn parent_hint(message: &ParentMessage) -> usize {
+    match message {
+        ParentMessage::Activate(req) => req.prefix.iter().fold(
+            req.script
+                .len()
+                .saturating_add(req.trigger.len())
+                .saturating_add(req.self_input.len())
+                .saturating_add(128),
+            |size, call| {
+                size.saturating_add(64 + 2 * MAX_NAME_BYTES)
+                    .saturating_add(call.outcome.as_ref().map_or(0, |o| o.value.len()))
+            },
+        ),
+        ParentMessage::Deliver(outcome) => outcome.value.len().saturating_add(32),
+        ParentMessage::LongRunning { positions } => {
+            positions.len().saturating_mul(8).saturating_add(5)
+        }
+        _ => 5,
+    }
+}
+
+pub(crate) fn worker_hint(message: &WorkerMessage) -> usize {
+    match message {
+        WorkerMessage::HostCall(call) => call.args.len().saturating_add(2 * MAX_NAME_BYTES + 32),
+        WorkerMessage::Blocked { awaiting } => awaiting.len().saturating_mul(8).saturating_add(5),
+        WorkerMessage::Finished {
+            result: ActivationResult::Completed { value },
+            ..
+        } => value.len().saturating_add(16),
+        WorkerMessage::Finished {
+            result: ActivationResult::Suspended { awaited },
+            ..
+        } => awaited.len().saturating_mul(8).saturating_add(16),
+        _ => 128,
+    }
+}
+
 /// Truncates a detail string to the decoder's limit, so an encoder never
 /// produces a frame its own peer would refuse just for a long message.
 fn detail(enc: &mut Encoder, text: &str) {
-    if text.len() <= MAX_DETAIL_BYTES {
-        enc.str(text);
-    } else {
-        let mut end = MAX_DETAIL_BYTES;
-        while !text.is_char_boundary(end) {
-            end -= 1;
-        }
-        enc.str(&text[..end]);
-    }
+    enc.str(crate::utf8_prefix(text, MAX_DETAIL_BYTES));
 }
 
 fn value(dec: &mut Decoder<'_>, field: &'static str) -> Result<JsonText, DecodeError> {
     let text = dec.string(field, MAX_VALUE_BYTES)?;
-    JsonText::new(text).map_err(|e| DecodeError::TooLong {
-        field,
-        len: e.bytes,
-        max: e.cap,
-    })
+    Ok(JsonText::new(text).expect("decoder already checked the hard value cap"))
 }
 
 fn positions(enc: &mut Encoder, list: &[u64]) {
@@ -51,7 +78,7 @@ fn positions(enc: &mut Encoder, list: &[u64]) {
 }
 
 fn read_positions(dec: &mut Decoder<'_>, field: &'static str) -> Result<Vec<u64>, DecodeError> {
-    let n = dec.count(field, MAX_LIST_ENTRIES)?;
+    let n = dec.count(field, MAX_LIST_ENTRIES, 8)?;
     let mut out = Vec::with_capacity(n);
     for _ in 0..n {
         out.push(dec.u64(field)?);
@@ -81,18 +108,28 @@ fn call_kind(enc: &mut Encoder, kind: &CallKind) {
     match kind {
         CallKind::Op { module, op } => {
             enc.u8(0);
-            enc.str(module);
-            enc.str(op);
+            enc.name("module", module);
+            enc.name("op", op);
         }
         CallKind::Primitive(p) => enc.u8(p.code()),
     }
 }
 
 fn read_call_kind(dec: &mut Decoder<'_>) -> Result<CallKind, DecodeError> {
+    let name = |dec: &mut Decoder<'_>, field| {
+        let value = dec.string(field, MAX_NAME_BYTES)?;
+        if value.is_empty() {
+            return Err(DecodeError::Invalid {
+                field,
+                detail: "name must not be empty".into(),
+            });
+        }
+        Ok(value)
+    };
     match dec.u8("call kind")? {
         0 => Ok(CallKind::Op {
-            module: dec.string("module", MAX_NAME_BYTES)?,
-            op: dec.string("op", MAX_NAME_BYTES)?,
+            module: name(dec, "module")?,
+            op: name(dec, "op")?,
         }),
         code => {
             Primitive::from_code(code)
@@ -497,7 +534,7 @@ pub(crate) fn encode_parent(enc: &mut Encoder, m: &ParentMessage) {
             enc.u64(req.activation_id);
             profile(enc, req.profile);
             enc.fixed(&req.prelude_hash.0);
-            enc.str(&req.script);
+            enc.limited_str("script", &req.script, MAX_SCRIPT_BYTES);
             enc.str(req.trigger.as_str());
             budgets(enc, &req.budgets);
             enc.count(req.prefix.len());
@@ -533,7 +570,8 @@ pub(crate) fn decode_parent(dec: &mut Decoder<'_>) -> Result<ParentMessage, Deco
             let script = dec.string("script", MAX_SCRIPT_BYTES)?;
             let trigger = value(dec, "trigger")?;
             let budgets = read_budgets(dec)?;
-            let n = dec.count("prefix", MAX_LIST_ENTRIES)?;
+            // position (8), primitive tag (1), digest (32), absent outcome (1).
+            let n = dec.count("prefix", MAX_LIST_ENTRIES, 42)?;
             let mut prefix = Vec::with_capacity(n);
             for _ in 0..n {
                 prefix.push(read_recorded_call(dec)?);
@@ -580,10 +618,7 @@ pub(crate) fn encode_worker(enc: &mut Encoder, m: &WorkerMessage) {
             });
         }
         WorkerMessage::HostCall(c) => {
-            enc.u8(TAG_HOST_CALL);
-            enc.u64(c.position);
-            call_kind(enc, &c.kind);
-            enc.str(c.args.as_str());
+            encode_host_call(enc, c);
         }
         WorkerMessage::Blocked { awaiting } => {
             enc.u8(TAG_BLOCKED);
@@ -602,6 +637,13 @@ pub(crate) fn encode_worker(enc: &mut Encoder, m: &WorkerMessage) {
             refusal(enc, r);
         }
     }
+}
+
+pub(crate) fn encode_host_call(enc: &mut Encoder, call: &HostCall) {
+    enc.u8(TAG_HOST_CALL);
+    enc.u64(call.position);
+    call_kind(enc, &call.kind);
+    enc.str(call.args.as_str());
 }
 
 pub(crate) fn decode_worker(dec: &mut Decoder<'_>) -> Result<WorkerMessage, DecodeError> {

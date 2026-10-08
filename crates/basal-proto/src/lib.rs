@@ -32,7 +32,7 @@ mod wire;
 pub use codec::DecodeError;
 pub use frame::{
     FrameError, decode_parent_payload, decode_worker_payload, encode_parent_frame,
-    encode_worker_frame, read_frame, read_parent_message, read_worker_message,
+    encode_worker_frame, read_frame, read_parent_message, read_worker_message, write_host_call,
     write_parent_message, write_raw_frame, write_worker_message,
 };
 pub use limits::*;

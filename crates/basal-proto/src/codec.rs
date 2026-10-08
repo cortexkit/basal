@@ -4,8 +4,8 @@
 //! Integers are big-endian; strings and byte strings carry a `u32` length
 //! prefix; lists carry a `u32` element count. The decoder checks every length
 //! against both a per-field maximum and the bytes actually left in the frame
-//! before it copies or allocates anything, so a hostile length can neither
-//! make it allocate a huge buffer nor read past the frame.
+//! before it copies or reserves a list, so a hostile length cannot read past
+//! the frame. Decoded Rust objects have more overhead than their wire fields.
 
 use std::fmt;
 
@@ -62,17 +62,51 @@ impl std::error::Error for DecodeError {}
 #[derive(Debug, Default)]
 pub(crate) struct Encoder {
     buf: Vec<u8>,
+    error: Option<DecodeError>,
 }
 
 impl Encoder {
-    pub(crate) fn with_header_room() -> Self {
+    pub(crate) fn with_header_room(hint: usize) -> Self {
         // Four bytes are reserved for the frame length so a message can be
         // written with one `write_all` once its size is known.
-        Self { buf: vec![0; 4] }
+        let mut buf = Vec::with_capacity(hint.min(crate::MAX_FRAME_BYTES) + 4);
+        buf.resize(4, 0);
+        Self { buf, error: None }
     }
 
+    #[cfg(test)]
     pub(crate) fn into_inner(self) -> Vec<u8> {
         self.buf
+    }
+
+    pub(crate) fn finish(self) -> Result<Vec<u8>, DecodeError> {
+        match self.error {
+            Some(error) => Err(error),
+            None => Ok(self.buf),
+        }
+    }
+
+    pub(crate) fn limited_str(&mut self, field: &'static str, value: &str, max: usize) {
+        if value.len() > max {
+            self.error.get_or_insert(DecodeError::TooLong {
+                field,
+                len: value.len(),
+                max,
+            });
+        } else {
+            self.str(value);
+        }
+    }
+
+    pub(crate) fn name(&mut self, field: &'static str, value: &str) {
+        if value.is_empty() {
+            self.error.get_or_insert(DecodeError::Invalid {
+                field,
+                detail: "name must not be empty".into(),
+            });
+        } else {
+            self.limited_str(field, value, crate::MAX_NAME_BYTES);
+        }
     }
 
     pub(crate) fn u8(&mut self, value: u8) {
@@ -105,6 +139,13 @@ impl Encoder {
     }
 
     pub(crate) fn count(&mut self, len: usize) {
+        if len > crate::MAX_LIST_ENTRIES {
+            self.error.get_or_insert(DecodeError::TooLong {
+                field: "list",
+                len,
+                max: crate::MAX_LIST_ENTRIES,
+            });
+        }
         self.u32(u32::try_from(len).unwrap_or(u32::MAX));
     }
 
@@ -204,17 +245,22 @@ impl<'a> Decoder<'a> {
             .map_err(|_| DecodeError::InvalidUtf8 { field })
     }
 
-    /// Reads a list count. Every element takes at least one byte, so a count
-    /// larger than the bytes left is refused before any allocation.
-    pub(crate) fn count(&mut self, field: &'static str, max: usize) -> Result<usize, DecodeError> {
+    /// Requires enough wire bytes for every element before reserving its list.
+    pub(crate) fn count(
+        &mut self,
+        field: &'static str,
+        max: usize,
+        minimum_bytes: usize,
+    ) -> Result<usize, DecodeError> {
         let len = self.u32(field)? as usize;
         if len > max {
             return Err(DecodeError::TooLong { field, len, max });
         }
-        if len > self.remaining() {
+        let needed = len.saturating_mul(minimum_bytes);
+        if needed > self.remaining() {
             return Err(DecodeError::Truncated {
                 field,
-                needed: len,
+                needed,
                 remaining: self.remaining(),
             });
         }
@@ -255,13 +301,27 @@ mod tests {
     }
 
     #[test]
+    fn list_counts_require_the_complete_minimum_wire_size() {
+        let mut enc = Encoder::default();
+        enc.u32(2);
+        enc.fixed(&[0, 0]);
+        let bytes = enc.into_inner();
+        let mut dec = Decoder::new(&bytes);
+        // Two positions need sixteen bytes, not two bytes.
+        assert!(matches!(
+            dec.count("positions", usize::MAX, 8),
+            Err(DecodeError::Truncated { .. })
+        ));
+    }
+
+    #[test]
     fn list_count_beyond_remaining_bytes_is_refused() {
         let mut enc = Encoder::default();
         enc.u32(1_000_000);
         let bytes = enc.into_inner();
         let mut dec = Decoder::new(&bytes);
         assert!(matches!(
-            dec.count("list", usize::MAX),
+            dec.count("list", usize::MAX, 8),
             Err(DecodeError::Truncated { .. })
         ));
     }

@@ -4,8 +4,9 @@
 /// The current protocol version, exchanged in the handshake.
 pub const PROTOCOL_VERSION: u32 = 2;
 
-/// The largest frame payload either side accepts. A 1000-call prefix of
-/// 16 KiB values is about 16 MiB, so this leaves room for twice that.
+/// The largest aggregate frame payload either side accepts. A run may have
+/// 10,000 calls; their combined outcomes, script and metadata must still fit
+/// this bound, independently of the per-value and protocol list limits.
 pub const MAX_FRAME_BYTES: usize = 32 * 1024 * 1024;
 
 /// The largest single JSON value (an argument, an outcome, a trigger or a
@@ -23,3 +24,12 @@ pub const MAX_DETAIL_BYTES: usize = 16 * 1024;
 
 /// The most entries in any list of positions or recorded calls.
 pub const MAX_LIST_ENTRIES: usize = 1 << 20;
+
+/// A prefix within a byte cap without splitting a UTF-8 character.
+pub fn utf8_prefix(text: &str, cap: usize) -> &str {
+    let mut end = text.len().min(cap);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}

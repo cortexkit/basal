@@ -74,16 +74,8 @@ impl fmt::Debug for JsonText {
         if self.0.len() <= SHOWN {
             write!(f, "JsonText({:?})", self.0)
         } else {
-            let mut end = SHOWN;
-            while !self.0.is_char_boundary(end) {
-                end -= 1;
-            }
-            write!(
-                f,
-                "JsonText({:?}... {} bytes)",
-                &self.0[..end],
-                self.0.len()
-            )
+            let shown = crate::utf8_prefix(&self.0, SHOWN);
+            write!(f, "JsonText({:?}... {} bytes)", shown, self.0.len())
         }
     }
 }
@@ -557,7 +549,7 @@ pub enum MessageKind {
 
 /// Why the worker refused a frame from the parent. A refusal never ends the
 /// worker, except [`Refusal::Oversized`], after which the byte stream can no
-/// longer be split into frames and the worker exits cleanly.
+/// longer be split into frames and the worker exits with code 3.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
     Malformed {
