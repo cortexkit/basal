@@ -28,6 +28,27 @@ struct Tokens {
     initial: Option<Handle>,
     report: Value,
 }
+unsafe fn token_dacl(token: HANDLE) -> Result<Vec<usize>> {
+    unsafe {
+        let mut bytes = 0;
+        GetKernelObjectSecurity(token, DACL_SECURITY_INFORMATION, null_mut(), 0, &mut bytes);
+        if bytes == 0 {
+            return Err(last("GetKernelObjectSecurity(token DACL size)"));
+        }
+        let mut data = vec![0usize; (bytes as usize).div_ceil(size_of::<usize>())];
+        check(
+            GetKernelObjectSecurity(
+                token,
+                DACL_SECURITY_INFORMATION,
+                data.as_mut_ptr().cast(),
+                bytes,
+                &mut bytes,
+            ),
+            "GetKernelObjectSecurity(token DACL)",
+        )?;
+        Ok(data)
+    }
+}
 struct Profile {
     sid: PSID,
     deleted: bool,
@@ -193,6 +214,7 @@ fn restricted_tokens(
         // Closest same-access loader token: no restricting SIDs, original groups
         // and integrity, maximum privileges disabled. It is never inherited.
         let loader_groups = token_buffer(loader_source, TokenGroups)?;
+        let source_dacl = token_dacl(loader_source)?;
         let loader_user = token_buffer(loader_source, TokenUser)?;
         let mut same_access = groups(&loader_groups)
             .iter()
@@ -222,6 +244,16 @@ fn restricted_tokens(
             "CreateRestrictedToken(loader)",
         )?;
         let loader = Handle(loader);
+        // Filtering and duplication otherwise use the broker's default DACL,
+        // which lacks the package SID needed for the lowbox to query itself.
+        check(
+            SetKernelObjectSecurity(
+                loader.0,
+                DACL_SECURITY_INFORMATION,
+                source_dacl.as_ptr().cast_mut().cast(),
+            ),
+            "SetKernelObjectSecurity(filtered loader DACL)",
+        )?;
         if start_low {
             let level = token_buffer(loader.0, TokenIntegrityLevel)?;
             let level = sid_string((*level.as_ptr().cast::<TOKEN_MANDATORY_LABEL>()).Label.Sid);
@@ -234,11 +266,12 @@ fn restricted_tokens(
         } else {
             loader
         };
+        let loader_dacl = token_dacl(loader.0)?;
         let mut impersonation = null_mut();
         check(
             DuplicateTokenEx(
                 loader.0,
-                TOKEN_QUERY | TOKEN_IMPERSONATE | TOKEN_DUPLICATE,
+                TOKEN_ALL_ACCESS,
                 null(),
                 SecurityImpersonation,
                 TokenImpersonation,
@@ -247,6 +280,14 @@ fn restricted_tokens(
             "DuplicateTokenEx(loader)",
         )?;
         let initial = Handle(impersonation);
+        check(
+            SetKernelObjectSecurity(
+                initial.0,
+                DACL_SECURITY_INFORMATION,
+                loader_dacl.as_ptr().cast_mut().cast(),
+            ),
+            "SetKernelObjectSecurity(initial DACL)",
+        )?;
         check(
             SetHandleInformation(initial.0, HANDLE_FLAG_INHERIT, 0),
             "SetHandleInformation(initial token)",
@@ -1059,7 +1100,7 @@ pub fn run() -> Result<()> {
                     let sequence = "CreateProcessAsUserW / Low primary / same-package LPAC loader / self-lower";
                     let result = if OpenProcessToken(
                         holder.process.0,
-                        TOKEN_QUERY | TOKEN_DUPLICATE,
+                        TOKEN_ALL_ACCESS,
                         &mut source,
                     ) == 0
                     {
@@ -1096,12 +1137,7 @@ pub fn run() -> Result<()> {
             let mut source = null_mut();
             let source_holder = if mode == "full" && !native_loader {
                 if let Ok((holder, _)) = &namespace_initializer {
-                    if OpenProcessToken(
-                        holder.process.0,
-                        TOKEN_QUERY | TOKEN_DUPLICATE,
-                        &mut source,
-                    ) != 0
-                    {
+                    if OpenProcessToken(holder.process.0, TOKEN_ALL_ACCESS, &mut source) != 0 {
                         Some(Handle(source))
                     } else {
                         None
