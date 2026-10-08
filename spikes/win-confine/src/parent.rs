@@ -521,7 +521,7 @@ fn launch(
         } else {
             None
         };
-        let job = if full { Some(job()?) } else { None };
+        let mut job = if full { Some(job()?) } else { None };
         let (child_in, parent_in) = pipe()?;
         let (parent_out, child_out) = pipe()?;
         let (parent_err, child_err) = pipe()?;
@@ -602,6 +602,20 @@ fn launch(
         check(ok, sequence)?;
         let process = Handle(pi.hProcess);
         let main_thread = Handle(pi.hThread);
+        if let Some((h, info)) = &mut job {
+            let mut member = 0;
+            let ok = IsProcessInJob(process.0, h.0, &mut member) != 0;
+            let error = GetLastError();
+            info["member_at_birth"] = json!(ok && member != 0);
+            info["membership_query_error"] = json!(if ok { 0 } else { error });
+        }
+        let mut birth_primary = null_mut();
+        let birth_primary = if OpenProcessToken(process.0, TOKEN_QUERY, &mut birth_primary) == 0 {
+            json!({"error":last("OpenProcessToken(suspended child)")})
+        } else {
+            let h = Handle(birth_primary);
+            token_attestation(h.0).unwrap_or_else(|e| json!({"error":e}))
+        };
         if full {
             if let Err(e) = check(
                 SetThreadToken(&main_thread.0, tokens.as_ref().unwrap().1.0),
@@ -611,6 +625,17 @@ fn launch(
                 return Err(e);
             }
         }
+        let mut assigned = null_mut();
+        let assigned_loader = if full {
+            if OpenThreadToken(main_thread.0, TOKEN_QUERY, 1, &mut assigned) == 0 {
+                json!({"error":last("OpenThreadToken(suspended child)")})
+            } else {
+                let h = Handle(assigned);
+                token_attestation(h.0).unwrap_or_else(|e| json!({"error":e}))
+            }
+        } else {
+            Value::Null
+        };
         if ResumeThread(main_thread.0) == u32::MAX {
             TerminateProcess(process.0, 1);
             return Err(last("ResumeThread"));
@@ -647,7 +672,7 @@ fn launch(
             |e| json!({"parse_error":e.to_string(),"stdout":String::from_utf8_lossy(&stdout)}),
         );
         Ok(
-            json!({"sequence":sequence,"exit_code":hex(exit),"timeout":wait!=WAIT_OBJECT_0,"input_write":{"success":write_ok,"error":if write_ok{0}else{write_error},"bytes":written},"stderr":String::from_utf8_lossy(&stderr),"job":job.as_ref().map(|j|&j.1),"constructed_tokens":tokens.as_ref().map(|t|&t.2),"child":child}),
+            json!({"sequence":sequence,"exit_code":hex(exit),"timeout":wait!=WAIT_OBJECT_0,"input_write":{"success":write_ok,"error":if write_ok{0}else{write_error},"bytes":written},"stderr":String::from_utf8_lossy(&stderr),"job":job.as_ref().map(|j|&j.1),"constructed_tokens":tokens.as_ref().map(|t|&t.2),"parent_before_resume":{"primary":birth_primary,"assigned_loader":assigned_loader},"stdio_handles":{"stdin":handles[0] as usize,"stdout":handles[1] as usize,"stderr":handles[2] as usize},"child":child}),
         )
     }
 }

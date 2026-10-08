@@ -65,6 +65,8 @@ def validate(report):
         if actual != EXPECTED_POLICIES:
             errors.append(f'full: mitigation mismatch: {actual}')
         job = attempt.get('job') or {}
+        if job.get('member_at_birth') is not True:
+            errors.append('full: child was not in the owned job at birth')
         if (job.get('limit_flags'), job.get('active_process_limit'), job.get('process_memory_limit'), job.get('ui_restrictions'), job.get('breakaway')) != ('0x00002508', 1, 268435456, '0x000000ff', False):
             errors.append('full: parent-owned job limit readback mismatch')
         if isinstance(child.get('loaded_modules'), list):

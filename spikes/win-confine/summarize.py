@@ -18,6 +18,8 @@ def summarize(report):
         print(f'## {run["mode"]}')
         for attempt in run['attempts']:
             print(f'- Sequence: `{attempt["sequence"]}`; exit: `{attempt.get("exit_code")}`; error: {attempt.get("error", "none")}')
+            print(f'- Parent tokens before resume: `{json.dumps(attempt.get("parent_before_resume"))}`')
+            print(f'- Constructed tokens: `{json.dumps(attempt.get("constructed_tokens"))}`')
             child = attempt.get('child', {})
             if 'probes' not in child:
                 print(f'- **NO MEASUREMENT**: {escape(child or attempt)}')
