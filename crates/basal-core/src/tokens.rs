@@ -62,17 +62,6 @@ impl Usage {
             .saturating_add(self.cache_write_tokens)
             .saturating_add(self.output_tokens)
     }
-
-    /// Reads Broca's usage object. Every field must be a whole number.
-    pub fn from_value(v: &Value) -> Option<Self> {
-        let field = |name: &str| v.get(name).and_then(Value::as_u64);
-        Some(Self {
-            input_tokens: field("input_tokens")?,
-            cache_write_tokens: field("cache_write_tokens")?,
-            output_tokens: field("output_tokens")?,
-            cached_input_tokens: field("cached_input_tokens")?,
-        })
-    }
 }
 
 fn to_i64(n: u64) -> Result<i64> {
@@ -406,22 +395,14 @@ pub fn settle_outcome(
     outcome: &HostOutcome,
     now_ms: i64,
 ) -> Result<bool> {
-    let p =
-        i64::try_from(position).map_err(|_| CoreError::Invalid(format!("position {position}")))?;
-    let open: bool = tx.query_row(
-        "SELECT EXISTS (SELECT 1 FROM token_ledger WHERE run_id = ?1 AND position = ?2 \
-         AND state = 'reserved')",
-        params![run_id, p],
-        |r| r.get(0),
-    )?;
-    if !open {
-        return Ok(false);
-    }
-    let value: Value = serde_json::from_str(outcome.value.as_str()).unwrap_or(Value::Null);
     let report = match outcome.usage {
         Some(usage) => Report::Metadata(usage),
         None if outcome.settlement == Settlement::Rejected
-            && value.get("code").and_then(Value::as_str) == Some(UNAVAILABLE_CODE) =>
+            && serde_json::from_str::<Value>(outcome.value.as_str())
+                .ok()
+                .is_some_and(|value| {
+                    value.get("code").and_then(Value::as_str) == Some(UNAVAILABLE_CODE)
+                }) =>
         {
             Report::NoEffect
         }

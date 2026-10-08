@@ -117,10 +117,8 @@ fn cron_next_after(
 
 /// Up to `keep` of the newest due times in `[from, to]`, oldest first.
 ///
-/// Searches backwards in wall-clock time. The search starts a day past
-/// `to`'s wall-clock time because during a repeated hour, wall-clock times
-/// later than `to`'s can belong to instants before `to` (the hour's first
-/// pass); a day covers any real zone's overlap.
+/// Searches backwards in wall-clock time. Only the second pass of a fold
+/// needs a forward offset: later wall times in the first pass precede `to`.
 fn cron_newest_in(
     cron: &Cron,
     tz: &TimeZone,
@@ -133,9 +131,21 @@ fn cron_newest_in(
         return Ok(out);
     }
     let start = to.to_zoned(tz.clone()).datetime();
-    let mut cursor = start
-        .checked_add(jiff::Span::new().days(1))
-        .unwrap_or(start);
+    let ambiguous = tz.to_ambiguous_timestamp(start);
+    let mut cursor = match ambiguous.offset() {
+        AmbiguousOffset::Fold { .. } => {
+            let earlier = ambiguous.earlier().map_err(|e| DueError(e.to_string()))?;
+            let later = ambiguous.later().map_err(|e| DueError(e.to_string()))?;
+            if to == later {
+                start
+                    .checked_add(jiff::Span::new().seconds(later.as_second() - earlier.as_second()))
+                    .map_err(|e| DueError(e.to_string()))?
+            } else {
+                start
+            }
+        }
+        _ => start,
+    };
     let mut inclusive = true;
     for _ in 0..SEARCH_GUARD {
         let civil = match cron.find_previous_occurrence(&cursor, inclusive) {

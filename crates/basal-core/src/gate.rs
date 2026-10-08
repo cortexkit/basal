@@ -53,38 +53,11 @@ pub enum InstallGate {
     Off,
 }
 
-#[cfg(test)]
-mod removal_tests {
-    use super::*;
-
-    #[test]
-    fn removed_cancellation_rechecks_mark_in_its_write_transaction() {
-        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
-        for migration in crate::schema::MIGRATIONS {
-            conn.execute_batch(migration.statements).unwrap();
-        }
-        conn.execute_batch("INSERT INTO flows(flow_id,package,removed,created_at) VALUES ('instance','package',1,1); INSERT INTO runs(run_id,flow_id,trigger_id,attempt,trigger,script,manifest,code_hash,state,owner,generation,admitted_at) VALUES ('run','instance','trigger',1,'null','return 1','{}',zeroblob(32),'running','parent',1,1);").unwrap();
-        let lease = Lease {
-            run_id: "run".into(),
-            owner: "parent".into(),
-            generation: 1,
-        };
-        assert!(crate::packages::removed(&conn, "instance").unwrap());
-        // Reconciliation commits after the optimistic read but before the
-        // cancellation writer is acquired. That old observation grants nothing.
-        conn.execute("UPDATE flows SET removed=0 WHERE flow_id='instance'", [])
-            .unwrap();
-        let tx = conn.transaction().unwrap();
-        assert!(!cancel_removed(&tx, &lease, "instance", "removed").unwrap());
-        assert!(lease.holds(&tx).unwrap());
-        assert_eq!(runs::state(&tx, "run").unwrap(), crate::RunState::Running);
-        tx.commit().unwrap();
-    }
-}
-
 /// Why core no longer stands behind a run's version.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RevokeCause {
+    /// The persona no longer selects this package instance; approval is unchanged.
+    Removed,
     /// Core answered `revoked`.
     Revoked,
     /// Core holds no install of a version basal approved.
@@ -155,14 +128,25 @@ impl Runtime {
     /// Records one more unanswered check and returns how long the run now
     /// waits: `install_gate_retry`, doubled for each earlier unanswered
     /// check in a row, at most `install_gate_retry_max`.
-    fn back_off(&self, run_id: &str) -> Duration {
+    fn back_off(&self, run_id: &str) -> Result<Duration> {
         let now = self.config.clock.now_ms();
+        let live = self.store().read(|conn| {
+            let mut stmt = conn.prepare("SELECT run_id FROM runs WHERE state IN ('pending','running','suspended','needs_reconcile')")?;
+            let ids = stmt.query_map([], |r| r.get::<_,String>(0))?.collect::<rusqlite::Result<std::collections::HashSet<_>>>()?;
+            Ok(ids)
+        })?;
         let mut table = self
             .shared
             .gate_backoff
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        let failures = table.get(run_id).map_or(0, |b| b.failures) + 1;
+        // Terminal runs and deleted rows can never retry the install gate.
+        // Reap them on insertion so cancellations cannot grow this map forever.
+        table.retain(|id, _| live.contains(id));
+        let failures = table
+            .get(run_id)
+            .map_or(0, |b| b.failures)
+            .saturating_add(1);
         let wait = self
             .config
             .install_gate_retry
@@ -175,7 +159,7 @@ impl Runtime {
                 failures,
             },
         );
-        wait
+        Ok(wait)
     }
 
     fn clear_backoff(&self, run_id: &str) {
@@ -201,7 +185,7 @@ impl Runtime {
                 self.shared.signal.bump();
                 return Ok(Gate::Closed(ActivationEnd::Revoked {
                     version: run.flow_version.unwrap_or(0),
-                    cause: RevokeCause::Revoked,
+                    cause: RevokeCause::Removed,
                     detail,
                 }));
             }
@@ -294,7 +278,7 @@ impl Runtime {
             )?;
             Ok(())
         })?;
-        let retry_in = self.back_off(&lease.run_id);
+        let retry_in = self.back_off(&lease.run_id)?;
         self.shared.signal.bump();
         Ok(Gate::Closed(ActivationEnd::Deferred { detail, retry_in }))
     }
@@ -336,3 +320,7 @@ impl Runtime {
         }))
     }
 }
+
+#[cfg(test)]
+#[path = "gate_tests.rs"]
+mod removal_tests;

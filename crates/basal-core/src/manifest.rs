@@ -746,10 +746,16 @@ mod tests {
                     }
                     _ => value["trigger"] = serde_json::json!({"schedule":{"interval":text}}),
                 }
-                assert!(
-                    Manifest::parse(&value.to_string()).is_err(),
-                    "{field}: {text:?}"
-                );
+                let error = Manifest::parse(&value.to_string()).unwrap_err();
+                match field {
+                    "deadline" => assert!(
+                        matches!(error, ManifestError::Invalid { field, .. } if field == "deadline")
+                    ),
+                    "token_window" => assert!(
+                        matches!(error, ManifestError::Invalid { field, .. } if field == "llm.token_cap.window")
+                    ),
+                    _ => assert!(matches!(error, ManifestError::Schedule(_))),
+                }
             }
         }
     }

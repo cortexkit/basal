@@ -69,8 +69,25 @@ impl ScheduleRow {
     /// a failure here means the store holds something this build did not
     /// write.
     pub fn compiled(&self) -> Result<CompiledSchedule> {
-        validate(&self.spec)
-            .map_err(|e| CoreError::Corrupt(format!("schedule of {}: {e}", self.flow_id)))
+        type Cache = std::collections::VecDeque<(ScheduleSpec, CompiledSchedule)>;
+        static CACHE: std::sync::OnceLock<std::sync::Mutex<Cache>> = std::sync::OnceLock::new();
+        let mut cache = CACHE
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if let Some((_, compiled)) = cache.iter().find(|(spec, _)| spec == &self.spec) {
+            return Ok(compiled.clone());
+        }
+        let compiled = validate(&self.spec)
+            .map_err(|e| CoreError::Corrupt(format!("schedule of {}: {e}", self.flow_id)))?;
+        // Validation rules and the bundled timezone database are fixed for the
+        // process. Cache only valid, exact specs, with a bound independent of flows.
+        const MAX_COMPILED_SPECS: usize = 128;
+        if cache.len() == MAX_COMPILED_SPECS {
+            cache.pop_front();
+        }
+        cache.push_back((self.spec.clone(), compiled.clone()));
+        Ok(compiled)
     }
 }
 
@@ -115,59 +132,52 @@ fn due_error(flow_id: &str, e: super::due::DueError) -> CoreError {
     CoreError::Corrupt(format!("schedule of {flow_id}: {e}"))
 }
 
-pub fn load(c: &Connection, flow_id: &str) -> Result<Option<ScheduleRow>> {
-    let raw = c
-        .query_row(
-            "SELECT version, spec, state, anchor_ms, next_due_ms, last_fired_ms \
-             FROM schedules WHERE flow_id = ?1",
-            [flow_id],
-            |r| {
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, i64>(3)?,
-                    r.get::<_, Option<i64>>(4)?,
-                    r.get::<_, Option<i64>>(5)?,
-                ))
-            },
-        )
-        .optional()?;
-    let Some((version, spec, state, anchor, next_due, last_fired)) = raw else {
-        return Ok(None);
-    };
-    let version = u64::try_from(version)
-        .map_err(|_| CoreError::Corrupt(format!("schedule version {version}")))?;
-    let spec: ScheduleSpec = serde_json::from_str(&spec)
-        .map_err(|e| CoreError::Corrupt(format!("schedule spec of {flow_id}: {e}")))?;
-    Ok(Some(ScheduleRow {
-        flow_id: flow_id.to_owned(),
-        version,
-        spec,
-        state: ScheduleState::parse(&state)?,
-        anchor: from_ms(anchor, "schedule anchor")?,
-        next_due: next_due
-            .map(|ms| from_ms(ms, "next due time"))
-            .transpose()?,
-        last_fired_due: last_fired
-            .map(|ms| from_ms(ms, "last fired due time"))
-            .transpose()?,
-    }))
+const COLUMNS: &str = "flow_id, version, spec, state, anchor_ms, next_due_ms, last_fired_ms";
+
+fn decode_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<ScheduleRow>> {
+    let flow_id: String = row.get(0)?;
+    let version: i64 = row.get(1)?;
+    let spec: String = row.get(2)?;
+    let state: String = row.get(3)?;
+    let anchor: i64 = row.get(4)?;
+    let next_due: Option<i64> = row.get(5)?;
+    let last_fired: Option<i64> = row.get(6)?;
+    Ok((|| {
+        Ok(ScheduleRow {
+            version: u64::try_from(version)
+                .map_err(|_| CoreError::Corrupt(format!("schedule version {version}")))?,
+            spec: serde_json::from_str(&spec)
+                .map_err(|e| CoreError::Corrupt(format!("schedule spec of {flow_id}: {e}")))?,
+            flow_id,
+            state: ScheduleState::parse(&state)?,
+            anchor: from_ms(anchor, "schedule anchor")?,
+            next_due: next_due
+                .map(|ms| from_ms(ms, "next due time"))
+                .transpose()?,
+            last_fired_due: last_fired
+                .map(|ms| from_ms(ms, "last fired due time"))
+                .transpose()?,
+        })
+    })())
 }
 
-/// Every flow with a schedule, in flow id order.
+pub fn load(c: &Connection, flow_id: &str) -> Result<Option<ScheduleRow>> {
+    c.query_row(
+        &format!("SELECT {COLUMNS} FROM schedules WHERE flow_id=?1"),
+        [flow_id],
+        decode_row,
+    )
+    .optional()?
+    .transpose()
+}
+
+/// Every flow with a schedule, in flow id order, in one query.
 pub fn list(c: &Connection) -> Result<Vec<ScheduleRow>> {
-    let mut stmt = c.prepare("SELECT flow_id FROM schedules ORDER BY flow_id")?;
-    let ids = stmt
-        .query_map([], |r| r.get::<_, String>(0))?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    let mut rows = Vec::with_capacity(ids.len());
-    for id in ids {
-        if let Some(row) = load(c, &id)? {
-            rows.push(row);
-        }
-    }
-    Ok(rows)
+    let mut stmt = c.prepare(&format!("SELECT {COLUMNS} FROM schedules ORDER BY flow_id"))?;
+    let rows = stmt
+        .query_map([], decode_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    rows.into_iter().collect()
 }
 
 /// Records an approved flow version with a schedule trigger.
@@ -290,8 +300,9 @@ fn approve_inner(
 }
 
 /// Stops a flow's schedule. Due times passing while it is disabled never
-/// fire, and fires planned but not yet admitted are dropped: disabling
-/// fences new work. Returns whether the flow had a schedule.
+/// fire, and fires planned but not yet admitted are deleted without individual
+/// `schedule_dropped` records: the flow's disable explains the discarded work.
+/// Disabling fences new work. Returns whether the flow had a schedule.
 pub fn disable(tx: &Transaction, flow_id: &str, now: Timestamp) -> Result<bool> {
     let changed = tx.execute(
         "UPDATE schedules SET state = 'disabled', updated_at = ?2 WHERE flow_id = ?1",
