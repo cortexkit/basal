@@ -7388,3 +7388,37 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
+
+[[control]]
+id = "audit-b-retention-keeps-refusal-intents"
+guards = "pruning preserves a terminal run until its refusal acknowledgement is delivered"
+file = "crates/basal-core/src/retention.rs"
+old = "o.kind='refusal_committed' AND json_extract(o.body,'$.run_id')=r.run_id"
+new = "o.kind='refusal_committed' AND json_extract(o.body,'$.run_id')=r.run_id AND 0 /* NON-VACUITY BREAK */"
+edits = []
+test_file = "crates/basal-core/src/runtime_regressions.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+expect_red = ["runtime::regressions::pruning_preserves_a_terminal_run_until_its_refusal_acknowledgement_is_delivered"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "audit-b-production-retention-prunes-history"
+guards = "retention prunes old history but keeps live obligations and card episodes"
+file = "crates/basal-core/src/retention.rs"
+old = "self.prune_history(now, now.saturating_sub(millis(config.history)))?;"
+new = "// NON-VACUITY BREAK: self.prune_history(now, now.saturating_sub(millis(config.history)))?;"
+edits = []
+test_file = "crates/basal-core/src/runtime_regressions.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+expect_red = ["runtime::regressions::retention_prunes_old_history_but_keeps_live_obligations_and_card_episodes"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
