@@ -80,8 +80,15 @@ impl ScheduleRow {
         }
         let compiled = validate(&self.spec)
             .map_err(|e| CoreError::Corrupt(format!("schedule of {}: {e}", self.flow_id)))?;
-        // Validation rules and the bundled timezone database are fixed for the
-        // process. Cache only valid, exact specs, with a bound independent of flows.
+        // A compiled spec depends only on the spec itself: the validation
+        // rules and the bundled timezone database never change while the
+        // process runs, so the cache is keyed by the exact spec and never
+        // needs invalidating. Only valid specs are cached, so a bad one stays
+        // an error every time. The cache is one static for the whole process,
+        // shared by every flow and store, so its size is a fixed number of
+        // specs (oldest dropped first) rather than one entry per flow: memory
+        // stays bounded however many flows there are or however often their
+        // schedules change.
         const MAX_COMPILED_SPECS: usize = 128;
         if cache.len() == MAX_COMPILED_SPECS {
             cache.pop_front();

@@ -139,7 +139,7 @@ mod tests {
         exhausted.set(false);
         let second = alloc.alloc(40);
         assert!(!second.is_null() && !exhausted.get());
-        // SAFETY: as above.
+        // SAFETY: `second` came from this allocator and is freed once.
         unsafe { alloc.dealloc(second) };
     }
 }

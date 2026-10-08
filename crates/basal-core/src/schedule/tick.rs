@@ -250,8 +250,14 @@ pub fn admit_next(
     ctx: &AdmitContext,
 ) -> Result<Option<AdmittedFire>> {
     loop {
-        // Admission may write rate counters before encountering corrupt bytes.
-        // Roll those writes back before quarantining only the offending fire.
+        // Admitting a fire can fail on stored data this build cannot use (a
+        // planned payload that is not valid JSON, an approved manifest that
+        // does not decode, a due time out of range). Admission may already
+        // have written rate counters by then, so roll back to the savepoint
+        // first. Then quarantine only the offending fire: record it as
+        // dropped and write an audit row naming the error, delete it from
+        // the planned fires, and go on to the next one, so one bad fire
+        // cannot block every fire behind it.
         tx.execute_batch("SAVEPOINT schedule_admission")?;
         match admit_oldest(tx, store_id, ctx) {
             Ok(fire) => {
@@ -330,7 +336,11 @@ pub fn planned_count(c: &rusqlite::Connection) -> Result<u64> {
 pub struct DroppedFire {
     pub flow_id: String,
     pub trigger_id: String,
-    /// `disabled`, `not_approved` (also covers corrupt persisted input), or `rate_limited`.
+    /// `disabled`, `not_approved` or `rate_limited`. A fire quarantined
+    /// because its stored data is unusable is also recorded as
+    /// `not_approved`: the schema allows only these three reasons and none
+    /// fits better, and the audit log's `schedule.corrupt` row holds the
+    /// actual error.
     pub reason: String,
 }
 

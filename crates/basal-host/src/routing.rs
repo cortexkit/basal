@@ -74,9 +74,16 @@ impl ModuleOpsHost {
                     message: "flows cannot run shell operations".into(),
                 });
             }
-            // An unavailable catalog may have journaled the conservative,
-            // non-repeatable class. A stricter retry policy is always safe;
-            // only losing the safety the saved policy relied on is refused.
+            // The call's class was journaled when it was issued, and the
+            // retry policy for an unknown outcome was chosen from it. If the
+            // catalog could not resolve the op then, the call was journaled
+            // as a mutation that does not honour idempotency keys, the class
+            // that is never repeated; whatever the catalog declares now,
+            // that stricter policy stays safe, so the call proceeds. A call
+            // journaled as safe to repeat (a query, or a mutation that
+            // deduplicates on its key) is refused if the op's declared class
+            // has changed since: its policy may resend it, and that is safe
+            // only while the op still behaves as it was declared.
             if expected.is_some_and(|class| {
                 class.safe_to_repeat() && class != self.declared_class(module, op, &decl)
             }) {

@@ -8,8 +8,18 @@ publish.workspace = true
 rust-version.workspace = true
 
 [features]
-# Only the rig's ck-basal exposes the unscoped-send test seam.
-# Also enables test-only network scope exemptions; never used in production.
+# Test-only switches, never enabled in a production build. The rig is basal's
+# isolated test deployment (script/flows-rig.sh): a private subc daemon with
+# its own modules, whose ck-basal is built with this feature through
+# basal-module's feature of the same name. In this crate the feature adds:
+# - the unscoped-send seam: a way to send a model call to Broca without the
+#   flow's scope, so the rig can prove Broca refuses such a send;
+# - network exemptions: `net.fetch` may reach hosts a test names that resolve
+#   to private addresses (a local HTTPS test server), which production always
+#   refuses.
+# script/stage.sh checks every production ck-basal it stages for the rig's
+# kill-switch variable name, which only a build with this feature contains,
+# so a staged binary carries none of these switches.
 rig-kill-hook = []
 
 [dependencies]

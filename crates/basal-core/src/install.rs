@@ -278,8 +278,11 @@ pub(crate) fn validate_inner(
     }
     if !package {
         for (field, agent) in manifest.agents() {
-            // Agent-owned flows act only for their owner. Global operator flows
-            // and unverified local installs retain their catalog-wide grants.
+            // A flow installed by an agent is agent-owned: every agent field
+            // in its manifest must name that same agent, so it can act only
+            // for its owner. A flow installed by the operator or by an
+            // unverified local caller is global and belongs to no agent; it
+            // may name any agent the catalog knows.
             if author != crate::decisions::OPERATOR_ACTOR && author != "local:unverified" {
                 let Some(target_id) = catalog.agent_id(agent) else {
                     return Err(InstallError::UnknownAgent {
@@ -465,13 +468,17 @@ pub fn approve(
         params![flow_id, version_i64(version), author],
     )?;
     let approval = schedule_approved(tx, flow_id, version, now_ms, schedule)?;
-    // A disable by core (see `revoke`) said only that core no longer stood
-    // behind the version approved then. In production an approval is the
-    // operator's answer to a card on core's consent plane, so core stands
-    // behind a version again and the flow may run. Any other disable (the
-    // operator's, the owner's, the runtime's) stays.
-    // Retirement is about the agent, not the approved version. A new
-    // version restores core's approval but cannot bring an agent back.
+    // When core revokes the approved version (see `revoke`), it disables the
+    // flow with core as the actor. That disable says only that core no longer
+    // stood behind the version approved at the time. In production an
+    // approval is the operator's answer to a card on core's consent plane,
+    // so approving a newer version means core stands behind the flow again,
+    // and the disable is cleared. A disable by anyone else (the operator,
+    // the owner, the runtime) was not about the approved version, so it
+    // stays. A flow is also disabled with core as the actor when core
+    // refuses one of its calls because its agent was retired; that is about
+    // the agent, not the version, and a new version cannot bring a retired
+    // agent back, so it stays too.
     if flow(tx, flow_id)?.is_some_and(|f| {
         f.disabled_by.as_deref() == Some(CORE_ACTOR)
             && f.disabled_reason.as_deref() != Some("agent_retired")

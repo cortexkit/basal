@@ -155,8 +155,12 @@ impl<H: Copy + Eq> ScopedRoutes<H> {
         dropped
     }
 
-    /// The caller serializes opening per route identity. A closed scope keeps
-    /// a tombstone until core changes it.
+    /// The caller serializes opening per route identity. When the daemon
+    /// closes a route because its scope ended, the route is kept as a
+    /// tombstone that refuses every use with `scope_ended` instead of
+    /// reopening under the same selector. It stays until prefrontal-core
+    /// re-registers the flow's scope with a different selector (a new epoch,
+    /// for example), which `configure` records.
     pub fn route(
         &mut self,
         flow: &str,
@@ -253,8 +257,13 @@ impl<H: Copy + Eq> ScopedRoutes<H> {
         plan: RoutePlan<H>,
         handle: H,
     ) -> Result<H, WireError> {
-        // Opening occurs outside the table lock. Never install a handle under
-        // authority or a connection that changed while the daemon was replying.
+        // The route is opened outside the table lock, so two things may have
+        // changed while the daemon was answering the open: the flow's scope
+        // registration (prefrontal-core re-registered or removed it, and
+        // `configure` recorded that) and the connection generation (the
+        // daemon connection dropped and was restored, so handles from the old
+        // connection are dead). Install the handle only if both still match
+        // what the open was planned against.
         self.ready(flow, &plan.key.module, "route.open")
             .map_err(WireError::Typed)?;
         if self.connection_generation != plan.generation

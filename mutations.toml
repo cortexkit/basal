@@ -6022,8 +6022,8 @@ file = "crates/basal-module/src/dryrun.rs"
 old = "                    == Some(CallClass::Query)"
 new = "                    != None // NON-VACUITY BREAK"
 
-# Test fixture: 1 additional control
-## Flow scope controls, including uncaught rejection identity.
+# Flow scope controls: scoped routes, per-call model sessions, readiness
+# refusals, and the identity of an uncaught host rejection.
 [[control]]
 id = "flow-model-sessions-collapse-to-the-flow"
 guards = "each model call has its own scoped conversation, preserved on recovery"
@@ -6409,6 +6409,9 @@ file = "crates/basal-core/src/install.rs"
 old = "if module == basal_host::subc_catalog::CORE && !catalog.supports_flow_scopes(module) {"
 new = "if false && module == basal_host::subc_catalog::CORE && !catalog.supports_flow_scopes(module) { // NON-VACUITY BREAK"
 
+# A test-fixture control: the pool test harness must stop waiting at its own
+# deadline and reap the workers it started, so a stalled pool test fails by
+# name instead of hanging the suite.
 [[control]]
 id = "pool-fixture-wait-has-no-deadline"
 guards = "a stalled pool fixture fails within its own deadline and reaps its workers"
@@ -8516,6 +8519,10 @@ build_timeout_s = 7200
 id = "broca-generation-accepts-unknown-keys"
 guards = "broca generation accepts unknown keys"
 file = "crates/basal-host/src/broca/wire.rs"
+# The `old` text is Rust source, not a TOML comment. Removing the
+# `deny_unknown_fields` attribute from GenerationConfig would let a misspelt
+# generation setting in a flow's model request be silently ignored; the test
+# checks that such a typo is refused instead.
 old = """
 #[serde(deny_unknown_fields)]
 pub struct GenerationConfig"""

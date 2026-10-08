@@ -42,7 +42,8 @@ const CORE: &str = "prefrontal-core";
 const BASAL: &str = "basal";
 const TIMEOUT: Duration = Duration::from_secs(30);
 
-/// The stub's ops: public name, operation kind, and manifest description.
+/// The stub's management operations: public name, operation kind, and
+/// manifest description.
 const OPERATIONS: &[(&str, ManagementOperationKind, &str)] = &[
     (
         "elicitation.list_pending",

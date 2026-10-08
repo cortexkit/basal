@@ -224,8 +224,12 @@ impl Runtime {
                 }
             }
         };
-        // A domain error is local to this run, not a dead store. Retire its
-        // claim under the same fence so a dead activation cannot hold a slot.
+        // A domain error (anything but a store failure, a cut, or a lost
+        // lease) concerns only this run; the store is still usable. Mark the
+        // run failed, but only while this activation still owns it (same
+        // owner and lease generation, state still `running`). Ending the run
+        // releases its flow's concurrency slot, so the next run of the flow
+        // is not stuck behind an activation that has already stopped.
         let end = match end {
             Err(e)
                 if !matches!(
@@ -1187,8 +1191,13 @@ impl Activation<'_> {
         Ok(Some(inserted))
     }
 
-    /// A synchronous row whose value is missing can be recovered at its old
-    /// position. Any other old-position call indicates worker divergence.
+    /// The worker issued a call at a position the journal already holds.
+    /// That is legitimate only for a synchronous call whose row holds no
+    /// recorded value: the value is produced, recorded and answered at that
+    /// position, as for a new call.
+    /// A call of a different kind or with different arguments at that
+    /// position means the replayed worker diverged from the journal, and the
+    /// run fails as nondeterministic; any other repeat breaks the protocol.
     fn on_reissued_sync(&mut self, call: HostCall) -> Result<Flow> {
         let row = self
             .rt

@@ -59,8 +59,10 @@ fn removed_cancellation_rechecks_mark_in_its_write_transaction() {
         generation: 1,
     };
     assert!(crate::packages::removed(&conn, "instance").unwrap());
-    // Reconciliation commits after the optimistic read but before the
-    // cancellation writer is acquired. That old observation grants nothing.
+    // The instance was read as removed above, but reconciliation restores
+    // it before the cancelling write transaction starts. That earlier read
+    // can't authorize the cancellation: the transaction must check the
+    // removed mark again and leave the run running.
     conn.execute("UPDATE flows SET removed=0 WHERE flow_id='instance'", [])
         .unwrap();
     let tx = conn.transaction().unwrap();

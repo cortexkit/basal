@@ -241,8 +241,11 @@ const NEXT_ORDER: &str =
     "(SELECT COALESCE(MAX(delivery_order) + 1, 0) FROM journal WHERE run_id = ?1)";
 
 /// Records a synchronous call's value together with its delivery order,
-/// fenced. Done in the transaction that journals the call, before the value
-/// is sent, so recovery can never find a synchronous row without its value.
+/// only while the activation's lease still holds (same owner and lease
+/// generation, run still `running`), so an activation that lost the run
+/// cannot write to it. Done in the transaction that journals the call,
+/// before the value is sent, so recovery can never find a synchronous row
+/// without its value.
 pub fn record_sync(
     tx: &Transaction,
     lease: &Lease,
@@ -413,9 +416,13 @@ impl SavedRefusal {
         match serde_json::from_str(&self.detail) {
             Ok(refusal) => Ok(refusal),
             Err(error) => {
-                // The database checks the refusal's reason, provider and
-                // action at insertion. Optional display/retry fields must
-                // not prevent closing an already proven-unsent obligation.
+                // A deferred row records the typed refusal the provider gave
+                // before the call was sent, and that refusal proves the call
+                // never reached it. The schema checks the refusal's reason,
+                // provider and action when the row is written. Only the
+                // optional fields (a retry hint and a display detail) can be
+                // malformed here, and closing the call needs neither, so they
+                // are dropped rather than leaving the call open forever.
                 tracing::warn!(run_id=%self.run_id, position=self.position, %error, "ignoring malformed optional refusal fields");
                 let mut value: serde_json::Value = serde_json::from_str(&self.detail)
                     .map_err(|e| CoreError::Corrupt(e.to_string()))?;
@@ -427,9 +434,13 @@ impl SavedRefusal {
     }
 }
 
-/// Closes known-unsent obligations whenever a run becomes terminal. The
-/// acknowledgement intent commits with the outcome, so a restart between
-/// commit and notification cannot strand a provider's durable snapshot.
+/// When a run becomes terminal, closes each of its deferred calls: calls a
+/// provider refused before sending, which were waiting to be retried. Each
+/// gets the refusal as its outcome. The provider must then be told the call
+/// is closed (for Broca, so it marks its stored record of the call as
+/// refused and acknowledged). That notification happens after commit, so
+/// this transaction also writes a `refusal_committed` outbox row; a restart
+/// before the notification is delivered finds the row and sends it again.
 pub fn expire_deferred(tx: &Transaction, run_id: &str) -> Result<()> {
     let mut stmt = tx.prepare(
         "SELECT r.flow_id,j.position,j.kind_code,j.module,j.op,COALESCE(j.request,j.args),\

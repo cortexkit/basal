@@ -630,7 +630,11 @@ fn run(
             });
         }
     };
-    // The allocator owns the cap so refusal has an unforgeable native signal.
+    // The budget allocator caps the bytes the engine's heap may hold at the
+    // activation's memory budget, so QuickJS's own limit is turned off. A
+    // refused allocation sets the `memory_exhausted` flag, which lives
+    // outside the VM where no script can set it, so a memory refusal is told
+    // apart from a script that merely throws an out-of-memory error.
     rt.set_memory_limit(0);
     rt.set_max_stack_size(request.budgets.stack_bytes as usize);
     let interrupt = shared.clone();

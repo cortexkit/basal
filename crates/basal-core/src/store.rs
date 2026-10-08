@@ -213,9 +213,12 @@ impl Store {
             match f(tx) {
                 Ok(v) => Ok(v),
                 Err(e) => {
+                    // `with_conn_fenced` rolls the transaction back when the
+                    // closure returns an SQLite error, so save the closure's
+                    // own error, return a placeholder SQLite error to trigger
+                    // the rollback, and report the saved error to the caller
+                    // instead of the placeholder.
                     failure = Some(e);
-                    // Any error makes with_conn_fenced roll back; the domain
-                    // error is reported instead of this placeholder.
                     Err(rusqlite::Error::InvalidQuery)
                 }
             }

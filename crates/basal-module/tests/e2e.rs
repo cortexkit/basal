@@ -400,7 +400,9 @@ fn e2e_fixture_drop_reaps_its_child() {
     // SAFETY: this child was created by this test; the status pointer is valid.
     let waited = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
     if waited == 0 {
-        // Reap the baseline's leaked child before reporting the failed guard.
+        // The child is still running, so dropping the fixture did not reap
+        // it. Kill and reap it here, so the failing assertion below does not
+        // leave a stray process behind.
         unsafe {
             libc::kill(pid, libc::SIGKILL);
             libc::waitpid(pid, &mut status, 0);
@@ -516,7 +518,8 @@ fn a_schedule_flow_reads_a_file_and_a_git_log_fetches_and_writes_a_digest() {
          return {{ body, status: page.status }};",
         file = files.join("watch.txt").display().to_string(),
         repo = repo.display().to_string(),
-        // The resolver seam maps the approved HTTPS:443 URL to the local socket.
+        // The test's resolver (`--builtins-resolve`) maps the approved
+        // HTTPS URL's host, api.test on port 443, to the local test server.
         url = "https://api.test/release",
     );
     let manifest = json!({

@@ -56,7 +56,9 @@ pub enum InstallGate {
 /// Why core no longer stands behind a run's version.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RevokeCause {
-    /// The persona no longer selects this package instance; approval is unchanged.
+    /// The instance was removed from the agent it belonged to (the agent's
+    /// persona no longer lists this package instance), so it must not run.
+    /// Core's approval of the package version is unchanged.
     Removed,
     /// Core answered `revoked`.
     Revoked,

@@ -327,8 +327,14 @@ impl BrocaStore {
         if bytes.is_empty() {
             return Ok(true);
         }
+        // Each frame of Broca's WAL file is a 4-byte length, a 17-byte
+        // envelope (a 1-byte format version, an 8-byte sequence number and
+        // an 8-byte fence, the lease tenure of the writer that appended the
+        // frame), a 32-byte SHA-256 checksum, then the body. A WAL with no
+        // records holds only its lineage frame: version 2, sequence and fence
+        // both zero, and a 16-byte identity body.
         const LENGTH_BYTES: usize = 4;
-        const ENVELOPE_BYTES: usize = 17; // version, sequence and fence
+        const ENVELOPE_BYTES: usize = 17;
         const CHECKSUM_BYTES: usize = 32;
         const BODY_BYTES: usize = 16;
         const CHECKSUM_AT: usize = LENGTH_BYTES + ENVELOPE_BYTES;

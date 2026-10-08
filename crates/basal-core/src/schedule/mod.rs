@@ -184,8 +184,15 @@ impl Scheduler {
                     Err(error) => {
                         tx.execute_batch("ROLLBACK TO schedule_planning; RELEASE schedule_planning")?;
                         let CoreError::Corrupt(detail) = error else { return Err(error); };
-                        // Isolate invalid persisted bytes without starving other
-                        // flows or disabling a replacement approved by another writer.
+                        // Planning found stored schedule data this build cannot
+                        // use: a spec that no longer compiles, a version or due
+                        // time out of range, a scan that contradicts itself.
+                        // Disable only this flow's schedule and record why, so
+                        // one bad row cannot stop every other flow from being
+                        // planned on each tick. The row was read inside this
+                        // same immediate write transaction, so no other writer
+                        // can have replaced it since: the schedule disabled is
+                        // the one found bad, never a newer approved one.
                         tx.execute("UPDATE schedules SET state='disabled', updated_at=?2 WHERE flow_id=?1", rusqlite::params![flow_id, now.as_millisecond()])?;
                         tx.execute("INSERT INTO audit(at,actor,action,detail) VALUES (?1,'runtime','schedule.corrupt',?2)", rusqlite::params![now.as_millisecond(), serde_json::json!({"flow_id":flow_id,"error":detail}).to_string()])?;
                         Ok(None)

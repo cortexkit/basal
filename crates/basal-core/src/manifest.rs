@@ -729,7 +729,8 @@ mod tests {
     #[test]
     fn multibyte_durations_are_refused_without_panicking() {
         for text in ["é", "10é", "10中", "10🦀", "é1s", "١s", "1sé"] {
-            // dry_run uses this same parser for its window.
+            // `flow.dry_run` parses its `window` parameter (how far back to
+            // replay the flow's schedule fires) with this same parser.
             assert_eq!(duration_ms(text), None, "window {text:?}");
             for field in ["deadline", "token_window", "schedule_interval"] {
                 let mut value = serde_json::json!({

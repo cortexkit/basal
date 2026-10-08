@@ -599,7 +599,11 @@ impl BrocaHost {
         let mut first_error = None;
         for send_id in self.store.pending_ids()? {
             let gate = self.call_gate(&send_id);
-            // An activation already owns this id; it will poll after commit.
+            // Another activation holds this send id's lock because it is
+            // dispatching the same call right now. Skip the call instead of
+            // waiting: once that activation commits the dispatch to the
+            // journal it polls again (`dispatch_committed`), and that poll
+            // picks the call up.
             let Ok(_guard) = gate.try_lock() else {
                 continue;
             };
@@ -861,11 +865,14 @@ const TERMINAL_STATES: [&str; 6] = [
 ];
 /// How many consecutive polls an ended run's outcome waits for `run.status`
 /// to stop saying active or paused before it is recorded with usage
-/// unreported (which charges the whole token reservation). Broca's window
-/// is brief but unbounded in principle (explained in `resolve`), so this is
-/// the safety net. Each waiting poll fails, and the module retries a failed
-/// poll with capped exponential backoff, so an unreachable provider does not
-/// turn an indefinitely lagging status into a busy retry loop.
+/// unreported (which charges the whole token reservation). Broca makes a
+/// run's end durable before its live session marks the run ended, so for a
+/// moment `run.result` already reports the run ended while `run.status`
+/// still says active or paused. That lag is normally milliseconds but has no
+/// upper bound (explained in `resolve`), so this cap is the safety net. Each
+/// waiting poll fails, and the module retries a failed poll with capped
+/// exponential backoff, so an unreachable provider does not turn an
+/// indefinitely lagging status into a busy retry loop.
 pub const STATUS_LAG_POLLS: u32 = 12;
 
 /// States of a run that has not ended. A paused run can still resume.
@@ -923,8 +930,14 @@ mod params_bytes {
 }
 
 fn fingerprint(envelope: &JsonText) -> String {
-    // The journal retains the original request. A domain-labelled digest in
-    // the snapshot detects changed reissues without retaining the prompt twice.
+    // The stored call keeps a BLAKE3 digest of the whole journaled model
+    // envelope (send id, work class, session, op, output cap, request and
+    // model selection), not the envelope itself: basal's journal already
+    // holds the request, so the prompt is not stored twice. A reissue of the
+    // call must produce the same digest, so a changed payload under the same
+    // send id is refused. The `blake3:` label tells a stored digest apart
+    // from the full envelope text that older stored calls kept, which is
+    // hashed when it is read (see `envelope_fingerprint`).
     format!(
         "blake3:{}",
         serde_json::to_string(&ArgsDigest::of(envelope).0).expect("fixed digest")

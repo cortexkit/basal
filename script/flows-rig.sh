@@ -69,22 +69,29 @@
 #             refusal, crash recovery and no tools. Three tiny calls at most
 #             in normal execution; each manifest caps all its scheduled runs
 #             in a day, for an aggregate allowance of 4,112 tokens per suite
-#             (including the unscoped negative flow if enforcement regresses).
-#             Core registers each flow its own subc scope, and the scope's
-#             carrier list names the only principals the daemon lets open routes
-#             under it. Each send's Broca checkpoint must match core's
+#             (including the unscoped-send flow described below, if Broca's
+#             enforcement regresses).
+#             A flow scope is the subc daemon's record of one flow's
+#             authority: core registers one per flow, and basal opens every
+#             route it uses for that flow under it. A scope's carrier list
+#             names the only principals the daemon lets open routes under
+#             that scope. Each send's Broca checkpoint must match core's
 #             flow_scope selector, attest reserved:basal as the first sender
 #             and freeze the flow_id. A direct client opening the same selector
 #             must be refused as a non-carrier. That proves an outsider can't
 #             use the scope; it doesn't read the carrier list, which no store
-#             exposes. That the list is exactly [reserved:basal] is tested in
-#             the prefrontal repository at cba528a11, in
+#             exposes. Tests in the prefrontal repository prove that the
+#             carrier list core registers for every flow scope, agent-owned
+#             or global, is exactly [reserved:basal]. For reference, they are
+#             at commit cba528a11, in
 #             crates/prefrontal-core-module/src/scope_owner.rs:
 #             flow_scope_registration_is_basal_only,
 #             registered_flow_scope_wire_vector_pins_attributes_and_the_entire_carrier_list,
 #             registered_global_flow_scope_wire_vector_pins_no_agent_and_the_entire_carrier_list.
-#             Hook builds also send once without scope and require Broca's
-#             flow_scope_required refusal with no RunStarted or run_index row.
+#             The rig's own ck-basal build (with the unscoped-send switch
+#             described below) also sends once without a scope and requires
+#             Broca's flow_scope_required refusal with no RunStarted or
+#             run_index row.
 #             Any first-call refusal is reported verbatim and stops the model
 #             cases; it is never retried with another provider or model.
 #
@@ -92,9 +99,14 @@
 # directory script/stage.sh wrote, byte for byte and under their production
 # identifiers, instead of the rig's own build of them; every other binary is
 # the rig's build. The stage must be of the commit the rig built basal at.
-# A staged ck-basal has neither rig-only switch, so test reports the sink crash,
-# pre-send route checkpoint, accepted model crash and unscoped-send cases as
-# not run; a plain place puts the rig's build back.
+# The rig's own ck-basal is built with two rig-only switches: a one-shot kill
+# switch, armed by a file, that kills ck-basal at a named point in a run so the
+# suite can check crash recovery; and an unscoped-send switch, armed by
+# another file, that sends one model call to Broca without the flow's scope so
+# the suite can check that Broca refuses it. A staged ck-basal has neither
+# switch, so test reports the sink crash, pre-send route checkpoint, accepted
+# model crash and unscoped-send cases as not run; a plain place puts the rig's
+# build back.
 #
 # What the rig isolates:
 #   - Everything lives under ~/.local/share/cortexkit/ckdev-flows/: src/ (one
