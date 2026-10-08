@@ -26,7 +26,37 @@ launcher, and cross-compilation is not runtime evidence.
 
 ## Working API sequence and attestation
 
-Pending completed native reports.
+Run [37807020190](https://github.com/cortexkit/basal/actions/runs/37807020190),
+source `e905aff22941a7f75940117b78379fc7aa3ea010`, produced reports on both
+Windows Server 2025 (26100) and Server 2022:
+
+- `CreateProcessAsUserW`, all six full-policy attributes, `SetThreadToken`
+  and resume succeeded. Neither runner needed a privilege workaround.
+  The constructed primary token had only NULL restricting SID, Untrusted
+  integrity and zero privileges; the initial token was impersonation-type
+  with original groups/integrity and only SeChangeNotifyPrivilege.
+  The full child exited `0xc00000a5` (`STATUS_BAD_IMPERSONATION_LEVEL`) before
+  emitting any JSON. This is a startup failure, not a measured denial.
+- Plain completed with 2,071 probes on latest and 1,827 on 2022.
+  LPAC-only panicked on Rust's assertion that `WSAStartup` returns zero;
+  Windows returned 10107 (`WSASYSCALLFAILURE`). Native Winsock calls now
+  report that failure instead of losing the file/IPC evidence.
+- `GetAppContainerNamedObjectPath` returned a **relative** path beginning
+  `AppContainerNamedObjects\\S-1-15-2-…`. Sending that to
+  `NtOpenDirectoryObject` returned `0xc000003b` (`STATUS_OBJECT_PATH_SYNTAX_BAD`).
+  It now resolves under the runner's `\\Sessions\\<session>` prefix.
+- The real package storage key is keyed by `basal.spike.worker`, not the
+  package SID. The initialized lowbox token's registry API resolved it to
+  `\\REGISTRY\\USER\\<user SID>_Classes\\Local Settings\\Software\\Microsoft\\Windows\\CurrentVersion\\AppContainer\\Storage\\basal.spike.worker`.
+- The plain loader loaded Ole32, Userenv, User32, GDI, Win32u and COM/RPC
+  transitively and held 106/107 handles before input. A static parent-only
+  import contaminates the child role of the same executable. Userenv and
+  Ole32 are now resolved dynamically only by the parent, and the child
+  opens the broker-resolved hive via NT instead. This change tests the
+  minimal child loader; it does not establish the cause of the earlier
+  full child's exit until the next report.
+
+Pending completed full-policy native reports.
 
 ## Measured residual and risk assessment
 

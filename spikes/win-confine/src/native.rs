@@ -333,6 +333,15 @@ unsafe extern "system" {
     -> i32;
     fn NtOpenKeyedEvent(out: *mut HANDLE, access: u32, attrs: *mut ObjectAttributes) -> i32;
     fn NtOpenKey(out: *mut HANDLE, access: u32, attrs: *mut ObjectAttributes) -> i32;
+    fn NtOpenJobObject(out: *mut HANDLE, access: u32, attrs: *mut ObjectAttributes) -> i32;
+    fn NtSetValueKey(
+        key: HANDLE,
+        name: *mut UnicodeString,
+        title_index: u32,
+        value_type: u32,
+        data: *const c_void,
+        size: u32,
+    ) -> i32;
     fn NtCreateSection(
         out: *mut HANDLE,
         access: u32,
@@ -497,6 +506,7 @@ pub fn object_probe(t: &Target) -> Probe {
             "event" => NtOpenEvent(&mut handle, 1, &mut attrs),     // EVENT_QUERY_STATE
             "event_modify" => NtOpenEvent(&mut handle, 2, &mut attrs),
             "registry_native" => NtOpenKey(&mut handle, 1, &mut attrs), // KEY_QUERY_VALUE
+            "job" => NtOpenJobObject(&mut handle, 4, &mut attrs),       // JOB_OBJECT_QUERY
             "mutant" => NtOpenMutant(&mut handle, 1, &mut attrs),
             "semaphore" => NtOpenSemaphore(&mut handle, 1, &mut attrs),
             "timer" => NtOpenTimer(&mut handle, 1, &mut attrs),
@@ -562,6 +572,30 @@ pub fn registry_name(h: HANDLE) -> Value {
                 buffer[0] as usize / 2
             )))
         }
+    }
+}
+pub fn registry_write_native(path: &str) -> Probe {
+    unsafe {
+        let target = Target::new(
+            "registry_write_native",
+            path,
+            "KEY_SET_VALUE / NtSetValueKey(REG_BINARY)",
+        );
+        let mut w = wide(path);
+        let mut name = us(&mut w);
+        let mut attrs = oa(&mut name);
+        let mut key = null_mut();
+        let status = NtOpenKey(&mut key, 2, &mut attrs);
+        if status != 0 {
+            return Probe::nt(&target, status);
+        }
+        let key = Handle(key);
+        let mut w = wide("win-confine-native-fixture");
+        let mut name = us(&mut w);
+        Probe::nt(
+            &target,
+            NtSetValueKey(key.0, &mut name, 0, 3, [1u8].as_ptr().cast(), 1),
+        )
     }
 }
 

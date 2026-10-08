@@ -1,4 +1,5 @@
 use crate::native::*;
+use crate::profile::UserEnv;
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -25,12 +26,13 @@ const MITIGATIONS: u64 =
 struct Profile {
     sid: PSID,
     deleted: bool,
+    api: UserEnv,
 }
 impl Drop for Profile {
     fn drop(&mut self) {
         unsafe {
             if !self.deleted {
-                DeleteAppContainerProfile(wide(PROFILE).as_ptr());
+                self.api.delete(PROFILE);
             }
             FreeSid(self.sid);
         }
@@ -106,7 +108,7 @@ fn pipe() -> Result<(Handle, Handle)> {
         Ok((Handle(read), Handle(write)))
     }
 }
-fn restricted_tokens(parent: HANDLE) -> Result<(Handle, Handle, Value)> {
+fn restricted_tokens(parent: HANDLE, loader_source: HANDLE) -> Result<(Handle, Handle, Value)> {
     unsafe {
         let data = token_buffer(parent, TokenGroups)?;
         // Integrity labels are not access groups. Every actual group is disabled,
@@ -202,7 +204,7 @@ fn restricted_tokens(parent: HANDLE) -> Result<(Handle, Handle, Value)> {
         let mut loader = null_mut();
         check(
             CreateRestrictedToken(
-                parent,
+                loader_source,
                 DISABLE_MAX_PRIVILEGE,
                 0,
                 null(),
@@ -406,6 +408,7 @@ fn add_directory(path: &str, targets: &mut Vec<Target>, enumeration: &mut Vec<Va
                     "Semaphore" => ("semaphore", "SEMAPHORE_QUERY_STATE"),
                     "Timer" => ("timer", "TIMER_QUERY_STATE"),
                     "SymbolicLink" => ("symbolic_link", "SYMBOLIC_LINK_QUERY"),
+                    "Job" => ("job", "JOB_OBJECT_QUERY"),
                     other => (other, "unsupported object type"),
                 };
                 targets.push(Target::new(kind, &name, access));
@@ -420,7 +423,7 @@ fn add_directory(path: &str, targets: &mut Vec<Target>, enumeration: &mut Vec<Va
         Err(e) => enumeration.push(json!({"namespace":path,"error":e})),
     }
 }
-fn prepare_namespace(image: &str, sid: PSID) -> Result<(SuspendedContainer, Value)> {
+fn prepare_namespace(image: &str, sid: PSID, api: &UserEnv) -> Result<(SuspendedContainer, Value)> {
     unsafe {
         // The kernel materializes a lowbox object directory at process creation,
         // not profile creation. This never-resumed process holds that namespace
@@ -485,7 +488,7 @@ fn prepare_namespace(image: &str, sid: PSID) -> Result<(SuspendedContainer, Valu
             "SetThreadToken(namespace initializer)",
         )?;
         let mut hive = null_mut();
-        let hr = GetAppContainerRegistryLocation(1, &mut hive);
+        let hr = api.registry(1, &mut hive);
         let registry = if hr >= 0 {
             let value = registry_name(hive);
             windows_sys::Win32::System::Registry::RegCloseKey(hive);
@@ -507,13 +510,14 @@ fn launch(
     image: &str,
     sid: PSID,
     parent_token: HANDLE,
+    loader_source: HANDLE,
     sequence: &str,
 ) -> Result<Value> {
     unsafe {
         let full = input.mode == "full";
         let lpac = input.mode != "plain";
         let tokens = if full {
-            Some(restricted_tokens(parent_token)?)
+            Some(restricted_tokens(parent_token, loader_source)?)
         } else {
             None
         };
@@ -567,7 +571,7 @@ fn launch(
         let mut pi: PROCESS_INFORMATION = zeroed();
         let mut command = wide(&format!("\"{image}\" --child"));
         let flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_NO_WINDOW;
-        let ok = if full && sequence == "CreateProcessAsUserW" {
+        let ok = if full {
             CreateProcessAsUserW(
                 tokens.as_ref().unwrap().0.0,
                 wide(image).as_ptr(),
@@ -680,14 +684,8 @@ pub fn run() -> Result<()> {
     unsafe {
         let started = Instant::now();
         let mut sid = null_mut();
-        let hr = CreateAppContainerProfile(
-            wide(PROFILE).as_ptr(),
-            wide(PROFILE).as_ptr(),
-            wide("Native reachability experiment").as_ptr(),
-            null(),
-            0,
-            &mut sid,
-        );
+        let api = UserEnv::new()?;
+        let hr = api.create(PROFILE, &mut sid);
         if hr < 0 {
             return Err(format!(
                 "CreateAppContainerProfile: {} (remove stale {PROFILE} profile before retry)",
@@ -697,28 +695,22 @@ pub fn run() -> Result<()> {
         let mut profile = Profile {
             sid,
             deleted: false,
+            api,
         };
         let sid_text = sid_string(profile.sid);
-        let mut folder = null_mut();
-        let hr = GetAppContainerFolderPath(wide(&sid_text).as_ptr(), &mut folder);
-        if hr < 0 {
-            return Err(format!("GetAppContainerFolderPath: {}", hex(hr as u32)));
-        }
-        let package = utf16_ptr(folder);
-        // Userenv allocates this string with the COM task allocator.
-        CoTaskMemFree(folder.cast());
+        let package = profile.api.folder(&sid_text)?;
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
         let binary_dir = exe.parent().unwrap().join("placed");
         fs::create_dir_all(&binary_dir).map_err(|e| e.to_string())?;
         grant_image(&binary_dir.to_string_lossy(), sid)?;
         let image = binary_dir.join("win-confine.exe");
         fs::copy(&exe, &image).map_err(|e| e.to_string())?;
-        let namespace_initializer = prepare_namespace(&image.to_string_lossy(), sid);
+        let namespace_initializer = prepare_namespace(&image.to_string_lossy(), sid, &profile.api);
         let temp = std::env::var("TEMP").map_err(|e| e.to_string())?;
         let user = std::env::var("USERPROFILE").map_err(|e| e.to_string())?;
         let system = std::env::var("SystemRoot").map_err(|e| e.to_string())?;
         let package_registry = format!(
-            "HKCU\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\CurrentVersion\\AppContainer\\Storage\\{sid_text}"
+            "HKCU\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\CurrentVersion\\AppContainer\\Storage\\{PROFILE}"
         );
         let mut targets = vec![
             Target::new(
@@ -831,7 +823,12 @@ pub fn run() -> Result<()> {
             &mut len,
         ) != 0
         {
-            let path = utf16_ptr(object_path.as_ptr());
+            let relative = utf16_ptr(object_path.as_ptr());
+            let path = if relative.starts_with('\\') {
+                relative
+            } else {
+                format!("\\Sessions\\{session}\\{relative}")
+            };
             match package_fixtures(&path) {
                 Ok(fixtures) => package_object_fixtures = Some(fixtures),
                 Err(e) => enumeration.push(json!({"namespace":"package fixtures","error":e})),
@@ -888,10 +885,50 @@ pub fn run() -> Result<()> {
             } else {
                 "CreateProcessW"
             };
-            let result = match launch(&input, &image.to_string_lossy(), sid, token.0, sequence) {
+            let result = match launch(
+                &input,
+                &image.to_string_lossy(),
+                sid,
+                token.0,
+                token.0,
+                sequence,
+            ) {
                 Ok(v) => v,
                 Err(e) => json!({"sequence":sequence,"error":e}),
             };
+            let mut attempts = vec![result];
+            if mode == "full" && attempts[0]["exit_code"] == "0xc00000a5" {
+                // A lowbox loader can reject an ordinary impersonation token.
+                // Keep the same complete launch policy and try a same-package
+                // LPAC loader token, recording both outcomes rather than
+                // silently weakening the primary token or its mitigations.
+                if let Ok((holder, _)) = &namespace_initializer {
+                    let mut source = null_mut();
+                    let sequence = "CreateProcessAsUserW / same-package LPAC loader";
+                    let result = if OpenProcessToken(
+                        holder.process.0,
+                        TOKEN_QUERY | TOKEN_DUPLICATE,
+                        &mut source,
+                    ) == 0
+                    {
+                        json!({"sequence":sequence,"error":last("OpenProcessToken(LPAC loader source)")})
+                    } else {
+                        let source = Handle(source);
+                        match launch(
+                            &input,
+                            &image.to_string_lossy(),
+                            sid,
+                            token.0,
+                            source.0,
+                            sequence,
+                        ) {
+                            Ok(v) => v,
+                            Err(e) => json!({"sequence":sequence,"error":e}),
+                        }
+                    };
+                    attempts.push(result);
+                }
+            }
             let mut tcp_count = 0;
             while tcp.accept().is_ok() {
                 tcp_count += 1;
@@ -901,7 +938,7 @@ pub fn run() -> Result<()> {
             while let Ok((n, from)) = udp.recv_from(&mut buffer) {
                 datagrams.push(json!({"from":from.to_string(),"payload":String::from_utf8_lossy(&buffer[..n])}));
             }
-            runs.push(json!({"mode":mode,"attempts":[result],"loopback_observed":{"tcp_connections":tcp_count,"udp_datagrams":datagrams}}));
+            runs.push(json!({"mode":mode,"attempts":attempts,"loopback_observed":{"tcp_connections":tcp_count,"udp_datagrams":datagrams}}));
         }
         drop(leaked);
         let leaked_content = fs::read(&leak_name).map_err(|e| e.to_string())?;
@@ -909,11 +946,13 @@ pub fn run() -> Result<()> {
         // Successful create probes are state evidence; remove the fixtures only
         // after all modes so later runs could detect their existence if requested.
         for run in &runs {
-            if let Some(probes) = run["attempts"][0]["child"]["probes"].as_array() {
-                for p in probes {
-                    if p["kind"] == "file_create" && p["success"] == true {
-                        if let Some(path) = p["target"].as_str() {
-                            fs::remove_file(path).map_err(|e| e.to_string())?;
+            for attempt in run["attempts"].as_array().unwrap() {
+                if let Some(probes) = attempt["child"]["probes"].as_array() {
+                    for p in probes {
+                        if p["kind"] == "file_create" && p["success"] == true {
+                            if let Some(path) = p["target"].as_str() {
+                                fs::remove_file(path).map_err(|e| e.to_string())?;
+                            }
                         }
                     }
                 }
@@ -921,7 +960,7 @@ pub fn run() -> Result<()> {
         }
         drop(package_object_fixtures);
         drop(namespace_initializer);
-        let cleanup = DeleteAppContainerProfile(wide(PROFILE).as_ptr());
+        let cleanup = profile.api.delete(PROFILE);
         profile.deleted = cleanup >= 0;
         let report = json!({"schema":1,"profile":PROFILE,"profile_cleanup":{"HRESULT":hex(cleanup as u32),"success":cleanup>=0},"system_root":system,"child_image":image.to_string_lossy(),"appcontainer_sid":sid_text,"package_folder":package,"package_registry_target":package_registry,"namespace_initializer":namespace_report,"enumeration":enumeration,"targets":targets,"parent_token":token_attestation(token.0)?,"runs":runs,"leaked_fixture_content":String::from_utf8_lossy(&leaked_content),"elapsed_seconds":started.elapsed().as_secs_f64()});
         let output = std::env::args()
@@ -940,14 +979,14 @@ pub fn run() -> Result<()> {
                 hex(cleanup as u32)
             ));
         }
-        let full = &report["runs"][2]["attempts"][0];
+        let full = report["runs"][2]["attempts"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap();
         if full["exit_code"] != "0x00000000" || full["child"]["primary_token"]["lpac"] != true {
             return Err("full-policy child did not complete; inspect report for exact launch or attestation failure".into());
         }
         Ok(())
     }
-}
-#[link(name = "ole32")]
-unsafe extern "system" {
-    fn CoTaskMemFree(memory: *const std::ffi::c_void);
 }

@@ -18,7 +18,10 @@ The executable has parent and `--child` roles. The parent owns the profile,
 fixtures and job. All three modes use an explicit three-pipe handle list as
 transport plumbing. `plain` has no security layers; `lpac` adds only the
 zero-capability LPAC identity; `full` adds the restricted primary token,
-loader impersonation, job, mitigations and child-process prohibition.
+loader impersonation, job, mitigations and child-process prohibition. If the
+ordinary loader exits with STATUS_BAD_IMPERSONATION_LEVEL, the parent retries
+that same full policy with a duplicated same-package LPAC loader token and
+records both attempts. It never replaces the lockdown primary with the loader.
 
 The loader token is a same-access approximation, not a literal implementation
 of Chromium's token builder: it retains groups and integrity, disables maximum
@@ -56,7 +59,11 @@ The workflow runs only on `spike/windows-confinement`, measures both runner
 images and uploads the raw report, host information, full import listing and
 summary. `pe_inventory.py` independently inventories normal and delay imports
 from the exact artifact. Import names alone do not prove loader resolution;
-the child also inventories the actual module paths.
+the child also inventories the actual module paths. Broker-only Userenv/Ole32
+entry points are resolved dynamically in the parent: static imports of those
+libraries load GUI/COM code into the child before any Rust code can revert.
+Native Winsock calls record initialization failures instead of panicking like
+`std::net` does when WSAStartup is denied.
 
 Use an isolated runner. This intentionally launches an unsandboxed control,
 probes public IPC endpoints, creates temporary fixtures and creates/deletes

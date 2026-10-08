@@ -4,11 +4,9 @@ use std::{
     io::{Read, Write},
     mem::{size_of, zeroed},
     ptr::{null, null_mut},
-    time::Duration,
 };
 use windows_sys::Win32::{
     Foundation::*,
-    Security::Isolation::*,
     Security::*,
     Storage::FileSystem::*,
     System::{Diagnostics::ToolHelp::*, Memory::*, Registry::*, Threading::*},
@@ -112,18 +110,6 @@ unsafe extern "system" fn thread_entry(_: *mut std::ffi::c_void) -> u32 {
 fn win_probe(kind: &str, name: &str, access: &str, ok: bool, error: u32) -> Probe {
     Probe::win(&Target::new(kind, name, access), ok, error)
 }
-fn io_probe(kind: &str, name: &str, access: &str, result: std::io::Result<()>) -> Probe {
-    match result {
-        Ok(()) => win_probe(kind, name, access, true, 0),
-        Err(e) => win_probe(
-            kind,
-            name,
-            access,
-            false,
-            e.raw_os_error().unwrap_or(-1) as u32,
-        ),
-    }
-}
 pub fn run() -> Result<()> {
     unsafe {
         // No untrusted input is consumed under the loader's more permissive token.
@@ -202,44 +188,12 @@ pub fn run() -> Result<()> {
             ));
         }
         let mut hive = null_mut();
-        let hr = GetAppContainerRegistryLocation(KEY_QUERY_VALUE, &mut hive);
-        let hive_name = if hr >= 0 {
-            let name = registry_name(hive);
-            RegCloseKey(hive);
-            name
-        } else {
-            json!({"HRESULT":hex(hr as u32)})
-        };
-        probes.push(Probe {
-            kind: "package_registry_api".into(),
-            target: "GetAppContainerRegistryLocation".into(),
-            access: "KEY_QUERY_VALUE".into(),
-            success: hr >= 0,
-            result: json!({"HRESULT":hex(hr as u32),"name":hive_name}),
-        });
-        let hr = GetAppContainerRegistryLocation(KEY_SET_VALUE, &mut hive);
-        if hr >= 0 {
-            let value = wide("win-confine-fixture");
-            let bytes = [1u8];
-            let error = RegSetValueExW(hive, value.as_ptr(), 0, REG_BINARY, bytes.as_ptr(), 1);
-            probes.push(win_probe(
-                "registry_write",
-                "package hive / win-confine-fixture",
-                "KEY_SET_VALUE / REG_BINARY",
-                error == 0,
-                error,
-            ));
-            RegCloseKey(hive);
-        } else {
-            probes.push(Probe {
-                kind: "registry_write".into(),
-                target: "package hive / win-confine-fixture".into(),
-                access: "KEY_SET_VALUE / REG_BINARY".into(),
-                success: false,
-                result: json!({"HRESULT":hex(hr as u32)}),
-            });
+        for target in &input.targets {
+            if target.kind == "registry_native" {
+                probes.push(registry_write_native(&target.name));
+            }
         }
-        // Also probe the parent's resolved path; a plain child has no package identity for the API above.
+        // The broker resolves the package's actual storage key before spawning.
         let path = input
             .package_registry
             .strip_prefix("HKCU\\")
@@ -272,21 +226,10 @@ pub fn run() -> Result<()> {
             error == 0,
             error,
         ));
-        let tcp = std::net::SocketAddr::from(([127, 0, 0, 1], input.tcp_port));
-        probes.push(io_probe(
-            "tcp",
-            &tcp.to_string(),
-            "connect",
-            std::net::TcpStream::connect_timeout(&tcp, Duration::from_secs(2)).map(|_| ()),
-        ));
-        let udp = std::net::SocketAddr::from(([127, 0, 0, 1], input.udp_port));
-        probes.push(io_probe(
-            "udp",
-            &udp.to_string(),
-            "bind + send_to",
-            std::net::UdpSocket::bind("127.0.0.1:0")
-                .and_then(|s| s.send_to(input.mode.as_bytes(), udp))
-                .map(|_| ()),
+        probes.extend(crate::network::probes(
+            input.tcp_port,
+            input.udp_port,
+            &input.mode,
         ));
         let system = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
         let cmd = format!("{system}\\System32\\cmd.exe");

@@ -3,7 +3,11 @@ mod child;
 #[cfg(windows)]
 mod native;
 #[cfg(windows)]
+mod network;
+#[cfg(windows)]
 mod parent;
+#[cfg(windows)]
+mod profile;
 
 #[cfg(windows)]
 fn main() {
