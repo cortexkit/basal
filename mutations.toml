@@ -7219,3 +7219,83 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
+
+[[control]]
+id = "audit-b-ambiguous-send-is-not-a-scope-refusal"
+guards = "An ambiguous mutation send stays unknown when its resend is scope-refused"
+file = "crates/basal-core/src/runtime.rs"
+old = "if let Some(reason) = maybe_sent {"
+new = "if let Some(reason) = maybe_sent.filter(|_| refusal.reason != RefusalReason::FlowScopeRequired) { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-core/src/runtime_regressions.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+expect_red = ["runtime::regressions::scope_refusal_after_an_ambiguous_send_stays_unknown"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "audit-b-terminal-deferred-settlement"
+guards = "terminal transitions settle every deferred call"
+file = "crates/basal-core/src/runs.rs"
+old = "if state.is_terminal() {"
+new = "if state.is_terminal() && state != RunState::EngineMismatch { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-core/src/runtime_regressions.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+expect_red = ["runtime::regressions::terminal_transitions_settle_every_deferred_call"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "audit-b-claim-flushes-refusal-intents"
+guards = "claim expiry acknowledges the deferred snapshot after commit"
+file = "crates/basal-core/src/driver.rs"
+old = """
+Ok(Err(end)) => {
+                self.flush_refusals()?;"""
+new = "Ok(Err(end)) => { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-core/src/runtime_regressions.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+expect_red = ["runtime::regressions::claim_expiry_acknowledges_the_deferred_snapshot_after_commit"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "audit-b-mailbox-winner-prevents-reconcile"
+guards = "a mailbox winner prevents a false reconcile transition"
+file = "crates/basal-core/src/journal.rs"
+old = """
+if changed == 0 {
+        return Ok(());
+    }
+    tx.execute(
+        "UPDATE runs SET state = 'needs_reconcile'"""
+new = """
+if false && changed == 0 { // NON-VACUITY BREAK
+        return Ok(());
+    }
+    tx.execute(
+        "UPDATE runs SET state = 'needs_reconcile'"""
+edits = []
+test_file = "crates/basal-core/src/runtime_regressions.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+expect_red = ["runtime::regressions::a_mailbox_winner_prevents_a_false_reconcile_transition"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
