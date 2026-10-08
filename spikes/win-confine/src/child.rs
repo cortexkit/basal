@@ -146,15 +146,24 @@ pub fn run() -> Result<()> {
             ));
         }
         let mut token = null_mut();
-        check(
-            OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token),
-            "OpenProcessToken",
-        )?;
-        let token = Handle(token);
-        let attestation = token_attestation(token.0)?;
+        let token_opened = OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) != 0;
+        let token_open_error = if token_opened { 0 } else { GetLastError() };
+        // The current-process token pseudo-handle needs no DACL open. Its
+        // authority is only this process's token query, never token adjustment.
+        let attestation = if token_opened {
+            let h = Handle(token);
+            token_attestation(h.0)
+        } else {
+            token_attestation(-4isize as HANDLE)
+        }
+        .unwrap_or_else(|e| json!({"error":e}));
         // Snapshot before input and all probes: probe-created sockets must not masquerade as inherited authority.
-        let handles = handle_table()?;
-        let modules = loaded_modules()?;
+        let handles = handle_table()
+            .map(|v| json!(v))
+            .unwrap_or_else(|e| json!({"error":e}));
+        let modules = loaded_modules()
+            .map(|v| json!(v))
+            .unwrap_or_else(|e| json!({"error":e}));
         let policies = mitigations();
         let mut input = String::new();
         std::io::stdin()
@@ -377,7 +386,7 @@ pub fn run() -> Result<()> {
             ok,
             error,
         ));
-        let report = json!({"mode":input.mode,"initial_impersonation":{"present":initially_impersonating,"open_error":initial_error,"token":initial_report},"after_revert":{"present":still_impersonating,"open_error":no_token_error},"primary_token":attestation,"mitigations":policies,"handle_table":handles,"loaded_modules":modules,"probes":probes});
+        let report = json!({"mode":input.mode,"initial_impersonation":{"present":initially_impersonating,"open_error":initial_error,"token":initial_report},"after_revert":{"present":still_impersonating,"open_error":no_token_error},"primary_token_open":{"success":token_opened,"error":token_open_error,"pseudo_handle_fallback":!token_opened},"primary_token":attestation,"mitigations":policies,"handle_table":handles,"loaded_modules":modules,"probes":probes});
         serde_json::to_writer(std::io::stdout().lock(), &report).map_err(|e| e.to_string())?;
         std::io::stdout().flush().map_err(|e| e.to_string())?;
         Ok(())

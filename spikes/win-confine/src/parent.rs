@@ -33,6 +33,18 @@ impl Drop for Profile {
         }
     }
 }
+struct SuspendedContainer {
+    process: Handle,
+    _thread: Handle,
+}
+impl Drop for SuspendedContainer {
+    fn drop(&mut self) {
+        unsafe {
+            TerminateProcess(self.process.0, 0);
+            WaitForSingleObject(self.process.0, 5000);
+        }
+    }
+}
 struct AttributeList {
     buffer: Vec<usize>,
 }
@@ -393,10 +405,98 @@ fn add_directory(path: &str, targets: &mut Vec<Target>, enumeration: &mut Vec<Va
                     "SymbolicLink" => ("symbolic_link", "SYMBOLIC_LINK_QUERY"),
                     other => (other, "unsupported object type"),
                 };
-                targets.push(Target::new(kind, name, access));
+                targets.push(Target::new(kind, &name, access));
+                if kind == "section" {
+                    targets.push(Target::new("section_read", &name, "SECTION_MAP_READ"));
+                    targets.push(Target::new("section_write", &name, "SECTION_MAP_WRITE"));
+                } else if kind == "event" {
+                    targets.push(Target::new("event_modify", &name, "EVENT_MODIFY_STATE"));
+                }
             }
         }
         Err(e) => enumeration.push(json!({"namespace":path,"error":e})),
+    }
+}
+fn prepare_namespace(image: &str, sid: PSID) -> Result<(SuspendedContainer, Value)> {
+    unsafe {
+        // The kernel materializes a lowbox object directory at process creation,
+        // not profile creation. This never-resumed process holds that namespace
+        // alive while the parent inventories it before any measured child starts.
+        let mut attrs = AttributeList::new(2)?;
+        let security = SECURITY_CAPABILITIES {
+            AppContainerSid: sid,
+            Capabilities: null_mut(),
+            CapabilityCount: 0,
+            Reserved: 0,
+        };
+        attrs.add(PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, &security)?;
+        attrs.add(
+            PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY,
+            &PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT,
+        )?;
+        let mut si: STARTUPINFOEXW = zeroed();
+        si.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
+        si.lpAttributeList = attrs.ptr();
+        let mut pi: PROCESS_INFORMATION = zeroed();
+        let mut cmd = wide(&format!("\"{image}\" --child"));
+        check(
+            CreateProcessW(
+                wide(image).as_ptr(),
+                cmd.as_mut_ptr(),
+                null(),
+                null(),
+                0,
+                EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_NO_WINDOW,
+                null(),
+                null(),
+                &si.StartupInfo,
+                &mut pi,
+            ),
+            "CreateProcessW(namespace initializer)",
+        )?;
+        let holder = SuspendedContainer {
+            process: Handle(pi.hProcess),
+            _thread: Handle(pi.hThread),
+        };
+        let mut token = null_mut();
+        check(
+            OpenProcessToken(holder.process.0, TOKEN_QUERY | TOKEN_DUPLICATE, &mut token),
+            "OpenProcessToken(namespace initializer)",
+        )?;
+        let token = Handle(token);
+        let mut imp = null_mut();
+        check(
+            DuplicateTokenEx(
+                token.0,
+                TOKEN_QUERY | TOKEN_IMPERSONATE,
+                null(),
+                SecurityImpersonation,
+                TokenImpersonation,
+                &mut imp,
+            ),
+            "DuplicateTokenEx(namespace initializer)",
+        )?;
+        let imp = Handle(imp);
+        check(
+            SetThreadToken(null(), imp.0),
+            "SetThreadToken(namespace initializer)",
+        )?;
+        let mut hive = null_mut();
+        let hr = GetAppContainerRegistryLocation(1, &mut hive);
+        let registry = if hr >= 0 {
+            let value = registry_name(hive);
+            windows_sys::Win32::System::Registry::RegCloseKey(hive);
+            value
+        } else {
+            json!({"HRESULT":hex(hr as u32)})
+        };
+        // Revert even if the package registry API failed; enumeration and all
+        // later process launches must run as the parent, not the initializer.
+        check(RevertToSelf(), "RevertToSelf(namespace initializer)")?;
+        Ok((
+            holder,
+            json!({"sequence":"CreateProcessW / LPAC / suspended / never resumed","registry":registry}),
+        ))
     }
 }
 fn launch(
@@ -607,6 +707,7 @@ pub fn run() -> Result<()> {
         grant_image(&binary_dir.to_string_lossy(), sid)?;
         let image = binary_dir.join("win-confine.exe");
         fs::copy(&exe, &image).map_err(|e| e.to_string())?;
+        let namespace_initializer = prepare_namespace(&image.to_string_lossy(), sid);
         let temp = std::env::var("TEMP").map_err(|e| e.to_string())?;
         let user = std::env::var("USERPROFILE").map_err(|e| e.to_string())?;
         let system = std::env::var("SystemRoot").map_err(|e| e.to_string())?;
@@ -644,6 +745,15 @@ pub fn run() -> Result<()> {
             targets.push(Target::new("registry", key, "KEY_QUERY_VALUE"));
         }
         let mut enumeration = Vec::new();
+        let namespace_report = match &namespace_initializer {
+            Ok((_, report)) => {
+                if let Some(path) = report["registry"].as_str() {
+                    targets.push(Target::new("registry_native", path, "KEY_QUERY_VALUE"));
+                }
+                report.clone()
+            }
+            Err(e) => json!({"error":e}),
+        };
         match fs::read_dir(r"\\.\pipe\") {
             Ok(entries) => {
                 let mut count = 0;
@@ -681,6 +791,7 @@ pub fn run() -> Result<()> {
         );
         let mut object_path = [0u16; 2048];
         let mut len = 0;
+        let mut package_object_fixtures = None;
         if GetAppContainerNamedObjectPath(
             null_mut(),
             sid,
@@ -689,11 +800,12 @@ pub fn run() -> Result<()> {
             &mut len,
         ) != 0
         {
-            add_directory(
-                &utf16_ptr(object_path.as_ptr()),
-                &mut targets,
-                &mut enumeration,
-            );
+            let path = utf16_ptr(object_path.as_ptr());
+            match package_fixtures(&path) {
+                Ok(fixtures) => package_object_fixtures = Some(fixtures),
+                Err(e) => enumeration.push(json!({"namespace":"package fixtures","error":e})),
+            }
+            add_directory(&path, &mut targets, &mut enumeration);
         } else {
             enumeration.push(json!({"namespace":"AppContainerNamedObjects","error":last("GetAppContainerNamedObjectPath")}));
         }
@@ -776,7 +888,9 @@ pub fn run() -> Result<()> {
                 }
             }
         }
-        let report = json!({"schema":1,"profile":PROFILE,"appcontainer_sid":sid_text,"package_folder":package,"package_registry_target":package_registry,"enumeration":enumeration,"targets":targets,"parent_token":token_attestation(token.0)?,"runs":runs,"leaked_fixture_content":String::from_utf8_lossy(&leaked_content),"elapsed_seconds":started.elapsed().as_secs_f64()});
+        drop(package_object_fixtures);
+        drop(namespace_initializer);
+        let report = json!({"schema":1,"profile":PROFILE,"appcontainer_sid":sid_text,"package_folder":package,"package_registry_target":package_registry,"namespace_initializer":namespace_report,"enumeration":enumeration,"targets":targets,"parent_token":token_attestation(token.0)?,"runs":runs,"leaked_fixture_content":String::from_utf8_lossy(&leaked_content),"elapsed_seconds":started.elapsed().as_secs_f64()});
         let output = std::env::args()
             .skip_while(|a| a != "--output")
             .nth(1)

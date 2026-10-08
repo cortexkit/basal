@@ -39,6 +39,8 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           cargo test --locked
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python -m unittest -v test_evidence
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           cargo build --release --locked
           exit $LASTEXITCODE
       - name: Import and delay-import inventory

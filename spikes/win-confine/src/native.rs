@@ -153,6 +153,9 @@ pub unsafe fn groups(data: &[usize]) -> &[SID_AND_ATTRIBUTES] {
 pub unsafe fn token_attestation(token: HANDLE) -> Result<Value> {
     unsafe {
         let group_data = token_buffer(token, TokenGroups)?;
+        let user_data = token_buffer(token, TokenUser)?;
+        let user = &*user_data.as_ptr().cast::<TOKEN_USER>();
+        let token_type = token_buffer(token, TokenType)?;
         let restrict_data = token_buffer(token, TokenRestrictedSids)?;
         let capability_data = token_buffer(token, TokenCapabilities)?;
         let app = token_buffer(token, TokenAppContainerSid)?;
@@ -162,17 +165,27 @@ pub unsafe fn token_attestation(token: HANDLE) -> Result<Value> {
         let privs = token_buffer(token, TokenPrivileges)?;
         let p = &*privs.as_ptr().cast::<TOKEN_PRIVILEGES>();
         let entries = std::slice::from_raw_parts(p.Privileges.as_ptr(), p.PrivilegeCount as usize);
+        let privilege_name = |luid: &LUID| {
+            let mut text = [0u16; 256];
+            let mut length = text.len() as u32;
+            if LookupPrivilegeNameW(std::ptr::null(), luid, text.as_mut_ptr(), &mut length) != 0 {
+                String::from_utf16_lossy(&text[..length as usize])
+            } else {
+                last("LookupPrivilegeNameW")
+            }
+        };
         let less = token_buffer(token, TokenIsLessPrivilegedAppContainer)?;
         let is_app = token_buffer(token, TokenIsAppContainer)?;
         let render = |list: &[SID_AND_ATTRIBUTES]| {
             list.iter().map(|s| json!({"sid":sid_string(s.Sid),"attributes":hex(s.Attributes),"deny_only":s.Attributes & SE_GROUP_USE_FOR_DENY_ONLY != 0})).collect::<Vec<_>>()
         };
         Ok(json!({
+            "token_type":*token_type.as_ptr().cast::<u32>(),"user_sid":sid_string(user.User.Sid),
             "lpac": *less.as_ptr().cast::<u32>() != 0, "appcontainer":*is_app.as_ptr().cast::<u32>() != 0,
             "appcontainer_sid":if app_sid.is_null() {Value::Null} else {json!(sid_string(app_sid))},
             "capabilities":render(groups(&capability_data)), "restricting_sids":render(groups(&restrict_data)),
             "groups":render(groups(&group_data)), "integrity":sid_string(mandatory.Label.Sid),
-            "privileges":entries.iter().map(|p|json!({"luid_low":p.Luid.LowPart,"luid_high":p.Luid.HighPart,"attributes":hex(p.Attributes)})).collect::<Vec<_>>()
+            "privileges":entries.iter().map(|p|json!({"name":privilege_name(&p.Luid),"luid_low":p.Luid.LowPart,"luid_high":p.Luid.HighPart,"attributes":hex(p.Attributes)})).collect::<Vec<_>>()
         }))
     }
 }
@@ -262,6 +275,23 @@ unsafe extern "system" {
     fn NtOpenSymbolicLinkObject(out: *mut HANDLE, access: u32, attrs: *mut ObjectAttributes)
     -> i32;
     fn NtOpenKeyedEvent(out: *mut HANDLE, access: u32, attrs: *mut ObjectAttributes) -> i32;
+    fn NtOpenKey(out: *mut HANDLE, access: u32, attrs: *mut ObjectAttributes) -> i32;
+    fn NtCreateSection(
+        out: *mut HANDLE,
+        access: u32,
+        attrs: *mut ObjectAttributes,
+        size: *mut i64,
+        protect: u32,
+        allocation: u32,
+        file: HANDLE,
+    ) -> i32;
+    fn NtCreateEvent(
+        out: *mut HANDLE,
+        access: u32,
+        attrs: *mut ObjectAttributes,
+        kind: u32,
+        state: u8,
+    ) -> i32;
     fn NtAlpcConnectPort(
         out: *mut HANDLE,
         name: *mut UnicodeString,
@@ -402,7 +432,11 @@ pub fn object_probe(t: &Target) -> Probe {
         let mut handle = null_mut();
         let status = match t.kind.as_str() {
             "section" => NtOpenSection(&mut handle, 1, &mut attrs), // SECTION_QUERY
+            "section_read" => NtOpenSection(&mut handle, 4, &mut attrs), // SECTION_MAP_READ
+            "section_write" => NtOpenSection(&mut handle, 2, &mut attrs), // SECTION_MAP_WRITE
             "event" => NtOpenEvent(&mut handle, 1, &mut attrs),     // EVENT_QUERY_STATE
+            "event_modify" => NtOpenEvent(&mut handle, 2, &mut attrs),
+            "registry_native" => NtOpenKey(&mut handle, 1, &mut attrs), // KEY_QUERY_VALUE
             "mutant" => NtOpenMutant(&mut handle, 1, &mut attrs),
             "semaphore" => NtOpenSemaphore(&mut handle, 1, &mut attrs),
             "timer" => NtOpenTimer(&mut handle, 1, &mut attrs),
@@ -468,6 +502,72 @@ pub fn registry_name(h: HANDLE) -> Value {
                 buffer[0] as usize / 2
             )))
         }
+    }
+}
+
+pub fn package_fixtures(directory: &str) -> Result<(Handle, Handle, Handle)> {
+    unsafe {
+        let mut w = wide(directory);
+        let mut name = us(&mut w);
+        let mut attrs = oa(&mut name);
+        let mut directory_handle = null_mut();
+        let status = NtOpenDirectoryObject(&mut directory_handle, 1, &mut attrs);
+        if status != 0 {
+            return Err(format!(
+                "NtOpenDirectoryObject(package fixture): {}",
+                hex(status as u32)
+            ));
+        }
+        let directory_handle = Handle(directory_handle);
+        let mut sd: SECURITY_DESCRIPTOR = zeroed();
+        check(
+            InitializeSecurityDescriptor((&mut sd as *mut SECURITY_DESCRIPTOR).cast(), 1),
+            "InitializeSecurityDescriptor(package fixture)",
+        )?;
+        check(
+            SetSecurityDescriptorDacl(
+                (&mut sd as *mut SECURITY_DESCRIPTOR).cast(),
+                1,
+                std::ptr::null(),
+                0,
+            ),
+            "SetSecurityDescriptorDacl(package fixture)",
+        )?;
+        let mut w = wide(&format!("{directory}\\basal.spike.package.section"));
+        let mut name = us(&mut w);
+        let mut attrs = oa(&mut name);
+        attrs.descriptor = (&mut sd as *mut SECURITY_DESCRIPTOR).cast();
+        let mut section = null_mut();
+        let mut size = 4096;
+        let status = NtCreateSection(
+            &mut section,
+            0xf001f,
+            &mut attrs,
+            &mut size,
+            4,
+            0x8000000,
+            null_mut(),
+        );
+        if status != 0 {
+            return Err(format!(
+                "NtCreateSection(package fixture): {}",
+                hex(status as u32)
+            ));
+        }
+        let section = Handle(section);
+        let mut w = wide(&format!("{directory}\\basal.spike.package.event"));
+        let mut name = us(&mut w);
+        let mut attrs = oa(&mut name);
+        attrs.descriptor = (&mut sd as *mut SECURITY_DESCRIPTOR).cast();
+        let mut event = null_mut();
+        let status = NtCreateEvent(&mut event, 0x1f0003, &mut attrs, 0, 0);
+        if status != 0 {
+            return Err(format!(
+                "NtCreateEvent(package fixture): {}",
+                hex(status as u32)
+            ));
+        }
+        Ok((directory_handle, section, Handle(event)))
     }
 }
 

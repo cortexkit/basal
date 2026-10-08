@@ -30,13 +30,22 @@ DACL and are not inherited. The deliberately inheritable writable file is
 excluded from the handle list. Successful file-create fixtures are cleaned up
 after measurement. Deleting the profile removes package state at the end.
 
+A never-resumed LPAC process materializes the kernel's package namespace and
+holds it alive while the parent inventories it. The parent queries its package
+registry location under a temporary impersonation and reverts immediately.
+Package-namespace fixtures are pre-created with NULL DACLs too. This makes
+same-profile sharing measurable instead of accidentally testing a nonexistent
+directory. This initializer is terminated before profile deletion.
+
 Every attempted operation carries an access mask or operation name and an
 exact Win32, HRESULT or NTSTATUS code. Unsupported native object types and
 enumeration failures are **coverage gaps**, not successful denials. ALPC uses
 identification-only security QoS and a 100 ms connection timeout; a timeout is
 not a denial. Endpoints may disappear between enumeration and probing.
 Directory listing access is stronger than merely reading attributes; section
-query is weaker than mapping its bytes. Neither a finite endpoint list nor
+query is weaker than mapping its bytes. Separate section read/write-map and
+event-modify access requests distinguish read-only authority from IPC channels.
+Neither a finite endpoint list nor
 one granted-access request proves all stronger access is unavailable.
 
 The workflow runs only on `spike/windows-confinement`, measures both runner
