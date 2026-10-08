@@ -114,8 +114,10 @@ pub fn run() -> Result<()> {
     unsafe {
         // No untrusted input is consumed under the loader's more permissive token.
         let mut initial = null_mut();
+        // Query with the effective loader token. OpenAsSelf would ask the
+        // already locked-down primary token to open the loader's token DACL.
         let initially_impersonating =
-            OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, 1, &mut initial) != 0;
+            OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, 0, &mut initial) != 0;
         let initial_error = if initially_impersonating {
             0
         } else {

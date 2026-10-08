@@ -16,7 +16,7 @@ def complete_report():
     runs = []
     for mode in ('plain', 'lpac', 'full'):
         token = {'token_type': 1, 'lpac': mode != 'plain', 'appcontainer_sid': sid if mode != 'plain' else None, 'capabilities': [], 'integrity': 'S-1-16-0', 'privileges': [], 'restricting_sids': [{'sid': 'S-1-0-0'}], 'groups': [{'sid': 'S-1-1-0', 'attributes': '0x00000010', 'deny_only': True}]}
-        child = {'primary_token': token, 'initial_impersonation': {'present': mode == 'full'}, 'after_revert': {'present': False, 'open_error': 1008}, 'handle_table': [], 'loaded_modules': [{'name': 'kernel32.dll', 'path': 'C:\\Windows\\System32\\kernel32.dll'}], 'mitigations': [{'policy': name, 'flags': f'0x{flags:08x}', 'success': True} for name, flags in policies], 'probes': []}
+        child = {'primary_token': token, 'initial_impersonation': {'present': mode == 'full', 'token': {'token_type': 2, 'impersonation_level': 2}}, 'after_revert': {'present': False, 'open_error': 1008}, 'handle_table': [], 'loaded_modules': [{'name': 'kernel32.dll', 'path': 'C:\\Windows\\System32\\kernel32.dll'}], 'mitigations': [{'policy': name, 'flags': f'0x{flags:08x}', 'success': True} for name, flags in policies], 'probes': []}
         job = {'limit_flags': '0x00002508', 'active_process_limit': 1, 'process_memory_limit': 268435456, 'ui_restrictions': '0x000000ff', 'breakaway': False}
         runs.append({'mode': mode, 'attempts': [{'exit_code': '0x00000000', 'child': child, 'job': job}]})
     return {'appcontainer_sid': sid, 'system_root': 'C:\\Windows', 'enumeration': [], 'runs': runs}
@@ -25,6 +25,11 @@ def complete_report():
 class EvidenceTests(unittest.TestCase):
     def test_complete_launch_evidence_is_accepted(self):
         self.assertEqual(validate(complete_report()), [])
+
+    def test_loader_identification_token_is_rejected(self):
+        report = complete_report()
+        report['runs'][2]['attempts'][0]['child']['initial_impersonation']['token']['impersonation_level'] = 1
+        self.assertEqual(validate(report), ['full: loader token is not SecurityImpersonation'])
 
     def test_full_policy_requires_null_restricting_sid(self):
         report = complete_report()

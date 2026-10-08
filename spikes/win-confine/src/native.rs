@@ -163,6 +163,13 @@ pub unsafe fn token_attestation(token: HANDLE) -> Result<Value> {
         let user_data = token_buffer(token, TokenUser)?;
         let user = &*user_data.as_ptr().cast::<TOKEN_USER>();
         let token_type = token_buffer(token, TokenType)?;
+        let kind = *token_type.as_ptr().cast::<u32>();
+        let impersonation_level = if kind == TokenImpersonation as u32 {
+            let data = token_buffer(token, TokenImpersonationLevel)?;
+            Some(*data.as_ptr().cast::<u32>())
+        } else {
+            None
+        };
         let restrict_data = token_buffer(token, TokenRestrictedSids)?;
         let is_app = token_buffer(token, TokenIsAppContainer)?;
         let is_app = *is_app.as_ptr().cast::<u32>() != 0;
@@ -230,7 +237,7 @@ pub unsafe fn token_attestation(token: HANDLE) -> Result<Value> {
             list.iter().map(|s| json!({"sid":sid_string(s.Sid),"attributes":hex(s.Attributes),"deny_only":s.Attributes & SE_GROUP_USE_FOR_DENY_ONLY != 0})).collect::<Vec<_>>()
         };
         Ok(json!({
-            "token_type":*token_type.as_ptr().cast::<u32>(),"user_sid":sid_string(user.User.Sid),
+            "token_type":kind,"impersonation_level":impersonation_level,"user_sid":sid_string(user.User.Sid),
             "lpac": less, "lpac_query":lpac_query, "appcontainer":is_app,
             "appcontainer_sid":if app_sid.is_null() {Value::Null} else {json!(sid_string(app_sid))},
             "capabilities":capability_data.as_ref().map(|data|render(groups(data))).unwrap_or_default(), "restricting_sids":render(groups(&restrict_data)),

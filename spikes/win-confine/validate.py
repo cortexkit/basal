@@ -58,6 +58,9 @@ def validate(report):
             errors.append('full: access groups are not all deny-only')
         if child['initial_impersonation']['present'] is not True:
             errors.append('full: loader impersonation was absent')
+        loader=child['initial_impersonation'].get('token') or {}
+        if (loader.get('token_type'),loader.get('impersonation_level'))!=(2,2):
+            errors.append('full: loader token is not SecurityImpersonation')
         actual = {p['policy']: int(p['flags'], 16) if p['success'] else None for p in child['mitigations']}
         if actual != EXPECTED_POLICIES:
             errors.append(f'full: mitigation mismatch: {actual}')
