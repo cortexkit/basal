@@ -73,6 +73,12 @@ INSERT INTO outbox(at,kind,flow_id,recipient,body) VALUES (1,'flow.disabled','f'
     {
         conn.execute("INSERT INTO journal(run_id,position,kind_code,args,args_digest,idempotency_key,class,dispatch,issued_generation,unknown_reason,refusal,retry_not_before,refusal_detail) VALUES ('r',?1,1,'{}',zeroblob(32),?2,'query',?3,1,?4,?5,?6,?7)",params![p as i64+1,format!("dispatch:{state}"),state,(state=="unknown").then_some("connection_lost"),(state=="deferred").then_some("scope_ended"),(state=="deferred").then_some(1),(state=="deferred").then_some(r#"{"reason":"scope_ended","provider":"mock","action":"send"}"#)]).unwrap();
     }
+    conn.execute_batch(r#"
+INSERT INTO broca_calls VALUES ('ready','r',1,'{"acknowledged":false,"deferred":false}');
+INSERT INTO broca_calls VALUES ('deferred','r',2,'{"acknowledged":false,"deferred":true}');
+INSERT INTO broca_calls VALUES ('acknowledged','r',3,'{"acknowledged":true}');
+INSERT INTO broca_calls VALUES ('acknowledged-deferred','r',4,'{"acknowledged":true,"deferred":true}');
+"#).unwrap();
     for (version, state) in ["validated", "approved", "superseded", "validated"]
         .into_iter()
         .enumerate()
@@ -106,6 +112,15 @@ INSERT INTO outbox(at,kind,flow_id,recipient,body) VALUES (1,'flow.disabled','f'
             (table, rows)
         })
         .collect();
+    let index_names = |conn: &Connection| {
+        conn.prepare("SELECT name FROM sqlite_master WHERE type='index' ORDER BY name")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<std::result::Result<std::collections::BTreeSet<_>, _>>()
+            .unwrap()
+    };
+    let indexes_before = index_names(&conn);
     let migration = MIGRATIONS
         .iter()
         .find(|m| m.version == 11)
@@ -123,27 +138,46 @@ INSERT INTO outbox(at,kind,flow_id,recipient,body) VALUES (1,'flow.disabled','f'
             .unwrap()
             .is_none()
     );
-    for name in [
+    let expected_indexes = [
         "runs_flow_finished",
         "runs_flow_state_admission",
         "journal_deferred",
         "decision_cards_kind_flow_instance",
         "decision_cards_open",
         "decision_cards_subject",
-        "decision_cards_elicitation",
         "broca_calls_pending",
-    ] {
-        assert_eq!(
-            conn.query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?1",
-                [name],
-                |r| r.get::<_, i64>(0)
-            )
-            .unwrap(),
-            1,
-            "{name}"
-        );
-    }
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<std::collections::BTreeSet<_>>();
+    let indexes_after = index_names(&conn);
+    assert!(indexes_before.is_subset(&indexes_after));
+    assert_eq!(
+        indexes_after
+            .difference(&indexes_before)
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>(),
+        expected_indexes
+    );
+    let pending_index: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND name='broca_calls_pending'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        pending_index.split_once(" WHERE ").unwrap().1,
+        "json_extract(snapshot, '$.acknowledged') = 0 AND COALESCE(json_extract(snapshot, '$.deferred'), 0) = 0"
+    );
+    let pending: Vec<String> = conn
+        .prepare("SELECT send_id FROM broca_calls WHERE json_extract(snapshot, '$.acknowledged') = 0 AND COALESCE(json_extract(snapshot, '$.deferred'), 0) = 0 ORDER BY send_id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<std::result::Result<_, _>>()
+        .unwrap();
+    assert_eq!(pending, ["k", "ready"]);
     for (query, index) in [
         (
             "SELECT run_id FROM runs WHERE flow_id='f' AND state IN ('succeeded', 'failed', 'engine_mismatch', 'cancelled') ORDER BY admit_seq DESC, run_id DESC",

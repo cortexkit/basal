@@ -7364,3 +7364,23 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
+
+
+
+
+[[control]]
+id = "health-index-predicate-selects-deferred"
+guards = "migration 11 must retain the exact pending Broca predicate on populated stores"
+file = "crates/basal-core/src/schema.rs"
+old = "CREATE INDEX broca_calls_pending ON broca_calls(send_id) WHERE json_extract(snapshot, '$.acknowledged') = 0 AND COALESCE(json_extract(snapshot, '$.deferred'), 0) = 0;"
+new = "CREATE INDEX broca_calls_pending ON broca_calls(send_id) WHERE json_extract(snapshot, '$.acknowledged') = 0 AND COALESCE(json_extract(snapshot, '$.deferred'), 0) = 1; -- NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-core/src/schema_health_tests.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+expect_red = ["schema::health_tests::additive_health_indexes_preserve_populated_tables_in_every_state"]
+only = true
+timeout_s = 600
+build_timeout_s = 7200
+
