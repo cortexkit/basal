@@ -7354,3 +7354,37 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
+
+[[control]]
+id = "audit-b-retirement-is-not-version-disapproval"
+guards = "retirement fails through the terminal transition and blocks approval reenable"
+file = "crates/basal-core/src/install.rs"
+old = '&& f.disabled_reason.as_deref() != Some("agent_retired")'
+new = "&& true // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-core/src/runtime_regressions.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+expect_red = ["runtime::regressions::retirement_fails_through_the_terminal_transition_and_blocks_approval_reenable"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "audit-b-retention-keeps-unacknowledged-broca"
+guards = "pruning keeps unacknowledged broca snapshots and open cards"
+file = "crates/basal-core/src/retention.rs"
+old = "b.run_id=r.run_id AND COALESCE(json_extract(b.snapshot,'$.acknowledged'),0)=0"
+new = "b.run_id=r.run_id AND COALESCE(json_extract(b.snapshot,'$.acknowledged'),0)=0 AND 0 /* NON-VACUITY BREAK */"
+edits = []
+test_file = "crates/basal-core/src/runtime_regressions.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+expect_red = ["runtime::regressions::pruning_keeps_unacknowledged_broca_snapshots_and_open_cards"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
