@@ -7299,3 +7299,58 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
+
+[[control]]
+id = "audit-b-domain-error-retires-claim"
+guards = "a non storage driver error exits the claim and frees the slot"
+file = "crates/basal-core/src/driver.rs"
+old = """
+Err(e)
+                if !matches!("""
+new = """
+Err(e)
+                if false && !matches!( // NON-VACUITY BREAK"""
+edits = []
+test_file = "crates/basal-core/src/runtime_regressions.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+expect_red = ["runtime::regressions::a_non_storage_driver_error_exits_the_claim_and_frees_the_slot"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "audit-b-production-retention-prunes-runs"
+guards = "retention runs from the production deadline pass"
+file = "crates/basal-core/src/retention.rs"
+old = "self.prune(now, millis(config.runs))?;"
+new = "// NON-VACUITY BREAK: self.prune(now, millis(config.runs))?;"
+edits = []
+test_file = "crates/basal-core/src/runtime_regressions.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+expect_red = ["runtime::regressions::retention_runs_from_the_production_deadline_pass"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "audit-b-malformed-optional-refusal-is-tolerated"
+guards = "malformed optional refusal detail does not halt deadline enforcement"
+file = "crates/basal-core/src/journal.rs"
+old = 'value["retry_after_ms"] = serde_json::Value::Null;'
+new = '// NON-VACUITY BREAK: value["retry_after_ms"] = serde_json::Value::Null;'
+edits = []
+test_file = "crates/basal-core/src/runtime_regressions.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+expect_red = ["runtime::regressions::malformed_optional_refusal_detail_does_not_halt_deadline_enforcement"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
