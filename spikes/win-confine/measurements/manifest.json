@@ -1,0 +1,14 @@
+{
+  "run_id": 37840751756,
+  "image_source_sha": "9235748f1b6cd5e15fcbf01b4406cd17d7375b95",
+  "files": {
+    "windows-latest.json": {
+      "sha256": "0dadb504e3200c4e75e10d3a94002470429e95c39984861b0c4a22f76f1b59a7",
+      "bytes": 1013006
+    },
+    "windows-2022.json": {
+      "sha256": "19309dfb256a333d7de12a5e00fd2f611d0924fa878b22688fddb191794270e1",
+      "bytes": 933515
+    }
+  }
+}

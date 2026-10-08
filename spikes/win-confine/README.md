@@ -3,6 +3,11 @@
 This standalone, disposable experiment measures native authority, not QuickJS
 behavior. It does not change basal's worker or claim a production sandbox.
 
+**Measured outcome:** the full restricted birth recipes fail DLL initialization
+on both native runner images; LPAC-only controls complete. The workflow's full
+runtime gate intentionally remains red. See [RESULTS.md](RESULTS.md) for the
+complete residual, failure ledger and the not-reached primary-replacement test.
+
 Run from this directory on 64-bit Windows:
 
 ```powershell
