@@ -39,7 +39,7 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           cargo test --locked
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          python -m unittest -v test_evidence test_reference
+          python -m unittest -v test_evidence test_reference test_procmon
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           cargo build --release --locked
           exit $LASTEXITCODE
@@ -60,7 +60,7 @@ jobs:
           exit $LASTEXITCODE
       - name: Measure sandbox-enabled Chrome from the parent
         run: ./chrome_reference.ps1
-      - name: Measure all three modes with image-specific loader snaps
+      - name: Capture denied child startup operations with Process Monitor
         run: |
           systeminfo | Out-File evidence/host.txt
           whoami /all | Out-File -Append evidence/host.txt
@@ -70,7 +70,7 @@ jobs:
             New-Item $ifeo -Force | Out-Null
             New-ItemProperty $ifeo -Name GlobalFlag -PropertyType String -Value '0x00000002' | Out-Null
             Get-ItemProperty $ifeo | Out-File evidence/loader-snaps-setting.txt
-            & target\release\win-confine.exe --output evidence/report.json
+            ./procmon_capture.ps1
             $measurementExit = $LASTEXITCODE
           } finally {
             Remove-Item $ifeo -Recurse -Force

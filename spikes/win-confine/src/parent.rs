@@ -677,10 +677,16 @@ fn launch_variant(
 ) -> Result<Value> {
     unsafe {
         let full = input.mode == "full";
+        let context_matched =
+            sequence == "chrome-context-control" || sequence == "lpac-context-control";
+        let chrome_token =
+            sequence == "chrome-default-dacl-control" || sequence == "chrome-context-control";
+        let same_primary =
+            sequence == "post-load-primary-control" || sequence == "lpac-context-control";
         let lpac = input.mode != "plain"
             && sequence != "chrome-logon-non-lpac-control"
             && sequence != "chrome-loader-privileges-control"
-            && sequence != "chrome-default-dacl-control";
+            && !chrome_token;
         let bare = sequence == "bare-token-control";
         let debug = sequence == "loader-trace";
         let mut tokens = if full {
@@ -693,16 +699,14 @@ fn launch_variant(
                 } else {
                     None
                 },
-                sequence == "same-access-primary-control"
-                    || sequence == "post-load-primary-control",
-                sequence == "post-load-primary-control",
+                sequence == "same-access-primary-control" || same_primary,
+                same_primary,
                 sequence == "chrome-logon-control"
                     || sequence == "chrome-logon-non-lpac-control"
                     || sequence == "chrome-loader-privileges-control"
-                    || sequence == "chrome-default-dacl-control",
-                sequence == "chrome-loader-privileges-control"
-                    || sequence == "chrome-default-dacl-control",
-                sequence == "chrome-default-dacl-control",
+                    || chrome_token,
+                sequence == "chrome-loader-privileges-control" || chrome_token,
+                chrome_token,
             )?)
         } else {
             None
@@ -758,12 +762,20 @@ fn launch_variant(
             attrs.add(PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY, &mitigation)?;
             attrs.add(PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY, &child_policy)?;
         }
+        let mut context = if context_matched {
+            Some(crate::context::create(image, parent_token, sid)?)
+        } else {
+            None
+        };
         let mut startup: STARTUPINFOEXW = zeroed();
         startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
         startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
         startup.StartupInfo.hStdInput = child_in.0;
         startup.StartupInfo.hStdOutput = child_out.0;
         startup.StartupInfo.hStdError = child_err.0;
+        if let Some(context) = &mut context {
+            startup.StartupInfo.lpDesktop = context.name.as_mut_ptr();
+        }
         startup.lpAttributeList = if bare { null_mut() } else { attrs.ptr() };
         if bare {
             startup.StartupInfo.cb = size_of::<STARTUPINFOW>() as u32;
@@ -773,7 +785,7 @@ fn launch_variant(
             "\"{image}\" --child{}{}{}",
             if start_low { " --lower-integrity" } else { "" },
             if leak_only { " --probe-leak" } else { "" },
-            if sequence == "post-load-primary-control" {
+            if same_primary {
                 " --replace-primary"
             } else {
                 ""
@@ -787,6 +799,13 @@ fn launch_variant(
         if debug {
             flags |= DEBUG_ONLY_THIS_PROCESS;
         }
+        if context.is_some() {
+            flags |= CREATE_UNICODE_ENVIRONMENT;
+        }
+        let environment = context
+            .as_ref()
+            .map_or(null(), |c| c.environment.as_ptr().cast());
+        let cwd = context.as_ref().map_or(null(), |c| c.cwd.as_ptr());
         let mut debug_creation_error = Value::Null;
         let mut create = |flags, pi: &mut PROCESS_INFORMATION| {
             if full {
@@ -798,8 +817,8 @@ fn launch_variant(
                     null(),
                     1,
                     flags,
-                    null(),
-                    null(),
+                    environment,
+                    cwd,
                     &startup.StartupInfo,
                     pi,
                 )
@@ -811,8 +830,8 @@ fn launch_variant(
                     null(),
                     1,
                     flags,
-                    null(),
-                    null(),
+                    environment,
+                    cwd,
                     &startup.StartupInfo,
                     pi,
                 )
@@ -949,7 +968,7 @@ fn launch_variant(
             |e| json!({"parse_error":e.to_string(),"stdout":String::from_utf8_lossy(&stdout)}),
         );
         Ok(
-            json!({"sequence":sequence,"debug":{"requested":debug,"loader_snaps_enablement":loader_snaps_enablement,"setup":debug_setup,"attached_before_resume":attached,"creation_error":debug_creation_error,"trace":debug_events},"exit_code":hex(exit),"timeout":wait!=WAIT_OBJECT_0,"input_write":{"success":write_ok,"error":if write_ok{0}else{write_error},"bytes":written},"stderr":String::from_utf8_lossy(&stderr),"job":job.as_ref().map(|j|&j.1),"constructed_tokens":tokens.as_ref().map(|t|&t.report),"parent_before_resume":{"startup_context":birth_startup,"primary":birth_primary,"assigned_loader":assigned_loader,"initial_handle_closed":initial_closed_before_resume},"stdio_handles":{"stdin":handles[0] as usize,"stdout":handles[1] as usize,"stderr":handles[2] as usize},"child":child}),
+            json!({"sequence":sequence,"pid":pi.dwProcessId,"requested_context":context.as_ref().map(|c|&c.report),"debug":{"requested":debug,"loader_snaps_enablement":loader_snaps_enablement,"setup":debug_setup,"attached_before_resume":attached,"creation_error":debug_creation_error,"trace":debug_events},"exit_code":hex(exit),"timeout":wait!=WAIT_OBJECT_0,"input_write":{"success":write_ok,"error":if write_ok{0}else{write_error},"bytes":written},"stderr":String::from_utf8_lossy(&stderr),"job":job.as_ref().map(|j|&j.1),"constructed_tokens":tokens.as_ref().map(|t|&t.report),"parent_before_resume":{"startup_context":birth_startup,"primary":birth_primary,"assigned_loader":assigned_loader,"initial_handle_closed":initial_closed_before_resume},"stdio_handles":{"stdin":handles[0] as usize,"stdout":handles[1] as usize,"stderr":handles[2] as usize},"child":child}),
         )
     }
 }
@@ -1423,6 +1442,27 @@ pub fn run() -> Result<()> {
                         Err(e) => json!({"error":e}),
                     };
                     diagnostics.push(json!({"label":"full policy / same-access enabled groups / post-load primary replacement","result":result}));
+                    for sequence in ["chrome-context-control", "lpac-context-control"] {
+                        let result = launch_variant(
+                            &input,
+                            &image.to_string_lossy(),
+                            sid,
+                            token.0,
+                            if sequence == "chrome-context-control" {
+                                token.0
+                            } else {
+                                source
+                            },
+                            sequence,
+                            true,
+                            false,
+                            false,
+                            MITIGATIONS,
+                            0xff,
+                        )
+                        .unwrap_or_else(|e| json!({"sequence":sequence,"error":e}));
+                        diagnostics.push(json!({"label":sequence,"result":result}));
+                    }
                 }
                 for (label, mitigation, ui_flags) in [
                     ("all mitigations off", 0, 0xff),
