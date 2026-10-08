@@ -1,0 +1,11 @@
+# Native release worker, post-confinement trace. Loader/setup calls omitted.
+# All non-clock calls retained; first/last 8 thread-CPU samples retained.
+seccomp(SECCOMP_SET_MODE_FILTER, SECCOMP_FILTER_FLAG_TSYNC, 0x7ffee7fa8308) = 0
+write(1, 0x625cee894270, 113)           = 113
+write(1, 0x625cee894270, 13)            = 13
+gettid()                                = 1207
+write(2, 0x7ffee7fa7fc8, 92)            = 92
+write(2, 0x625cd6fc5990, 78)            = 78
+futex(0x798bf078b230, FUTEX_WAKE_PRIVATE, 2147483647) = 0
+exit_group(101)                         = ?
++++ exited with 101 +++

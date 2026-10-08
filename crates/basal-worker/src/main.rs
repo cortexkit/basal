@@ -1,6 +1,6 @@
 //! Entry point for `ck-basal-worker`.
 //!
-//! Started by basal with no arguments, the worker confines itself and then
+//! Started by basal with an explicit Landlock policy on Linux, the worker confines itself and then
 //! serves frames on stdin and stdout. Logs go to stderr. The other modes are
 //! `--confinement-probe`, which reports what the sandbox denies, and
 //! `--version`, which prints the version and the build revision.
@@ -28,6 +28,8 @@ fn main() -> ExitCode {
             );
             return ExitCode::SUCCESS;
         }
+        #[cfg(target_os = "linux")]
+        Some("--landlock=required" | "--landlock=optional") if args.len() == 1 => {}
         Some(other) => {
             eprintln!("ck-basal-worker: unknown argument {other}");
             return ExitCode::from(64);
@@ -36,7 +38,20 @@ fn main() -> ExitCode {
 
     // Confinement comes before the first read: nothing the parent sends is
     // ever processed by an unconfined worker.
-    let entered = match confinement::enter() {
+    #[cfg(target_os = "linux")]
+    let result = match confinement::linux::engine_arguments(&args) {
+        Ok(landlock) => confinement::linux::enter(&confinement::linux::Options {
+            landlock,
+            ..Default::default()
+        }),
+        Err(confinement::linux::ArgumentError::Missing) => Err(
+            confinement::ConfinementError::Linux("landlock-argument-missing"),
+        ),
+        Err(confinement::linux::ArgumentError::Usage) => return ExitCode::from(64),
+    };
+    #[cfg(not(target_os = "linux"))]
+    let result = confinement::enter();
+    let entered = match result {
         Ok(entered) => entered,
         Err(e) => {
             eprintln!("ck-basal-worker: refusing to run unconfined: {e}");

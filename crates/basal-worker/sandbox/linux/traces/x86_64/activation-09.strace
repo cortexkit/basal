@@ -1,0 +1,8 @@
+# Native release worker, post-confinement trace. Loader/setup calls omitted.
+# All non-clock calls retained; first/last 8 thread-CPU samples retained.
+seccomp(SECCOMP_SET_MODE_FILTER, SECCOMP_FILTER_FLAG_TSYNC, 0x7fff46c231d8) = 0
+read(0, 0x5e7b44da6460, 8192)           = 9
+write(1, 0x5e7b44da8470, 80)            = 80
+write(1, 0x5e7b44da3270, 13)            = 13
+read(0 <unfinished ...>)                = ?
++++ killed by SIGKILL +++

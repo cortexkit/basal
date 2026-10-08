@@ -1,0 +1,10 @@
+# Native release worker, post-confinement trace. Loader/setup calls omitted.
+# All non-clock calls retained; first/last 8 thread-CPU samples retained.
+seccomp(SECCOMP_SET_MODE_FILTER, SECCOMP_FILTER_FLAG_TSYNC, 0x7fff26ece688) = 0
+write(1, 0x6014dc7c4270, 113)           = 113
+write(1, 0x6014dc7c4270, 13)            = 13
+gettid()                                = 1210
+getpid()                                = 1210
+tgkill(1210, 1210, SIGABRT)             = 0
+--- SIGABRT {si_signo=SIGABRT, si_code=SI_TKILL, si_pid=1210, si_uid=999} ---
++++ killed by SIGABRT +++

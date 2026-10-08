@@ -1,0 +1,27 @@
+# Native release worker, post-confinement trace. Loader/setup calls omitted.
+# All non-clock calls retained; first/last 8 thread-CPU samples retained.
+seccomp(SECCOMP_SET_MODE_FILTER, SECCOMP_FILTER_FLAG_TSYNC, 0x7ffd1155d648) = 0
+read(0, 0x57f265da3460, 8192)           = 9
+write(1, 0x57f265da5470, 80)            = 80
+write(1, 0x57f265da0270, 13)            = 13
+read(0, 0x57f265da3460, 8192)           = 158
+brk(0x57f265de2000)                     = 0x57f265de2000
+brk(0x57f265de1000)                     = 0x57f265de1000
+futex(0x57f25b8d6188, FUTEX_WAKE_PRIVATE, 2147483647) = 0
+brk(0x57f265e02000)                     = 0x57f265e02000
+brk(0x57f265e23000)                     = 0x57f265e23000
+brk(0x57f265e22000)                     = 0x57f265e22000
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0x7ffd1155cd00) = 0
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0x7ffd1155ccf0) = 0
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0x7ffd1155cfe0) = 0
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0x7ffd1155ccf0) = 0
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0x7ffd1155cfe0) = 0
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0x7ffd1155ccf0) = 0
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0x7ffd1155cfe0) = 0
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0x7ffd1155ccf0) = 0
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0x7ffd1155cd00) = 0
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0x7ffd1155ccf0) = 0
+brk(0x57f265e1e000)                     = 0x57f265e1e000
+write(1, 0x57f265da0270, 15)            = 15
+read(0 <unfinished ...>)                = ?
++++ killed by SIGKILL +++

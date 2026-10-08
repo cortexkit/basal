@@ -1,0 +1,47 @@
+   Compiling basal-testkit v0.1.0 (/Users/ufukaltinok/.local/share/cortexkit/alfonso/worktrees/adddb770875f5a2d/bg_dispatch_808a7da40e90b9d99edbefa5/crates/basal-testkit)
+   Compiling basal-worker v0.1.0 (/Users/ufukaltinok/.local/share/cortexkit/alfonso/worktrees/adddb770875f5a2d/bg_dispatch_808a7da40e90b9d99edbefa5/crates/basal-worker)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.47s
+     Running tests/budgets.rs (target/debug/deps/budgets-afcf82625d114032)
+
+running 5 tests
+test cpu_bound_loop_is_stopped_by_the_js_time_budget ... ok
+test long_host_waits_do_not_consume_the_js_time_budget ... ok
+test memory_limit_holds ... ok
+test stack_limit_holds ... ok
+test stalled_promise_is_reported_as_stalled ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.39s
+
+     Running tests/clock.rs (target/debug/deps/clock-892c3abe6b375dde)
+
+running 2 tests
+test clock_and_random_are_journaled_and_replayed ... ok
+test fresh_clock_read_after_a_gap_returns_the_new_time ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/ipc.rs (target/debug/deps/ipc-2f46eb187bc59572)
+
+running 5 tests
+test closing_the_channel_ends_the_worker_cleanly ... ok
+test handshake_reports_version_engine_and_confinement ... ok
+test malformed_frames_are_refused_and_the_worker_survives ... ok
+test out_of_order_frames_are_refused ... ok
+test oversized_frame_is_refused_and_the_worker_exits_cleanly ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/replay.rs (target/debug/deps/replay-fe6a28ac0df1edb4)
+
+running 9 tests
+test all_rejected_any_replays_in_order ... ok
+test blocked_only_on_long_calls_suspends_and_resumes ... ok
+test caught_rejection_replays_as_a_rejection ... ok
+test divergent_call_fails_with_a_typed_error ... ok
+test early_all_rejection_replays_with_calls_in_flight ... ok
+test race_and_any_keep_their_winner_on_replay ... ok
+test recorded_outcomes_are_released_in_delivery_order ... ok
+test replay_crosses_the_channel_only_for_new_calls ... ok
+test unreplayed_journal_entries_are_detected ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s

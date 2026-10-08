@@ -3,14 +3,18 @@
 //! The worker runs scripts that are approved but still untrusted input to a
 //! C engine, so it assumes the engine can be subverted and makes sure a
 //! subverted worker can do nothing but talk to its parent. Before it reads
-//! any frame it closes every inherited descriptor except stdio and applies a
-//! deny-by-default Seatbelt profile to itself through `sandbox_init`, the
-//! mechanism Chromium's helper processes use. The API is deprecated but
-//! enforced on current macOS. Once applied, a sandbox cannot be lifted.
+//! any frame it closes every inherited descriptor except stdio. Linux applies
+//! an empty Landlock ruleset and a mandatory fatal seccomp allowlist; macOS
+//! applies a deny-by-default Seatbelt profile through `sandbox_init`, the
+//! mechanism Chromium's helper processes use. The macOS API is deprecated but
+//! enforced on current systems. Once applied, these boundaries cannot be lifted.
 
 use std::fmt;
 
 use basal_proto::Confinement;
+
+#[cfg(target_os = "linux")]
+pub mod linux;
 
 /// The Seatbelt profile, checked in beside the crate and embedded at build
 /// time so the binary cannot be pointed at a different one.
@@ -26,6 +30,9 @@ pub enum ConfinementError {
     Descriptors(String),
     /// This platform has no supported sandbox.
     Unsupported,
+    /// A Linux startup precondition or confinement layer failed.
+    #[cfg(target_os = "linux")]
+    Linux(&'static str),
 }
 
 impl fmt::Display for ConfinementError {
@@ -34,6 +41,8 @@ impl fmt::Display for ConfinementError {
             Self::Seatbelt(e) => write!(f, "sandbox_init failed: {e}"),
             Self::Descriptors(e) => write!(f, "could not close inherited descriptors: {e}"),
             Self::Unsupported => write!(f, "no supported OS sandbox on this platform"),
+            #[cfg(target_os = "linux")]
+            Self::Linux(token) => f.write_str(token),
         }
     }
 }
@@ -50,6 +59,7 @@ pub struct Entered {
 }
 
 /// Closes inherited descriptors and applies the sandbox.
+#[cfg(not(target_os = "linux"))]
 pub fn enter() -> Result<Entered, ConfinementError> {
     close_inherited_descriptors()?;
     let descriptors = open_descriptors();
@@ -136,7 +146,7 @@ fn apply_seatbelt() -> Result<(), ConfinementError> {
     macos::apply(SEATBELT_PROFILE).map_err(ConfinementError::Seatbelt)
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn apply_seatbelt() -> Result<(), ConfinementError> {
     Err(ConfinementError::Unsupported)
 }
@@ -163,9 +173,24 @@ pub fn close_inherited_descriptors() -> Result<(), ConfinementError> {
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub fn close_inherited_descriptors() -> Result<(), ConfinementError> {
     Err(ConfinementError::Unsupported)
+}
+
+#[cfg(target_os = "linux")]
+pub fn enter() -> Result<Entered, ConfinementError> {
+    linux::enter(&linux::Options::default())
+}
+
+#[cfg(target_os = "linux")]
+pub fn close_inherited_descriptors() -> Result<(), ConfinementError> {
+    linux::close_descriptors(false).map(|_| ())
+}
+
+#[cfg(target_os = "linux")]
+pub fn open_descriptors() -> Vec<i32> {
+    linux::descriptors().unwrap_or_default()
 }
 
 /// The descriptors currently open.
@@ -174,7 +199,7 @@ pub fn open_descriptors() -> Vec<i32> {
     macos::open_descriptors().unwrap_or_default()
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub fn open_descriptors() -> Vec<i32> {
     Vec::new()
 }
