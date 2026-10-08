@@ -9343,11 +9343,12 @@ build_timeout_s = 3600
 id = "content-addressed-directory-uses-path-not-bytes"
 guards = "Changed executable bytes select a different content-addressed directory"
 file = "crates/basal-testkit/src/binaries.rs"
-old = "let digest = digest.finish();"
+old = "let digest_name = digest.to_hex().to_string()[..16].to_owned();"
 new = """
-let mut path_digest = Sha256::new();
-        path_digest.update(sources[0].2.as_os_str().as_encoded_bytes());
-        let digest = path_digest.finish(); // NON-VACUITY BREAK"""
+let digest_name = blake3::hash(sources[0].2.as_os_str().as_encoded_bytes())
+            .to_hex()
+            .to_string()[..16]
+            .to_owned(); // NON-VACUITY BREAK"""
 edits = []
 test_file = "crates/basal-testkit/src/binaries.rs"
 runner = "cargo"
