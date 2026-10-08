@@ -121,6 +121,7 @@ pub fn run() -> Result<()> {
     unsafe {
         // No untrusted input is consumed under the loader's more permissive token.
         let lower_requested = std::env::args().any(|a| a == "--lower-integrity");
+        let replacement_requested = std::env::args().any(|a| a == "--replace-primary");
         // Borrow only the primary's adjustment right under the loader token.
         // No token handle with that right may survive into the input phase.
         let adjustment = if lower_requested {
@@ -128,7 +129,13 @@ pub fn run() -> Result<()> {
             check(
                 OpenProcessToken(
                     GetCurrentProcess(),
-                    TOKEN_QUERY | TOKEN_ADJUST_DEFAULT,
+                    TOKEN_QUERY
+                        | TOKEN_ADJUST_DEFAULT
+                        | if replacement_requested {
+                            TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY
+                        } else {
+                            0
+                        },
                     &mut h,
                 ),
                 "OpenProcessToken(self-lower before revert)",
@@ -155,9 +162,14 @@ pub fn run() -> Result<()> {
         let self_lowering = if let Some(h) = adjustment {
             let before = token_buffer(h.0, TokenIntegrityLevel)?;
             let before = sid_string((*before.as_ptr().cast::<TOKEN_MANDATORY_LABEL>()).Label.Sid);
+            let replacement = if replacement_requested {
+                replace_primary_locked(h.0)
+            } else {
+                Value::Null
+            };
             set_integrity(h.0, WinUntrustedLabelSid)?;
             drop(h);
-            json!({"requested":true,"integrity_before":before,"set_error":0,"adjustment_handle_closed_before_input":true})
+            json!({"requested":true,"integrity_before":before,"set_error":0,"adjustment_handle_closed_before_input":true,"primary_replacement":replacement})
         } else {
             json!({"requested":false})
         };

@@ -140,6 +140,7 @@ fn restricted_tokens(
     start_low: bool,
     lowbox_sid: Option<PSID>,
     same_primary: bool,
+    enabled_groups: bool,
 ) -> Result<Tokens> {
     unsafe {
         let data = token_buffer(parent, TokenGroups)?;
@@ -191,8 +192,16 @@ fn restricted_tokens(
             CreateRestrictedToken(
                 parent,
                 DISABLE_MAX_PRIVILEGE,
-                disabled.len() as u32,
-                disabled.as_ptr(),
+                if enabled_groups {
+                    0
+                } else {
+                    disabled.len() as u32
+                },
+                if enabled_groups {
+                    null()
+                } else {
+                    disabled.as_ptr()
+                },
                 0,
                 null(),
                 restrict.len() as u32,
@@ -658,7 +667,9 @@ fn launch_variant(
                 } else {
                     None
                 },
-                sequence == "same-access-primary-control",
+                sequence == "same-access-primary-control"
+                    || sequence == "post-load-primary-control",
+                sequence == "post-load-primary-control",
             )?)
         } else {
             None
@@ -726,9 +737,14 @@ fn launch_variant(
         }
         let mut pi: PROCESS_INFORMATION = zeroed();
         let mut command = wide(&format!(
-            "\"{image}\" --child{}{}",
+            "\"{image}\" --child{}{}{}",
             if start_low { " --lower-integrity" } else { "" },
-            if leak_only { " --probe-leak" } else { "" }
+            if leak_only { " --probe-leak" } else { "" },
+            if sequence == "post-load-primary-control" {
+                " --replace-primary"
+            } else {
+                ""
+            }
         ));
         let flags = if bare {
             CREATE_SUSPENDED | CREATE_NO_WINDOW
@@ -1226,6 +1242,23 @@ pub fn run() -> Result<()> {
                         Err(e) => json!({"error":e}),
                     };
                     diagnostics.push(json!({"label":"full LPAC policy / primary user+group restricting SIDs instead of NULL","result":result}));
+                    let result = match launch_variant(
+                        &input,
+                        &image.to_string_lossy(),
+                        sid,
+                        token.0,
+                        source,
+                        "post-load-primary-control",
+                        true,
+                        false,
+                        false,
+                        MITIGATIONS,
+                        0xff,
+                    ) {
+                        Ok(v) => v,
+                        Err(e) => json!({"error":e}),
+                    };
+                    diagnostics.push(json!({"label":"full policy / same-access enabled groups / post-load primary replacement","result":result}));
                 }
                 for (label, mitigation, ui_flags) in [
                     ("all mitigations off", 0, 0xff),

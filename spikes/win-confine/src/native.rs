@@ -418,6 +418,12 @@ fn lpac_claim(token: HANDLE) -> Result<(bool, Value)> {
 }
 #[link(name = "ntdll")]
 unsafe extern "system" {
+    fn NtSetInformationProcess(
+        process: HANDLE,
+        class: u32,
+        information: *const c_void,
+        length: u32,
+    ) -> i32;
     fn NtCreateLowBoxToken(
         out: *mut HANDLE,
         existing: HANDLE,
@@ -800,6 +806,72 @@ pub fn set_integrity(token: HANDLE, level: WELL_KNOWN_SID_TYPE) -> Result<()> {
             ),
             "SetTokenInformation(TokenIntegrityLevel)",
         )
+    }
+}
+pub fn replace_primary_locked(source: HANDLE) -> Value {
+    unsafe {
+        let result = (|| -> Result<Value> {
+            let data = token_buffer(source, TokenGroups)?;
+            let disabled = groups(&data)
+                .iter()
+                .filter(|g| g.Attributes & SE_GROUP_INTEGRITY == 0)
+                .map(|g| SID_AND_ATTRIBUTES {
+                    Sid: g.Sid,
+                    Attributes: 0,
+                })
+                .collect::<Vec<_>>();
+            let mut sid = [0u32; 17];
+            let mut bytes = (sid.len() * 4) as u32;
+            check(
+                CreateWellKnownSid(
+                    WinNullSid,
+                    std::ptr::null_mut(),
+                    sid.as_mut_ptr().cast(),
+                    &mut bytes,
+                ),
+                "CreateWellKnownSid(post-load NULL)",
+            )?;
+            let restricting = [SID_AND_ATTRIBUTES {
+                Sid: sid.as_mut_ptr().cast(),
+                Attributes: 0,
+            }];
+            let mut token = null_mut();
+            check(
+                CreateRestrictedToken(
+                    source,
+                    DISABLE_MAX_PRIVILEGE,
+                    disabled.len() as u32,
+                    disabled.as_ptr(),
+                    0,
+                    std::ptr::null(),
+                    1,
+                    restricting.as_ptr(),
+                    &mut token,
+                ),
+                "CreateRestrictedToken(post-load lockdown)",
+            )?;
+            let token = Handle(token);
+            set_integrity(token.0, WinUntrustedLabelSid)?;
+            #[repr(C)]
+            struct ProcessAccessToken {
+                token: HANDLE,
+                thread: HANDLE,
+            }
+            let access = ProcessAccessToken {
+                token: token.0,
+                thread: null_mut(),
+            };
+            let status = NtSetInformationProcess(
+                GetCurrentProcess(),
+                9,
+                (&access as *const ProcessAccessToken).cast(),
+                size_of::<ProcessAccessToken>() as u32,
+            );
+            Ok(
+                json!({"api":"NtSetInformationProcess(ProcessAccessToken)","NTSTATUS":hex(status as u32),"success":status==0,"candidate":token_attestation(token.0)?}),
+            )
+        })();
+        result.unwrap_or_else(|e| json!({"success":false,"error":e}))
     }
 }
 
