@@ -8,7 +8,20 @@ use basal_proto::Primitive;
 use basal_testkit::git::git_command;
 use basal_testkit::harness::scratch;
 use serde_json::{Value, json};
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
+
+fn child_exit(status: &std::process::ExitStatus) -> String {
+    match status.code() {
+        Some(code) => format!("exit code {code}"),
+        None => format!(
+            "terminated by signal {}",
+            status
+                .signal()
+                .map_or_else(|| "unknown".to_owned(), |signal| signal.to_string())
+        ),
+    }
+}
 
 /// Runs git to build a fixture, with no outside configuration.
 fn setup_git(dir: &Path, args: &[&str], date: &str) {
@@ -19,7 +32,7 @@ fn setup_git(dir: &Path, args: &[&str], date: &str) {
         .args(args)
         .status()
         .expect("git");
-    assert!(status.success(), "git {args:?}");
+    assert!(status.success(), "git {args:?}: {}", child_exit(&status));
 }
 
 /// A repository with three commits and two tags.
@@ -234,7 +247,11 @@ fn a_repository_config_cannot_make_a_built_in_run_a_program() {
         .args(["status", "--porcelain"])
         .output()
         .expect("git status");
-    assert!(status.status.success());
+    assert!(
+        status.status.success(),
+        "git status: {}",
+        child_exit(&status.status)
+    );
     assert!(
         std::fs::read_to_string(&marker)
             .unwrap_or_default()

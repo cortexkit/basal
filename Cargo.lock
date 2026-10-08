@@ -140,6 +140,7 @@ dependencies = [
  "basal-core",
  "basal-host",
  "basal-proto",
+ "blake3",
  "jiff",
  "libc",
  "rcgen",

@@ -9235,7 +9235,6 @@ platforms = ["linux"]
 timeout_s = 600
 build_timeout_s = 3600
 
-
 [[control]]
 id = "wake-migration-omits-the-deadline-order-index"
 platforms = ["linux"]
@@ -9253,7 +9252,6 @@ expect_red = ["maintenance::tests::timer_plans_use_the_ordered_wake_indexes"]
 only = false
 timeout_s = 600
 build_timeout_s = 3600
-
 
 [[control]]
 id = "local-primitives-ask-the-model-host-for-a-scope"
@@ -9275,5 +9273,49 @@ package = "basal-testkit"
 target = "--test global_model_scope"
 expect_red = ["local_primitives_need_no_model_scope"]
 only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "content-addressed-copy-is-not-rewritten"
+guards = "An existing executable copy is reused without changing its modification time"
+file = "crates/basal-testkit/src/binaries.rs"
+old = """
+if destination.is_file() {
+        return Ok(());
+    }"""
+new = """
+if destination.is_file() {
+        fs::remove_file(destination)?; // NON-VACUITY BREAK
+    }"""
+edits = []
+test_file = "crates/basal-testkit/src/binaries.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--lib"
+expect_red = ["binaries::tests::pre_existing_complete_copy_is_reused_without_rewriting"]
+only = true
+platforms = ["linux"]
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "content-addressed-directory-uses-path-not-bytes"
+guards = "Changed executable bytes select a different content-addressed directory"
+file = "crates/basal-testkit/src/binaries.rs"
+old = "let digest_name = digest.to_hex().to_string()[..16].to_owned();"
+new = """
+let digest_name = blake3::hash(sources[0].2.as_os_str().as_encoded_bytes())
+            .to_hex()
+            .to_string()[..16]
+            .to_owned(); // NON-VACUITY BREAK"""
+edits = []
+test_file = "crates/basal-testkit/src/binaries.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--lib"
+expect_red = ["binaries::tests::changed_binary_bytes_use_a_different_directory"]
+only = true
+platforms = ["linux"]
 timeout_s = 600
 build_timeout_s = 3600

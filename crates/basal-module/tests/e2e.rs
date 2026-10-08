@@ -76,10 +76,9 @@ mod privacy {
     }
 
     /// The module's direct children whose running image is the worker file,
-    /// compared by device and inode. Comparing the path `proc_pidpath` reports
-    /// is not enough: the worker is a hard link to cargo's build output (and to
-    /// any other test's link of it), and macOS reports one cached name for
-    /// every process running a given inode, which can be another link's path.
+    /// compared by device and inode. Stat both the expected worker and the image
+    /// path reported for each child so matching is based on the executable file,
+    /// not on a possibly aliased path string.
     fn worker_pids(parent: u32, worker: &Path) -> Vec<u32> {
         use std::os::unix::fs::MetadataExt;
         let target = std::fs::metadata(worker).expect("worker file");
