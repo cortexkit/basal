@@ -20,7 +20,7 @@ All three lines are optional. A line that is absent grants nothing, and every ca
 | `fs.read` | `fs.read`, `fs.list` and `fs.stat` on paths under these roots. |
 | `fs.write` | `fs.write` on paths under these roots. A write root grants no reads; list it under `fs.read` too if the flow reads what it writes. |
 | `git.read` | Every git built-in, on exactly these repositories (the directory holding `.git`). A directory inside a repository is not the repository. |
-| `net.fetch` | `net.fetch` to these hosts. `methods` defaults to `GET` and `HEAD`; any other method must be listed. |
+| `net.fetch` | `net.fetch` to these hosts over HTTPS on port 443. `methods` defaults to `GET` and `HEAD`; any other method must be listed. |
 
 Install refuses:
 
@@ -38,24 +38,24 @@ Every built-in is an async function that returns a promise. A refusal or a failu
 
 ### Files
 
-- **`fs.read(path, {maxBytes?})`** returns `{text}`. It refuses a file that is not UTF-8 text, and one larger than `maxBytes`. That cap defaults to 1 MiB and can be raised to 8 MiB at most.
+- **`fs.read(path, {maxBytes?})`** returns `{text}`. It refuses a file that is not UTF-8 text, and one larger than `maxBytes`. The default and maximum cap are 106 KiB, reserving room below the 1 MiB encoded-result limit for worst-case JSON escaping and response framing. Any result over the encoded limit is a typed `too_large` rejection, never a successful `null`.
 - **`fs.list(dir)`** returns `[{name, kind}]`, sorted by name, where `kind` is `"file"`, `"dir"`, `"symlink"` or `"other"`. A directory with more than 1000 entries is refused.
-- **`fs.stat(path)`** returns `{exists: true, kind, size, mtime_ms}`. A path that does not exist returns `{exists: false}`, not an error, but only if its parent directory is inside a root.
-- **`fs.write(path, text)`** replaces the whole file atomically: basal writes a temporary file in the same directory, syncs it, and renames it over the target. It returns `{bytes}`. The text is at most 1 MiB. This version has no append and no delete.
+- **`fs.stat(path)`** returns `{exists: true, kind, size, mtime_ms}`. Existing symlinks are followed; a dangling symlink is reported as `kind: "symlink"`. A path that does not exist returns `{exists: false}`, not an error, but only if its parent directory is inside a root.
+- **`fs.write(path, text)`** replaces the whole file atomically: basal writes a temporary file in the same directory, syncs it, and renames it over the target. It returns `{bytes}`. The text is at most 1 MiB. Access permissions are retained, but setuid/setgid are never copied onto the replacement inode; ownership, ACLs, xattrs and hard links are not preserved. This version has no append and no delete.
 
 ### Git
 
 - **`git.log(repo, {ref?, path?, sinceMs?, maxCount?})`** returns `[{sha, subject, author_ms}]`, newest first. `ref` defaults to `HEAD`, and `maxCount` to 20 (at most 500).
 - **`git.revParse(repo, ref)`** returns the commit sha that `ref` names. An annotated tag gives the commit it points at.
-- **`git.describeTags(repo, {pattern?})`** returns `{nearest, tags}`: the nearest tag reachable from `HEAD` (or `null`), and every tag, newest first. With `pattern` (a glob such as `"v1.*"`), both are limited to matching tags.
+- **`git.describeTags(repo, {pattern?})`** returns `{nearest, tags}`: the nearest tag reachable from `HEAD` (or `null`), and at most 200 tags, newest first. With `pattern` (a glob such as `"v1.*"`), both are limited to matching tags.
 - **`git.show(repo, rev, path)`** returns the text of `path` at `rev`.
 - **`git.diff(repo, from, to, {path?})`** returns the unified diff text from `from` to `to`.
 
-A ref, revision or pattern cannot start with `-`, and a path inside a repository must be relative with no `..`. Git output is capped at 1 MiB, and a git command may run for at most 20 seconds.
+A ref, revision or pattern cannot start with `-`, and a path inside a repository must be relative with no `..`. Git output is capped at 106 KiB (with room for JSON escaping), and a git command including its output pipes may run for at most 20 seconds. The repository must belong to basal's uid: global `safe.directory` exceptions are deliberately ignored.
 
 ### Network
 
-- **`net.fetch(url, {method?, headers?, body?})`** returns `{status, headers, body}`. `method` defaults to `GET`. `body` is text. The response's header names are lower-cased, and `Set-Cookie` is dropped. The response body is returned as text and capped at 1 MiB.
+- **`net.fetch(url, {method?, headers?, body?})`** returns `{status, headers, body}`. `method` defaults to `GET`. `body` is text. The response's header names are lower-cased, and `Set-Cookie` is dropped. The response body is returned as text and capped at 106 KiB, with room for escaped headers and body below the 1 MiB encoded-result limit.
 
 What happens when basal can't use the answer depends on whether the server may already have acted on the request. Nothing can have changed while every request so far was a `GET` or `HEAD`. In that case an oversized body, a body that isn't UTF-8, or an answer basal can't read rejects the call with the matching error code. Once a request with any other method has started to leave, the server may have acted on it. From then on, no answer is reported as a refusal. Instead:
 
@@ -78,6 +78,7 @@ What happens when basal can't use the answer depends on whether the server may a
 ### Paths
 
 - Every path is resolved with `realpath`, which follows symlinks and removes `..`. The resolved path must lie under an approved root of the call's kind (`fs.read` for reads, `fs.write` for writes), itself resolved the same way. A `..` escape and a symlink that points outside a root are both refused.
+- Paths outside the roots and paths whose parent cannot be resolved receive one `denied` refusal, without revealing the resolved path or whether an outside path exists.
 - For `fs.write`, and for `fs.stat` of a path that does not exist, basal resolves the parent directory instead and keeps the last name as given. The parent must lie inside a root.
 - A symlink can be swapped in between the check and the open. basal closes that window as far as macOS allows. It opens with `O_NOFOLLOW`, so a symlink swapped into the last component makes the open fail. After the open, it asks the kernel where the opened file really is (`F_GETPATH`) and refuses the file if that is outside the roots, which catches a directory higher up swapped for a symlink. What stays open: between the open and that second check, a read may already have the file open. basal reads nothing before the check passes, so the contents are never returned. The open itself can still block briefly on a FIFO planted in place of the file, which is why reads open non-blocking.
 - `fs.write` creates its temporary file with `O_CREAT | O_EXCL | O_NOFOLLOW` in a parent directory opened and checked the same way. It refuses a target that is already a symlink, so a write never lands outside a root through a link.
@@ -94,12 +95,12 @@ A test plants a repository whose config names an fsmonitor program, an external 
 
 ### Network
 
-- HTTPS only. The host must be approved, and the method allowed for that host.
-- Redirects are followed by hand, at most 5. Every hop is checked again from the top: scheme, host, method and address. A script's own headers go only to the host it named.
+- HTTPS on port 443 only. The host must be approved, and the method allowed for that host. Other ports are refused before DNS or connecting.
+- Redirects are followed by hand, at most 5. Every hop is checked again from the top: scheme, host, port, method and address. A script's own headers go only to its original HTTPS origin (scheme, host and port).
 - A redirect that may not be followed refuses the call only while nothing has changed. Once a request with a method other than `GET` or `HEAD` has reached a server, the server may already have acted on it. If basal then stops following redirects (for example, because the next host is not approved), the call ends with the 3xx response basal did not follow (`{status, headers, body}`) as its answer, not with a refusal. The rules above for a refused body apply to that response too.
 - Before connecting, basal resolves the host once. If any address it resolves to is private, loopback, link-local, multicast, unspecified or otherwise reserved, the fetch is refused. An IPv4-mapped IPv6 address is judged by the IPv4 address it carries. The connection then goes to an address from that same checked answer, so a second DNS answer cannot swap in another. TLS still verifies the certificate against the host name, using the bundled web roots and never the system store.
-- Connecting times out after 10 seconds, and a whole fetch, redirects included, after 30 seconds. The response head is capped at 64 KiB and the body at 1 MiB.
-- No cookies are sent or kept, and no credentials or proxy settings are read from anywhere. A script may not set `Authorization`, `Proxy-Authorization`, `Cookie`, `Host` or the headers that frame the request.
+- Connecting times out after 10 seconds, and a whole fetch, DNS and redirects included, after 30 seconds. The response head is capped at 64 KiB and the body at 106 KiB. A connection-framed body requires authenticated TLS close_notify: a missing close signal cannot silently truncate a fulfilled response.
+- No cookies are sent or kept, and no credentials or proxy settings are read from anywhere. A script may not set `Authorization`, `Proxy-Authorization`, `Cookie`, `Host`, method-override headers, `Accept-Encoding`, `User-Agent` or the headers that frame the request.
 
 ### Authorization
 

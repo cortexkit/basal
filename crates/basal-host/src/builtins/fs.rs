@@ -24,6 +24,9 @@
 //! swap that happens after the open changes nothing for this call, which
 //! already holds the checked file.
 
+#[cfg(test)]
+mod tests;
+
 use std::ffi::{CString, OsStr, OsString};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
@@ -38,9 +41,9 @@ use serde_json::{Value, json};
 use super::{Denial, codes, expand_home};
 
 /// `fs.read`'s default cap.
-pub const DEFAULT_READ_BYTES: u64 = 1024 * 1024;
+pub const DEFAULT_READ_BYTES: u64 = super::MAX_TEXT_RESULT_BYTES as u64;
 /// The largest cap `fs.read` accepts.
-pub const MAX_READ_BYTES: u64 = 8 * 1024 * 1024;
+pub const MAX_READ_BYTES: u64 = DEFAULT_READ_BYTES;
 /// The largest text `fs.write` writes.
 pub const MAX_WRITE_BYTES: usize = 1024 * 1024;
 /// The most entries `fs.list` returns.
@@ -82,11 +85,8 @@ pub fn inside(path: &Path, roots: &[PathBuf]) -> bool {
     roots.iter().any(|root| path.starts_with(root))
 }
 
-fn outside(path: &Path) -> Denial {
-    Denial::denied(format!(
-        "{} is outside the manifest's roots",
-        path.display()
-    ))
+fn outside(_path: &Path) -> Denial {
+    Denial::denied("path is outside the manifest's roots or missing")
 }
 
 fn io_denial(path: &Path, e: &std::io::Error) -> Denial {
@@ -111,19 +111,23 @@ fn absolute(path: &str) -> Result<PathBuf, Denial> {
 
 /// Resolves `path` and requires it to lie under one of `roots`.
 pub fn resolve(path: &str, roots: &[String], purpose: Purpose) -> Result<Target, Denial> {
-    let path = absolute(path)?;
     let roots = real_roots(roots);
+    resolve_real(path, &roots, purpose)
+}
+
+fn resolve_real(path: &str, roots: &[PathBuf], purpose: Purpose) -> Result<Target, Denial> {
+    let path = absolute(path)?;
     if purpose == Purpose::Read {
         match std::fs::canonicalize(&path) {
             Ok(real) => {
-                return if inside(&real, &roots) {
+                return if inside(&real, roots) {
                     Ok(Target::Existing(real))
                 } else {
                     Err(outside(&real))
                 };
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(io_denial(&path, &e)),
+            Err(_) => return Err(outside(&path)),
         }
     }
     // A missing path, or a write: resolve the parent and keep the name.
@@ -137,8 +141,8 @@ pub fn resolve(path: &str, roots: &[String], purpose: Purpose) -> Result<Target,
         }
     };
     let parent = path.parent().unwrap_or(Path::new("/"));
-    let real_parent = std::fs::canonicalize(parent).map_err(|e| io_denial(parent, &e))?;
-    if inside(&real_parent.join(&name), &roots) {
+    let real_parent = std::fs::canonicalize(parent).map_err(|_| outside(&path))?;
+    if inside(&real_parent.join(&name), roots) {
         Ok(Target::Entry {
             parent: real_parent,
             name,
@@ -180,10 +184,7 @@ fn verify(fd: RawFd, name: Option<&OsStr>, roots: &[PathBuf]) -> Result<(), Deni
     if inside(&real, roots) {
         Ok(())
     } else {
-        Err(Denial::denied(format!(
-            "{} moved outside the manifest's roots while it was being opened",
-            real.display()
-        )))
+        Err(outside(&real))
     }
 }
 
@@ -195,6 +196,10 @@ fn verify(fd: RawFd, name: Option<&OsStr>, roots: &[PathBuf]) -> Result<(), Deni
 /// since resolution fails the open; one swapped in higher up is caught by
 /// the check after it.
 pub fn open_checked(resolved: &Path, roots: &[String], directory: bool) -> Result<File, Denial> {
+    open_checked_real(resolved, &real_roots(roots), directory)
+}
+
+fn open_checked_real(resolved: &Path, roots: &[PathBuf], directory: bool) -> Result<File, Denial> {
     let mut flags = libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK;
     if directory {
         flags |= libc::O_DIRECTORY;
@@ -213,13 +218,15 @@ pub fn open_checked(resolved: &Path, roots: &[String], directory: bool) -> Resul
                 io_denial(resolved, &e)
             }
         })?;
-    verify(file.as_raw_fd(), None, &real_roots(roots))?;
+    verify(file.as_raw_fd(), None, roots)?;
     Ok(file)
 }
 
 /// `fs.read`: the file's text, refused over `max_bytes` or when not UTF-8.
 pub fn read(path: &str, roots: &[String], max_bytes: u64) -> Result<Value, Denial> {
-    let real = match resolve(path, roots, Purpose::Read)? {
+    let roots = real_roots(roots);
+    let max_bytes = max_bytes.min(MAX_READ_BYTES);
+    let real = match resolve_real(path, &roots, Purpose::Read)? {
         Target::Existing(real) => real,
         Target::Entry { parent, name } => {
             return Err(Denial::new(
@@ -228,7 +235,7 @@ pub fn read(path: &str, roots: &[String], max_bytes: u64) -> Result<Value, Denia
             ));
         }
     };
-    let file = open_checked(&real, roots, false)?;
+    let file = open_checked_real(&real, &roots, false)?;
     let meta = file.metadata().map_err(|e| io_denial(&real, &e))?;
     if !meta.is_file() {
         return Err(Denial::invalid(format!(
@@ -296,20 +303,23 @@ fn stat_at(dir: RawFd, name: &OsStr) -> Result<Option<libc::stat>, Denial> {
 }
 
 /// Opens the parent of an entry and checks the entry's real path.
-fn open_parent(parent: &Path, name: &OsStr, roots: &[String]) -> Result<File, Denial> {
+fn open_parent(parent: &Path, name: &OsStr, roots: &[PathBuf]) -> Result<File, Denial> {
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_DIRECTORY)
         .open(parent)
         .map_err(|e| io_denial(parent, &e))?;
-    verify(file.as_raw_fd(), Some(name), &real_roots(roots))?;
+    verify(file.as_raw_fd(), Some(name), roots)?;
     Ok(file)
 }
 
 /// `fs.stat`: `{exists, kind, size, mtime_ms}`. A path that does not exist
 /// answers `{exists: false}` when its parent lies under a root.
+/// Existing symlinks are followed by resolution; only a dangling symlink is
+/// reported as `kind: "symlink"` by the descriptor-relative metadata lookup.
 pub fn stat(path: &str, roots: &[String]) -> Result<Value, Denial> {
-    let (parent, name) = match resolve(path, roots, Purpose::Read)? {
+    let roots = real_roots(roots);
+    let (parent, name) = match resolve_real(path, &roots, Purpose::Read)? {
         Target::Existing(real) => match (real.parent(), real.file_name()) {
             (Some(parent), Some(name)) => (parent.to_owned(), name.to_owned()),
             // The file system root itself.
@@ -317,7 +327,7 @@ pub fn stat(path: &str, roots: &[String]) -> Result<Value, Denial> {
         },
         Target::Entry { parent, name } => (parent, name),
     };
-    let dir = open_parent(&parent, &name, roots)?;
+    let dir = open_parent(&parent, &name, &roots)?;
     let Some(st) = stat_at(dir.as_raw_fd(), &name)? else {
         return Ok(json!({ "exists": false }));
     };
@@ -334,7 +344,8 @@ pub fn stat(path: &str, roots: &[String]) -> Result<Value, Denial> {
 /// `fs.list`: the directory's entries, sorted by name, refused over
 /// [`MAX_LIST_ENTRIES`] or when a name is not UTF-8.
 pub fn list(path: &str, roots: &[String]) -> Result<Value, Denial> {
-    let real = match resolve(path, roots, Purpose::Read)? {
+    let roots = real_roots(roots);
+    let real = match resolve_real(path, &roots, Purpose::Read)? {
         Target::Existing(real) => real,
         Target::Entry { parent, name } => {
             return Err(Denial::new(
@@ -343,7 +354,7 @@ pub fn list(path: &str, roots: &[String]) -> Result<Value, Denial> {
             ));
         }
     };
-    let dir = open_checked(&real, roots, true)?;
+    let dir = open_checked_real(&real, &roots, true)?;
     let names = read_dir_fd(dir.as_raw_fd()).map_err(|e| io_denial(&real, &e))?;
     if names.len() > MAX_LIST_ENTRIES {
         return Err(Denial::new(
@@ -433,6 +444,10 @@ fn read_dir_fd(fd: RawFd) -> std::io::Result<Vec<(OsString, u8)>> {
 
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
+fn replacement_mode(mode: libc::mode_t) -> libc::mode_t {
+    mode & 0o777
+}
+
 /// `fs.write`: replaces the whole file with `text`, atomically. The text
 /// goes to a new temporary file in the same directory, which is flushed to
 /// disk and then renamed over the target, so a reader sees the old file or
@@ -448,10 +463,11 @@ pub fn write(path: &str, roots: &[String], text: &str) -> Result<Value, Denial> 
             ),
         ));
     }
-    let Target::Entry { parent, name } = resolve(path, roots, Purpose::Write)? else {
+    let roots = real_roots(roots);
+    let Target::Entry { parent, name } = resolve_real(path, &roots, Purpose::Write)? else {
         return Err(Denial::invalid("a write resolves to a directory entry"));
     };
-    let dir = open_parent(&parent, &name, roots)?;
+    let dir = open_parent(&parent, &name, &roots)?;
     let dirfd = dir.as_raw_fd();
     let mode = match stat_at(dirfd, &name)? {
         Some(st) if st.st_mode & libc::S_IFMT == libc::S_IFLNK => {
@@ -466,13 +482,12 @@ pub fn write(path: &str, roots: &[String], text: &str) -> Result<Value, Denial> 
                 parent.join(&name).display()
             )));
         }
-        // Keep an existing file's permissions.
-        Some(st) => st.st_mode & 0o7777,
+        // Preserve access permissions, never privilege bits on a new inode.
+        Some(st) => replacement_mode(st.st_mode),
         None => 0o644,
     };
-    let mut temp_name = OsString::from(".");
-    temp_name.push(&name);
-    temp_name.push(format!(
+    // A bounded basename leaves room even when the target uses NAME_MAX bytes.
+    let temp_name = OsString::from(format!(
         ".basal-{}-{}.tmp",
         std::process::id(),
         TEMP_SEQ.fetch_add(1, Ordering::Relaxed)

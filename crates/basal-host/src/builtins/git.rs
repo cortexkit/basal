@@ -12,7 +12,12 @@
 //! the operator who approved the flow. Every command therefore goes through
 //! [`hardened_command`], which turns each of those off.
 
+#[cfg(test)]
+mod tests;
+
 use std::io::Read;
+use std::os::fd::AsRawFd;
+use std::os::unix::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
@@ -25,8 +30,10 @@ use super::{Denial, codes, expand_home, options, string_arg};
 
 /// How long one git command may run.
 pub const TIMEOUT: Duration = Duration::from_secs(20);
+const STDERR_BYTES: usize = 4096;
+const PROCESS_POLL: Duration = Duration::from_millis(2);
 /// The most output one git command may produce: a log, a blob or a diff.
-pub const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
+pub const MAX_OUTPUT_BYTES: usize = super::MAX_TEXT_RESULT_BYTES;
 /// `git.log`'s default and largest entry counts.
 pub const DEFAULT_LOG_COUNT: u64 = 20;
 pub const MAX_LOG_COUNT: u64 = 500;
@@ -206,29 +213,14 @@ pub fn parse(primitive: Primitive, args: &Value) -> Result<Op, Denial> {
 pub fn repo(repo: &str, repos: &[String]) -> Result<PathBuf, Denial> {
     let path = expand_home(repo)
         .ok_or_else(|| Denial::invalid(format!("{repo:?} is not an absolute path")))?;
-    let real = std::fs::canonicalize(&path).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            Denial::new(
-                codes::NOT_FOUND,
-                format!("{} does not exist", path.display()),
-            )
-        } else {
-            Denial::new(codes::IO, format!("{}: {e}", path.display()))
-        }
-    })?;
+    let refused = || Denial::denied("repository is outside the manifest's repositories or missing");
+    let real = std::fs::canonicalize(&path).map_err(|_| refused())?;
     let approved = repos
         .iter()
         .filter_map(|r| expand_home(r))
         .filter_map(|r| std::fs::canonicalize(r).ok())
         .any(|r| r == real);
-    if approved {
-        Ok(real)
-    } else {
-        Err(Denial::denied(format!(
-            "{} is not among the manifest's git.read repositories",
-            real.display()
-        )))
-    }
+    if approved { Ok(real) } else { Err(refused()) }
 }
 
 /// The only way the built-ins run git: a `git -C <repo>` command that can
@@ -251,6 +243,9 @@ pub fn repo(repo: &str, repos: &[String]) -> Result<PathBuf, Denial> {
 ///   `GIT_TERMINAL_PROMPT=0` and a null stdin keep git from asking anyone
 ///   anything; `GIT_CEILING_DIRECTORIES` stops git from walking up to a
 ///   repository above the approved one.
+///
+/// Repositories must belong to the service uid. Global `safe.directory`
+/// exceptions are deliberately ignored, rather than trusting foreign config.
 pub fn hardened_command(repo: &Path) -> Command {
     let mut command = Command::new("git");
     command.env_clear();
@@ -262,6 +257,7 @@ pub fn hardened_command(repo: &Path) -> Command {
     command
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("LC_ALL", "C")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_NO_LAZY_FETCH", "1");
     if let Some(parent) = repo.parent() {
@@ -302,88 +298,112 @@ pub struct Ran {
 /// Runs a git command under [`TIMEOUT`], refusing output over
 /// [`MAX_OUTPUT_BYTES`].
 pub fn run_command(mut command: Command) -> Result<Ran, Denial> {
-    let mut child = command
+    command.process_group(0);
+    let child = command
         .spawn()
         .map_err(|e| Denial::new(codes::GIT, format!("git could not start: {e}")))?;
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-    let out_thread = thread::spawn(move || {
-        let mut buf = Vec::new();
-        if let Some(s) = stdout {
-            let _ = s.take(MAX_OUTPUT_BYTES as u64 + 1).read_to_end(&mut buf);
+    let mut guard = ProcessGroup(child);
+    let mut out = guard.0.stdout.take();
+    let mut err = guard.0.stderr.take();
+    for fd in out
+        .as_ref()
+        .map(AsRawFd::as_raw_fd)
+        .into_iter()
+        .chain(err.as_ref().map(AsRawFd::as_raw_fd))
+    {
+        // SAFETY: the pipes remain owned by this call; only their nonblocking
+        // status is changed so descendant-held pipes cannot bypass the deadline.
+        if unsafe { libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK) } == -1 {
+            return Err(Denial::new(
+                codes::GIT,
+                std::io::Error::last_os_error().to_string(),
+            ));
         }
-        buf
-    });
-    let err_thread = thread::spawn(move || {
-        // Keep the first 4 KiB and drain the rest, so git never blocks on
-        // a full stderr pipe.
-        let mut kept = Vec::new();
-        if let Some(mut s) = stderr {
-            let mut chunk = [0u8; 4096];
-            while let Ok(n) = s.read(&mut chunk) {
-                if n == 0 {
-                    break;
-                }
-                let room = 4096usize.saturating_sub(kept.len());
-                kept.extend_from_slice(&chunk[..n.min(room)]);
-            }
-        }
-        String::from_utf8_lossy(&kept).into_owned()
-    });
+    }
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
     let deadline = Instant::now() + TIMEOUT;
-    let mut out_thread = Some(out_thread);
-    let mut stdout = None;
+    let mut status = None;
     let status = loop {
-        if stdout.is_none() && out_thread.as_ref().is_some_and(|t| t.is_finished()) {
-            let bytes: Vec<u8> = out_thread
-                .take()
-                .and_then(|t| t.join().ok())
-                .unwrap_or_default();
-            if bytes.len() > MAX_OUTPUT_BYTES {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(Denial::new(
-                    codes::TOO_LARGE,
-                    format!("git's output is larger than {MAX_OUTPUT_BYTES} bytes"),
-                ));
-            }
-            stdout = Some(bytes);
+        drain_pipe(&mut out, &mut stdout, MAX_OUTPUT_BYTES + 1)?;
+        drain_pipe(&mut err, &mut stderr, STDERR_BYTES)?;
+        if stdout.len() > MAX_OUTPUT_BYTES {
+            return Err(Denial::new(
+                codes::TOO_LARGE,
+                format!("git's output is larger than {MAX_OUTPUT_BYTES} bytes"),
+            ));
         }
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) => {}
-            Err(e) => return Err(Denial::new(codes::GIT, e.to_string())),
+        if status.is_none() {
+            status = guard
+                .0
+                .try_wait()
+                .map_err(|e| Denial::new(codes::GIT, e.to_string()))?;
+            if status.is_some() {
+                guard.kill();
+            }
+        }
+        if let Some(status) = status
+            && out.is_none()
+            && err.is_none()
+        {
+            break status;
         }
         if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
             return Err(Denial::new(
                 codes::TIMEOUT,
                 format!("git ran longer than {} s", TIMEOUT.as_secs()),
             ));
         }
-        thread::sleep(Duration::from_millis(2));
+        thread::sleep(PROCESS_POLL);
     };
-    let stdout = match stdout {
-        Some(s) => s,
-        None => out_thread
-            .take()
-            .and_then(|t| t.join().ok())
-            .unwrap_or_default(),
-    };
-    if stdout.len() > MAX_OUTPUT_BYTES {
-        return Err(Denial::new(
-            codes::TOO_LARGE,
-            format!("git's output is larger than {MAX_OUTPUT_BYTES} bytes"),
-        ));
-    }
-    let stderr = err_thread.join().unwrap_or_default();
+    let stderr = String::from_utf8_lossy(&stderr).into_owned();
     Ok(Ran {
         success: status.success(),
         code: status.code(),
         stdout,
         stderr,
     })
+}
+
+struct ProcessGroup(std::process::Child);
+impl ProcessGroup {
+    fn kill(&mut self) {
+        // SAFETY: process_group(0) made the spawned child's pid its private
+        // group id. Negative pid addresses that entire group, not the parent.
+        unsafe {
+            libc::kill(-(self.0.id() as i32), libc::SIGKILL);
+        }
+    }
+}
+impl Drop for ProcessGroup {
+    fn drop(&mut self) {
+        self.kill();
+        let _ = self.0.wait();
+    }
+}
+fn drain_pipe<R: Read>(pipe: &mut Option<R>, kept: &mut Vec<u8>, cap: usize) -> Result<(), Denial> {
+    let Some(reader) = pipe.as_mut() else {
+        return Ok(());
+    };
+    // Bound each turn so a continuously writing process cannot starve the
+    // deadline or the other pipe; stderr is drained even after its keep cap.
+    for _ in 0..16 {
+        let mut chunk = [0u8; STDERR_BYTES];
+        match reader.read(&mut chunk) {
+            Ok(0) => {
+                *pipe = None;
+                break;
+            }
+            Ok(n) => {
+                let room = cap.saturating_sub(kept.len());
+                kept.extend_from_slice(&chunk[..n.min(room)]);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(Denial::new(codes::GIT, error.to_string())),
+        }
+    }
+    Ok(())
 }
 
 fn git(repo: &Path, args: &[&str]) -> Result<Ran, Denial> {
@@ -399,6 +419,39 @@ fn failed(ran: &Ran) -> Denial {
 fn utf8(bytes: Vec<u8>, what: &str) -> Result<String, Denial> {
     String::from_utf8(bytes)
         .map_err(|_| Denial::new(codes::NOT_UTF8, format!("{what} is not UTF-8")))
+}
+
+fn parse_log(text: &str) -> Result<Vec<Value>, Denial> {
+    text.lines()
+        .filter(|l| !l.is_empty())
+        .map(|line| {
+            let bad = || {
+                Denial::new(
+                    codes::GIT,
+                    "git log returned invalid fields or an out-of-range timestamp",
+                )
+            };
+            let mut fields = line.splitn(3, '\0');
+            let sha = fields.next().ok_or_else(bad)?;
+            let at: i64 = fields.next().ok_or_else(bad)?.parse().map_err(|_| bad())?;
+            let subject = fields.next().ok_or_else(bad)?;
+            let author_ms = at.checked_mul(1000).ok_or_else(bad)?;
+            Ok(json!({"sha":sha, "subject":subject, "author_ms":author_ms}))
+        })
+        .collect()
+}
+
+fn show_failure(ran: &Ran) -> Denial {
+    // LC_ALL=C fixes git's diagnostic vocabulary. Only recognized missing
+    // objects/paths are not_found; ownership, permissions and corruption fail.
+    if ran.stderr.contains("Not a valid object name")
+        || ran.stderr.contains("does not exist in")
+        || ran.stderr.contains("exists on disk, but not in")
+    {
+        Denial::new(codes::NOT_FOUND, ran.stderr.trim())
+    } else {
+        failed(ran)
+    }
 }
 
 /// Runs one git read in an approved repository.
@@ -436,17 +489,7 @@ pub fn run(repo_arg: &str, repos: &[String], op: &Op) -> Result<Value, Denial> {
                 return Err(failed(&ran));
             }
             let text = utf8(ran.stdout, "the log")?;
-            let entries: Vec<Value> = text
-                .lines()
-                .filter(|l| !l.is_empty())
-                .filter_map(|line| {
-                    let mut fields = line.splitn(3, '\0');
-                    let sha = fields.next()?;
-                    let at: i64 = fields.next()?.parse().ok()?;
-                    let subject = fields.next().unwrap_or("");
-                    Some(json!({ "sha": sha, "subject": subject, "author_ms": at * 1000 }))
-                })
-                .collect();
+            let entries = parse_log(&text)?;
             Ok(Value::Array(entries))
         }
         Op::RevParse { reference } => {
@@ -486,12 +529,27 @@ pub fn run(repo_arg: &str, repos: &[String], op: &Op) -> Result<Value, Denial> {
             let ran = git(&dir, &describe)?;
             let nearest = if ran.success {
                 Some(utf8(ran.stdout, "the tag")?.trim().to_owned())
-            } else {
+            } else if ran.stderr.contains("No names found")
+                || ran.stderr.contains("No tags can describe")
+                || ran.stderr.contains("Not a valid object name HEAD")
+            {
                 None
+            } else {
+                return Err(failed(&ran));
             };
-            let mut list = vec!["tag", "--list", "--sort=-creatordate"];
+            let count = format!("--count={MAX_TAGS}");
+            let mut list = vec![
+                "for-each-ref",
+                "--sort=-creatordate",
+                "--format=%(refname:strip=2)",
+                &count,
+            ];
+            let filter;
             if let Some(p) = pattern {
-                list.push(p);
+                filter = format!("refs/tags/{p}");
+                list.push(&filter);
+            } else {
+                list.push("refs/tags/");
             }
             let ran = git(&dir, &list)?;
             if !ran.success {
@@ -509,10 +567,7 @@ pub fn run(repo_arg: &str, repos: &[String], op: &Op) -> Result<Value, Denial> {
             let spec = format!("{rev}:{path}");
             let ran = git(&dir, &["cat-file", "blob", &spec])?;
             if !ran.success {
-                return Err(Denial::new(
-                    codes::NOT_FOUND,
-                    format!("{spec}: {}", ran.stderr.trim()),
-                ));
+                return Err(show_failure(&ran));
             }
             Ok(Value::String(utf8(ran.stdout, "the blob")?))
         }

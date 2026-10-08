@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
-use basal_proto::{CallKind, JsonText, Primitive, Settlement};
+use basal_proto::{ArgsDigest, CallKind, JsonText, Primitive, Settlement};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -51,7 +51,16 @@ pub enum BrocaError {
 
 impl fmt::Display for BrocaError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{self:?}")
+        match self {
+            Self::Flow(refusal) => write!(f, "Broca flow refusal: {}", refusal.reason.as_str()),
+            Self::Invalid(detail) => write!(f, "invalid Broca arguments: {detail}"),
+            Self::UnsupportedKind => f.write_str("unsupported Broca call kind"),
+            Self::Wire(detail) => write!(f, "Broca reply: {detail}"),
+            Self::Refused { code, detail } => write!(f, "Broca refused {code}: {detail}"),
+            Self::Unavailable { detail, .. } => write!(f, "Broca unavailable: {detail}"),
+            Self::Store(detail) => write!(f, "Broca store: {detail}"),
+            Self::Sink(detail) => write!(f, "Broca completion: {detail}"),
+        }
     }
 }
 impl std::error::Error for BrocaError {}
@@ -102,6 +111,22 @@ pub trait StateStore: Send + Sync {
         Ok(None)
     }
     fn load(&self) -> Result<Vec<StoredCall>, BrocaError>;
+    /// Look up one id without decoding unrelated snapshots. The default keeps
+    /// older adapters source compatible; durable stores should use their key.
+    fn get(&self, send_id: &str) -> Result<Option<StoredCall>, BrocaError> {
+        Ok(self
+            .load()?
+            .into_iter()
+            .find(|call| call.send_id == send_id))
+    }
+    fn pending_ids(&self) -> Result<Vec<String>, BrocaError> {
+        Ok(self
+            .load()?
+            .into_iter()
+            .filter(|call| !call.acknowledged && !call.deferred)
+            .map(|call| call.send_id)
+            .collect())
+    }
     fn save(&self, call: &StoredCall) -> Result<(), BrocaError>;
 }
 
@@ -141,7 +166,9 @@ pub struct StoredCall {
     pub basal_run_id: String,
     pub position: u64,
     pub send_id: String,
+    #[serde(with = "params_bytes")]
     pub params: Vec<u8>,
+    #[serde(deserialize_with = "envelope_fingerprint")]
     pub envelope: String,
     pub labels: Option<Vec<String>>,
     pub handle: Option<String>,
@@ -172,7 +199,9 @@ pub struct BrocaHost {
     project_root: String,
     harness: String,
     selector: Arc<dyn ModelSelector>,
-    gate: Mutex<()>,
+    // Only identical send ids serialize. An unavailable provider must not hold
+    // every other model dispatch behind a process-wide network lock.
+    gate: Mutex<HashMap<String, std::sync::Weak<Mutex<()>>>>,
     /// Per send id, how many consecutive polls found the run terminal in
     /// `run.result` while `run.status` still said active or paused (the
     /// brief window described in `resolve`). Kept in memory only: a restart
@@ -200,10 +229,21 @@ impl BrocaHost {
             project_root,
             harness,
             selector,
-            gate: Mutex::new(()),
+            gate: Mutex::new(HashMap::new()),
             status_lag: Mutex::new(HashMap::new()),
             sink: Mutex::new(None),
         }
+    }
+
+    fn call_gate(&self, send_id: &str) -> Arc<Mutex<()>> {
+        let mut gates = lock(&self.gate);
+        if let Some(gate) = gates.get(send_id).and_then(std::sync::Weak::upgrade) {
+            return gate;
+        }
+        gates.retain(|_, gate| gate.strong_count() != 0);
+        let gate = Arc::new(Mutex::new(()));
+        gates.insert(send_id.to_owned(), Arc::downgrade(&gate));
+        gate
     }
 
     fn prepare(&self, request: &CallRequest) -> Result<StoredCall, BrocaError> {
@@ -299,19 +339,9 @@ impl BrocaHost {
                 .map(serde_json::from_value::<GenerationConfig>)
                 .transpose()
                 .map_err(|error| BrocaError::Invalid(error.to_string()))?
-                .unwrap_or(GenerationConfig {
-                    max_output_tokens: None,
-                    temperature: None,
-                    top_p: None,
-                    stop_sequences: vec![],
-                })
+                .unwrap_or_default()
         } else {
-            GenerationConfig {
-                max_output_tokens: None,
-                temperature: None,
-                top_p: None,
-                stop_sequences: vec![],
-            }
+            GenerationConfig::default()
         };
         generation.max_output_tokens = Some(e.max_output);
         let params = SendParams {
@@ -340,7 +370,7 @@ impl BrocaHost {
             send_id: e.send_id,
             params: serde_json::to_vec(&params).map_err(|e| BrocaError::Wire(e.to_string()))?,
             labels,
-            envelope: request.args.as_str().to_owned(),
+            envelope: fingerprint(&request.args),
             handle: None,
             broca_run_id: None,
             state: None,
@@ -565,16 +595,37 @@ impl BrocaHost {
     /// delivers what is known. Errors leave durable work pending for the
     /// next invocation, including sink failures after an outcome is saved.
     pub fn poll(&self) -> Result<(), BrocaError> {
-        let _guard = lock(&self.gate);
         let sink = lock(&self.sink).clone();
         let mut first_error = None;
-        for mut call in self.store.load()? {
+        for send_id in self.store.pending_ids()? {
+            let gate = self.call_gate(&send_id);
+            // An activation already owns this id; it will poll after commit.
+            let Ok(_guard) = gate.try_lock() else {
+                continue;
+            };
+            let mut call = match self.store.get(&send_id) {
+                Ok(Some(call)) => call,
+                Ok(None) => continue,
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                    continue;
+                }
+            };
             if call.acknowledged || call.deferred {
                 continue;
             }
-            if self.scope_checks.load(std::sync::atomic::Ordering::SeqCst)
-                && let Some(identity) = self.store.identity(&call.basal_run_id)?
-            {
+            let identity = if self.scope_checks.load(std::sync::atomic::Ordering::SeqCst) {
+                match self.store.identity(&call.basal_run_id) {
+                    Ok(identity) => identity,
+                    Err(error) => {
+                        first_error.get_or_insert(error);
+                        continue;
+                    }
+                }
+            } else {
+                None
+            };
+            if let Some(identity) = identity {
                 call.route.flow_id = Some(identity.flow_id.clone());
                 if let Err(error) = self.transport.refresh_flow(&identity) {
                     first_error.get_or_insert(error);
@@ -635,13 +686,10 @@ impl BrocaHost {
     }
 
     pub fn dispatch_model(&self, request: &CallRequest) -> Result<Dispatched, BrocaError> {
-        let _guard = lock(&self.gate);
+        let gate = self.call_gate(&request.idempotency_key);
+        let _guard = lock(&gate);
         let prepared = self.prepare(request)?;
-        let existing = self
-            .store
-            .load()?
-            .into_iter()
-            .find(|c| c.send_id == prepared.send_id);
+        let existing = self.store.get(&prepared.send_id)?;
         let mut call = match existing {
             Some(mut c) => {
                 if c.route.flow_id.is_none() {
@@ -659,7 +707,13 @@ impl BrocaHost {
                 c
             }
             None => {
-                self.store.save(&prepared)?;
+                // No send can happen before the initial snapshot is durable.
+                self.store
+                    .save(&prepared)
+                    .map_err(|error| BrocaError::Unavailable {
+                        proven_unsent: true,
+                        detail: error.to_string(),
+                    })?;
                 prepared
             }
         };
@@ -706,13 +760,9 @@ impl Host for BrocaHost {
     }
     fn refusal_committed(&self, request: &CallRequest, refusal: &crate::flow_refusal::FlowRefusal) {
         let result = (|| {
-            let _guard = lock(&self.gate);
-            if let Some(mut call) = self
-                .store
-                .load()?
-                .into_iter()
-                .find(|c| c.send_id == request.idempotency_key)
-            {
+            let gate = self.call_gate(&request.idempotency_key);
+            let _guard = lock(&gate);
+            if let Some(mut call) = self.store.get(&request.idempotency_key)? {
                 let outcome = refusal.outcome();
                 call.outcome = Some(StoredOutcome {
                     rejected: true,
@@ -720,8 +770,10 @@ impl Host for BrocaHost {
                     usage: outcome.usage,
                 });
                 call.acknowledged = true;
+                // Admission refused before any model send. Reporting a model
+                // error would penalize a runner that was never invoked.
+                call.report_attempted = true;
                 self.store.save(&call)?;
-                self.report_terminal(&mut call)?;
             }
             Ok::<_, BrocaError>(())
         })();
@@ -844,4 +896,46 @@ fn json_text(value: Value) -> JsonText {
     // This helper only handles small, host-owned errors. Oversized wire values
     // are checked by StoredOutcome::host and never use this fallback.
     JsonText::new(value.to_string()).unwrap_or_else(|_| JsonText::null())
+}
+
+mod params_bytes {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        // Frozen sends are UTF-8 JSON. A text scalar stores those exact bytes
+        // without expanding every byte to a decimal array element.
+        let text = std::str::from_utf8(bytes).map_err(serde::ser::Error::custom)?;
+        serializer.serialize_str(text)
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Bytes {
+            Text(String),
+            Legacy(Vec<u8>),
+        }
+        Ok(match Bytes::deserialize(deserializer)? {
+            Bytes::Text(text) => text.into_bytes(),
+            Bytes::Legacy(bytes) => bytes,
+        })
+    }
+}
+
+fn fingerprint(envelope: &JsonText) -> String {
+    // The journal retains the original request. A domain-labelled digest in
+    // the snapshot detects changed reissues without retaining the prompt twice.
+    format!(
+        "blake3:{}",
+        serde_json::to_string(&ArgsDigest::of(envelope).0).expect("fixed digest")
+    )
+}
+fn envelope_fingerprint<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<String, D::Error> {
+    let envelope = String::deserialize(deserializer)?;
+    if envelope.starts_with("blake3:") {
+        return Ok(envelope);
+    }
+    let envelope = JsonText::new(envelope).map_err(serde::de::Error::custom)?;
+    Ok(fingerprint(&envelope))
 }
