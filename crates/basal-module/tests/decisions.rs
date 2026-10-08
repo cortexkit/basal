@@ -295,7 +295,7 @@ fn a_run_in_needs_reconcile_raises_one_card_per_unknown_call_to_the_operator_onl
     assert_eq!(
         request["prompt"],
         format!(
-            "Run 00:00 UTC of {FLOW} may not have finished: its call to mock.post was sent \
+            "Run 2026-05-01 00:00 UTC of {FLOW} may not have finished: its call to mock.post was sent \
              and then the connection closed before a reply came."
         )
     );
@@ -484,7 +484,7 @@ fn each_unknown_site_records_its_reason_and_the_card_shows_it() {
     assert_eq!(
         request["prompt"],
         format!(
-            "Run 00:00 UTC of {FLOW} may not have finished: its call to mock.post was sent \
+            "Run 2026-05-01 00:00 UTC of {FLOW} may not have finished: its call to mock.post was sent \
              and then basal restarted before the reply was saved."
         )
     );
@@ -821,7 +821,7 @@ fn an_auto_disabled_flow_raises_one_reenable_card_and_each_option_applies() {
     assert_eq!(
         request["prompt"],
         format!(
-            "basal disabled {FLOW} at 00:00 UTC: it reached its limit of 1 runs per \
+            "basal disabled {FLOW} at 2026-05-01 00:00 UTC: it reached its limit of 1 runs per \
              60-second window in 1 windows in a row."
         )
     );
