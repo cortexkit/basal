@@ -25,9 +25,9 @@ fn stack_trace_hooks_cannot_recover_private_prelude_functions() {
     "#;
     let report = parent.run("trace", script);
     assert_eq!(report.value(), json!([]), "{report:#?}");
+    stack_trace_accessors_are_replaced_and_other_function_routes_are_closed();
 }
 
-#[test]
 fn stack_trace_accessors_are_replaced_and_other_function_routes_are_closed() {
     let mut parent = common::parent();
     let report = parent.run(

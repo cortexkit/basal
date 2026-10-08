@@ -7219,3 +7219,168 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
+
+[[control]]
+id = "worker-stack-trace-hook-exposes-private-functions"
+guards = "worker stack trace hook exposes private functions"
+file = "crates/basal-worker/src/prelude.js"
+old = "for (const key of ['prepareStackTrace', 'stackTraceLimit']) {"
+new = "for (const key of ['stackTraceLimit']) { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-worker/tests/sandbox_integrity.rs"
+runner = "cargo"
+package = "basal-worker"
+target = "--test sandbox_integrity"
+expect_red = ["stack_trace_hooks_cannot_recover_private_prelude_functions"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "worker-replay-sync-orders-regress"
+guards = "worker replay sync orders regress"
+file = "crates/basal-worker/src/engine.rs"
+old = "if last_sync_order.is_some_and(|last| outcome.delivery_order <= last) {"
+new = "if false && last_sync_order.is_some_and(|last| outcome.delivery_order <= last) { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-worker/src/engine/tests.rs"
+runner = "cargo"
+package = "basal-worker"
+target = "--lib"
+expect_red = ["engine::tests::replayed_sync_delivery_orders_must_increase"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "worker-memory-budget-classified-from-script-text"
+guards = "worker memory budget classified from script text"
+file = "crates/basal-worker/src/engine.rs"
+old = """
+if self.shared.memory_exhausted.get() {
+                        return Ok(ActivationResult::BudgetExhausted(BudgetKind::Memory));"""
+new = """
+if self.shared.memory_exhausted.get() || text.contains("out of memory") { // NON-VACUITY BREAK
+                        return Ok(ActivationResult::BudgetExhausted(BudgetKind::Memory));"""
+edits = []
+test_file = "crates/basal-worker/tests/sandbox_integrity.rs"
+runner = "cargo"
+package = "basal-worker"
+target = "--test sandbox_integrity"
+expect_red = ["forged_memory_errors_are_script_failures_and_description_does_not_invoke_getters"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "worker-exception-description-invokes-getters"
+guards = "worker exception description invokes getters"
+file = "crates/basal-worker/src/prelude.js"
+old = """
+const desc = ObjectGetOwnPropertyDescriptor(object, key);
+    return desc !== undefined"""
+new = """
+const desc = {value: object[key]}; // NON-VACUITY BREAK
+    return desc !== undefined"""
+edits = []
+test_file = "crates/basal-worker/tests/sandbox_integrity.rs"
+runner = "cargo"
+package = "basal-worker"
+target = "--test sandbox_integrity"
+expect_red = ["forged_memory_errors_are_script_failures_and_description_does_not_invoke_getters"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "worker-rejection-orphans-outstanding-outcomes"
+guards = "worker rejection orphans outstanding outcomes"
+file = "crates/basal-worker/src/engine.rs"
+old = """
+} if outstanding.is_empty() => {
+                    if self.shared.memory_exhausted.get()"""
+new = """
+} => { // NON-VACUITY BREAK
+                    if self.shared.memory_exhausted.get()"""
+edits = []
+test_file = "crates/basal-worker/src/engine/tests.rs"
+runner = "cargo"
+package = "basal-worker"
+target = "--lib"
+expect_red = ["engine::tests::script_rejection_drains_outstanding_calls_before_finishing"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "protocol-list-count-ignores-element-wire-size"
+guards = "protocol list count ignores element wire size"
+file = "crates/basal-proto/src/codec.rs"
+old = "let needed = len.saturating_mul(minimum_bytes);"
+new = "let needed = len; let _ = minimum_bytes; // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-proto/src/codec.rs"
+runner = "cargo"
+package = "basal-proto"
+target = "--lib"
+expect_red = ["codec::tests::list_counts_require_the_complete_minimum_wire_size"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "protocol-encoder-allows-empty-names"
+guards = "protocol encoder allows empty names"
+file = "crates/basal-proto/src/codec.rs"
+old = "if value.is_empty() {"
+new = "if false && value.is_empty() { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-worker/tests/shutdown.rs"
+runner = "cargo"
+package = "basal-worker"
+target = "--test shutdown"
+expect_red = ["encoder_rejects_fields_that_its_decoder_would_refuse"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "worker-shutdown-is-an-unexpected-frame-during-activation"
+guards = "worker shutdown is an unexpected frame during activation"
+file = "crates/basal-worker/src/link.rs"
+old = "Received::Message(ParentMessage::Shutdown) => {"
+new = "Received::Message(ParentMessage::Shutdown) if false => { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-worker/tests/shutdown.rs"
+runner = "cargo"
+package = "basal-worker"
+target = "--test shutdown"
+expect_red = ["shutdown_ends_sync_and_async_activations_without_refusal"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "worker-prelude-primitive-code-diverges"
+guards = "worker prelude primitive code diverges"
+file = "crates/basal-worker/src/prelude.js"
+old = "FACTS = 3, CLASSIFY = 4"
+new = "FACTS = 4, CLASSIFY = 4 /* NON-VACUITY BREAK */"
+edits = []
+test_file = "crates/basal-worker/src/engine/tests.rs"
+runner = "cargo"
+package = "basal-worker"
+target = "--lib"
+expect_red = ["engine::tests::prelude_primitive_calls_match_the_rust_wire_codes"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
