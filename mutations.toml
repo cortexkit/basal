@@ -5174,8 +5174,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/routing.rs"
-old = "expected.is_some_and(|class| class != self.declared_class(module, op, &decl))"
-new = "false"
+old = "expected.is_some_and(|class| {\n                class.safe_to_repeat() && class != self.declared_class(module, op, &decl)\n            })"
+new = "false /* NON-VACUITY BREAK */"
 
 [[control]]
 id = "hosts-consent-provider-refusal-treated-as-outage"
@@ -5265,8 +5265,8 @@ build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/subc_catalog.rs"
 # Invent a declaration only for a missing op, without changing existing ones.
-old = "        Ok(found)"
-new = "        Ok(found.or_else(|| Some(CatalogOp { // NON-VACUITY BREAK\n            declaration: OpDecl { kind: Some(OpKind::Query), cause_echo: false, shell_capable: false },\n            surface: Surface::Management, execution_mode: None,\n        })))"
+old = "        Ok((found, flow_capable))"
+new = "        Ok((found.or_else(|| Some(CatalogOp { // NON-VACUITY BREAK\n            declaration: OpDecl { kind: Some(OpKind::Query), cause_echo: false, shell_capable: false },\n            surface: Surface::Management, execution_mode: None,\n        })), flow_capable))"
 
 [[control]]
 id = "hosts-undeclared-events-fabricated"
@@ -5525,8 +5525,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/core_consent.rs"
-old = ".map_err(|e| ConsentError::Unavailable(e.to_string()))?;"
-new = ".ok();"
+old = ".map_err(|e| ConsentError::Unavailable(e.to_string()))"
+new = ".or(Ok(())) // NON-VACUITY BREAK"
 
 [[control]]
 id = "hosts-approval-decoded-as-rejection"
@@ -6036,8 +6036,8 @@ only = true
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/transport.rs"
-old = "let bind = identity;"
-new = "let bind = BindIdentity::new(\"/\", \"basal\", format!(\"basal:flow:{flow}\")); // NON-VACUITY BREAK"
+old = "self.open_scoped_handle(flow, target, Some(&identity), identity.clone())"
+new = "let identity = BindIdentity::new(\"/\", \"basal\", format!(\"basal:flow:{flow}\")); // NON-VACUITY BREAK\n        self.open_scoped_handle(flow, target, Some(&identity), identity.clone())"
 
 [[control]]
 id = "flow-readiness-rejection-identity-is-not-tracked"
@@ -6066,8 +6066,27 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/transport.rs"
-old = ".block_on(self.consumer.open_route_scoped(\n                        target.clone(),\n                        BindIdentity::new(\"/\", \"basal\", format!(\"basal:flow:{flow}\")),\n                        scope.selector(),"
-new = ".block_on(self.consumer.open_route( // NON-VACUITY BREAK\n                        target.clone(),\n                        BindIdentity::new(\"/\", \"basal\", format!(\"basal:flow:{flow}\")),"
+old = """
+let handle = self
+                .consumer
+                .open_route_scoped(
+                    target.clone(),
+                    bind,
+                    plan.scope.selector(),
+                    CallOptions {
+                        timeout: self.timeout,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .map_err(map_error)?;"""
+new = """
+let options = CallOptions { timeout:self.timeout, ..Default::default() };
+            let handle = if identity.is_none() { // NON-VACUITY BREAK
+                self.consumer.open_route(target.clone(), bind, options).await
+            } else {
+                self.consumer.open_route_scoped(target.clone(), bind, plan.scope.selector(), options).await
+            }.map_err(map_error)?;"""
 
 [[control]]
 id = "flow-route-cache-is-not-reused"
@@ -6100,8 +6119,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/flow_scope.rs"
-old = "self.flows.insert(flow.into(), scope);"
-new = "let scope = self.flows.get(flow).cloned().flatten().or(scope); // NON-VACUITY BREAK\n        self.flows.insert(flow.into(), scope);"
+old = "if let Some((_, key)) = self.flows.remove(flow) {"
+new = "let scope = self.flows.get(flow).map(|(registered, _)| registered.clone()).or(scope); // NON-VACUITY BREAK\n        if let Some((_, key)) = self.flows.remove(flow) {"
 
 [[control]]
 id = "flow-scope-close-is-not-recorded"
