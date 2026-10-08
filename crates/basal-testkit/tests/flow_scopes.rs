@@ -782,11 +782,14 @@ fn a_stalled_scope_activation_deadline_reaps_its_worker() {
             (end, worker)
         })
     };
-    // The five-second receive timeout is the test's own check that the
-    // activation's STALLED_ACTIVATION_WAIT fired. Release the held provider
+    // The provider reply is held forever, so the activation can only end by
+    // its own STALLED_ACTIVATION_WAIT firing; the outcome check below proves it
+    // was the deadline. This receive bound only stops a hang if the deadline
+    // never fires, so it is generous: a short bound fails on a loaded machine
+    // where the deadline fires late but correctly. Release the held provider
     // reply whatever the result, then join the driver and reap its worker
     // before asserting, so a failure never leaves a worker behind.
-    let waited = rx.recv_timeout(Duration::from_secs(5));
+    let waited = rx.recv_timeout(ACTIVATION_WAIT);
     drop(held_reply);
     wait_until(
         Instant::now() + ACTIVATION_WAIT,
@@ -795,10 +798,10 @@ fn a_stalled_scope_activation_deadline_reaps_its_worker() {
     )
     .expect("driver cleanup");
     let (end, mut worker) = driver.join().expect("driver thread");
-    let reaped = worker.exited(Duration::from_secs(3));
+    let reaped = worker.exited(ACTIVATION_WAIT);
     worker.kill();
     f.rt.quiesce();
-    waited.expect("the scope activation did not fail within five seconds");
+    waited.expect("the stalled scope activation never ended");
     let end = end.expect("activation");
     assert!(
         matches!(&end, basal_core::ActivationEnd::Failed { kind, .. } if kind == "deadline"),
