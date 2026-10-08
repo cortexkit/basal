@@ -43,6 +43,11 @@ pub enum CoreError {
         run_id: String,
         holder: String,
     },
+    /// The requested state was not reached before the wait's deadline.
+    Timeout {
+        run_id: String,
+        state: RunState,
+    },
 }
 
 impl fmt::Display for CoreError {
@@ -69,6 +74,11 @@ impl fmt::Display for CoreError {
                     "run {run_id} waits for run {holder}, which holds its flow's slot"
                 )
             }
+            Self::Timeout { run_id, state } => write!(
+                f,
+                "timed out waiting for run {run_id}; last state: {}",
+                state.as_str()
+            ),
         }
     }
 }
@@ -77,7 +87,12 @@ impl std::error::Error for CoreError {}
 
 impl From<rusqlite::Error> for CoreError {
     fn from(e: rusqlite::Error) -> Self {
-        Self::Store(e.to_string())
+        match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                Self::Invalid("the requested row does not exist".into())
+            }
+            other => Self::Store(other.to_string()),
+        }
     }
 }
 

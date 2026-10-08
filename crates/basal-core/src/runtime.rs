@@ -36,6 +36,10 @@ use crate::rate::RateLimits;
 use crate::runs::{self, Lease};
 use crate::store::Store;
 
+#[cfg(test)]
+#[path = "runtime_regressions.rs"]
+mod regressions;
+
 /// Per-run limits, besides the per-activation budgets the worker enforces.
 /// The JS heap limit does not cover the parent's buffers or the store, so
 /// every argument and result is capped in bytes in the parent before
@@ -107,6 +111,7 @@ pub struct Config {
     /// `install_gate_retry_max`.
     pub install_gate_retry: Duration,
     pub install_gate_retry_max: Duration,
+    pub retention: crate::retention::RetentionConfig,
 }
 
 impl Default for Config {
@@ -129,6 +134,7 @@ impl Default for Config {
             install_gate: crate::gate::InstallGate::Core,
             install_gate_retry: Duration::from_secs(1),
             install_gate_retry_max: Duration::from_secs(60),
+            retention: crate::retention::RetentionConfig::default(),
         }
     }
 }
@@ -231,6 +237,8 @@ pub(crate) struct Shared {
     pub(crate) gate_backoff: Mutex<HashMap<String, crate::gate::Backoff>>,
     pub(crate) signal: Signal,
     threads: Mutex<Vec<JoinHandle<()>>>,
+    pub(crate) retention_next: Mutex<Option<i64>>,
+    pub(crate) refusal_flush: Mutex<()>,
 }
 
 /// A handle on the runtime. Cheap to clone.
@@ -307,6 +315,7 @@ impl Runtime {
         source: Option<Arc<dyn WorkerSource>>,
         config: Config,
     ) -> Self {
+        store.set_clock(config.clock.clone());
         let shared = Arc::new(Shared {
             store,
             host,
@@ -320,6 +329,8 @@ impl Runtime {
                 cond: Condvar::new(),
             },
             threads: Mutex::new(Vec::new()),
+            retention_next: Mutex::new(None),
+            refusal_flush: Mutex::new(()),
         });
         let config = Arc::new(config);
         shared
@@ -345,12 +356,6 @@ impl Runtime {
 
     pub fn store(&self) -> &Store {
         &self.shared.store
-    }
-
-    /// Shared store for adapters that must use the runtime's single-writer
-    /// SQLite connection rather than opening a competing store lease.
-    pub fn shared_store(&self) -> Arc<Store> {
-        self.shared.store.clone()
     }
 
     pub fn config(&self) -> &Config {
@@ -455,6 +460,7 @@ impl Runtime {
     /// process starts: the store's lease proves their owners are gone.
     pub fn recover(&self) -> Result<Vec<String>> {
         let ids = self.shared.store.write(runs::requeue_orphans)?;
+        self.flush_refusals()?;
         self.shared.signal.bump();
         Ok(ids)
     }
@@ -475,7 +481,11 @@ impl Runtime {
             runs::cancel(tx, run_id, &format!("cancelled by {actor}"))?;
             crate::reconcile::audit(tx, actor, "cancel", Some(run_id), None, "")
         })?;
+        self.flush_refusals()?;
         self.shared.signal.bump();
+        if let Ok(run) = self.run(run_id) {
+            self.wake_flow(&run.flow_id);
+        }
         Ok(())
     }
 
@@ -493,8 +503,14 @@ impl Runtime {
             let seen = self.shared.signal.current();
             let state = self.shared.store.read(|c| runs::state(c, run_id))?;
             let now = Instant::now();
-            if done(state) || now >= deadline {
+            if done(state) {
                 return Ok(state);
+            }
+            if now >= deadline {
+                return Err(CoreError::Timeout {
+                    run_id: run_id.to_owned(),
+                    state,
+                });
             }
             self.shared
                 .signal
@@ -517,7 +533,43 @@ impl Runtime {
 
     pub(crate) fn spawn(&self, f: impl FnOnce() + Send + 'static) {
         let handle = thread::spawn(f);
-        lock(&self.shared.threads).push(handle);
+        let mut threads = lock(&self.shared.threads);
+        threads.retain(|h| !h.is_finished());
+        threads.push(handle);
+    }
+
+    fn reap_threads(&self) {
+        lock(&self.shared.threads).retain(|h| !h.is_finished());
+    }
+
+    /// Deliver only committed refusal intents. A flush lock prevents two
+    /// activations acknowledging the same intent concurrently. A crash may
+    /// redeliver an intent, as the host's acknowledgement API allows.
+    pub(crate) fn flush_refusals(&self) -> Result<()> {
+        let _flush = lock(&self.shared.refusal_flush);
+        let rows = self.store().read(|c| {
+            let mut stmt = c.prepare(
+                "SELECT seq,body FROM outbox WHERE kind='refusal_committed' ORDER BY seq LIMIT 128",
+            )?;
+            Ok(stmt
+                .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?)
+        })?;
+        for (seq, body) in rows {
+            let saved: journal::SavedRefusal =
+                serde_json::from_str(&body).map_err(|e| CoreError::Corrupt(e.to_string()))?;
+            self.shared
+                .host
+                .refusal_committed(&saved.request()?, &saved.refusal()?);
+            self.store().write(|tx| {
+                tx.execute(
+                    "DELETE FROM outbox WHERE seq=?1 AND kind='refusal_committed'",
+                    [seq],
+                )?;
+                Ok(())
+            })?;
+        }
+        Ok(())
     }
 
     // ---- Outcomes ----------------------------------------------------------
@@ -701,29 +753,32 @@ impl Runtime {
                 Ok(d) => break Ok(d),
                 Err(TransportError::Refused(refusal)) => {
                     use basal_host::flow_refusal::RefusalReason;
-                    if refusal.reason == RefusalReason::FlowScopeRequired {
+                    if let Some(reason) = maybe_sent {
+                        self.shared
+                            .store
+                            .write(|tx| journal::record_unknown(tx, &run_id, position, reason))?;
+                    } else if refusal.reason == RefusalReason::FlowScopeRequired {
                         tracing::error!(provider=%refusal.provider,action=%refusal.action,code="flow_scope_required","provider refused a flow call without its required scope");
                         self.accept(&run_id, position, None, &refusal.outcome(), Source::Host)?;
                         self.shared.host.refusal_committed(&request, &refusal);
                         return Ok(());
-                    }
-                    if maybe_sent.is_some() {
-                        self.shared.store.write(|tx| {
-                            journal::record_unknown(
-                                tx,
-                                &run_id,
-                                position,
-                                UnknownReason::ConnectionLost,
-                            )
-                        })?;
                     } else if refusal.readiness() {
                         self.shared.store.write(|tx| {
-                            let accepted=journal::accept_outcome(tx,&run_id,position,None,&refusal.outcome(),Source::Host)?;
-                            if accepted.ack==CompletionAck::Accepted {
-                                crate::flow_scope::health(tx,&request.flow_id,&refusal)?;
-                                let at:i64=tx.query_row("SELECT at FROM call_audit WHERE run_id=?1 AND position=?2",rusqlite::params![run_id,position],|r|r.get(0))?;
-                                crate::rate::refund_dispatch(tx,&request.flow_id,at,&self.config.rate)?;
-                                tx.execute("UPDATE call_audit SET outcome=?3 WHERE run_id=?1 AND position=?2",rusqlite::params![run_id,position,refusal.reason.as_str()])?;
+                            let accepted = journal::accept_outcome(
+                                tx, &run_id, position, None, &refusal.outcome(), Source::Host,
+                            )?;
+                            if accepted.ack == CompletionAck::Accepted {
+                                crate::flow_scope::health(tx, &request.flow_id, &refusal)?;
+                                let at: i64 = tx.query_row(
+                                    "SELECT at FROM call_audit WHERE run_id=?1 AND position=?2",
+                                    rusqlite::params![run_id,position],
+                                    |r| r.get(0),
+                                )?;
+                                crate::rate::refund_dispatch(tx, &request.flow_id, at, &self.config.rate)?;
+                                tx.execute(
+                                    "UPDATE call_audit SET outcome=?3 WHERE run_id=?1 AND position=?2",
+                                    rusqlite::params![run_id,position,refusal.reason.as_str()],
+                                )?;
                             }
                             Ok(())
                         })?;
@@ -733,11 +788,36 @@ impl Runtime {
                         // and disable its flow together so recovery cannot retry it.
                         self.shared.store.write(|tx| {
                             let flow_id = &request.flow_id;
-                            crate::install::disable(tx, flow_id, &crate::install::Actor::Core, "agent_retired", self.config.clock.now_ms()).map_err(|e| CoreError::Invalid(e.to_string()))?;
-                            journal::accept_outcome(tx, &run_id, position, None, &crate::kv::rejection("agent_retired", &format!("{} {}", refusal.provider, refusal.action)), Source::Host)?;
-                            tx.execute("UPDATE runs SET state = 'failed', owner = NULL, generation = generation + 1, awaited = NULL, error_kind = 'agent_retired', error_detail = ?2, ended_at = ?3 WHERE run_id = ?1 AND state IN ('running','pending','suspended')", rusqlite::params![run_id, format!("{} {}", refusal.provider, refusal.action), self.config.clock.now_ms()])?;
+                            crate::install::disable(
+                                tx,
+                                flow_id,
+                                &crate::install::Actor::Core,
+                                "agent_retired",
+                                self.config.clock.now_ms(),
+                            )
+                            .map_err(|e| CoreError::Invalid(e.to_string()))?;
+                            journal::accept_outcome(
+                                tx,
+                                &run_id,
+                                position,
+                                None,
+                                &crate::kv::rejection(
+                                    "agent_retired",
+                                    &format!("{} {}", refusal.provider, refusal.action),
+                                ),
+                                Source::Host,
+                            )?;
+                            runs::fail_external(
+                                tx,
+                                &run_id,
+                                "agent_retired",
+                                &format!("{} {}", refusal.provider, refusal.action),
+                            )?;
                             Ok(())
                         })?;
+                        self.flush_refusals()?;
+                        self.shared.host.refusal_committed(&request, &refusal);
+                        self.wake_flow(&request.flow_id);
                     } else {
                         let now = self.config.clock.now_ms();
                         let backoff = self
@@ -844,7 +924,11 @@ impl Runtime {
         }
     }
 
-    pub(crate) fn class_of(&self, kind: &CallKind, args: &JsonText) -> StoredClass {
+    pub(crate) fn class_of(
+        &self,
+        kind: &CallKind,
+        args: Option<&serde_json::Value>,
+    ) -> StoredClass {
         if kind.is_synchronous() {
             return StoredClass::Sync;
         }
@@ -854,16 +938,7 @@ impl Runtime {
         // A built-in's class is basal's own rule, not the host's, and for
         // `net.fetch` it depends on the method in the arguments. Arguments
         // over the cap are refused before dispatch, so they are not parsed.
-        let class = if basal_host::builtins::is_builtin(kind) {
-            let parsed = if args.len() <= self.config.limits.max_arg_bytes {
-                serde_json::from_str(args.as_str()).unwrap_or(serde_json::Value::Null)
-            } else {
-                serde_json::Value::Null
-            };
-            basal_host::builtins::class(kind, &parsed)
-        } else {
-            None
-        };
+        let class = args.and_then(|parsed| basal_host::builtins::class(kind, parsed));
         match class.unwrap_or_else(|| self.shared.host.classify(kind)) {
             basal_host::CallClass::Query => StoredClass::Query,
             basal_host::CallClass::Mutation {
@@ -929,27 +1004,14 @@ impl Runtime {
 
     // ---- Slots and deadlines ----------------------------------------------
 
-    /// Fails every run past its wall-clock deadline (see
-    /// [`runs::expire`]), frees its flow's slot and wakes the next run of
-    /// that flow. The module calls this on a timer; an activation also
-    /// notices its own run's deadline.
+    /// Fails runs past their deadline, then services durable provider
+    /// acknowledgements and retention on the runtime's own cadence.
     pub fn enforce_deadlines(&self) -> Result<Vec<String>> {
         let now = self.config.clock.now_ms();
-        let (expired,refusals) = self.shared.store.write(|tx| {
-            let mut stmt=tx.prepare("SELECT j.run_id,j.position,j.refusal_detail FROM journal j JOIN runs r USING (run_id) WHERE j.dispatch='deferred' AND r.deadline_at<=?1 AND r.state IN ('pending','running','suspended')")?;
-            let rows=stmt.query_map([now],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;drop(stmt);
-            let mut refusals=Vec::new();
-            for (run_id,position,detail) in rows {
-                let run=runs::load(tx,&run_id)?;
-                let row=journal::row(tx,&run_id,crate::model::to_u64(position,"position")?)?.ok_or_else(||CoreError::Corrupt("expired call missing".into()))?;
-                let refusal=serde_json::from_str::<basal_host::flow_refusal::FlowRefusal>(&detail).map_err(|e|CoreError::Corrupt(e.to_string()))?;
-                refusals.push((Self::request(&run,&row,row.attempts),refusal));
-            }
-            Ok((runs::expire(tx,now,None)?,refusals))
-        })?;
-        for (request, refusal) in refusals {
-            self.shared.host.refusal_committed(&request, &refusal);
-        }
+        let expired = self.shared.store.write(|tx| runs::expire(tx, now, None))?;
+        self.flush_refusals()?;
+        self.retention_due(now)?;
+        self.reap_threads();
         self.shared.signal.bump();
         for (_, flow_id) in &expired {
             self.wake_flow(flow_id);

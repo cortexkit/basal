@@ -393,6 +393,9 @@ pub fn exit(tx: &Transaction, lease: &Lease, exit: &Exit) -> Result<RunState> {
     if changed == 0 {
         return Err(lease.lost());
     }
+    if state.is_terminal() {
+        crate::journal::expire_deferred(tx, &lease.run_id)?;
+    }
     Ok(state)
 }
 
@@ -504,6 +507,27 @@ pub fn cancel(tx: &Transaction, run_id: &str, detail: &str) -> Result<()> {
             state,
             operation: "cancel",
         });
+    }
+    crate::journal::expire_deferred(tx, run_id)?;
+    Ok(())
+}
+
+/// Fail a live run from a provider refusal rather than an activation lease.
+/// Moving the generation fences any worker still executing this run.
+pub(crate) fn fail_external(
+    tx: &Transaction,
+    run_id: &str,
+    kind: &str,
+    detail: &str,
+) -> Result<()> {
+    let changed = tx.execute(
+        "UPDATE runs SET state='failed',owner=NULL,generation=generation+1,awaited=NULL,\
+         error_kind=?2,error_detail=?3,ended_at=?4 WHERE run_id=?1 \
+         AND state IN ('running','pending','suspended')",
+        params![run_id, kind, detail, now_ms()],
+    )?;
+    if changed > 0 {
+        crate::journal::expire_deferred(tx, run_id)?;
     }
     Ok(())
 }

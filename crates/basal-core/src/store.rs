@@ -2,7 +2,8 @@
 //! ways to touch it (a read, and a write transaction that commits or rolls
 //! back as a whole).
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -53,8 +54,8 @@ pub struct Pragmas {
 pub struct Store {
     inner: SqliteStore,
     cut: AtomicBool,
-    path: PathBuf,
     store_id: String,
+    clock: Mutex<crate::clock::Clock>,
 }
 
 fn backend(e: StoreError) -> CoreError {
@@ -62,6 +63,10 @@ fn backend(e: StoreError) -> CoreError {
 }
 
 pub(crate) fn now_ms() -> i64 {
+    crate::clock::write_time().unwrap_or_else(system_now_ms)
+}
+
+pub(crate) fn system_now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -100,8 +105,8 @@ impl Store {
         let mut store = Self {
             inner,
             cut: AtomicBool::new(false),
-            path,
             store_id: String::new(),
+            clock: Mutex::new(crate::clock::Clock::system()),
         };
         store.store_id = store.write(|tx| {
             let existing: Option<String> = tx
@@ -131,12 +136,12 @@ impl Store {
         Ok(store)
     }
 
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
     pub fn store_id(&self) -> &str {
         &self.store_id
+    }
+
+    pub(crate) fn set_clock(&self, clock: crate::clock::Clock) {
+        *self.clock.lock().unwrap_or_else(|p| p.into_inner()) = clock;
     }
 
     /// The durability pragmas as SQLite reports them.
@@ -198,13 +203,21 @@ impl Store {
     pub fn write<T>(&self, f: impl FnOnce(&Transaction) -> Result<T>) -> Result<T> {
         self.check_cut()?;
         let mut failure = None;
-        let out = self.inner.with_conn_fenced(|tx| match f(tx) {
-            Ok(v) => Ok(v),
-            Err(e) => {
-                failure = Some(e);
-                // Any error makes with_conn_fenced roll back; the domain
-                // error is reported instead of this placeholder.
-                Err(rusqlite::Error::InvalidQuery)
+        let out = self.inner.with_conn_fenced(|tx| {
+            let now = self
+                .clock
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .now_ms();
+            let _time = crate::clock::WriteTime::enter(now);
+            match f(tx) {
+                Ok(v) => Ok(v),
+                Err(e) => {
+                    failure = Some(e);
+                    // Any error makes with_conn_fenced roll back; the domain
+                    // error is reported instead of this placeholder.
+                    Err(rusqlite::Error::InvalidQuery)
+                }
             }
         });
         if let Some(e) = failure {

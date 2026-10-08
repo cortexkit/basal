@@ -276,33 +276,32 @@ pub(crate) fn validate_inner(
             });
         }
     }
-    for (field, agent) in manifest.agents() {
-        if package {
-            continue;
-        }
-        // Agent-owned flows act only for their owner. Global operator flows
-        // and unverified local installs retain their catalog-wide grants.
-        if author != "operator" && author != "local:unverified" {
-            let Some(target_id) = catalog.agent_id(agent) else {
+    if !package {
+        for (field, agent) in manifest.agents() {
+            // Agent-owned flows act only for their owner. Global operator flows
+            // and unverified local installs retain their catalog-wide grants.
+            if author != crate::decisions::OPERATOR_ACTOR && author != "local:unverified" {
+                let Some(target_id) = catalog.agent_id(agent) else {
+                    return Err(InstallError::UnknownAgent {
+                        field,
+                        agent: agent.to_owned(),
+                    });
+                };
+                // Manifests may use a display name, while the scope-stamped author
+                // is a stable id. Compare resolved identities, not their spelling.
+                if target_id != author {
+                    return Err(InstallError::ForeignAgentTarget {
+                        field,
+                        agent: agent.to_owned(),
+                        author: author.to_owned(),
+                    });
+                }
+            } else if !catalog.agent_known(agent) {
                 return Err(InstallError::UnknownAgent {
                     field,
                     agent: agent.to_owned(),
                 });
-            };
-            // Manifests may use a display name, while the scope-stamped author
-            // is a stable id. Compare resolved identities, not their spelling.
-            if target_id != author {
-                return Err(InstallError::ForeignAgentTarget {
-                    field,
-                    agent: agent.to_owned(),
-                    author: author.to_owned(),
-                });
             }
-        } else if !catalog.agent_known(agent) {
-            return Err(InstallError::UnknownAgent {
-                field,
-                agent: agent.to_owned(),
-            });
         }
     }
     for (field, root) in manifest.roots() {
@@ -471,7 +470,12 @@ pub fn approve(
     // operator's answer to a card on core's consent plane, so core stands
     // behind a version again and the flow may run. Any other disable (the
     // operator's, the owner's, the runtime's) stays.
-    if flow(tx, flow_id)?.and_then(|f| f.disabled_by).as_deref() == Some(CORE_ACTOR) {
+    // Retirement is about the agent, not the approved version. A new
+    // version restores core's approval but cannot bring an agent back.
+    if flow(tx, flow_id)?.is_some_and(|f| {
+        f.disabled_by.as_deref() == Some(CORE_ACTOR)
+            && f.disabled_reason.as_deref() != Some("agent_retired")
+    }) {
         enable(tx, flow_id, now_ms)?;
     }
     Ok(approval)
@@ -687,30 +691,6 @@ pub fn flow(conn: &Connection, flow_id: &str) -> Result<Option<FlowRecord>> {
         })
     })
     .transpose()
-}
-
-/// Author labels alone cannot distinguish an operator installing in an
-/// agent's name. The consent card records the attested author form.
-pub fn agent_owned_version(conn: &Connection, flow_id: &str, version: u32) -> Result<bool> {
-    let card: Option<String> = conn
-        .query_row(
-            "SELECT card FROM install_cards WHERE flow_id=?1 AND version=?2",
-            params![flow_id, version_i64(version)],
-            |r| r.get(0),
-        )
-        .optional()?;
-    if let Some(card) = card {
-        let card: serde_json::Value =
-            serde_json::from_str(&card).map_err(|e| CoreError::Corrupt(e.to_string()))?;
-        if let Some(author) = card.get("wire_author") {
-            return Ok(author.get("operator") != Some(&serde_json::Value::Bool(true)));
-        }
-    }
-    // Direct runtime installs have no consent card. Only the explicit operator
-    // author is global; unknown authors fail closed until core supplies scope.
-    Ok(flow(conn, flow_id)?
-        .and_then(|f| f.owner)
-        .is_none_or(|o| o != "operator"))
 }
 
 /// Whether the flow is disabled. A flow with no record is treated as
@@ -980,7 +960,7 @@ impl Runtime {
         self.store().read(|c| {
             let mut stmt = c.prepare(
                 "SELECT kind, flow_id, recipient, body FROM outbox \
-                 WHERE delivered_at IS NULL ORDER BY seq",
+                 WHERE delivered_at IS NULL AND kind <> 'refusal_committed' ORDER BY seq",
             )?;
             let rows = stmt
                 .query_map([], |r| {
@@ -1038,7 +1018,6 @@ pub fn enable_as(
             };
             match record.disabled_by.as_deref() {
                 Some(by) if by == own => {}
-                Some(RUNTIME_ACTOR) => return Err(refused()),
                 _ => return Err(refused()),
             }
         }
@@ -1063,10 +1042,12 @@ pub fn enable(
          disabled_at = NULL WHERE flow_id = ?1 AND state = 'disabled'",
         [flow_id],
     )?;
-    tx.execute(
-        "UPDATE rate_windows SET saturated = 0 WHERE flow_id = ?1",
-        [flow_id],
-    )?;
+    if changed > 0 {
+        tx.execute(
+            "UPDATE rate_windows SET saturated = 0 WHERE flow_id = ?1",
+            [flow_id],
+        )?;
+    }
     if changed > 0 && !crate::packages::removed(tx, flow_id)? {
         schedule::table::enable(tx, flow_id, timestamp(now_ms)?)?;
     }

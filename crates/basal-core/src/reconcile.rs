@@ -201,9 +201,12 @@ impl Runtime {
         let state = self
             .store()
             .write(|tx| resolve(tx, run_id, position, &resolution, actor, None))?;
+        self.flush_refusals()?;
         self.shared.signal.bump();
         if state == RunState::Pending {
             self.wake(run_id);
+        } else if state.is_terminal() {
+            self.wake_flow(&self.run(run_id)?.flow_id);
         }
         Ok(state)
     }

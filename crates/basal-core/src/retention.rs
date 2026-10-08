@@ -1,6 +1,20 @@
-//! Retention: pruning finished runs, keeping tombstones.
+//! Retention in bounded transactions, on the runtime's deadline-service cadence.
+//!
+//! Terminal runs, journal, mailbox, activations and Broca snapshots are kept
+//! for seven days by default, and longer while any call, token reservation or
+//! open decision card needs them. Quarantine, call/audit history, delivered
+//! outbox notifications, settled token ledgers and dropped schedules keep
+//! thirty days; any existing run protects its dependent history. Unsent
+//! notifications and open reservations/cards stay until settled. Old rate
+//! windows are removed only outside the current saturation streak and any
+//! window a live call could refund; token windows stay while a reservation or
+//! existing run needs them. Closed decision cards retain the latest re-enable
+//! episode per flow forever, because its number allocates the next episode.
+//! Trigger and idempotency tombstones stay forever: no source redelivery
+//! horizon is established, so deleting one could permit a second effect.
 
-use rusqlite::{Transaction, params};
+use rusqlite::{Connection, Transaction, params};
+use std::time::Duration;
 
 use crate::admission::trigger_key;
 use crate::error::Result;
@@ -16,14 +30,57 @@ pub struct PruneReport {
     pub kept_unsettled: Vec<String>,
 }
 
-fn prune_in(tx: &Transaction, cutoff: i64, now: i64) -> Result<PruneReport> {
+const BATCH: usize = 128;
+
+#[derive(Debug, Clone)]
+pub struct RetentionConfig {
+    pub interval: Duration,
+    pub runs: Duration,
+    pub history: Duration,
+}
+
+impl Default for RetentionConfig {
+    fn default() -> Self {
+        Self {
+            interval: Duration::from_secs(3600),
+            runs: Duration::from_secs(7 * 24 * 3600),
+            history: Duration::from_secs(30 * 24 * 3600),
+        }
+    }
+}
+
+fn millis(duration: Duration) -> i64 {
+    i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
+}
+
+// Kept in SQL so permanently unsettled old runs do not consume every slot
+// of the bounded candidate batch and starve later, prunable runs.
+const OBLIGATIONS: &str = "EXISTS (SELECT 1 FROM journal j WHERE j.run_id=r.run_id AND j.settlement IS NULL \
+    AND NOT EXISTS (SELECT 1 FROM mailbox m WHERE m.run_id=j.run_id AND m.position=j.position) \
+    AND NOT EXISTS (SELECT 1 FROM quarantine q WHERE q.run_id=j.run_id AND q.position=j.position AND q.reason='run_cancelled')) \
+    OR EXISTS (SELECT 1 FROM token_ledger t WHERE t.run_id=r.run_id AND t.state='reserved') \
+    OR EXISTS (SELECT 1 FROM decision_cards d WHERE d.run_id=r.run_id AND d.state='open') \
+    OR EXISTS (SELECT 1 FROM outbox o WHERE o.kind='refusal_committed' AND json_extract(o.body,'$.run_id')=r.run_id)";
+
+fn candidates(conn: &Connection, cutoff: i64, unsettled: bool) -> Result<Vec<String>> {
+    let predicate = if unsettled { "" } else { "NOT" };
+    let mut stmt = conn.prepare(&format!(
+        "SELECT r.run_id FROM runs r WHERE r.state IN ('succeeded','failed','engine_mismatch','cancelled') \
+         AND r.ended_at<=?1 AND {predicate} ({OBLIGATIONS}) ORDER BY r.run_id LIMIT {BATCH}",
+    ))?;
+    Ok(stmt
+        .query_map([cutoff], |r| r.get(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+fn prune_in(tx: &Transaction, cutoff: i64, now: i64, run_id: &str) -> Result<PruneReport> {
     let mut stmt = tx.prepare(
         "SELECT run_id, flow_id, trigger_id FROM runs \
          WHERE state IN ('succeeded', 'failed', 'engine_mismatch', 'cancelled') \
-         AND ended_at IS NOT NULL AND ended_at <= ?1 ORDER BY run_id",
+         AND ended_at IS NOT NULL AND ended_at <= ?1 AND run_id=?2 ORDER BY run_id",
     )?;
     let candidates = stmt
-        .query_map([cutoff], |r| {
+        .query_map(params![cutoff, run_id], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
@@ -41,7 +98,13 @@ fn prune_in(tx: &Transaction, cutoff: i64, now: i64) -> Result<PruneReport> {
         // An open token reservation is an obligation too: its usage has not
         // been reported. The call audit and the token ledger are records of
         // what the flow did and spent, and outlive the journal.
-        if crate::tokens::open_reservations(tx, &run_id)? > 0 {
+        if crate::tokens::open_reservations(tx, &run_id)? > 0
+            || tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM decision_cards WHERE run_id=?1 AND state='open') OR EXISTS(SELECT 1 FROM outbox WHERE kind='refusal_committed' AND json_extract(body,'$.run_id')=?1)",
+                [&run_id],
+                |r| r.get::<_, bool>(0),
+            )?
+        {
             report.kept_unsettled.push(run_id);
             continue;
         }
@@ -62,6 +125,13 @@ fn prune_in(tx: &Transaction, cutoff: i64, now: i64) -> Result<PruneReport> {
         tx.execute("DELETE FROM activations WHERE run_id = ?1", [&run_id])?;
         tx.execute("DELETE FROM trigger_inbox WHERE run_id = ?1", [&run_id])?;
         tx.execute("DELETE FROM runs WHERE run_id = ?1", [&run_id])?;
+        tx.execute(
+            "DELETE FROM meta WHERE key IN (?1,?2)",
+            params![
+                format!("journal_calls:{run_id}"),
+                format!("journal_bytes:{run_id}")
+            ],
+        )?;
         report.pruned.push(run_id);
     }
     Ok(report)
@@ -73,14 +143,82 @@ impl Runtime {
     /// not terminal (`needs_reconcile` included).
     pub fn prune(&self, now_ms: i64, retention_ms: i64) -> Result<PruneReport> {
         let cutoff = now_ms.saturating_sub(retention_ms);
-        self.store().write(|tx| prune_in(tx, cutoff, now_ms))
+        let ids = self.store().read(|c| candidates(c, cutoff, false))?;
+        let mut report = PruneReport {
+            kept_unsettled: self.store().read(|c| candidates(c, cutoff, true))?,
+            ..PruneReport::default()
+        };
+        for id in ids {
+            // Release the single connection between runs; a batch can never
+            // monopolize it for the whole retained history.
+            let pruned = self.store().write(|tx| prune_in(tx, cutoff, now_ms, &id))?;
+            report.pruned.extend(pruned.pruned);
+            report.kept_unsettled.extend(pruned.kept_unsettled);
+        }
+        Ok(report)
     }
 
-    /// Drops tombstones written before `before_ms`. Call it only once no
-    /// source can still redeliver a trigger that old (the broker's
-    /// redelivery horizon); until then a tombstone is what refuses it.
-    pub fn prune_tombstones(&self, before_ms: i64) -> Result<usize> {
-        self.store()
-            .write(|tx| Ok(tx.execute("DELETE FROM tombstones WHERE pruned_at < ?1", [before_ms])?))
+    pub(crate) fn retention_due(&self, now: i64) -> Result<()> {
+        let mut next = self
+            .shared
+            .retention_next
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if next.is_some_and(|at| now < at) {
+            return Ok(());
+        }
+        let config = &self.config.retention;
+        self.prune(now, millis(config.runs))?;
+        self.prune_history(now, now.saturating_sub(millis(config.history)))?;
+        *next = Some(now.saturating_add(millis(config.interval).max(1)));
+        Ok(())
+    }
+
+    fn prune_history(&self, now: i64, cutoff: i64) -> Result<()> {
+        for (table, predicate) in [
+            (
+                "quarantine",
+                "at<=?1 AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.run_id=quarantine.run_id)",
+            ),
+            (
+                "call_audit",
+                "at<=?1 AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.run_id=call_audit.run_id)",
+            ),
+            (
+                "audit",
+                "at<=?1 AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.run_id=audit.run_id) AND NOT EXISTS (SELECT 1 FROM decision_cards d WHERE d.elicitation_id=audit.elicitation_id AND d.state='open')",
+            ),
+            ("outbox", "delivered_at<=?1 AND kind<>'refusal_committed'"),
+            ("schedule_dropped", "at<=?1"),
+            (
+                "token_ledger",
+                "state='settled' AND settled_at<=?1 AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.run_id=token_ledger.run_id)",
+            ),
+            (
+                "token_windows",
+                "window_start + window_ms<=?1 AND NOT EXISTS (SELECT 1 FROM token_ledger t WHERE t.flow_id=token_windows.flow_id AND t.window_ms=token_windows.window_ms AND t.window_start=token_windows.window_start AND (t.state='reserved' OR EXISTS (SELECT 1 FROM runs r WHERE r.run_id=t.run_id)))",
+            ),
+            (
+                "decision_cards",
+                "state<>'open' AND answered_at<=?1 AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.run_id=decision_cards.run_id) AND (kind<>'reenable' OR EXISTS (SELECT 1 FROM decision_cards newer WHERE newer.kind='reenable' AND newer.flow_id=decision_cards.flow_id AND newer.instance>decision_cards.instance))",
+            ),
+        ] {
+            self.delete_history_batch(table, predicate, cutoff)?;
+        }
+        let streak = millis(self.config.rate.window).saturating_mul(i64::from(
+            self.config.rate.saturated_windows_to_disable.max(1),
+        ));
+        self.delete_history_batch("rate_windows",
+            "window_start + window_ms<=?1 AND NOT EXISTS (SELECT 1 FROM call_audit a JOIN runs r USING(run_id) WHERE a.flow_id=rate_windows.flow_id AND a.at>=rate_windows.window_start AND a.at<rate_windows.window_start+rate_windows.window_ms)",
+            cutoff.min(now.saturating_sub(streak)))?;
+        Ok(())
+    }
+
+    fn delete_history_batch(&self, table: &str, predicate: &str, cutoff: i64) -> Result<()> {
+        // The names/predicates are private constants, never caller input.
+        self.store().write(|tx| {
+            tx.execute(&format!("DELETE FROM {table} WHERE rowid IN (SELECT rowid FROM {table} WHERE {predicate} ORDER BY rowid LIMIT {BATCH})"),[cutoff])?;
+            Ok(())
+        })
     }
 }
