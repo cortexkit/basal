@@ -654,10 +654,10 @@ impl Module {
         for f in self.rt.flow_health().map_err(|e| self.core_error(e))? {
             // Apply visibility even when the caller explicitly requests an id:
             // absent and invisible flows must be indistinguishable.
-            if let Some(owner) = owner {
-                if !self.owns(owner, &f.flow_id)? {
-                    continue;
-                }
+            if let Some(owner) = owner
+                && !self.owns(owner, &f.flow_id)?
+            {
+                continue;
             }
             if p.flow_ids
                 .as_ref()

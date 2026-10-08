@@ -418,11 +418,11 @@ pub fn main() -> std::process::ExitCode {
             return std::process::ExitCode::from(EXIT_STORE_FAILURE as u8);
         }
     };
-    if args.broca {
-        if let Err(error) = broca.poll() {
-            eprintln!("ck-basal-harness: {error}");
-            return std::process::ExitCode::FAILURE;
-        }
+    if args.broca
+        && let Err(error) = broca.poll()
+    {
+        eprintln!("ck-basal-harness: {error}");
+        return std::process::ExitCode::FAILURE;
     }
     let _ = pool_slot.set(module.pool.clone());
     module.fatal.exit_when_raised();
@@ -470,10 +470,10 @@ pub fn main() -> std::process::ExitCode {
                 } else {
                     let reply =
                         command_reply(&module, &mock, &consent, &clock, &args.dir, &command);
-                    if args.broca {
-                        if let Err(error) = broca.poll() {
-                            eprintln!("ck-basal-harness: {error}");
-                        }
+                    if args.broca
+                        && let Err(error) = broca.poll()
+                    {
+                        eprintln!("ck-basal-harness: {error}");
                     }
                     reply
                 }

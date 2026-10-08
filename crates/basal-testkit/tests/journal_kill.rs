@@ -76,13 +76,13 @@ fn killing_the_parent_at_every_boundary_recovers_to_the_uncut_state() {
                     // The restarted parent recovers and finishes the run.
                     let (_, after, err2) = parent(&dir, None);
                     let summary = after.as_ref().map(|a| a["summary"].clone());
-                    if summary.as_ref() != Some(&expected) {
-                        if let Ok(mut f) = failures.lock() {
-                            f.push(format!(
-                                "{} (killed {killed}): {summary:?}\nfirst: {out:?} {err}\nsecond: {err2}",
-                                point.render()
-                            ));
-                        }
+                    if summary.as_ref() != Some(&expected)
+                        && let Ok(mut f) = failures.lock()
+                    {
+                        f.push(format!(
+                            "{} (killed {killed}): {summary:?}\nfirst: {out:?} {err}\nsecond: {err2}",
+                            point.render()
+                        ));
                     }
                     let _ = std::fs::remove_dir_all(&dir);
                 }
@@ -171,10 +171,10 @@ fn killing_the_worker_at_every_boundary_recovers_to_the_uncut_state() {
                         m.push(point.render());
                     }
                     let summary = outcome.and_then(|_| summarize(&rt, &world.mock, &run_id));
-                    if summary.as_ref().ok() != Some(&expected) {
-                        if let Ok(mut f) = failures.lock() {
-                            f.push(format!("{}: {summary:#?}", point.render()));
-                        }
+                    if summary.as_ref().ok() != Some(&expected)
+                        && let Ok(mut f) = failures.lock()
+                    {
+                        f.push(format!("{}: {summary:#?}", point.render()));
                     }
                 }
             });
