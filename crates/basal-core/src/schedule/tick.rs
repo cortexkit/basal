@@ -183,7 +183,8 @@ pub fn plan_flow(
             params![
                 flow_id,
                 fire.trigger_id,
-                i64::try_from(row.version).unwrap_or(i64::MAX),
+                i64::try_from(row.version)
+                    .map_err(|_| CoreError::Corrupt(format!("schedule version {}", row.version)))?,
                 to_ms(fire.due),
                 fire.payload.to_string(),
                 at
@@ -248,6 +249,36 @@ pub fn admit_next(
     store_id: &str,
     ctx: &AdmitContext,
 ) -> Result<Option<AdmittedFire>> {
+    loop {
+        // Admission may write rate counters before encountering corrupt bytes.
+        // Roll those writes back before quarantining only the offending fire.
+        tx.execute_batch("SAVEPOINT schedule_admission")?;
+        match admit_oldest(tx, store_id, ctx) {
+            Ok(fire) => {
+                tx.execute_batch("RELEASE schedule_admission")?;
+                return Ok(fire);
+            }
+            Err(error) => {
+                tx.execute_batch("ROLLBACK TO schedule_admission; RELEASE schedule_admission")?;
+                let CoreError::Corrupt(detail) = error else {
+                    return Err(error);
+                };
+                tx.execute("INSERT INTO schedule_dropped(flow_id,trigger_id,due_ms,payload,reason,at) SELECT flow_id,trigger_id,due_ms,payload,'not_approved',?1 FROM schedule_fires ORDER BY seq ASC LIMIT 1", [ctx.now_ms])?;
+                tx.execute("INSERT INTO audit(at,actor,action,detail) VALUES (?1,'runtime','schedule.corrupt',?2)", params![ctx.now_ms, serde_json::json!({"error":detail}).to_string()])?;
+                tx.execute(
+                    "DELETE FROM schedule_fires WHERE seq=(SELECT MIN(seq) FROM schedule_fires)",
+                    [],
+                )?;
+            }
+        }
+    }
+}
+
+fn admit_oldest(
+    tx: &Transaction,
+    store_id: &str,
+    ctx: &AdmitContext,
+) -> Result<Option<AdmittedFire>> {
     let row = tx
         .query_row(
             "SELECT seq, flow_id, trigger_id, due_ms, payload \
@@ -299,7 +330,7 @@ pub fn planned_count(c: &rusqlite::Connection) -> Result<u64> {
 pub struct DroppedFire {
     pub flow_id: String,
     pub trigger_id: String,
-    /// `disabled`, `not_approved` or `rate_limited`.
+    /// `disabled`, `not_approved` (also covers corrupt persisted input), or `rate_limited`.
     pub reason: String,
 }
 

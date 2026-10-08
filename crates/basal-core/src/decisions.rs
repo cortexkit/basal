@@ -41,7 +41,6 @@ use crate::install;
 use crate::journal;
 use crate::model::RunState;
 use crate::reconcile::{self, Resolution};
-use crate::runs;
 use crate::runtime::Runtime;
 
 pub use crate::reconcile::RECONCILED_AS_APPLIED;
@@ -165,6 +164,11 @@ impl DecisionRecord {
     pub fn context(&self) -> Result<DecisionContext> {
         let corrupt = |why: &str| CoreError::Corrupt(format!("decision card {}: {why}", self.seq));
         let v: Value = serde_json::from_str(&self.card).map_err(|e| corrupt(&e.to_string()))?;
+        self.context_from_value(&v)
+    }
+
+    fn context_from_value(&self, v: &Value) -> Result<DecisionContext> {
+        let corrupt = |why: &str| CoreError::Corrupt(format!("decision card {}: {why}", self.seq));
         let int = |name: &str| v[name].as_i64().ok_or_else(|| corrupt(name));
         let small = |name: &str| {
             v[name]
@@ -206,10 +210,10 @@ impl DecisionRecord {
     /// title and prompt written from it. Core writes the card's facts from
     /// the context itself.
     pub fn to_card(&self) -> Result<DecisionCard> {
-        let context = self.context()?;
-        let args_digest = serde_json::from_str::<Value>(&self.card)
-            .ok()
-            .and_then(|v| v["args_digest"].as_str().map(str::to_owned));
+        let value: Value = serde_json::from_str(&self.card)
+            .map_err(|e| CoreError::Corrupt(format!("decision card {}: {e}", self.seq)))?;
+        let context = self.context_from_value(&value)?;
+        let args_digest = value["args_digest"].as_str().map(str::to_owned);
         Ok(DecisionCard {
             dedup_key: Some(self.dedup_key.clone()),
             flow_id: self.flow_id.clone(),
@@ -320,7 +324,7 @@ pub fn prompt(flow_id: &str, context: &DecisionContext) -> String {
             ..
         } => format!(
             "Run {} of {flow_id} may not have finished: its call to {op} was sent and then {}.",
-            clock(*run_admitted_at_ms, "%H:%M UTC"),
+            clock(*run_admitted_at_ms, "%Y-%m-%d %H:%M UTC"),
             what_happened(*unknown_reason)
         ),
         DecisionContext::Reenable {
@@ -332,7 +336,7 @@ pub fn prompt(flow_id: &str, context: &DecisionContext) -> String {
         } => format!(
             "basal disabled {flow_id} at {}: it reached its limit of {limit} {} per {} window \
              in {saturated_windows} windows in a row.",
-            clock(*disabled_at_ms, "%H:%M UTC"),
+            clock(*disabled_at_ms, "%Y-%m-%d %H:%M UTC"),
             unit(*disabled_reason),
             window(*window_ms)
         ),
@@ -401,7 +405,10 @@ fn first(
     filter: &str,
     args: impl rusqlite::Params,
 ) -> Result<Option<DecisionRecord>> {
-    Ok(select(conn, filter, args)?.into_iter().next())
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {COLUMNS} FROM decision_cards {filter} LIMIT 1"
+    ))?;
+    stmt.query_row(args, from_row).optional()?.transpose()
 }
 
 /// Every card, oldest first.
@@ -438,11 +445,18 @@ pub fn refresh(tx: &Transaction, now_ms: i64) -> Result<()> {
 /// ended unknown, for its own reason); a decision already made for this
 /// send of the call is never asked again.
 pub fn refresh_run(tx: &Transaction, run_id: &str, now_ms: i64) -> Result<()> {
-    let run = runs::load(tx, run_id)?;
-    if run.state != RunState::NeedsReconcile {
+    let (state, flow_id, version, admitted_at): (String, String, Option<u32>, i64) = tx
+        .query_row(
+            "SELECT state, flow_id, flow_version, admitted_at FROM runs WHERE run_id=?1",
+            [run_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()?
+        .ok_or_else(|| CoreError::NoSuchRun(run_id.to_owned()))?;
+    if state != RunState::NeedsReconcile.as_str() {
         return Ok(());
     }
-    let version = run.flow_version.unwrap_or(0);
+    let version = version.unwrap_or(0);
     for position in journal::unknown_positions(tx, run_id)? {
         let Some(row) = journal::row(tx, run_id, position)? else {
             continue;
@@ -456,7 +470,7 @@ pub fn refresh_run(tx: &Transaction, run_id: &str, now_ms: i64) -> Result<()> {
             .ok_or_else(|| CoreError::Corrupt(format!("unknown reason {reason:?}")))?;
         let context = DecisionContext::Reconcile {
             run_id: run_id.to_owned(),
-            run_admitted_at_ms: run.admitted_at,
+            run_admitted_at_ms: admitted_at,
             step: None,
             call_key: row.idempotency_key.clone(),
             op: basal_host::op_label(&row.kind),
@@ -466,7 +480,7 @@ pub fn refresh_run(tx: &Transaction, run_id: &str, now_ms: i64) -> Result<()> {
         let mut stored = context_json(&context);
         stored["args_digest"] = json!(hex(&row.args_digest.0));
         let card = stored.to_string();
-        let key = reconcile_key(&run.flow_id, run_id, position);
+        let key = reconcile_key(&flow_id, run_id, position);
         let instance = i64::from(row.attempts);
         let decided: bool = tx.query_row(
             "SELECT EXISTS (SELECT 1 FROM decision_cards WHERE dedup_key = ?1 AND instance = ?2 \
@@ -502,7 +516,7 @@ pub fn refresh_run(tx: &Transaction, run_id: &str, now_ms: i64) -> Result<()> {
                      VALUES (?1, 'reconcile', ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'open', ?9)",
                     params![
                         key,
-                        run.flow_id,
+                        flow_id,
                         i64::from(version),
                         run_id,
                         pos(position)?,

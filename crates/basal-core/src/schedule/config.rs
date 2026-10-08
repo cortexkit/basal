@@ -38,18 +38,10 @@ impl SchedulerConfig {
     }
 }
 
-/// Where the scheduler reads the time. Production uses [`SystemClock`];
+/// Where the scheduler reads the time. The runtime adapts its own clock;
 /// tests drive a [`ManualClock`], so no test depends on wall time.
 pub trait Clock: Send + Sync {
     fn now(&self) -> Timestamp;
-}
-
-pub struct SystemClock;
-
-impl Clock for SystemClock {
-    fn now(&self) -> Timestamp {
-        Timestamp::now()
-    }
 }
 
 /// A clock that moves only when told to.

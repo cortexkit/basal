@@ -55,7 +55,8 @@ pub enum Admission {
     /// The flow is disabled.
     Disabled,
     /// The flow's run rate limit for the current window is reached; the
-    /// trigger was not admitted and may be offered again later.
+    /// trigger was not admitted. Callers may offer it again later, but the
+    /// scheduler records it as dropped and does not retry that scheduled fire.
     RateLimited,
 }
 
@@ -110,6 +111,33 @@ fn next_run_id(tx: &Transaction, store_id: &str) -> Result<(String, i64)> {
 struct Grant {
     version: u32,
     deadline_ms: i64,
+    code_hash: [u8; 32],
+}
+
+fn approved_deadline(text: &str, default_ms: i64) -> Result<i64> {
+    type Cache = std::collections::VecDeque<(String, i64, i64)>;
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<Cache>> = std::sync::OnceLock::new();
+    let mut cache = CACHE
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    if let Some((_, _, deadline)) = cache
+        .iter()
+        .find(|(manifest, default, _)| manifest == text && *default == default_ms)
+    {
+        return Ok(*deadline);
+    }
+    let manifest =
+        Manifest::parse(text).map_err(|e| CoreError::Corrupt(format!("approved manifest: {e}")))?;
+    let deadline = manifest.deadline_ms(default_ms);
+    // Exact bytes validated by this process need not be decoded and checked
+    // again on every trigger. Invalid bytes never enter the bounded cache.
+    const MAX_VALIDATED_MANIFESTS: usize = 64;
+    if cache.len() == MAX_VALIDATED_MANIFESTS {
+        cache.pop_front();
+    }
+    cache.push_back((text.to_owned(), default_ms, deadline));
+    Ok(deadline)
 }
 
 /// Everything that can stop an admission besides deduplication: drain, a
@@ -120,6 +148,7 @@ fn gate(
     tx: &Transaction,
     spec: &TriggerSpec,
     ctx: &AdmitContext,
+    supplied: Option<&install::Approved>,
 ) -> Result<std::result::Result<Grant, Admission>> {
     if draining(tx)? {
         return Ok(Err(Admission::Draining));
@@ -132,14 +161,21 @@ fn gate(
         Some(flow) if !flow.enabled => return Ok(Err(Admission::Disabled)),
         Some(_) => {}
     }
-    let Some(approved) = install::approved(tx, &spec.flow_id)? else {
-        return Ok(Err(Admission::NotApproved));
+    let loaded;
+    let approved = match supplied {
+        Some(approved) => approved,
+        None => {
+            loaded = install::approved(tx, &spec.flow_id)?;
+            let Some(approved) = loaded.as_ref() else {
+                return Ok(Err(Admission::NotApproved));
+            };
+            approved
+        }
     };
     if approved.code_hash != code_hash(&spec.script, &spec.manifest) {
         return Ok(Err(Admission::NotApproved));
     }
-    let manifest = Manifest::parse(&spec.manifest)
-        .map_err(|e| CoreError::Corrupt(format!("approved manifest of {}: {e}", spec.flow_id)))?;
+    let deadline_ms = approved_deadline(&spec.manifest, ctx.default_deadline_ms)?;
     if let Take::Refused { .. } =
         rate::take(tx, &spec.flow_id, rate::Kind::Run, ctx.now_ms, &ctx.rate)?
     {
@@ -147,7 +183,8 @@ fn gate(
     }
     Ok(Ok(Grant {
         version: approved.version,
-        deadline_ms: manifest.deadline_ms(ctx.default_deadline_ms),
+        deadline_ms,
+        code_hash: approved.code_hash,
     }))
 }
 
@@ -162,7 +199,6 @@ fn insert_run(
     now: i64,
 ) -> Result<String> {
     let (run_id, seq) = next_run_id(tx, store_id)?;
-    let hash = code_hash(&spec.script, &spec.manifest);
     tx.execute(
         "INSERT INTO runs (run_id, flow_id, trigger_id, attempt, trigger, script, manifest, \
          code_hash, state, admitted_at, flow_version, admit_seq, deadline_ms) \
@@ -175,7 +211,7 @@ fn insert_run(
             spec.trigger.as_str(),
             spec.script,
             spec.manifest,
-            hash.as_slice(),
+            grant.code_hash.as_slice(),
             now,
             i64::from(grant.version),
             seq,
@@ -202,6 +238,16 @@ pub fn admit(
     spec: &TriggerSpec,
     ctx: &AdmitContext,
 ) -> Result<Admission> {
+    admit_with_approved(tx, store_id, spec, ctx, None)
+}
+
+fn admit_with_approved(
+    tx: &Transaction,
+    store_id: &str,
+    spec: &TriggerSpec,
+    ctx: &AdmitContext,
+    approved: Option<&install::Approved>,
+) -> Result<Admission> {
     let tomb: Option<String> = tx
         .query_row(
             "SELECT run_id FROM tombstones WHERE kind = 'trigger' AND key = ?1",
@@ -223,7 +269,7 @@ pub fn admit(
     if let Some(run_id) = existing {
         return Ok(Admission::Duplicate { run_id });
     }
-    let grant = match gate(tx, spec, ctx)? {
+    let grant = match gate(tx, spec, ctx, approved)? {
         Ok(grant) => grant,
         Err(refused) => return Ok(refused),
     };
@@ -246,8 +292,9 @@ pub fn admit_current(
     trigger: JsonText,
     ctx: &AdmitContext,
 ) -> Result<Admission> {
-    let (script, manifest) = match install::approved(tx, flow_id)? {
-        Some(approved) => (approved.script, approved.manifest),
+    let approved = install::approved(tx, flow_id)?;
+    let (script, manifest) = match &approved {
+        Some(approved) => (approved.script.clone(), approved.manifest.clone()),
         None => (String::new(), String::new()),
     };
     let spec = TriggerSpec {
@@ -257,7 +304,7 @@ pub fn admit_current(
         script,
         manifest,
     };
-    admit(tx, store_id, &spec, ctx)
+    admit_with_approved(tx, store_id, &spec, ctx, approved.as_ref())
 }
 
 /// Admits the run's trigger again as new work: a new run with a new id, so
@@ -288,7 +335,7 @@ pub fn retrigger(
         script: approved.script,
         manifest: approved.manifest,
     };
-    let grant = match gate(tx, &spec, ctx)? {
+    let grant = match gate(tx, &spec, ctx, None)? {
         Ok(grant) => grant,
         Err(refused) => return Ok(refused),
     };

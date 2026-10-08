@@ -86,7 +86,7 @@ pub fn apply(
     }
     if key.len() > limits.max_key_bytes {
         return Ok(rejection(
-            "kv_limit",
+            crate::authorize::codes::KV_LIMIT,
             &format!("keys are limited to {} bytes", limits.max_key_bytes),
         ));
     }
@@ -115,7 +115,7 @@ pub fn apply(
                 .to_string();
             if value.len() > limits.max_value_bytes {
                 return Ok(rejection(
-                    "kv_limit",
+                    crate::authorize::codes::KV_LIMIT,
                     &format!("values are limited to {} bytes", limits.max_value_bytes),
                 ));
             }
@@ -129,7 +129,7 @@ pub fn apply(
             )?;
             if total - previous + entry > bytes_i64(limits.max_flow_bytes)? {
                 return Ok(rejection(
-                    "kv_limit",
+                    crate::authorize::codes::KV_LIMIT,
                     &format!(
                         "a flow's kv is limited to {} bytes in total",
                         limits.max_flow_bytes

@@ -83,7 +83,7 @@ pub fn take(
 ) -> Result<Take> {
     let take = check(tx, flow_id, kind, now_ms, limits)?;
     if take == Take::Allowed {
-        count(tx, flow_id, kind, now_ms, limits)?;
+        increment(tx, flow_id, kind, now_ms, limits)?;
     }
     Ok(take)
 }
@@ -107,11 +107,24 @@ pub fn count(
 ) -> Result<()> {
     let window_ms = limits.window_ms()?;
     let start = window_start(now_ms, window_ms);
-    let (column, _) = column(kind, limits);
     tx.execute(
         "INSERT OR IGNORE INTO rate_windows (flow_id, window_ms, window_start) VALUES (?1, ?2, ?3)",
         params![flow_id, window_ms, start],
     )?;
+    increment(tx, flow_id, kind, now_ms, limits)
+}
+
+// Called after either count or check has created the current window.
+fn increment(
+    tx: &Transaction,
+    flow_id: &str,
+    kind: Kind,
+    now_ms: i64,
+    limits: &RateLimits,
+) -> Result<()> {
+    let window_ms = limits.window_ms()?;
+    let start = window_start(now_ms, window_ms);
+    let (column, _) = column(kind, limits);
     tx.execute(
         &format!(
             "UPDATE rate_windows SET {column} = {column} + 1 WHERE flow_id = ?1 \

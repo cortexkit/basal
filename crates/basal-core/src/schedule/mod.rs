@@ -28,7 +28,7 @@ use std::sync::Arc;
 
 use jiff::Timestamp;
 
-pub use config::{Clock, ManualClock, SchedulerConfig, SystemClock, TickHooks, TickPoint};
+pub use config::{Clock, ManualClock, SchedulerConfig, TickHooks, TickPoint};
 pub use due::DueError;
 pub use spec::{
     CompiledSchedule, DEFAULT_EACH_CAP, MAX_EACH_CAP, MAX_INTERVAL_SECS, MIN_INTERVAL_SECS, Missed,
@@ -174,9 +174,24 @@ impl Scheduler {
         self.admit_planned(now, &mut report.admitted)?;
         let due = self.store.read(|c| tick::due_flows(c, now))?;
         for flow_id in due {
-            let planned = self
-                .store
-                .write(|tx| tick::plan_flow(tx, &flow_id, now, &self.config))?;
+            let planned = self.store.write(|tx| {
+                tx.execute_batch("SAVEPOINT schedule_planning")?;
+                match tick::plan_flow(tx, &flow_id, now, &self.config) {
+                    Ok(planned) => {
+                        tx.execute_batch("RELEASE schedule_planning")?;
+                        Ok(planned)
+                    }
+                    Err(error) => {
+                        tx.execute_batch("ROLLBACK TO schedule_planning; RELEASE schedule_planning")?;
+                        let CoreError::Corrupt(detail) = error else { return Err(error); };
+                        // Isolate invalid persisted bytes without starving other
+                        // flows or disabling a replacement approved by another writer.
+                        tx.execute("UPDATE schedules SET state='disabled', updated_at=?2 WHERE flow_id=?1", rusqlite::params![flow_id, now.as_millisecond()])?;
+                        tx.execute("INSERT INTO audit(at,actor,action,detail) VALUES (?1,'runtime','schedule.corrupt',?2)", rusqlite::params![now.as_millisecond(), serde_json::json!({"flow_id":flow_id,"error":detail}).to_string()])?;
+                        Ok(None)
+                    }
+                }
+            })?;
             if let Some(planned) = planned {
                 report.planned.push(planned);
                 self.at(TickPoint::Planned {

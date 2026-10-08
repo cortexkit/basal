@@ -7270,6 +7270,23 @@ build_timeout_s = 3600
 
 
 [[control]]
+id = "manifest-duration-splits-multibyte-unit"
+guards = "untrusted duration units must not panic at a UTF-8 byte boundary"
+file = "crates/basal-core/src/manifest.rs"
+old = "let (unit_at, _) = text.char_indices().last()?;"
+new = "let unit_at = text.len().checked_sub(1)?; // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-core/src/manifest.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+expect_red = ["manifest::tests::multibyte_durations_are_refused_without_panicking"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
 id = "worker-stack-trace-hook-exposes-private-functions"
 guards = "worker stack trace hook exposes private functions"
 file = "crates/basal-worker/src/prelude.js"
@@ -7298,6 +7315,23 @@ runner = "cargo"
 package = "basal-worker"
 target = "--lib"
 expect_red = ["engine::tests::replayed_sync_delivery_orders_must_increase"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "facts-non-array-include-is-allowed"
+guards = "facts include shape must fail closed before private text can reach core"
+file = "crates/basal-core/src/authorize.rs"
+old = "if include.is_some_and(|v| !v.is_array()) {"
+new = "if false && include.is_some_and(|v| !v.is_array()) { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-core/src/audit_regression_tests.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+expect_red = ["audit_regression_tests::facts_include_must_be_an_array"]
 only = true
 timeout_s = 600
 build_timeout_s = 3600
@@ -7565,6 +7599,23 @@ build_timeout_s = 3600
 
 
 [[control]]
+id = "package-instance-overwrites-regular-flow"
+guards = "ensure_instance must preserve a non-instance flow with the deterministic instance id"
+file = "crates/basal-core/src/packages.rs"
+old = "if identity.is_some_and(|(p, owner)| {"
+new = "if false && identity.is_some_and(|(p, owner)| { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-core/src/audit_regression_tests.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+expect_red = ["audit_regression_tests::instance_collision_cannot_change_a_regular_flow"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
 id = "worker-rejection-orphans-outstanding-outcomes"
 guards = "worker rejection orphans outstanding outcomes"
 file = "crates/basal-worker/src/engine.rs"
@@ -7580,6 +7631,64 @@ runner = "cargo"
 package = "basal-worker"
 target = "--lib"
 expect_red = ["engine::tests::script_rejection_drains_outstanding_calls_before_finishing"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "huge-token-usage-aborts-settlement"
+guards = "provider usage above signed storage range must not prevent an outcome from settling"
+file = "crates/basal-core/src/tokens.rs"
+old = "usage.input_tokens.map(saturate_usage),"
+new = "usage.input_tokens.map(to_i64).transpose()?, // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-core/src/audit_regression_tests.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+expect_red = ["audit_regression_tests::huge_usage_settles_and_keeps_window_totals_integral"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "corrupt-schedule-stops-all-planning"
+guards = "invalid persisted schedules must be isolated while healthy schedules keep ticking"
+file = "crates/basal-core/src/schedule/mod.rs"
+old = "let CoreError::Corrupt(detail) = error else { return Err(error); };"
+new = "let CoreError::Corrupt(detail) = error else { return Err(error); }; if std::hint::black_box(true) { return Err(CoreError::Corrupt(detail.clone())); } // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-core/src/audit_regression_tests.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+expect_red = ["audit_regression_tests::corrupt_schedule_does_not_block_healthy_schedules"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "corrupt-oldest-fire-stops-all-admission"
+guards = "a corrupt planned fire must not indefinitely block healthy planned fires"
+file = "crates/basal-core/src/schedule/tick.rs"
+old = """
+let CoreError::Corrupt(detail) = error else {
+                    return Err(error);
+                };"""
+new = """
+let CoreError::Corrupt(detail) = error else {
+                    return Err(error);
+                };
+                if std::hint::black_box(true) { return Err(CoreError::Corrupt(detail.clone())); } // NON-VACUITY BREAK"""
+edits = []
+test_file = "crates/basal-core/src/audit_regression_tests.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+expect_red = ["audit_regression_tests::corrupt_oldest_fire_does_not_block_healthy_fires"]
 only = true
 timeout_s = 600
 build_timeout_s = 3600
@@ -7641,6 +7750,25 @@ runner = "cargo"
 package = "basal-host"
 target = "--lib"
 expect_red = ["transport::tests::stale_model_subscription_evicts_its_dead_handle"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "health-index-migration-deletes-existing-rows"
+guards = "additive health and decision indexes must preserve populated stores in every existing state"
+file = "crates/basal-core/src/schema.rs"
+old = 'const HEALTH_INDEXES: &str = r#"'
+new = """
+const HEALTH_INDEXES: &str = r#"
+DELETE FROM meta; -- NON-VACUITY BREAK"""
+edits = []
+test_file = "crates/basal-core/src/schema_health_tests.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+expect_red = ["schema::health_tests::additive_health_indexes_preserve_populated_tables_in_every_state"]
 only = true
 timeout_s = 600
 build_timeout_s = 3600
@@ -7784,4 +7912,41 @@ expect_red = ["top_level_wrapper_code_has_activation_budgets"]
 only = true
 timeout_s = 600
 build_timeout_s = 3600
+
+
+[[control]]
+id = "dry-run-multibyte-window-panics"
+guards = "flow.dry_run must reject multibyte windows through the public operation rather than panic"
+file = "crates/basal-core/src/manifest.rs"
+old = "let (unit_at, _) = text.char_indices().last()?;"
+new = "let unit_at = text.len().checked_sub(1)?; // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-module/tests/unicode_dry_run.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test unicode_dry_run"
+expect_red = ["dry_run_multibyte_windows_are_typed_refusals"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+
+
+
+[[control]]
+id = "health-index-predicate-selects-deferred"
+guards = "migration 11 must retain the exact pending Broca predicate on populated stores"
+file = "crates/basal-core/src/schema.rs"
+old = "CREATE INDEX broca_calls_pending ON broca_calls(send_id) WHERE json_extract(snapshot, '$.acknowledged') = 0 AND COALESCE(json_extract(snapshot, '$.deferred'), 0) = 0;"
+new = "CREATE INDEX broca_calls_pending ON broca_calls(send_id) WHERE json_extract(snapshot, '$.acknowledged') = 0 AND COALESCE(json_extract(snapshot, '$.deferred'), 0) = 1; -- NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-core/src/schema_health_tests.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+expect_red = ["schema::health_tests::additive_health_indexes_preserve_populated_tables_in_every_state"]
+only = true
+timeout_s = 600
+build_timeout_s = 7200
 

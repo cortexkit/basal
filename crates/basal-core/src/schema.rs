@@ -267,7 +267,23 @@ ALTER TABLE installs ADD COLUMN revoked_reason TEXT;
         version: 10,
         statements: PACKAGES,
     },
+    Migration {
+        version: 11,
+        statements: HEALTH_INDEXES,
+    },
 ];
+
+// Health reads the finished suffix and pending work of each flow. Decision
+// lookups need the latest episode and open cards, not every historical card.
+const HEALTH_INDEXES: &str = r#"
+CREATE INDEX runs_flow_finished ON runs(flow_id, admit_seq DESC, run_id DESC) WHERE state IN ('succeeded', 'failed', 'engine_mismatch', 'cancelled');
+CREATE INDEX runs_flow_state_admission ON runs(flow_id, state, admitted_at, admit_seq);
+CREATE INDEX journal_deferred ON journal(run_id, position) WHERE dispatch = 'deferred';
+CREATE INDEX decision_cards_kind_flow_instance ON decision_cards(kind, flow_id, instance DESC);
+CREATE INDEX decision_cards_open ON decision_cards(seq) WHERE state = 'open';
+CREATE INDEX decision_cards_subject ON decision_cards(kind, flow_id, run_id, call_key, seq DESC);
+CREATE INDEX broca_calls_pending ON broca_calls(send_id) WHERE json_extract(snapshot, '$.acknowledged') = 0 AND COALESCE(json_extract(snapshot, '$.deferred'), 0) = 0;
+"#;
 
 const PACKAGES: &str = r#"
 CREATE TABLE package_versions (
@@ -628,3 +644,7 @@ mod flow_deferral_tests;
 #[cfg(test)]
 #[path = "schema_package_tests.rs"]
 mod package_tests;
+
+#[cfg(test)]
+#[path = "schema_health_tests.rs"]
+mod health_tests;
