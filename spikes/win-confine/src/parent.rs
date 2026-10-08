@@ -139,6 +139,7 @@ fn restricted_tokens(
     loader_source: HANDLE,
     start_low: bool,
     lowbox_sid: Option<PSID>,
+    same_primary: bool,
 ) -> Result<Tokens> {
     unsafe {
         let data = token_buffer(parent, TokenGroups)?;
@@ -163,10 +164,28 @@ fn restricted_tokens(
             ),
             "CreateWellKnownSid(NULL)",
         )?;
-        let restrict = [SID_AND_ATTRIBUTES {
+        let null_restrict = [SID_AND_ATTRIBUTES {
             Sid: null_sid.as_mut_ptr().cast(),
             Attributes: 0,
         }];
+        let primary_user = token_buffer(parent, TokenUser)?;
+        let mut primary_same = groups(&data)
+            .iter()
+            .filter(|g| g.Attributes & SE_GROUP_INTEGRITY == 0)
+            .map(|g| SID_AND_ATTRIBUTES {
+                Sid: g.Sid,
+                Attributes: 0,
+            })
+            .collect::<Vec<_>>();
+        primary_same.push(SID_AND_ATTRIBUTES {
+            Sid: (*primary_user.as_ptr().cast::<TOKEN_USER>()).User.Sid,
+            Attributes: 0,
+        });
+        let restrict = if same_primary {
+            primary_same.as_slice()
+        } else {
+            &null_restrict
+        };
         let mut lockdown = null_mut();
         check(
             CreateRestrictedToken(
@@ -176,7 +195,7 @@ fn restricted_tokens(
                 disabled.as_ptr(),
                 0,
                 null(),
-                1,
+                restrict.len() as u32,
                 restrict.as_ptr(),
                 &mut lockdown,
             ),
@@ -639,6 +658,7 @@ fn launch_variant(
                 } else {
                     None
                 },
+                sequence == "same-access-primary-control",
             )?)
         } else {
             None
@@ -1176,8 +1196,8 @@ pub fn run() -> Result<()> {
                         &input,
                         &image.to_string_lossy(),
                         sid,
-                        source,
-                        source,
+                        token.0,
+                        token.0,
                         "bare-token-control",
                         true,
                         false,
@@ -1188,7 +1208,24 @@ pub fn run() -> Result<()> {
                         Ok(v) => v,
                         Err(e) => json!({"error":e}),
                     };
-                    diagnostics.push(json!({"label":"LPAC restricted token / no startup attributes","result":result}));
+                    diagnostics.push(json!({"label":"non-lowbox NULL primary / same-access Low loader / no startup attributes","result":result}));
+                    let result = match launch_variant(
+                        &input,
+                        &image.to_string_lossy(),
+                        sid,
+                        token.0,
+                        source,
+                        "same-access-primary-control",
+                        true,
+                        false,
+                        false,
+                        MITIGATIONS,
+                        0xff,
+                    ) {
+                        Ok(v) => v,
+                        Err(e) => json!({"error":e}),
+                    };
+                    diagnostics.push(json!({"label":"full LPAC policy / primary user+group restricting SIDs instead of NULL","result":result}));
                 }
                 for (label, mitigation, ui_flags) in [
                     ("all mitigations off", 0, 0xff),
