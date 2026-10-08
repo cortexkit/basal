@@ -1,0 +1,56 @@
+{
+  "campaigns": [
+    {
+      "run_id": 37844940895,
+      "source_sha": "82763603e886e1f6bd34869158a16f070a440474",
+      "purpose": "immediate Chrome startup sample and initial loader diagnostic"
+    },
+    {
+      "run_id": 37845672412,
+      "source_sha": "6a70bde7f43b2f20ee0e7922bf58bb795fbbed9f",
+      "purpose": "delayed Chrome sample, IFEO REG_SZ and enabled-logon attempt"
+    },
+    {
+      "run_id": 37846354629,
+      "source_sha": "04f1eee6d270a843879077981a3748cdbca76d80",
+      "purpose": "PEB loader flag fallback and non-AppContainer enabled-logon attempt"
+    },
+    {
+      "run_id": 37847647582,
+      "source_sha": "225c0d035db1aa14d0450d03f7ba55c4962ea02b",
+      "purpose": "token default DACL, loader thread tokens and retained-loader-privilege attempt"
+    },
+    {
+      "run_id": 37848564991,
+      "source_sha": "2cc7c91c6118e640a94e717279a206cfc7d06994",
+      "purpose": "final startup-context reads, object ACL samples and Chrome default-DACL attempt"
+    }
+  ],
+  "files": {
+    "final-windows-2022.json": {
+      "sha256": "862ba24a83fb68909e55b0ed42273404f8107ea8db78a6b0d3695433e28fb7b8",
+      "bytes": 2160996
+    },
+    "final-windows-latest.json": {
+      "sha256": "6d21f11e3fc22d9b7a0ac5068ad2cf812d0370ed0a30e694330ad4b5b15e03f3",
+      "bytes": 2272025
+    },
+    "loader-windows-2022.txt": {
+      "sha256": "934fe9a976a08be59644a5c964af290f80473821165313cab28b10ea0b273866",
+      "bytes": 20762
+    },
+    "loader-windows-latest.txt": {
+      "sha256": "e9ab8dc9b1dfba6138e88330a387c3caf49ceea39c4655b300ebb103b67ab5f6",
+      "bytes": 22317
+    },
+    "round1-windows-2022.json": {
+      "sha256": "c2d4be7a2aa637d6f756529f64c3ce397b6014eef6cc0b7aeb22c5795eecccd6",
+      "bytes": 292580
+    },
+    "round1-windows-latest.json": {
+      "sha256": "d0f7ce0dd2a0f0a8f0507d0b9a31ba5b7c0c8bd445a73edac64f87d07a7878ea",
+      "bytes": 344499
+    }
+  },
+  "retention": "First and final reports retained; intermediate run artifacts contain duplicate and incremental diagnostics. Final runtime report omits only the duplicate input targets array."
+}

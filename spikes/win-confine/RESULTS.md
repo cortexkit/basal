@@ -7,7 +7,7 @@ this prototype.** Process creation with all requested attributes succeeds, but
 its restricted primary recipes terminate before Rust entry. There is therefore
 **no measured full-lockdown residual**. An empty report is not a denial result.
 
-The final round is [37840751756](https://github.com/cortexkit/basal/actions/runs/37840751756),
+The earlier control/residual baseline is [37840751756](https://github.com/cortexkit/basal/actions/runs/37840751756),
 compiled from `9235748f1b6cd5e15fcbf01b4406cd17d7375b95`. Both Windows images
 passed formatting, checking, seven native tests, thirteen Python tests, release
 building with `-C target-feature=+crt-static`, import inventory and a live-token
@@ -15,7 +15,7 @@ mutation witness. Their runtime full-policy acceptance gates failed, correctly.
 
 The plain and LPAC-only controls **did** produce complete measurements. Those
 results, rather than an assumed Chromium residual, are the authority evidence
-below. Final source, controls, failed birth attempts, diagnostics, attestation,
+below. Baseline source, controls, failed birth attempts, diagnostics, attestation,
 all successful/failed probes, imports and mutation proofs are preserved in:
 
 - [measurements/windows-latest.json](measurements/windows-latest.json)
@@ -297,7 +297,7 @@ startup inventories; no full worker loaded-path attestation exists.
 
 ## Verification and mutation witnesses
 
-Final native run: rustc/cargo **1.99.0**, seven native tests and thirteen Python
+Earlier baseline native run: rustc/cargo **1.99.0**, seven native tests and thirteen Python
 tests passed per runner; release builds use static CRT. Fmt/check/build and PE
 inventory passed. Runtime acceptance remained red for the unsupported recipes,
 not rewritten to accept a missing child.
@@ -314,6 +314,211 @@ The NULL restricting-SID validator also had a local mutation witness: only
 `test_full_policy_requires_null_restricting_sid` failed; the seven other tests
 then present stayed green. Live staged source was restored before committing.
 
+## Loader trace and Chrome reference
+
+The final follow-up is [37848564991](https://github.com/cortexkit/basal/actions/runs/37848564991),
+compiled from `2cc7c91c6118e640a94e717279a206cfc7d06994`. Both images passed
+fmt/check, **seven native tests, sixteen Python tests**, static-CRT release build,
+PE inventory and the live-token fence mutation witness. Runtime full-policy
+acceptance remained red; the diagnostics were not substituted for that gate.
+
+Native observations, field-by-field token comparisons, every renderer's raw
+handle table and type/access counts, GPU/network/browser contrasts, startup
+parameters/ACL samples, failed attempts and complete control probes are retained:
+
+- [measurements/loader-chrome/final-windows-latest.json](measurements/loader-chrome/final-windows-latest.json)
+- [measurements/loader-chrome/final-windows-2022.json](measurements/loader-chrome/final-windows-2022.json)
+- [loader-windows-latest.txt](measurements/loader-chrome/loader-windows-latest.txt)
+  and [loader-windows-2022.txt](measurements/loader-chrome/loader-windows-2022.txt)
+- [manifest.json](measurements/loader-chrome/manifest.json), with all five run IDs,
+  compiled-source SHAs, artifact-file hashes and retained-file hashes.
+
+The first-run JSON is retained separately because it caught a different Chrome
+startup state. Final JSON omits only the duplicate input `targets` array from the
+runtime report; completed probe results retain their exact targets and accesses.
+
+### Exact loader finding
+
+Image-specific IFEO `GlobalFlag=0x2` alone did not produce snaps for the restricted
+child. Both DWORD and REG_SZ attempts were silent. In the final REG_SZ run the
+**parent** PEB read back `0x2`, but the suspended child read back `0x0`. The parent
+therefore wrote only the diagnostic `0x2` bit to that child's x64 PEB and verified
+`0x2` before resume. No token, ACL, mitigation or application instruction was
+changed in the traced attempt. Both runners removed the image-specific IFEO key;
+retained cleanup output says `IFEO exists after cleanup: False`.
+
+`CreateProcessAsUserW(DEBUG_ONLY_THIS_PROCESS)` succeeded on both images. Neither
+pre-resume attach nor ETW was needed. The event loop completed without errors,
+with **172 events / 165 debug strings** on latest and **154 / 147** on 2022. It
+recorded all output strings and DLL load/unload events through process exit.
+
+The decisive sequence is the same on both:
+
+1. Current-directory initialization for `D:\a\basal\basal\spikes\win-confine\`
+   fails with **`0xc0000022` (`STATUS_ACCESS_DENIED`)**. The loader continues.
+2. Known-DLL lookup and mapping of `KERNEL32.DLL` and `KERNELBASE.dll` return
+   **`0x00000000`**. This is not a missing-DLL or failed image-mapping result.
+3. `LdrpThreadTokenUnsetMainThreadToken` reports **`Status: 0x0`**.
+4. `LdrpInitializeNode` calls the init routine for
+   **`C:\Windows\System32\KERNELBASE.dll`**, then reports that the routine
+   **failed during `DLL_PROCESS_ATTACH`**.
+5. Kernel32 and KernelBase unload. `LdrpLoadDllInternal` first returns
+   **`0xc0000142`**, propagated through process initialization and exit.
+
+Thus the exact failing DLL is **KernelBase**, and the last reported NTSTATUS
+before the first `0xc0000142` is **success (`0x0`)**, not a disclosed internal
+KernelBase failure status. The earlier cwd access denial is real, but the trace
+**does not establish that it causes the attach failure**. The latest loader also
+logs resolved `0xc0000135` cache misses before successful Known-DLL mapping.
+
+Importantly, outside token queries at the token-unset message **and** the
+`Calling init routine` message still find the assigned Low LPAC impersonation
+token at level 2. The log line is **not evidence of `RevertToSelf`**. These
+snapshots do not reveal every token switch inside KernelBase's routine. Its
+internal failing syscall/object remains unmeasured.
+
+### Chrome renderer token: startup is not the settled state
+
+Chrome was already installed, so no `choco` install was needed. The final images
+have Chrome **154.0.8037.58** (latest) and **154.0.8037.98** (2022). Each launch used
+`--headless=new`, a fresh temporary profile and `about:blank`, with no
+sandbox-disabling switches. Descendant command lines identify seven renderers
+per image. The final snapshot was taken ten seconds after the first observed
+renderer; subsequent outside queries are sequential snapshots, not simultaneous
+or a census of every startup process. The selected thread is the earliest
+surviving thread by creation time, since Toolhelp has no main-thread flag.
+
+The immediate first-run snapshot caught Low primary tokens and Low level-2
+same-access thread tokens. Those initial thread tokens retained 24 privileges,
+with only SeChangeNotifyPrivilege enabled. In the later final sample, **all 14
+renderers are Untrusted and have no selected-thread token (`ERROR_NO_TOKEN`,
+1008)**. A Low/thread-token startup sample must not be described as Chrome's
+final sandbox.
+
+| Primary field | Chrome, all final renderers | Basal failing LPAC birth | Basal intended final, not reached |
+|---|---|---|---|
+| Type / impersonation level | Primary (1) / not applicable | Same | Same |
+| User SID | Same runner user as the broker | Same exact per-run user SID | Same |
+| Integrity | Untrusted, `S-1-16-0` | Low, `S-1-16-4096` | Untrusted |
+| AppContainer / SID | **False / NULL** | True / basal package SID | True / basal package SID |
+| LPAC | Not an AppContainer; claim getter not queried | `WIN://NOALLAPPPKG` UINT64 `[1]` | Required, unmeasured |
+| Capabilities | Empty | Empty | Empty |
+| Restricting SIDs | NULL SID only, `S-1-0-0`, attributes `0x7` | Same | Same |
+| Access groups | 12 deny-only; **session logon SID enabled**, `0xc0000007` | 13 deny-only; logon SID `0xc0000010` | All access groups deny-only |
+| Integrity group | Untrusted, attributes `0x60` | Low, attributes `0x60` | Untrusted |
+| Privileges | Empty | Empty | Empty |
+| TokenDefaultDacl | `D:(A;;GA;;;LA)(A;;GA;;;BA)(A;;GA;;;SY)` | BA/SY full access, logon read/execute, package full access; **no user full-access ACE** | Constructed source-derived DACL is in JSON; final DACL unmeasured |
+| Selected thread | No token | Assigned Low matching LPAC token, level 2 | No token after revert, unmeasured |
+
+`LA` is the runner's local Administrator user SID, `BA` Administrators and `SY`
+SYSTEM. The initial Low Chrome token's enabled logon SID was also observed in the
+first sample. Chrome's measured renderer is **not LPAC**: this reference does not
+prove that an LPAC plus deny-all primary can load. TokenDefaultDacl is the default
+security for newly created objects, **not** the DACL protecting the token object.
+The baseline preserved token-object DACLs to avoid dropping the package SID's
+query grant; that change did not fix DLL initialization or inspect TokenDefaultDacl.
+
+### Chrome mitigations, jobs and handle inventory
+
+Raw policy words below are identical across each image's seven final renderers.
+Failed getters are not zero-policy measurements.
+
+| Mitigation policy | Latest | 2022 |
+|---|---|---|
+| DEP | `[3, 1]` | `[3, 1]` |
+| ASLR | `5` | `5` |
+| Dynamic code | **`0`** | **`0`** |
+| Strict handle | `3` | `3` |
+| Win32k | `5` | `1` |
+| Extension points / CFG / font / child process / side channel | Each `1` | Each `1` |
+| Signature | `5` | `5` |
+| Image load | `3` | `3` |
+| System-call filter / payload / redirection trust | Each `0` | Each `0` |
+| User shadow stack | `256` | `256` |
+| User pointer auth | Getter fails Win32 `50` | Successful `0` |
+| SEHOP | Successful `1` | Getter fails Win32 `87` |
+
+Each renderer belongs to an exact Chrome-owned job, read through a duplicated
+browser Job handle and checked with `IsProcessInJob`. Both images report flags
+**`0x2508`**, UI **`0xff`**, process memory **1,099,511,627,776 bytes**, job memory
+0 and active-process limit 0. Basal's owned job uses the same flags/UI but requests
+256 MiB and active limit 1. Outer runner job limits are not recovered by this
+method. Chrome's dynamic-code policy is zero, unlike the required basal ban;
+matching its token is not equivalent to matching all our policies.
+
+| Latest renderer PID | Handles | 2022 renderer PID | Handles |
+|---:|---:|---:|---:|
+| 8440 | 268 | 3468 | 265 |
+| 1104 | 221 | 6932 | 218 |
+| 7908 | 225 | 6264 | 222 |
+| 2800 | 229 | 8020 | 226 |
+| 2384 | 203 | 6380 | 200 |
+| 4716 | 229 | 7312 | 226 |
+| 6952 | 225 | 7436 | 222 |
+
+The inventory includes ALPC Port, Directory, EtwRegistration, Event, File,
+IRTimer, IoCompletion, Key, Mutant, Section, Semaphore, Thread, TpWorkerFactory
+and WaitCompletionPacket; latest also has SchedulerSharedData. Every raw handle,
+type/access combination and count is retained under `handles` and
+`handles_by_type_access`. No Token or unknown type appeared in these renderer
+snapshots. Hundreds of ambient handles are **not** a three-stdio-only reference,
+nor evidence that unidentified File/ALPC/Section handles are harmless.
+
+GPU and network processes were inspected with the same outside code, as contrast
+only. GPU: Low, non-AppContainer, five restricting SIDs (Users, World, Restricted
+Code, a unique SID and logon SID), SeChangeNotifyPrivilege enabled, **357 / 301
+handles**. Network service: command line explicitly has
+`--service-sandbox-type=none`, High (`S-1-16-12288`), non-AppContainer, no restricting
+SIDs, 24 privileges, **344 / 380 handles**. Their complete thread, group,
+mitigation, job and handle reports are retained, but they are not renderer policy
+or evidence for basal confinement.
+
+### Additional startup-context differences
+
+| Field | Chrome renderer | Failing basal child / limits of measurement |
+|---|---|---|
+| Primary default DACL | User + Administrators + SYSTEM full access | User ACE missing; matching Chrome's exact DACL still leaves the child failing before Rust entry |
+| Station / desktop | `Service-0x0-d8957$\sbox_alternate_desktop_0x1570` on latest; `Service-0x0-9e1ae$\sbox_alternate_desktop_0x1170` on 2022 | `winsta0\default`. Station ACLs and basal desktop ACL are retained. **Chrome desktop ACL not read** because the observer belongs to another station and did not switch its own station. Its name is observed, not its ACL. |
+| Current directory | Versioned Chrome install directory under `C:\Program Files\Google\Chrome\Application\` | Inherited repository spike directory; its loader initialization returns `0xc0000022`. No tested cwd grant/change or proof of Chrome's final cwd-open authority. |
+| Environment block | Seven variable names: CHROME_CRASHPAD_PIPE_NAME, LOCALAPPDATA, PATH, SYSTEMDRIVE, SYSTEMROOT, TEMP, TMP | 147 inherited runner variable names. Actual LPAC birth TEMP/TMP point at package `AC\Temp`. Console parameter is 0 for Chrome and `0xfffffffffffffffd` for basal. Names and selected path values are retained; other values are omitted to avoid publishing credentials. |
+| Named attach objects / ACLs | Samples of `\KnownDlls` and `\Sessions\2\BaseNamedObjects` | Same objects sampled against basal primary. **Not an NtOpen* trace:** which objects KernelBase opens, CSR/console endpoint identity and their attach-time security contexts remain unknown. |
+
+For the KnownDlls and session-directory suspects, DACL-only `AccessCheck` used
+impersonation-token duplicates of each actual process primary and denied directory
+query (`1`), traverse (`2`) and READ_CONTROL (`0x20000`) on those two directories
+for Chrome renderers and the failing NULL-restricted basal primary. Those checks
+**cannot be called failed loader operations**: Chrome runs and basal's Known-DLL
+mapping explicitly succeeds. The plain positive control grants all six checks;
+LPAC-only grants the KnownDlls checks but not the session-directory checks. This
+also demonstrates the evaluator is not a constant-denial stub. Window-station
+checks and all raw ACLs are preserved; neither DACL-only evaluation nor an ACL
+sample includes mandatory-integrity enforcement or establishes an object's use
+inside KernelBase.
+
+### Applied property changes and final outcome
+
+All variants retain the three-handle list, child-process restriction, full
+mitigation mask and exact owned job. Non-AppContainer variants intentionally
+omit only lowbox attributes and use a matching non-AppContainer Low initial
+source; they remain separate diagnostics, not full LPAC acceptance.
+
+| Additional attempt | Both native images |
+|---|---|
+| Enable only the session logon SID; LPAC retained | Create succeeds; Low primary attested; initial level 2; `0xc0000142`, no Rust-entry marker |
+| Same enabled-logon restricted Low birth, without AppContainer/LPAC | Same pre-entry failure |
+| Non-AppContainer, enabled-logon variant; initial impersonation token retains all 24 broker-source privileges (only SeChangeNotify enabled) | Same pre-entry failure; primary privileges remain empty |
+| Non-AppContainer, enabled-logon, retained-loader-privilege variant; **match exact Chrome primary TokenDefaultDacl** user/BA/SY full-access grants | Parent readback exactly matches Chrome; same pre-entry `0xc0000142` |
+
+**None reaches Rust entry, so no new full-policy or non-AppContainer reachability
+residual is measured.** The normal complete probe path is wired for each variant,
+but never executes. No empty residual is substituted for the LPAC-only table.
+These measurements isolate KernelBase attach and falsify logon-only, non-lowbox
+plus logon, retained-loader-privilege, and primary-default-DACL fixes as sufficient
+in this recipe. They do **not** identify one proven root-cause property. Alternate
+desktop/station setup, cwd/environment initialization and KernelBase's internal
+object opens remain real differences or coverage gaps requiring another native
+investigation; no install-directory grant or desktop fix is claimed tested.
+
 ## Recommended Windows design changes
 
 1. **Keep Windows unsupported/fail-closed until a runnable primary-token sequence
@@ -322,7 +527,9 @@ then present stayed green. Live staged source was restored before committing.
    broader primary; it must never become an escape hatch.
 2. **Separate birth requirements from final requirements.** Query the actual
    suspended process and assigned thread, not only the input handles. Account
-   for the observed Low integrity reset and Identification downgrade. Treat
+   for the observed Low integrity reset and Identification downgrade. Chrome's
+   later Untrusted/no-thread-token observation supports distinct startup and
+   input phases, not LPAC compatibility. Treat
    post-load Untrusted as a transition requiring an independently attested
    result, not a paper property of CreateRestrictedToken.
 3. **Do not yet conclude a privileged service solves this.** The bare LPAC
@@ -358,5 +565,13 @@ then present stayed green. Live staged source was restored before committing.
    real ALPC protocols and collaborating worker endpoints; inventory modules
    after probes; scrub inherited environment/current-directory authority.
    This finite parent-enumerated sample is evidence, not a universal capability
-   proof. The final DLL-init failure requires loader-level tracing before its
-   cause can be asserted.
+   proof. KernelBase's attach is now the measured DLL failure location; its
+   internal failing object/syscall and Chrome desktop ACL remain unknown.
+10. **Compare complete startup contexts, not token fields alone.** Chrome uses
+    an alternate station/desktop, a versioned install cwd and a seven-variable
+    environment, unlike the inherited runner context. Its renderer is not LPAC.
+    Neither enabling the logon SID nor matching its primary default DACL fixed
+    this recipe. Preserve these as separately testable differences, scrub
+    inherited environment authority, and do not infer a successful transition
+    from loader function names: the initial token was still present at the
+    observed KernelBase init call.

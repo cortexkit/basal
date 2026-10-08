@@ -1,0 +1,167 @@
+0f70:0b6c @ 00243171 - LdrpInitializeProcess - INFO: Beginning execution of win-confine.exe (D:\a\basal\basal\spikes\win-confine\target\release\placed\win-confine.exe)
+	Current directory: D:\a\basal\basal\spikes\win-confine\
+	Package directories: (null)
+0f70:0b6c @ 00243171 - LdrpInitializeProcess - ERROR: Initializing the current directory to "D:\a\basal\basal\spikes\win-confine\" failed with status 0xc0000022
+0f70:0b6c @ 00243171 - LdrpInitializeTls - INFO: DLL "D:\a\basal\basal\spikes\win-confine\target\release\placed\win-confine.exe" has TLS information at 00007FF6AB5BD180
+0f70:0b6c @ 00243171 - LdrpAllocateTls - INFO: TlsVector 00000206CE7DB790 Index 0 : 105 bytes copied from 00007FF6AB5BD820 to 00000206CE7DB820
+0f70:0b6c @ 00243171 - LdrpFindLoadedDllInternal - RETURN: Status: 0xc0000135
+0f70:0b6c @ 00243171 - LdrpFindLoadedDllInternal - RETURN: c0000135
+0f70:0b6c @ 00243171 - LdrLoadDll - ENTER: DLL name: KERNEL32.DLL
+0f70:0b6c @ 00243171 - LdrLoadDll - ENTER: KERNEL32.DLL
+0f70:0b6c @ 00243171 - LdrpLoadDllInternal - ENTER: DLL name: KERNEL32.DLL
+0f70:0b6c @ 00243171 - LdrpLoadDllInternal - ENTER: KERNEL32.DLL
+0f70:0b6c @ 00243171 - LdrpThreadTokenSetMainThreadToken - INFO: Status: 0x0
+0f70:0b6c @ 00243171 - LdrpFindKnownDll - ENTER: DLL name: KERNEL32.DLL
+0f70:0b6c @ 00243171 - LdrpFindKnownDll - ENTER: KERNEL32.DLL
+0f70:0b6c @ 00243171 - LdrpFindKnownDll - RETURN: Status: 0x00000000
+0f70:0b6c @ 00243171 - LdrpFindKnownDll - RETURN: 0
+0f70:0b6c @ 00243171 - LdrpMinimalMapModule - ENTER: DLL name: C:\Windows\System32\KERNEL32.DLL
+0f70:0b6c @ 00243171 - LdrpMinimalMapModule - ENTER: C:\Windows\System32\KERNEL32.DLL
+0f70:0b6c @ 00243171 - LdrpMinimalMapModule - RETURN: Status: 0x00000000
+0f70:0b6c @ 00243171 - LdrpMinimalMapModule - RETURN: 0
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-rtlsupport-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\ntdll.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-rtlsupport-l1-2-2.dll was redirected to C:\Windows\SYSTEM32\ntdll.dll by API set
+0f70:0b6c @ 00243171 - LdrpFindKnownDll - ENTER: DLL name: KERNELBASE.dll
+0f70:0b6c @ 00243171 - LdrpFindKnownDll - ENTER: KERNELBASE.dll
+0f70:0b6c @ 00243171 - LdrpFindKnownDll - RETURN: Status: 0x00000000
+0f70:0b6c @ 00243171 - LdrpFindKnownDll - RETURN: 0
+0f70:0b6c @ 00243171 - LdrpMinimalMapModule - ENTER: DLL name: C:\Windows\System32\KERNELBASE.dll
+0f70:0b6c @ 00243171 - LdrpMinimalMapModule - ENTER: C:\Windows\System32\KERNELBASE.dll
+0f70:0b6c @ 00243171 - LdrpMinimalMapModule - RETURN: Status: 0x00000000
+0f70:0b6c @ 00243171 - LdrpMinimalMapModule - RETURN: 0
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-eventing-provider-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-apiquery-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\ntdll.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-processthreads-l1-1-3.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-processthreads-l1-1-2.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-processthreads-l1-1-1.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-processthreads-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-registry-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-heap-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-heap-l2-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-memory-l1-1-1.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-memory-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-memory-l1-1-2.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-handle-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-synch-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-synch-l1-2-1.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-synch-l1-2-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-file-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-file-l1-2-5.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-file-l1-2-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-file-l1-2-2.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-file-l1-2-3.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-file-l1-2-1.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-delayload-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-io-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-io-l1-1-1.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-job-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-threadpool-legacy-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-threadpool-private-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-largeinteger-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-libraryloader-l1-2-3.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-libraryloader-l1-2-2.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-libraryloader-l1-2-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-libraryloader-l1-2-1.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-libraryloader-l2-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-namedpipe-l1-2-2.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-namedpipe-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-namedpipe-l1-2-1.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-datetime-l1-1-1.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-datetime-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-datetime-l1-1-2.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-sysinfo-l1-2-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-sysinfo-l1-2-1.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-sysinfo-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-sysinfo-l1-2-3.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-timezone-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-localization-l1-2-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-processsnapshot-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-processenvironment-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-processenvironment-l1-2-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-string-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-debug-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-debug-l1-1-1.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-errorhandling-l1-1-3.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-errorhandling-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-fibers-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-util-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-profile-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-security-base-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-security-base-l1-2-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-security-appcontainer-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-comm-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-realtime-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-wow64-l1-1-1.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-wow64-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-wow64-l1-1-3.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-systemtopology-l1-1-1.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-systemtopology-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-processtopology-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-namespace-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-file-l2-1-2.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-file-l2-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-file-l2-1-1.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-file-l2-1-4.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-file-l2-1-3.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-xstate-l2-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-xstate-l2-1-1.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-xstate-l2-1-2.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-localization-l2-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-normalization-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-heap-obsolete-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-fibers-l2-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-fibers-l2-1-1.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-localization-private-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-sidebyside-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-appcompat-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-windowserrorreporting-l1-1-1.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-windowserrorreporting-l1-1-2.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-windowserrorreporting-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-windowserrorreporting-l1-1-3.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-console-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-console-l1-2-2.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-console-l1-2-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-console-l1-2-1.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-console-l2-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-console-l2-2-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-console-l3-2-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-psapi-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-psapi-ansi-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-eventing-provider-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-apiquery-l1-1-0.dll was redirected to C:\Windows\SYSTEM32\ntdll.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-delayload-l1-1-1.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpPreprocessDllName - INFO: DLL api-ms-win-core-appcompat-l1-1-1.dll was redirected to C:\Windows\SYSTEM32\kernelbase.dll by API set
+0f70:0b6c @ 00243171 - LdrpGetProcedureAddress - INFO: Locating procedure "RtlAllocateHeap" by name
+0f70:0b6c @ 00243171 - LdrpGetProcedureAddress - INFO: Locating procedure "RtlFreeHeap" by name
+0f70:0b6c @ 00243171 - LdrpGetProcedureAddress - INFO: Locating procedure "RtlReAllocateHeap" by name
+0f70:0b6c @ 00243171 - LdrpGetProcedureAddress - INFO: Locating procedure "RtlDeleteCriticalSection" by name
+0f70:0b6c @ 00243171 - LdrpGetProcedureAddress - INFO: Locating procedure "RtlInitializeCriticalSection" by name
+0f70:0b6c @ 00243171 - LdrpGetProcedureAddress - INFO: Locating procedure "RtlLeaveCriticalSection" by name
+0f70:0b6c @ 00243171 - LdrpGetProcedureAddress - INFO: Locating procedure "RtlEnterCriticalSection" by name
+0f70:0b6c @ 00243171 - LdrpGetProcedureAddress - INFO: Locating procedure "RtlSetLastWin32Error" by name
+0f70:0b6c @ 00243171 - LdrpGetProcedureAddress - INFO: Locating procedure "RtlQueryPerformanceCounter" by name
+0f70:0b6c @ 00243171 - LdrpGetProcedureAddress - INFO: Locating procedure "RtlQueryPerformanceFrequency" by name
+0f70:0b6c @ 00243171 - LdrpGetProcedureAddress - INFO: Locating procedure "RtlQueryUnbiasedInterruptTime" by name
+0f70:0b6c @ 00243171 - LdrpGetProcedureAddress - INFO: Locating procedure "EtwEventUnregister" by name
+0f70:0b6c @ 00243171 - LdrpGetProcedureAddress - INFO: Locating procedure "EtwEventWriteTransfer" by name
+0f70:0b6c @ 00243171 - LdrpGetProcedureAddress - INFO: Locating procedure "EtwEventSetInformation" by name
+0f70:0b6c @ 00243171 - LdrpGetProcedureAddress - INFO: Locating procedure "EtwEventRegister" by name
+0f70:0b6c @ 00243171 - LdrpGetProcedureAddress - INFO: Locating procedure "EtwEventSetInformation" by name
+0f70:0b6c @ 00243171 - LdrpGetProcedureAddress - INFO: Locating procedure "EtwEventRegister" by name
+0f70:0b6c @ 00243171 - LdrpGetProcedureAddress - INFO: Locating procedure "EtwEventWriteTransfer" by name
+0f70:0b6c @ 00243171 - LdrpGetProcedureAddress - INFO: Locating procedure "EtwEventActivityIdControl" by name
+0f70:0b6c @ 00243171 - LdrpGetProcedureAddress - INFO: Locating procedure "EtwEventUnregister" by name
+0f70:0b6c @ 00243171 - LdrpThreadTokenUnsetMainThreadToken - INFO: Status: 0x0
+0f70:0b6c @ 00243171 - LdrpInitializeNode - INFO: Calling init routine 00007FFB0CF9D1A0 for DLL "C:\Windows\System32\KERNELBASE.dll"
+0f70:0b6c @ 00243171 - LdrpInitializeNode - ERROR: Init routine 00007FFB0CF9D1A0 for DLL "C:\Windows\System32\KERNELBASE.dll" failed during DLL_PROCESS_ATTACH
+0f70:0b6c @ 00243171 - LdrpUnloadNode - INFO: Unmapping DLL "C:\Windows\System32\KERNEL32.DLL"
+0f70:0b6c @ 00243171 - LdrpProcessDetachNode - INFO: Uninitializing DLL "C:\Windows\System32\KERNELBASE.dll" (Init routine: 00007FFB0CF9D1A0)
+0f70:0b6c @ 00243171 - LdrpUnloadNode - INFO: Unmapping DLL "C:\Windows\System32\KERNELBASE.dll"
+0f70:0b6c @ 00243171 - LdrpLoadDllInternal - RETURN: Status: 0xc0000142
+0f70:0b6c @ 00243171 - LdrpLoadDllInternal - RETURN: c0000142
+0f70:0b6c @ 00243171 - LdrLoadDll - RETURN: Status: 0xc0000142
+0f70:0b6c @ 00243171 - LdrLoadDll - RETURN: c0000142
+0f70:0b6c @ 00243171 - LdrpInitializeKernel32Functions - ERROR: Loading Windows subsystem DLL "KERNEL32.DLL" failed with status 0xc0000142
+0f70:0b6c @ 00243171 - LdrpInitializeProcess - ERROR: Calling LdrpInitializeKernel32Functions failed with status 0xc0000142
+0f70:0b6c @ 00243171 - _LdrpInitialize - ERROR: Process initialization failed with status 0xc0000142
+0f70:0b6c @ 00243171 - LdrpInitializationFailure - ERROR: Process initialization failed with status 0xc0000142

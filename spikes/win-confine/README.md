@@ -131,3 +131,21 @@ the other omits lowbox attributes and uses a non-AppContainer Low loader token.
 Both run the ordinary complete probe path if they pass entry, self-lowering and
 handle attestation. They remain diagnostics: retaining an access group or
 omitting LPAC is not the intended deny-all final token.
+
+The observer also reads the x64 process parameters (current directory, desktop,
+console handle, environment variable names and selected path values). Other
+environment values are omitted because runners may hold credentials. User32 is
+resolved dynamically only in the broker for station/desktop ACL queries, so it
+does not become a worker import. KnownDlls and session BaseNamedObjects ACLs are
+sampled from the broker. `AccessCheck` evaluates their DACLs against a duplicate
+of the actual primary token; it is neither an object operation nor a mandatory
+integrity check. These samples do **not** identify the objects KernelBase opened
+inside its attach routine. CSR/console endpoint identity and an NtOpen* trace
+remain explicit gaps.
+
+The additional loader-privilege diagnostic retains disabled source privileges
+on the non-AppContainer initial token. A final diagnostic changes only that
+variant's primary `TokenDefaultDacl` to the user/Administrators/SYSTEM full-access
+ACL observed on Chrome. TokenDefaultDacl controls default security for newly
+created objects; it is not the DACL protecting the token object itself. Neither
+diagnostic is promoted to the full acceptance path.
