@@ -272,6 +272,10 @@ impl MockHost {
 
     /// Makes the next sends of (module, op) fail, one fault per send.
     pub fn inject(&self, module: &str, op: &str, faults: &[Fault]) {
+        assert!(
+            faults.iter().all(|f| !f.proven_unsent || !f.effect_applied),
+            "an unsent fault cannot apply an effect"
+        );
         lock(&self.shared.controls)
             .faults
             .entry((module.to_owned(), op.to_owned()))

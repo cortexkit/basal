@@ -37,6 +37,16 @@ impl SubcCatalog {
         self
     }
     pub fn resolve(&self, module: &str, op: &str) -> Result<Option<CatalogOp>, WireError> {
+        self.resolve_for_dispatch(module, op).map(|(decl, _)| decl)
+    }
+    /// Scope capability and operation kind come from the same fresh snapshot.
+    /// A missing provider is not evidence that an operation was removed: the
+    /// provider may simply be disconnected while the daemon rebuilds its catalog.
+    pub fn resolve_for_dispatch(
+        &self,
+        module: &str,
+        op: &str,
+    ) -> Result<(Option<CatalogOp>, bool), WireError> {
         let catalog = self.transport.catalog()?;
         let modules = catalog
             .get("modules")
@@ -46,7 +56,9 @@ impl SubcCatalog {
             .iter()
             .find(|e| e.get("module_id").and_then(Value::as_str) == Some(module))
         else {
-            return Ok(None);
+            return Err(WireError::NeverSent(format!(
+                "provider {module} is not currently catalogued"
+            )));
         };
         let roles: Vec<ProviderRole> = serde_json::from_value(
             entry
@@ -109,7 +121,10 @@ impl SubcCatalog {
                 });
             }
         }
-        Ok(found)
+        let flow_capable = entry["capabilities"]["provides"]
+            .as_array()
+            .is_some_and(|caps| caps.iter().any(|c| c == "flow-scopes/v1"));
+        Ok((found, flow_capable))
     }
     pub fn known_agent(&self, agent: &str) -> Result<bool, WireError> {
         self.resolve_agent(agent).map(|id| id.is_some())
@@ -119,6 +134,7 @@ impl SubcCatalog {
     pub fn resolve_agent(&self, agent: &str) -> Result<Option<String>, WireError> {
         let mut cursor: Option<String> = None;
         let mut seen = std::collections::BTreeSet::new();
+        let mut named = std::collections::BTreeSet::new();
         loop {
             let mut params = json!({});
             if let Some(c) = &cursor {
@@ -129,19 +145,27 @@ impl SubcCatalog {
                 .get("agents")
                 .and_then(Value::as_array)
                 .ok_or_else(|| WireError::Unknown("agent.list agents missing".into()))?;
-            if let Some(found) = agents.iter().find(|a| {
-                a.get("agent_id").and_then(Value::as_str) == Some(agent)
-                    || a.get("name").and_then(Value::as_str) == Some(agent)
-            }) {
-                return found
+            for entry in agents {
+                let id = entry
                     .get("agent_id")
                     .and_then(Value::as_str)
                     .filter(|id| !id.is_empty())
-                    .map(|id| Some(id.to_owned()))
-                    .ok_or_else(|| WireError::Unknown("agent.list agent_id missing".into()));
+                    .ok_or_else(|| WireError::Unreadable("agent.list agent_id missing".into()))?;
+                if id == agent {
+                    return Ok(Some(id.to_owned()));
+                }
+                if entry.get("name").and_then(Value::as_str) == Some(agent) {
+                    named.insert(id.to_owned());
+                }
             }
             match reply.get("next_cursor") {
-                None | Some(Value::Null) => return Ok(None),
+                None | Some(Value::Null) => {
+                    return match named.len() {
+                        0 => Ok(None),
+                        1 => Ok(named.into_iter().next()),
+                        _ => Err(WireError::Unreadable("ambiguous agent display name".into())),
+                    };
+                }
                 Some(Value::String(c)) if seen.insert(c.clone()) => cursor = Some(c.clone()),
                 _ => {
                     return Err(WireError::Unknown(

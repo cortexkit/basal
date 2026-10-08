@@ -7219,3 +7219,48 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
+
+
+[[control]]
+id = "stale-connection-handle-becomes-scope-tombstone"
+guards = "Only a daemon scope close blocks reopening under the same selector"
+file = "crates/basal-host/src/transport.rs"
+old = """
+// Only a daemon scope-close push may leave a tombstone.
+                    self.routes
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .closed(handle, false);"""
+new = """
+// Only a daemon scope-close push may leave a tombstone.
+                    self.routes
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .closed(handle, true); // NON-VACUITY BREAK"""
+edits = []
+test_file = "crates/basal-host/src/transport.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--lib"
+expect_red = ["transport::tests::stale_handle_does_not_leave_a_scope_tombstone"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "catalog-outage-finalizes-conservative-call-class"
+guards = "A transient catalog outage cannot finalize a conservative classification as op_kind_changed"
+file = "crates/basal-host/src/routing.rs"
+old = "class.safe_to_repeat() && class != self.declared_class(module, op, &decl)"
+new = "class != self.declared_class(module, op, &decl) // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-host/tests/host_boundary_regressions.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--test host_boundary_regressions"
+expect_red = ["transient_classification_failure_does_not_finalize_a_query"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+

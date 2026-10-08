@@ -28,14 +28,50 @@ fn decode_owner<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Pri
 }
 
 pub struct ScopedRoutes<H> {
-    flows: HashMap<String, Option<RegisteredScope>>,
-    routes: HashMap<String, (FlowScope, Option<H>, String)>,
+    flows: HashMap<String, (RegisteredScope, ScopeKey)>,
+    scope_users: HashMap<ScopeKey, usize>,
+    routes: HashMap<RouteKey, (FlowScope, Option<H>, String)>,
+    connection_generation: u64,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct RouteKey {
+    scope: ScopeKey,
+    module: String,
+    tool: bool,
+    identity: Option<(std::path::PathBuf, String, String, Option<String>)>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ScopeKey {
+    owner: (u8, String),
+    reference: String,
+    epoch: u64,
+}
+impl From<&FlowScope> for ScopeKey {
+    fn from(scope: &FlowScope) -> Self {
+        Self {
+            owner: match &scope.owner {
+                Principal::Reserved { module_id } => (0, module_id.clone()),
+                Principal::Direct => (1, String::new()),
+                Principal::Unverified => (2, String::new()),
+            },
+            reference: scope.scope_ref.clone(),
+            epoch: scope.epoch,
+        }
+    }
+}
+pub(crate) struct RoutePlan<H> {
+    pub key: RouteKey,
+    pub scope: FlowScope,
+    pub handle: Option<H>,
+    generation: u64,
 }
 impl<H> Default for ScopedRoutes<H> {
     fn default() -> Self {
         Self {
             flows: HashMap::new(),
+            scope_users: HashMap::new(),
             routes: HashMap::new(),
+            connection_generation: 0,
         }
     }
 }
@@ -87,6 +123,7 @@ impl<H: Copy + Eq> ScopedRoutes<H> {
         // Closed-scope tombstones survive a connection restart. Live handles
         // do not: their next use opens a scoped route on the new connection.
         self.routes.retain(|_, (_, handle, _)| handle.is_none());
+        self.connection_generation = self.connection_generation.wrapping_add(1);
     }
     pub fn configure(
         &mut self,
@@ -94,23 +131,32 @@ impl<H: Copy + Eq> ScopedRoutes<H> {
         _agent_owned: bool,
         scope: Option<RegisteredScope>,
     ) -> Vec<H> {
-        self.flows.insert(flow.into(), scope);
+        if let Some((_, key)) = self.flows.remove(flow) {
+            let users = self
+                .scope_users
+                .get_mut(&key)
+                .expect("registered scope count");
+            *users -= 1;
+        }
+        if let Some(scope) = scope {
+            let key = ScopeKey::from(&scope.selector);
+            *self.scope_users.entry(key.clone()).or_default() += 1;
+            self.flows.insert(flow.into(), (scope, key));
+        }
         let mut dropped = Vec::new();
-        self.routes.retain(|_, (selector, handle, _)| {
-            let live = self
-                .flows
-                .values()
-                .any(|s| s.as_ref().is_some_and(|s| &s.selector == selector));
+        self.routes.retain(|key, (_, handle, _)| {
+            let live = self.scope_users.get(&key.scope).is_some_and(|n| *n > 0);
             if !live && let Some(handle) = handle {
                 dropped.push(*handle);
             }
             live
         });
+        self.scope_users.retain(|_, users| *users > 0);
         dropped
     }
 
-    /// Opening and lookup share a lock in the caller, so concurrent runs cannot
-    /// mint two routes. A closed scope keeps a tombstone until core changes it.
+    /// The caller serializes opening per route identity. A closed scope keeps
+    /// a tombstone until core changes it.
     pub fn route(
         &mut self,
         flow: &str,
@@ -139,42 +185,101 @@ impl<H: Copy + Eq> ScopedRoutes<H> {
         identity: Option<&BindIdentity>,
         open: impl FnOnce(&FlowScope) -> Result<H, WireError>,
     ) -> Result<Option<H>, WireError> {
-        let module = match target {
-            subc_protocol::RouteTarget::ManagementSurface { module_id }
-            | subc_protocol::RouteTarget::ToolProvider { module_id } => module_id.as_str(),
+        let plan = self.prepare(flow, target, identity)?;
+        if let Some(handle) = plan.handle {
+            return Ok(Some(handle));
+        }
+        let handle = open(&plan.scope)?;
+        self.install(flow, plan, handle).map(Some)
+    }
+
+    pub(crate) fn prepare(
+        &self,
+        flow: &str,
+        target: &subc_protocol::RouteTarget,
+        identity: Option<&BindIdentity>,
+    ) -> Result<RoutePlan<H>, WireError> {
+        let (module, tool) = match target {
+            subc_protocol::RouteTarget::ManagementSurface { module_id } => {
+                (module_id.as_str(), false)
+            }
+            subc_protocol::RouteTarget::ToolProvider { module_id } => (module_id.as_str(), true),
             _ => return Err(WireError::NeverSent("unsupported flow target".into())),
         };
         self.ready(flow, module, "route.open")
             .map_err(WireError::Typed)?;
-        let scope = self
-            .flows
-            .get(flow)
-            .and_then(Option::as_ref)
-            .unwrap()
-            .selector
-            .clone();
-        let key = Self::cache_key(&scope, target, identity);
+        let (registered, scope_key) = self.flows.get(flow).unwrap();
+        let scope = registered.selector.clone();
+        let key = RouteKey {
+            scope: scope_key.clone(),
+            module: module.into(),
+            tool,
+            identity: identity.map(|id| {
+                (
+                    id.project_root.clone(),
+                    id.harness.clone(),
+                    id.session.clone(),
+                    id.project_id.clone(),
+                )
+            }),
+        };
         if let Some((_, handle, _)) = self.routes.get(&key) {
-            return handle.map(Some).ok_or_else(|| {
+            return handle
+                .map(|handle| RoutePlan {
+                    key,
+                    scope,
+                    handle: Some(handle),
+                    generation: self.connection_generation,
+                })
+                .ok_or_else(|| {
+                    WireError::Typed(FlowRefusal::new(
+                        RefusalReason::ScopeEnded,
+                        module,
+                        "route.open",
+                    ))
+                });
+        }
+        Ok(RoutePlan {
+            key,
+            scope,
+            handle: None,
+            generation: self.connection_generation,
+        })
+    }
+
+    pub(crate) fn install(
+        &mut self,
+        flow: &str,
+        plan: RoutePlan<H>,
+        handle: H,
+    ) -> Result<H, WireError> {
+        // Opening occurs outside the table lock. Never install a handle under
+        // authority or a connection that changed while the daemon was replying.
+        self.ready(flow, &plan.key.module, "route.open")
+            .map_err(WireError::Typed)?;
+        if self.connection_generation != plan.generation
+            || self
+                .flows
+                .get(flow)
+                .is_none_or(|(_, key)| key != &plan.key.scope)
+        {
+            return Err(WireError::NeverSent(
+                "scope or connection changed during route open".into(),
+            ));
+        }
+        if let Some((_, existing, _)) = self.routes.get(&plan.key) {
+            return existing.ok_or_else(|| {
                 WireError::Typed(FlowRefusal::new(
                     RefusalReason::ScopeEnded,
-                    module,
+                    &plan.key.module,
                     "route.open",
                 ))
             });
         }
-        let handle = open(&scope)?;
+        let module = plan.key.module.clone();
         self.routes
-            .insert(key, (scope, Some(handle), module.into()));
-        Ok(Some(handle))
-    }
-
-    fn cache_key(
-        scope: &FlowScope,
-        target: &subc_protocol::RouteTarget,
-        identity: Option<&BindIdentity>,
-    ) -> String {
-        serde_json::to_string(&(scope, target, identity)).expect("route identity JSON")
+            .insert(plan.key, (plan.scope, Some(handle), module));
+        Ok(handle)
     }
 
     /// A settled model call no longer needs a channel or a subscription.
@@ -184,8 +289,7 @@ impl<H: Copy + Eq> ScopedRoutes<H> {
         target: &subc_protocol::RouteTarget,
         identity: &BindIdentity,
     ) -> Option<H> {
-        let scope = &self.flows.get(flow)?.as_ref()?.selector;
-        let key = Self::cache_key(scope, target, Some(identity));
+        let key = self.prepare(flow, target, Some(identity)).ok()?.key;
         self.routes.remove(&key).and_then(|(_, handle, _)| handle)
     }
 
@@ -204,7 +308,7 @@ impl<H: Copy + Eq> ScopedRoutes<H> {
     }
 
     pub fn ready(&self, flow: &str, module: &str, action: &str) -> Result<(), FlowRefusal> {
-        let Some(scope) = self.flows.get(flow).and_then(Option::as_ref) else {
+        let Some((scope, _)) = self.flows.get(flow) else {
             return Err(FlowRefusal::new(RefusalReason::NoFlowScope, module, action));
         };
         if !scope.targets.contains(module) {
@@ -353,5 +457,53 @@ mod tests {
             vec![1]
         );
         assert_eq!(routes.route("a", &target, |_| Ok(2)).unwrap(), Some(2));
+    }
+
+    #[test]
+    fn scope_bookkeeping_forgets_removed_flows_but_preserves_shared_authority() {
+        let mut routes = ScopedRoutes::<u64>::default();
+        let scope = decode(&fixture()).unwrap().unwrap();
+        let target = subc_protocol::RouteTarget::ManagementSurface {
+            module_id: "broca".into(),
+        };
+        routes.configure("a", true, Some(scope.clone()));
+        routes.configure("b", true, Some(scope.clone()));
+        routes.route("a", &target, |_| Ok(1)).unwrap();
+        assert!(routes.configure("a", true, None).is_empty());
+        assert_eq!(
+            routes
+                .route("b", &target, |_| panic!("shared handle dropped"))
+                .unwrap(),
+            Some(1)
+        );
+        assert_eq!(routes.configure("b", true, None), [1]);
+        assert!(routes.flows.is_empty());
+        assert!(routes.scope_users.is_empty());
+        assert!(routes.routes.is_empty());
+    }
+
+    #[test]
+    fn an_open_reply_cannot_install_after_scope_or_connection_changes() {
+        let mut routes = ScopedRoutes::<u64>::default();
+        let scope = decode(&fixture()).unwrap().unwrap();
+        let target = subc_protocol::RouteTarget::ManagementSurface {
+            module_id: "broca".into(),
+        };
+        routes.configure("a", true, Some(scope.clone()));
+        let plan = routes.prepare("a", &target, None).unwrap();
+        routes.connection_restored();
+        assert!(matches!(
+            routes.install("a", plan, 1),
+            Err(WireError::NeverSent(_))
+        ));
+        let plan = routes.prepare("a", &target, None).unwrap();
+        let mut next = scope;
+        next.selector.epoch += 1;
+        routes.configure("a", true, Some(next));
+        assert!(matches!(
+            routes.install("a", plan, 2),
+            Err(WireError::NeverSent(_))
+        ));
+        assert_eq!(routes.route("a", &target, |_| Ok(3)).unwrap(), Some(3));
     }
 }

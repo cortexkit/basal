@@ -98,16 +98,16 @@ pub trait Transport: Send + Sync {
     ) -> Result<Value, WireError>;
 }
 
-/// Maps a subc-client-rs 0.26.1 call error. Citations are to that release's
-/// `src/consumer.rs`.
+/// Maps the client's typed send disposition without guessing from prose.
 pub fn map_error(error: CallError) -> WireError {
     if let Some(body) = error.route_open_refusal() {
         return match crate::flow_refusal::FlowRefusal::decode(body) {
             Ok(Some(decoded)) => WireError::Typed(decoded),
-            Ok(None) if !body.code.starts_with("scope_") => {
-                WireError::NeverSent(body.message.clone())
-            }
-            _ => WireError::Unknown("unrecognised scoped route refusal".into()),
+            Ok(None) if !body.code.starts_with("scope_") => WireError::NeverSent(format!(
+                "{}: {} (detail: {:?})",
+                body.code, body.message, body.detail
+            )),
+            _ => WireError::Unreadable(format!("unrecognised scoped route refusal: {body:?}")),
         };
     }
     // Read before the match moves the error apart; `None` for every variant
@@ -115,22 +115,19 @@ pub fn map_error(error: CallError) -> WireError {
     let cause = error.outcome_cause();
     match error {
         CallError::NotSent(e) => WireError::NeverSent(e.to_string()),
-        CallError::StaleRouteHandle(_) => WireError::NeverSent("stale local route handle".into()),
+        e @ CallError::StaleRouteHandle(_) => WireError::NeverSent(e.to_string()),
         CallError::Module(e) => refusal(e),
         // The capability resolver's errors are raised before any request
-        // frame for a call is written: `resolve_provider` (lines 1351-1363)
-        // after reading the catalog, and `validate_capability_for_resolution`
-        // (lines 5351-5359) before even that. The client itself classifies
-        // all three as not sent (lines 4566-4572).
+        // frame for a call is written. The client classifies all three as
+        // not sent, unlike failures of an already accepted request.
         e @ (CallError::CapabilityUnprovided { .. }
         | CallError::CapabilityAmbiguous { .. }
         | CallError::InvalidCapabilityIdentifier { .. }) => WireError::NeverSent(e.to_string()),
         // A request the writer accepted and that got no reply; the client
-        // names why (`OutcomeUnknownCause`, line 1926).
+        // names why with OutcomeUnknownCause.
         CallError::OutcomeUnknown(e) => outcome_unknown(cause, e.to_string()),
         // SubscriptionBackpressure ends a subscription whose request was
-        // already sent (line 3634), and the client counts it as outcome
-        // unknown (lines 4552-4560).
+        // already sent, and the client counts it as outcome unknown.
         other => WireError::Unknown(other.to_string()),
     }
 }
@@ -149,7 +146,7 @@ pub fn refusal(body: subc_protocol::ErrorBody) -> WireError {
                 message: body.message,
             },
         },
-        Err(detail) => WireError::Unknown(detail),
+        Err(detail) => WireError::Unreadable(detail),
     }
 }
 
@@ -186,6 +183,12 @@ pub struct SubcTransport {
     identity: BindIdentity,
     timeout: Duration,
     routes: Arc<Mutex<crate::flow_scope::ScopedRoutes<subc_client_rs::RouteHandle>>>,
+    open_gates: Mutex<
+        std::collections::HashMap<
+            crate::flow_scope::RouteKey,
+            std::sync::Weak<tokio::sync::Mutex<()>>,
+        >,
+    >,
 }
 impl Drop for SubcTransport {
     fn drop(&mut self) {
@@ -202,22 +205,78 @@ impl SubcTransport {
         flow: &str,
         target: &RouteTarget,
     ) -> Result<Option<subc_client_rs::RouteHandle>, WireError> {
-        self.routes
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .route(flow, target, |scope| {
-                self.handle
-                    .block_on(self.consumer.open_route_scoped(
-                        target.clone(),
-                        BindIdentity::new("/", "basal", format!("basal:flow:{flow}")),
-                        scope.selector(),
-                        CallOptions {
-                            timeout: self.timeout,
-                            ..Default::default()
-                        },
-                    ))
-                    .map_err(map_error)
-            })
+        self.open_scoped_handle(
+            flow,
+            target,
+            None,
+            BindIdentity::new("/", "basal", format!("basal:flow:{flow}")),
+        )
+        .map(Some)
+    }
+
+    fn open_scoped_handle(
+        &self,
+        flow: &str,
+        target: &RouteTarget,
+        identity: Option<&BindIdentity>,
+        bind: BindIdentity,
+    ) -> Result<subc_client_rs::RouteHandle, WireError> {
+        self.handle.block_on(async {
+            let key = {
+                let routes = self.routes.lock().unwrap_or_else(|p| p.into_inner());
+                let plan = routes.prepare(flow, target, identity)?;
+                if let Some(handle) = plan.handle {
+                    return Ok(handle);
+                }
+                plan.key
+            };
+            let gate = {
+                let mut gates = self.open_gates.lock().unwrap_or_else(|p| p.into_inner());
+                gates.retain(|_, gate| gate.strong_count() > 0);
+                let gate = gates
+                    .get(&key)
+                    .and_then(std::sync::Weak::upgrade)
+                    .unwrap_or_else(|| Arc::new(tokio::sync::Mutex::new(())));
+                gates.insert(key, Arc::downgrade(&gate));
+                gate
+            };
+            // Only opens for this route identity wait for one another. Control
+            // pushes and other providers never wait on a network round trip.
+            let _opening = gate.lock().await;
+            let plan = self
+                .routes
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .prepare(flow, target, identity)?;
+            if let Some(handle) = plan.handle {
+                return Ok(handle);
+            }
+            let handle = self
+                .consumer
+                .open_route_scoped(
+                    target.clone(),
+                    bind,
+                    plan.scope.selector(),
+                    CallOptions {
+                        timeout: self.timeout,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .map_err(map_error)?;
+            let result = self
+                .routes
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .install(flow, plan, handle);
+            if !result.as_ref().is_ok_and(|installed| *installed == handle) {
+                let _ = self
+                    .consumer
+                    .close_handle(&handle, Default::default())
+                    .await;
+            }
+            result
+        })
     }
 
     fn call_for_flow(
@@ -243,12 +302,12 @@ impl SubcTransport {
                     },
                 ));
                 if let Err(CallError::StaleRouteHandle(_)) = &result {
-                    // The client never reopens a handle request. A later activation
-                    // obtains authority again before opening a replacement route.
+                    // A stale connection handle says nothing about scope expiry.
+                    // Only a daemon scope-close push may leave a tombstone.
                     self.routes
                         .lock()
                         .unwrap_or_else(|p| p.into_inner())
-                        .closed(handle, true);
+                        .closed(handle, false);
                 }
                 result
                     .map_err(map_error)
@@ -319,6 +378,7 @@ impl SubcTransport {
             identity: BindIdentity::new("/", "basal", "basal:flows"),
             timeout,
             routes,
+            open_gates: Mutex::new(std::collections::HashMap::new()),
         }))
     }
     fn call(&self, target: RouteTarget, body: Value, management: bool) -> Result<Value, WireError> {
@@ -356,24 +416,7 @@ impl SubcTransport {
         target: &RouteTarget,
         identity: BindIdentity,
     ) -> Result<subc_client_rs::RouteHandle, WireError> {
-        let bind = identity;
-        self.routes
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .route_for_identity(flow, target, &bind, |scope| {
-                self.handle
-                    .block_on(self.consumer.open_route_scoped(
-                        target.clone(),
-                        bind.clone(),
-                        scope.selector(),
-                        CallOptions {
-                            timeout: self.timeout,
-                            ..Default::default()
-                        },
-                    ))
-                    .map_err(map_error)
-            })?
-            .ok_or_else(|| WireError::NeverSent("model route has no handle".into()))
+        self.open_scoped_handle(flow, target, Some(&identity), identity.clone())
     }
 
     /// Sends to Broca as basal without the flow's scope. Only the test rig's
@@ -422,12 +465,12 @@ impl SubcTransport {
             self.routes
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
-                .closed(handle, true);
+                .closed(handle, false);
         }
         result
             .map_err(map_error)
-            .map_err(|e| contextual(e, module, op))
             .and_then(|bytes| decode_response(&bytes, true))
+            .map_err(|e| contextual(e, module, op))
     }
     pub(crate) fn subscribe_for_model(
         &self,
@@ -449,8 +492,16 @@ impl SubcTransport {
         let handle = self
             .model_handle(flow, &target, identity)
             .map_err(|e| contextual(e, module, op))?;
-        self.handle
-            .block_on(self.consumer.subscribe_route(&handle, bytes, opts))
+        let result = self
+            .handle
+            .block_on(self.consumer.subscribe_route(&handle, bytes, opts));
+        if let Err(CallError::StaleRouteHandle(_)) = &result {
+            self.routes
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .closed(handle, false);
+        }
+        result
             .map_err(map_error)
             .map_err(|e| contextual(e, module, op))
     }
@@ -619,19 +670,21 @@ pub fn contextual(error: WireError, module: &str, action: &str) -> WireError {
 }
 
 fn decode_response(response: &[u8], management: bool) -> Result<Value, WireError> {
-    let value: Value =
+    let mut value: Value =
         serde_json::from_slice(response).map_err(|e| WireError::Unreadable(e.to_string()))?;
     if !management {
         return Ok(value);
     }
-    if let Some(error) = value.get("error") {
-        let body: subc_protocol::ErrorBody = serde_json::from_value(error.clone())
-            .map_err(|e| WireError::Unknown(format!("invalid error envelope: {e}")))?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| WireError::Unreadable("management reply is not an object".into()))?;
+    if let Some(error) = object.remove("error") {
+        let body: subc_protocol::ErrorBody = serde_json::from_value(error)
+            .map_err(|e| WireError::Unreadable(format!("invalid error envelope: {e}")))?;
         return Err(refusal(body));
     }
-    value
-        .get("result")
-        .cloned()
+    object
+        .remove("result")
         .ok_or_else(|| WireError::Unreadable("missing management result".into()))
 }
 
@@ -644,7 +697,8 @@ pub fn tool_body(name: &str, arguments: Value, call_key: &str) -> Result<Value, 
     serde_json::to_value(request).map_err(|e| WireError::NeverSent(e.to_string()))
 }
 
-/// Embed frozen parameters without parsing and reserializing their bytes.
+/// Validate frozen parameters as an object, then embed their original bytes
+/// without reserializing them (spacing and field order are preserved).
 pub fn management_bytes(op: &str, params: &[u8]) -> Result<Vec<u8>, WireError> {
     let value: Value =
         serde_json::from_slice(params).map_err(|e| WireError::NeverSent(e.to_string()))?;
@@ -667,7 +721,191 @@ mod tests {
     use super::*;
     use crate::UnknownReason;
 
+    fn registered() -> crate::flow_scope::RegisteredScope {
+        crate::flow_scope::RegisteredScope {
+            selector: crate::flow_scope::FlowScope {
+                owner: subc_protocol::Principal::Reserved {
+                    module_id: "prefrontal-core".into(),
+                },
+                scope_ref: "flow:stale".into(),
+                epoch: 1,
+            },
+            targets: ["broca".into()].into_iter().collect(),
+        }
+    }
+    #[test]
+    fn opening_a_route_does_not_hold_the_control_table_lock() {
+        let (entered, received) = std::sync::mpsc::sync_channel(1);
+        let (release, paused) = tokio::sync::oneshot::channel();
+        with_paused_open(Some((entered, paused)), |transport, _, _, _| {
+            transport.configure_flow("a", true, Some(registered()));
+            let opening = transport.clone();
+            let thread = std::thread::spawn(move || {
+                opening.scoped_handle(
+                    "a",
+                    &RouteTarget::ManagementSurface {
+                        module_id: "broca".into(),
+                    },
+                )
+            });
+            received.recv_timeout(Duration::from_secs(10)).unwrap();
+            // The daemon has not replied yet; control pushes must still be able
+            // to acquire the table. Release and join before reporting failure.
+            let unlocked = transport.routes.try_lock().is_ok();
+            release.send(()).unwrap();
+            thread.join().unwrap().unwrap();
+            assert!(
+                unlocked,
+                "route open held the control table while awaiting the daemon"
+            );
+        });
+    }
+    #[test]
+    fn stale_handle_does_not_leave_a_scope_tombstone() {
+        with_scoped_transport(|transport, _, _, _| {
+            let scope = registered();
+            transport.configure_flow("a", true, Some(scope.clone()));
+            let target = RouteTarget::ManagementSurface {
+                module_id: "broca".into(),
+            };
+            let handle = transport.scoped_handle("a", &target).unwrap().unwrap();
+            transport
+                .handle
+                .block_on(transport.consumer.close_handle(&handle, Default::default()))
+                .unwrap();
+            assert!(matches!(
+                transport.management_for_flow("a", "broca", "echo", json!({})),
+                Err(WireError::NeverSent(_))
+            ));
+            // A reconnect and the same core selector must not preserve a local stale handle.
+            transport.routes.lock().unwrap().connection_restored();
+            transport.configure_flow("a", true, Some(scope));
+            assert_eq!(
+                transport
+                    .management_for_flow("a", "broca", "echo", json!({"n":1}))
+                    .unwrap(),
+                json!({"n":1})
+            );
+        });
+    }
+    #[test]
+    fn stale_model_subscription_evicts_its_dead_handle() {
+        with_scoped_transport(|transport, _, _, _| {
+            transport.configure_flow("a", true, Some(registered()));
+            let target = RouteTarget::ManagementSurface {
+                module_id: "broca".into(),
+            };
+            let identity = BindIdentity::new("/", "basal", "model");
+            let handle = transport
+                .model_handle("a", &target, identity.clone())
+                .unwrap();
+            transport
+                .handle
+                .block_on(transport.consumer.close_handle(&handle, Default::default()))
+                .unwrap();
+            assert!(
+                transport
+                    .subscribe_for_model("a", identity.clone(), "broca", "session.subscribe", b"{}")
+                    .is_err()
+            );
+            assert_ne!(
+                transport.model_handle("a", &target, identity).unwrap(),
+                handle
+            );
+        });
+    }
+
+    #[test]
+    fn stale_model_request_can_reopen_without_a_scope_epoch_change() {
+        with_scoped_transport(|transport, _, _, _| {
+            transport.configure_flow("a", true, Some(registered()));
+            let target = RouteTarget::ManagementSurface {
+                module_id: "broca".into(),
+            };
+            let identity = BindIdentity::new("/", "basal", "model");
+            let handle = transport
+                .model_handle("a", &target, identity.clone())
+                .unwrap();
+            transport
+                .handle
+                .block_on(transport.consumer.close_handle(&handle, Default::default()))
+                .unwrap();
+            assert!(matches!(
+                transport.management_for_model("a", identity.clone(), "broca", "echo", b"{}"),
+                Err(WireError::NeverSent(_))
+            ));
+            assert_eq!(
+                transport
+                    .management_for_model("a", identity, "broca", "echo", b"{}")
+                    .unwrap(),
+                json!({})
+            );
+        });
+    }
+    #[test]
+    fn model_refusal_has_provider_and_action_after_envelope_decoding() {
+        with_scoped_transport(|transport, _, _, _| {
+            transport.configure_flow("a", true, Some(registered()));
+            let result = transport.management_for_model(
+                "a",
+                BindIdentity::new("/", "basal", "model"),
+                "broca",
+                "refuse",
+                b"{}",
+            );
+            assert!(
+                matches!(result, Err(WireError::Typed(refusal)) if refusal.provider == "broca" && refusal.action == "refuse")
+            );
+        });
+    }
+
+    #[test]
+    fn stale_handle_mapping_keeps_the_client_handle_detail() {
+        with_scoped_transport(|transport, _, _, _| {
+            transport.configure_flow("a", true, Some(registered()));
+            let handle = transport
+                .scoped_handle(
+                    "a",
+                    &RouteTarget::ManagementSurface {
+                        module_id: "broca".into(),
+                    },
+                )
+                .unwrap()
+                .unwrap();
+            assert!(
+                matches!(map_error(CallError::StaleRouteHandle(handle)), WireError::NeverSent(detail) if detail.contains(&format!("{handle:?}")))
+            );
+        });
+    }
+    #[test]
+    fn malformed_management_errors_are_unreadable_not_connection_loss() {
+        for bytes in [
+            br#"{"error":{}}"#.as_slice(),
+            br#"{"error":{"code":"resource_busy","message":"busy"}}"#.as_slice(),
+        ] {
+            assert_eq!(
+                decode_response(bytes, true).unwrap_err().unknown_reason(),
+                Some(UnknownReason::ReplyUnreadable)
+            );
+        }
+    }
+
     fn with_scoped_transport(
+        test: impl FnOnce(
+            Arc<SubcTransport>,
+            Arc<Mutex<Vec<Value>>>,
+            Arc<Mutex<Vec<(u16, Value)>>>,
+            std::sync::mpsc::Receiver<()>,
+        ),
+    ) {
+        with_paused_open(None, test);
+    }
+
+    fn with_paused_open(
+        mut pause: Option<(
+            std::sync::mpsc::SyncSender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
         test: impl FnOnce(
             Arc<SubcTransport>,
             Arc<Mutex<Vec<Value>>>,
@@ -729,10 +967,16 @@ mod tests {
                 let body: Value = serde_json::from_slice(&frame.body).unwrap();
                 recorded_calls.lock().unwrap().push((frame.header.channel,body.clone()));
                 let end_scope = body["method"] == "end_scope";
+                if body["op"] == "route.open" && let Some((entered, release)) = pause.take() {
+                    entered.send(()).unwrap();
+                    release.await.unwrap();
+                }
                 let reply = if body["op"] == "route.open" {
                     let mut records = records.lock().unwrap();
                     records.push(body);
                     json!({"op":"route.open","route_channel":10+records.len(),"route_epoch":1})
+                } else if body["method"] == "refuse" {
+                    json!({"error":{"code":"scope_ended","message":"ended"}})
                 } else if body["method"] == "session.send" {
                     json!({"result":{"state":"active","run_id":format!("broca-run:{}",body["params"]["send_id"].as_str().unwrap())}})
                 } else if body["method"]=="route.select" {
@@ -1203,12 +1447,12 @@ mod tests {
     }
 
     #[test]
-    fn malformed_typed_busy_is_connection_lost_not_provably_unsent() {
+    fn malformed_typed_busy_is_unreadable_not_provably_unsent() {
         let error = map_error(CallError::Module(subc_protocol::ErrorBody::new(
             "resource_busy",
             "retry safely",
         )));
-        assert_eq!(error.unknown_reason(), Some(UnknownReason::ConnectionLost));
+        assert_eq!(error.unknown_reason(), Some(UnknownReason::ReplyUnreadable));
     }
 
     fn boxed(text: &str) -> Box<dyn std::error::Error + Send + Sync> {
