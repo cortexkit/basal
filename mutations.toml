@@ -7372,3 +7372,169 @@ only = true
 timeout_s = 600
 build_timeout_s = 7200
 
+
+[[control]]
+id = "builtin-write-carries-special-permission-bits"
+guards = "builtin write carries special permission bits"
+file = "crates/basal-host/src/builtins/fs.rs"
+old = "    mode & 0o777"
+new = "    mode & 0o7777 // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-host/src/builtins/fs/tests.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--lib"
+expect_red = ["builtins::fs::tests::replacement_mode_never_carries_setuid_or_setgid"]
+only = true
+timeout_s = 600
+build_timeout_s = 7200
+
+
+[[control]]
+id = "broca-generation-accepts-unknown-keys"
+guards = "broca generation accepts unknown keys"
+file = "crates/basal-host/src/broca/wire.rs"
+old = """
+#[serde(deny_unknown_fields)]
+pub struct GenerationConfig"""
+new = """
+// NON-VACUITY BREAK: ignore unknown generation keys.
+pub struct GenerationConfig"""
+edits = []
+test_file = "crates/basal-host/tests/audit_broca.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--test audit_broca"
+expect_red = ["generation_typos_are_refused"]
+only = true
+timeout_s = 600
+build_timeout_s = 7200
+
+
+[[control]]
+id = "broca-unsent-refusal-penalizes-model"
+guards = "broca unsent refusal penalizes model"
+file = "crates/basal-host/src/broca/mod.rs"
+old = "                call.report_attempted = true;"
+new = "                self.report_terminal(&mut call)?; // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-host/tests/audit_broca.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--test audit_broca"
+expect_red = ["an_unsent_refusal_does_not_penalize_the_selected_model"]
+only = true
+timeout_s = 600
+build_timeout_s = 7200
+
+
+[[control]]
+id = "builtin-dispatch-skips-result-encoding"
+guards = "builtin dispatch skips result encoding"
+file = "crates/basal-host/src/builtins/mod.rs"
+old = """
+            Ok(value) => Ok(Dispatched::Completed(match text(&value) {
+                Ok(value) => HostOutcome::fulfilled(value),
+                Err(denial) => denial.outcome(),
+            })),"""
+new = "            Ok(_value) => Ok(Dispatched::Completed(HostOutcome::fulfilled(JsonText::null()))), // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-host/tests/audit_builtins.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--test audit_builtins"
+expect_red = ["escaped_listing_exceeds_encoded_cap_as_a_typed_refusal"]
+only = true
+timeout_s = 600
+build_timeout_s = 7200
+
+
+[[control]]
+id = "broca-legacy-snapshot-discards-frozen-bytes"
+guards = "broca legacy snapshot discards frozen bytes"
+file = "crates/basal-host/src/broca/mod.rs"
+old = "            Bytes::Legacy(bytes) => bytes,"
+new = "            Bytes::Legacy(_bytes) => Vec::new(), // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-host/tests/audit_broca.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--test audit_broca"
+expect_red = ["saved_params_are_compact_and_read_legacy_byte_arrays"]
+only = true
+timeout_s = 600
+build_timeout_s = 7200
+
+
+[[control]]
+id = "broca-global-gate-blocks-independent-send"
+guards = "broca global gate blocks independent send"
+file = "crates/basal-host/src/broca/mod.rs"
+old = """
+    fn call_gate(&self, send_id: &str) -> Arc<Mutex<()>> {
+        let mut gates = lock(&self.gate);"""
+new = """
+    fn call_gate(&self, _send_id: &str) -> Arc<Mutex<()>> {
+        let send_id = "shared"; // NON-VACUITY BREAK
+        let mut gates = lock(&self.gate);"""
+edits = []
+test_file = "crates/basal-host/tests/audit_broca.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--test audit_broca"
+expect_red = ["a_stalled_send_does_not_hold_an_unrelated_dispatch"]
+only = true
+timeout_s = 600
+build_timeout_s = 7200
+
+
+[[control]]
+id = "builtin-dns-ignores-the-fetch-deadline"
+guards = "builtin dns ignores the fetch deadline"
+file = "crates/basal-host/src/builtins/net.rs"
+old = "            .resolve_until(&url.host, url.port, deadline)"
+new = "            .resolve(&url.host, url.port) // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-host/src/builtins/net/tests.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--lib"
+expect_red = ["builtins::net::tests::dns_receives_the_fetch_deadline"]
+only = true
+timeout_s = 600
+build_timeout_s = 7200
+
+
+[[control]]
+id = "builtin-git-leaves-descendant-pipes-open"
+guards = "builtin git leaves descendant pipes open"
+file = "crates/basal-host/src/builtins/git.rs"
+old = "            libc::kill(-(self.0.id() as i32), libc::SIGKILL);"
+new = "            let _ = self.0.id(); // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-host/tests/audit_builtins.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--test audit_builtins"
+expect_red = ["git_reaps_descendants_that_keep_its_output_pipe_open"]
+only = true
+timeout_s = 600
+build_timeout_s = 7200
+
+
+[[control]]
+id = "builtin-tags-are-truncated-only-after-reading-everything"
+guards = "builtin tags are truncated only after reading everything"
+file = "crates/basal-host/src/builtins/git.rs"
+old = "    run_command_until(command, Some(MAX_TAGS))"
+new = "    run_command_until(command, None) // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-host/src/builtins/git/tests.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--lib"
+expect_red = ["builtins::git::tests::tag_output_is_bounded_while_reading_not_after_completion"]
+only = true
+timeout_s = 600
+build_timeout_s = 7200
+
