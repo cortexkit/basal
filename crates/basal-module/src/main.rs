@@ -107,6 +107,7 @@ fn serve() -> ExitCode {
     let configured_models = models.clone();
     let built_models = models.clone();
     let initialized_models = models.clone();
+    let ready_models = models.clone();
     // Only the rig's kill switch reads this: the store path, once known.
     let store_path_cell = Arc::new(std::sync::OnceLock::<std::path::PathBuf>::new());
     let configured_store = store_path_cell.clone();
@@ -192,9 +193,17 @@ fn serve() -> ExitCode {
             .as_ref()
         {
             models.store.bind(shared).map_err(|e| e.to_string())?;
-            models.wake.start(&models.host);
         }
         Ok(())
+    }))
+    .with_ready_hosts(Box::new(move || {
+        if let Some(models) = ready_models
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+        {
+            models.wake.start(&models.host);
+        }
     }));
     match run(handler) {
         Ok(()) => ExitCode::SUCCESS,

@@ -2623,8 +2623,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-module/src/ops.rs"
-old = "&& !self.owns(owner, &f.flow_id)?"
-new = "&& p.flow_ids.is_none() && !self.owns(owner, &f.flow_id)?"
+old = "AND (?2 IS NULL OR f.owner=?2 OR (f.owner IS NULL"
+new = "AND (?1 IS NOT NULL OR ?2 IS NULL OR f.owner=?2 OR (f.owner IS NULL /* NON-VACUITY BREAK */"
 
 [[control]]
 id = "flow-list-state-diverges-from-flow-health"
@@ -2640,8 +2640,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-module/src/ops.rs"
-old = "\"state\": flow_state(f.approved_version, f.enabled),"
-new = "\"state\": \"enabled\","
+old = "\"state\": flow_state(approved, r.get(2)?),"
+new = "\"state\": \"enabled\", // NON-VACUITY BREAK"
 
 [[control]]
 id = "the-manifest-declares-a-capability-subc-protocol-s-grammar-refuses"
@@ -3233,7 +3233,7 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-module/src/module.rs"
-old = "let recovered = rt.recover().map_err(|e| format!(\"recovering runs: {e}\"))?;"
+old = "let recovered = store\n            .write(basal_core::runs::requeue_orphans)\n            .map_err(|e| format!(\"recovering runs: {e}\"))?;"
 new = "let recovered: Vec<String> = Vec::new();"
 
 [[control]]
@@ -3297,8 +3297,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-module/src/dryrun.rs"
-old = ".is_some_and(|d| d.kind == Some(OpKind::Query) && !d.shell_capable),"
-new = ".is_some(),"
+old = ".is_some_and(|d| d.kind == Some(OpKind::Query) && !d.shell_capable)"
+new = ".is_some() /* NON-VACUITY BREAK */"
 
 [[control]]
 id = "an-owning-agent-may-ask-for-a-live-dry-run"
@@ -3718,7 +3718,7 @@ new = "sent: Sent::Maybe(basal_host::UnknownReason::ConnectionLost),"
 
 [[control]]
 id = "flow-list-reports-a-disable-by-core-as-the-owner-s"
-hub = "Flow list preserves core as the disable author after revocation, asserted by list-contract and install-gate tests"
+hub = "List and health preserve core as the disable author after revocation; list-contract and install-gate failures both assert that a core disable is reported as core"
 hub_targets = ["install_gate"]
 guards = "flow.list reports a disable by core as the owner's"
 test_file = "crates/basal-module/tests/list_contract.rs"
@@ -3730,8 +3730,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-module/src/ops.rs"
-old = "\"auto\" => \"auto\", \"core\" => \"core\", _ => \"owner\" },"
-new = "\"auto\" => \"auto\", _ => \"owner\" },"
+old = "} else if by == basal_core::install::CORE_ACTOR {"
+new = "} else if false && by == basal_core::install::CORE_ACTOR { // NON-VACUITY BREAK"
 
 [[control]]
 id = "the-flow-install-request-sends-an-empty-placement-when-the-manifest-states-none"
@@ -4710,8 +4710,8 @@ edits = [
 
 [[control]]
 id = "integration-model-store-initialization-omitted"
-hub = "The module initializes the durable model-call store before dispatch or recovery, asserted by model-journal and end-to-end restart tests"
-hub_targets = ["e2e"]
+hub = "The module binds its durable model-call store before host recovery or dispatch; model-journal, restart and eager-attachment tests all require that initialized store"
+hub_targets = ["e2e", "module_lifecycle"]
 guards = "integration: model store initialization omitted"
 test_file = "crates/basal-module/tests/hosts.rs"
 runner = "cargo"
@@ -6551,8 +6551,8 @@ build_timeout_s = 3600
 id = "rig-crash-checkpoint-discards-clamped-request"
 guards = "Crash-boundary evidence captures the selected request before host dispatch"
 file = "crates/basal-module/src/rig_kill.rs"
-old = "SELECT COALESCE(request, args), dispatch, attempts, settlement FROM journal WHERE run_id = ?1 AND position = 0"
-new = "SELECT args, dispatch, attempts, settlement FROM journal WHERE run_id = ?1 AND position = 0 -- NON-VACUITY BREAK: discard clamped request evidence"
+old = "SELECT COALESCE(request, args), dispatch, attempts, settlement FROM journal WHERE run_id = ?1 AND position = ?2"
+new = "SELECT args, dispatch, attempts, settlement FROM journal WHERE run_id = ?1 AND position = ?2 -- NON-VACUITY BREAK: discard clamped request evidence"
 edits = []
 test_file = "crates/basal-module/src/rig_kill.rs"
 runner = "cargo"
@@ -7931,6 +7931,23 @@ timeout_s = 600
 build_timeout_s = 3600
 
 
+[[control]]
+id = "module-worker-frames-unbounded"
+guards = "worker frames back-pressure their stdout reader instead of growing parent memory"
+file = "crates/basal-module/src/process.rs"
+old = "mpsc::sync_channel(2)"
+new = "mpsc::channel() // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-module/src/process.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--lib"
+expect_red = ["process::buffer_tests::incoming_frames_have_bounded_capacity"]
+only = false
+timeout_s = 600
+build_timeout_s = 3600
+
+
 
 
 
@@ -7949,4 +7966,137 @@ expect_red = ["schema::health_tests::additive_health_indexes_preserve_populated_
 only = true
 timeout_s = 600
 build_timeout_s = 7200
+
+
+[[control]]
+id = "module-panic-retains-activation-slot"
+guards = "unwinding an activation releases both its run and flow reservations"
+file = "crates/basal-module/src/engine.rs"
+old = """
+active.runs.remove(self.run_id);
+        active.flows.remove(self.flow_id);"""
+new = """
+// NON-VACUITY BREAK: retain reservations when unwinding.
+        if !thread::panicking() {
+            active.runs.remove(self.run_id);
+            active.flows.remove(self.flow_id);
+        }"""
+edits = []
+test_file = "crates/basal-module/src/engine_tests.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--lib"
+expect_red = ["engine::lifecycle_tests::panicking_activation_releases_run_and_flow_slots"]
+only = false
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "module-kill-signals-reaped-worker-pid"
+guards = "a reaped worker pid is never signalled after its lease is gone"
+file = "crates/basal-module/src/process.rs"
+old = "if !matches!(child.try_wait(), Ok(None)) {"
+new = "if false && !matches!(child.try_wait(), Ok(None)) { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-module/src/process.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--lib"
+expect_red = ["process::buffer_tests::a_reaped_worker_handle_never_signals_a_recycled_pid"]
+only = false
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "module-invalid-descriptor-does-not-exit"
+guards = "invalid store descriptors terminate the module for supervised restart"
+file = "crates/basal-module/src/serve.rs"
+old = """
+// by serving more requests. Let supervision retry startup.
+                std::process::exit(crate::fatal::EXIT_STORE_FAILURE);"""
+new = """
+// by serving more requests. Let supervision retry startup.
+                // NON-VACUITY BREAK: keep serving after descriptor refusal."""
+edits = []
+test_file = "crates/basal-module/tests/startup_descriptor.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test startup_descriptor"
+expect_red = ["invalid_store_descriptor_exits_for_supervised_restart"]
+only = false
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "module-replay-count-masks-store-failure"
+guards = "reading the replay count cannot turn a storage failure into zero calls"
+file = "crates/basal-module/src/engine.rs"
+old = "let replayed = match journal_rows(&inner.rt, &run_id) {"
+new = "let replayed = match Ok::<u64, CoreError>(journal_rows(&inner.rt, &run_id).unwrap_or(0)) { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-module/src/engine_tests.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--lib"
+expect_red = ["engine::lifecycle_tests::journal_count_failure_is_fatal_not_zero_replayed_calls"]
+only = false
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "module-owner-disable-leaks-raw-actor-kind"
+guards = "health and list encode owner disables with the same closed owner kind"
+file = "crates/basal-module/src/ops.rs"
+old = """
+} else {
+        "owner"
+    }"""
+new = """
+} else {
+        by // NON-VACUITY BREAK
+    }"""
+edits = []
+test_file = "crates/basal-module/tests/module_lifecycle.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test module_lifecycle"
+expect_red = ["health_uses_the_same_owner_disable_kind_as_list"]
+only = false
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "module-start-binds-before-preparation"
+guards = "failed module preparation never binds or retains the writer lease"
+file = "crates/basal-module/src/module.rs"
+old = """
+std::fs::create_dir_all(&config.dry_run.scratch_root).map_err(|e| {
+            format!(
+                "creating the dry-run directory {}: {e}",
+                config.dry_run.scratch_root.display()
+            )
+        })?;
+        initialize(store.clone())?;"""
+new = """
+initialize(store.clone())?; // NON-VACUITY BREAK
+        std::fs::create_dir_all(&config.dry_run.scratch_root).map_err(|e| {
+            format!(
+                "creating the dry-run directory {}: {e}",
+                config.dry_run.scratch_root.display()
+            )
+        })?;"""
+edits = []
+test_file = "crates/basal-module/tests/module_lifecycle.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test module_lifecycle"
+expect_red = ["failed_start_does_not_bind_or_retain_the_store"]
+only = false
+timeout_s = 600
+build_timeout_s = 3600
 

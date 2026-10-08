@@ -15,8 +15,10 @@
 //! first launch of a freshly signed binary, and a launch after a few idle
 //! minutes, has been measured stalling for over a minute while the system
 //! evaluates the signature. The pool keeps `warm_spares` greeted, unbound
-//! workers ready, and replaces a killed, crashed or retired worker at once
-//! in the background, so the stall is paid off the activation's path.
+//! workers ready, and replenishes that reserve in the background. A dead
+//! bound worker is replaced on its flow's next activation, not by a new
+//! worker pre-bound to an idle flow. Failed spawns back off to avoid repeatedly
+//! launching a broken or unavailable binary.
 //!
 //! A worker is handed out before its run is claimed, so a run's wall-clock
 //! deadline (fixed at its first claim) never starts counting before the
@@ -34,7 +36,7 @@ use basal_core::channel::{ChannelError, WorkerChannel};
 use basal_proto::{ParentMessage, Welcome, WorkerMessage};
 
 use crate::metrics::Metrics;
-use crate::process::{SpawnError, WorkerLaunch, WorkerProcess};
+use crate::process::{SpawnError, WorkerKiller, WorkerLaunch, WorkerProcess};
 
 /// The pool's parameters. The defaults keep two spares (an install's dry
 /// run uses up to ten single-use workers in a row), cap the pool at 16
@@ -192,6 +194,9 @@ pub struct Handout {
 #[derive(Debug)]
 pub enum PoolError {
     Spawn(SpawnError),
+    Backoff {
+        retry_in: Duration,
+    },
     /// Every worker stayed busy for the whole acquire timeout.
     Exhausted,
     Stopped,
@@ -201,6 +206,7 @@ impl std::fmt::Display for PoolError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Spawn(e) => write!(f, "{e}"),
+            Self::Backoff { retry_in } => write!(f, "worker spawns backed off for {retry_in:?}"),
             Self::Exhausted => f.write_str("no worker became free in time"),
             Self::Stopped => f.write_str("the pool is stopped"),
         }
@@ -217,7 +223,7 @@ struct Idle {
 }
 
 struct Busy {
-    pid: u32,
+    killer: WorkerKiller,
     run: Option<String>,
 }
 
@@ -230,9 +236,13 @@ struct State {
     live: usize,
     /// Background spawns of spares in progress.
     spawning: usize,
-    /// Killed or crashed workers not yet replaced.
+    /// Lost workers whose next successful spawn counts as a replacement.
+    /// Bounded by the pool's maximum size, not an unbounded history of losses.
     owed_respawns: u64,
-    handouts: Vec<Handout>,
+    handouts: VecDeque<Handout>,
+    spawn_failures: u32,
+    spawn_error: Option<String>,
+    retry_at_ms: i64,
     stopped: bool,
 }
 
@@ -261,6 +271,21 @@ pub struct PoolStats {
     pub busy: usize,
     /// Idle bound workers per flow.
     pub bound: Vec<(String, usize)>,
+    pub spawn_error: Option<String>,
+    pub spawn_retry_in_ms: i64,
+}
+
+const HANDOUT_HISTORY: usize = 1024;
+const SPAWN_RETRY_MIN_MS: i64 = 250;
+const SPAWN_RETRY_MAX_MS: i64 = 30_000;
+
+impl State {
+    fn record_handout(&mut self, handout: Handout) {
+        self.handouts.push_back(handout);
+        if self.handouts.len() > HANDOUT_HISTORY {
+            self.handouts.pop_front();
+        }
+    }
 }
 
 impl Pool {
@@ -281,10 +306,6 @@ impl Pool {
                 next_id: AtomicU64::new(1),
             }),
         }
-    }
-
-    pub fn config(&self) -> &PoolConfig {
-        &self.shared.config
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -322,7 +343,12 @@ impl Pool {
             }
             if state.live >= self.shared.config.max_workers {
                 // Make room by retiring the bound worker idle longest.
-                if !self.shared.retire_longest_idle(&mut state) {
+                if let Some(idle) = self.shared.retire_longest_idle(&mut state) {
+                    // Reaping must not block other leases or housekeeping.
+                    drop(state);
+                    drop(idle);
+                    continue;
+                } else {
                     let now = Instant::now();
                     if now >= deadline {
                         return Err(PoolError::Exhausted);
@@ -333,6 +359,12 @@ impl Pool {
                         .wait_timeout(state, (deadline - now).min(Duration::from_secs(1)));
                     continue;
                 }
+            }
+            let retry_in = state.retry_at_ms.saturating_sub(self.shared.clock.now_ms());
+            if state.spawn_error.is_some() && retry_in > 0 {
+                return Err(PoolError::Backoff {
+                    retry_in: Duration::from_millis(retry_in as u64),
+                });
             }
             state.live += 1;
             drop(state);
@@ -356,11 +388,11 @@ impl Pool {
             state.busy.insert(
                 id,
                 Busy {
-                    pid: process.pid(),
+                    killer: process.killer(),
                     run: None,
                 },
             );
-            state.handouts.push(Handout {
+            state.record_handout(Handout {
                 worker: id,
                 pid: process.pid(),
                 binding: binding.clone(),
@@ -384,6 +416,9 @@ impl Pool {
     pub fn replenish(&self) {
         let mut state = self.lock();
         if state.stopped {
+            return;
+        }
+        if state.spawn_error.is_some() && self.shared.clock.now_ms() < state.retry_at_ms {
             return;
         }
         let wanted = self.shared.config.warm_spares;
@@ -440,6 +475,9 @@ impl Pool {
                 self.shared.lost(&mut state, false);
                 Metrics::bump(&self.shared.metrics.workers_retired);
             }
+            if crashed + retired > 0 {
+                self.shared.cond.notify_all();
+            }
         }
         // Killed outside the lock: reaping can take a moment.
         drop(doomed);
@@ -450,21 +488,13 @@ impl Pool {
     /// way a crash or the operating system would. For tests and the harness.
     /// Returns whether one was found.
     pub fn kill_for_run(&self, run_id: &str) -> bool {
-        let pid = self
+        let killer = self
             .lock()
             .busy
             .values()
             .find(|b| b.run.as_deref() == Some(run_id))
-            .map(|b| b.pid);
-        match pid.and_then(|p| libc::pid_t::try_from(p).ok()) {
-            Some(pid) => {
-                // SAFETY: kill(2) has no memory-safety preconditions; the pid
-                // is a child this process spawned and has not reaped (its
-                // lease holds the process, which reaps only when dropped).
-                unsafe { libc::kill(pid, libc::SIGKILL) == 0 }
-            }
-            None => false,
-        }
+            .map(|b| b.killer.clone());
+        killer.is_some_and(|k| k.kill())
     }
 
     /// Waits until at least `n` spares are ready, up to `timeout`.
@@ -488,9 +518,10 @@ impl Pool {
         }
     }
 
-    /// Every worker handed out so far, in order.
+    /// The most recent 1024 handouts, in order. This diagnostic history must
+    /// not grow with the lifetime of a production module.
     pub fn handouts(&self) -> Vec<Handout> {
-        self.lock().handouts.clone()
+        self.lock().handouts.iter().cloned().collect()
     }
 
     pub fn stats(&self) -> PoolStats {
@@ -507,6 +538,15 @@ impl Pool {
             spawning: state.spawning,
             busy: state.busy.len(),
             bound,
+            spawn_error: state.spawn_error.clone(),
+            spawn_retry_in_ms: if state.spawn_error.is_some() {
+                state
+                    .retry_at_ms
+                    .saturating_sub(self.shared.clock.now_ms())
+                    .max(0)
+            } else {
+                0
+            },
         }
     }
 
@@ -593,7 +633,10 @@ impl Shared {
     fn lost(&self, state: &mut State, replace: bool) {
         state.live = state.live.saturating_sub(1);
         if replace {
-            state.owed_respawns += 1;
+            state.owed_respawns = state
+                .owed_respawns
+                .saturating_add(1)
+                .min(self.config.max_workers as u64);
         }
     }
 
@@ -603,9 +646,9 @@ impl Shared {
         self.lost(state, true);
     }
 
-    /// Retires the bound worker idle longest, to make room. Returns whether
-    /// there was one.
-    fn retire_longest_idle(&self, state: &mut State) -> bool {
+    /// Removes the bound worker idle longest; the caller reaps it outside
+    /// the mutex, so releasing other workers never waits for this child.
+    fn retire_longest_idle(&self, state: &mut State) -> Option<Idle> {
         let oldest = state
             .bound
             .iter()
@@ -616,14 +659,10 @@ impl Shared {
                     .map(move |(i, w)| (w.idle_since_ms, flow.clone(), i))
             })
             .min();
-        let Some((_, flow, i)) = oldest else {
-            return false;
-        };
-        let Some(workers) = state.bound.get_mut(&flow) else {
-            return false;
-        };
+        let (_, flow, i) = oldest?;
+        let workers = state.bound.get_mut(&flow)?;
         if i >= workers.len() {
-            return false;
+            return None;
         }
         let idle = workers.remove(i);
         if workers.is_empty() {
@@ -631,18 +670,32 @@ impl Shared {
         }
         state.live = state.live.saturating_sub(1);
         Metrics::bump(&self.metrics.workers_retired);
-        drop(idle);
-        true
+        Some(idle)
     }
 
     fn spawn_counted(&self) -> Result<WorkerProcess, SpawnError> {
         match self.spawner.spawn() {
             Ok(p) => {
                 Metrics::bump(&self.metrics.workers_spawned);
+                let mut state = self.lock();
+                state.spawn_failures = 0;
+                state.spawn_error = None;
+                state.retry_at_ms = 0;
+                if state.owed_respawns > 0 && !state.stopped {
+                    state.owed_respawns -= 1;
+                    Metrics::bump(&self.metrics.workers_respawned);
+                }
                 Ok(p)
             }
             Err(e) => {
                 Metrics::bump(&self.metrics.spawn_failures);
+                let mut state = self.lock();
+                state.spawn_failures = state.spawn_failures.saturating_add(1);
+                let delay = SPAWN_RETRY_MIN_MS
+                    .saturating_mul(1i64 << state.spawn_failures.saturating_sub(1).min(7))
+                    .min(SPAWN_RETRY_MAX_MS);
+                state.retry_at_ms = self.clock.now_ms().saturating_add(delay);
+                state.spawn_error = Some(e.to_string());
                 tracing::warn!(target: "pool", "spawning a worker failed: {e}");
                 Err(e)
             }
@@ -657,10 +710,6 @@ impl Shared {
         state.spawning = state.spawning.saturating_sub(1);
         match spawned {
             Ok(process) if !state.stopped => {
-                if state.owed_respawns > 0 {
-                    state.owed_respawns -= 1;
-                    Metrics::bump(&self.metrics.workers_respawned);
-                }
                 let id = self.next_id.fetch_add(1, Ordering::Relaxed);
                 state.spares.push_back((id, process));
             }
@@ -680,24 +729,6 @@ impl Shared {
     }
 }
 
-/// The pool as the runtime's own worker source. The runtime asks a source
-/// for a worker only when it resumes a run by itself, which the module never
-/// lets it do (the engine drives every run). A worker handed out this way
-/// knows nothing of the run it will serve, so it is single-use and can never
-/// carry one flow's state into another's.
-pub struct PoolSource {
-    pub pool: Pool,
-}
-
-impl basal_core::WorkerSource for PoolSource {
-    fn worker(&self) -> Result<Box<dyn WorkerChannel>, ChannelError> {
-        self.pool
-            .acquire(Binding::DryRun("runtime-source".into()))
-            .map(|lease| Box::new(lease) as Box<dyn WorkerChannel>)
-            .map_err(|e| ChannelError::Broken(e.to_string()))
-    }
-}
-
 /// A worker handed out for one activation. It goes back to the pool (or is
 /// ended) when dropped.
 pub struct Lease {
@@ -710,23 +741,10 @@ pub struct Lease {
 }
 
 impl Lease {
-    pub fn id(&self) -> u64 {
-        self.id
-    }
-
-    pub fn pid(&self) -> Option<u32> {
-        self.process.as_ref().map(WorkerProcess::pid)
-    }
-
     /// Names the run this worker is about to serve, so it can be found by
     /// run (see [`Pool::kill_for_run`]).
     pub fn serve_run(&self, run_id: &str) {
         self.pool.set_run(self.id, run_id);
-    }
-
-    /// Whether the activation ended with the worker killed.
-    pub fn was_killed(&self) -> bool {
-        self.killed
     }
 }
 
@@ -781,3 +799,7 @@ fn unreachable_welcome() -> &'static Welcome {
         confinement: basal_proto::Confinement::None,
     })
 }
+
+#[cfg(test)]
+#[path = "pool_tests.rs"]
+mod bookkeeping_tests;

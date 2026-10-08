@@ -20,6 +20,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -65,9 +66,62 @@ impl std::error::Error for SpawnError {}
 
 type Incoming = Result<WorkerMessage, ChannelError>;
 
+trait FrameSender: Send {
+    fn send(&self, message: Incoming) -> Result<(), ()>;
+    #[cfg(test)]
+    fn try_send(&self, message: Incoming) -> Result<(), BufferError>;
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+enum BufferError {
+    Full,
+    Disconnected,
+}
+
+impl FrameSender for mpsc::Sender<Incoming> {
+    fn send(&self, message: Incoming) -> Result<(), ()> {
+        self.send(message).map_err(|_| ())
+    }
+    #[cfg(test)]
+    fn try_send(&self, message: Incoming) -> Result<(), BufferError> {
+        self.send(message).map_err(|_| BufferError::Disconnected)
+    }
+}
+
+impl FrameSender for mpsc::SyncSender<Incoming> {
+    fn send(&self, message: Incoming) -> Result<(), ()> {
+        self.send(message).map_err(|_| ())
+    }
+    #[cfg(test)]
+    fn try_send(&self, message: Incoming) -> Result<(), BufferError> {
+        self.try_send(message).map_err(|e| match e {
+            mpsc::TrySendError::Full(_) => BufferError::Full,
+            mpsc::TrySendError::Disconnected(_) => BufferError::Disconnected,
+        })
+    }
+}
+
+fn frame_channel() -> (impl FrameSender, Receiver<Incoming>) {
+    // Two queued frames plus the one being decoded bound read-ahead even when
+    // a worker floods stdout while its activation is not receiving.
+    mpsc::sync_channel(2)
+}
+
+fn recv_handshake(
+    incoming: &Receiver<Incoming>,
+    deadline: Instant,
+) -> Result<Incoming, RecvTimeoutError> {
+    let remaining = deadline
+        .checked_duration_since(Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or(RecvTimeoutError::Timeout)?;
+    incoming.recv_timeout(remaining)
+}
+
 /// A started and greeted worker process. Killed on drop.
 pub struct WorkerProcess {
-    child: Child,
+    child: Arc<Mutex<Child>>,
     stdin: Option<ChildStdin>,
     incoming: Receiver<Incoming>,
     welcome: Welcome,
@@ -134,7 +188,7 @@ impl WorkerProcess {
         let pid = child.id();
 
         // Frames are read on their own thread so a receive can time out.
-        let (tx, incoming) = mpsc::channel();
+        let (tx, incoming) = frame_channel();
         thread::spawn(move || {
             loop {
                 let message = match read_worker_message(&mut stdout) {
@@ -197,7 +251,7 @@ impl WorkerProcess {
             .ok_or_else(|| SpawnError::Handshake("no stdin pipe".into()))?
             .write_all(&hello)
             .map_err(|e| SpawnError::Handshake(e.to_string()))?;
-        let welcome = match incoming.recv_timeout(timeout) {
+        let welcome = match recv_handshake(&incoming, deadline) {
             Ok(Ok(WorkerMessage::Welcome(w))) => w,
             Ok(Ok(other)) => {
                 return Err(SpawnError::Handshake(format!(
@@ -220,7 +274,7 @@ impl WorkerProcess {
             return Err(SpawnError::Exec("the worker process was lost".into()));
         };
         Ok(Self {
-            child,
+            child: Arc::new(Mutex::new(child)),
             stdin,
             incoming,
             welcome,
@@ -228,7 +282,11 @@ impl WorkerProcess {
     }
 
     pub fn pid(&self) -> u32 {
-        self.child.id()
+        self.child.lock().unwrap_or_else(|p| p.into_inner()).id()
+    }
+
+    pub(crate) fn killer(&self) -> WorkerKiller {
+        WorkerKiller(self.child.clone())
     }
 
     pub fn welcome(&self) -> &Welcome {
@@ -258,13 +316,45 @@ impl WorkerProcess {
 
     /// Whether the process has exited (crashed, or was killed from outside).
     pub fn has_exited(&mut self) -> bool {
-        !matches!(self.child.try_wait(), Ok(None))
+        !matches!(
+            self.child
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .try_wait(),
+            Ok(None)
+        )
     }
 
     pub fn kill(&mut self) {
         self.stdin = None;
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let mut child = self.child.lock().unwrap_or_else(|p| p.into_inner());
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct WorkerKiller(Arc<Mutex<Child>>);
+
+impl WorkerKiller {
+    fn signal_with(&self, signal: impl FnOnce(u32) -> bool) -> bool {
+        let mut child = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        // A cached exit status means the pid may already belong to somebody
+        // else. Exclude every reaper until after the signal is issued.
+        if !matches!(child.try_wait(), Ok(None)) {
+            return false;
+        }
+        signal(child.id())
+    }
+
+    pub(crate) fn kill(&self) -> bool {
+        self.signal_with(|pid| {
+            let Ok(pid) = libc::pid_t::try_from(pid) else {
+                return false;
+            };
+            // SAFETY: the child mutex excludes reaping while its pid is signalled.
+            unsafe { libc::kill(pid, libc::SIGKILL) == 0 }
+        })
     }
 }
 
@@ -293,5 +383,51 @@ fn message_name(message: &WorkerMessage) -> &'static str {
 impl Drop for WorkerProcess {
     fn drop(&mut self) {
         self.kill();
+    }
+}
+
+#[cfg(test)]
+mod buffer_tests {
+    use super::*;
+
+    #[test]
+    fn incoming_frames_have_bounded_capacity() {
+        let (tx, incoming) = frame_channel();
+        tx.try_send(Err(ChannelError::Closed)).unwrap();
+        tx.try_send(Err(ChannelError::Closed)).unwrap();
+        assert!(matches!(
+            tx.try_send(Err(ChannelError::Closed)),
+            Err(BufferError::Full)
+        ));
+        assert!(matches!(
+            incoming.recv().unwrap(),
+            Err(ChannelError::Closed)
+        ));
+        tx.try_send(Err(ChannelError::Closed)).unwrap();
+        drop(incoming);
+        assert!(tx.send(Err(ChannelError::Closed)).is_err());
+    }
+
+    #[test]
+    fn a_reaped_worker_handle_never_signals_a_recycled_pid() {
+        let mut child = Command::new("/usr/bin/true").spawn().unwrap();
+        child.wait().unwrap();
+        let killer = WorkerKiller(Arc::new(Mutex::new(child)));
+        let mut signalled = false;
+        killer.signal_with(|_| {
+            signalled = true;
+            true
+        });
+        assert!(!signalled, "a reaped pid no longer identifies the worker");
+    }
+
+    #[test]
+    fn expired_launch_budget_cannot_accept_a_queued_welcome() {
+        let (tx, incoming) = mpsc::channel();
+        tx.send(Err(ChannelError::Closed)).unwrap();
+        assert!(matches!(
+            recv_handshake(&incoming, Instant::now()),
+            Err(RecvTimeoutError::Timeout)
+        ));
     }
 }

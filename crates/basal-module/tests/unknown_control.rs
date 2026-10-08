@@ -1,6 +1,7 @@
 //! The actual subc serve loop refuses an unreadable control request without
 //! dropping the module connection, so the following health probe can complete.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -109,6 +110,15 @@ async fn unknown_control_field_is_refused_and_the_following_health_check_is_answ
     )
     .expect("write connection file");
 
+    let storage = cortexkit_store_types::StorageDescriptor {
+        module_id: "basal".into(),
+        storage_namespace: "core".into(),
+        isolation: cortexkit_store_types::Isolation::Module,
+        backend: cortexkit_store_types::StorageBackend::Sqlite {
+            path: temp.0.join("store.db").to_string_lossy().into_owned(),
+        },
+    };
+
     let daemon = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.expect("module connects");
         authenticate_server(
@@ -136,7 +146,7 @@ async fn unknown_control_field_is_refused_and_the_following_health_check_is_answ
                 "negotiated_ver": PROTOCOL_VERSION,
                 "subc_ops": [],
                 "subc_capabilities": [],
-                "storage": "deliberately invalid for basal's store reader",
+                "storage": storage,
                 "machine_id": null
             }))
             .expect("encode HELLO_ACK"),
@@ -193,7 +203,9 @@ async fn unknown_control_field_is_refused_and_the_following_health_check_is_answ
         let ModuleControlResponse::HealthCheck { status, .. } = health else {
             panic!("expected health response, got {health:?}");
         };
-        assert_eq!(status, HealthStatus::Failing);
+        // HELLO_ACK starts store preparation on another thread. Whichever
+        // startup phase the probe observes, the connection must still answer.
+        assert!(matches!(status, HealthStatus::Ok | HealthStatus::Degraded));
 
         let goodbye =
             Frame::build(FrameType::Goodbye, flags(), 0, 0, 0, Vec::new()).expect("build GOODBYE");
@@ -203,8 +215,28 @@ async fn unknown_control_field_is_refused_and_the_following_health_check_is_answ
     });
 
     let handler = BasalHandler::new(
-        Box::new(|_| unreachable!("invalid HELLO_ACK storage prevents startup")),
-        Box::new(|| unreachable!("invalid HELLO_ACK storage prevents host setup")),
+        Box::new(|store_path| {
+            let mut pool = basal_module::pool::PoolConfig::new(
+                "unused-worker",
+                basal_module::process::WorkerLaunch::Plain,
+            );
+            pool.warm_spares = 0;
+            let scratch = store_path.parent().unwrap().join("dry-run");
+            basal_module::module::ModuleConfig {
+                store_path,
+                durability: basal_core::Durability { fullfsync: false },
+                runtime: basal_core::Config::default(),
+                pool,
+                engine: Default::default(),
+                dry_run: basal_module::dryrun::DryRunConfig::new(scratch),
+            }
+        }),
+        Box::new(|| basal_module::module::Hosts {
+            host: Arc::new(basal_host::mock::MockHost::new()),
+            catalog: Arc::new(basal_host::MockCatalog::standard()),
+            consent: Arc::new(basal_host::MockConsent::new()),
+            hooks: Arc::new(basal_core::NoHooks),
+        }),
     );
     let serving = subc_client_rs::serve_with(&connection_file, manifest(), handler);
     tokio::time::timeout(Duration::from_secs(10), serving)

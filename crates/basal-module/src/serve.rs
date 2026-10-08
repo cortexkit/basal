@@ -33,6 +33,8 @@ pub type Configure = Box<dyn Fn(PathBuf) -> ModuleConfig + Send + Sync>;
 /// Builds the hosts the module runs with.
 pub type MakeHosts = Box<dyn Fn() -> Hosts + Send + Sync>;
 pub type InitializeHosts = Box<dyn Fn(Arc<basal_core::Store>) -> Result<(), String> + Send + Sync>;
+/// Starts adapter polling only after module preparation has succeeded.
+pub type ReadyHosts = Box<dyn Fn() + Send + Sync>;
 
 enum Phase {
     Starting,
@@ -98,6 +100,7 @@ pub struct BasalHandler {
     configure: Arc<Configure>,
     hosts: Arc<MakeHosts>,
     initialize: Arc<InitializeHosts>,
+    ready: Arc<ReadyHosts>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -112,10 +115,15 @@ impl BasalHandler {
             configure: Arc::new(configure),
             hosts: Arc::new(hosts),
             initialize: Arc::new(Box::new(|_| Ok(()))),
+            ready: Arc::new(Box::new(|| {})),
         }
     }
     pub fn with_store_initializer(mut self, initialize: InitializeHosts) -> Self {
         self.initialize = Arc::new(initialize);
+        self
+    }
+    pub fn with_ready_hosts(mut self, ready: ReadyHosts) -> Self {
+        self.ready = Arc::new(ready);
         self
     }
 
@@ -174,13 +182,16 @@ fn start(
     configure: Arc<Configure>,
     hosts: Arc<MakeHosts>,
     initialize: Arc<InitializeHosts>,
+    ready: Arc<ReadyHosts>,
     phase: Arc<Mutex<Phase>>,
 ) {
     std::thread::spawn(move || {
-        let dependencies = hosts();
-        let config = configure(path);
         let deadline = std::time::Instant::now() + OPEN_RETRY;
         let started = loop {
+            // Every attempt owns fresh adapters. Retaining a failed attempt's
+            // bound Broca store would hold the old write lease across retries.
+            let dependencies = hosts();
+            let config = configure(path.clone());
             let spawner: Arc<dyn Spawn> = Arc::new(ProcessSpawner::new(&config.pool));
             match Module::start_with_store(config.clone(), dependencies.clone(), spawner, |store| {
                 initialize(store)
@@ -195,6 +206,7 @@ fn start(
         };
         match started {
             Ok(module) => {
+                ready();
                 let module = Arc::new(module);
                 module.fatal.exit_when_raised();
                 module.engine.spawn_loop();
@@ -297,11 +309,15 @@ impl ModuleHandler for BasalHandler {
                 self.configure.clone(),
                 self.hosts.clone(),
                 self.initialize.clone(),
+                self.ready.clone(),
                 self.phase.clone(),
             ),
             Err(e) => {
                 tracing::error!(target: "store", "{e}");
                 *lock(&self.phase) = Phase::Failed(e);
+                // A descriptor that cannot name a store cannot become healthy
+                // by serving more requests. Let supervision retry startup.
+                std::process::exit(crate::fatal::EXIT_STORE_FAILURE);
             }
         }
     }
@@ -326,11 +342,18 @@ impl ModuleHandler for BasalHandler {
                     detail: Some(why),
                     metrics: None,
                 },
-                None => HealthReport {
-                    status: HealthStatus::Ok,
-                    detail: None,
-                    metrics: Some(module.metrics.to_json()),
-                },
+                None => {
+                    let pool = module.pool.stats();
+                    HealthReport {
+                        status: if pool.spawn_error.is_some() {
+                            HealthStatus::Degraded
+                        } else {
+                            HealthStatus::Ok
+                        },
+                        detail: pool.spawn_error,
+                        metrics: Some(module.metrics.to_json()),
+                    }
+                }
             },
         }
     }

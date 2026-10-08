@@ -28,7 +28,7 @@ use basal_host::Consent;
 
 use crate::fatal::Fatal;
 use crate::metrics::Metrics;
-use crate::pool::{Binding, Pool};
+use crate::pool::{Binding, Pool, PoolError};
 
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
@@ -56,8 +56,6 @@ pub struct PassReport {
     pub expired: Vec<String>,
     /// Runs an activation was started for.
     pub started: Vec<String>,
-    /// Decision cards the consent plane accepted in this pass, by key.
-    pub raised: Vec<String>,
 }
 
 #[derive(Default)]
@@ -82,6 +80,29 @@ struct Inner {
     progress: AtomicU64,
 }
 
+/// Release both reservations even if a host, hook or spawner unwinds. A panic
+/// may have left a durable claim behind, so supervision must run recovery.
+struct ActivationSlot<'a> {
+    engine: &'a Engine,
+    run_id: &'a str,
+    flow_id: &'a str,
+}
+
+impl Drop for ActivationSlot<'_> {
+    fn drop(&mut self) {
+        if thread::panicking() {
+            self.engine
+                .inner
+                .fatal
+                .raise(format!("activation of {} panicked", self.run_id));
+        }
+        let mut active = self.engine.active();
+        active.runs.remove(self.run_id);
+        active.flows.remove(self.flow_id);
+        self.engine.inner.cond.notify_all();
+    }
+}
+
 /// The engine. Cloning shares it.
 #[derive(Clone)]
 pub struct Engine {
@@ -98,7 +119,23 @@ impl Engine {
         fatal: Fatal,
     ) -> Result<Self, CoreError> {
         let scheduler = rt.scheduler()?;
-        Ok(Self {
+        Ok(Self::with_scheduler(
+            rt, pool, consent, config, metrics, fatal, scheduler,
+        ))
+    }
+
+    /// Startup can validate the scheduler before binding adapters, then attach
+    /// the real runtime without leaving any fallible preparation afterward.
+    pub(crate) fn with_scheduler(
+        rt: Runtime,
+        pool: Pool,
+        consent: Arc<dyn Consent>,
+        config: EngineConfig,
+        metrics: Arc<Metrics>,
+        fatal: Fatal,
+        scheduler: Scheduler,
+    ) -> Self {
+        Self {
             inner: Arc::new(Inner {
                 rt,
                 pool,
@@ -111,7 +148,7 @@ impl Engine {
                 cond: Condvar::new(),
                 progress: AtomicU64::new(0),
             }),
-        })
+        }
     }
 
     fn active(&self) -> MutexGuard<'_, Active> {
@@ -142,7 +179,7 @@ impl Engine {
         let admitted: Vec<String> = tick.new_runs().into_iter().map(str::to_owned).collect();
         let expired = inner.rt.enforce_deadlines().map_err(fatal)?;
         inner.pool.maintain();
-        let raised = self.raise_decisions().map_err(fatal)?;
+        self.raise_decisions().map_err(fatal)?;
         let mut started = Vec::new();
         for (run_id, flow_id) in inner.rt.startable().map_err(fatal)? {
             {
@@ -165,7 +202,6 @@ impl Engine {
             admitted,
             expired,
             started,
-            raised,
         })
     }
 
@@ -175,9 +211,8 @@ impl Engine {
     /// raises it again under the same deduplication key, which core shows
     /// as one card. Returns the keys accepted now; a store error is
     /// returned, a consent error is logged and retried next pass.
-    fn raise_decisions(&self) -> Result<Vec<String>, CoreError> {
+    fn raise_decisions(&self) -> Result<(), CoreError> {
         let inner = &self.inner;
-        let mut raised = Vec::new();
         for record in inner.rt.decisions_due()? {
             let card = record.to_card()?;
             match inner.consent.raise_decision(&card) {
@@ -185,20 +220,32 @@ impl Engine {
                     inner
                         .rt
                         .decision_raised(record.seq, record.revision, &elicitation_id)?;
-                    raised.push(record.dedup_key);
                 }
                 Err(e) => {
                     tracing::warn!(target: "consent", key = %record.dedup_key, "raising a decision card: {e}");
                 }
             }
         }
-        Ok(raised)
+        Ok(())
     }
 
     /// One activation of `run_id`, on its own thread.
     fn activate(&self, run_id: String, flow_id: String) {
+        let _slot = ActivationSlot {
+            engine: self,
+            run_id: &run_id,
+            flow_id: &flow_id,
+        };
         let inner = &self.inner;
-        let replayed = journal_rows(&inner.rt, &run_id);
+        let replayed = match journal_rows(&inner.rt, &run_id) {
+            Ok(n) => n,
+            Err(e) => {
+                inner
+                    .fatal
+                    .raise(format!("reading replay size for {run_id}: {e}"));
+                return;
+            }
+        };
         let started = Instant::now();
         let changed = match self.drive_on_pool(&run_id, &flow_id) {
             None => false,
@@ -226,12 +273,6 @@ impl Engine {
         if changed {
             inner.progress.fetch_add(1, Ordering::SeqCst);
         }
-        {
-            let mut active = self.active();
-            active.runs.remove(&run_id);
-            active.flows.remove(&flow_id);
-        }
-        inner.cond.notify_all();
     }
 
     /// Drives the run on a worker bound to its flow. The worker is acquired
@@ -246,6 +287,7 @@ impl Engine {
     ) -> Option<Result<ActivationEnd, CoreError>> {
         let mut lease = match self.inner.pool.acquire(Binding::Flow(flow_id.to_owned())) {
             Ok(lease) => lease,
+            Err(PoolError::Backoff { .. }) => return None,
             Err(e) => {
                 tracing::warn!(target: "engine", run = %run_id, "no worker for the run: {e}");
                 return None;
@@ -391,15 +433,17 @@ impl Engine {
 }
 
 /// How many calls the run has journaled: what its next activation replays.
-fn journal_rows(rt: &Runtime, run_id: &str) -> u64 {
-    rt.store()
-        .read(|c| {
-            let n: i64 = c.query_row(
-                "SELECT COUNT(*) FROM journal WHERE run_id = ?1",
-                [run_id],
-                |r| r.get(0),
-            )?;
-            Ok(u64::try_from(n).unwrap_or(0))
-        })
-        .unwrap_or(0)
+fn journal_rows(rt: &Runtime, run_id: &str) -> Result<u64, CoreError> {
+    rt.store().read(|c| {
+        let n: i64 = c.query_row(
+            "SELECT COUNT(*) FROM journal WHERE run_id = ?1",
+            [run_id],
+            |r| r.get(0),
+        )?;
+        u64::try_from(n).map_err(|_| CoreError::Corrupt("negative journal count".into()))
+    })
 }
+
+#[cfg(test)]
+#[path = "engine_tests.rs"]
+mod lifecycle_tests;

@@ -192,7 +192,12 @@ fn package_callers_are_core_only_except_operator_registration() {
             if caller == Caller::Core || (caller == Caller::Operator && op == "package.register") {
                 assert!(result.is_ok(), "{caller:?} {op}: {result:?}");
             } else {
-                assert_eq!(result.unwrap_err().code, "not_permitted", "{caller:?} {op}");
+                let code = if caller == Caller::Local {
+                    "operator_attestation_required"
+                } else {
+                    "not_permitted"
+                };
+                assert_eq!(result.unwrap_err().code, code, "{caller:?} {op}");
             }
         }
     }
