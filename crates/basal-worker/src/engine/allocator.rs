@@ -61,6 +61,11 @@ unsafe impl Allocator for BudgetAllocator {
             self.exhausted.set(true);
             return std::ptr::null_mut();
         };
+        // RustAllocator answers a zero-sized calloc with null, as libc may.
+        // That is not a refusal, so it must not mark the budget exhausted.
+        if total == 0 {
+            return self.inner.calloc(count, size);
+        }
         if !self.permits(total, 0) {
             return std::ptr::null_mut();
         }
@@ -103,5 +108,38 @@ unsafe impl Allocator for BudgetAllocator {
     unsafe fn usable_size(ptr: *mut u8) -> usize {
         // SAFETY: the engine supplies a live pointer allocated by RustAllocator.
         unsafe { RustAllocator::usable_size(ptr) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_zero_sized_calloc_is_not_a_budget_refusal() {
+        let exhausted = Rc::new(Cell::new(false));
+        let mut alloc = BudgetAllocator::new(1024, exhausted.clone());
+        for (count, size) in [(0, 8), (8, 0), (0, 0)] {
+            assert!(alloc.calloc(count, size).is_null());
+        }
+        assert!(!exhausted.get());
+    }
+
+    #[test]
+    fn the_cap_refuses_and_frees_return_the_accounted_bytes() {
+        let exhausted = Rc::new(Cell::new(false));
+        let mut alloc = BudgetAllocator::new(64, exhausted.clone());
+        let first = alloc.alloc(40);
+        assert!(!first.is_null() && !exhausted.get());
+        assert!(alloc.alloc(40).is_null());
+        assert!(exhausted.get());
+        // SAFETY: `first` came from this allocator and is freed once.
+        unsafe { alloc.dealloc(first) };
+        assert_eq!(alloc.used, 0);
+        exhausted.set(false);
+        let second = alloc.alloc(40);
+        assert!(!second.is_null() && !exhausted.get());
+        // SAFETY: as above.
+        unsafe { alloc.dealloc(second) };
     }
 }
