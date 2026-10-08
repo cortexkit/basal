@@ -166,9 +166,10 @@ impl TestServer {
         self.cert_der.clone()
     }
 
-    /// A URL on this server under one of [`TEST_HOSTS`].
+    /// A production-form HTTPS URL; the static resolver maps port 443 to this
+    /// server's ephemeral socket without weakening URL approval checks.
     pub fn url(&self, host: &str, path: &str) -> String {
-        format!("https://{host}:{}{path}", self.port())
+        format!("https://{host}{path}")
     }
 
     /// Every request read so far.

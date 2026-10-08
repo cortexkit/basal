@@ -448,21 +448,26 @@ fn replacement_mode(mode: libc::mode_t) -> libc::mode_t {
     mode & 0o777
 }
 
+pub(super) fn check_write_size(bytes: usize) -> Result<(), Denial> {
+    if bytes > MAX_WRITE_BYTES {
+        Err(Denial::new(
+            codes::TOO_LARGE,
+            format!("{bytes} bytes exceed the write cap of {MAX_WRITE_BYTES}"),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 /// `fs.write`: replaces the whole file with `text`, atomically. The text
 /// goes to a new temporary file in the same directory, which is flushed to
 /// disk and then renamed over the target, so a reader sees the old file or
 /// the new one and never a part. Writing the same text again leaves the
 /// same file, which is why a lost reply may be sent again.
 pub fn write(path: &str, roots: &[String], text: &str) -> Result<Value, Denial> {
-    if text.len() > MAX_WRITE_BYTES {
-        return Err(Denial::new(
-            codes::TOO_LARGE,
-            format!(
-                "{} bytes exceed the write cap of {MAX_WRITE_BYTES}",
-                text.len()
-            ),
-        ));
-    }
+    // Public callers may bypass the argument parser, so enforce the shared
+    // write limit here as well as before authorization.
+    check_write_size(text.len())?;
     let roots = real_roots(roots);
     let Target::Entry { parent, name } = resolve_real(path, &roots, Purpose::Write)? else {
         return Err(Denial::invalid("a write resolves to a directory entry"));

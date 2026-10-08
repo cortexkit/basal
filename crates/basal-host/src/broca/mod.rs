@@ -864,7 +864,8 @@ const TERMINAL_STATES: [&str; 6] = [
 /// unreported (which charges the whole token reservation). Broca's window
 /// is brief but unbounded in principle (explained in `resolve`), so this is
 /// the safety net. Each waiting poll fails, and the module retries a failed
-/// poll after 5 s, so 12 polls take about a minute.
+/// poll with capped exponential backoff, so an unreachable provider does not
+/// turn an indefinitely lagging status into a busy retry loop.
 pub const STATUS_LAG_POLLS: u32 = 12;
 
 /// States of a run that has not ended. A paused run can still resume.

@@ -276,16 +276,7 @@ pub fn parse(primitive: Primitive, args: &Value) -> Result<Call, Denial> {
         Primitive::FsWrite => {
             let path = string_arg(args, "path")?;
             let text = string_arg(args, "text")?;
-            if text.len() > fs::MAX_WRITE_BYTES {
-                return Err(Denial::new(
-                    codes::TOO_LARGE,
-                    format!(
-                        "{} bytes exceed the write cap of {}",
-                        text.len(),
-                        fs::MAX_WRITE_BYTES
-                    ),
-                ));
-            }
+            fs::check_write_size(text.len())?;
             Ok(Call::FsWrite { path, text })
         }
         Primitive::GitLog

@@ -15,7 +15,7 @@ use basal_host::{Sent, TransportError, UnknownReason};
 use basal_testkit::https::{Reply, TEST_HOSTS, TestServer};
 use serde_json::{Value, json};
 
-fn routes(server_port: u16) -> BTreeMap<String, Reply> {
+fn routes(_server_port: u16) -> BTreeMap<String, Reply> {
     let mut r = BTreeMap::new();
     r.insert(
         "/hello".into(),
@@ -24,17 +24,14 @@ fn routes(server_port: u16) -> BTreeMap<String, Reply> {
     r.insert("/post".into(), Reply::text(201, "created"));
     r.insert(
         "/to-evil".into(),
-        Reply::redirect(302, &format!("https://evil.test:{server_port}/secret")),
+        Reply::redirect(302, "https://evil.test/secret"),
     );
     r.insert("/secret".into(), Reply::text(200, "secret"));
     r.insert(
         "/post-to-evil".into(),
         Reply {
             status: 307,
-            headers: vec![(
-                "Location".into(),
-                format!("https://evil.test:{server_port}/secret"),
-            )],
+            headers: vec![("Location".into(), "https://evil.test/secret".into())],
             body: b"moved".to_vec(),
             chunked: false,
             raw: None,
@@ -43,7 +40,7 @@ fn routes(server_port: u16) -> BTreeMap<String, Reply> {
     r.insert("/to-hello".into(), Reply::redirect(301, "/hello"));
     r.insert(
         "/to-other".into(),
-        Reply::redirect(307, &format!("https://other.test:{server_port}/hello")),
+        Reply::redirect(307, "https://other.test/hello"),
     );
     for i in 0..7 {
         r.insert(
@@ -181,10 +178,7 @@ fn fetches_from_an_approved_host_and_adds_nothing() {
 
     let seen = server.seen();
     assert_eq!(seen[0].header("accept"), Some("text/plain"));
-    assert_eq!(
-        seen[0].header("host"),
-        Some(format!("api.test:{}", server.port()).as_str())
-    );
+    assert_eq!(seen[0].header("host"), Some("api.test"));
     for s in &seen {
         assert_eq!(s.header("cookie"), None);
         assert_eq!(s.header("authorization"), None);
@@ -288,10 +282,7 @@ fn a_post_redirected_to_an_unapproved_host_returns_the_redirect() {
     )
     .expect("the redirect is the answer");
     assert_eq!(got["status"], 307, "{got}");
-    assert_eq!(
-        got["headers"]["location"],
-        format!("https://evil.test:{}/secret", server.port())
-    );
+    assert_eq!(got["headers"]["location"], "https://evil.test/secret");
     assert_eq!(got["body"], "moved");
     let seen: Vec<(String, String)> = server
         .seen()
@@ -326,10 +317,7 @@ fn redirects_are_followed_by_hand_within_the_allowlist_and_the_hop_limit() {
     assert_eq!(across["body"], "hello");
     // A script's headers go only to the host it named.
     let last = server.seen().pop().expect("seen");
-    assert_eq!(
-        last.header("host"),
-        Some(format!("other.test:{}", server.port()).as_str())
-    );
+    assert_eq!(last.header("host"), Some("other.test"));
     assert_eq!(last.header("x-token"), None);
     // Five hops are followed; the sixth is refused.
     match fetch(

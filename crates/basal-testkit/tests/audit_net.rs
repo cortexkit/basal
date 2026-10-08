@@ -45,7 +45,7 @@ fn oversized_redirect_body_does_not_block_a_valid_hop() {
 }
 
 #[test]
-fn cross_port_redirect_does_not_forward_script_headers() {
+fn nonstandard_redirect_port_is_refused_before_a_second_connection() {
     let server = TestServer::start(|port| {
         BTreeMap::from([
             (
@@ -62,10 +62,34 @@ fn cross_port_redirect_does_not_forward_script_headers() {
         ])
     });
     let req = parse_request(&json!({"url":server.url("api.test", "/redirect"), "options":{"headers":{"X-Secret":"secret"}}})).unwrap();
-    Client::new(config(&server)).fetch(&req, &rules()).unwrap();
+    let result = Client::new(config(&server)).fetch(&req, &rules());
     let seen = server.seen();
     assert_eq!(seen[0].header("x-secret"), Some("secret"));
-    assert_eq!(seen[1].header("x-secret"), None);
+    assert_eq!(seen.len(), 1, "a refused redirect must never connect");
+    assert!(
+        matches!(result, Err(Failure::Refused(ref d)) if d.code == "denied"),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn query_redirect_does_not_read_an_incomplete_body() {
+    let server = TestServer::start(|_| {
+        BTreeMap::from([
+            (
+                "/redirect".into(),
+                Reply::raw(
+                    b"HTTP/1.1 302 Found\r\nLocation: /done\r\nContent-Length: 100\r\n\r\nshort",
+                ),
+            ),
+            ("/done".into(), Reply::text(200, "done")),
+        ])
+    });
+    let req = parse_request(&json!({"url":server.url("api.test", "/redirect")})).unwrap();
+    assert_eq!(
+        Client::new(config(&server)).fetch(&req, &rules()).unwrap()["body"],
+        "done"
+    );
 }
 
 #[test]
@@ -133,7 +157,7 @@ fn unclean_tls_eof_cannot_fulfill_a_connection_framed_body() {
         total_timeout: Duration::from_secs(10),
         ..NetConfig::default()
     };
-    let req = parse_request(&json!({"url":format!("https://api.test:{}/", addr.port())})).unwrap();
+    let req = parse_request(&json!({"url":"https://api.test/"})).unwrap();
     let result = Client::new(config).fetch(&req, &rules());
     let _ = stop.send(());
     worker.join().unwrap();

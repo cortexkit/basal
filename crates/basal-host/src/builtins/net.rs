@@ -695,15 +695,11 @@ impl Client {
         let mut redirected: Option<Response> = None;
         let mut redirects = 0;
         loop {
-            let approval = if self.private_host(&url.host) {
-                allowed(rules, &url.host, &method)
-            } else {
-                allowed_url(rules, &url, &method)
-            };
+            let approval = allowed_url(rules, &url, &method);
             if let Err(refusal) = approval {
                 return stop(redirected, refusal);
             }
-            // A script's headers go only to the host it named.
+            // A script's headers go only to the HTTPS origin it named.
             let headers: &[(String, String)] = if same_origin(&url, &first) {
                 &request.headers
             } else {
@@ -914,7 +910,12 @@ impl Client {
             }
             break (status, headers);
         };
-        let no_body = method == "HEAD" || status == 204 || status == 304;
+        // Query redirects are followed using only the head. Do not let an
+        // irrelevant body (including broken framing) prevent the next hop.
+        // After a mutation, keep the small body for the answer returned when
+        // a later hop is refused, since that effect must not become a refusal.
+        let skip_redirect_body = !effect_possible && matches!(status, 301 | 302 | 303 | 307 | 308);
+        let no_body = method == "HEAD" || status == 204 || status == 304 || skip_redirect_body;
         let cap = self.config.max_body_bytes.min(DEFAULT_BODY_BYTES);
         // `None` when the body is over the cap; it is not read further.
         let body = if no_body {
