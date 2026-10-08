@@ -76,6 +76,34 @@ fn shell_issued(link: &EchoLink) -> bool {
 }
 
 #[test]
+fn wrapper_global_declaration_refusal_does_not_depend_on_os_confinement() {
+    let link = Rc::new(RefCell::new(EchoLink::default()));
+    let state = run_activation(
+        &request(
+            Profile::Flow,
+            "return [Object.isExtensible(globalThis), Object.getOwnPropertyDescriptor(globalThis, 'f') === undefined];",
+        ),
+        link.clone(),
+    );
+    assert_eq!(
+        state,
+        ActivationResult::Completed {
+            value: JsonText::new("[false,true]").unwrap()
+        }
+    );
+    let mut global = request(
+        Profile::Flow,
+        "return 1\n}); function f(n) { return n ? 1 + f(n - 1) : 0; } f(50); (async function () { return 1;",
+    );
+    global.budgets.stack_bytes = 1024 * 1024;
+    let result = run_activation(&global, link);
+    assert!(
+        matches!(result, ActivationResult::Failed(Failure::Script { ref message }) if message.contains("cannot define variable 'f'")),
+        "{result:?}"
+    );
+}
+
+#[test]
 fn echo_round_trip() {
     let link = Rc::new(RefCell::new(EchoLink::default()));
     let result = run_activation(

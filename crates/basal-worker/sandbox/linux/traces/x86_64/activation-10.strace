@@ -1,0 +1,38 @@
+# Native release worker, post-confinement trace. Loader/setup calls omitted.
+# All non-clock calls retained; first/last 8 thread-CPU samples retained.
+seccomp(SECCOMP_SET_MODE_FILTER, SECCOMP_FILTER_FLAG_TSYNC, 0x7ffcc13adc38) = 0
+read(0, 0x5ed53b50b460, 8192)           = 9
+write(1, 0x5ed53b50d470, 80)            = 80
+write(1, 0x5ed53b508270, 13)            = 13
+read(0, 0x5ed53b50b460, 8192)           = 5
+write(1, 0x5ed53b508270, 43)            = 43
+read(0, 0x5ed53b50b460, 8192)           = 8
+write(1, 0x5ed53b508270, 57)            = 57
+read(0, 0x5ed53b50b460, 8192)           = 28
+write(1, 0x5ed53b508270, 44)            = 44
+read(0, 0x5ed53b50b460, 8192)           = 9
+write(1, 0x5ed53b508270, 44)            = 44
+read(0, 0x5ed53b50b460, 8192)           = 6
+write(1, 0x5ed53b508270, 40)            = 40
+read(0, 0x5ed53b50b460, 8192)           = 107
+brk(0x5ed53b54a000)                     = 0x5ed53b54a000
+brk(0x5ed53b549000)                     = 0x5ed53b549000
+futex(0x5ed51c5aa188, FUTEX_WAKE_PRIVATE, 2147483647) = 0
+brk(0x5ed53b56a000)                     = 0x5ed53b56a000
+brk(0x5ed53b58b000)                     = 0x5ed53b58b000
+brk(0x5ed53b58a000)                     = 0x5ed53b58a000
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0x7ffcc13ad2f0) = 0
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0x7ffcc13ad2e0) = 0
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0x7ffcc13ad5d0) = 0
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0x7ffcc13ad2e0) = 0
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0x7ffcc13ad5d0) = 0
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0x7ffcc13ad2e0) = 0
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0x7ffcc13ad5d0) = 0
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0x7ffcc13ad2e0) = 0
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0x7ffcc13ad2f0) = 0
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0x7ffcc13ad2e0) = 0
+brk(0x5ed53b585000)                     = 0x5ed53b585000
+write(1, 0x5ed53b508270, 20)            = 20
+read(0, 0x5ed53b50b460, 8192)           = 5
+exit_group(0)                           = ?
++++ exited with 0 +++

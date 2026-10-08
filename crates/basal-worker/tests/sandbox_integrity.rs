@@ -98,16 +98,29 @@ fn top_level_wrapper_code_has_activation_budgets() {
         ),
         (
             "top-stack",
-            "function f(n) { return n ? 1 + f(n - 1) : 0; } f(50);",
+            "(function f(n) { return n ? 1 + f(n - 1) : 0; })(256);",
             BudgetKind::Stack,
         ),
     ] {
         parent.budgets.stack_bytes = if budget == BudgetKind::Stack {
-            32 * 1024
+            128 * 1024
         } else {
             basal_proto::Budgets::default().stack_bytes
         };
         let script = format!("return 1\n}}); {work} (async function () {{ return 1;");
+        if budget == BudgetKind::Stack {
+            // A global function declaration cannot extend the frozen global object.
+            // Use a named function expression so the 256 calls really execute. The
+            // non-recursive control proves prelude, compilation and one call fit
+            // 128 KiB; the 4 MiB control proves the identical recursive program completes.
+            let control_script = script.replace("})(256);", "})(0);");
+            let control = parent.run("top-stack-control", &control_script);
+            assert_eq!(control.value(), serde_json::json!(1), "{control:#?}");
+            parent.budgets.stack_bytes = 4 * 1024 * 1024;
+            let roomy = parent.run("top-stack-roomy", &script);
+            assert_eq!(roomy.value(), serde_json::json!(1), "{roomy:#?}");
+            parent.budgets.stack_bytes = 128 * 1024;
+        }
         let report = parent.run(id, &script);
         assert_eq!(
             common::finished(&report),
@@ -115,6 +128,17 @@ fn top_level_wrapper_code_has_activation_budgets() {
             "{report:#?}"
         );
     }
+}
+
+#[test]
+fn wrapper_level_function_declarations_cannot_extend_the_frozen_global_object() {
+    let mut parent = common::parent();
+    parent.budgets.stack_bytes = 1024 * 1024;
+    let report = parent.run("global-declaration", "return 1\n}); function f(n) { return n ? 1 + f(n - 1) : 0; } f(50); (async function () { return 1;");
+    assert!(
+        matches!(common::finished(&report), ActivationResult::Failed(Failure::Script { message }) if message.contains("cannot define variable 'f'")),
+        "{report:#?}"
+    );
 }
 
 #[test]

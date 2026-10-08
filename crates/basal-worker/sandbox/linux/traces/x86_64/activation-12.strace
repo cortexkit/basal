@@ -1,0 +1,13 @@
+# Native release worker, post-confinement trace. Loader/setup calls omitted.
+# All non-clock calls retained; first/last 8 thread-CPU samples retained.
+seccomp(SECCOMP_SET_MODE_FILTER, SECCOMP_FILTER_FLAG_TSYNC, 0x7ffcfaadf398) = 0
+read(0, 0x611ca3967460, 8192)           = 9
+write(1, 0x611ca3969470, 80)            = 80
+write(1, 0x611ca3964270, 13)            = 13
+read(0, 0x611ca3967460, 8192)           = 4
+write(1, 0x611ca3964270, 22)            = 22
+write(2, 0x611c6ebe72e6, 33)            = 33
+write(2, 0x611ca3967240, 52)            = 52
+write(2, 0x611c6ebe7309, 1)             = 1
+exit_group(3)                           = ?
++++ exited with 3 +++

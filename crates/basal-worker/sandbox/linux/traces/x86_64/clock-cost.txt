@@ -1,0 +1,6 @@
+architecture=x86_64 clock=CLOCK_THREAD_CPUTIME_ID samples_per_batch=1000000
+batch=1 nanoseconds_per_call=98.98
+batch=2 nanoseconds_per_call=96.21
+batch=3 nanoseconds_per_call=103.39
+batch=4 nanoseconds_per_call=98.60
+batch=5 nanoseconds_per_call=95.94

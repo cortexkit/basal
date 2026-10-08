@@ -1,0 +1,61 @@
+# Native release worker, post-confinement trace. Loader/setup calls omitted.
+# All non-clock calls retained; first/last 8 thread-CPU samples retained.
+seccomp(SECCOMP_SET_MODE_FILTER, SECCOMP_FILTER_FLAG_TSYNC, 0x7ffd9cbb94e8) = 0
+read(0, 0x63c55221f460, 8192)           = 9
+write(1, 0x63c552221470, 80)            = 80
+write(1, 0x63c55221c270, 13)            = 13
+read(0, 0x63c55221f460, 8192)           = 248
+brk(0x63c55225e000)                     = 0x63c55225e000
+brk(0x63c55225d000)                     = 0x63c55225d000
+futex(0x63c532bda188, FUTEX_WAKE_PRIVATE, 2147483647) = 0
+brk(0x63c55227e000)                     = 0x63c55227e000
+brk(0x63c55229f000)                     = 0x63c55229f000
+brk(0x63c55229e000)                     = 0x63c55229e000
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0x7ffd9cbb8ba0) = 0
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0x7ffd9cbb4700) = 0
+write(1, 0x63c55221c270, 22)            = 22
+read(0, 0x63c55221f460, 8192)           = 39
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0x7ffd9cbb4810) = 0
+write(1, 0x63c55221c270, 36)            = 36
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0x7ffd9cbb8b90) = 0
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0x7ffd9cbb8e80) = 0
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0x7ffd9cbb8b90) = 0
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0x7ffd9cbb8ba0) = 0
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0x7ffd9cbb8b90) = 0
+write(1, 0x63c55221c270, 17)            = 17
+read(0, 0x63c55221f460, 8192)           = 17
+# 2 additional clock_gettime(CLOCK_THREAD_CPUTIME_ID) samples omitted
+brk(0x63c55229a000)                     = 0x63c55229a000
+write(1, 0x63c55221c270, 26)            = 26
+read(0, 0x63c55221f460, 8192)           = 374
+brk(0x63c5522bb000)                     = 0x63c5522bb000
+# 6 additional clock_gettime(CLOCK_THREAD_CPUTIME_ID) samples omitted
+write(1, 0x63c55221c270, 17)            = 17
+read(0, 0x63c55221f460, 8192)           = 28
+# 4 additional clock_gettime(CLOCK_THREAD_CPUTIME_ID) samples omitted
+write(1, 0x63c55221c270, 22)            = 22
+read(0, 0x63c55221f460, 8192)           = 39
+# 8 additional clock_gettime(CLOCK_THREAD_CPUTIME_ID) samples omitted
+brk(0x63c5522ba000)                     = 0x63c5522ba000
+brk(0x63c5522b8000)                     = 0x63c5522b8000
+brk(0x63c5522b5000)                     = 0x63c5522b5000
+brk(0x63c5522b3000)                     = 0x63c5522b3000
+brk(0x63c55229a000)                     = 0x63c55229a000
+write(1, 0x63c55221c270, 47)            = 47
+read(0, 0x63c55221f460, 8192)           = 457
+brk(0x63c5522bb000)                     = 0x63c5522bb000
+# 6 additional clock_gettime(CLOCK_THREAD_CPUTIME_ID) samples omitted
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0x7ffd9cbb8e80) = 0
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0x7ffd9cbb8b90) = 0
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0x7ffd9cbb8e80) = 0
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0x7ffd9cbb8b90) = 0
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0x7ffd9cbb8e80) = 0
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0x7ffd9cbb8b90) = 0
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0x7ffd9cbb8ba0) = 0
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0x7ffd9cbb8b90) = 0
+brk(0x63c5522b8000)                     = 0x63c5522b8000
+brk(0x63c5522b6000)                     = 0x63c5522b6000
+brk(0x63c55229a000)                     = 0x63c55229a000
+write(1, 0x63c55221c270, 47)            = 47
+read(0 <unfinished ...>)                = ?
++++ killed by SIGKILL +++

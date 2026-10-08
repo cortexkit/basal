@@ -3,6 +3,8 @@
 //! the sandbox. The probe confines itself through the same function the
 //! engine uses before reading its first frame.
 
+#![cfg(target_os = "macos")]
+
 mod common;
 
 use std::io::Read;

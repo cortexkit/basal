@@ -61,8 +61,13 @@ impl WorkerProcess {
 
     pub fn spawn_with_args(binary: &Path, args: &[&str]) -> io::Result<Self> {
         let binary = crate::dev_binary(binary);
-        let mut child = Command::new(binary)
-            .args(args)
+        let mut command = Command::new(binary);
+        command.args(args);
+        #[cfg(target_os = "linux")]
+        if !args.iter().any(|arg| arg.starts_with("--landlock=")) {
+            command.arg("--landlock=required");
+        }
+        let mut child = command
             .env_clear()
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

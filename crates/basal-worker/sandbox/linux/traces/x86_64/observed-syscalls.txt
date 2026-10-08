@@ -1,0 +1,9 @@
+brk 218
+clock_gettime 17785
+exit_group 5
+futex 20
+getpid 1
+gettid 2
+read 155
+tgkill 1
+write 211

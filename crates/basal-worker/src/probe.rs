@@ -1,26 +1,38 @@
 //! The confinement probe: evidence that the sandbox denies what it should.
 //!
 //! `ck-basal-worker --confinement-probe` confines itself exactly as the
-//! engine does (the same `confinement::enter`), then tries to read a file,
-//! create a file, connect a TCP socket and execute a program, and prints one
-//! JSON line saying how each attempt went. Tests and the signing gate run it
-//! against the real binary.
+//! engine does (the same confinement entry). On Linux `--syscall=` selects one
+//! raw call in a fresh child, with readiness before the attempt; seccomp denial
+//! kills that child with SIGSYS. On macOS it tries to read a file, create a file,
+//! connect a TCP socket and execute a program, and prints one JSON line saying
+//! how each attempt went. Tests and the signing gate run the real binary.
 //!
 //! `--no-sandbox` skips confinement so the same attempts can be shown to
 //! succeed without it. It is accepted only in probe mode: the engine itself
 //! never runs unconfined.
 
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+pub use linux::run;
+
+#[cfg(not(target_os = "linux"))]
 use std::io::Write;
+#[cfg(not(target_os = "linux"))]
 use std::net::{SocketAddr, TcpStream};
+#[cfg(not(target_os = "linux"))]
 use std::time::Duration;
 
+#[cfg(not(target_os = "linux"))]
 use crate::confinement;
 
+#[cfg(not(target_os = "linux"))]
 struct Attempt {
     name: &'static str,
     result: Result<(), String>,
 }
 
+#[cfg(not(target_os = "linux"))]
 fn json_string(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 2);
     out.push('"');
@@ -38,6 +50,7 @@ fn json_string(text: &str) -> String {
 
 /// Runs the probe with the arguments after `--confinement-probe` and returns
 /// the process exit code.
+#[cfg(not(target_os = "linux"))]
 pub fn run(args: &[String]) -> u8 {
     let mut sandbox = true;
     let mut read = None;

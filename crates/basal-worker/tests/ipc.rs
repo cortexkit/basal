@@ -82,7 +82,16 @@ fn handshake_reports_version_engine_and_confinement() {
     let mut worker = spawn();
     let welcome = hello(&mut worker);
     assert_eq!(welcome.protocol_version, PROTOCOL_VERSION);
+    #[cfg(target_os = "macos")]
     assert_eq!(welcome.confinement, Confinement::Seatbelt);
+    #[cfg(target_os = "linux")]
+    assert!(matches!(
+        welcome.confinement,
+        Confinement::Linux {
+            seccomp: true,
+            landlock: Some(_)
+        }
+    ));
     assert!(welcome.engine.contains("quickjs"), "{}", welcome.engine);
 }
 
