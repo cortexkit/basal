@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn new_gate_backoffs_reap_terminal_and_pruned_runs() {
-    let fixture = crate::audit_regression_tests::TestRuntime::new();
+    let fixture = crate::runtime_authorization_regressions::TestRuntime::new();
     let rt = &fixture.rt;
     for id in ["done", "gone", "waiting"] {
         rt.store().write(|tx| {
@@ -26,7 +26,7 @@ fn new_gate_backoffs_reap_terminal_and_pruned_runs() {
 
 #[test]
 fn removed_instance_gate_reports_removal_not_revocation() {
-    let fixture = crate::audit_regression_tests::TestRuntime::new();
+    let fixture = crate::runtime_authorization_regressions::TestRuntime::new();
     let rt = &fixture.rt;
     rt.store().write(|tx| {
         tx.execute_batch("INSERT INTO flows(flow_id,package,removed,created_at) VALUES ('instance','package',1,1); INSERT INTO runs(run_id,flow_id,trigger_id,attempt,trigger,script,manifest,code_hash,state,owner,generation,admitted_at) VALUES ('run','instance','trigger',1,'null','return 1','{}',zeroblob(32),'running','parent',1,1);")?;

@@ -80,4 +80,4 @@ pub use schedule::{ScheduleSpec, Scheduler, SchedulerConfig};
 pub use store::{Durability, Pragmas, Store};
 
 #[cfg(test)]
-mod audit_regression_tests;
+mod runtime_authorization_regressions;

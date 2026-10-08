@@ -7290,7 +7290,7 @@ build_timeout_s = 3600
 
 
 [[control]]
-id = "audit-b-ambiguous-send-is-not-a-scope-refusal"
+id = "ambiguous-send-is-not-a-scope-refusal"
 guards = "An ambiguous mutation send stays unknown when its resend is scope-refused"
 file = "crates/basal-core/src/runtime.rs"
 old = "if let Some(reason) = maybe_sent {"
@@ -7347,18 +7347,18 @@ file = "crates/basal-core/src/authorize.rs"
 old = "if include.is_some_and(|v| !v.is_array()) {"
 new = "if false && include.is_some_and(|v| !v.is_array()) { // NON-VACUITY BREAK"
 edits = []
-test_file = "crates/basal-core/src/audit_regression_tests.rs"
+test_file = "crates/basal-core/src/runtime_authorization_regressions.rs"
 runner = "cargo"
 package = "basal-core"
 target = "--lib"
-expect_red = ["audit_regression_tests::facts_include_must_be_an_array"]
+expect_red = ["runtime_authorization_regressions::facts_include_must_be_an_array"]
 only = true
 timeout_s = 600
 build_timeout_s = 3600
 
 
 [[control]]
-id = "audit-b-terminal-deferred-settlement"
+id = "terminal-deferred-settlement"
 guards = "terminal transitions settle every deferred call"
 file = "crates/basal-core/src/runs.rs"
 old = "if state.is_terminal() {"
@@ -7642,18 +7642,18 @@ file = "crates/basal-core/src/packages.rs"
 old = "if identity.is_some_and(|(p, owner)| {"
 new = "if false && identity.is_some_and(|(p, owner)| { // NON-VACUITY BREAK"
 edits = []
-test_file = "crates/basal-core/src/audit_regression_tests.rs"
+test_file = "crates/basal-core/src/runtime_authorization_regressions.rs"
 runner = "cargo"
 package = "basal-core"
 target = "--lib"
-expect_red = ["audit_regression_tests::instance_collision_cannot_change_a_regular_flow"]
+expect_red = ["runtime_authorization_regressions::instance_collision_cannot_change_a_regular_flow"]
 only = true
 timeout_s = 600
 build_timeout_s = 3600
 
 
 [[control]]
-id = "audit-b-claim-flushes-refusal-intents"
+id = "claim-flushes-refusal-intents"
 guards = "claim expiry acknowledges the deferred snapshot after commit"
 file = "crates/basal-core/src/driver.rs"
 old = """
@@ -7699,18 +7699,18 @@ file = "crates/basal-core/src/tokens.rs"
 old = "usage.input_tokens.map(saturate_usage),"
 new = "usage.input_tokens.map(to_i64).transpose()?, // NON-VACUITY BREAK"
 edits = []
-test_file = "crates/basal-core/src/audit_regression_tests.rs"
+test_file = "crates/basal-core/src/runtime_authorization_regressions.rs"
 runner = "cargo"
 package = "basal-core"
 target = "--lib"
-expect_red = ["audit_regression_tests::huge_usage_settles_and_keeps_window_totals_integral"]
+expect_red = ["runtime_authorization_regressions::huge_usage_settles_and_keeps_window_totals_integral"]
 only = true
 timeout_s = 600
 build_timeout_s = 3600
 
 
 [[control]]
-id = "audit-b-mailbox-winner-prevents-reconcile"
+id = "mailbox-winner-prevents-reconcile"
 guards = "a mailbox winner prevents a false reconcile transition"
 file = "crates/basal-core/src/journal.rs"
 old = """
@@ -7743,18 +7743,18 @@ file = "crates/basal-core/src/schedule/mod.rs"
 old = "let CoreError::Corrupt(detail) = error else { return Err(error); };"
 new = "let CoreError::Corrupt(detail) = error else { return Err(error); }; if std::hint::black_box(true) { return Err(CoreError::Corrupt(detail.clone())); } // NON-VACUITY BREAK"
 edits = []
-test_file = "crates/basal-core/src/audit_regression_tests.rs"
+test_file = "crates/basal-core/src/runtime_authorization_regressions.rs"
 runner = "cargo"
 package = "basal-core"
 target = "--lib"
-expect_red = ["audit_regression_tests::corrupt_schedule_does_not_block_healthy_schedules"]
+expect_red = ["runtime_authorization_regressions::corrupt_schedule_does_not_block_healthy_schedules"]
 only = true
 timeout_s = 600
 build_timeout_s = 3600
 
 
 [[control]]
-id = "audit-b-domain-error-retires-claim"
+id = "domain-error-retires-claim"
 guards = "a non storage driver error exits the claim and frees the slot"
 file = "crates/basal-core/src/driver.rs"
 old = """
@@ -7788,18 +7788,18 @@ let CoreError::Corrupt(detail) = error else {
                 };
                 if std::hint::black_box(true) { return Err(CoreError::Corrupt(detail.clone())); } // NON-VACUITY BREAK"""
 edits = []
-test_file = "crates/basal-core/src/audit_regression_tests.rs"
+test_file = "crates/basal-core/src/runtime_authorization_regressions.rs"
 runner = "cargo"
 package = "basal-core"
 target = "--lib"
-expect_red = ["audit_regression_tests::corrupt_oldest_fire_does_not_block_healthy_fires"]
+expect_red = ["runtime_authorization_regressions::corrupt_oldest_fire_does_not_block_healthy_fires"]
 only = true
 timeout_s = 600
 build_timeout_s = 3600
 
 
 [[control]]
-id = "audit-b-production-retention-prunes-runs"
+id = "production-retention-prunes-runs"
 guards = "retention runs from the production deadline pass"
 file = "crates/basal-core/src/retention.rs"
 old = "let runs = self.prune(now, millis(config.runs))?;"
@@ -7896,7 +7896,7 @@ build_timeout_s = 3600
 
 
 [[control]]
-id = "audit-b-malformed-optional-refusal-is-tolerated"
+id = "malformed-optional-refusal-is-tolerated"
 guards = "malformed optional refusal detail does not halt deadline enforcement"
 file = "crates/basal-core/src/journal.rs"
 old = 'value["retry_after_ms"] = serde_json::Value::Null;'
@@ -8148,7 +8148,7 @@ build_timeout_s = 3600
 
 
 [[control]]
-id = "audit-b-retirement-is-not-version-disapproval"
+id = "retirement-is-not-version-disapproval"
 guards = "retirement fails through the terminal transition and blocks approval reenable"
 file = "crates/basal-core/src/install.rs"
 old = '&& f.disabled_reason.as_deref() != Some("agent_retired")'
@@ -8182,7 +8182,7 @@ build_timeout_s = 3600
 
 
 [[control]]
-id = "audit-b-retention-keeps-unacknowledged-broca"
+id = "retention-keeps-unacknowledged-broca"
 guards = "pruning keeps unacknowledged broca snapshots and open cards"
 file = "crates/basal-core/src/retention.rs"
 old = "b.run_id=r.run_id AND COALESCE(json_extract(b.snapshot,'$.acknowledged'),0)=0"
@@ -8220,7 +8220,7 @@ build_timeout_s = 3600
 
 
 [[control]]
-id = "audit-b-retention-keeps-refusal-intents"
+id = "retention-keeps-refusal-intents"
 guards = "pruning preserves a terminal run until its refusal acknowledgement is delivered"
 file = "crates/basal-core/src/retention.rs"
 old = "o.kind='refusal_committed' AND json_extract(o.body,'$.run_id')=r.run_id"
@@ -8254,7 +8254,7 @@ build_timeout_s = 3600
 
 
 [[control]]
-id = "audit-b-production-retention-prunes-history"
+id = "production-retention-prunes-history"
 guards = "retention prunes old history but keeps live obligations and card episodes"
 file = "crates/basal-core/src/retention.rs"
 old = "let history_full = self.prune_history(now, now.saturating_sub(millis(config.history)))?;"
@@ -8294,7 +8294,7 @@ build_timeout_s = 3600
 
 
 [[control]]
-id = "audit-b-wait-timeout-is-not-success"
+id = "wait-timeout-is-not-success"
 guards = "wait for reports unsatisfied predicates as timeouts"
 file = "crates/basal-core/src/runtime.rs"
 old = """
@@ -8346,7 +8346,7 @@ build_timeout_s = 3600
 
 
 [[control]]
-id = "audit-b-spawn-reaps-completed-handles"
+id = "spawn-reaps-completed-handles"
 guards = "completed thread handles are reaped during normal spawning"
 file = "crates/basal-core/src/runtime.rs"
 old = "threads.retain(|h| !h.is_finished());"
@@ -8369,10 +8369,10 @@ file = "crates/basal-host/src/builtins/fs.rs"
 old = """    Denial::denied("path is outside the manifest's roots or missing")"""
 new = '    Denial::denied(format!("{} is outside the manifest roots", _path.display())) // NON-VACUITY BREAK'
 edits = []
-test_file = "crates/basal-host/tests/audit_builtins.rs"
+test_file = "crates/basal-host/tests/builtin_host_regressions.rs"
 runner = "cargo"
 package = "basal-host"
-target = "--test audit_builtins"
+target = "--test builtin_host_regressions"
 expect_red = ["outside_missing_and_symlink_targets_have_identical_refusals"]
 only = true
 timeout_s = 600
@@ -8386,10 +8386,10 @@ file = "crates/basal-host/src/builtins/net.rs"
 old = '    "x-http-method-override",'
 new = '    "disabled-method-override", // NON-VACUITY BREAK'
 edits = []
-test_file = "crates/basal-host/tests/audit_builtins.rs"
+test_file = "crates/basal-host/tests/builtin_host_regressions.rs"
 runner = "cargo"
 package = "basal-host"
-target = "--test audit_builtins"
+target = "--test builtin_host_regressions"
 expect_red = ["method_override_and_compression_headers_are_denied"]
 only = true
 timeout_s = 600
@@ -8407,10 +8407,10 @@ new = """
                     .map_err(|error| BrocaError::Unavailable {
                         proven_unsent: false, // NON-VACUITY BREAK"""
 edits = []
-test_file = "crates/basal-host/tests/audit_broca.rs"
+test_file = "crates/basal-host/tests/broca_dispatch_regressions.rs"
 runner = "cargo"
 package = "basal-host"
-target = "--test audit_broca"
+target = "--test broca_dispatch_regressions"
 expect_red = ["first_snapshot_failure_is_provably_unsent"]
 only = true
 timeout_s = 600
@@ -8433,10 +8433,10 @@ new = """
                 }
             };"""
 edits = []
-test_file = "crates/basal-host/tests/audit_broca.rs"
+test_file = "crates/basal-host/tests/broca_dispatch_regressions.rs"
 runner = "cargo"
 package = "basal-host"
-target = "--test audit_broca"
+target = "--test broca_dispatch_regressions"
 expect_red = ["one_corrupt_snapshot_does_not_block_healthy_completions"]
 only = true
 timeout_s = 600
@@ -8450,10 +8450,10 @@ file = "crates/basal-host/src/builtins/net.rs"
 old = "    if url.port != 443 {"
 new = "    if url.port == 0 { // NON-VACUITY BREAK"
 edits = []
-test_file = "crates/basal-testkit/tests/audit_net.rs"
+test_file = "crates/basal-testkit/tests/net_fetch_regressions.rs"
 runner = "cargo"
 package = "basal-testkit"
-target = "--test audit_net"
+target = "--test net_fetch_regressions"
 expect_red = ["nonstandard_redirect_port_is_refused_before_a_second_connection"]
 only = true
 timeout_s = 600
@@ -8471,10 +8471,10 @@ new = """
             other => other,
         }"""
 edits = []
-test_file = "crates/basal-testkit/tests/audit_net.rs"
+test_file = "crates/basal-testkit/tests/net_fetch_regressions.rs"
 runner = "cargo"
 package = "basal-testkit"
-target = "--test audit_net"
+target = "--test net_fetch_regressions"
 expect_red = ["unclean_tls_eof_cannot_fulfill_a_connection_framed_body"]
 only = true
 timeout_s = 600
@@ -8488,10 +8488,10 @@ file = "crates/basal-host/src/builtins/net.rs"
 old = "        let skip_redirect_body = !effect_possible && matches!(status, 301 | 302 | 303 | 307 | 308);"
 new = "        let skip_redirect_body = false; // NON-VACUITY BREAK"
 edits = []
-test_file = "crates/basal-testkit/tests/audit_net.rs"
+test_file = "crates/basal-testkit/tests/net_fetch_regressions.rs"
 runner = "cargo"
 package = "basal-testkit"
-target = "--test audit_net"
+target = "--test net_fetch_regressions"
 expect_red = ["query_redirect_does_not_read_an_incomplete_body"]
 only = true
 timeout_s = 600
@@ -8530,10 +8530,10 @@ new = """
 // NON-VACUITY BREAK: ignore unknown generation keys.
 pub struct GenerationConfig"""
 edits = []
-test_file = "crates/basal-host/tests/audit_broca.rs"
+test_file = "crates/basal-host/tests/broca_dispatch_regressions.rs"
 runner = "cargo"
 package = "basal-host"
-target = "--test audit_broca"
+target = "--test broca_dispatch_regressions"
 expect_red = ["generation_typos_are_refused"]
 only = true
 timeout_s = 600
@@ -8547,10 +8547,10 @@ file = "crates/basal-host/src/broca/mod.rs"
 old = "                call.report_attempted = true;"
 new = "                self.report_terminal(&mut call)?; // NON-VACUITY BREAK"
 edits = []
-test_file = "crates/basal-host/tests/audit_broca.rs"
+test_file = "crates/basal-host/tests/broca_dispatch_regressions.rs"
 runner = "cargo"
 package = "basal-host"
-target = "--test audit_broca"
+target = "--test broca_dispatch_regressions"
 expect_red = ["an_unsent_refusal_does_not_penalize_the_selected_model"]
 only = true
 timeout_s = 600
@@ -8568,10 +8568,10 @@ old = """
             })),"""
 new = "            Ok(_value) => Ok(Dispatched::Completed(HostOutcome::fulfilled(JsonText::null()))), // NON-VACUITY BREAK"
 edits = []
-test_file = "crates/basal-host/tests/audit_builtins.rs"
+test_file = "crates/basal-host/tests/builtin_host_regressions.rs"
 runner = "cargo"
 package = "basal-host"
-target = "--test audit_builtins"
+target = "--test builtin_host_regressions"
 expect_red = ["escaped_listing_exceeds_encoded_cap_as_a_typed_refusal"]
 only = true
 timeout_s = 600
@@ -8585,10 +8585,10 @@ file = "crates/basal-host/src/broca/mod.rs"
 old = "            Bytes::Legacy(bytes) => bytes,"
 new = "            Bytes::Legacy(_bytes) => Vec::new(), // NON-VACUITY BREAK"
 edits = []
-test_file = "crates/basal-host/tests/audit_broca.rs"
+test_file = "crates/basal-host/tests/broca_dispatch_regressions.rs"
 runner = "cargo"
 package = "basal-host"
-target = "--test audit_broca"
+target = "--test broca_dispatch_regressions"
 expect_red = ["saved_params_are_compact_and_read_legacy_byte_arrays"]
 only = true
 timeout_s = 600
@@ -8607,10 +8607,10 @@ new = """
         let send_id = "shared"; // NON-VACUITY BREAK
         let mut gates = lock(&self.gate);"""
 edits = []
-test_file = "crates/basal-host/tests/audit_broca.rs"
+test_file = "crates/basal-host/tests/broca_dispatch_regressions.rs"
 runner = "cargo"
 package = "basal-host"
-target = "--test audit_broca"
+target = "--test broca_dispatch_regressions"
 expect_red = ["a_stalled_send_does_not_hold_an_unrelated_dispatch"]
 only = true
 timeout_s = 600
@@ -8641,10 +8641,10 @@ file = "crates/basal-host/src/builtins/git.rs"
 old = "            libc::kill(-(self.0.id() as i32), libc::SIGKILL);"
 new = "            let _ = self.0.id(); // NON-VACUITY BREAK"
 edits = []
-test_file = "crates/basal-host/tests/audit_builtins.rs"
+test_file = "crates/basal-host/tests/builtin_host_regressions.rs"
 runner = "cargo"
 package = "basal-host"
-target = "--test audit_builtins"
+target = "--test builtin_host_regressions"
 expect_red = ["git_reaps_descendants_that_keep_its_output_pipe_open"]
 only = true
 timeout_s = 600
@@ -8675,10 +8675,10 @@ file = "crates/basal-host/src/broca/mod.rs"
 old = "        serializer.serialize_str(text)"
 new = '        serializer.serialize_str("") // NON-VACUITY BREAK'
 edits = []
-test_file = "crates/basal-host/tests/audit_broca.rs"
+test_file = "crates/basal-host/tests/broca_dispatch_regressions.rs"
 runner = "cargo"
 package = "basal-host"
-target = "--test audit_broca"
+target = "--test broca_dispatch_regressions"
 expect_red = ["saved_params_are_compact_and_read_legacy_byte_arrays"]
 only = true
 timeout_s = 600
@@ -8686,7 +8686,7 @@ build_timeout_s = 7200
 
 
 [[control]]
-id = "audit-b-retention-full-batches-catch-up"
+id = "retention-full-batches-catch-up"
 guards = "Full retention batches prompt another bounded pass rather than impose an hourly throughput ceiling"
 file = "crates/basal-core/src/retention.rs"
 old = "let backlog = runs.pruned.len() == BATCH || history_full;"
@@ -8703,7 +8703,7 @@ build_timeout_s = 3600
 
 
 [[control]]
-id = "audit-b-retention-history-only-backlogs-catch-up"
+id = "retention-history-only-backlogs-catch-up"
 guards = "A full history batch schedules catch-up even when there are no terminal runs to prune"
 file = "crates/basal-core/src/retention.rs"
 old = "let backlog = runs.pruned.len() == BATCH || history_full;"
