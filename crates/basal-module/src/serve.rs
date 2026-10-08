@@ -342,15 +342,18 @@ impl ModuleHandler for BasalHandler {
                     detail: Some(why),
                     metrics: None,
                 },
-                None => HealthReport {
-                    status: if module.pool.stats().spawn_error.is_some() {
-                        HealthStatus::Degraded
-                    } else {
-                        HealthStatus::Ok
-                    },
-                    detail: module.pool.stats().spawn_error,
-                    metrics: Some(module.metrics.to_json()),
-                },
+                None => {
+                    let pool = module.pool.stats();
+                    HealthReport {
+                        status: if pool.spawn_error.is_some() {
+                            HealthStatus::Degraded
+                        } else {
+                            HealthStatus::Ok
+                        },
+                        detail: pool.spawn_error,
+                        metrics: Some(module.metrics.to_json()),
+                    }
+                }
             },
         }
     }

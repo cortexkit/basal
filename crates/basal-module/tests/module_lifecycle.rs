@@ -20,6 +20,69 @@ impl Spawn for FailingSpawner {
     }
 }
 
+struct RecoverOnAttach(Arc<basal_core::broca::BrocaStore>);
+impl basal_host::Host for RecoverOnAttach {
+    fn classify(&self, _: &basal_proto::CallKind) -> basal_host::CallClass {
+        basal_host::CallClass::Query
+    }
+    fn dispatch(
+        &self,
+        _: &basal_host::CallRequest,
+    ) -> Result<basal_host::Dispatched, basal_host::TransportError> {
+        unreachable!("startup recovery does not dispatch a flow")
+    }
+    fn now_ms(&self) -> f64 {
+        0.0
+    }
+    fn random(&self) -> f64 {
+        0.0
+    }
+    fn attach(&self, _: Arc<dyn basal_host::CompletionSink>) {
+        // BrocaHost also polls immediately when its completion sink attaches.
+        // This read must succeed before any recovery can inspect saved calls.
+        basal_host::broca::StateStore::load(self.0.as_ref())
+            .expect("model store bound before recovery");
+    }
+}
+
+#[test]
+fn startup_binds_the_model_store_before_host_recovery() {
+    let dir = common::scratch("bound-before-recovery");
+    let snapshots = Arc::new(basal_core::broca::BrocaStore::default());
+    let mut pool = PoolConfig::new("unused", WorkerLaunch::Plain);
+    pool.warm_spares = 0;
+    let config = ModuleConfig {
+        store_path: dir.join("store.db"),
+        durability: Durability { fullfsync: false },
+        runtime: Config::default(),
+        pool,
+        engine: Default::default(),
+        dry_run: DryRunConfig::new(dir.join("scratch")),
+    };
+    let hosts = Hosts {
+        host: Arc::new(RecoverOnAttach(snapshots.clone())),
+        catalog: Arc::new(MockCatalog::standard()),
+        consent: Arc::new(MockConsent::new()),
+        hooks: Arc::new(NoHooks),
+    };
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        Module::start_with_store(
+            config,
+            hosts,
+            Arc::new(FailingSpawner::default()),
+            |store| snapshots.bind(store).map_err(|e| e.to_string()),
+        )
+    }));
+    let succeeded = matches!(&result, Ok(Ok(_)));
+    if let Ok(Ok(module)) = result {
+        module.pool.stop();
+        drop(module);
+    }
+    drop(snapshots);
+    std::fs::remove_dir_all(dir).unwrap();
+    assert!(succeeded, "host recovery must read the initialized store");
+}
+
 #[test]
 fn failed_spawns_wait_before_retrying() {
     let clock = basal_core::Clock::manual(0);

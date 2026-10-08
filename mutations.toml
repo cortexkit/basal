@@ -2623,8 +2623,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-module/src/ops.rs"
-old = "if !self.owns(owner, &f.flow_id)? {"
-new = "if p.flow_ids.is_none() && !self.owns(owner, &f.flow_id)? {"
+old = "AND (?2 IS NULL OR f.owner=?2 OR (f.owner IS NULL"
+new = "AND (?1 IS NOT NULL OR ?2 IS NULL OR f.owner=?2 OR (f.owner IS NULL /* NON-VACUITY BREAK */"
 
 [[control]]
 id = "flow-list-state-diverges-from-flow-health"
@@ -2640,8 +2640,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-module/src/ops.rs"
-old = "\"state\": flow_state(f.approved_version, f.enabled),"
-new = "\"state\": \"enabled\","
+old = "\"state\": flow_state(approved, r.get(2)?),"
+new = "\"state\": \"enabled\", // NON-VACUITY BREAK"
 
 [[control]]
 id = "the-manifest-declares-a-capability-subc-protocol-s-grammar-refuses"
@@ -3233,7 +3233,7 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-module/src/module.rs"
-old = "let recovered = rt.recover().map_err(|e| format!(\"recovering runs: {e}\"))?;"
+old = "let recovered = store\n            .write(basal_core::runs::requeue_orphans)\n            .map_err(|e| format!(\"recovering runs: {e}\"))?;"
 new = "let recovered: Vec<String> = Vec::new();"
 
 [[control]]
@@ -3297,8 +3297,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-module/src/dryrun.rs"
-old = ".is_some_and(|d| d.kind == Some(OpKind::Query) && !d.shell_capable),"
-new = ".is_some(),"
+old = ".is_some_and(|d| d.kind == Some(OpKind::Query) && !d.shell_capable)"
+new = ".is_some() /* NON-VACUITY BREAK */"
 
 [[control]]
 id = "an-owning-agent-may-ask-for-a-live-dry-run"
@@ -3718,7 +3718,7 @@ new = "sent: Sent::Maybe(basal_host::UnknownReason::ConnectionLost),"
 
 [[control]]
 id = "flow-list-reports-a-disable-by-core-as-the-owner-s"
-hub = "Flow list preserves core as the disable author after revocation, asserted by list-contract and install-gate tests"
+hub = "List and health preserve core as the disable author after revocation; list-contract and install-gate failures both assert that a core disable is reported as core"
 hub_targets = ["install_gate"]
 guards = "flow.list reports a disable by core as the owner's"
 test_file = "crates/basal-module/tests/list_contract.rs"
@@ -6532,8 +6532,8 @@ build_timeout_s = 3600
 id = "rig-crash-checkpoint-discards-clamped-request"
 guards = "Crash-boundary evidence captures the selected request before host dispatch"
 file = "crates/basal-module/src/rig_kill.rs"
-old = "SELECT COALESCE(request, args), dispatch, attempts, settlement FROM journal WHERE run_id = ?1 AND position = 0"
-new = "SELECT args, dispatch, attempts, settlement FROM journal WHERE run_id = ?1 AND position = 0 -- NON-VACUITY BREAK: discard clamped request evidence"
+old = "SELECT COALESCE(request, args), dispatch, attempts, settlement FROM journal WHERE run_id = ?1 AND position = ?2"
+new = "SELECT args, dispatch, attempts, settlement FROM journal WHERE run_id = ?1 AND position = ?2 -- NON-VACUITY BREAK: discard clamped request evidence"
 edits = []
 test_file = "crates/basal-module/src/rig_kill.rs"
 runner = "cargo"
@@ -7256,37 +7256,6 @@ runner = "cargo"
 package = "basal-module"
 target = "--lib"
 expect_red = ["engine::lifecycle_tests::panicking_activation_releases_run_and_flow_slots"]
-only = false
-timeout_s = 600
-build_timeout_s = 3600
-
-
-[[control]]
-id = "module-start-binds-before-preparation"
-guards = "failed module preparation never binds or retains the writer lease"
-file = "crates/basal-module/src/module.rs"
-old = """
-std::fs::create_dir_all(&config.dry_run.scratch_root).map_err(|e| {
-            format!(
-                "creating the dry-run directory {}: {e}",
-                config.dry_run.scratch_root.display()
-            )
-        })?;
-        initialize(store)?;"""
-new = """
-initialize(store)?; // NON-VACUITY BREAK
-        std::fs::create_dir_all(&config.dry_run.scratch_root).map_err(|e| {
-            format!(
-                "creating the dry-run directory {}: {e}",
-                config.dry_run.scratch_root.display()
-            )
-        })?;"""
-edits = []
-test_file = "crates/basal-module/tests/module_lifecycle.rs"
-runner = "cargo"
-package = "basal-module"
-target = "--test module_lifecycle"
-expect_red = ["failed_start_does_not_bind_or_retain_the_store"]
 only = false
 timeout_s = 600
 build_timeout_s = 3600

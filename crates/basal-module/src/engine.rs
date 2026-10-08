@@ -119,7 +119,23 @@ impl Engine {
         fatal: Fatal,
     ) -> Result<Self, CoreError> {
         let scheduler = rt.scheduler()?;
-        Ok(Self {
+        Ok(Self::with_scheduler(
+            rt, pool, consent, config, metrics, fatal, scheduler,
+        ))
+    }
+
+    /// Startup can validate the scheduler before binding adapters, then attach
+    /// the real runtime without leaving any fallible preparation afterward.
+    pub(crate) fn with_scheduler(
+        rt: Runtime,
+        pool: Pool,
+        consent: Arc<dyn Consent>,
+        config: EngineConfig,
+        metrics: Arc<Metrics>,
+        fatal: Fatal,
+        scheduler: Scheduler,
+    ) -> Self {
+        Self {
             inner: Arc::new(Inner {
                 rt,
                 pool,
@@ -132,7 +148,7 @@ impl Engine {
                 cond: Condvar::new(),
                 progress: AtomicU64::new(0),
             }),
-        })
+        }
     }
 
     fn active(&self) -> MutexGuard<'_, Active> {

@@ -68,10 +68,10 @@ impl Module {
         Self::start_with_store(config, hosts, spawner, |_| Ok(()))
     }
 
-    /// Prepare the store, recovery, scheduler and scratch directory before
-    /// binding adapters. Attaching completion sinks only records weak runtime
-    /// references; no polling or workers may start until this returns success.
-    /// A preparation failure therefore cannot retain an adapter's writer lease.
+    /// Prepare the store, orphan recovery, scheduler and scratch directory
+    /// before binding adapters. Bind before attaching completion sinks: a host
+    /// can poll saved calls immediately when attached. A preparation failure
+    /// therefore cannot retain an adapter's writer lease or start pool workers.
     pub fn start_with_store(
         config: ModuleConfig,
         hosts: Hosts,
@@ -89,35 +89,49 @@ impl Module {
         let metrics = Arc::new(Metrics::default());
         let fatal = Fatal::new();
         let pool = Pool::new(config.pool.clone(), spawner, clock, metrics.clone());
-        let rt = Runtime::new(
-            store.clone(),
-            hosts.host.clone(),
-            hosts.catalog.clone(),
-            hosts.hooks,
-            None,
-            runtime_config.clone(),
-        );
-        let recovered = rt.recover().map_err(|e| format!("recovering runs: {e}"))?;
+        // No runtime or completion sink exists yet. Recovering orphan claims
+        // needs only the writer lease, and cannot call an unbound adapter.
+        let recovered = store
+            .write(basal_core::runs::requeue_orphans)
+            .map_err(|e| format!("recovering runs: {e}"))?;
         if !recovered.is_empty() {
             tracing::info!(target: "engine", "recovered {} runs left running", recovered.len());
         }
-        let engine = Engine::new(
-            rt.clone(),
-            pool.clone(),
-            hosts.consent.clone(),
-            config.engine.clone(),
-            metrics.clone(),
-            fatal.clone(),
+        let default_deadline_ms = i64::try_from(runtime_config.limits.default_deadline.as_millis())
+            .map_err(|_| "building the scheduler: default deadline too long".to_owned())?;
+        let scheduler = basal_core::schedule::Scheduler::new(
+            store.clone(),
+            Arc::new(runtime_config.clock.clone()),
+            runtime_config.schedule.clone(),
         )
-        .map_err(|e| format!("building the scheduler: {e}"))?;
+        .with_limits(basal_core::schedule::AdmitLimits {
+            rate: runtime_config.rate,
+            default_deadline_ms,
+        });
         std::fs::create_dir_all(&config.dry_run.scratch_root).map_err(|e| {
             format!(
                 "creating the dry-run directory {}: {e}",
                 config.dry_run.scratch_root.display()
             )
         })?;
-        initialize(store)?;
-        pool.replenish();
+        initialize(store.clone())?;
+        let rt = Runtime::new(
+            store,
+            hosts.host.clone(),
+            hosts.catalog.clone(),
+            hosts.hooks,
+            None,
+            runtime_config.clone(),
+        );
+        let engine = Engine::with_scheduler(
+            rt.clone(),
+            pool.clone(),
+            hosts.consent.clone(),
+            config.engine.clone(),
+            metrics.clone(),
+            fatal.clone(),
+            scheduler,
+        );
         let dry = DryRunner::new(
             hosts.catalog.clone(),
             hosts.host,
@@ -130,6 +144,7 @@ impl Module {
             rt: rt.clone(),
             fatal: fatal.clone(),
         }));
+        pool.replenish();
         Ok(Self {
             rt,
             pool,

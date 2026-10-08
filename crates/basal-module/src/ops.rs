@@ -69,9 +69,9 @@ impl OpError {
         self
     }
 
-    /// The refusal of `op` for `caller`. Every op is open to the operator,
-    /// so a local caller refused one has reached something only an attested
-    /// operator may do, and is told so by its code.
+    /// The refusal of `op` for `caller`. A plain local route has neither the
+    /// operator's nor core's daemon attestation, so management refusals use a
+    /// distinct code for it rather than treating it as another module.
     fn not_permitted(op: &str, caller: &Caller) -> Self {
         if *caller == Caller::Local {
             return Self::operator_attestation_required(&format!("calling {op}"));
