@@ -20,11 +20,12 @@ basal runs as a module supervised by the subc daemon, with the binary `ck-basal`
 
 ## Building and testing
 
-basal needs a recent stable Rust toolchain (edition 2024) on macOS. Every dependency comes from crates.io.
+basal needs Rust 1.88 or newer (edition 2024) on macOS. Dependencies are published on crates.io or pinned to an immutable Git revision.
 
 ```sh
 cargo build --workspace
 cargo test --workspace --locked
+cargo test --workspace --locked --features basal-module/rig-kill-hook
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo clippy --workspace --all-targets --features basal-module/rig-kill-hook -- -D warnings
@@ -40,7 +41,7 @@ The `rig-kill-hook` feature adds a one-shot kill switch used only by the test ri
 A passing safety test proves little until it has been seen to fail. [`mutations.toml`](mutations.toml) is the checked-in catalogue of source edits and the exact full libtest paths that must catch them. The shared `ckdev-mutate` runner builds each mutant separately, runs its target's tests, requires the named test to fail, and restores the saved source bytes and checks `Cargo.lock`. The existing proofs name one guard each; other tests may also catch the mutant (`only = false`). Install the reviewed, immutable revision:
 
 ```sh
-cargo install --locked --git https://github.com/cortexkit/commons --rev 46cc166b0df2edcfd14b3eb54ed6eeac588fed69 cortexkit-mutate
+cargo install --locked --git https://github.com/cortexkit/commons --rev 0097d269a4c409db13306a11fc2c504057629791 cortexkit-mutate
 mkdir -p target/mutations
 ckdev-mutate check
 ckdev-mutate run --all --report target/mutations/all.json
@@ -64,7 +65,7 @@ ckdev-mutate prove --id worker-closes-descriptors-proof \
   --build-timeout-s 3600 --timeout-s 600 --report target/mutations/proof.json
 ```
 
-`prove` appends a row only when it is caught. Inspect the appended row, run `ckdev-mutate check`, and commit the source, guarding test and catalogue together. The [pinned runner's README](https://github.com/cortexkit/commons/blob/46cc166b0df2edcfd14b3eb54ed6eeac588fed69/crates/cortexkit-mutate/README.md) documents multi-file edits and survivor diagnosis. When a manifest edit changes dependency resolution, resolve it without `--locked` in a scratch copy and include the resulting `Cargo.lock` changes in `edits`; the runner restores and byte-verifies the lockfile like any other edit target. Rows guarding the rig script's offline Python tests use `runner = "command"`: prove one with `--runner command --expect-red script.tests.flows_rig.RigChecks.<test> --command python3 -m unittest '{test}'`, putting `--command` last because it consumes everything after it. The runner first checks that the named test passes on the unmutated tree, then that it fails on the mutant. PR CI replays rows touched by the committed diff against `origin/main`; pushes to main replay the entire catalogue in isolated shards. A nightly run replays it with `--broad`, against every test target in each row's package, and grades a control CAUGHT_BROADLY when its mutant also breaks tests in another target. Reviewed HUB rows name the shared property and list only the other targets asserting it; the broad replay accepts only that set or a subset, warning on any new target. Structural breaks must be narrowed instead of labelled HUB. Diff selection cannot see a changed helper or fixture that is neither an edit target nor `test_file`, so the full replay remains necessary.
+`prove` appends a row only when it is caught. Inspect the appended row, run `ckdev-mutate check`, and commit the source, guarding test and catalogue together. The [pinned runner's README](https://github.com/cortexkit/commons/blob/0097d269a4c409db13306a11fc2c504057629791/crates/cortexkit-mutate/README.md) documents multi-file edits and survivor diagnosis. When a manifest edit changes dependency resolution, resolve it without `--locked` in a scratch copy and include the resulting `Cargo.lock` changes in `edits`; the runner restores and byte-verifies the lockfile like any other edit target. Rows guarding the rig script's offline Python tests use `runner = "command"`: prove one with `--runner command --expect-red script.tests.flows_rig.RigChecks.<test> --command python3 -m unittest '{test}'`, putting `--command` last because it consumes everything after it. The runner first checks that the named test passes on the unmutated tree, then that it fails on the mutant. PR CI replays rows touched by the committed diff against `origin/main`; pushes to main replay the entire catalogue in isolated shards. A nightly run replays it with `--broad`, against every test target in each row's package, and grades a control CAUGHT_BROADLY when its mutant also breaks tests in another target. Reviewed HUB rows name the shared property and list only the other targets asserting it; the broad replay accepts only that set or a subset, warning on any new target. Structural breaks must be narrowed instead of labelled HUB. Diff selection cannot see a changed helper or fixture that is neither an edit target nor `test_file`, so the full replay remains necessary.
 
 ## The test rig
 

@@ -106,7 +106,7 @@ fi
 
 # ---------------------------------------------------------------- tree
 
-for tool in git cargo codesign lldb shasum strings python3 perl lsof file; do
+for tool in git cargo codesign lldb shasum strings nm python3 perl lsof file; do
   command -v "$tool" >/dev/null || die "$tool is not on PATH"
 done
 
@@ -170,14 +170,16 @@ say "=== build (release, CK_BUILD_GIT_SHA=$SHA CK_BUILD_GIT_DIRTY=$DIRTY)"
   cargo build --release --locked -p basal-module --bin ck-basal -p basal-worker --bin ck-basal-worker)
 [ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ] \
   || die "the build changed the tree; nothing staged"
-hook=$(strings "$TARGET/release/ck-basal" | grep -cF -- "$KILL_HOOK_NEEDLE" || true)
+hook_table=$(strings "$TARGET/release/ck-basal") || die "cannot inspect the built ck-basal; nothing staged"
+hook=$(printf '%s\n' "$hook_table" | grep -cF -- "$KILL_HOOK_NEEDLE" || true)
 [ "$hook" = 0 ] || die "the built ck-basal contains the rig kill switch ($KILL_HOOK_NEEDLE); nothing staged"
 say "ck-basal carries no rig kill switch ($KILL_HOOK_NEEDLE: 0)"
 # The placement gate refuses a binary that still carries its debug map (the
 # OSO entries pointing at object files on the build machine). Cargo strips
 # release builds, but a stripping failure is only a warning, so check.
 for bin in $BINARIES; do
-  oso=$(nm -a "$TARGET/release/$bin" | grep -c ' OSO ' || true)
+  symbols=$(nm -a "$TARGET/release/$bin") || die "cannot inspect $bin's symbols; nothing staged"
+  oso=$(printf '%s\n' "$symbols" | grep -c ' OSO ' || true)
   [ "$oso" = 0 ] || die "$bin still carries $oso debug-map entries: stripping failed; nothing staged"
 done
 say "debug map: 0 entries in each binary"
@@ -382,10 +384,11 @@ store_versions() {
     || die "cannot read the schema at HEAD"
   versions=$(printf '%s\n' "$schema" | python3 -c '
 import pathlib, re, sqlite3, sys
+from contextlib import closing
 versions = [int(v) for v in re.findall(r"^\s*version:\s*(\d+)\s*,", sys.stdin.read(), re.M)]
 if not versions:
     sys.exit("no migration versions in the schema at HEAD")
-with sqlite3.connect(pathlib.Path(sys.argv[1]).resolve().as_uri() + "?mode=ro", uri=True) as db:
+with closing(sqlite3.connect(pathlib.Path(sys.argv[1]).resolve().as_uri() + "?mode=ro", uri=True)) as db:
     live = db.execute("SELECT max(version) FROM cortexkit_schema_version").fetchone()[0]
 if not isinstance(live, int) or live < 0:
     sys.exit("the live store has no valid schema version")
@@ -477,8 +480,6 @@ write_current() {
   say "wrote $STAGING/$1.current:"
   sed 's/^/  /' "$STAGING/$1.current"
 }
-write_current basal
-write_current basal-worker
 
 # ---------------------------------------------------------------- card
 
@@ -598,7 +599,9 @@ shell_quote() {
 write_card() {
   # Run validation here too: callers that only generate a card get the same
   # refusal as staging, before card.md can be created or truncated.
-  prepare_card "$STAGE_DIR"
+   if [ "${1:-}" != --prepared ]; then
+     prepare_card "$STAGE_DIR"
+   fi
   CARD="$STAGE_DIR/card.md"
   if [ "$UPDATE" = 1 ]; then
     write_update_card
@@ -608,7 +611,9 @@ write_card() {
 }
 
 # ---------------------------------------------------------------- output
-write_card
+write_card --prepared
+write_current basal
+write_current basal-worker
 say ""
 say "=== card (saved to $CARD; not posted)"
 cat "$CARD"
