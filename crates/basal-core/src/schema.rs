@@ -278,14 +278,16 @@ ALTER TABLE installs ADD COLUMN revoked_reason TEXT;
 ];
 
 // Bounded cleanup searches age ranges and checks the obligations that can keep
-// a run or a refundable window alive. Existing unique indexes already cover
-// trigger_inbox(run_id) and quarantine(run_id, position).
+// a run or a refundable window alive. The trigger inbox's unique run_id index
+// already covers run deletion. Quarantine's unique index puts payload_hash
+// before reason, so it cannot seek directly to a cancellation receipt.
 // The refusal expression uses TEXT affinity to match runs.run_id; otherwise
 // SQLite scans the partial index instead of looking up an individual run.
 // Leading with state lets the run age search beat runs_state even before the
 // store has planner statistics.
 const RETENTION_INDEXES: &str = r#"
 CREATE INDEX runs_retention ON runs(state,ended_at,run_id) WHERE state IN ('succeeded','failed','engine_mismatch','cancelled');
+CREATE INDEX quarantine_obligation ON quarantine(run_id,position,reason);
 CREATE INDEX outbox_refusal_run ON outbox(CAST(json_extract(body,'$.run_id') AS TEXT)) WHERE kind='refusal_committed';
 CREATE INDEX call_audit_refund_window ON call_audit(flow_id,at,run_id);
 CREATE INDEX token_ledger_retention_window ON token_ledger(flow_id,window_ms,window_start,run_id,state);

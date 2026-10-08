@@ -30,60 +30,122 @@ env:
 jobs:
   checks:
     if: github.event_name != 'schedule'
-    runs-on: macos-latest
+    # Compilation and portable tests need no Seatbelt. Worker tests, including
+    # their codesign and privacy-disclaim probes, must stay on a macOS host.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            os: ubuntu-latest
+          - platform: macos
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
       - name: Install stable Rust and analysis components
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt --component clippy
           rustup default stable
+      - name: Record installed Rust version
+        id: rust
+        run: echo "version=$(rustc --version | cut -d ' ' -f 2)" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-${{ runner.arch }}-cargo-checks-${{ hashFiles('Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-${{ runner.arch }}-cargo-checks-
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-checks-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-checks-
+            ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-
       - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         id: mutate-cache
         with:
           path: ~/.cargo/bin/ckdev-mutate
-          key: ${{ runner.os }}-${{ runner.arch }}-ckdev-mutate-${{ env.CK_MUTATE_REV }}
+          key: ${{ runner.os }}-${{ runner.arch }}-ckdev-mutate-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-${{ env.CK_MUTATE_REV }}
       - name: Install pinned mutation runner
         if: steps.mutate-cache.outputs.cache-hit != 'true'
         run: cargo install --locked --git https://github.com/cortexkit/commons --rev "$CK_MUTATE_REV" cortexkit-mutate
       - run: cargo fmt --all --check
+        if: matrix.platform == 'linux'
       - run: cargo clippy --workspace --all-targets -- -D warnings
+        if: matrix.platform == 'linux'
       - run: cargo clippy --workspace --all-targets --features basal-module/rig-kill-hook -- -D warnings
-      - run: cargo test --workspace --locked
-      - run: cargo test --workspace --locked --features basal-module/rig-kill-hook
+        if: matrix.platform == 'linux'
+      - name: Test portable crates
+        if: matrix.platform == 'linux'
+        run: cargo test --locked -p basal-proto -p basal-core -p basal-host
+      # The module feature propagates to basal-host, so portable tests need both
+      # modes as well. Enable it on the selected host crate without selecting the
+      # worker-using module. Worker packages run both modes only on macOS.
+      - name: Test portable crates with the rig kill hook
+        if: matrix.platform == 'linux'
+        run: cargo test --locked -p basal-proto -p basal-core -p basal-host --features basal-host/rig-kill-hook
+      - name: Test confined worker packages
+        if: matrix.platform == 'macos'
+        run: cargo test --locked -p basal-worker -p basal-module -p basal-testkit -p basal-rig
+      - name: Test confined worker packages with the rig kill hook
+        if: matrix.platform == 'macos'
+        run: cargo test --locked -p basal-worker -p basal-module -p basal-testkit -p basal-rig --features basal-module/rig-kill-hook
       - name: Check shell scripts
+        if: matrix.platform == 'linux'
         run: |
-          curl --fail --location --retry 3 https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.darwin.x86_64.tar.xz -o "$RUNNER_TEMP/shellcheck.tar.xz"
+          curl --fail --location --retry 3 https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz -o "$RUNNER_TEMP/shellcheck.tar.xz"
           tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP"
           "$RUNNER_TEMP/shellcheck-v0.11.0/shellcheck" --version
           "$RUNNER_TEMP/shellcheck-v0.11.0/shellcheck" -x script/*.sh
+      # These Python suites invoke POSIX /bin/sh with fixture signing and
+      # debugger functions; none invokes the real codesign, lldb or worker.
       - name: Check offline flow rig contracts
+        if: matrix.platform == 'linux'
         run: python3 -m unittest script.tests.flows_rig -v
       - name: Check Cargo path dependency boundary
+        if: matrix.platform == 'linux'
         run: |
           python3 script/check-path-deps.py
           python3 -m unittest script.tests.check_path_deps -v
       - name: Check development executable names
+        if: matrix.platform == 'linux'
         run: |
           python3 script/check-ckdev-names.py
           python3 -m unittest script.tests.check_ckdev_names -v
       - name: Check offline placement cards
+        if: matrix.platform == 'linux'
         run: |
           /bin/sh -n script/stage.sh
           python3 -m unittest script.tests.stage_card -v
+      - name: Check catalogue platform coverage
+        if: matrix.platform == 'linux'
+        run: |
+          python3 --version
+          python3 .github/workflows/check_mutation_coverage.py
+          python3 -m unittest discover -s .github/workflows -p 'test_*.py' -v
+      # `ckdev-mutate check` validates every catalogue row's anchors and test
+      # names. Listing test names compiles the test binaries but runs no test,
+      # so no worker starts. Rows marked for the other OS are skipped, so each
+      # host validates the rows it will replay.
       - run: ckdev-mutate check
 
   mutations-pr:
     if: github.event_name == 'pull_request'
     needs: checks
-    runs-on: macos-latest
+    # Replays the mutation controls whose files this pull request changes.
+    # Every catalogue row is marked for exactly one OS, so running the replay
+    # on both hosts covers every changed control without running any twice.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            os: ubuntu-latest
+          - platform: macos
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -92,6 +154,9 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
+      - name: Record installed Rust version
+        id: rust
+        run: echo "version=$(rustc --version | cut -d ' ' -f 2)" >> "$GITHUB_OUTPUT"
       # Restore the build the checks job saved for this commit and never save
       # a second copy: the repository's cache quota holds only a few target
       # directories.
@@ -101,13 +166,15 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-${{ runner.arch }}-cargo-checks-${{ hashFiles('Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-${{ runner.arch }}-cargo-checks-
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-checks-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-checks-
+            ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-
       - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         id: mutate-cache
         with:
           path: ~/.cargo/bin/ckdev-mutate
-          key: ${{ runner.os }}-${{ runner.arch }}-ckdev-mutate-${{ env.CK_MUTATE_REV }}
+          key: ${{ runner.os }}-${{ runner.arch }}-ckdev-mutate-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-${{ env.CK_MUTATE_REV }}
       - name: Install pinned mutation runner
         if: steps.mutate-cache.outputs.cache-hit != 'true'
         run: cargo install --locked --git https://github.com/cortexkit/commons --rev "$CK_MUTATE_REV" cortexkit-mutate
@@ -119,7 +186,7 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
-          name: mutations-pr
+          name: mutations-pr-${{ matrix.platform }}
           path: target/mutations/diff.json
 
   # On a push to main: the full catalogue, each row against its own target.
@@ -131,33 +198,47 @@ jobs:
     # A push still requires checks to succeed before replaying mutations.
     # always() lets the scheduled run proceed past that skipped dependency.
     # The event filter above remains the boundary for unrelated events.
-    runs-on: macos-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        # GitHub runs at most five macOS jobs at once for this account, so
-        # five shards replay the catalogue in one wave. More shards would only
-        # queue, and each one pays its own checkout and cache restore.
-        shard: [1, 2, 3, 4, 5]
+        # Each catalogue row is one mutation control. The 104 rows marked for
+        # Linux use two shards, about 52 each. The 429 marked for macOS use five,
+        # about 86 each: five is the most macOS jobs this GitHub account runs at
+        # once. Each host shards the sorted catalogue on its own, and rows marked
+        # for the other OS are reported SKIPPED_PLATFORM without being built.
+        include:
+          - { platform: linux, os: ubuntu-latest, shard: 1, shards: 2 }
+          - { platform: linux, os: ubuntu-latest, shard: 2, shards: 2 }
+          - { platform: macos, os: macos-latest, shard: 1, shards: 5 }
+          - { platform: macos, os: macos-latest, shard: 2, shards: 5 }
+          - { platform: macos, os: macos-latest, shard: 3, shards: 5 }
+          - { platform: macos, os: macos-latest, shard: 4, shards: 5 }
+          - { platform: macos, os: macos-latest, shard: 5, shards: 5 }
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Install stable Rust
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
+      - name: Record installed Rust version
+        id: rust
+        run: echo "version=$(rustc --version | cut -d ' ' -f 2)" >> "$GITHUB_OUTPUT"
       - uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-${{ runner.arch }}-cargo-checks-${{ hashFiles('Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-${{ runner.arch }}-cargo-checks-
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-checks-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-checks-
+            ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-
       - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         id: mutate-cache
         with:
           path: ~/.cargo/bin/ckdev-mutate
-          key: ${{ runner.os }}-${{ runner.arch }}-ckdev-mutate-${{ env.CK_MUTATE_REV }}
+          key: ${{ runner.os }}-${{ runner.arch }}-ckdev-mutate-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-${{ env.CK_MUTATE_REV }}
       - name: Install pinned mutation runner
         if: steps.mutate-cache.outputs.cache-hit != 'true'
         run: cargo install --locked --git https://github.com/cortexkit/commons --rev "$CK_MUTATE_REV" cortexkit-mutate
@@ -165,22 +246,61 @@ jobs:
         run: |
           mkdir -p target/mutations
           rm -f target/mutations/all.json
-          env -u BASAL_WORKER_BIN -u BASAL_CUT_EXHAUSTIVE ckdev-mutate run --all --shard ${{ matrix.shard }}/${{ strategy.job-total }} ${BROAD:+--broad} --report target/mutations/all.json
+          env -u BASAL_WORKER_BIN -u BASAL_CUT_EXHAUSTIVE ckdev-mutate run --all --shard ${{ matrix.shard }}/${{ matrix.shards }} ${BROAD:+--broad} --report target/mutations/all.json
         env:
           BROAD: ${{ github.event_name != 'push' && 'true' || '' }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
-          name: mutations-${{ github.event_name == 'push' && 'main' || 'broad' }}-${{ matrix.shard }}
+          name: mutations-${{ matrix.platform }}-${{ matrix.shard }}
           path: target/mutations/all.json
+
+  # Reads every shard's replay report (target/mutations/all.json) after both
+  # hosts finish, and requires exactly one successful replay of each
+  # catalogue row across all of them. A row skipped everywhere, missing from
+  # every report or replayed twice fails here, even if each shard passed.
+  mutation-coverage:
+    if: always() && needs.mutations-main.result != 'skipped'
+    needs: mutations-main
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: mutations-*
+          path: target/mutation-reports
+      - name: Require one successful replay for every catalogue row
+        run: |
+          python3 --version
+          python3 .github/workflows/check_mutation_coverage.py --reports target/mutation-reports
 
   minimum-rust:
     if: github.event_name != 'schedule'
-    runs-on: macos-latest
+    # Builds every workspace target at the declared minimum Rust version. It
+    # only compiles, so it needs no macOS: nothing here starts the flow
+    # worker, whose sandbox exists on macOS.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install the declared minimum Rust
+        run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Record installed Rust version
+        id: rust
+        run: echo "version=$(rustc +1.88.0 --version | cut -d ' ' -f 2)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-minimum-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-minimum-
+            ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-
       - name: Build every target with the declared minimum Rust
         run: |
-          rustup toolchain install 1.88.0 --profile minimal
           cargo +1.88.0 check --workspace --all-targets --locked
           cargo +1.88.0 check --workspace --all-targets --locked --features basal-module/rig-kill-hook

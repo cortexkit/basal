@@ -14,6 +14,10 @@ const EXPECTED_INDEXES: &[(&str, &str)] = &[
         "CREATE INDEX runs_retention ON runs(state,ended_at,run_id) WHERE state IN ('succeeded','failed','engine_mismatch','cancelled')",
     ),
     (
+        "quarantine_obligation",
+        "CREATE INDEX quarantine_obligation ON quarantine(run_id,position,reason)",
+    ),
+    (
         "outbox_refusal_run",
         "CREATE INDEX outbox_refusal_run ON outbox(CAST(json_extract(body,'$.run_id') AS TEXT)) WHERE kind='refusal_committed'",
     ),
@@ -90,6 +94,8 @@ INSERT INTO quarantine(run_id,position,settlement,value,payload_hash,reason,at)
 SELECT CASE WHEN i%2=0 THEN 'run-'||i ELSE 'deleted-'||i END,0,'fulfilled','1',zeroblob(32),
        CASE i%4 WHEN 0 THEN 'contradicts_outcome' WHEN 1 THEN 'unknown_call'
        WHEN 2 THEN 'handle_mismatch' ELSE 'run_cancelled' END,2048-i FROM fixture;
+INSERT INTO quarantine(run_id,position,settlement,value,payload_hash,reason,at)
+SELECT run_id,position,settlement,value,payload_hash,'run_cancelled',at FROM quarantine WHERE reason='contradicts_outcome';
 INSERT INTO call_audit
 SELECT CASE WHEN i%2=0 THEN 'run-'||i ELSE 'deleted-'||i END,0,'flow-'||(i%16),'echo',zeroblob(32),'fulfilled',2048-i FROM fixture;
 INSERT INTO audit(at,actor,action,run_id,detail,elicitation_id)
@@ -253,17 +259,25 @@ fn plan_store() -> Connection {
 
 #[test]
 fn runs_retention_plan() {
-    let conn = plan_store();
     for unsettled in [false, true] {
+        let conn = plan_store();
         assert_plan(&conn, &candidates_query(unsettled), "runs_retention");
     }
 }
 
 #[test]
 fn outbox_refusal_run_plan() {
-    let conn = plan_store();
     for unsettled in [false, true] {
+        let conn = plan_store();
         assert_plan(&conn, &candidates_query(unsettled), "outbox_refusal_run");
+    }
+}
+
+#[test]
+fn quarantine_obligation_plan() {
+    for unsettled in [false, true] {
+        let conn = plan_store();
+        assert_plan(&conn, &candidates_query(unsettled), "quarantine_obligation");
     }
 }
 
