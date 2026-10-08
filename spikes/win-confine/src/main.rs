@@ -1,0 +1,25 @@
+#[cfg(windows)]
+mod child;
+#[cfg(windows)]
+mod native;
+#[cfg(windows)]
+mod parent;
+
+#[cfg(windows)]
+fn main() {
+    let result = if std::env::args().any(|a| a == "--child") {
+        child::run()
+    } else {
+        parent::run()
+    };
+    if let Err(error) = result {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
+}
+
+#[cfg(not(windows))]
+fn main() {
+    eprintln!("win-confine requires native Windows; no emulated measurements are accepted");
+    std::process::exit(1);
+}

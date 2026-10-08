@@ -1,0 +1,74 @@
+name: Windows confinement experiment
+
+on:
+  push:
+    branches: [spike/windows-confinement]
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: spikes/win-confine
+        shell: pwsh
+    env:
+      RUSTFLAGS: -C target-feature=+crt-static
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install stable Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt
+          rustup default stable
+          rustc --version
+          cargo --version
+          python --version
+      - name: Check, test and build standalone binary
+        run: |
+          cargo fmt --check
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo check --locked
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo test --locked
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo build --release --locked
+          exit $LASTEXITCODE
+      - name: Import and delay-import inventory
+        run: |
+          New-Item -ItemType Directory -Force evidence | Out-Null
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products '*' -property installationPath
+          $toolset = Get-ChildItem "$vs\VC\Tools\MSVC" -Directory | Sort-Object Name -Descending | Select-Object -First 1
+          $dumpbin = Join-Path $toolset.FullName 'bin\Hostx64\x64\dumpbin.exe'
+          & $dumpbin /imports /dependents target\release\win-confine.exe | Tee-Object evidence\imports.txt
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python pe_inventory.py target/release/win-confine.exe evidence/imports.json
+          exit $LASTEXITCODE
+      - name: Measure all three modes
+        run: |
+          systeminfo | Out-File evidence/host.txt
+          whoami /all | Out-File -Append evidence/host.txt
+          & target\release\win-confine.exe --output evidence/report.json
+          exit $LASTEXITCODE
+      - name: Print residual and comparison
+        if: always()
+        run: |
+          if (Test-Path evidence/report.json) {
+            python summarize.py evidence/report.json | Tee-Object evidence/summary.md
+            Get-Content evidence/summary.md >> $env:GITHUB_STEP_SUMMARY
+            exit $LASTEXITCODE
+          }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: win-confine-${{ matrix.os }}
+          path: spikes/win-confine/evidence/
+          if-no-files-found: error
