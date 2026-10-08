@@ -1,0 +1,3 @@
+[env]
+# Allocation accounting is unused; its global mutex serializes SQLite callers.
+LIBSQLITE3_FLAGS = "-DSQLITE_DEFAULT_MEMSTATUS=0"

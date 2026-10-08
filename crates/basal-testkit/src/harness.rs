@@ -166,6 +166,7 @@ pub fn wait_until(
     description: &str,
     mut ready: impl FnMut() -> bool,
 ) -> Result<(), String> {
+    let mut backoff = crate::backoff::Backoff::new();
     loop {
         if ready() {
             return Ok(());
@@ -173,7 +174,7 @@ pub fn wait_until(
         if Instant::now() >= deadline {
             return Err(format!("timed out waiting for {description}"));
         }
-        std::thread::sleep(Duration::from_millis(5));
+        backoff.sleep(deadline);
     }
 }
 

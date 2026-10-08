@@ -127,7 +127,7 @@ fn workers_of(pool: &Pool, flow: &str) -> Vec<u64> {
 
 #[test]
 fn a_worker_is_never_reused_across_flows() {
-    let f = fixture("pool-isolation", Options::default());
+    let f = fixture("pool-isolation", Options::with_worker());
     let a = install_approved(&f, &agent("SYNAPSE"), SCRIPT, &events_manifest("flow-a"));
     let b = install_approved(&f, &agent("SYNAPSE"), SCRIPT, &events_manifest("flow-b"));
     for (flow, trigger) in [(&a, "a-1"), (&b, "b-1"), (&a, "a-2"), (&b, "b-2")] {
@@ -185,7 +185,7 @@ fn a_killed_worker_is_replaced_and_the_run_continues() {
         "pool-kill",
         Options {
             hooks,
-            ..Options::default()
+            ..Options::with_worker()
         },
     );
     let _ = slot.set(f.module.pool.clone());
@@ -225,7 +225,7 @@ fn a_killed_worker_is_replaced_and_the_run_continues() {
 
 #[test]
 fn an_activation_uses_a_warm_spare() {
-    let f = fixture("pool-spare", Options::default());
+    let f = fixture("pool-spare", Options::with_worker());
     wait_for_spares(&f);
     let spawned_before = f.module.metrics.workers_spawned.load(Ordering::Relaxed);
     let flow = install_approved(
@@ -260,7 +260,7 @@ fn a_bound_worker_is_retired_after_its_activation_count_and_its_idle_period() {
         Options {
             max_activations: 2,
             idle_retire: Duration::from_secs(60),
-            ..Options::default()
+            ..Options::with_worker()
         },
     );
     let flow = install_approved(
@@ -371,14 +371,14 @@ impl Spawn for RecordedSpawner {
 #[test]
 fn a_wait_deadline_stops_and_reaps_its_workers() {
     let spawner = Arc::new(RecordedSpawner {
-        inner: Arc::new(ProcessSpawner::new(&pool_config(&Options::default()))),
+        inner: Arc::new(ProcessSpawner::new(&pool_config(&Options::with_worker()))),
         pids: Mutex::new(Vec::new()),
     });
     let f = fixture(
         "pool-wait-deadline",
         Options {
             spawner: Some(spawner.clone()),
-            ..Options::default()
+            ..Options::with_worker()
         },
     );
     wait_for_spares(&f);

@@ -26,7 +26,7 @@ fn activations_are_bounded_across_flows() {
         "engine-bound",
         Options {
             max_concurrent: 1,
-            ..Options::default()
+            ..Options::with_worker()
         },
     );
     let held = install_approved(
@@ -87,7 +87,7 @@ fn a_storage_error_stops_the_engine_and_raises_the_fatal_latch() {
         "engine-fatal",
         Options {
             hooks: Arc::new(CutAtSecondCall),
-            ..Options::default()
+            ..Options::with_worker()
         },
     );
     let flow = install_approved(
@@ -111,7 +111,7 @@ fn a_storage_error_stops_the_engine_and_raises_the_fatal_latch() {
 fn the_unconfigured_host_refuses_every_dispatch_as_never_sent() {
     let dir = scratch("engine-unconfigured");
     let clock = Clock::manual(T0);
-    let o = Options::default();
+    let o = Options::with_worker();
     let pool = pool_config(&o);
     let consent = MockConsent::new();
     let module = Module::start(

@@ -18,6 +18,9 @@ libc.workspace = true
 rcgen.workspace = true
 rustls.workspace = true
 
+[build-dependencies]
+serde_json.workspace = true
+
 [dev-dependencies]
 basal-host = { workspace = true, features = ["rig-kill-hook"] }
 jiff.workspace = true

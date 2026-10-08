@@ -71,7 +71,7 @@ impl Default for Options {
         Self {
             hosts: None,
             selector: Arc::new(basal_host::selector::FakeSelector::default()),
-            warm_spares: 1,
+            warm_spares: 0,
             max_concurrent: 4,
             spawner: None,
             hooks: Arc::new(NoHooks),
@@ -81,6 +81,17 @@ impl Default for Options {
             activation_deadline: Duration::from_secs(60),
             pool_wait_timeout: None,
             install_gate: InstallGate::Off,
+        }
+    }
+}
+
+impl Options {
+    /// Activation and pool tests explicitly request a greeted spare. Management
+    /// fixtures do not start a process merely to install or inspect a flow.
+    pub fn with_worker() -> Self {
+        Self {
+            warm_spares: 1,
+            ..Self::default()
         }
     }
 }

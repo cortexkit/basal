@@ -21,7 +21,11 @@ fn ids(raw: &Value) -> Vec<&str> {
 }
 
 fn populated(name: &str) -> Fixture {
-    let f = fixture(name, Options::default());
+    populated_with_options(name, Options::default())
+}
+
+fn populated_with_options(name: &str, options: Options) -> Fixture {
+    let f = fixture(name, options);
     f.catalog.add_agent("A");
     f.catalog.add_agent("B");
     install_approved(&f, &agent("A"), "return 1;", &owned_manifest("a", "A"));
@@ -34,6 +38,49 @@ fn owned_manifest(id: &str, owner: &str) -> Value {
     let mut m = events_manifest(id);
     m["sinks"][0]["agent"] = json!(owner);
     m
+}
+
+#[test]
+fn management_fixture_starts_no_worker() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    struct CountSpawns(Arc<AtomicUsize>);
+    impl basal_module::pool::Spawn for CountSpawns {
+        fn spawn(
+            &self,
+        ) -> Result<basal_module::process::WorkerProcess, basal_module::process::SpawnError>
+        {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Err(basal_module::process::SpawnError::Handshake(
+                "management fixture must not spawn".into(),
+            ))
+        }
+    }
+    let calls = Arc::new(AtomicUsize::new(0));
+    let options = Options {
+        spawner: Some(Arc::new(CountSpawns(calls.clone()))),
+        ..Options::default()
+    };
+    assert_eq!(
+        options.warm_spares, 0,
+        "management fixtures must not request background workers"
+    );
+    let f = fixture("management-no-worker", options);
+    install(
+        &f,
+        &Caller::Local,
+        "return 1;",
+        &events_manifest("management"),
+    );
+    assert_eq!(ids(&list(&f, &Caller::Operator, json!({}))), ["management"]);
+    f.module.pool.stop();
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "management operations must not spawn a worker"
+    );
 }
 
 #[test]
@@ -147,7 +194,7 @@ fn matches_shape(value: &Value, shape: &Value, nullable: bool) {
 
 #[test]
 fn list_reply_decodes_against_documented_shape_and_health_state() {
-    let f = populated("list-shape");
+    let f = populated_with_options("list-shape", Options::with_worker());
     let run = admit(&f, "a", "run");
     f.module.engine.run_until_idle(50).unwrap();
     let mut update = owned_manifest("a", "A");
@@ -221,7 +268,7 @@ fn list_reply_decodes_against_documented_shape_and_health_state() {
 fn list_declined_card_and_reconciliation() {
     use basal_host::CardDecision;
     use basal_host::mock::Fault;
-    let f = fixture("list-reconcile", Options::default());
+    let f = fixture("list-reconcile", Options::with_worker());
     f.catalog.add_agent("A");
     let declined = install(
         &f,

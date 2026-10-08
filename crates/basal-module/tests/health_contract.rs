@@ -96,7 +96,7 @@ fn entry<'a>(reply: &'a Reply, flow: &str) -> &'a Entry {
 
 #[test]
 fn flow_health_decodes_as_core_decodes_it() {
-    let f = fixture("health-contract", Options::default());
+    let f = fixture("health-contract", Options::with_worker());
     let synapse = agent("SYNAPSE");
     let ok = install_approved(&f, &synapse, "return 1;", &events_manifest("flow-ok"));
     let failing = install_approved(

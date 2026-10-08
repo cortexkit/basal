@@ -12,11 +12,7 @@ use basal_proto::{ActivationResult, Failure, Nondeterminism};
 use basal_testkit::{Ending, Report, TestParent};
 
 pub fn worker_binary() -> PathBuf {
-    basal_testkit::dev_binary(
-        std::env::var_os("BASAL_WORKER_BIN")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_ck-basal-worker"))),
-    )
+    basal_testkit::worker_binary()
 }
 
 pub fn parent() -> TestParent {
