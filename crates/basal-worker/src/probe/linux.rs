@@ -10,6 +10,7 @@ struct Parsed {
     handler: bool,
     wait: bool,
     induce_personality: bool,
+    engine_stack_fixture: Option<u64>,
 }
 fn parse(args: &[String]) -> Result<Parsed, ()> {
     let mut parsed = Parsed {
@@ -19,6 +20,7 @@ fn parse(args: &[String]) -> Result<Parsed, ()> {
         handler: false,
         wait: false,
         induce_personality: false,
+        engine_stack_fixture: None,
     };
     for arg in args {
         if let Some(value) = arg.strip_prefix("--landlock=") {
@@ -33,10 +35,18 @@ fn parse(args: &[String]) -> Result<Parsed, ()> {
             } else {
                 Some(value.parse().map_err(|_| ())?)
             });
+        } else if let Some(value) = arg.strip_prefix("--fixture-random-result=") {
+            parsed.options.fixtures.random_result = Some(value.parse().map_err(|_| ())?);
         } else if let Some(value) = arg.strip_prefix("--fixture-tasks=") {
             parsed.options.fixtures.task_count = Some(value.parse().map_err(|_| ())?);
         } else if let Some(value) = arg.strip_prefix("--fixture-maps=") {
             parsed.options.fixtures.maps = Some(value.to_owned());
+        } else if let Some(value) = arg.strip_prefix("--engine-stack-fixture=") {
+            let stack = value.parse().map_err(|_| ())?;
+            if ![32768, 131072, 1048576, 4194304].contains(&stack) {
+                return Err(());
+            }
+            parsed.engine_stack_fixture = Some(stack);
         } else if let Some(value) = arg.strip_prefix("--syscall=") {
             if ![
                 "open",
@@ -132,6 +142,13 @@ pub fn run(args: &[String]) -> u8 {
         None => println!("{{\"confinement\":\"none\",\"open_descriptors\":{descriptors:?}}}"),
         _ => unreachable!(),
     }
+    if let Some(stack) = parsed.engine_stack_fixture {
+        println!("ready: engine-stack-fixture");
+        if std::io::stdout().flush().is_err() {
+            return 70;
+        }
+        println!("engine-stack-fixture: {:?}", engine_stack_fixture(stack));
+    }
     if parsed.wait {
         if std::io::stdout().flush().is_err() {
             return 70;
@@ -191,6 +208,22 @@ pub fn run(args: &[String]) -> u8 {
     0
 }
 
+fn engine_stack_fixture(stack: u64) -> basal_proto::ActivationResult {
+    use basal_proto::{ActivationRequest, Budgets, JsonText, Profile};
+    use std::{cell::RefCell, rc::Rc};
+    let request = ActivationRequest {
+        activation_id: 1, profile: Profile::Flow, prelude_hash: crate::engine::prelude_hash(),
+        script: "return 1\n}); function f(n) { return n ? 1 + f(n - 1) : 0; } f(50); (async function () { return 1;".into(),
+        trigger: JsonText::null(), self_input: JsonText::null(),
+        budgets: Budgets { stack_bytes: stack, ..Default::default() }, prefix: vec![],
+    };
+    let link = Rc::new(RefCell::new(crate::link::Channel::new(
+        std::io::Cursor::new(Vec::<u8>::new()),
+        Vec::<u8>::new(),
+    )));
+    crate::engine::run_activation(&request, link)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,6 +237,7 @@ mod tests {
             "--layers=none",
             "--fixture-tasks=no",
             "--syscall=unknown",
+            "--engine-stack-fixture=1",
         ] {
             assert!(parse(&[arg.into()]).is_err());
         }

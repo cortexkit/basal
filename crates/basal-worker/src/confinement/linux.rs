@@ -30,14 +30,16 @@ pub fn engine_arguments(args: &[String]) -> Result<LandlockMode, ArgumentError> 
     }
 }
 
-/// Probe-only command-line fixtures replace procfs magic, task count or maps text
-/// read by startup. The engine argument parser rejects all fixture flags.
+/// Probe-only command-line fixtures replace procfs magic, task count, maps text
+/// or the random-initialization byte count observed by startup. The engine
+/// argument parser rejects all fixture flags.
 #[derive(Default, Debug)]
 pub struct Fixtures {
     pub proc_magic: Option<Option<i64>>,
     pub task_count: Option<usize>,
     pub maps: Option<String>,
     pub legacy_close: bool,
+    pub random_result: Option<isize>,
 }
 #[derive(Debug)]
 pub struct Options {
@@ -94,13 +96,24 @@ pub fn decide_stdio(magic: i64, mode: i32, fd: i32) -> Result<(), ConfinementErr
     }
     Ok(())
 }
-pub fn decide_personality(value: u64) -> Result<(), ConfinementError> {
+pub fn decide_personality(value: i32) -> Result<(), ConfinementError> {
+    if value == -1 {
+        return Err(refuse("personality-query-failed"));
+    }
     if value & 0x0400000 != 0 {
         Err(refuse("read-implies-exec"))
     } else {
         Ok(())
     }
 }
+pub fn decide_random_priming(result: isize, expected: usize) -> Result<(), ConfinementError> {
+    if usize::try_from(result).ok() == Some(expected) {
+        Ok(())
+    } else {
+        Err(refuse("random-priming-failed"))
+    }
+}
+
 pub fn decide_maps(maps: &str) -> Result<(), ConfinementError> {
     if maps.is_empty() {
         return Err(refuse("proc-untrusted"));
@@ -193,10 +206,7 @@ fn preconditions(fixtures: &Fixtures) -> Result<(), ConfinementError> {
     decide_proc(fixtures.proc_magic.unwrap_or(Some(actual)))?;
     // Personality precedes maps: READ_IMPLIES_EXEC can itself create writable-executable segments.
     let personality = unsafe { libc::personality(0xffffffff) };
-    if personality == -1 {
-        return Err(refuse("read-implies-exec"));
-    }
-    decide_personality(personality as u64)?;
+    decide_personality(personality)?;
     let tasks = open_at(
         proc.as_raw_fd(),
         c"self/task",
@@ -349,9 +359,11 @@ pub fn enter(options: &Options) -> Result<Entered, ConfinementError> {
     // activations must not need that allocation: seccomp permits mmap only with flags
     // MAP_PRIVATE | MAP_ANONYMOUS, not glibc's additional mapping mode.
     let mut seed = [0u8; 16];
-    unsafe {
-        libc::getrandom(seed.as_mut_ptr().cast(), seed.len(), 0);
-    }
+    let random_result = unsafe { libc::getrandom(seed.as_mut_ptr().cast(), seed.len(), 0) };
+    decide_random_priming(
+        options.fixtures.random_result.unwrap_or(random_result),
+        seed.len(),
+    )?;
     preconditions(&options.fixtures)?;
     let close_range = close_descriptors(options.fixtures.legacy_close)?;
     let descriptors = descriptors()?;
@@ -480,6 +492,7 @@ mod tests {
             .unwrap();
         }
         decide_personality(0).unwrap();
+        token(decide_personality(-1), "personality-query-failed");
         token(decide_personality(0x0400000), "read-implies-exec");
         decide_maps("0000-1000 rw-p 0 00:00 0 [stack]\n1000-2000 r-xp 0 00:00 0 /worker").unwrap();
         token(decide_maps("0000-1000 rwxp 0 00:00 0"), "mapping-wx");
@@ -490,6 +503,13 @@ mod tests {
         token(decide_maps("0000-1000 r--s 0 00:00 0"), "mapping-shared");
         token(decide_maps(""), "proc-untrusted");
         token(decide_maps("bad"), "proc-untrusted");
+    }
+    #[test]
+    fn random_priming_requires_a_full_successful_read() {
+        decide_random_priming(16, 16).unwrap();
+        for result in [-1, 0, 15] {
+            token(decide_random_priming(result, 16), "random-priming-failed");
+        }
     }
     #[test]
     fn syscall_result_decision_requires_zero_not_positive_success() {

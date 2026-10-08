@@ -49,6 +49,11 @@ macro_rules! fixture_test {
     };
 }
 fixture_test!(
+    refuses_random_priming_failed,
+    "--fixture-random-result=-1",
+    "random-priming-failed"
+);
+fixture_test!(
     refuses_proc_missing,
     "--fixture-proc=missing",
     "proc-missing"
@@ -88,6 +93,8 @@ fn engine_arguments_are_closed_and_probe_options_need_probe_mode() {
         vec!["--fixture-tasks=2"],
         vec!["--layers=landlock"],
         vec!["--attest-descriptors"],
+        vec!["--fixture-random-result=-1"],
+        vec!["--engine-stack-fixture=32768"],
     ] {
         let out = command(&args).output().unwrap();
         assert_eq!(out.status.code(), Some(64), "{args:?}: {out:?}");
@@ -189,6 +196,12 @@ injection_test!(
     libc::SYS_close_range,
     libc::EACCES,
     "descriptor-close-failed"
+);
+injection_test!(
+    refuses_personality_query_failed,
+    libc::SYS_personality,
+    libc::EACCES,
+    "personality-query-failed"
 );
 injection_test!(
     refuses_seccomp_install_failed,
