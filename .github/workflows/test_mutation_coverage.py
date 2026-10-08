@@ -1,4 +1,6 @@
-"""Exercise the catalogue partition and real-report coverage fences."""
+"""Tests for check_mutation_coverage.py: every catalogue row is assigned to
+exactly one CI host (Linux or macOS, by package), and the shards' replay
+reports together contain exactly one successful replay of every row."""
 
 import unittest
 

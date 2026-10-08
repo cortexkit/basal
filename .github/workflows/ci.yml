@@ -125,15 +125,18 @@ jobs:
           python3 --version
           python3 .github/workflows/check_mutation_coverage.py
           python3 -m unittest discover -s .github/workflows -p 'test_*.py' -v
-      # Name listing compiles but does not spawn workers. Platform gates also
-      # skip OS-specific names, so each host validates its own runnable rows.
+      # `ckdev-mutate check` validates every catalogue row's anchors and test
+      # names. Listing test names compiles the test binaries but runs no test,
+      # so no worker starts. Rows marked for the other OS are skipped, so each
+      # host validates the rows it will replay.
       - run: ckdev-mutate check
 
   mutations-pr:
     if: github.event_name == 'pull_request'
     needs: checks
-    # Diff replay runs on both hosts; mutually exclusive catalogue platforms
-    # prevent duplicate execution while retaining every changed proof.
+    # Replays the mutation controls whose files this pull request changes.
+    # Every catalogue row is marked for exactly one OS, so running the replay
+    # on both hosts covers every changed control without running any twice.
     strategy:
       fail-fast: false
       matrix:
@@ -199,10 +202,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 104 Linux rows use two shards (about 52 each). The 429 macOS rows
-        # use five (about 86 each), the account's macOS concurrency ceiling.
-        # Each host shards the sorted catalogue independently; off-host rows
-        # are reported as SKIPPED_PLATFORM without builds or test execution.
+        # Each catalogue row is one mutation control. The 104 rows marked for
+        # Linux use two shards, about 52 each. The 429 marked for macOS use five,
+        # about 86 each: five is the most macOS jobs this GitHub account runs at
+        # once. Each host shards the sorted catalogue on its own, and rows marked
+        # for the other OS are reported SKIPPED_PLATFORM without being built.
         include:
           - { platform: linux, os: ubuntu-latest, shard: 1, shards: 2 }
           - { platform: linux, os: ubuntu-latest, shard: 2, shards: 2 }
@@ -251,8 +255,10 @@ jobs:
           name: mutations-${{ matrix.platform }}-${{ matrix.shard }}
           path: target/mutations/all.json
 
-  # Validate actual replay reports after both hosts finish. A skipped, missing
-  # or duplicated row fails even if every individual shard happened to pass.
+  # Reads every shard's replay report (target/mutations/all.json) after both
+  # hosts finish, and requires exactly one successful replay of each
+  # catalogue row across all of them. A row skipped everywhere, missing from
+  # every report or replayed twice fails here, even if each shard passed.
   mutation-coverage:
     if: always() && needs.mutations-main.result != 'skipped'
     needs: mutations-main
@@ -273,7 +279,9 @@ jobs:
 
   minimum-rust:
     if: github.event_name != 'schedule'
-    # All targets compile without launching the macOS-confined worker.
+    # Builds every workspace target at the declared minimum Rust version. It
+    # only compiles, so it needs no macOS: nothing here starts the flow
+    # worker, whose sandbox exists on macOS.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
