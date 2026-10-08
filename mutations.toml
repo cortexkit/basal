@@ -7422,3 +7422,41 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
+
+[[control]]
+id = "audit-b-wait-timeout-is-not-success"
+guards = "wait for reports unsatisfied predicates as timeouts"
+file = "crates/basal-core/src/runtime.rs"
+old = """
+return Err(CoreError::Timeout {
+                    run_id: run_id.to_owned(),
+                    state,
+                });"""
+new = "return Ok(state); // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-core/src/runtime_regressions.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+expect_red = ["runtime::regressions::wait_for_reports_unsatisfied_predicates_as_timeouts"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+
+[[control]]
+id = "audit-b-spawn-reaps-completed-handles"
+guards = "completed thread handles are reaped during normal spawning"
+file = "crates/basal-core/src/runtime.rs"
+old = "threads.retain(|h| !h.is_finished());"
+new = "// NON-VACUITY BREAK: threads.retain(|h| !h.is_finished());"
+edits = []
+test_file = "crates/basal-core/src/runtime_regressions.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+expect_red = ["runtime::regressions::completed_thread_handles_are_reaped_during_normal_spawning"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
