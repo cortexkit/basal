@@ -7219,3 +7219,156 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
+
+[[control]]
+id = "builtin-encoded-result-becomes-null"
+guards = "builtin encoded result becomes null"
+file = "crates/basal-host/src/builtins/mod.rs"
+old = "    JsonText::new(value.to_string()).map_err(|_| {"
+new = "    JsonText::new(value.to_string()).or_else(|_| Ok(JsonText::null())).map_err(|_: basal_proto::ValueTooLarge| { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-host/src/builtins/mod.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--lib"
+expect_red = ["builtins::tests::encoded_result_limit_never_fulfills_null"]
+only = true
+timeout_s = 600
+build_timeout_s = 7200
+
+
+[[control]]
+id = "builtin-outside-path-leaks-resolved-target"
+guards = "builtin outside path leaks resolved target"
+file = "crates/basal-host/src/builtins/fs.rs"
+old = """    Denial::denied("path is outside the manifest's roots or missing")"""
+new = '    Denial::denied(format!("{} is outside the manifest roots", _path.display())) // NON-VACUITY BREAK'
+edits = []
+test_file = "crates/basal-host/tests/audit_builtins.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--test audit_builtins"
+expect_red = ["outside_missing_and_symlink_targets_have_identical_refusals"]
+only = true
+timeout_s = 600
+build_timeout_s = 7200
+
+
+[[control]]
+id = "builtin-method-override-header-is-admitted"
+guards = "builtin method override header is admitted"
+file = "crates/basal-host/src/builtins/net.rs"
+old = '    "x-http-method-override",'
+new = '    "disabled-method-override", // NON-VACUITY BREAK'
+edits = []
+test_file = "crates/basal-host/tests/audit_builtins.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--test audit_builtins"
+expect_red = ["method_override_and_compression_headers_are_denied"]
+only = true
+timeout_s = 600
+build_timeout_s = 7200
+
+
+[[control]]
+id = "broca-initial-store-failure-is-maybe-sent"
+guards = "broca initial store failure is maybe sent"
+file = "crates/basal-host/src/broca/mod.rs"
+old = """
+                    .map_err(|error| BrocaError::Unavailable {
+                        proven_unsent: true,"""
+new = """
+                    .map_err(|error| BrocaError::Unavailable {
+                        proven_unsent: false, // NON-VACUITY BREAK"""
+edits = []
+test_file = "crates/basal-host/tests/audit_broca.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--test audit_broca"
+expect_red = ["first_snapshot_failure_is_provably_unsent"]
+only = true
+timeout_s = 600
+build_timeout_s = 7200
+
+
+[[control]]
+id = "broca-one-corrupt-snapshot-aborts-the-poll"
+guards = "broca one corrupt snapshot aborts the poll"
+file = "crates/basal-host/src/broca/mod.rs"
+old = """
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                    continue;
+                }
+            };"""
+new = """
+                Err(error) => {
+                    return Err(error); // NON-VACUITY BREAK
+                }
+            };"""
+edits = []
+test_file = "crates/basal-host/tests/audit_broca.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--test audit_broca"
+expect_red = ["one_corrupt_snapshot_does_not_block_healthy_completions"]
+only = true
+timeout_s = 600
+build_timeout_s = 7200
+
+
+[[control]]
+id = "builtin-nonstandard-redirect-port-is-approved"
+guards = "builtin nonstandard redirect port is approved"
+file = "crates/basal-host/src/builtins/net.rs"
+old = "    if url.port != 443 {"
+new = "    if url.port == 0 { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-testkit/tests/audit_net.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test audit_net"
+expect_red = ["nonstandard_redirect_port_is_refused_before_a_second_connection"]
+only = true
+timeout_s = 600
+build_timeout_s = 7200
+
+
+[[control]]
+id = "builtin-unclean-tls-eof-is-clean"
+guards = "builtin unclean tls eof is clean"
+file = "crates/basal-host/src/builtins/net.rs"
+old = "        self.stream.read(buf)"
+new = """
+        match self.stream.read(buf) { // NON-VACUITY BREAK
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(0),
+            other => other,
+        }"""
+edits = []
+test_file = "crates/basal-testkit/tests/audit_net.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test audit_net"
+expect_red = ["unclean_tls_eof_cannot_fulfill_a_connection_framed_body"]
+only = true
+timeout_s = 600
+build_timeout_s = 7200
+
+
+[[control]]
+id = "builtin-query-redirect-reads-irrelevant-body"
+guards = "builtin query redirect reads irrelevant body"
+file = "crates/basal-host/src/builtins/net.rs"
+old = "        let skip_redirect_body = !effect_possible && matches!(status, 301 | 302 | 303 | 307 | 308);"
+new = "        let skip_redirect_body = false; // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-testkit/tests/audit_net.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--test audit_net"
+expect_red = ["query_redirect_does_not_read_an_incomplete_body"]
+only = true
+timeout_s = 600
+build_timeout_s = 7200
+
