@@ -203,16 +203,24 @@ fn restricted_tokens(
                 return Err(last("AdjustTokenPrivileges(remove)"));
             }
         }
-        set_integrity(
-            lockdown.0,
-            if start_low {
-                WinLowLabelSid
-            } else {
-                WinUntrustedLabelSid
-            },
-        )?;
-        // Closest same-access loader token: no restricting SIDs, original groups
-        // and integrity, maximum privileges disabled. It is never inherited.
+        let current = token_buffer(lockdown.0, TokenIntegrityLevel)?;
+        let current = sid_string(
+            (*current.as_ptr().cast::<TOKEN_MANDATORY_LABEL>())
+                .Label
+                .Sid,
+        );
+        if current != if start_low { "S-1-16-4096" } else { "S-1-16-0" } {
+            set_integrity(
+                lockdown.0,
+                if start_low {
+                    WinLowLabelSid
+                } else {
+                    WinUntrustedLabelSid
+                },
+            )?;
+        }
+        // Same-access restricting SIDs retain the source user and groups;
+        // unlike the primary's NULL SID, they permit trusted loader operations.
         let loader_groups = token_buffer(loader_source, TokenGroups)?;
         let source_dacl = token_dacl(loader_source)?;
         let loader_user = token_buffer(loader_source, TokenUser)?;
@@ -620,6 +628,7 @@ fn launch_variant(
     unsafe {
         let full = input.mode == "full";
         let lpac = input.mode != "plain";
+        let bare = sequence == "bare-token-control";
         let mut tokens = if full {
             Some(restricted_tokens(
                 parent_token,
@@ -634,7 +643,11 @@ fn launch_variant(
         } else {
             None
         };
-        let mut job = if full { Some(job(ui_flags)?) } else { None };
+        let mut job = if full && !bare {
+            Some(job(ui_flags)?)
+        } else {
+            None
+        };
         let (child_in, parent_in) = pipe()?;
         let (parent_out, child_out) = pipe()?;
         let (parent_err, child_err) = pipe()?;
@@ -668,7 +681,7 @@ fn launch_variant(
         };
         let optout = PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT;
         let child_policy = PROCESS_CREATION_CHILD_PROCESS_RESTRICTED;
-        if lpac {
+        if lpac && !bare {
             attrs.add(PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, &security)?;
             attrs.add(
                 PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY,
@@ -676,7 +689,7 @@ fn launch_variant(
             )?;
         }
         let jobs = [job.as_ref().map(|j| j.0.0).unwrap_or(null_mut())];
-        if full {
+        if full && !bare {
             attrs.add(PROC_THREAD_ATTRIBUTE_JOB_LIST, &jobs)?;
             attrs.add(PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY, &mitigation)?;
             attrs.add(PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY, &child_policy)?;
@@ -687,14 +700,21 @@ fn launch_variant(
         startup.StartupInfo.hStdInput = child_in.0;
         startup.StartupInfo.hStdOutput = child_out.0;
         startup.StartupInfo.hStdError = child_err.0;
-        startup.lpAttributeList = attrs.ptr();
+        startup.lpAttributeList = if bare { null_mut() } else { attrs.ptr() };
+        if bare {
+            startup.StartupInfo.cb = size_of::<STARTUPINFOW>() as u32;
+        }
         let mut pi: PROCESS_INFORMATION = zeroed();
         let mut command = wide(&format!(
             "\"{image}\" --child{}{}",
             if start_low { " --lower-integrity" } else { "" },
             if leak_only { " --probe-leak" } else { "" }
         ));
-        let flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_NO_WINDOW;
+        let flags = if bare {
+            CREATE_SUSPENDED | CREATE_NO_WINDOW
+        } else {
+            EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_NO_WINDOW
+        };
         let ok = if full {
             CreateProcessAsUserW(
                 tokens.as_ref().unwrap().primary.0,
@@ -1151,6 +1171,25 @@ pub fn run() -> Result<()> {
             let source = source_holder.as_ref().map(|h| h.0).unwrap_or(token.0);
             let mut diagnostics = Vec::new();
             if mode == "full" && selected["exit_code"] == "0xc0000142" {
+                if source_holder.is_some() {
+                    let result = match launch_variant(
+                        &input,
+                        &image.to_string_lossy(),
+                        sid,
+                        source,
+                        source,
+                        "bare-token-control",
+                        true,
+                        false,
+                        false,
+                        0,
+                        0,
+                    ) {
+                        Ok(v) => v,
+                        Err(e) => json!({"error":e}),
+                    };
+                    diagnostics.push(json!({"label":"LPAC restricted token / no startup attributes","result":result}));
+                }
                 for (label, mitigation, ui_flags) in [
                     ("all mitigations off", 0, 0xff),
                     ("dynamic code off", MITIGATIONS & !(1 << 36), 0xff),
