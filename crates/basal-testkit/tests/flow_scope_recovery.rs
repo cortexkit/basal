@@ -71,7 +71,7 @@ fn open(world: &World, provider: Arc<Provider>, clock: &Clock) -> Runtime {
         Config {
             clock: clock.clone(),
             install_gate: InstallGate::Core,
-            retry_backoff: Duration::from_millis(100),
+            deferral_retry: Duration::from_millis(100),
             auto_resume: false,
             ..Config::default()
         },
