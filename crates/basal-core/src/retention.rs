@@ -12,6 +12,8 @@
 //! episode per flow forever, because its number allocates the next episode.
 //! Trigger and idempotency tombstones stay forever: no source redelivery
 //! horizon is established, so deleting one could permit a second effect.
+//! Full batches schedule another bounded pass after one second rather than
+//! limiting cleanup throughput to one batch per normal maintenance interval.
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use std::time::Duration;
@@ -163,13 +165,20 @@ impl Runtime {
             return Ok(());
         }
         let config = &self.config.retention;
-        self.prune(now, millis(config.runs))?;
-        self.prune_history(now, now.saturating_sub(millis(config.history)))?;
-        *next = Some(now.saturating_add(millis(config.interval).max(1)));
+        let runs = self.prune(now, millis(config.runs))?;
+        let history_full = self.prune_history(now, now.saturating_sub(millis(config.history)))?;
+        let backlog = runs.pruned.len() == BATCH || history_full;
+        let interval = if backlog {
+            config.interval.min(Duration::from_secs(1))
+        } else {
+            config.interval
+        };
+        *next = Some(now.saturating_add(millis(interval).max(1)));
         Ok(())
     }
 
-    fn prune_history(&self, now: i64, cutoff: i64) -> Result<()> {
+    fn prune_history(&self, now: i64, cutoff: i64) -> Result<bool> {
+        let mut full = false;
         for (table, predicate) in [
             (
                 "quarantine",
@@ -198,22 +207,21 @@ impl Runtime {
                 "state<>'open' AND answered_at<=?1 AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.run_id=decision_cards.run_id) AND (kind<>'reenable' OR EXISTS (SELECT 1 FROM decision_cards newer WHERE newer.kind='reenable' AND newer.flow_id=decision_cards.flow_id AND newer.instance>decision_cards.instance))",
             ),
         ] {
-            self.delete_history_batch(table, predicate, cutoff)?;
+            full |= self.delete_history_batch(table, predicate, cutoff)? == BATCH;
         }
         let streak = millis(self.config.rate.window).saturating_mul(i64::from(
             self.config.rate.saturated_windows_to_disable.max(1),
         ));
-        self.delete_history_batch("rate_windows",
+        full |= self.delete_history_batch("rate_windows",
             "window_start + window_ms<=?1 AND NOT EXISTS (SELECT 1 FROM call_audit a JOIN runs r USING(run_id) WHERE a.flow_id=rate_windows.flow_id AND a.at>=rate_windows.window_start AND a.at<rate_windows.window_start+rate_windows.window_ms)",
-            cutoff.min(now.saturating_sub(streak)))?;
-        Ok(())
+            cutoff.min(now.saturating_sub(streak)))? == BATCH;
+        Ok(full)
     }
 
-    fn delete_history_batch(&self, table: &str, predicate: &str, cutoff: i64) -> Result<()> {
+    fn delete_history_batch(&self, table: &str, predicate: &str, cutoff: i64) -> Result<usize> {
         // The names/predicates are private constants, never caller input.
         self.store().write(|tx| {
-            tx.execute(&format!("DELETE FROM {table} WHERE rowid IN (SELECT rowid FROM {table} WHERE {predicate} ORDER BY rowid LIMIT {BATCH})"),[cutoff])?;
-            Ok(())
+            Ok(tx.execute(&format!("DELETE FROM {table} WHERE rowid IN (SELECT rowid FROM {table} WHERE {predicate} ORDER BY rowid LIMIT {BATCH})"),[cutoff])?)
         })
     }
 }

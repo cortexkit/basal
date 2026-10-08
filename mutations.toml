@@ -7325,8 +7325,8 @@ build_timeout_s = 3600
 id = "audit-b-production-retention-prunes-runs"
 guards = "retention runs from the production deadline pass"
 file = "crates/basal-core/src/retention.rs"
-old = "self.prune(now, millis(config.runs))?;"
-new = "// NON-VACUITY BREAK: self.prune(now, millis(config.runs))?;"
+old = "let runs = self.prune(now, millis(config.runs))?;"
+new = "let runs = PruneReport::default(); // NON-VACUITY BREAK"
 edits = []
 test_file = "crates/basal-core/src/runtime_regressions.rs"
 runner = "cargo"
@@ -7410,8 +7410,8 @@ build_timeout_s = 3600
 id = "audit-b-production-retention-prunes-history"
 guards = "retention prunes old history but keeps live obligations and card episodes"
 file = "crates/basal-core/src/retention.rs"
-old = "self.prune_history(now, now.saturating_sub(millis(config.history)))?;"
-new = "// NON-VACUITY BREAK: self.prune_history(now, now.saturating_sub(millis(config.history)))?;"
+old = "let history_full = self.prune_history(now, now.saturating_sub(millis(config.history)))?;"
+new = "let history_full = false; // NON-VACUITY BREAK"
 edits = []
 test_file = "crates/basal-core/src/runtime_regressions.rs"
 runner = "cargo"
