@@ -1,5 +1,5 @@
 use basal_module::serve::BasalHandler;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 use subc_client_rs::ModuleHandler;
 
@@ -28,6 +28,9 @@ fn invalid_store_descriptor_exits_for_supervised_restart() {
             "invalid_store_descriptor_exits_for_supervised_restart",
         ])
         .env(CHILD, "1")
+        // Only the parent's test is a libtest case. The child exits inside
+        // HELLO_ACK and cannot produce its own complete test summary.
+        .stdout(Stdio::null())
         .spawn()
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(60);

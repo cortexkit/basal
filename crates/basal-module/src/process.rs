@@ -114,6 +114,7 @@ fn recv_handshake(
 ) -> Result<Incoming, RecvTimeoutError> {
     let remaining = deadline
         .checked_duration_since(Instant::now())
+        .filter(|remaining| !remaining.is_zero())
         .ok_or(RecvTimeoutError::Timeout)?;
     incoming.recv_timeout(remaining)
 }
