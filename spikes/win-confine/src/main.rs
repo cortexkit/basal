@@ -3,6 +3,8 @@ mod child;
 #[cfg(windows)]
 mod context;
 #[cfg(windows)]
+mod handles;
+#[cfg(windows)]
 mod native;
 #[cfg(windows)]
 mod network;

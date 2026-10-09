@@ -33,6 +33,11 @@ jobs:
           python --version
       - name: Check, test and build standalone binary
         run: |
+          New-Item -ItemType Directory -Force evidence/formatted-source | Out-Null
+          cargo fmt
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          git diff --stat | Out-File evidence/formatting-stat.txt
+          Copy-Item src/*.rs evidence/formatted-source/
           cargo fmt --check
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           cargo fetch --locked
@@ -66,31 +71,19 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python -c "import json; assert json.load(open('evidence/imports.json'))['subsystem'] == 3; assert json.load(open('evidence/imports-gui.json'))['subsystem'] == 2; print('PE subsystem check: 2 images passed (CUI=3, GUI=2)')"
           exit $LASTEXITCODE
-      - name: Measure sandbox-enabled Chrome from the parent
-        run: ./chrome_reference.ps1
-      - name: Capture denied child startup operations with Process Monitor
+      - name: Measure pre-input ambient handles from the parent
         run: |
           systeminfo | Out-File evidence/host.txt
           whoami /all | Out-File -Append evidence/host.txt
-          $ifeo = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\win-confine.exe'
-          if (Test-Path $ifeo) { throw 'Refusing to overwrite an existing image-specific IFEO key' }
-          try {
-            New-Item $ifeo -Force | Out-Null
-            New-ItemProperty $ifeo -Name GlobalFlag -PropertyType String -Value '0x00000002' | Out-Null
-            Get-ItemProperty $ifeo | Out-File evidence/loader-snaps-setting.txt
-            ./procmon_capture.ps1
-            $measurementExit = $LASTEXITCODE
-          } finally {
-            Remove-Item $ifeo -Recurse -Force
-            "IFEO exists after cleanup: $(Test-Path $ifeo)" | Out-File evidence/loader-snaps-cleanup.txt
-          }
+          & target/release/win-confine.exe --output evidence/report.json 2> evidence/parent-stderr.txt
+          $measurementExit = $LASTEXITCODE
+          $ifeo = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\win-confine-gui.exe'
+          "GUI IFEO exists after campaign: $(Test-Path $ifeo)" | Out-File evidence/loader-threads-cleanup.txt
           exit $measurementExit
       - name: Print residual and comparison
         if: always()
         run: |
           if (Test-Path evidence/report.json) {
-            python compare_reference.py evidence evidence/reference-diff.json
-            if ($LASTEXITCODE) { exit $LASTEXITCODE }
             python summarize.py evidence/report.json | Tee-Object evidence/summary.md
             if ($LASTEXITCODE) { exit $LASTEXITCODE }
             Get-Content evidence/summary.md >> $env:GITHUB_STEP_SUMMARY

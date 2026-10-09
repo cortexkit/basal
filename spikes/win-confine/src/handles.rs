@@ -1,0 +1,252 @@
+//! Parent-only startup handle diagnostics. These calls never send an ALPC message.
+use crate::native::*;
+use serde_json::{Value, json};
+use std::ffi::c_void;
+use std::mem::{size_of, zeroed};
+use std::ptr::{null, null_mut};
+use windows_sys::Win32::Foundation::*;
+use windows_sys::Win32::Security::*;
+use windows_sys::Win32::System::Diagnostics::Debug::*;
+use windows_sys::Win32::System::Diagnostics::ToolHelp::*;
+use windows_sys::Win32::System::LibraryLoader::*;
+use windows_sys::Win32::System::Registry::*;
+use windows_sys::Win32::System::Threading::*;
+
+#[link(name = "ntdll")]
+unsafe extern "system" {
+    fn NtQuerySystemInformation(class: u32, buffer: *mut c_void, bytes: u32, returned: *mut u32) -> i32;
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SystemHandle {
+    object: usize,
+    pid: usize,
+    handle: usize,
+    access: u32,
+    backtrace: u16,
+    type_index: u16,
+    attributes: u32,
+    reserved: u32,
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct TraceEntry {
+    handle: usize,
+    pid: usize,
+    tid: usize,
+    kind: u32,
+    stacks: [usize; 16],
+}
+
+pub fn enable_tracing(process: HANDLE) -> Value {
+    let settings = [0u32, 16384];
+    let status = unsafe { NtSetInformationProcess(process, 32, settings.as_ptr().cast(), 8) };
+    json!({"class":32,"slots":16384,"NTSTATUS":hex(status as u32)})
+}
+
+fn system_handles() -> Result<Vec<SystemHandle>> {
+    unsafe {
+        let mut bytes = 1 << 20;
+        loop {
+            let mut buffer = vec![0usize; bytes / size_of::<usize>()];
+            let mut returned = 0;
+            let status = NtQuerySystemInformation(64, buffer.as_mut_ptr().cast(), bytes as u32, &mut returned);
+            if status as u32 == 0xc0000004 && bytes < (1 << 27) {
+                bytes = (bytes * 2).max(returned as usize + 4096);
+                bytes = bytes.next_multiple_of(size_of::<usize>());
+                continue;
+            }
+            if status < 0 { return Err(format!("SystemExtendedHandleInformation: {}", hex(status as u32))); }
+            let count = buffer[0];
+            if count > (bytes - 16) / size_of::<SystemHandle>() { return Err("system handle count exceeds buffer".into()); }
+            return Ok(std::slice::from_raw_parts(buffer.as_ptr().add(2).cast::<SystemHandle>(), count).to_vec());
+        }
+    }
+}
+fn image_name(process: HANDLE) -> Value {
+    unsafe {
+        let mut name = vec![0u16; 32768];
+        let mut size = name.len() as u32;
+        if QueryFullProcessImageNameW(process, 0, name.as_mut_ptr(), &mut size) == 0 {
+            json!({"error":GetLastError()})
+        } else { json!(String::from_utf16_lossy(&name[..size as usize])) }
+    }
+}
+
+// Kernel pointer disclosure and foreign-process queries may require
+// SeDebugPrivilege even for an administrator. Restore its previous state.
+struct DebugPrivilege { token: Handle, previous: TOKEN_PRIVILEGES }
+impl DebugPrivilege {
+    fn enable() -> Result<Self> {
+        unsafe {
+            let mut token = null_mut();
+            check(OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &mut token), "OpenProcessToken(debug privilege)")?;
+            let token = Handle(token);
+            let mut luid = zeroed();
+            check(LookupPrivilegeValueW(null(), wide("SeDebugPrivilege").as_ptr(), &mut luid), "LookupPrivilegeValueW")?;
+            let wanted = TOKEN_PRIVILEGES { PrivilegeCount: 1, Privileges: [LUID_AND_ATTRIBUTES { Luid: luid, Attributes: SE_PRIVILEGE_ENABLED }] };
+            let mut previous = zeroed();
+            let mut returned = 0;
+            SetLastError(0);
+            check(AdjustTokenPrivileges(token.0, 0, &wanted, size_of::<TOKEN_PRIVILEGES>() as u32, &mut previous, &mut returned), "AdjustTokenPrivileges")?;
+            if GetLastError() != 0 { return Err(last("AdjustTokenPrivileges(SeDebugPrivilege)")); }
+            Ok(Self { token, previous })
+        }
+    }
+}
+impl Drop for DebugPrivilege {
+    fn drop(&mut self) { unsafe { AdjustTokenPrivileges(self.token.0, 0, &self.previous, 0, null_mut(), null_mut()); } }
+}
+
+pub struct LoaderSetting { path: Vec<u16>, pub report: Value }
+impl Drop for LoaderSetting {
+    fn drop(&mut self) { unsafe { RegDeleteKeyW(HKEY_LOCAL_MACHINE, self.path.as_ptr()); } }
+}
+pub fn loader_setting(count: u32) -> Result<LoaderSetting> {
+    unsafe {
+        let path = wide("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine-gui.exe");
+        let mut key = null_mut();
+        let mut disposition = 0;
+        let status = RegCreateKeyExW(HKEY_LOCAL_MACHINE, path.as_ptr(), 0, null(), 0, KEY_SET_VALUE | KEY_QUERY_VALUE, null(), &mut key, &mut disposition);
+        if status != 0 { return Err(format!("RegCreateKeyExW(MaxLoaderThreads): {status}")); }
+        if disposition != REG_CREATED_NEW_KEY { RegCloseKey(key); return Err("refusing existing GUI IFEO key".into()); }
+        let setting = LoaderSetting { path, report: json!({"MaxLoaderThreads":count,"diagnostic_only":true}) };
+        let status = RegSetValueExW(key, wide("MaxLoaderThreads").as_ptr(), 0, REG_DWORD, (&count as *const u32).cast(), 4);
+        let mut readback = 0u32;
+        let mut size = 4;
+        let read_status = RegQueryValueExW(key, wide("MaxLoaderThreads").as_ptr(), null(), null_mut(), (&mut readback as *mut u32).cast(), &mut size);
+        RegCloseKey(key);
+        if status != 0 || read_status != 0 || readback != count { return Err(format!("MaxLoaderThreads write/read: {status}/{read_status}/{readback}")); }
+        Ok(setting)
+    }
+}
+
+#[repr(C)]
+struct SymbolInfo {
+    size: u32, type_index: u32, reserved: [u64; 2], index: u32, symbol_size: u32,
+    module: u64, flags: u32, value: u64, address: u64, register: u32, scope: u32,
+    tag: u32, name_len: u32, max_name_len: u32, name: [u8; 1024],
+}
+type Initialize = unsafe extern "system" fn(HANDLE, *const u16, i32) -> i32;
+type FromAddress = unsafe extern "system" fn(HANDLE, u64, *mut u64, *mut SymbolInfo) -> i32;
+type Cleanup = unsafe extern "system" fn(HANDLE) -> i32;
+struct Symbols { library: HMODULE, process: HANDLE, from_address: FromAddress, cleanup: Cleanup }
+impl Symbols {
+    fn new(process: HANDLE) -> Result<Self> {
+        unsafe {
+            let library = LoadLibraryExW(wide("dbghelp.dll").as_ptr(), null_mut(), LOAD_LIBRARY_SEARCH_SYSTEM32);
+            if library.is_null() { return Err(last("LoadLibraryExW(dbghelp)")); }
+            let exports = (GetProcAddress(library, c"SymInitializeW".as_ptr().cast()), GetProcAddress(library, c"SymFromAddr".as_ptr().cast()), GetProcAddress(library, c"SymCleanup".as_ptr().cast()));
+            let (Some(init), Some(from), Some(cleanup)) = exports else { FreeLibrary(library); return Err("DbgHelp exports unavailable".into()); };
+            let init: Initialize = std::mem::transmute(init);
+            let path = wide("srv*evidence\\symbols*https://msdl.microsoft.com/download/symbols");
+            if init(process, path.as_ptr(), 1) == 0 { let error = last("SymInitializeW"); FreeLibrary(library); return Err(error); }
+            Ok(Self { library, process, from_address: std::mem::transmute(from), cleanup: std::mem::transmute(cleanup) })
+        }
+    }
+    fn address(&self, address: usize) -> Value {
+        unsafe {
+            let mut symbol: SymbolInfo = zeroed();
+            // SYMBOL_INFO has an 88-byte ABI header; the name buffer is variable.
+            symbol.size = 88;
+            symbol.max_name_len = 1024;
+            let mut displacement = 0;
+            if (self.from_address)(self.process, address as u64, &mut displacement, &mut symbol) == 0 {
+                return json!({"address":format!("0x{address:016x}"),"error":GetLastError()});
+            }
+            json!({"address":format!("0x{address:016x}"),"symbol":String::from_utf8_lossy(&symbol.name[..(symbol.name_len as usize).min(1024)]),"displacement":displacement,"module_base":format!("0x{:016x}",symbol.module)})
+        }
+    }
+}
+impl Drop for Symbols {
+    fn drop(&mut self) { unsafe { (self.cleanup)(self.process); FreeLibrary(self.library); } }
+}
+fn traces(process: HANDLE, symbols: Option<&Symbols>, handles: &[Value]) -> Value {
+    unsafe {
+        let mut buffer = vec![0usize; (16 + 16384 * size_of::<TraceEntry>()) / 8];
+        let mut returned = 0;
+        let status = NtQueryInformationProcess(process, 32, buffer.as_mut_ptr().cast(), (buffer.len() * 8) as u32, &mut returned);
+        if status < 0 { return json!({"NTSTATUS":hex(status as u32),"returned":returned}); }
+        let count = *buffer.as_ptr().add(1).cast::<u32>() as usize;
+        if count > (buffer.len() * 8 - 16) / size_of::<TraceEntry>() { return json!({"error":"trace count exceeds buffer","count":count}); }
+        let entries = std::slice::from_raw_parts(buffer.as_ptr().add(2).cast::<TraceEntry>(), count);
+        let mut cache = std::collections::BTreeMap::new();
+        let relevant: Vec<_> = entries.iter().filter(|entry| handles.iter().any(|handle| handle["handle"].as_u64() == Some(entry.handle as u64))).map(|entry| {
+            let stack: Vec<_> = entry.stacks.iter().copied().filter(|address| *address != 0).map(|address| cache.entry(address).or_insert_with(|| symbols.map(|symbols| symbols.address(address)).unwrap_or_else(|| json!({"address":format!("0x{address:016x}")}))).clone()).collect();
+            json!({"handle":entry.handle,"pid":entry.pid,"tid":entry.tid,"operation":entry.kind,"stack":stack})
+        }).collect();
+        json!({"NTSTATUS":hex(status as u32),"total_traces":count,"entries_for_current_handles":relevant})
+    }
+}
+
+pub fn inspect(process: HANDLE, main_thread: HANDLE, pid: u32, inventory: &Value) -> Value {
+    let modules = unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, pid);
+        if snapshot == INVALID_HANDLE_VALUE { json!({"error":GetLastError()}) } else {
+            let snapshot = Handle(snapshot);
+            let mut entry: MODULEENTRY32W = zeroed();
+            entry.dwSize = size_of::<MODULEENTRY32W>() as u32;
+            let mut modules = Vec::new();
+            if Module32FirstW(snapshot.0, &mut entry) != 0 {
+                loop {
+                    modules.push(json!({"name":utf16_ptr(entry.szModule.as_ptr()),"path":utf16_ptr(entry.szExePath.as_ptr()),"base":format!("0x{:016x}",entry.modBaseAddr as usize),"bytes":entry.modBaseSize}));
+                    if Module32NextW(snapshot.0, &mut entry) == 0 { break; }
+                }
+            }
+            json!(modules)
+        }
+    };
+    let privilege = DebugPrivilege::enable();
+    let privilege_report = privilege.as_ref().map(|_| json!({"enabled":true})).unwrap_or_else(|error| json!({"error":error}));
+    let handles = inventory["ambient_close"]["before"].as_array().cloned().unwrap_or_default();
+    let symbols = Symbols::new(process);
+    let symbol_setup = symbols.as_ref().map(|_| json!({"initialized":true,"server":"https://msdl.microsoft.com/download/symbols"})).unwrap_or_else(|error| json!({"error":error}));
+    let trace_report = traces(process, symbols.as_ref().ok(), &handles);
+    let system = system_handles();
+    let alpc = match system {
+        Err(error) => json!({"error":error}),
+        Ok(entries) => {
+            let worker: Vec<_> = entries.iter().filter(|entry| entry.pid == pid as usize && handles.iter().any(|handle| handle["type"] == "ALPC Port" && handle["handle"].as_u64() == Some(entry.handle as u64))).copied().collect();
+            let identified: Vec<_> = worker.iter().map(|client| {
+                let mut session = [0u32; 2];
+                let mut returned = 0;
+                let mut duplicate = null_mut();
+                let duplicated = unsafe { DuplicateHandle(process, client.handle as HANDLE, GetCurrentProcess(), &mut duplicate, 0, 0, DUPLICATE_SAME_ACCESS) } != 0;
+                let mut server_info = vec![0usize; 128];
+                let (session_status, server_status) = if duplicated {
+                    let duplicate = Handle(duplicate);
+                    server_info[0] = main_thread as usize;
+                    unsafe { (NtAlpcQueryInformation(duplicate.0, 12, session.as_mut_ptr().cast(), 8, &mut returned), NtAlpcQueryInformation(duplicate.0, 4, server_info.as_mut_ptr().cast(), (server_info.len() * 8) as u32, &mut returned)) }
+                } else { (-1, -1) };
+                let peer_pid = if session_status >= 0 { session[1] as usize } else { 0 };
+                let matches: Vec<_> = entries.iter().filter(|entry| entry.object == client.object && entry.pid != pid as usize).map(|entry| json!({"pid":entry.pid,"handle":entry.handle,"object":format!("0x{:016x}",entry.object)})).collect();
+                let peer = unsafe { OpenProcess(PROCESS_DUP_HANDLE | PROCESS_QUERY_LIMITED_INFORMATION, 0, peer_pid as u32) };
+                let peer_info = if peer.is_null() {
+                    let duplicate_error = unsafe { GetLastError() };
+                    let query = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, peer_pid as u32) };
+                    let image = if query.is_null() { json!({"error":unsafe {GetLastError()}}) } else { let query = Handle(query); image_name(query.0) };
+                    json!({"pid":peer_pid,"image":image,"duplicate_open_error":duplicate_error})
+                } else {
+                    let peer = Handle(peer);
+                    let ports: Vec<_> = entries.iter().filter(|entry| entry.pid == peer_pid && entry.type_index == client.type_index).map(|entry| json!({"handle":entry.handle,"object":format!("0x{:016x}",entry.object),"access":hex(entry.access),"identity":remote_alpc_name(peer.0, entry.handle as HANDLE)})).collect();
+                    json!({"pid":peer_pid,"image":image_name(peer.0),"alpc_ports":ports})
+                };
+                json!({"handle":client.handle,"object":format!("0x{:016x}",client.object),"same_object_foreign_handles":matches,"server_session":{"NTSTATUS":hex(session_status as u32),"session_id":session[0],"process_id":session[1]},"server_information":{"NTSTATUS":hex(server_status as u32),"thread_blocked":server_info[0] & 0xff,"connected_pid":server_info[1]},"peer":peer_info})
+            }).collect();
+            json!({"system_handle_count":entries.len(),"worker_ports":identified})
+        }
+    };
+    json!({"privilege":privilege_report,"modules":modules,"symbols":symbol_setup,"tracing":trace_report,"alpc":alpc,"messages_sent":0})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn native_diagnostic_layouts_match_x64_abi() {
+        assert_eq!(size_of::<SystemHandle>(), 40);
+        assert_eq!(size_of::<TraceEntry>(), 160);
+        assert_eq!(std::mem::offset_of!(TraceEntry, stacks), 32);
+        assert_eq!(std::mem::offset_of!(SymbolInfo, name), 84);
+    }
+}

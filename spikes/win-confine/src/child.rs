@@ -129,6 +129,14 @@ pub fn run() -> Result<()> {
             .nth(1)
             .map(|value| match value.as_str() {
                 "alpc" => vec!["ALPC Port"],
+                "combined" => vec!["ALPC Port", "File"],
+                "event" => vec!["Event"],
+                "completion" => vec!["IoCompletion"],
+                "factory" => vec!["TpWorkerFactory"],
+                "timer" => vec!["IRTimer"],
+                "packet" => vec!["WaitCompletionPacket"],
+                "semaphore" => vec!["Semaphore"],
+                "scheduler" => vec!["SchedulerSharedData"],
                 "directory" => vec!["Directory"],
                 "file" => vec!["File"],
                 "pool" => vec![
@@ -214,11 +222,8 @@ pub fn run() -> Result<()> {
         if !no_token_handles {
             return Err("token handle or unidentified handle survived lockdown".into());
         }
-        // Name every handle present before input, then close ALPC, Directory and
-        // non-stdio File handles. Event, completion, worker-factory, timer and
-        // wait-packet handles stay open: closing them is a separate measurement
-        // because the loader may still use them. The second snapshot shows
-        // whether each close removed that handle before the first input byte.
+        // Name every handle before input and close only types in close_kinds.
+        // Stdio is excluded; the second snapshot records the surviving inventory.
         let ambient = if close_ambient {
             let stdio = [
                 GetStdHandle(STD_INPUT_HANDLE),
@@ -241,6 +246,7 @@ pub fn run() -> Result<()> {
         if let Some(ambient) = &ambient {
             let preliminary = json!({"mode":"preliminary","ambient_close":ambient,"handle_table":input_handles,"loaded_modules":modules,"mitigations":policies,"self_lowering":self_lowering,"primary_token":attestation});
             if serde_json::to_writer(std::io::stdout().lock(), &preliminary).is_ok() {
+                println!();
                 let _ = std::io::stdout().flush();
                 eprintln!("probe-stage: preliminary inventory written");
             }

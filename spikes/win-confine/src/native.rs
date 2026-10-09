@@ -565,7 +565,7 @@ fn lpac_claim(token: HANDLE) -> Result<(bool, Value)> {
 }
 #[link(name = "ntdll")]
 unsafe extern "system" {
-    fn NtSetInformationProcess(
+    pub fn NtSetInformationProcess(
         process: HANDLE,
         class: u32,
         information: *const c_void,
@@ -636,7 +636,7 @@ unsafe extern "system" {
         attributes: u32,
         options: u32,
     ) -> i32;
-    fn NtAlpcQueryInformation(
+    pub fn NtAlpcQueryInformation(
         port: HANDLE,
         class: u32,
         buffer: *mut c_void,
@@ -883,20 +883,19 @@ struct AlpcBasicInformation {
     sequence: u32,
     context: *mut c_void,
 }
-// NtAlpcQueryInformation class 0 returns port flags. Classes 1 through 4
-// are the remaining published port queries; each result is retained, including
-// a failure. None of these calls sends an ALPC message.
+// Retain raw ALPC query results, including failures. Class 12 adds server
+// session/process information on recent Windows. No query sends a message.
 fn alpc_identity(handle: HANDLE) -> Value {
     unsafe {
         let mut queries = Vec::new();
-        for class in 0..5u32 {
+        for class in [0, 1, 2, 3, 4, 12] {
             let mut buffer = vec![0u8; 512];
             let mut returned = 0;
             let status = NtAlpcQueryInformation(
                 handle,
                 class,
                 buffer.as_mut_ptr().cast(),
-                buffer.len() as u32,
+                if class == 12 { 8 } else { buffer.len() as u32 },
                 &mut returned,
             );
             let shown = returned.min(buffer.len() as u32) as usize;
@@ -912,6 +911,17 @@ fn alpc_identity(handle: HANDLE) -> Value {
 }
 fn hex_bytes(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+pub fn remote_alpc_name(process: HANDLE, handle: HANDLE) -> Value {
+    unsafe {
+        let mut duplicate = null_mut();
+        let status = NtDuplicateObject(process, handle, GetCurrentProcess(), &mut duplicate, 0, 0, 2);
+        if status < 0 {
+            return json!({"duplicate_status":hex(status as u32)});
+        }
+        let duplicate = Handle(duplicate);
+        json!({"object_name":object_name(duplicate.0),"queries":alpc_identity(duplicate.0)})
+    }
 }
 // Identify one stable handle without using the process snapshot as a query
 // target. The duplicate is closed here; the caller's handle is not.
@@ -981,6 +991,7 @@ pub fn identify_and_close(keep_stdio: &[HANDLE], close_types: &[&str]) -> Result
                 continue;
             }
             let ok = CloseHandle(entry.handle) != 0;
+            eprintln!("ambient-close: handle={} type={kind:?} success={ok}", entry.handle as usize);
             closed.push(json!({
                 "handle": entry.handle as usize,
                 "type": kind,

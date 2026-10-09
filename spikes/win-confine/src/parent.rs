@@ -760,8 +760,19 @@ fn launch_variant(
             || sequence == "post-load-detached-control"
             || sequence == "lpac-context-control"
             || sequence == "lpac-context-detached-control";
-        let close_ambient = sequence.starts_with("full-gui-close-");
+        let inspect_ambient = sequence == "full-gui-inspect";
+        let close_ambient = sequence.starts_with("full-gui-close-") || inspect_ambient
+            || sequence.starts_with("full-gui-serial-");
         let close_argument = match sequence {
+            "full-gui-inspect" | "full-gui-serial-0" | "full-gui-serial-1" => " --close-ambient --close-types none",
+            "full-gui-close-combined" => " --close-ambient --close-types combined",
+            "full-gui-close-event" => " --close-ambient --close-types event",
+            "full-gui-close-completion" => " --close-ambient --close-types completion",
+            "full-gui-close-factory" => " --close-ambient --close-types factory",
+            "full-gui-close-timer" => " --close-ambient --close-types timer",
+            "full-gui-close-packet" => " --close-ambient --close-types packet",
+            "full-gui-close-semaphore" => " --close-ambient --close-types semaphore",
+            "full-gui-close-scheduler" => " --close-ambient --close-types scheduler",
             "full-gui-close-alpc" => " --close-ambient --close-types alpc",
             "full-gui-close-directory" => " --close-ambient --close-types directory",
             "full-gui-close-file" => " --close-ambient --close-types file",
@@ -878,6 +889,11 @@ fn launch_variant(
             startup.StartupInfo.cb = size_of::<STARTUPINFOW>() as u32;
         }
         let mut pi: PROCESS_INFORMATION = zeroed();
+        let loader_setting = match sequence {
+            "full-gui-serial-0" => Some(crate::handles::loader_setting(0)?),
+            "full-gui-serial-1" => Some(crate::handles::loader_setting(1)?),
+            _ => None,
+        };
         let mut command = wide(&format!(
             "\"{image}\" --child{}{}{}{}",
             if start_low { " --lower-integrity" } else { "" },
@@ -967,6 +983,11 @@ fn launch_variant(
         };
         let process = Handle(pi.hProcess);
         let main_thread = Handle(pi.hThread);
+        let handle_trace_enablement = if inspect_ambient {
+            crate::handles::enable_tracing(process.0)
+        } else {
+            Value::Null
+        };
         if let Some((h, info)) = &mut job {
             let mut member = 0;
             let ok = IsProcessInJob(process.0, h.0, &mut member) != 0;
@@ -1046,8 +1067,21 @@ fn launch_variant(
         // Drain both pipes concurrently so neither can deadlock a large namespace report.
         let out_value = parent_out.0 as usize;
         let err_value = parent_err.0 as usize;
-        let reader = thread::spawn(move || read_pipe(out_value as HANDLE));
+        let (inventory_sender, inventory_receiver) = std::sync::mpsc::channel();
+        let reader = thread::spawn(move || {
+            read_pipe_inventory(out_value as HANDLE, inspect_ambient.then_some(inventory_sender))
+        });
         let err_reader = thread::spawn(move || read_pipe(err_value as HANDLE));
+        // The child flushes its inventory and blocks on stdin. Inspect that
+        // live process before supplying any probe input; no ALPC message is sent.
+        let parent_handles = if inspect_ambient {
+            match inventory_receiver.recv_timeout(std::time::Duration::from_secs(60)) {
+                Ok(inventory) => crate::handles::inspect(process.0, main_thread.0, pi.dwProcessId, &inventory),
+                Err(error) => json!({"error":error.to_string()}),
+            }
+        } else {
+            Value::Null
+        };
         let payload = serde_json::to_vec(input).map_err(|e| e.to_string())?;
         let input_handle = parent_in.0 as usize;
         std::mem::forget(parent_in);
@@ -1082,15 +1116,19 @@ fn launch_variant(
             writer.join().map_err(|_| "stdin writer panicked")?;
         let stdout = reader.join().map_err(|_| "stdout reader panicked")??;
         let stderr = err_reader.join().map_err(|_| "stderr reader panicked")??;
-        let child: Value = serde_json::from_slice(&stdout).unwrap_or_else(
-            |e| json!({"parse_error":e.to_string(),"stdout":String::from_utf8_lossy(&stdout)}),
+        let reports: Vec<_> = serde_json::Deserializer::from_slice(&stdout).into_iter::<Value>().collect();
+        let child = reports.last().and_then(|report| report.as_ref().ok()).cloned().unwrap_or_else(
+            || json!({"parse_error":format!("{reports:?}"),"stdout":String::from_utf8_lossy(&stdout)}),
         );
         Ok(
-            json!({"sequence":sequence,"pid":pi.dwProcessId,"creation_flags":hex(flags),"requested_context":context.as_ref().map(|c|&c.report),"debug":{"requested":debug,"loader_snaps_enablement":loader_snaps_enablement,"setup":debug_setup,"attached_before_resume":attached,"creation_error":debug_creation_error,"trace":debug_events},"exit_code":hex(exit),"timeout":wait!=WAIT_OBJECT_0,"input_write":{"success":write_ok,"error":if write_ok{0}else{write_error},"bytes":written},"stderr":String::from_utf8_lossy(&stderr),"job":job.as_ref().map(|j|&j.1),"constructed_tokens":tokens.as_ref().map(|t|&t.report),"parent_before_resume":{"startup_context":birth_startup,"primary":birth_primary,"assigned_loader":assigned_loader,"initial_handle_closed":initial_closed_before_resume},"stdio_handles":{"stdin":handles[0] as usize,"stdout":handles[1] as usize,"stderr":handles[2] as usize},"child":child}),
+            json!({"sequence":sequence,"pid":pi.dwProcessId,"creation_flags":hex(flags),"requested_context":context.as_ref().map(|c|&c.report),"handle_trace_enablement":handle_trace_enablement,"loader_setting":loader_setting.as_ref().map(|setting| &setting.report),"parent_handle_inspection":parent_handles,"debug":{"requested":debug,"loader_snaps_enablement":loader_snaps_enablement,"setup":debug_setup,"attached_before_resume":attached,"creation_error":debug_creation_error,"trace":debug_events},"exit_code":hex(exit),"timeout":wait!=WAIT_OBJECT_0,"input_write":{"success":write_ok,"error":if write_ok{0}else{write_error},"bytes":written},"stderr":String::from_utf8_lossy(&stderr),"job":job.as_ref().map(|j|&j.1),"constructed_tokens":tokens.as_ref().map(|t|&t.report),"parent_before_resume":{"startup_context":birth_startup,"primary":birth_primary,"assigned_loader":assigned_loader,"initial_handle_closed":initial_closed_before_resume},"stdio_handles":{"stdin":handles[0] as usize,"stdout":handles[1] as usize,"stderr":handles[2] as usize},"child":child}),
         )
     }
 }
 fn read_pipe(h: HANDLE) -> Result<Vec<u8>> {
+    read_pipe_inventory(h, None)
+}
+fn read_pipe_inventory(h: HANDLE, mut sender: Option<std::sync::mpsc::Sender<Value>>) -> Result<Vec<u8>> {
     unsafe {
         let mut output = Vec::new();
         let mut chunk = [0u8; 8192];
@@ -1114,6 +1152,13 @@ fn read_pipe(h: HANDLE) -> Result<Vec<u8>> {
                 break;
             }
             output.extend_from_slice(&chunk[..bytes as usize]);
+            if let Some(end) = output.iter().position(|byte| *byte == b'\n') {
+                if let Some(sender) = sender.take() {
+                    if let Ok(inventory) = serde_json::from_slice(&output[..end]) {
+                        let _ = sender.send(inventory);
+                    }
+                }
+            }
         }
         Ok(output)
     }
@@ -1623,6 +1668,17 @@ pub fn run() -> Result<()> {
                         "full-gui-close-alpc",
                         "full-gui-close-file",
                         "full-gui-close-pool",
+                        "full-gui-inspect",
+                        "full-gui-close-combined",
+                        "full-gui-serial-0",
+                        "full-gui-serial-1",
+                        "full-gui-close-event",
+                        "full-gui-close-completion",
+                        "full-gui-close-factory",
+                        "full-gui-close-timer",
+                        "full-gui-close-packet",
+                        "full-gui-close-semaphore",
+                        "full-gui-close-scheduler",
                         "chrome-untrusted-gui-control",
                     ] {
                         let gui = sequence.contains("gui");
