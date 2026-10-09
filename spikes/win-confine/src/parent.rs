@@ -760,7 +760,13 @@ fn launch_variant(
             || sequence == "post-load-detached-control"
             || sequence == "lpac-context-control"
             || sequence == "lpac-context-detached-control";
-        let close_ambient = sequence == "full-gui-close-ambient";
+        let close_ambient = sequence.starts_with("full-gui-close-");
+        let close_argument = match sequence {
+            "full-gui-close-alpc" => " --close-ambient --close-types alpc",
+            "full-gui-close-directory" => " --close-ambient --close-types directory",
+            "full-gui-close-file" => " --close-ambient --close-types file",
+            _ => "",
+        };
         let _cwd_grant = if sequence == "post-load-cwd-grant-control" {
             Some(CwdGrant::new(sid)?)
         } else {
@@ -880,11 +886,7 @@ fn launch_variant(
             } else {
                 ""
             },
-            if close_ambient {
-                " --close-ambient"
-            } else {
-                ""
-            }
+            if close_ambient { close_argument } else { "" }
         ));
         let mut flags = if bare {
             CREATE_SUSPENDED | CREATE_NO_WINDOW
@@ -1617,7 +1619,9 @@ pub fn run() -> Result<()> {
                         "full-detached-control",
                         "chrome-untrusted-detached-control",
                         "full-gui-control",
-                        "full-gui-close-ambient",
+                        "full-gui-close-alpc",
+                        "full-gui-close-directory",
+                        "full-gui-close-file",
                         "chrome-untrusted-gui-control",
                     ] {
                         let gui = sequence.contains("gui");

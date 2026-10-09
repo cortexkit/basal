@@ -124,6 +124,27 @@ pub fn run() -> Result<()> {
         let lower_requested = std::env::args().any(|a| a == "--lower-integrity");
         let replacement_requested = std::env::args().any(|a| a == "--replace-primary");
         let close_ambient = std::env::args().any(|a| a == "--close-ambient");
+        let close_kinds: Vec<&str> = std::env::args()
+            .skip_while(|arg| arg != "--close-types")
+            .nth(1)
+            .map(|value| match value.as_str() {
+                "alpc" => vec!["ALPC Port"],
+                "directory" => vec!["Directory"],
+                "file" => vec!["File"],
+                "pool" => vec![
+                    "Event",
+                    "IoCompletion",
+                    "TpWorkerFactory",
+                    "IRTimer",
+                    "WaitCompletionPacket",
+                    "Semaphore",
+                ],
+                _ => Vec::new(),
+            })
+            .unwrap_or_else(|| vec!["ALPC Port", "Directory", "File"]);
+        // A closed loader handle can make a later call use an invalid handle.
+        // The strict-handle mitigation turns that into process termination, so
+        // the named inventory is written before those calls.
         // Borrow only the primary's adjustment right under the loader token.
         // No token handle with that right may survive into the input phase.
         let adjustment = if lower_requested {
@@ -204,10 +225,7 @@ pub fn run() -> Result<()> {
                 GetStdHandle(STD_OUTPUT_HANDLE),
                 GetStdHandle(STD_ERROR_HANDLE),
             ];
-            Some(identify_and_close(
-                &stdio,
-                &["ALPC Port", "Directory", "File"],
-            )?)
+            Some(identify_and_close(&stdio, &close_kinds)?)
         } else {
             None
         };
@@ -220,6 +238,13 @@ pub fn run() -> Result<()> {
             .unwrap_or_else(|e| json!({"error":e}));
         let policies = mitigations();
         eprintln!("probe-stage: attestation complete");
+        if let Some(ambient) = &ambient {
+            let preliminary = json!({"mode":"preliminary","ambient_close":ambient,"handle_table":input_handles,"loaded_modules":modules,"mitigations":policies,"self_lowering":self_lowering,"primary_token":attestation});
+            if serde_json::to_writer(std::io::stdout().lock(), &preliminary).is_ok() {
+                let _ = std::io::stdout().flush();
+                eprintln!("probe-stage: preliminary inventory written");
+            }
+        }
         let mut input = String::new();
         std::io::stdin()
             .read_to_string(&mut input)

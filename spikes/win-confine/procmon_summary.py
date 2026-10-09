@@ -10,7 +10,8 @@ FOLLOWUPS = ('post-load-cwd-grant-control', 'post-load-detached-control',
              'chrome-detached-control', 'lpac-context-detached-control',
              'chrome-context-detached-control', 'full-detached-control',
              'chrome-untrusted-detached-control', 'full-gui-control',
-             'full-gui-close-ambient', 'chrome-untrusted-gui-control')
+             'full-gui-close-alpc', 'full-gui-close-directory',
+             'full-gui-close-file', 'chrome-untrusted-gui-control')
 
 
 def attempts(report):
