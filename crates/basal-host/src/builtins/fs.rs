@@ -740,8 +740,8 @@ pub fn write_call(
         temp: temp_name.clone(),
         roots: roots.to_vec(),
     };
-    // The record is durable before the file exists, so no crash can leave
-    // a file nothing knows about.
+    // With a ledger, the record is durable before the file exists, so no
+    // crash can leave a temporary file that nothing has recorded.
     let hold = match ledger {
         Some(ledger) => Some(ledger.record(&lease).map_err(|e| {
             Denial::new(

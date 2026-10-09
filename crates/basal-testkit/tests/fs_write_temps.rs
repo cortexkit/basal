@@ -1,9 +1,9 @@
-//! `fs.write` temporary files never outlive their call.
+//! Cleanup of `fs.write` temporary files.
 //!
 //! A write records its temporary file in the runtime's store before it
 //! creates the file, and clears the record once the file has been renamed
-//! over its target. A record left behind (by a run that ended while its
-//! write was running, or by a crash) is acted on by the next maintenance
+//! over its target. A record left behind (by a write that stopped part way
+//! after its run ended, or by a crash) is acted on by the next maintenance
 //! pass, which removes the recorded file only if it is still a regular file
 //! with exactly the recorded name, in exactly the recorded directory, inside
 //! the write's roots. Every assertion here is about state on disk and in the
