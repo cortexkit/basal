@@ -17,7 +17,8 @@ def retain(source, destination, run_id, source_sha, image):
     selected = [a for a in attempts(report) if a.get('sequence') in RECIPES + FOLLOWUPS]
     kept = {'run_id': run_id, 'compiled_source_sha': source_sha, 'image': image,
             'parent_token': report['parent_token'], 'appcontainer_sid': report['appcontainer_sid'],
-            'profile_cleanup': report['profile_cleanup'], 'selected_attempts': selected}
+            'profile_cleanup': report['profile_cleanup'], 'selected_attempts': selected,
+            'controls': [r for r in report['runs'] if r['mode'] == 'lpac']}
     path = destination / f'{run_id}-{image}-births.json'
     path.write_text(json.dumps(kept, separators=(',', ':')), encoding='utf-8')
     retained = [path]
@@ -33,8 +34,16 @@ def retain(source, destination, run_id, source_sha, image):
             else:
                 path.write_bytes(original.read_bytes())
             retained.append(path)
+    for name in ['imports.json', 'imports-gui.json', 'kernel-trace-setup.txt',
+                 'kernel-trace-export.txt', 'kernel-providers.txt']:
+        original = source / name
+        if original.exists():
+            path = destination / f'{run_id}-{image}-{name}'
+            path.write_bytes(original.read_bytes())
+            retained.append(path)
     manifest_path = destination / 'manifest.json'
     manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {'runs': []}
+    manifest['runs'] = [r for r in manifest['runs'] if (r['run_id'], r['image']) != (run_id, image)]
     manifest['runs'].append({'run_id': run_id, 'source_sha': source_sha, 'image': image,
                              'artifact_url': f'https://github.com/cortexkit/basal/actions/runs/{run_id}',
                              'artifact_file_sha256': files,

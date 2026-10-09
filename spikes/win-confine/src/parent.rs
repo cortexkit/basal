@@ -752,7 +752,9 @@ fn launch_variant(
         let chrome_token = sequence == "chrome-default-dacl-control"
             || sequence == "chrome-context-control"
             || sequence == "chrome-detached-control"
-            || sequence == "chrome-context-detached-control";
+            || sequence == "chrome-context-detached-control"
+            || sequence == "chrome-untrusted-detached-control"
+            || sequence == "chrome-untrusted-gui-control";
         let same_primary = sequence == "post-load-primary-control"
             || sequence == "post-load-cwd-grant-control"
             || sequence == "post-load-detached-control"
@@ -791,6 +793,13 @@ fn launch_variant(
         } else {
             None
         };
+        if sequence == "chrome-untrusted-detached-control"
+            || sequence == "chrome-untrusted-gui-control"
+        {
+            let tokens = tokens.as_mut().unwrap();
+            set_integrity(tokens.primary.0, WinUntrustedLabelSid)?;
+            tokens.report["lockdown"] = token_attestation(tokens.primary.0)?;
+        }
         let mut job = if full && !bare {
             Some(job(ui_flags)?)
         } else {
@@ -1126,6 +1135,14 @@ pub fn run() -> Result<()> {
         grant_image(&binary_dir.to_string_lossy(), sid)?;
         let image = binary_dir.join("win-confine.exe");
         fs::copy(&exe, &image).map_err(|e| e.to_string())?;
+        let gui_source = exe.parent().unwrap().join("win-confine-gui.exe");
+        let gui_image = binary_dir.join("win-confine-gui.exe");
+        let gui_placed = if gui_source.exists() {
+            fs::copy(&gui_source, &gui_image).map_err(|e| e.to_string())?;
+            true
+        } else {
+            false
+        };
         let namespace_initializer = prepare_namespace(&image.to_string_lossy(), sid, &profile.api);
         let temp = std::env::var("TEMP").map_err(|e| e.to_string())?;
         let user = std::env::var("USERPROFILE").map_err(|e| e.to_string())?;
@@ -1588,6 +1605,37 @@ pub fn run() -> Result<()> {
                             0xff,
                         )
                         .unwrap_or_else(|e| json!({"sequence":sequence,"error":e}));
+                        diagnostics.push(json!({"label":sequence,"result":result}));
+                    }
+                    for sequence in [
+                        "full-detached-control",
+                        "chrome-untrusted-detached-control",
+                        "full-gui-control",
+                        "chrome-untrusted-gui-control",
+                    ] {
+                        let gui = sequence.contains("gui");
+                        let result = if gui && !gui_placed {
+                            json!({"sequence":sequence,"error":"GUI worker image was not built"})
+                        } else {
+                            launch_variant(
+                                &input,
+                                &if gui { &gui_image } else { &image }.to_string_lossy(),
+                                sid,
+                                token.0,
+                                if sequence.starts_with("chrome") {
+                                    token.0
+                                } else {
+                                    source
+                                },
+                                sequence,
+                                true,
+                                false,
+                                false,
+                                MITIGATIONS,
+                                0xff,
+                            )
+                            .unwrap_or_else(|e| json!({"sequence":sequence,"error":e}))
+                        };
                         diagnostics.push(json!({"label":sequence,"result":result}));
                     }
                 }

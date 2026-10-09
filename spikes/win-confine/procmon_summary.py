@@ -8,7 +8,9 @@ RECIPES = ('post-load-primary-control', 'chrome-default-dacl-control',
            'chrome-context-control', 'lpac-context-control')
 FOLLOWUPS = ('post-load-cwd-grant-control', 'post-load-detached-control',
              'chrome-detached-control', 'lpac-context-detached-control',
-             'chrome-context-detached-control')
+             'chrome-context-detached-control', 'full-detached-control',
+             'chrome-untrusted-detached-control', 'full-gui-control',
+             'chrome-untrusted-gui-control')
 
 
 def attempts(report):

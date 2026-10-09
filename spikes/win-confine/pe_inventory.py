@@ -70,7 +70,8 @@ def inventory(path):
             result.append({'dll': string(name), 'symbols': thunks(lookup or iat)})
             cursor += 32 if delay else 20
 
-    return {'image': str(path), 'normal': descriptors(1, False), 'delay': descriptors(13, True)}
+    return {'image': str(path), 'subsystem': struct.unpack_from('<H', data, optional + 68)[0],
+            'normal': descriptors(1, False), 'delay': descriptors(13, True)}
 
 
 if __name__ == '__main__':

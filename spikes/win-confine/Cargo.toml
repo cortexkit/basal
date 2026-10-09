@@ -7,6 +7,12 @@ publish = false
 # This experiment deliberately does not join the production workspace.
 [workspace]
 
+[[bin]]
+name = "win-confine-gui"
+path = "src/gui.rs"
+test = false
+bench = false
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

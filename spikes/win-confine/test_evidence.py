@@ -84,6 +84,7 @@ class EvidenceTests(unittest.TestCase):
         struct.pack_into('<H', data, 0x98, 0x20B)
         struct.pack_into('<Q', data, 0x98 + 24, 0x140000000)
         struct.pack_into('<I', data, 0x98 + 60, 0x200)
+        struct.pack_into('<H', data, 0xDC, 3)
         directory = 0x98 + 112
         struct.pack_into('<II', data, directory + 8, 0x1000, 40)
         struct.pack_into('<II', data, directory + 13 * 8, 0x1100, 64)
@@ -104,6 +105,18 @@ class EvidenceTests(unittest.TestCase):
             result = inventory(path)
         self.assertEqual(result['normal'], [{'dll': 'KERNEL32.dll', 'symbols': [{'name': 'ExitNow'}]}])
         self.assertEqual(result['delay'], [{'dll': 'USERENV.dll', 'symbols': [{'name': 'DelayNow'}]}])
+        self.assertEqual(result['subsystem'], 3)
+
+    def test_pe_inventory_reads_gui_subsystem_from_image_header(self):
+        data = bytearray(0x200)
+        struct.pack_into('<I', data, 0x3C, 0x80)
+        data[0x80:0x84] = b'PE\0\0'
+        struct.pack_into('<H', data, 0x98, 0x20B)
+        struct.pack_into('<H', data, 0xDC, 2)
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'gui.exe'
+            path.write_bytes(data)
+            self.assertEqual(inventory(path)['subsystem'], 2)
 
     def test_failed_child_is_not_summarized_as_denial(self):
         report = {'appcontainer_sid': 'S-1-15-2-test', 'enumeration': [], 'runs': [

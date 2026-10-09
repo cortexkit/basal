@@ -24,7 +24,10 @@ $session = "BasalStartup-$PID"
 $objectEtl = Join-Path $PWD 'evidence/kernel-objects.etl'
 # Procmon covers files/registry, not every object-manager call. Retain the
 # kernel providers in the same birth window to expose that coverage gap.
-& logman create trace $session -o $objectEtl -p Microsoft-Windows-Kernel-File 0xffffffffffffffff 0xff -p Microsoft-Windows-Kernel-Registry 0xffffffffffffffff 0xff -p Microsoft-Windows-Kernel-Object 0xffffffffffffffff 0xff 2>&1 | Out-File evidence/kernel-trace-setup.txt
+@('Microsoft-Windows-Kernel-File 0xffffffffffffffff 0xff',
+  'Microsoft-Windows-Kernel-Registry 0xffffffffffffffff 0xff',
+  'Microsoft-Windows-Kernel-Object 0xffffffffffffffff 0xff') | Out-File -Encoding ascii evidence/kernel-providers.txt
+& logman create trace $session -o $objectEtl -pf evidence/kernel-providers.txt 2>&1 | Out-File evidence/kernel-trace-setup.txt
 $metadata['logman_create_exit'] = $LASTEXITCODE
 if ($LASTEXITCODE -eq 0) {
     & logman start $session -ets 2>&1 | Out-File -Append evidence/kernel-trace-setup.txt

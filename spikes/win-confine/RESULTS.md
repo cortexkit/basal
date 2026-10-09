@@ -2,10 +2,12 @@
 
 ## Outcome
 
-**The requested lockdown was not reached. Do not enable a Windows worker from
-this prototype.** Process creation with all requested attributes succeeds, but
-its restricted primary recipes terminate before Rust entry. There is therefore
-**no measured full-lockdown residual**. An empty report is not a denial result.
+**Do not enable a Windows worker from this prototype.** The original console
+births fail before Rust entry, but the console-free campaign below shows that
+`DETACHED_PROCESS` reaches entry, reverts and lowers to Untrusted under the same
+job and mitigations. Its enabled-group LPAC post-load token replacement fails
+with Win32 87, so that residual is **not** the requested NULL/deny-only LPAC
+primary. The three-stdio-only boundary is not established.
 
 The earlier control/residual baseline is [37840751756](https://github.com/cortexkit/basal/actions/runs/37840751756),
 compiled from `9235748f1b6cd5e15fcbf01b4406cd17d7375b95`. Both Windows images
@@ -45,8 +47,8 @@ file contents were read or printed.
 
 The intended next phase is `RevertToSelf`, lower the actual primary to
 Untrusted, close every temporary adjustment handle, verify no Token handles,
-then read stdin. The code implements that phase, but **none of the restricted
-birth candidates reached it**.
+then read stdin. The code implements that phase, but **none of the baseline
+console-birth candidates reached it**. Console-free results are reported below.
 
 ## API sequences and failure ledger
 
@@ -641,6 +643,52 @@ of a failed console attach. The suspended console parameter remains
 `0xfffffffffffffffd` from `CREATE_NO_WINDOW`, unlike Chrome's 0. A detached-process
 diagnostic isolates that console path while preserving the exact job,
 child-process ban, mitigations and three stdio pipes.
+
+### Trace-driven changes: console-free entry is measured
+
+Run [37853389246](https://github.com/cortexkit/basal/actions/runs/37853389246),
+compiled from `3889668cfd7d0e2fffa27ff20957d2bae0e5aa28`, retains the baseline
+console recipes and tests two isolated interventions. A temporary package-SID
+ACE grants exactly traverse/synchronize on the original cwd, without inheritance;
+the original DACL is restored before the next recipe. Procmon confirms that
+cwd open now succeeds, but the child still exits `0xc0000142` with no Rust entry.
+
+**Replacing only `CREATE_NO_WINDOW` with `DETACHED_PROCESS` reaches Rust entry
+on both images**, for both original-context token recipes and their alternate
+context counterparts. All four detached children exit 0, revert (`ERROR_NO_TOKEN`
+1008), close the adjustment handle, attest their actual primary as Untrusted,
+and complete 2,049 probes on windows-latest / 1,921 on windows-2022. The job,
+mitigations, child-process ban and explicit three-pipe inheritance list remain
+unchanged. The detached startup console parameter is `0xffffffffffffffff`, not
+Chrome's 0. The failing console
+recipes' conhost image opens are not seen on that detached startup path.
+This establishes console initialization as a sufficient removable cause of
+pre-entry failure in these comparisons, **not an intrinsically unloadable
+restricted token**. The exact internal console syscall/failure NTSTATUS was
+not measured by Process Monitor.
+
+The enabled-group LPAC detached recipes attempt post-load lockdown, but
+`CreateRestrictedToken(post-load lockdown)` returns **Win32 87** on both images,
+before `NtSetInformationProcess(ProcessAccessToken)` is called. The actual
+Untrusted primary retains enabled groups and user/group restricting SIDs. The
+Chrome-style detached primary is non-AppContainer, NULL-restricted, Untrusted
+and privilege-free, but retains an enabled logon SID. Those are distinct
+measured floors, not full LPAC acceptance.
+
+Every detached recipe has exactly **one successful reachability probe**:
+`CreateThread` / in-process thread. All tested file/directory/metadata, registry,
+named-object and ALPC opens fail; epmapper connection fails; native Winsock
+startup/socket paths fail; process creation, parent opens and executable-memory
+allocation/protection fail. This is a finite target sample, not an all-IPC
+proof. The retained birth reports include every exact probe result and each
+ambient handle/type/access value. The unknown startup ALPC port and other
+ambient objects must not be classified harmless from failed new opens.
+
+The attempted same-window ETW adjunct did **not** run: `logman` rejected repeated
+`-p` arguments with `0x80070057`, "Argument 'p' has been defined too many times."
+No ETW data is claimed. Procmon's complete PID windows remain the authority;
+setup output and metadata preserve that coverage gap. A provider-file form is
+used for the subsequent GUI confirmation, rather than hiding this failed command.
 
 ## Recommended Windows design changes
 

@@ -35,6 +35,8 @@ jobs:
         run: |
           cargo fmt --check
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo fetch --locked
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           cargo check --locked
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           cargo test --locked
@@ -57,6 +59,12 @@ jobs:
           & $dumpbin /imports /dependents target\release\win-confine.exe | Tee-Object evidence\imports.txt
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python pe_inventory.py target/release/win-confine.exe evidence/imports.json
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          & $dumpbin /imports /dependents target\release\win-confine-gui.exe | Out-File evidence/imports-gui.txt
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python pe_inventory.py target/release/win-confine-gui.exe evidence/imports-gui.json
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python -c "import json; assert json.load(open('evidence/imports.json'))['subsystem'] == 3; assert json.load(open('evidence/imports-gui.json'))['subsystem'] == 2; print('PE subsystem check: 2 images passed (CUI=3, GUI=2)')"
           exit $LASTEXITCODE
       - name: Measure sandbox-enabled Chrome from the parent
         run: ./chrome_reference.ps1
