@@ -761,10 +761,13 @@ fn launch_variant(
             || sequence == "lpac-context-control"
             || sequence == "lpac-context-detached-control";
         let inspect_ambient = sequence == "full-gui-inspect";
-        let close_ambient = sequence.starts_with("full-gui-close-") || inspect_ambient
+        let close_ambient = sequence.starts_with("full-gui-close-")
+            || inspect_ambient
             || sequence.starts_with("full-gui-serial-");
         let close_argument = match sequence {
-            "full-gui-inspect" | "full-gui-serial-0" | "full-gui-serial-1" => " --close-ambient --close-types none",
+            "full-gui-inspect" | "full-gui-serial-0" | "full-gui-serial-1" => {
+                " --close-ambient --close-types none"
+            }
             "full-gui-close-combined" => " --close-ambient --close-types combined",
             "full-gui-close-event" => " --close-ambient --close-types event",
             "full-gui-close-completion" => " --close-ambient --close-types completion",
@@ -1069,14 +1072,19 @@ fn launch_variant(
         let err_value = parent_err.0 as usize;
         let (inventory_sender, inventory_receiver) = std::sync::mpsc::channel();
         let reader = thread::spawn(move || {
-            read_pipe_inventory(out_value as HANDLE, inspect_ambient.then_some(inventory_sender))
+            read_pipe_inventory(
+                out_value as HANDLE,
+                inspect_ambient.then_some(inventory_sender),
+            )
         });
         let err_reader = thread::spawn(move || read_pipe(err_value as HANDLE));
         // The child flushes its inventory and blocks on stdin. Inspect that
         // live process before supplying any probe input; no ALPC message is sent.
         let parent_handles = if inspect_ambient {
             match inventory_receiver.recv_timeout(std::time::Duration::from_secs(60)) {
-                Ok(inventory) => crate::handles::inspect(process.0, main_thread.0, pi.dwProcessId, &inventory),
+                Ok(inventory) => {
+                    crate::handles::inspect(process.0, main_thread.0, pi.dwProcessId, &inventory)
+                }
                 Err(error) => json!({"error":error.to_string()}),
             }
         } else {
@@ -1116,7 +1124,9 @@ fn launch_variant(
             writer.join().map_err(|_| "stdin writer panicked")?;
         let stdout = reader.join().map_err(|_| "stdout reader panicked")??;
         let stderr = err_reader.join().map_err(|_| "stderr reader panicked")??;
-        let reports: Vec<_> = serde_json::Deserializer::from_slice(&stdout).into_iter::<Value>().collect();
+        let reports: Vec<_> = serde_json::Deserializer::from_slice(&stdout)
+            .into_iter::<Value>()
+            .collect();
         let child = reports.last().and_then(|report| report.as_ref().ok()).cloned().unwrap_or_else(
             || json!({"parse_error":format!("{reports:?}"),"stdout":String::from_utf8_lossy(&stdout)}),
         );
@@ -1128,7 +1138,10 @@ fn launch_variant(
 fn read_pipe(h: HANDLE) -> Result<Vec<u8>> {
     read_pipe_inventory(h, None)
 }
-fn read_pipe_inventory(h: HANDLE, mut sender: Option<std::sync::mpsc::Sender<Value>>) -> Result<Vec<u8>> {
+fn read_pipe_inventory(
+    h: HANDLE,
+    mut sender: Option<std::sync::mpsc::Sender<Value>>,
+) -> Result<Vec<u8>> {
     unsafe {
         let mut output = Vec::new();
         let mut chunk = [0u8; 8192];

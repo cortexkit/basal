@@ -915,7 +915,15 @@ fn hex_bytes(bytes: &[u8]) -> String {
 pub fn remote_alpc_name(process: HANDLE, handle: HANDLE) -> Value {
     unsafe {
         let mut duplicate = null_mut();
-        let status = NtDuplicateObject(process, handle, GetCurrentProcess(), &mut duplicate, 0, 0, 2);
+        let status = NtDuplicateObject(
+            process,
+            handle,
+            GetCurrentProcess(),
+            &mut duplicate,
+            0,
+            0,
+            2,
+        );
         if status < 0 {
             return json!({"duplicate_status":hex(status as u32)});
         }
@@ -991,13 +999,17 @@ pub fn identify_and_close(keep_stdio: &[HANDLE], close_types: &[&str]) -> Result
                 continue;
             }
             let ok = CloseHandle(entry.handle) != 0;
-            eprintln!("ambient-close: handle={} type={kind:?} success={ok}", entry.handle as usize);
+            let error = if ok { 0 } else { GetLastError() };
+            eprintln!(
+                "ambient-close: handle={} type={kind:?} success={ok}",
+                entry.handle as usize
+            );
             closed.push(json!({
                 "handle": entry.handle as usize,
                 "type": kind,
                 "granted_access": hex(entry.access),
                 "success": ok,
-                "error": if ok { 0 } else { GetLastError() },
+                "error": error,
             }));
         }
         let after = handle_table()?;

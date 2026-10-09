@@ -33,11 +33,6 @@ jobs:
           python --version
       - name: Check, test and build standalone binary
         run: |
-          New-Item -ItemType Directory -Force evidence/formatted-source | Out-Null
-          cargo fmt
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          git diff --stat | Out-File evidence/formatting-stat.txt
-          Copy-Item src/*.rs evidence/formatted-source/
           cargo fmt --check
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           cargo fetch --locked
@@ -84,6 +79,8 @@ jobs:
         if: always()
         run: |
           if (Test-Path evidence/report.json) {
+            python retain_handles.py evidence evidence/handles $env:GITHUB_RUN_ID $env:GITHUB_SHA '${{ matrix.os }}'
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
             python summarize.py evidence/report.json | Tee-Object evidence/summary.md
             if ($LASTEXITCODE) { exit $LASTEXITCODE }
             Get-Content evidence/summary.md >> $env:GITHUB_STEP_SUMMARY

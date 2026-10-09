@@ -93,9 +93,7 @@ would race. A stale profile is an error, not silently deleted at startup.
 
 ## Loader and Chrome reference measurements
 
-The workflow enables image-specific loader snaps (`GlobalFlag=2`) for
-`win-confine.exe` and removes the IFEO key in a `finally` block. The full-policy
-`loader-trace` diagnostic requests `DEBUG_ONLY_THIS_PROCESS`; if creation refuses
+The `loader-trace` diagnostic requests `DEBUG_ONLY_THIS_PROCESS`; if creation refuses
 that flag, it retries suspended and attaches before resuming. The creating thread
 records every debug string, DLL load/unload and exception event while separate
 threads drain the pipes. The x64 child PEB's `NtGlobalFlag` is read back: if the
@@ -149,3 +147,35 @@ variant's primary `TokenDefaultDacl` to the user/Administrators/SYSTEM full-acce
 ACL observed on Chrome. TokenDefaultDacl controls default security for newly
 created objects; it is not the DACL protecting the token object itself. Neither
 diagnostic is promoted to the full acceptance path.
+
+## Pre-input handle provenance
+
+The current workflow focuses on the GUI worker's ambient handles rather than
+launching Chrome or Process Monitor. `full-gui-inspect` enables
+`ProcessHandleTracing` on the suspended worker, then resumes with the unchanged
+LPAC/job/mitigation recipe. The child flushes a preliminary JSON inventory and
+blocks on stdin. Before writing probe input, the parent queries the trace ring,
+resolves available public symbols with broker-only DbgHelp, and records the live
+module address ranges. Symbol downloads use Microsoft's symbol server from the
+parent, never the worker.
+
+The parent also snapshots `SystemExtendedHandleInformation`, records the ALPC
+client's kernel object address, searches for foreign handles to that same object,
+and tries `AlpcServerSessionInformation` (class 12). Foreign process opens and
+handle duplication may fail even for an administrator; failures are preserved.
+Matching an object address is not the same as following a connection to a
+different server-side port object. No diagnostic sends an ALPC message.
+
+`full-gui-close-combined` closes ALPC and non-stdio File handles in one worker.
+Separate recipes close one pool object type at a time. All close diagnostics
+retain their preliminary inventory even if strict-handle checks terminate the
+worker before the final report. Stdio is excluded from every close list.
+`full-gui-serial-0` and `full-gui-serial-1` temporarily set the GUI image's IFEO
+`MaxLoaderThreads` DWORD as diagnostics. An existing GUI IFEO key is refused;
+normal completion removes the created key. These settings are not proposed as
+production registry mutations. The ordinary console acceptance gate is unchanged
+and must not be mistaken for acceptance of a GUI diagnostic.
+
+`retain_handles.py evidence <destination> <run-id> <source-sha> <image>` retains
+all GUI variants, complete probe results, raw trace failures and source/report
+hashes without the duplicate parent target array.
