@@ -70,7 +70,12 @@ fn macos_section_says_thread_creation_is_not_blocked() {
 #[test]
 fn macos_section_describes_only_what_the_worker_applies_today() {
     let macos = section("macOS");
-    for layer in ["worker.sb", "deny-by-default", "hardened runtime", "disclaimed"] {
+    for layer in [
+        "worker.sb",
+        "deny-by-default",
+        "hardened runtime",
+        "disclaimed",
+    ] {
         assert_mentions(&macos, layer);
     }
 }
