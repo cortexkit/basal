@@ -179,3 +179,16 @@ and must not be mistaken for acceptance of a GUI diagnostic.
 `retain_handles.py evidence <destination> <run-id> <source-sha> <image>` retains
 all GUI variants, complete probe results, raw trace failures and source/report
 hashes without the duplicate parent target array.
+
+The additional `full-gui-connect-trace` diagnostic uses x64 hardware execution
+breakpoints on `NtConnectPort` and `NtAlpcConnectPort` and their return addresses.
+It reads the loader's destination Unicode string and returned handle, without
+patching instruction bytes, changing security tokens, or generating a request.
+It is debugger-assisted identification, not a production launch recipe.
+`context_layout.c` checks the hard-coded context offsets against the Windows SDK.
+`full-gui-parameter-1` separately writes/readbacks the undocumented
+`RTL_USER_PROCESS_PARAMETERS.LoaderThreads` field at x64 offset `0x40c` on the
+suspended worker, without an IFEO value. Both this field and registry control are
+diagnostics only. Parent inspection also records matching foreign kernel-object
+handles and queries each worker factory's process ID; a snapshot does not prove
+no future object transfer.

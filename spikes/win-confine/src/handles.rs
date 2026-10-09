@@ -6,6 +6,7 @@ use std::mem::{size_of, zeroed};
 use std::ptr::{null, null_mut};
 use windows_sys::Win32::Foundation::*;
 use windows_sys::Win32::Security::*;
+use windows_sys::Win32::System::Diagnostics::Debug::{ReadProcessMemory, WriteProcessMemory};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::*;
 use windows_sys::Win32::System::LibraryLoader::*;
 use windows_sys::Win32::System::Registry::*;
@@ -244,6 +245,7 @@ struct SymbolInfo {
 type Initialize = unsafe extern "system" fn(HANDLE, *const u16, i32) -> i32;
 type FromAddress = unsafe extern "system" fn(HANDLE, u64, *mut u64, *mut SymbolInfo) -> i32;
 type Cleanup = unsafe extern "system" fn(HANDLE) -> i32;
+type ModuleInfo = unsafe extern "system" fn(HANDLE, u64, *mut c_void) -> i32;
 struct Symbols {
     library: HMODULE,
     process: HANDLE,
@@ -253,10 +255,23 @@ struct Symbols {
 impl Symbols {
     fn new(process: HANDLE) -> Result<Self> {
         unsafe {
+            let image = std::env::var("BASAL_DBGHELP").unwrap_or_else(|_| "dbghelp.dll".into());
+            if let Ok(server) = std::env::var("BASAL_SYMSRV") {
+                LoadLibraryExW(
+                    wide(&server).as_ptr(),
+                    null_mut(),
+                    LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR,
+                );
+            }
             let library = LoadLibraryExW(
-                wide("dbghelp.dll").as_ptr(),
+                wide(&image).as_ptr(),
                 null_mut(),
-                LOAD_LIBRARY_SEARCH_SYSTEM32,
+                LOAD_LIBRARY_SEARCH_SYSTEM32
+                    | if image.contains('\\') {
+                        LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR
+                    } else {
+                        0
+                    },
             );
             if library.is_null() {
                 return Err(last("LoadLibraryExW(dbghelp)"));
@@ -271,7 +286,14 @@ impl Symbols {
                 return Err("DbgHelp exports unavailable".into());
             };
             let init: Initialize = std::mem::transmute(init);
-            let path = wide("srv*evidence\\symbols*https://msdl.microsoft.com/download/symbols");
+            let cache = std::env::current_dir()
+                .map_err(|error| error.to_string())?
+                .join("evidence")
+                .join("symbols");
+            let path = wide(&format!(
+                "srv*{}*https://msdl.microsoft.com/download/symbols",
+                cache.display()
+            ));
             if init(process, path.as_ptr(), 1) == 0 {
                 let error = last("SymInitializeW");
                 FreeLibrary(library);
@@ -297,7 +319,19 @@ impl Symbols {
             {
                 return json!({"address":format!("0x{address:016x}"),"error":GetLastError()});
             }
-            json!({"address":format!("0x{address:016x}"),"symbol":String::from_utf8_lossy(&symbol.name[..(symbol.name_len as usize).min(1024)]),"displacement":displacement,"module_base":format!("0x{:016x}",symbol.module)})
+            let module = GetProcAddress(self.library, c"SymGetModuleInfo64".as_ptr().cast()).map(|export| {
+                let query: ModuleInfo = std::mem::transmute(export);
+                let mut buffer = [0u64; 210];
+                buffer[0] = 1680;
+                if query(self.process, address as u64, buffer.as_mut_ptr().cast()) == 0 { return json!({"error":GetLastError()}); }
+                let bytes = std::slice::from_raw_parts(buffer.as_ptr().cast::<u8>(), 1680);
+                let text = |start: usize, length: usize| {
+                    let value = &bytes[start..start + length];
+                    String::from_utf8_lossy(&value[..value.iter().position(|byte| *byte == 0).unwrap_or(length)]).into_owned()
+                };
+                json!({"base":format!("0x{:016x}",buffer[1]),"symbol_type":u32::from_le_bytes(bytes[32..36].try_into().unwrap()),"name":text(36,32),"pdb":text(580,256)})
+            });
+            json!({"address":format!("0x{address:016x}"),"symbol":String::from_utf8_lossy(&symbol.name[..(symbol.name_len as usize).min(1024)]),"displacement":displacement,"module_base":format!("0x{:016x}",symbol.module),"module":module})
         }
     }
 }
@@ -378,6 +412,10 @@ pub fn inspect(process: HANDLE, main_thread: HANDLE, pid: u32, inventory: &Value
     let alpc = match system {
         Err(error) => json!({"error":error}),
         Ok(entries) => {
+            let correlations: Vec<_> = entries.iter().filter(|entry| entry.pid == pid as usize && handles.iter().any(|handle| handle["handle"].as_u64() == Some(entry.handle as u64))).map(|entry| {
+                let foreign: Vec<_> = entries.iter().filter(|other| entry.object != 0 && other.object == entry.object && other.pid != entry.pid).map(|other| json!({"pid":other.pid,"handle":other.handle,"access":hex(other.access)})).collect();
+                json!({"handle":entry.handle,"object":format!("0x{:016x}",entry.object),"foreign_handles":foreign})
+            }).collect();
             let worker: Vec<_> = entries
                 .iter()
                 .filter(|entry| {
@@ -398,7 +436,7 @@ pub fn inspect(process: HANDLE, main_thread: HANDLE, pid: u32, inventory: &Value
                 let (session_status, server_status) = if duplicated {
                     let duplicate = Handle(duplicate);
                     server_info[0] = main_thread as usize;
-                    unsafe { (NtAlpcQueryInformation(duplicate.0, 12, session.as_mut_ptr().cast(), 8, &mut returned), NtAlpcQueryInformation(duplicate.0, 4, server_info.as_mut_ptr().cast(), (server_info.len() * 8) as u32, &mut returned)) }
+                    unsafe { (NtAlpcQueryInformation(duplicate.0, 12, session.as_mut_ptr().cast(), 8, &mut returned), NtAlpcQueryInformation(null_mut(), 4, server_info.as_mut_ptr().cast(), (server_info.len() * 8) as u32, &mut returned)) }
                 } else { (-1, -1) };
                 let peer_pid = if session_status >= 0 { session[1] as usize } else { 0 };
                 let matches: Vec<_> = entries.iter().filter(|entry| entry.object == client.object && entry.pid != pid as usize).map(|entry| json!({"pid":entry.pid,"handle":entry.handle,"object":format!("0x{:016x}",entry.object)})).collect();
@@ -413,12 +451,13 @@ pub fn inspect(process: HANDLE, main_thread: HANDLE, pid: u32, inventory: &Value
                     let ports: Vec<_> = entries.iter().filter(|entry| entry.pid == peer_pid && entry.type_index == client.type_index).map(|entry| json!({"handle":entry.handle,"object":format!("0x{:016x}",entry.object),"access":hex(entry.access),"identity":remote_alpc_name(peer.0, entry.handle as HANDLE)})).collect();
                     json!({"pid":peer_pid,"image":image_name(peer.0),"alpc_ports":ports})
                 };
-                json!({"handle":client.handle,"object":format!("0x{:016x}",client.object),"same_object_foreign_handles":matches,"server_session":{"NTSTATUS":hex(session_status as u32),"session_id":session[0],"process_id":session[1]},"server_information":{"NTSTATUS":hex(server_status as u32),"thread_blocked":server_info[0] & 0xff,"connected_pid":server_info[1]},"peer":peer_info})
+                json!({"handle":client.handle,"object":format!("0x{:016x}",client.object),"same_object_foreign_handles":matches,"server_session":{"NTSTATUS":hex(session_status as u32),"session_id":session[0],"process_id":session[1]},"server_information":{"NTSTATUS":hex(server_status as u32),"thread_blocked":if server_status >= 0 {Some(server_info[0] & 0xff != 0)} else {None},"connected_pid":if server_status >= 0 {Some(server_info[1])} else {None}},"peer":peer_info})
             }).collect();
-            json!({"system_handle_count":entries.len(),"worker_ports":identified})
+            json!({"system_handle_count":entries.len(),"worker_ports":identified,"worker_object_correlations":correlations})
         }
     };
-    json!({"privilege":privilege_report,"modules":modules,"symbols":symbol_setup,"tracing":trace_report,"alpc":alpc,"messages_sent":0})
+    let factories: Vec<_> = handles.iter().filter(|handle| handle["type"] == "TpWorkerFactory").map(|handle| json!({"handle":handle["handle"],"basic":remote_worker_factory(process, handle["handle"].as_u64().unwrap_or(0) as HANDLE)})).collect();
+    json!({"privilege":privilege_report,"modules":modules,"symbols":symbol_setup,"tracing":trace_report,"alpc":alpc,"worker_factories":factories,"loader_threads_after_load":loader_threads(process,None),"messages_sent":0})
 }
 
 #[cfg(test)]
@@ -430,5 +469,76 @@ mod tests {
         assert_eq!(size_of::<TraceEntry>(), 160);
         assert_eq!(std::mem::offset_of!(TraceEntry, stacks), 32);
         assert_eq!(std::mem::offset_of!(SymbolInfo, name), 84);
+    }
+}
+
+// LoaderThreads is an undocumented x64 process-parameter field. Record a read
+// for every recipe; only the explicitly labelled diagnostic writes it.
+// LoaderThreads is an undocumented x64 process-parameter field. Record a read
+// for every recipe; only the explicitly labelled diagnostic writes it.
+pub fn loader_threads(process: HANDLE, requested: Option<u32>) -> Value {
+    unsafe {
+        let result = (|| {
+            let mut basic = [0usize; 6];
+            let status =
+                NtQueryInformationProcess(process, 0, basic.as_mut_ptr().cast(), 48, null_mut());
+            if status < 0 {
+                return Err(format!("ProcessBasicInformation: {}", hex(status as u32)));
+            }
+            let mut parameters = 0usize;
+            let mut read = 0;
+            check(
+                ReadProcessMemory(
+                    process,
+                    (basic[1] + 0x20) as *const c_void,
+                    (&mut parameters as *mut usize).cast(),
+                    8,
+                    &mut read,
+                ),
+                "ReadProcessMemory(process parameters)",
+            )?;
+            let address = parameters + 0x40c;
+            let mut before = 0u32;
+            check(
+                ReadProcessMemory(
+                    process,
+                    address as *const c_void,
+                    (&mut before as *mut u32).cast(),
+                    4,
+                    &mut read,
+                ),
+                "ReadProcessMemory(LoaderThreads)",
+            )?;
+            if let Some(count) = requested {
+                check(
+                    WriteProcessMemory(
+                        process,
+                        address as *mut c_void,
+                        (&count as *const u32).cast(),
+                        4,
+                        &mut read,
+                    ),
+                    "WriteProcessMemory(LoaderThreads)",
+                )?;
+            }
+            let mut after = 0u32;
+            check(
+                ReadProcessMemory(
+                    process,
+                    address as *const c_void,
+                    (&mut after as *mut u32).cast(),
+                    4,
+                    &mut read,
+                ),
+                "ReadProcessMemory(LoaderThreads readback)",
+            )?;
+            if requested.is_some_and(|count| count != after) {
+                return Err("LoaderThreads readback mismatch".into());
+            }
+            Ok::<_, String>(
+                json!({"offset":"0x40c","before":before,"requested":requested,"after":after,"diagnostic_only":requested.is_some()}),
+            )
+        })();
+        result.unwrap_or_else(|error| json!({"error":error}))
     }
 }

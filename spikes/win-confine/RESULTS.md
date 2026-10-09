@@ -7,9 +7,12 @@ Untrusted before input**, both as a detached console image and as a GUI-subsyste
 image without `DETACHED_PROCESS`. The earlier `0xc0000142` failures were not proof
 that restricted birth tokens cannot load: removing console initialization is
 sufficient in the measured comparisons. **Do not enable a Windows worker from
-this prototype yet.** The successful recipes retain **27 / 28 ambient handles**,
-including an ALPC port and, on 2022, a non-stdio read/write File handle. They do
-not establish the requested three-stdio-only boundary.
+this prototype yet.** The GUI worker initially retains **27 / 28 ambient
+handles**, rather than three stdio pipes. A combined pre-input ALPC/KsecDD close
+now leaves **26 handles on both images** and completes every probe; creator and
+remaining-authority evidence is in
+[the provenance campaign](#handle-provenance-and-combined-closes). This is not a
+three-stdio-only boundary.
 
 The final recommendation is the **GUI-subsystem, NULL-only LPAC recipe with
 Low birth and an attested post-load Untrusted transition**, not the failed
@@ -905,11 +908,105 @@ After the two successful closes, the pre-input table is:
 | windows-latest | ALPC port | 23 | `\KnownDlls`, `SchedulerSharedData` | 7 Event, 2 IoCompletion, 2 TpWorkerFactory, 4 IRTimer, 6 WaitCompletionPacket |
 | windows-2022 | ALPC port and `\Device\KsecDD` | 23 | `\KnownDlls` | 7 Event, 2 IoCompletion, 2 TpWorkerFactory, 4 IRTimer, 5 WaitCompletionPacket, 2 Semaphore |
 
-That is the bounded residual. It is not a three-pipe table. The two closes were
-measured in separate processes, not together in one process. Production acceptance
+That was the earlier bounded residual, not a three-pipe table. The two closes
+were measured separately in that campaign. The later
+[combined-close campaign](#handle-provenance-and-combined-closes) measures them in
+one process. Production acceptance
 still fails closed until a gate explicitly selects the GUI recipe, checks these
 names, checks that the ALPC and KsecDD handles are gone, and refuses a `\KnownDlls`
 handle that is missing or writable.
+
+## Handle provenance and combined closes
+
+The first native provenance run is
+[37988913528](https://github.com/cortexkit/basal/actions/runs/37988913528), from
+`fabfc81507b1bcf1eb71c0facbc04450fb0248d5`. Retained
+[latest](measurements/handle-provenance/37988913528-windows-latest.json) and
+[2022](measurements/handle-provenance/37988913528-windows-2022.json) reports include
+all GUI variants, every completed probe, birth/final attestation, creation stacks
+and raw query failures. The adjacent manifests hash the raw and retained reports.
+
+### One worker closes both ambient channels
+
+`full-gui-close-combined` closes the unnamed ALPC port and every non-stdio File
+handle after self-lowering and before reading stdin. On latest there is one ALPC
+close and no non-stdio File; on 2022 there are two successful closes: ALPC and the
+File named `\\Device\\KsecDD`. Both second snapshots contain **26 handles**, no
+ALPC Port or non-stdio File, and no closed handle value. Latest PID **7072**
+completes **2,146 probes**, and 2022 PID **7644** completes **1,843**; both exit
+**0**, with only `CreateThread` succeeding. This is a single-process observation,
+not a subtraction of results from separate workers.
+
+### Server attribution without a request
+
+The administrator parent enables `SeDebugPrivilege` temporarily and reads
+`SystemExtendedHandleInformation` while the child blocks on stdin. Latest's
+ALPC handle **92**, object **`0xffff948fd68bab90`**, has **no matching foreign
+handle** in the 50,470-entry snapshot. An ALPC connection's client and server
+ports need not be the same kernel object, so absence of that match is not absence
+of a peer. `AlpcServerSessionInformation` (class **12**, exact eight-byte output)
+returns session **2**, PID **6496**; query-limited process inspection resolves
+**`C:\\Windows\\System32\\csrss.exe`**. Opening that process with
+`PROCESS_DUP_HANDLE` fails **Win32 5**, even with the privilege enabled. The open
+trace includes `ntdll!ZwConnectPort+0x14` and a frame nearest to
+`ntdll!CsrClientConnectToServer+0x118`. This identifies the **CSR server**, not
+apphelp, epmapper or WER. The connection-port name is not returned by this run.
+**No message was sent by the diagnostic**. `PORT_CONNECT` in the measured
+`0x1f0001` grant permits the existing IPC channel's messaging interface; whether
+a real CSR message would be accepted after self-lowering was **not exercised**.
+The observed close removes the channel before probe input.
+
+### Avoidance and isolated close results
+
+Both IFEO `MaxLoaderThreads=0` and `=1` are written/read back as DWORDs on the GUI
+image key. Neither changes the **27 / 28** pre-input totals in this run. The
+created IFEO key is absent after the campaign. This tests the registry settings,
+not whether the restricted loader consumed them. There is no documented
+loader-thread-count field in `IMAGE_LOAD_CONFIG_DIRECTORY`; the documented
+image load-config fields must not be relabelled as that control.
+
+| Type closed, in its own GUI worker | Latest / 2022 outcome |
+|---|---|
+| Event (all 7) | `0xc0000008` after preliminary inventory; no completed probes |
+| TpWorkerFactory (both) | `0xc0000008` during the close, before preliminary inventory |
+| SchedulerSharedData (one latest, absent 2022) | Latest `0xc0000008`; 2022 closes nothing and completes |
+| IoCompletion (both) | Both complete all probes and exit 0 |
+| IRTimer (all 4) | Both complete all probes and exit 0 |
+| WaitCompletionPacket (6 / 5) | Both complete all probes and exit 0 |
+| Semaphore (absent latest / both 2022) | Both complete all probes and exit 0 |
+
+The fatal set is narrowed to **Event and TpWorkerFactory**, plus latest's
+**SchedulerSharedData**. This is type-at-a-time isolation, not proof that each
+individual Event is indispensable. The completion/timer/packet/semaphore subset
+is removable **one type at a time in the measured workload**; combined removal
+is a separate experiment. No thread-pool shutdown API or arbitrary handle close
+is proposed as a production invariant.
+
+### Working handle tracing and its symbol limit
+
+The parent sets `ProcessHandleTracing` (class **32**, 16,384 slots) before resume
+and queries it before input. Both calls succeed, unlike the earlier ETW session.
+The 16-address open stacks include ntdll syscall wrappers for timer, completion,
+worker-factory and wait-packet creation. Loader-phase frames establish creation
+before Rust entry; some Events have RPCRT4/KernelBase frames. Thus not every
+Event can be described as a loader pool object merely from its type/count.
+The initial symbol resolver returns **nearest exports plus displacements**, not
+verified private function symbols. In particular, a distant
+`EtwEventWriteNoRegistration` or `TpWaitForWork` label is not proof that that
+function created the handle. Raw addresses and live module ranges are preserved.
+More precise function attribution is needed before calling the residual a fully
+proved no-peer boundary.
+
+Both images pass Rust **1.99.0** fmt/check, **nine native tests**, Python
+**3.12.10 / 22 tests**, static-CRT builds, two-image PE subsystem/import inventory
+and the live-token fence mutation/restoration witness. Only
+`native::tests::live_token_handle_is_visible_to_handle_inventory` runs in the
+mutant and fails; eight tests are filtered, then all nine pass after restoration.
+The unchanged console full-policy acceptance still fails; GUI diagnostics are
+not silently substituted. The preparatory run
+[37988461388](https://github.com/cortexkit/basal/actions/runs/37988461388), from
+`51495b38d9662bb15d4f028d9459a9af054e124e`, passed compilation/tests but produced no
+runtime evidence: its mutation safety check refused unstaged rustfmt changes.
 
 ## Recommended Windows design changes
 

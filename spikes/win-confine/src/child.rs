@@ -130,6 +130,14 @@ pub fn run() -> Result<()> {
             .map(|value| match value.as_str() {
                 "alpc" => vec!["ALPC Port"],
                 "combined" => vec!["ALPC Port", "File"],
+                "removable" => vec![
+                    "ALPC Port",
+                    "File",
+                    "IoCompletion",
+                    "IRTimer",
+                    "WaitCompletionPacket",
+                    "Semaphore",
+                ],
                 "event" => vec!["Event"],
                 "completion" => vec!["IoCompletion"],
                 "factory" => vec!["TpWorkerFactory"],

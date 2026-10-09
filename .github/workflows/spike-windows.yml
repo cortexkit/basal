@@ -56,6 +56,11 @@ jobs:
           $vs = & $vswhere -latest -products '*' -property installationPath
           $toolset = Get-ChildItem "$vs\VC\Tools\MSVC" -Directory | Sort-Object Name -Descending | Select-Object -First 1
           $dumpbin = Join-Path $toolset.FullName 'bin\Hostx64\x64\dumpbin.exe'
+          $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+          cmd /c "`"$vcvars`" && cl /Bv context_layout.c /Fe:target\context-layout.exe /Fo:target\context-layout.obj"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          & target/context-layout.exe | Tee-Object evidence/context-layout.txt
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           & $dumpbin /imports /dependents target\release\win-confine.exe | Tee-Object evidence\imports.txt
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python pe_inventory.py target/release/win-confine.exe evidence/imports.json
@@ -68,6 +73,14 @@ jobs:
           exit $LASTEXITCODE
       - name: Measure pre-input ambient handles from the parent
         run: |
+          $kits = "${env:ProgramFiles(x86)}\Windows Kits\10"
+          $candidates = @(Get-ChildItem $kits -Filter dbghelp.dll -Recurse -ErrorAction SilentlyContinue | Where-Object { Test-Path (Join-Path $_.DirectoryName 'symsrv.dll') })
+          $toolkit = $candidates | Where-Object { $_.FullName -notmatch '\\x86\\|\\arm64\\' } | Select-Object -First 1
+          if ($toolkit) {
+            $env:BASAL_DBGHELP = $toolkit.FullName
+            $env:BASAL_SYMSRV = Join-Path $toolkit.DirectoryName 'symsrv.dll'
+          }
+          $candidates | Select-Object FullName, @{n='Version';e={$_.VersionInfo.FileVersion}} | ConvertTo-Json | Out-File evidence/symbol-toolkit.json
           systeminfo | Out-File evidence/host.txt
           whoami /all | Out-File -Append evidence/host.txt
           & target/release/win-confine.exe --output evidence/report.json 2> evidence/parent-stderr.txt

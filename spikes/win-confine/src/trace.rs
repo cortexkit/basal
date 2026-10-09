@@ -120,6 +120,12 @@ unsafe fn thread_token(tid: u32) -> Value {
 // The creating thread must pump debug events. Pipe readers run independently
 // because a child that reaches entry can write more than one pipe buffer.
 pub unsafe fn collect(process: HANDLE, pid: u32) -> Value {
+    unsafe { collect_inner(process, pid, false) }
+}
+pub unsafe fn collect_connections(process: HANDLE, pid: u32) -> Value {
+    unsafe { collect_inner(process, pid, true) }
+}
+unsafe fn collect_inner(process: HANDLE, pid: u32, watch_connections: bool) -> Value {
     unsafe {
         let started = Instant::now();
         let mut events = Vec::new();
@@ -127,6 +133,7 @@ pub unsafe fn collect(process: HANDLE, pid: u32) -> Value {
         let initial_loader_flag = loader_flag(process);
         let mut startup_breakpoint_seen = false;
         let mut errors = Vec::new();
+        let mut connections = None;
         while started.elapsed().as_secs() < 180 {
             let mut event: DEBUG_EVENT = zeroed();
             if WaitForDebugEventEx(&mut event, 1000) == 0 {
@@ -147,7 +154,22 @@ pub unsafe fn collect(process: HANDLE, pid: u32) -> Value {
                 }
                 LOAD_DLL_DEBUG_EVENT => {
                     let info = event.u.LoadDll;
-                    json!({"kind":"load_dll","base":info.lpBaseOfDll as usize,"path":image_path(info.hFile),"loader_flag":loader_flag(process),"thread_token":thread_token(event.dwThreadId)})
+                    let path = image_path(info.hFile);
+                    let mut setup = Value::Null;
+                    if watch_connections
+                        && path
+                            .as_str()
+                            .is_some_and(|path| path.to_ascii_lowercase().ends_with("\\ntdll.dll"))
+                    {
+                        match crate::connections::Connections::new(info.lpBaseOfDll as usize) {
+                            Ok(mut observer) => {
+                                setup = observer.arm(event.dwThreadId);
+                                connections = Some(observer);
+                            }
+                            Err(error) => setup = json!({"error":error}),
+                        }
+                    }
+                    json!({"kind":"load_dll","base":info.lpBaseOfDll as usize,"path":path,"connection_breakpoints":setup,"loader_flag":loader_flag(process),"thread_token":thread_token(event.dwThreadId)})
                 }
                 UNLOAD_DLL_DEBUG_EVENT => {
                     json!({"kind":"unload_dll","base":event.u.UnloadDll.lpBaseOfDll as usize})
@@ -189,20 +211,33 @@ pub unsafe fn collect(process: HANDLE, pid: u32) -> Value {
                 EXCEPTION_DEBUG_EVENT => {
                     let info = event.u.Exception;
                     let code = info.ExceptionRecord.ExceptionCode;
-                    // Only the debugger's startup breakpoint is consumed; real
-                    // faults must retain the child's normal exception behavior.
-                    if code == EXCEPTION_BREAKPOINT && !startup_breakpoint_seen {
+                    let observation = if code == EXCEPTION_SINGLE_STEP {
+                        connections
+                            .as_mut()
+                            .and_then(|observer| observer.hit(process, event.dwThreadId))
+                    } else {
+                        None
+                    };
+                    // Consume only our hardware stops and the startup breakpoint;
+                    // all other faults retain the child's exception behavior.
+                    if observation.is_some() {
+                    } else if code == EXCEPTION_BREAKPOINT && !startup_breakpoint_seen {
                         startup_breakpoint_seen = true;
                     } else {
                         disposition = DBG_EXCEPTION_NOT_HANDLED;
                     }
-                    json!({"kind":"exception","code":hex(code as u32),"first_chance":info.dwFirstChance,"address":info.ExceptionRecord.ExceptionAddress as usize})
+                    json!({"kind":"exception","code":hex(code as u32),"first_chance":info.dwFirstChance,"address":info.ExceptionRecord.ExceptionAddress as usize,"connection":observation})
                 }
                 EXIT_PROCESS_DEBUG_EVENT => {
                     completed = true;
                     json!({"kind":"exit_process","exit_code":hex(event.u.ExitProcess.dwExitCode)})
                 }
-                CREATE_THREAD_DEBUG_EVENT => json!({"kind":"create_thread"}),
+                CREATE_THREAD_DEBUG_EVENT => {
+                    let setup = connections
+                        .as_mut()
+                        .map(|observer| observer.arm(event.dwThreadId));
+                    json!({"kind":"create_thread","connection_breakpoints":setup})
+                }
                 EXIT_THREAD_DEBUG_EVENT => {
                     json!({"kind":"exit_thread","exit_code":hex(event.u.ExitThread.dwExitCode)})
                 }
@@ -222,6 +257,6 @@ pub unsafe fn collect(process: HANDLE, pid: u32) -> Value {
             DebugActiveProcessStop(pid);
             WaitForSingleObject(process, 5000);
         }
-        json!({"completed":completed,"initial_loader_flag":initial_loader_flag,"errors":errors,"events":events})
+        json!({"completed":completed,"initial_loader_flag":initial_loader_flag,"errors":errors,"events":events,"connections":connections.as_ref().map(|observer| &observer.events)})
     }
 }

@@ -1,6 +1,8 @@
 #[cfg(windows)]
 mod child;
 #[cfg(windows)]
+mod connections;
+#[cfg(windows)]
 mod context;
 #[cfg(windows)]
 mod handles;

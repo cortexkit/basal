@@ -643,6 +643,13 @@ unsafe extern "system" {
         size: u32,
         returned: *mut u32,
     ) -> i32;
+    fn NtQueryInformationWorkerFactory(
+        handle: HANDLE,
+        class: u32,
+        buffer: *mut c_void,
+        bytes: u32,
+        returned: *mut u32,
+    ) -> i32;
     fn NtOpenSection(out: *mut HANDLE, access: u32, attrs: *mut ObjectAttributes) -> i32;
     fn NtOpenEvent(out: *mut HANDLE, access: u32, attrs: *mut ObjectAttributes) -> i32;
     fn NtOpenMutant(out: *mut HANDLE, access: u32, attrs: *mut ObjectAttributes) -> i32;
@@ -929,6 +936,37 @@ pub fn remote_alpc_name(process: HANDLE, handle: HANDLE) -> Value {
         }
         let duplicate = Handle(duplicate);
         json!({"object_name":object_name(duplicate.0),"queries":alpc_identity(duplicate.0)})
+    }
+}
+pub fn remote_worker_factory(process: HANDLE, handle: HANDLE) -> Value {
+    unsafe {
+        let mut duplicate = null_mut();
+        let status = NtDuplicateObject(
+            process,
+            handle,
+            GetCurrentProcess(),
+            &mut duplicate,
+            0,
+            0,
+            2,
+        );
+        if status < 0 {
+            return json!({"duplicate_status":hex(status as u32)});
+        }
+        let duplicate = Handle(duplicate);
+        let mut basic = [0usize; 15];
+        let mut returned = 0;
+        let status = NtQueryInformationWorkerFactory(
+            duplicate.0,
+            7,
+            basic.as_mut_ptr().cast(),
+            120,
+            &mut returned,
+        );
+        if status < 0 {
+            return json!({"NTSTATUS":hex(status as u32),"returned":returned});
+        }
+        json!({"NTSTATUS":hex(status as u32),"process_id":basic[11],"start_routine":format!("0x{:016x}",basic[9]),"start_parameter":format!("0x{:016x}",basic[10])})
     }
 }
 // Identify one stable handle without using the process snapshot as a query

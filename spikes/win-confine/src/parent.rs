@@ -760,15 +760,19 @@ fn launch_variant(
             || sequence == "post-load-detached-control"
             || sequence == "lpac-context-control"
             || sequence == "lpac-context-detached-control";
-        let inspect_ambient = sequence == "full-gui-inspect";
+        let inspect_ambient = sequence == "full-gui-inspect" || sequence == "full-gui-parameter-1";
         let close_ambient = sequence.starts_with("full-gui-close-")
             || inspect_ambient
-            || sequence.starts_with("full-gui-serial-");
+            || sequence.starts_with("full-gui-serial-")
+            || sequence == "full-gui-connect-trace";
         let close_argument = match sequence {
-            "full-gui-inspect" | "full-gui-serial-0" | "full-gui-serial-1" => {
-                " --close-ambient --close-types none"
-            }
+            "full-gui-inspect"
+            | "full-gui-serial-0"
+            | "full-gui-serial-1"
+            | "full-gui-parameter-1"
+            | "full-gui-connect-trace" => " --close-ambient --close-types none",
             "full-gui-close-combined" => " --close-ambient --close-types combined",
+            "full-gui-close-removable" => " --close-ambient --close-types removable",
             "full-gui-close-event" => " --close-ambient --close-types event",
             "full-gui-close-completion" => " --close-ambient --close-types completion",
             "full-gui-close-factory" => " --close-ambient --close-types factory",
@@ -792,7 +796,7 @@ fn launch_variant(
             && sequence != "chrome-loader-privileges-control"
             && !chrome_token;
         let bare = sequence == "bare-token-control";
-        let debug = sequence == "loader-trace";
+        let debug = sequence == "loader-trace" || sequence == "full-gui-connect-trace";
         let mut tokens = if full {
             Some(restricted_tokens(
                 parent_token,
@@ -986,6 +990,10 @@ fn launch_variant(
         };
         let process = Handle(pi.hProcess);
         let main_thread = Handle(pi.hThread);
+        let loader_threads = crate::handles::loader_threads(
+            process.0,
+            (sequence == "full-gui-parameter-1").then_some(1),
+        );
         let handle_trace_enablement = if inspect_ambient {
             crate::handles::enable_tracing(process.0)
         } else {
@@ -1109,7 +1117,11 @@ fn launch_variant(
             (ok, error, written)
         });
         let debug_events = if debug {
-            crate::trace::collect(process.0, pi.dwProcessId)
+            if sequence == "full-gui-connect-trace" {
+                crate::trace::collect_connections(process.0, pi.dwProcessId)
+            } else {
+                crate::trace::collect(process.0, pi.dwProcessId)
+            }
         } else {
             Value::Null
         };
@@ -1131,7 +1143,7 @@ fn launch_variant(
             || json!({"parse_error":format!("{reports:?}"),"stdout":String::from_utf8_lossy(&stdout)}),
         );
         Ok(
-            json!({"sequence":sequence,"pid":pi.dwProcessId,"creation_flags":hex(flags),"requested_context":context.as_ref().map(|c|&c.report),"handle_trace_enablement":handle_trace_enablement,"loader_setting":loader_setting.as_ref().map(|setting| &setting.report),"parent_handle_inspection":parent_handles,"debug":{"requested":debug,"loader_snaps_enablement":loader_snaps_enablement,"setup":debug_setup,"attached_before_resume":attached,"creation_error":debug_creation_error,"trace":debug_events},"exit_code":hex(exit),"timeout":wait!=WAIT_OBJECT_0,"input_write":{"success":write_ok,"error":if write_ok{0}else{write_error},"bytes":written},"stderr":String::from_utf8_lossy(&stderr),"job":job.as_ref().map(|j|&j.1),"constructed_tokens":tokens.as_ref().map(|t|&t.report),"parent_before_resume":{"startup_context":birth_startup,"primary":birth_primary,"assigned_loader":assigned_loader,"initial_handle_closed":initial_closed_before_resume},"stdio_handles":{"stdin":handles[0] as usize,"stdout":handles[1] as usize,"stderr":handles[2] as usize},"child":child}),
+            json!({"sequence":sequence,"pid":pi.dwProcessId,"creation_flags":hex(flags),"requested_context":context.as_ref().map(|c|&c.report),"handle_trace_enablement":handle_trace_enablement,"loader_setting":loader_setting.as_ref().map(|setting| &setting.report),"loader_threads":loader_threads,"parent_handle_inspection":parent_handles,"debug":{"requested":debug,"loader_snaps_enablement":loader_snaps_enablement,"setup":debug_setup,"attached_before_resume":attached,"creation_error":debug_creation_error,"trace":debug_events},"exit_code":hex(exit),"timeout":wait!=WAIT_OBJECT_0,"input_write":{"success":write_ok,"error":if write_ok{0}else{write_error},"bytes":written},"stderr":String::from_utf8_lossy(&stderr),"job":job.as_ref().map(|j|&j.1),"constructed_tokens":tokens.as_ref().map(|t|&t.report),"parent_before_resume":{"startup_context":birth_startup,"primary":birth_primary,"assigned_loader":assigned_loader,"initial_handle_closed":initial_closed_before_resume},"stdio_handles":{"stdin":handles[0] as usize,"stdout":handles[1] as usize,"stderr":handles[2] as usize},"child":child}),
         )
     }
 }
@@ -1682,7 +1694,10 @@ pub fn run() -> Result<()> {
                         "full-gui-close-file",
                         "full-gui-close-pool",
                         "full-gui-inspect",
+                        "full-gui-connect-trace",
+                        "full-gui-parameter-1",
                         "full-gui-close-combined",
+                        "full-gui-close-removable",
                         "full-gui-serial-0",
                         "full-gui-serial-1",
                         "full-gui-close-event",
