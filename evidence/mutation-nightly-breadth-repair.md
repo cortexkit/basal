@@ -112,19 +112,25 @@ to name it.
 
 ## Proofs
 
-Every changed row was replayed in a single session per host with
-`ckdev-mutate run --diff 21b03f4`. That selects exactly the rows whose catalogue
-entry changed, and each row runs the same replay that `--only <id>` would run.
-The sessions then ran again with `--broad`.
+All proofs used `ckdev-mutate` 0.9.5, built from commons
+`73c7e66145e131eadffdd874c82d93548868b668` (the revision CI pins).
+`ckdev-mutate check` passed with it on both hosts.
 
-- Linux (remote build server, ckdev-mutate 0.9.5): the plain replay graded
-  all 7 Linux rows CAUGHT, and the `--broad` replay graded all 7 HUB. In the
-  plain replay, none of the six rows that used to carry `only = true` reddened
-  any test in its own target besides the named one.
+On each host, every changed row was replayed in one session with
+`ckdev-mutate run --diff 21b03f4`, where `21b03f4` is the commit just before the
+catalogue change. That selects exactly the rows whose catalogue entry changed,
+and each row runs the same replay that `--only <id>` would run. The session
+was then repeated with `--broad`.
+
+- Linux (remote build server): the plain replay graded all 7 Linux rows CAUGHT,
+  and the `--broad` replay graded all 7 HUB. In the plain replay, none of the
+  six rows that used to carry `only = true` reddened any test in its own target
+  besides the named one.
 - macOS (local): the plain replay graded all 27 macOS rows CAUGHT, and the
-  `--broad` replay graded all 27 HUB. The four rows that used to carry
-  `only = true` showed no other red test in their own target.
+  `--broad` replay graded all 27 HUB. None of the four rows that used to carry
+  `only = true` showed another red test in its own target.
 - `flow-scope-fixture-keeps-the-production-activation-deadline`: macOS
-  `run --only` CAUGHT, as above. With `--broad` it is also CAUGHT, and across
-  the package's 206 tests only the named test went red, so its `only = true`
-  holds there too.
+  `run --only` is CAUGHT, failing at `the stalled activation took 60.004697292s,
+  at least the production activation deadline of 60s`. With `--broad` it is also
+  CAUGHT: of the package's 206 tests only the named test went red, so its
+  `only = true` holds there as well.
