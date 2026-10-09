@@ -18,7 +18,12 @@ cortexkit-store.workspace = true
 cortexkit-store-types.workspace = true
 croner.workspace = true
 jiff.workspace = true
+jsonschema.workspace = true
 rusqlite.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+# Canonical JSON hashes the double a JSON number denotes, so a number must
+# parse to exactly the nearest double: without `float_roundtrip`, serde_json
+# may land one unit away, and a catalog digest would differ from the one
+# another canonical JSON implementation computes for the same text.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 tracing.workspace = true

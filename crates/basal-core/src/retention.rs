@@ -210,6 +210,10 @@ impl Runtime {
     }
 
     pub(crate) fn retention_due(&self, now: i64) -> Result<()> {
+        // Codemode runs are pruned when they are due, not on the flow
+        // retention interval: their 24-hour horizon is part of the codemode
+        // contract, and `next_wake_at` wakes the engine for it.
+        crate::codemode::retention::sweep(self.store(), now)?;
         let mut next = self
             .shared
             .retention_next

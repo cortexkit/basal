@@ -279,7 +279,129 @@ ALTER TABLE installs ADD COLUMN revoked_reason TEXT;
         version: 13,
         statements: WAKE_INDEXES,
     },
+    Migration {
+        version: 14,
+        statements: CODEMODE,
+    },
 ];
+
+/// Codemode runs and their tool calls, kept apart from the flow tables.
+///
+/// A codemode run is never a flow run: it has no flow, lease, trigger or
+/// replay, and none of the flow paths (the journal, call recovery, retry,
+/// suspension, reconcile, flow retention or the flow ops) reads these
+/// tables. Each call is attempted at most once, so nothing here records
+/// attempts or resend state.
+///
+/// The triggers make the outcome rules hold for any writer, not only the
+/// functions in `codemode::store`: a recorded call outcome and a terminal
+/// run never change, a run becomes terminal only once none of its calls is
+/// pending, calls are added only while their run is running, and a run's row
+/// is deleted only behind its permanent tombstone, whose id is never used
+/// again.
+const CODEMODE: &str = r#"
+-- One row per admitted run. `catalog` is the catalog as admitted and
+-- `catalog_digest` its digest; `limits` and `scope` are the admitted
+-- request's, as JSON. `ended_at` and the frozen `duration_ms` are set
+-- exactly when the run is terminal. `value` is the program's return value
+-- (JSON), only for a completed run; `error_code` and `error_message` are
+-- present together.
+CREATE TABLE codemode_runs (
+    run_id         TEXT PRIMARY KEY,
+    agent_id       TEXT NOT NULL,
+    program        TEXT NOT NULL,
+    catalog        TEXT NOT NULL CHECK (json_valid(catalog) AND json_type(catalog) = 'array'),
+    catalog_digest TEXT NOT NULL CHECK (length(catalog_digest) = 64 AND catalog_digest NOT GLOB '*[^0-9a-f]*'),
+    description    TEXT CHECK (description IS NULL OR (length(CAST(description AS BLOB)) <= 1024
+                       AND instr(description, char(10)) = 0 AND instr(description, char(13)) = 0
+                       AND instr(description, char(8232)) = 0 AND instr(description, char(8233)) = 0)),
+    limits         TEXT NOT NULL CHECK (json_valid(limits) AND json_type(limits) = 'object'),
+    scope          TEXT NOT NULL CHECK (json_valid(scope) AND json_type(scope) = 'object'),
+    deadline_ms    INTEGER NOT NULL,
+    status         TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed',
+                       'budget_exhausted:js_cpu', 'budget_exhausted:memory', 'budget_exhausted:stack',
+                       'budget_exhausted:wall', 'budget_exhausted:tool_calls', 'cancelled', 'interrupted')),
+    value          TEXT CHECK (value IS NULL OR (status = 'completed' AND json_valid(value))),
+    error_code     TEXT,
+    error_message  TEXT CHECK (error_message IS NULL OR length(error_message) > 0),
+    output         TEXT NOT NULL DEFAULT '',
+    warnings       TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(warnings) AND json_type(warnings) = 'array'),
+    admitted_at    INTEGER NOT NULL,
+    ended_at       INTEGER,
+    duration_ms    INTEGER CHECK (duration_ms IS NULL OR duration_ms >= 0),
+    CHECK ((status = 'running') = (ended_at IS NULL)),
+    CHECK ((status = 'running') = (duration_ms IS NULL)),
+    CHECK ((error_code IS NULL) = (error_message IS NULL)),
+    CHECK ((error_code IS NOT NULL) = (status = 'failed' OR status = 'interrupted'
+        OR status LIKE 'budget_exhausted:%')),
+    CHECK (status NOT LIKE 'budget_exhausted:%' OR error_code = status)
+);
+CREATE INDEX codemode_runs_active ON codemode_runs (agent_id) WHERE status = 'running';
+CREATE INDEX codemode_runs_ended ON codemode_runs (ended_at) WHERE ended_at IS NOT NULL;
+
+-- One row per tool call the parent recorded, by the worker's position.
+-- `intent_at` is set when the intent to send was committed, just before the
+-- single send; a row without it was never sent. `outcome` is 'pending'
+-- while the call is queued or awaiting its answer. `duration_ms` runs from
+-- `intent_at` to the recorded outcome and exists only for a sent call with
+-- an outcome. `input_bytes` is the size of the call's input, which is not
+-- stored.
+CREATE TABLE codemode_calls (
+    run_id          TEXT NOT NULL REFERENCES codemode_runs (run_id),
+    position        INTEGER NOT NULL CHECK (position >= 0),
+    tool            TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    input_bytes     INTEGER NOT NULL CHECK (input_bytes >= 0),
+    intent_at       INTEGER,
+    outcome         TEXT NOT NULL CHECK (outcome IN ('pending', 'ok', 'error', 'refused',
+                        'consent_unavailable', 'tool_unavailable', 'outcome_unknown', 'cancelled')),
+    code            TEXT,
+    duration_ms     INTEGER CHECK (duration_ms IS NULL OR duration_ms >= 0),
+    PRIMARY KEY (run_id, position),
+    CHECK ((code IS NULL) = (outcome IN ('pending', 'ok', 'cancelled'))),
+    CHECK (outcome NOT IN ('ok', 'error', 'consent_unavailable', 'outcome_unknown') OR intent_at IS NOT NULL),
+    CHECK (outcome <> 'cancelled' OR intent_at IS NULL),
+    CHECK ((duration_ms IS NOT NULL) = (intent_at IS NOT NULL AND outcome <> 'pending'))
+);
+
+-- A pruned run's id, kept forever so the id is never admitted again.
+CREATE TABLE codemode_tombstones (
+    run_id    TEXT PRIMARY KEY,
+    pruned_at INTEGER NOT NULL
+);
+
+CREATE TRIGGER codemode_calls_outcome_is_final BEFORE UPDATE ON codemode_calls
+WHEN OLD.outcome <> 'pending'
+BEGIN SELECT RAISE(ABORT, 'a recorded codemode call outcome never changes'); END;
+
+CREATE TRIGGER codemode_calls_only_while_running BEFORE INSERT ON codemode_calls
+WHEN NOT EXISTS (SELECT 1 FROM codemode_runs WHERE run_id = NEW.run_id AND status = 'running')
+BEGIN SELECT RAISE(ABORT, 'codemode calls are recorded only while their run is running'); END;
+
+CREATE TRIGGER codemode_runs_terminal_is_final BEFORE UPDATE ON codemode_runs
+WHEN OLD.status <> 'running'
+BEGIN SELECT RAISE(ABORT, 'a terminal codemode run never changes'); END;
+
+CREATE TRIGGER codemode_runs_end_with_no_pending_call BEFORE UPDATE OF status ON codemode_runs
+WHEN NEW.status <> 'running'
+    AND EXISTS (SELECT 1 FROM codemode_calls WHERE run_id = NEW.run_id AND outcome = 'pending')
+BEGIN SELECT RAISE(ABORT, 'a codemode run ends only once none of its calls is pending'); END;
+
+CREATE TRIGGER codemode_runs_not_tombstoned BEFORE INSERT ON codemode_runs
+WHEN EXISTS (SELECT 1 FROM codemode_tombstones WHERE run_id = NEW.run_id)
+BEGIN SELECT RAISE(ABORT, 'a pruned codemode run id is never used again'); END;
+
+CREATE TRIGGER codemode_runs_delete_behind_tombstone BEFORE DELETE ON codemode_runs
+WHEN OLD.status = 'running'
+    OR NOT EXISTS (SELECT 1 FROM codemode_tombstones WHERE run_id = OLD.run_id)
+BEGIN SELECT RAISE(ABORT, 'a codemode run is deleted only once it has ended and been tombstoned'); END;
+
+CREATE TRIGGER codemode_tombstones_no_update BEFORE UPDATE ON codemode_tombstones
+BEGIN SELECT RAISE(ABORT, 'codemode tombstones are permanent'); END;
+
+CREATE TRIGGER codemode_tombstones_no_delete BEFORE DELETE ON codemode_tombstones
+BEGIN SELECT RAISE(ABORT, 'codemode tombstones are permanent'); END;
+"#;
 
 // The idle engine sleeps until its earliest timer. Finding that timer takes the
 // smallest live run deadline and the smallest deferred-call retry time; these

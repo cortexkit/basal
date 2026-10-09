@@ -24,6 +24,8 @@
 //!   reconciling an unknown call and re-enabling an auto-disabled flow.
 //! - [`schedule`]: schedule triggers, due times in a named zone, missed
 //!   fires, and their admission.
+//! - [`codemode`]: codemode runs and calls, stored apart from flow runs,
+//!   with the catalog digest and input schema checks.
 //!
 //! The core never spawns a process and never links the worker. It drives a
 //! worker through [`channel::WorkerChannel`], so whoever owns the pool
@@ -36,6 +38,7 @@ pub mod broca;
 pub mod cards;
 pub mod channel;
 pub mod clock;
+pub mod codemode;
 pub mod decisions;
 pub mod driver;
 pub mod error;
