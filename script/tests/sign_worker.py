@@ -3,6 +3,7 @@
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -41,6 +42,12 @@ class SignWorkerVerifyChecks(unittest.TestCase):
         result = self.run_gate("exit")
         self.assert_gate_rejected(result)
         self.assertIn("exited with code 23", result.stderr)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "SIGSYS is a Linux seccomp signal")
+    def test_sigsys_before_ready_fails_gate(self):
+        result = self.run_gate("setup-sigsys")
+        self.assert_gate_rejected(result)
+        self.assertIn("died by signal", result.stderr)
 
     def test_correct_denial_passes(self):
         result = self.run_gate("sigsys")
@@ -109,8 +116,8 @@ linux = sys.platform.startswith("linux")
 if linux:
     selected = next(value for value in args if value.startswith("--syscall="))
     syscall_name = selected.split("=", 1)[1]
-    attempt = {"open": "read", "connect": "connect", "exec": "exec"}[syscall_name]
-    raw_name = {"open": "openat", "connect": "connect", "exec": "execve"}[syscall_name]
+    attempt = {"open": "read", "tcp": "connect", "exec": "exec"}[syscall_name]
+    raw_name = {"open": "openat", "tcp": "socket", "exec": "execve"}[syscall_name]
 else:
     attempt = "read"
     syscall_name = "open"
@@ -123,14 +130,13 @@ if scenario == "unparsable":
     sys.exit(0)
 
 if linux:
-    report = {
-        "confinement": "linux",
-        "seccomp": True,
-        "landlock": None,
-        "open_descriptors": [],
-        "sigsys_handler": False,
-    }
-    print(json.dumps(report), flush=True)
+    print(
+        '{"confinement":"linux","seccomp":true,"landlock":null,'
+        '"open_descriptors":[],"sigsys_handler":false}',
+        flush=True,
+    )
+    if scenario == "setup-sigsys":
+        os.kill(os.getpid(), signal.SIGSYS)
     print(f"ready: {syscall_name} syscall: {raw_name}", flush=True)
     if scenario == "crashed":
         os.kill(os.getpid(), signal.SIGSEGV)
@@ -142,7 +148,7 @@ if linux:
         port = int(next(value.split("=", 1)[1] for value in args if value.startswith("--port=")))
         with socket.create_connection(("127.0.0.1", port), timeout=2):
             pass
-        print("result: 0 errno: 0", flush=True)
+        print("result: 3 errno: 0", flush=True)
     elif attempt == "connect" and scenario == "refused":
         print("result: -1 errno: 111", flush=True)
     else:

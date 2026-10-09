@@ -206,7 +206,7 @@ def check_macos(listener):
 def check_linux(listener):
     probes = (
         ("read", "open", "openat", [f"--path={profile}"]),
-        ("connect", "connect", "connect", [f"--port={listener.port}"]),
+        ("connect", "tcp", "socket", [f"--port={listener.port}"]),
         ("exec", "exec", "execve", []),
     )
     for attempt, syscall_name, raw_name, extra in probes:
