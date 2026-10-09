@@ -245,8 +245,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Each catalogue row is one mutation control. The 104 rows marked for
-        # Linux use two shards, about 52 each. The 429 marked for macOS use five,
+        # Each catalogue row is one mutation control. The 125 rows marked for
+        # Linux use two shards, about 63 each. The 431 marked for macOS use five,
         # about 86 each: five is the most macOS jobs this GitHub account runs at
         # once. Each host shards the sorted catalogue on its own, and rows marked
         # for the other OS are reported SKIPPED_PLATFORM without being built.

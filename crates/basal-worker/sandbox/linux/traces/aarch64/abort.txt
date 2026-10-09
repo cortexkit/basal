@@ -1,0 +1,2 @@
+{"confinement":"linux","seccomp":true,"landlock":{"runtime_abi":7,"applied_abi":7},"open_descriptors":[0, 1, 2],"sigsys_handler":false}
+ready: abort syscall: abort

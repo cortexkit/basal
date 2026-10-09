@@ -112,7 +112,7 @@ published yet.
 | Second layer | Landlock | none |
 | Threads | blocked by seccomp | not blocked |
 | Ptrace and memory reads | blocked by non-dumpable | blocked by the hardened runtime |
-| Privacy grants | not applicable | worker launched disclaimed |
+| Privacy grants | not applicable | launched detached from the module's privacy grants |
 | Health counter | SIGSYS deaths | none |
 
 A denied operation on Linux kills the worker; on macOS the call fails and the
@@ -132,6 +132,9 @@ another thread whose CPU the engine thread's clock does not count, and that
 thread could keep running after its activation returns. The CPU such a pooled
 worker can use is therefore bounded only by time: the wall-clock deadline
 while an activation runs, plus the idle-retire limit once the worker sits idle.
+Retiring or killing a worker ends its process and every thread in it, so a
+stray thread lives no longer than its worker: until the worker is killed at a
+deadline, or retired after the idle-retire period or its 256th activation.
 
 ### Budget exhaustion and retirement
 

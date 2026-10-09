@@ -1,0 +1,6 @@
+{"confinement":"linux","seccomp":true,"landlock":{"runtime_abi":7,"applied_abi":7},"open_descriptors":[0, 1, 2],"sigsys_handler":false}
+ready: panic syscall: panic
+
+thread 'main' (7674) panicked at crates/basal-worker/src/probe/linux.rs:443:24:
+probe panic
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

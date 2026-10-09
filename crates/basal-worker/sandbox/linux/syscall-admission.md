@@ -75,10 +75,36 @@ MAP_DROPPABLE. That mapping mode was **not** admitted. The worker now primes tha
 single-thread libc state before step 0 audits mappings, keeping initialization
 out of activations and keeping the exact MAP_PRIVATE + MAP_ANONYMOUS predicate.
 
-aarch64: **pending native traces and clock-cost measurement**. The filter table is
-built and tested structurally on x86_64, but no emulated trace is presented as
-native evidence. Run `trace-native.sh` on native aarch64 to fill
-`traces/aarch64/`; review those calls against the table before accepting that leg.
+aarch64: see `traces/aarch64/`, produced natively by CI's `aarch64-syscall-trace`
+job on a GitHub `ubuntu-24.04-arm` runner (Linux 6.17 Azure / glibc 2.39 /
+Rust 1.99 / strace 6.8; `tools.txt` has the exact versions). No emulated trace is
+used. `clock-cost.txt` records the measured `CLOCK_THREAD_CPUTIME_ID` syscall
+cost there: 281.12–281.92 ns/call across five batches of 1,000,000 calls. This
+cost is descriptive, not a test bound. The 23 confined release engine children
+passed all 22 selected budget, IPC, clock and replay tests, and the panic and
+abort probes reached readiness and exited 101 and SIGABRT respectively.
+
+Every post-filter call in the aarch64 trace set was reviewed against the table:
+
+- `read(0)` and `write(1|2)`: stdio only, as on x86_64.
+- `brk`: the private heap.
+- `clock_gettime(CLOCK_THREAD_CPUTIME_ID)`: the CPU-budget clock; every sample
+  in the set uses that clock.
+- `futex(..., FUTEX_WAKE_PRIVATE, ...)`: process-private wakeups only.
+- `getrandom(buf, 16, GRND_INSECURE)`: one call per worker, seeding std's
+  HashMap. glibc 2.39 has no vDSO `getrandom`, so on this runner the seed is a
+  real syscall where the x86_64 trace (glibc 2.43) shows none. It returns random
+  bytes into the worker's own memory and opens no device.
+- `rt_sigprocmask(SIG_UNBLOCK, ...)`, `gettid`, `getpid` and
+  `tgkill(own pid, own tid, SIGABRT)`: glibc's `abort`, signalling only the
+  worker itself.
+- `exit_group`: normal exit, the panic probe's 101, and exit 3 after the worker
+  reports a broken channel on stderr.
+
+None of these grants filesystem, network, executable memory, process creation
+or other-process authority, so no call was removed from the worker and the
+aarch64 column is unchanged. Workers the test parent kills appear as
+`killed by SIGKILL`; no trace shows SIGSYS.
 
 The intentionally admitted vDSO fallbacks need not appear on every machine.
 Private allocator and signal plumbing convey no filesystem, network, executable

@@ -1,0 +1,11 @@
+brk 175
+clock_gettime 12048
+exit_group 6
+futex 21
+getpid 1
+getrandom 20
+gettid 2
+read 158
+rt_sigprocmask 1
+tgkill 1
+write 214
