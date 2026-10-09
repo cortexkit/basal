@@ -262,6 +262,9 @@ impl Host for RoutingHost {
         self.core.attach(sink.clone());
         self.model.attach(sink);
     }
+    fn bind_fs_temps(&self, ledger: Arc<dyn crate::builtins::fs::TempLedger>) {
+        self.builtins.bind_fs_temps(ledger);
+    }
     fn install_status(
         &self,
         flow_id: &str,

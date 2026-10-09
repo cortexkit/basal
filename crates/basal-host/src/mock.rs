@@ -788,6 +788,10 @@ impl Host for MockHost {
         *lock(&self.shared.sink) = Some(sink);
         self.redeliver();
     }
+
+    fn bind_fs_temps(&self, ledger: Arc<dyn crate::builtins::fs::TempLedger>) {
+        self.shared.builtins.bind_fs_temps(ledger);
+    }
 }
 
 impl MockHost {

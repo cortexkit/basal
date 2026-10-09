@@ -6442,6 +6442,184 @@ file = "crates/basal-module/src/dryrun.rs"
 old = "                    == Some(CallClass::Query)"
 new = "                    != None // NON-VACUITY BREAK"
 
+# fs.write temporary files: 11 controls
+
+[[control]]
+id = "fs-write-creates-its-temporary-file-before-recording-it"
+guards = "fs.write: the temporary file is created without a durable record of it"
+test_file = "crates/basal-testkit/tests/fs_write_temps.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test fs_write_temps"
+expect_red = ["a_crash_mid_write_is_cleaned_up_by_recovery_without_following_a_swapped_path"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/builtins/fs.rs"
+old = "    let hold = match ledger {\n        Some(ledger) =>"
+new = "    let hold = match None::<&dyn TempLedger> { // NON-VACUITY BREAK\n        Some(ledger) =>"
+
+[[control]]
+id = "fs-write-keeps-its-record-after-the-rename"
+guards = "fs.write: the record outlives a write that renamed its file"
+test_file = "crates/basal-testkit/tests/fs_write_temps.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test fs_write_temps"
+expect_red = ["a_successful_write_leaves_no_record_and_no_temporary_file"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/builtins/fs.rs"
+old = "    let _ = dir.sync_all();\n    clear(hold);"
+new = "    let _ = dir.sync_all();\n    drop(hold); // NON-VACUITY BREAK"
+
+[[control]]
+id = "fs-write-fails-on-the-file-its-earlier-send-left"
+guards = "fs.write: a resent call fails on the temporary file its earlier send left"
+test_file = "crates/basal-testkit/tests/fs_write_temps.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test fs_write_temps"
+expect_red = ["a_resent_write_replaces_the_file_its_earlier_send_left"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/builtins/fs.rs"
+old = "            && !replaced\n"
+new = "            && replaced // NON-VACUITY BREAK\n"
+
+[[control]]
+id = "fs-temp-removal-removes-what-is-not-a-regular-file"
+guards = "fs temp cleanup: a symlink or directory under the recorded name is removed"
+test_file = "crates/basal-testkit/tests/fs_write_temps.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test fs_write_temps"
+expect_red = ["a_crash_mid_write_is_cleaned_up_by_recovery_without_following_a_swapped_path"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/builtins/fs.rs"
+old = "        Some(st) if st.st_mode & libc::S_IFMT == libc::S_IFREG => {}\n        Some(st) => return Ok(Unlinked::NotRegular(st.st_mode)),"
+new = "        Some(_) => {} // NON-VACUITY BREAK"
+
+[[control]]
+id = "fs-temp-removal-accepts-a-directory-that-resolves-elsewhere"
+guards = "fs temp cleanup: a recorded directory that now resolves elsewhere in the root is acted on"
+test_file = "crates/basal-testkit/tests/fs_write_temps.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test fs_write_temps"
+expect_red = ["a_crash_mid_write_is_cleaned_up_by_recovery_without_following_a_swapped_path"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/builtins/fs.rs"
+old = "if parent != lease.dir || name != lease.target {"
+new = "if false { // NON-VACUITY BREAK"
+
+[[control]]
+id = "fs-temp-removal-trusts-the-recorded-directory-over-the-roots"
+guards = "fs temp cleanup: the recorded directory is not checked against the write's roots"
+test_file = "crates/basal-testkit/tests/fs_write_temps.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test fs_write_temps"
+expect_red = ["a_crash_record_whose_directory_left_its_root_is_not_acted_on"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/builtins/fs.rs"
+old = "match open_write_parent(path, &lease.roots) {"
+new = "match open_write_parent(path, &[lease.dir.display().to_string()]) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "fs-legacy-temp-name-matches-more-than-the-old-shape"
+guards = "fs temp cleanup: names other than .basal-<pid>-<seq>.tmp are removed as legacy strays"
+test_file = "crates/basal-testkit/tests/fs_write_temps.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test fs_write_temps"
+expect_red = ["legacy_temporary_files_are_removed_once_from_written_directories"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/builtins/fs.rs"
+old = ".is_some_and(|(pid, seq)| digits(pid) && digits(seq))"
+new = ".is_some_and(|_| true) // NON-VACUITY BREAK"
+
+[[control]]
+id = "fs-temp-sweep-removes-a-file-a-live-write-holds"
+guards = "fs temp cleanup: a pass removes the file of a write still running"
+test_file = "crates/basal-testkit/tests/fs_write_temps.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test fs_write_temps"
+expect_red = ["a_cancelled_runs_write_that_dies_mid_flight_is_cleaned_up"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/retention.rs"
+old = "if live.contains_key(&call_key) {"
+new = "if false { // NON-VACUITY BREAK"
+
+[[control]]
+id = "fs-temp-sweep-is-not-run-by-maintenance"
+guards = "fs temp cleanup: maintenance passes never act on recorded files"
+test_file = "crates/basal-testkit/tests/fs_write_temps.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test fs_write_temps"
+expect_red = ["a_crash_mid_write_is_cleaned_up_by_recovery_without_following_a_swapped_path"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/retention.rs"
+old = "        self.sweep_fs_temps()?;\n"
+new = "        // NON-VACUITY BREAK\n"
+
+[[control]]
+id = "fs-temp-sweep-skips-startup"
+guards = "fs temp cleanup: startup does not act on records a previous process left"
+test_file = "crates/basal-testkit/tests/fs_write_temps.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test fs_write_temps"
+expect_red = ["a_crash_record_whose_directory_left_its_root_is_not_acted_on"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/retention.rs"
+old = "pending: AtomicBool::new(true),"
+new = "pending: AtomicBool::new(false), // NON-VACUITY BREAK"
+
+[[control]]
+id = "fs-temp-sweep-ignores-a-write-that-ended-uncleared"
+guards = "fs temp cleanup: a write that ends without clearing its record does not ask for a pass"
+test_file = "crates/basal-testkit/tests/fs_write_temps.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test fs_write_temps"
+expect_red = ["a_cancelled_runs_write_that_dies_mid_flight_is_cleaned_up"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/retention.rs"
+old = "        if uncleared {\n"
+new = "        if uncleared && false { // NON-VACUITY BREAK\n"
+
 # Flow scope controls: scoped routes, per-call model sessions, readiness
 # refusals, and the identity of an uncaught host rejection.
 

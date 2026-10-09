@@ -325,6 +325,9 @@ pub struct BuiltinConfig {
 /// parent journaled; the host checks its scope again, then acts.
 pub struct BuiltinHost {
     net: net::Client,
+    /// Where `fs.write` records its temporary files, once a runtime has
+    /// bound one ([`Host::bind_fs_temps`]).
+    temps: std::sync::RwLock<Option<Arc<dyn fs::TempLedger>>>,
 }
 
 impl Default for BuiltinHost {
@@ -337,11 +340,26 @@ impl BuiltinHost {
     pub fn new(config: BuiltinConfig) -> Self {
         Self {
             net: net::Client::new(config.net),
+            temps: std::sync::RwLock::new(None),
         }
     }
 
-    /// Runs one built-in call from its journaled envelope.
+    /// Runs one built-in call from its journaled envelope, outside any
+    /// journaled call: an `fs.write` gets a temporary file name of its own
+    /// and no record of it.
     pub fn run(&self, primitive: Primitive, envelope: &Value) -> Result<Value, Failure> {
+        self.run_call(primitive, envelope, None)
+    }
+
+    /// Runs one built-in call from its journaled envelope. `call_key` is the
+    /// journaled call's idempotency key, which names an `fs.write`
+    /// temporary file and the record of it in the bound ledger.
+    pub fn run_call(
+        &self,
+        primitive: Primitive,
+        envelope: &Value,
+        call_key: Option<&str>,
+    ) -> Result<Value, Failure> {
         let args = envelope.get("args").unwrap_or(&Value::Null);
         let grant: Grant =
             serde_json::from_value(envelope.get("grant").cloned().unwrap_or(Value::Null))
@@ -353,7 +371,13 @@ impl BuiltinHost {
             Call::FsRead { path, max_bytes } => Ok(fs::read(&path, &grant.roots, max_bytes)?),
             Call::FsList { path } => Ok(fs::list(&path, &grant.roots)?),
             Call::FsStat { path } => Ok(fs::stat(&path, &grant.roots)?),
-            Call::FsWrite { path, text } => Ok(fs::write(&path, &grant.roots, &text)?),
+            Call::FsWrite { path, text } => Ok(match call_key {
+                Some(key) => {
+                    let ledger = self.temps.read().unwrap_or_else(|p| p.into_inner()).clone();
+                    fs::write_call(&path, &grant.roots, &text, key, ledger.as_deref())?
+                }
+                None => fs::write(&path, &grant.roots, &text)?,
+            }),
             Call::Git { repo, op } => Ok(git::run(&repo, &grant.roots, &op)?),
             Call::NetFetch(request) => self.net.fetch(&request, &grant.hosts),
         }
@@ -391,7 +415,7 @@ impl BuiltinHost {
                 .outcome(),
             ));
         }
-        match self.run(p, &envelope) {
+        match self.run_call(p, &envelope, Some(&request.idempotency_key)) {
             Ok(value) => Ok(Dispatched::Completed(match text(&value) {
                 Ok(value) => HostOutcome::fulfilled(value),
                 Err(denial) => denial.outcome(),
@@ -432,6 +456,10 @@ impl Host for BuiltinHost {
     }
 
     fn attach(&self, _: Arc<dyn CompletionSink>) {}
+
+    fn bind_fs_temps(&self, ledger: Arc<dyn fs::TempLedger>) {
+        *self.temps.write().unwrap_or_else(|p| p.into_inner()) = Some(ledger);
+    }
 }
 
 #[cfg(test)]
