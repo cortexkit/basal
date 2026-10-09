@@ -432,6 +432,17 @@ pub fn list(path: &str, roots: &[String]) -> Result<Value, Denial> {
 /// The entries of the directory behind `fd` (not `.` or `..`) with their
 /// `d_type`, reading at most one more than [`MAX_LIST_ENTRIES`].
 fn read_dir_fd(fd: RawFd) -> std::io::Result<Vec<(OsString, u8)>> {
+    let mut out = Vec::new();
+    scan_dir(fd, |name, d_type| {
+        out.push((name, d_type));
+        out.len() <= MAX_LIST_ENTRIES
+    })?;
+    Ok(out)
+}
+
+/// Hands each entry of the directory behind `fd` (not `.` or `..`) with its
+/// `d_type` to `visit`, until `visit` answers false.
+fn scan_dir(fd: RawFd, mut visit: impl FnMut(OsString, u8) -> bool) -> std::io::Result<()> {
     // fdopendir takes ownership of the descriptor it is given, so it gets
     // a duplicate and the caller keeps its own.
     // SAFETY: dup of a descriptor this function's caller holds open.
@@ -447,7 +458,6 @@ fn read_dir_fd(fd: RawFd) -> std::io::Result<Vec<(OsString, u8)>> {
         unsafe { libc::close(dup) };
         return Err(e);
     }
-    let mut out = Vec::new();
     loop {
         // SAFETY: `dir` is the open stream from fdopendir above.
         let entry = unsafe { libc::readdir(dir) };
@@ -466,18 +476,140 @@ fn read_dir_fd(fd: RawFd) -> std::io::Result<Vec<(OsString, u8)>> {
         if name == "." || name == ".." {
             continue;
         }
-        out.push((name, d_type));
-        if out.len() > MAX_LIST_ENTRIES {
+        if !visit(name, d_type) {
             break;
         }
     }
     // SAFETY: `dir` is open and is closed exactly once, here; closing it
     // also closes `dup`.
     unsafe { libc::closedir(dir) };
-    Ok(out)
+    Ok(())
 }
 
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// What every temporary file `fs.write` creates is named with: the call's
+/// key between these, so the name belongs to one call and to no other.
+const TEMP_PREFIX: &str = ".basal-call-";
+const TEMP_SUFFIX: &str = ".tmp";
+/// The longest call key a temporary file name carries.
+const MAX_TEMP_KEY_BYTES: usize = 64;
+
+/// One `fs.write` temporary file, described before it is created.
+///
+/// Everything needed to remove the file later is here: the directory it is
+/// created in (a real path), the name it replaces there (removal reopens
+/// the directory through that name, exactly as the write did, so a grant
+/// of a single file still reaches it), its own name, and the roots the
+/// write was granted, which removal checks again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TempLease {
+    pub call_key: String,
+    pub dir: PathBuf,
+    pub target: OsString,
+    pub temp: OsString,
+    pub roots: Vec<String>,
+}
+
+/// Somewhere durable to record temporary files before they exist.
+///
+/// A write records its file before creating it and clears the record once
+/// the file has been renamed over its target or removed. A record that is
+/// never cleared names a file a crash, or a write that died part way, may
+/// have left behind; whoever owns the ledger removes it with
+/// [`remove_temp`].
+pub trait TempLedger: Send + Sync {
+    /// Durably records `lease`. The write creates nothing unless this
+    /// succeeds.
+    fn record(&self, lease: &TempLease) -> Result<Box<dyn TempHold>, String>;
+
+    /// Called once the temporary file exists, before its contents are
+    /// written. Production ledgers do nothing here; tests use it to stop a
+    /// write while its file is on disk.
+    fn created(&self, _lease: &TempLease) {}
+}
+
+/// A recorded lease held by the write that recorded it. Dropping it without
+/// [`TempHold::clear`] means the write ended without accounting for its
+/// file, so the record stays for cleanup.
+pub trait TempHold: Send {
+    /// The file was renamed over its target, removed, or never created.
+    fn clear(self: Box<Self>);
+}
+
+/// The temporary file name for the call with key `call_key`. The key is
+/// kept as it is (basal's keys are short hex digests), so the same call
+/// always names the same file and recovery can recognise it.
+pub fn temp_name(call_key: &str) -> Result<OsString, Denial> {
+    let usable = !call_key.is_empty()
+        && call_key.len() <= MAX_TEMP_KEY_BYTES
+        && call_key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+    if !usable {
+        return Err(Denial::invalid(
+            "the call's key cannot name a temporary file",
+        ));
+    }
+    Ok(OsString::from(format!(
+        "{TEMP_PREFIX}{call_key}{TEMP_SUFFIX}"
+    )))
+}
+
+/// Whether `name` is one this module's [`temp_name`] produces.
+fn is_temp_name(name: &OsStr) -> bool {
+    name.to_str()
+        .and_then(|n| n.strip_prefix(TEMP_PREFIX))
+        .and_then(|n| n.strip_suffix(TEMP_SUFFIX))
+        .is_some_and(|key| temp_name(key).is_ok())
+}
+
+/// Whether `name` is a temporary file name earlier versions of basal used,
+/// `.basal-<process id>-<sequence>.tmp`, with both numbers in decimal.
+pub fn is_legacy_temp_name(name: &OsStr) -> bool {
+    let Some(rest) = name
+        .to_str()
+        .and_then(|n| n.strip_prefix(".basal-"))
+        .and_then(|n| n.strip_suffix(TEMP_SUFFIX))
+    else {
+        return false;
+    };
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    rest.split_once('-')
+        .is_some_and(|(pid, seq)| digits(pid) && digits(seq))
+}
+
+/// What [`unlink_regular`] found under a name.
+enum Unlinked {
+    Removed,
+    Absent,
+    /// Something other than a regular file, left in place; its `st_mode`.
+    NotRegular(libc::mode_t),
+}
+
+/// Removes `name` from the directory behind `dir` only if it is a regular
+/// file. The name is examined without following a symlink, and unlinkat
+/// removes the entry itself, so a symlink's target is never touched.
+fn unlink_regular(dir: RawFd, name: &OsStr) -> Result<Unlinked, Denial> {
+    match stat_at(dir, name)? {
+        None => return Ok(Unlinked::Absent),
+        Some(st) if st.st_mode & libc::S_IFMT == libc::S_IFREG => {}
+        Some(st) => return Ok(Unlinked::NotRegular(st.st_mode)),
+    }
+    let c = c_name(name)?;
+    // SAFETY: `c` is NUL-terminated and `dir` is a directory the caller
+    // opened and checked; unlinkat with no flags removes the entry itself
+    // and never follows a symlink.
+    if unsafe { libc::unlinkat(dir, c.as_ptr(), 0) } == 0 {
+        return Ok(Unlinked::Removed);
+    }
+    let e = std::io::Error::last_os_error();
+    if e.kind() == std::io::ErrorKind::NotFound {
+        Ok(Unlinked::Absent)
+    } else {
+        Err(Denial::new(codes::IO, e.to_string()))
+    }
+}
 
 fn replacement_mode(mode: libc::mode_t) -> libc::mode_t {
     mode & 0o777
@@ -494,28 +626,93 @@ pub(super) fn check_write_size(bytes: usize) -> Result<(), Denial> {
     }
 }
 
-/// `fs.write`: replaces the whole file with `text`, atomically. The text
-/// goes to a new temporary file in the same directory, which is flushed to
-/// disk and then renamed over the target, so a reader sees the old file or
-/// the new one and never a part. Writing the same text again leaves the
-/// same file, which is why a lost reply may be sent again.
+/// `fs.write` outside a journaled call, under a key of its own.
 pub fn write(path: &str, roots: &[String], text: &str) -> Result<Value, Denial> {
-    // Public callers may bypass the argument parser, so enforce the shared
-    // write limit here as well as before authorization.
-    check_write_size(text.len())?;
+    let key = format!(
+        "local-{}-{}",
+        std::process::id(),
+        TEMP_SEQ.fetch_add(1, Ordering::Relaxed)
+    );
+    write_call(path, roots, text, &key, None)
+}
+
+/// Resolves `path` for a write and opens its parent directory, checked
+/// against `roots`: the directory's real path, the name in it, and the
+/// open directory.
+fn open_write_parent(path: &str, roots: &[String]) -> Result<(PathBuf, OsString, File), Denial> {
     #[cfg(not(target_os = "linux"))]
-    let roots = real_roots(roots);
+    let real = real_roots(roots);
     #[cfg(not(target_os = "linux"))]
-    let target = resolve_real(path, &roots, Purpose::Write)?;
+    let target = resolve_real(path, &real, Purpose::Write)?;
     #[cfg(target_os = "linux")]
     let target = resolve(path, roots, Purpose::Write)?;
     let Target::Entry { parent, name } = target else {
         return Err(Denial::invalid("a write resolves to a directory entry"));
     };
     #[cfg(not(target_os = "linux"))]
-    let dir = open_parent(&parent, &name, &roots)?;
+    let dir = open_parent(&parent, &name, &real)?;
     #[cfg(target_os = "linux")]
     let dir = linux::open_parent(&parent, &name, roots, KernelCapability::Openat2)?;
+    Ok((parent.to_path_buf(), name, dir))
+}
+
+/// Creates the temporary file `name` (`c` is the same name) in the
+/// directory behind `dir`, never following a symlink.
+fn create_temp(dir: RawFd, name: &OsStr, c: &CString, mode: libc::mode_t) -> std::io::Result<File> {
+    let mut replaced = false;
+    loop {
+        // SAFETY: `c` is NUL-terminated and `dir` is the verified parent
+        // directory; O_EXCL|O_NOFOLLOW create a new file and never follow a
+        // symlink.
+        let raw = unsafe {
+            libc::openat(
+                dir,
+                c.as_ptr(),
+                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                libc::c_uint::from(mode),
+            )
+        };
+        if raw != -1 {
+            // SAFETY: openat returned a new descriptor this function owns.
+            return Ok(File::from(unsafe { OwnedFd::from_raw_fd(raw) }));
+        }
+        let e = std::io::Error::last_os_error();
+        // The name belongs to this call alone, so a regular file already
+        // under it is what an earlier send of the same call left when it
+        // never finished. It is replaced once; anything else is an error.
+        if e.raw_os_error() == Some(libc::EEXIST)
+            && !replaced
+            && matches!(unlink_regular(dir, name), Ok(Unlinked::Removed))
+        {
+            replaced = true;
+            continue;
+        }
+        return Err(e);
+    }
+}
+
+/// `fs.write`: replaces the whole file with `text`, atomically. The text
+/// goes to a new temporary file in the same directory, which is flushed to
+/// disk and then renamed over the target, so a reader sees the old file or
+/// the new one and never a part. Writing the same text again leaves the
+/// same file, which is why a lost reply may be sent again.
+///
+/// The temporary file is named after `call_key` ([`temp_name`]). With a
+/// `ledger`, the file is recorded there before it is created and the record
+/// is cleared only once the file is gone and that is durable, so however
+/// the call ends, crash included, a file it left behind is on record.
+pub fn write_call(
+    path: &str,
+    roots: &[String],
+    text: &str,
+    call_key: &str,
+    ledger: Option<&dyn TempLedger>,
+) -> Result<Value, Denial> {
+    // Public callers may bypass the argument parser, so enforce the shared
+    // write limit here as well as before authorization.
+    check_write_size(text.len())?;
+    let temp_name = temp_name(call_key)?;
+    let (parent, name, dir) = open_write_parent(path, roots)?;
     let dirfd = dir.as_raw_fd();
     let mode = match stat_at(dirfd, &name)? {
         Some(st) if st.st_mode & libc::S_IFMT == libc::S_IFLNK => {
@@ -534,31 +731,41 @@ pub fn write(path: &str, roots: &[String], text: &str) -> Result<Value, Denial> 
         Some(st) => replacement_mode(st.st_mode),
         None => 0o644,
     };
-    // A bounded basename leaves room even when the target uses NAME_MAX bytes.
-    let temp_name = OsString::from(format!(
-        ".basal-{}-{}.tmp",
-        std::process::id(),
-        TEMP_SEQ.fetch_add(1, Ordering::Relaxed)
-    ));
     let temp = c_name(&temp_name)?;
     let target = c_name(&name)?;
-    // SAFETY: `temp` is NUL-terminated and `dirfd` is the verified parent
-    // directory; O_EXCL|O_NOFOLLOW create a new file and never follow a
-    // symlink.
-    let raw = unsafe {
-        libc::openat(
-            dirfd,
-            temp.as_ptr(),
-            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            libc::c_uint::from(mode),
-        )
+    let lease = TempLease {
+        call_key: call_key.to_owned(),
+        dir: parent.clone(),
+        target: name.clone(),
+        temp: temp_name.clone(),
+        roots: roots.to_vec(),
     };
-    if raw == -1 {
-        let e = std::io::Error::last_os_error();
-        return Err(io_denial(&parent.join(&temp_name), &e));
+    // The record is durable before the file exists, so no crash can leave
+    // a file nothing knows about.
+    let hold = match ledger {
+        Some(ledger) => Some(ledger.record(&lease).map_err(|e| {
+            Denial::new(
+                codes::IO,
+                format!(
+                    "the temporary file for {} could not be recorded: {e}",
+                    parent.join(&name).display()
+                ),
+            )
+        })?),
+        None => None,
+    };
+    let clear = |hold: Option<Box<dyn TempHold>>| {
+        if let Some(hold) = hold {
+            hold.clear();
+        }
+    };
+    // On a failed create the record stays: a file an earlier send left
+    // under this name may still be there, and cleanup checks for it.
+    let mut file = create_temp(dirfd, &temp_name, &temp, mode)
+        .map_err(|e| io_denial(&parent.join(&temp_name), &e))?;
+    if let Some(ledger) = ledger {
+        ledger.created(&lease);
     }
-    // SAFETY: openat returned a new descriptor this function owns.
-    let mut file = File::from(unsafe { OwnedFd::from_raw_fd(raw) });
     let written = file
         .write_all(text.as_bytes())
         .and_then(|()| file.sync_all());
@@ -574,14 +781,103 @@ pub fn write(path: &str, roots: &[String], text: &str) -> Result<Value, Denial> 
         }
     });
     if let Err(e) = renamed {
-        // SAFETY: removes the temporary file this call created.
-        unsafe { libc::unlinkat(dirfd, temp.as_ptr(), 0) };
+        // Remove the temporary file this call created. The record is
+        // cleared only when that worked; otherwise cleanup tries again.
+        if unlink_regular(dirfd, &temp_name).is_ok() {
+            clear(hold);
+        }
         return Err(io_denial(&parent.join(&name), &e));
     }
     // Make the rename itself durable; a failure here leaves the new file
-    // in place, so it is not an error.
+    // in place, so it is not an error. The record is cleared only after
+    // this: until the rename is on disk, a power loss could bring the
+    // temporary name back.
     let _ = dir.sync_all();
+    clear(hold);
     Ok(json!({ "bytes": text.len() }))
+}
+
+/// What [`remove_temp`] did with a recorded temporary file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TempRemoval {
+    /// The file was there and was removed.
+    Removed,
+    /// No file of that name was there.
+    Absent,
+    /// The record no longer names a file this module may remove: the
+    /// directory now resolves outside the roots or somewhere else, or the
+    /// name holds a symlink or anything but a regular file. Nothing was
+    /// touched, and nothing ever will be for this record.
+    Refused(Denial),
+}
+
+/// Removes the temporary file `lease` records, only if it is still a
+/// regular file with exactly the recorded name, in exactly the recorded
+/// directory, inside one of the lease's roots. The directory is reached the
+/// way [`write_call`] reached it (beneath the root with `openat2` on Linux,
+/// checked with `F_GETPATH` on macOS), the name is examined without
+/// following a symlink, and nothing else is ever removed. Removing a file
+/// that is already gone is not an error, so this may run any number of
+/// times. `Err` is a failure that may pass: keep the record and try again.
+pub fn remove_temp(lease: &TempLease) -> Result<TempRemoval, Denial> {
+    if !is_temp_name(&lease.temp) && !is_legacy_temp_name(&lease.temp) {
+        return Ok(TempRemoval::Refused(Denial::invalid(
+            "the record does not name a temporary file",
+        )));
+    }
+    let joined = lease.dir.join(&lease.target);
+    let Some(path) = joined.to_str() else {
+        return Ok(TempRemoval::Refused(Denial::invalid(
+            "the recorded path is not UTF-8",
+        )));
+    };
+    let (parent, name, dir) = match open_write_parent(path, &lease.roots) {
+        Ok(opened) => opened,
+        Err(d) if d.code == codes::NOT_FOUND => return Ok(TempRemoval::Absent),
+        Err(d) if d.code == codes::IO => return Err(d),
+        Err(d) => return Ok(TempRemoval::Refused(d)),
+    };
+    if parent != lease.dir || name != lease.target {
+        return Ok(TempRemoval::Refused(Denial::denied(format!(
+            "{} now resolves to {}",
+            joined.display(),
+            parent.join(&name).display()
+        ))));
+    }
+    Ok(match unlink_regular(dir.as_raw_fd(), &lease.temp)? {
+        Unlinked::Removed => TempRemoval::Removed,
+        Unlinked::Absent => TempRemoval::Absent,
+        Unlinked::NotRegular(mode) => TempRemoval::Refused(Denial::denied(format!(
+            "{} is a {}, not a temporary file",
+            parent.join(&lease.temp).display(),
+            kind_of(mode)
+        ))),
+    })
+}
+
+/// Removes temporary files earlier versions of basal may have left beside
+/// `path`: entries of its parent directory named exactly as
+/// [`is_legacy_temp_name`] describes that are regular files. The directory
+/// is opened and checked against `roots` as a write to `path` would be;
+/// symlinks are never followed and nothing else is removed. Returns how
+/// many files were removed.
+pub fn remove_legacy_temps(path: &str, roots: &[String]) -> Result<usize, Denial> {
+    let (parent, _, dir) = open_write_parent(path, roots)?;
+    let mut names = Vec::new();
+    scan_dir(dir.as_raw_fd(), |name, _| {
+        if is_legacy_temp_name(&name) {
+            names.push(name);
+        }
+        true
+    })
+    .map_err(|e| io_denial(&parent, &e))?;
+    let mut removed = 0;
+    for name in names {
+        if let Unlinked::Removed = unlink_regular(dir.as_raw_fd(), &name)? {
+            removed += 1;
+        }
+    }
+    Ok(removed)
 }
 
 /// Linux opens the canonical component list beneath a descriptor whose identity

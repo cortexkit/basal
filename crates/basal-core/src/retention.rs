@@ -14,13 +14,25 @@
 //! horizon is established, so deleting one could permit a second effect.
 //! Full batches schedule another bounded pass after one second rather than
 //! limiting cleanup throughput to one batch per normal maintenance interval.
+//!
+//! `fs.write` temporary files are not history and do not wait for the
+//! retention interval: every maintenance pass removes the ones whose write
+//! is no longer running in this process ([`Runtime::sweep_fs_temps`]).
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use std::collections::HashMap;
+use std::ffi::OsString;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
+
+use basal_host::builtins::fs::{self as host_fs, TempHold, TempLease, TempLedger};
 
 use crate::admission::trigger_key;
 use crate::error::Result;
-use crate::runtime::Runtime;
+use crate::runtime::{Runtime, Shared};
 
 /// What a prune did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -210,6 +222,7 @@ impl Runtime {
     }
 
     pub(crate) fn retention_due(&self, now: i64) -> Result<()> {
+        self.sweep_fs_temps()?;
         let mut next = self
             .shared
             .retention_next
@@ -218,6 +231,9 @@ impl Runtime {
         if next.is_some_and(|at| now < at) {
             return Ok(());
         }
+        // Before pruning, while the journal still names the directories
+        // earlier writes went to.
+        self.sweep_legacy_fs_temps()?;
         let config = &self.config.retention;
         let runs = self.prune(now, millis(config.runs))?;
         let history_full = self.prune_history(now, now.saturating_sub(millis(config.history)))?;
@@ -259,6 +275,276 @@ impl Runtime {
                 ),
                 [cutoff],
             )?)
+        })
+    }
+}
+
+/// The `fs.write` temporary files this process is writing now, and whether
+/// any record may have outlived its write.
+///
+/// A record is only ever removed with its file by [`Runtime::sweep_fs_temps`]
+/// once no write in this process holds it. Holding the `live` lock while a
+/// record is checked and removed means a write of the same call cannot
+/// start in between: a write marks its call live before it records the
+/// file, so the sweep either sees it live and leaves it, or finishes first.
+pub(crate) struct FsTemps {
+    /// Call key to the number of writes in this process holding it.
+    live: Mutex<HashMap<String, usize>>,
+    /// Whether a record may be waiting for cleanup: true at startup, since
+    /// a previous process may have died mid-write, and set again whenever a
+    /// write ends without clearing its record.
+    pending: AtomicBool,
+}
+
+impl Default for FsTemps {
+    fn default() -> Self {
+        Self {
+            live: Mutex::new(HashMap::new()),
+            pending: AtomicBool::new(true),
+        }
+    }
+}
+
+impl FsTemps {
+    fn live(&self) -> MutexGuard<'_, HashMap<String, usize>> {
+        self.live.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn enter(&self, key: &str) {
+        *self.live().entry(key.to_owned()).or_default() += 1;
+    }
+
+    fn leave(&self, key: &str, uncleared: bool) {
+        let mut live = self.live();
+        if uncleared {
+            self.pending.store(true, Ordering::SeqCst);
+        }
+        if let Some(count) = live.get_mut(key) {
+            *count -= 1;
+            if *count == 0 {
+                live.remove(key);
+            }
+        }
+    }
+}
+
+/// The ledger `fs.write` records its temporary files in: the runtime's own
+/// store. It holds the runtime weakly, like the completion sink, so a host
+/// outliving the runtime does not keep the store open.
+pub(crate) fn fs_temp_ledger(shared: &Arc<Shared>) -> Arc<dyn TempLedger> {
+    Arc::new(FsTempLedger {
+        shared: Arc::downgrade(shared),
+    })
+}
+
+struct FsTempLedger {
+    shared: Weak<Shared>,
+}
+
+impl TempLedger for FsTempLedger {
+    fn record(&self, lease: &TempLease) -> std::result::Result<Box<dyn TempHold>, String> {
+        let shared = self
+            .shared
+            .upgrade()
+            .ok_or_else(|| "the runtime is gone".to_owned())?;
+        shared.fs_temps.enter(&lease.call_key);
+        // From here on, dropping the hold releases the call again.
+        let hold = FsTempHold {
+            shared: self.shared.clone(),
+            key: lease.call_key.clone(),
+            dir: lease.dir.as_os_str().as_bytes().to_vec(),
+            cleared: false,
+        };
+        let roots = serde_json::to_string(&lease.roots).map_err(|e| e.to_string())?;
+        shared
+            .store
+            .write(|tx| {
+                tx.execute(
+                    "INSERT OR REPLACE INTO fs_temps (call_key, dir, target, temp, roots) \
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![
+                        lease.call_key,
+                        hold.dir,
+                        lease.target.as_bytes(),
+                        lease.temp.to_string_lossy(),
+                        roots
+                    ],
+                )?;
+                Ok(())
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(Box::new(hold))
+    }
+}
+
+struct FsTempHold {
+    shared: Weak<Shared>,
+    key: String,
+    dir: Vec<u8>,
+    cleared: bool,
+}
+
+impl TempHold for FsTempHold {
+    fn clear(mut self: Box<Self>) {
+        if let Some(shared) = self.shared.upgrade() {
+            self.cleared = shared
+                .store
+                .write(|tx| {
+                    tx.execute(
+                        "DELETE FROM fs_temps WHERE call_key = ?1 AND dir = ?2",
+                        params![self.key, self.dir],
+                    )?;
+                    Ok(())
+                })
+                .is_ok();
+        }
+    }
+}
+
+impl Drop for FsTempHold {
+    fn drop(&mut self) {
+        if let Some(shared) = self.shared.upgrade() {
+            shared.fs_temps.leave(&self.key, !self.cleared);
+        }
+    }
+}
+
+/// Marks that every `fs.write` call's journaled directory has been checked
+/// once for temporary files named the way earlier versions named them.
+const LEGACY_FS_TEMPS_SWEPT: &str = "fs_temps_legacy_swept";
+
+impl Runtime {
+    /// Removes every recorded `fs.write` temporary file that no write in
+    /// this process holds, and its record: what a cancelled, failed or
+    /// expired run's write, or a crash at any point, left behind. Removal
+    /// is [`host_fs::remove_temp`]'s: only a regular file with exactly the
+    /// recorded name, in exactly the recorded directory, inside the write's
+    /// roots. A record that cannot be acted on safely is dropped without
+    /// touching anything; one whose removal failed for a reason that may
+    /// pass is kept for the next pass. Costs nothing while no record can be
+    /// waiting. Returns how many records were settled.
+    pub fn sweep_fs_temps(&self) -> Result<usize> {
+        let temps = &self.shared.fs_temps;
+        if !temps.pending.swap(false, Ordering::SeqCst) {
+            return Ok(0);
+        }
+        let swept = self.sweep_fs_temps_batch();
+        if !matches!(swept, Ok((_, true))) {
+            temps.pending.store(true, Ordering::SeqCst);
+        }
+        swept.map(|(settled, _)| settled)
+    }
+
+    /// One bounded pass; also says whether every record it saw is settled
+    /// or held by a write in this process.
+    fn sweep_fs_temps_batch(&self) -> Result<(usize, bool)> {
+        type Row = (String, Vec<u8>, Vec<u8>, String, String);
+        let rows: Vec<Row> = self.store().read(|c| {
+            let mut stmt = c.prepare(&format!(
+                "SELECT call_key, dir, target, temp, roots FROM fs_temps LIMIT {BATCH}"
+            ))?;
+            Ok(stmt
+                .query_map([], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?)
+        })?;
+        let mut done = rows.len() < BATCH;
+        let mut settled = 0;
+        for (call_key, dir, target, temp, roots) in rows {
+            let live = self.shared.fs_temps.live();
+            if live.contains_key(&call_key) {
+                // The write holding it clears it, or marks it pending when
+                // it ends without doing so.
+                continue;
+            }
+            let removal = match serde_json::from_str::<Vec<String>>(&roots) {
+                Ok(roots) => host_fs::remove_temp(&TempLease {
+                    call_key: call_key.clone(),
+                    dir: PathBuf::from(OsString::from_vec(dir.clone())),
+                    target: OsString::from_vec(target),
+                    temp: OsString::from(temp),
+                    roots,
+                }),
+                // No roots to check a path against: nothing may be removed.
+                Err(_) => Ok(host_fs::TempRemoval::Refused(
+                    basal_host::builtins::Denial::invalid("unreadable roots"),
+                )),
+            };
+            match removal {
+                Ok(outcome) => {
+                    if let host_fs::TempRemoval::Refused(why) = &outcome {
+                        tracing::warn!(
+                            call_key = %call_key,
+                            reason = %why.message,
+                            "fs.write temporary file left in place: its record no longer names a file basal may remove"
+                        );
+                    }
+                    self.store().write(|tx| {
+                        tx.execute(
+                            "DELETE FROM fs_temps WHERE call_key = ?1 AND dir = ?2",
+                            params![call_key, dir],
+                        )?;
+                        Ok(())
+                    })?;
+                    settled += 1;
+                }
+                Err(_) => done = false,
+            }
+            drop(live);
+        }
+        Ok((settled, done))
+    }
+
+    /// Once per store: removes temporary files earlier versions of basal
+    /// left, named `.basal-<process id>-<sequence>.tmp`, which no record
+    /// describes. Only the directories journaled `fs.write` calls wrote to
+    /// are examined, each opened and checked against the call's own roots,
+    /// and only regular files with exactly that name shape are removed.
+    /// Best effort: a directory that cannot be opened is skipped.
+    fn sweep_legacy_fs_temps(&self) -> Result<()> {
+        let done: bool = self.store().read(|c| {
+            Ok(c.query_row(
+                "SELECT EXISTS (SELECT 1 FROM meta WHERE key = ?1)",
+                [LEGACY_FS_TEMPS_SWEPT],
+                |r| r.get(0),
+            )?)
+        })?;
+        if done {
+            return Ok(());
+        }
+        let writes: Vec<(String, String)> = self.store().read(|c| {
+            let mut stmt = c.prepare(
+                "SELECT DISTINCT json_extract(request, '$.args.path'), \
+                 json_extract(request, '$.grant.roots') FROM journal \
+                 WHERE kind_code = ?1 AND request IS NOT NULL AND json_valid(request)",
+            )?;
+            Ok(stmt
+                .query_map([i64::from(basal_proto::Primitive::FsWrite.code())], |r| {
+                    Ok((
+                        r.get::<_, Option<String>>(0)?,
+                        r.get::<_, Option<String>>(1)?,
+                    ))
+                })?
+                .filter_map(|row| match row {
+                    Ok((Some(path), Some(roots))) => Some(Ok((path, roots))),
+                    Ok(_) => None,
+                    Err(e) => Some(Err(e)),
+                })
+                .collect::<rusqlite::Result<Vec<_>>>()?)
+        })?;
+        for (path, roots) in writes {
+            let Ok(roots) = serde_json::from_str::<Vec<String>>(&roots) else {
+                continue;
+            };
+            let _ = host_fs::remove_legacy_temps(&path, &roots);
+        }
+        self.store().write(|tx| {
+            tx.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, '1')",
+                [LEGACY_FS_TEMPS_SWEPT],
+            )?;
+            Ok(())
         })
     }
 }

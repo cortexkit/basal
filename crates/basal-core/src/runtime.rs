@@ -250,6 +250,8 @@ pub(crate) struct Shared {
     threads: Mutex<Vec<JoinHandle<()>>>,
     pub(crate) retention_next: Mutex<Option<i64>>,
     pub(crate) refusal_flush: Mutex<()>,
+    /// The `fs.write` temporary files this process is writing now.
+    pub(crate) fs_temps: crate::retention::FsTemps,
 }
 
 /// A handle on the runtime. Cheap to clone.
@@ -343,6 +345,7 @@ impl Runtime {
             threads: Mutex::new(Vec::new()),
             retention_next: Mutex::new(None),
             refusal_flush: Mutex::new(()),
+            fs_temps: crate::retention::FsTemps::default(),
         });
         let config = Arc::new(config);
         shared
@@ -352,6 +355,9 @@ impl Runtime {
             shared: Arc::downgrade(&shared),
             config: config.clone(),
         }));
+        shared
+            .host
+            .bind_fs_temps(crate::retention::fs_temp_ledger(&shared));
         Self { shared, config }
     }
 

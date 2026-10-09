@@ -279,7 +279,30 @@ ALTER TABLE installs ADD COLUMN revoked_reason TEXT;
         version: 13,
         statements: WAKE_INDEXES,
     },
+    Migration {
+        version: 14,
+        statements: FS_TEMPS,
+    },
 ];
+
+// One row for each `fs.write` temporary file that may exist on disk. The row
+// is committed before the file is created and deleted once the file has been
+// renamed over its target or removed, so a crash or a run ending in any way
+// leaves a record of every file still to remove. `dir` and `target` hold
+// path bytes exactly; `roots` is the JSON list of roots the write was
+// granted, which removal checks the file against again. A row belongs to a
+// call rather than to a run, so pruning a run neither needs nor deletes it;
+// rows only leave once their file is accounted for.
+const FS_TEMPS: &str = r#"
+CREATE TABLE fs_temps (
+    call_key TEXT NOT NULL,
+    dir      BLOB NOT NULL,
+    target   BLOB NOT NULL,
+    temp     TEXT NOT NULL,
+    roots    TEXT NOT NULL,
+    PRIMARY KEY (call_key, dir)
+) WITHOUT ROWID;
+"#;
 
 // The idle engine sleeps until its earliest timer. Finding that timer takes the
 // smallest live run deadline and the smallest deferred-call retry time; these

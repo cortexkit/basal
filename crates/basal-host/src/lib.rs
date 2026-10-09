@@ -457,6 +457,11 @@ pub trait Host: Send + Sync {
     /// which is how a restarted runtime learns outcomes it missed.
     fn attach(&self, sink: Arc<dyn CompletionSink>);
 
+    /// Gives the host the ledger `fs.write` records its temporary files in
+    /// ([`builtins::fs::TempLedger`]). A host that runs no file built-ins
+    /// ignores it; one that routes them forwards it.
+    fn bind_fs_temps(&self, _ledger: Arc<dyn builtins::fs::TempLedger>) {}
+
     /// Asks core whether it still stands behind `version` of `flow_id`. The
     /// runtime asks before every activation and activates nothing on an
     /// error, so this default (no answer) keeps every run of a host that
