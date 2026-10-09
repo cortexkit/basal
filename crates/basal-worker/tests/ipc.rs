@@ -26,6 +26,7 @@ fn activation(prelude_hash: PreludeHash, script: &str) -> ParentMessage {
     ParentMessage::Activate(Box::new(ActivationRequest {
         activation_id: 9,
         profile: Profile::Flow,
+        tools: vec![],
         prelude_hash,
         script: script.into(),
         trigger: JsonText::null(),

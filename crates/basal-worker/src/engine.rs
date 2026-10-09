@@ -33,6 +33,7 @@ use crate::link::{HostLink, WaitReply};
 
 /// The lockdown prelude, embedded so a worker binary has exactly one.
 pub const PRELUDE: &str = include_str!("prelude.js");
+pub const CODEMODE_PRELUDE: &str = include_str!("codemode_prelude.js");
 
 /// The engine and binding, reported in the handshake as part of a run's
 /// runtime fingerprint. The binding is pinned to an exact version in the
@@ -42,6 +43,18 @@ pub const ENGINE: &str = "quickjs-ng 0.16.2 via rquickjs 0.14.0";
 pub fn prelude_hash() -> PreludeHash {
     static HASH: OnceLock<PreludeHash> = OnceLock::new();
     *HASH.get_or_init(|| PreludeHash::of(PRELUDE))
+}
+
+pub fn codemode_prelude_hash() -> PreludeHash {
+    static HASH: OnceLock<PreludeHash> = OnceLock::new();
+    *HASH.get_or_init(|| PreludeHash::of(CODEMODE_PRELUDE))
+}
+
+pub fn profile_prelude_hash(profile: Profile) -> PreludeHash {
+    match profile {
+        Profile::Flow => prelude_hash(),
+        Profile::Codemode => codemode_prelude_hash(),
+    }
 }
 
 /// The intrinsics a context gets. `Performance`, `WeakRef` and
@@ -108,6 +121,7 @@ struct Shared {
     bridge: RefCell<Bridge>,
     link: Rc<RefCell<dyn HostLink>>,
     memory_exhausted: Rc<Cell<bool>>,
+    stack_exhausted: Cell<bool>,
 }
 
 enum Issued {
@@ -181,6 +195,18 @@ fn json_number(text: &str) -> Option<f64> {
 }
 
 impl Shared {
+    fn sticky_budget(&self) -> Option<ActivationResult> {
+        if self.bridge.borrow().profile != Profile::Codemode {
+            return None;
+        }
+        if self.memory_exhausted.get() {
+            return Some(ActivationResult::BudgetExhausted(BudgetKind::Memory));
+        }
+        if self.stack_exhausted.get() {
+            return Some(ActivationResult::BudgetExhausted(BudgetKind::Stack));
+        }
+        None
+    }
     fn halt(&self, result: ActivationResult) {
         let mut bridge = self.bridge.borrow_mut();
         if bridge.halt.is_none() {
@@ -197,6 +223,9 @@ impl Shared {
     /// from the recorded prefix, by announcing it to the parent, or (for a
     /// synchronous call) by asking the parent and waiting.
     fn prepare(&self, kind: CallKind, args: String) -> Result<Prepared, ActivationResult> {
+        if let Some(budget) = self.sticky_budget() {
+            return Err(budget);
+        }
         let mut bridge = self.bridge.borrow_mut();
         if bridge.halt.is_some() {
             return Err(failed(Failure::Engine {
@@ -405,6 +434,52 @@ fn native_bridge<'js>(ctx: &Ctx<'js>, shared: &Rc<Shared>) -> rquickjs::Result<O
 
     let s = shared.clone();
     native.set(
+        "issueTool",
+        Function::new(
+            ctx.clone(),
+            move |ctx: Ctx<'js>, name: String, args: String| -> rquickjs::Result<f64> {
+                if name.is_empty() || name.len() > MAX_NAME_BYTES {
+                    return Err(Exception::throw_range(
+                        &ctx,
+                        "tool names must contain 1 to 128 bytes",
+                    ));
+                }
+                match s.issue(CallKind::Tool { name }, args) {
+                    Ok(Issued::Async(position)) => Ok(position as f64),
+                    _ => Err(halt_exception(&ctx)),
+                }
+            },
+        )?,
+    )?;
+
+    let s = shared.clone();
+    native.set(
+        "console",
+        Function::new(
+            ctx.clone(),
+            move |ctx: Ctx<'js>, line: String| -> rquickjs::Result<()> {
+                if let Some(budget) = s.sticky_budget() {
+                    s.halt(budget);
+                    return Err(halt_exception(&ctx));
+                }
+                // Codemode output is capped at 65,536 bytes by the parent. A line
+                // beyond MAX_VALUE_BYTES is represented by a prefix still larger
+                // than that output cap, so it is dropped whole without large IPC.
+                let line = basal_proto::utf8_prefix(&line, MAX_VALUE_BYTES);
+                let result = s.link.borrow_mut().console(line);
+                if let Err(error) = result {
+                    s.halt(failed(Failure::HostLink {
+                        detail: truncate(error.0),
+                    }));
+                    return Err(halt_exception(&ctx));
+                }
+                Ok(())
+            },
+        )?,
+    )?;
+
+    let s = shared.clone();
+    native.set(
         "issueOp",
         Function::new(
             ctx.clone(),
@@ -489,6 +564,31 @@ fn native_bridge<'js>(ctx: &Ctx<'js>, shared: &Rc<Shared>) -> rquickjs::Result<O
 struct Hooks {
     deliver: Persistent<Function<'static>>,
     status: Persistent<Function<'static>>,
+}
+
+/// QuickJS builds a backtrace before JavaScript can catch an engine RangeError.
+/// Store a Rust stack-budget observer in Error.prepareStackTrace's context state,
+/// then hide that setter and Error.stackTraceLimit in the prelude. Returning only
+/// a string prevents CallSites from exposing the private native bridge functions.
+fn install_stack_observer<'js>(ctx: &Ctx<'js>, shared: &Rc<Shared>) -> rquickjs::Result<()> {
+    let error: Object = ctx.globals().get("Error")?;
+    error.set("stackTraceLimit", 0)?;
+    let shared = shared.clone();
+    error.set(
+        "prepareStackTrace",
+        Function::new(
+            ctx.clone(),
+            move |error: Value<'js>, _sites: Value<'js>| -> String {
+                if matches!(
+                    classify_exception(error),
+                    ActivationResult::BudgetExhausted(BudgetKind::Stack)
+                ) {
+                    shared.stack_exhausted.set(true);
+                }
+                String::new()
+            },
+        )?,
+    )
 }
 
 enum ScriptState {
@@ -618,6 +718,7 @@ fn run(
         bridge: RefCell::new(bridge),
         link,
         memory_exhausted: Rc::new(Cell::new(false)),
+        stack_exhausted: Cell::new(false),
     });
     let rt = match Runtime::new_with_alloc(allocator::BudgetAllocator::new(
         request.budgets.memory_bytes as usize,
@@ -642,7 +743,9 @@ fn run(
     rt.set_max_stack_size(request.budgets.stack_bytes as usize);
     let interrupt = shared.clone();
     rt.set_interrupt_handler(Some(Box::new(move || {
-        interrupt.halted.get() || interrupt.clock.over_budget()
+        interrupt.halted.get()
+            || interrupt.clock.over_budget()
+            || interrupt.sticky_budget().is_some()
     })));
     let ctx = match Context::custom::<Intrinsics>(&rt) {
         Ok(ctx) => ctx,
@@ -676,7 +779,7 @@ fn plan(
     prefix: Vec<RecordedCall>,
 ) -> Result<Bridge, ActivationResult> {
     let invalid = |detail: String| Err(failed(Failure::InvalidRequest { detail }));
-    let actual = prelude_hash();
+    let actual = profile_prelude_hash(request.profile);
     if request.prelude_hash != actual {
         return Err(failed(Failure::EngineMismatch {
             expected: request.prelude_hash,
@@ -759,6 +862,9 @@ impl Activation {
     /// The result for an engine error, preferring the reason the activation
     /// was stopped over the exception that stopping it produced.
     fn engine_error(&self, error: rquickjs::Error) -> ActivationResult {
+        if let Some(budget) = self.shared.sticky_budget() {
+            return budget;
+        }
         if let Some(halt) = self.shared.take_halt() {
             return halt;
         }
@@ -790,7 +896,7 @@ impl Activation {
         if self.shared.clock.over_budget() {
             return Some(ActivationResult::BudgetExhausted(BudgetKind::JsTime));
         }
-        None
+        self.shared.sticky_budget()
     }
 
     /// Runs a closure inside the engine with the JS clock running.
@@ -823,14 +929,25 @@ impl Activation {
                     ctx.globals().set("__rawBridge", native.clone())?;
                 }
                 let mut options = EvalOptions::default();
-                options.filename = Some("prelude.js".into());
-                let prelude: Function = ctx.eval_with_options(PRELUDE, options)?;
-                let hooks: Object = prelude.call((
-                    native,
-                    codemode,
-                    request.trigger.as_str(),
-                    request.self_input.as_str(),
-                ))?;
+                let hooks: Object = if codemode {
+                    install_stack_observer(&ctx, &shared)?;
+                    options.filename = Some("codemode_prelude.js".into());
+                    let prelude: Function = ctx.eval_with_options(CODEMODE_PRELUDE, options)?;
+                    let names = Array::new(ctx.clone())?;
+                    for (index, name) in request.tools.iter().enumerate() {
+                        names.set(index, name.as_str())?;
+                    }
+                    prelude.call((native, names))?
+                } else {
+                    options.filename = Some("prelude.js".into());
+                    let prelude: Function = ctx.eval_with_options(PRELUDE, options)?;
+                    prelude.call((
+                        native,
+                        false,
+                        request.trigger.as_str(),
+                        request.self_input.as_str(),
+                    ))?
+                };
                 let deliver: Function = hooks.get("deliver")?;
                 let start: Function = hooks.get("start")?;
                 let status: Function = hooks.get("status")?;

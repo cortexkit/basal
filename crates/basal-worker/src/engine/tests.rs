@@ -10,7 +10,7 @@ use basal_proto::{
     Primitive, Profile, Settlement,
 };
 
-use super::{prelude_hash, run_activation, run_activation_with_raw_bridge};
+use super::{run_activation, run_activation_with_raw_bridge};
 use crate::link::{HostLink, LinkError, WaitReply};
 
 /// Answers every call with its own arguments, in issue order.
@@ -60,7 +60,8 @@ fn request(profile: Profile, script: &str) -> ActivationRequest {
     ActivationRequest {
         activation_id: 1,
         profile,
-        prelude_hash: prelude_hash(),
+        prelude_hash: super::profile_prelude_hash(profile),
+        tools: vec![],
         script: script.into(),
         trigger: JsonText::null(),
         self_input: JsonText::null(),
@@ -224,14 +225,14 @@ fn prelude_primitive_calls_match_the_rust_wire_codes() {
         await facts('a', {}); await classify('t', []); await llm({});
         await sink.digest('a', {}, 'add'); await sink.status('a', {});
         await kv.get('k'); await kv.set('k', 1); await kv.delete('k');
-        await sh('true', {}); await fs.read('p', {}); await fs.list('p');
+        await fs.read('p', {}); await fs.list('p');
         await fs.stat('p'); await fs.write('p', 't'); await git.log('r', {});
         await git.revParse('r', 'HEAD'); await git.describeTags('r', {});
         await git.show('r', 'HEAD', 'p'); await git.diff('r', 'a', 'b', {});
         await net.fetch('https://example.com', {});
         return null;
     "#;
-    let result = run_activation(&request(Profile::Codemode, script), link.clone());
+    let result = run_activation(&request(Profile::Flow, script), link.clone());
     assert!(
         matches!(result, ActivationResult::Completed { .. }),
         "{result:?}"
@@ -247,7 +248,6 @@ fn prelude_primitive_calls_match_the_rust_wire_codes() {
         Primitive::KvGet,
         Primitive::KvSet,
         Primitive::KvDelete,
-        Primitive::Sh,
         Primitive::FsRead,
         Primitive::FsList,
         Primitive::FsStat,

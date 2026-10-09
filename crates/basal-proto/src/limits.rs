@@ -2,7 +2,11 @@
 //! side will read before it allocates, independent of any activation budget.
 
 /// The current protocol version, exchanged in the handshake.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
+
+/// Linux codemode process ceiling, including the 64 MiB JS heap, native
+/// stacks, executable mappings and allocator overhead.
+pub const CODEMODE_ADDRESS_SPACE_BYTES: u64 = 512 * 1024 * 1024;
 
 /// The highest Landlock ABI supported by the worker's pinned `landlock`
 /// crate, version `=0.4.7`. Update this together with the worker's crate pin

@@ -416,6 +416,7 @@ impl Activation<'_> {
         let request = ActivationRequest {
             activation_id: self.lease.generation,
             profile: Profile::Flow,
+            tools: vec![],
             prelude_hash: self.worker.welcome().prelude_hash,
             script: self.run.script.clone(),
             trigger: self.run.trigger.clone(),
@@ -486,6 +487,13 @@ impl Activation<'_> {
                 }
                 WorkerMessage::Welcome(_) => {
                     return self.broken("unexpected Welcome during an activation".into());
+                }
+                WorkerMessage::Console { .. } => {
+                    return self.fail(
+                        "profile_violation",
+                        "console output is not available to flows".into(),
+                        false,
+                    );
                 }
             };
             if let Flow::Done { .. } = flow {
@@ -663,6 +671,13 @@ impl Activation<'_> {
     }
 
     fn on_host_call(&mut self, call: HostCall) -> Result<Flow> {
+        if matches!(call.kind, CallKind::Tool { .. }) {
+            return self.fail(
+                "profile_violation",
+                format!("{} is not available to flows", call.kind),
+                false,
+            );
+        }
         if call.position < self.next_position {
             return self.on_reissued_sync(call);
         }

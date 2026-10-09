@@ -19,6 +19,10 @@ const TAG_HOST_CALL: u8 = 102;
 const TAG_BLOCKED: u8 = 103;
 const TAG_FINISHED: u8 = 104;
 const TAG_REFUSED: u8 = 105;
+const TAG_CONSOLE: u8 = 106;
+
+// Codes 1..=21 are primitives, including the permanently assigned shell code 11.
+const CALL_TOOL: u8 = 22;
 
 // Hints include the large variable fields; small fixed metadata may grow the
 // buffer once. They are capped by Encoder before reserving any memory.
@@ -46,6 +50,7 @@ pub(crate) fn parent_hint(message: &ParentMessage) -> usize {
 pub(crate) fn worker_hint(message: &WorkerMessage) -> usize {
     match message {
         WorkerMessage::HostCall(call) => call.args.len().saturating_add(2 * MAX_NAME_BYTES + 32),
+        WorkerMessage::Console { line } => line.len().saturating_add(5),
         WorkerMessage::Blocked { awaiting } => awaiting.len().saturating_mul(8).saturating_add(5),
         WorkerMessage::Finished {
             result: ActivationResult::Completed { value },
@@ -112,6 +117,10 @@ fn call_kind(enc: &mut Encoder, kind: &CallKind) {
             enc.name("op", op);
         }
         CallKind::Primitive(p) => enc.u8(p.code()),
+        CallKind::Tool { name } => {
+            enc.u8(CALL_TOOL);
+            enc.name("tool", name);
+        }
     }
 }
 
@@ -127,6 +136,9 @@ fn read_call_kind(dec: &mut Decoder<'_>) -> Result<CallKind, DecodeError> {
         Ok(value)
     };
     match dec.u8("call kind")? {
+        CALL_TOOL => Ok(CallKind::Tool {
+            name: name(dec, "tool")?,
+        }),
         0 => Ok(CallKind::Op {
             module: name(dec, "module")?,
             op: name(dec, "op")?,
@@ -542,6 +554,10 @@ pub(crate) fn encode_parent(enc: &mut Encoder, m: &ParentMessage) {
                 recorded_call(enc, call);
             }
             enc.str(req.self_input.as_str());
+            enc.count(req.tools.len());
+            for name in &req.tools {
+                enc.name("tool", name);
+            }
         }
         ParentMessage::Deliver(o) => {
             enc.u8(TAG_DELIVER);
@@ -580,9 +596,22 @@ pub(crate) fn decode_parent(dec: &mut Decoder<'_>) -> Result<ParentMessage, Deco
                 prefix.push(read_recorded_call(dec)?);
             }
             let self_input = value(dec, "self")?;
+            let n = dec.count("tools", MAX_LIST_ENTRIES, 5)?;
+            let mut tools = Vec::new();
+            for _ in 0..n {
+                let name = dec.string("tool", MAX_NAME_BYTES)?;
+                if name.is_empty() {
+                    return Err(DecodeError::Invalid {
+                        field: "tool",
+                        detail: "name must not be empty".into(),
+                    });
+                }
+                tools.push(name);
+            }
             Ok(ParentMessage::Activate(Box::new(ActivationRequest {
                 activation_id,
                 profile,
+                tools,
                 prelude_hash,
                 script,
                 trigger,
@@ -615,6 +644,7 @@ pub(crate) fn encode_worker(enc: &mut Encoder, m: &WorkerMessage) {
             enc.u32(w.protocol_version);
             detail(enc, &w.engine);
             enc.fixed(&w.prelude_hash.0);
+            enc.fixed(&w.codemode_prelude_hash.0);
             match w.confinement {
                 Confinement::None => enc.u8(0),
                 Confinement::Seatbelt => enc.u8(1),
@@ -647,6 +677,10 @@ pub(crate) fn encode_worker(enc: &mut Encoder, m: &WorkerMessage) {
             enc.u8(TAG_REFUSED);
             refusal(enc, r);
         }
+        WorkerMessage::Console { line } => {
+            enc.u8(TAG_CONSOLE);
+            enc.limited_str("console line", line, MAX_VALUE_BYTES);
+        }
     }
 }
 
@@ -663,6 +697,7 @@ pub(crate) fn decode_worker(dec: &mut Decoder<'_>) -> Result<WorkerMessage, Deco
             protocol_version: dec.u32("protocol version")?,
             engine: dec.string("engine", MAX_DETAIL_BYTES)?,
             prelude_hash: PreludeHash(dec.fixed32("prelude hash")?),
+            codemode_prelude_hash: PreludeHash(dec.fixed32("codemode prelude hash")?),
             confinement: match dec.u8("confinement")? {
                 0 => Confinement::None,
                 1 => Confinement::Seatbelt,
@@ -705,6 +740,9 @@ pub(crate) fn decode_worker(dec: &mut Decoder<'_>) -> Result<WorkerMessage, Deco
             result: read_result(dec)?,
         }),
         TAG_REFUSED => Ok(WorkerMessage::Refused(read_refusal(dec)?)),
+        TAG_CONSOLE => Ok(WorkerMessage::Console {
+            line: dec.string("console line", MAX_VALUE_BYTES)?,
+        }),
         tag => Err(DecodeError::UnknownTag {
             field: "worker message",
             tag,

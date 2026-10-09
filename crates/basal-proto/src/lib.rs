@@ -50,6 +50,7 @@ mod tests {
         ActivationRequest {
             activation_id: 7,
             profile: Profile::Codemode,
+            tools: vec!["lookup".into(), "echo".into()],
             prelude_hash: PreludeHash::of("prelude"),
             script: "return 1".into(),
             trigger: text("{\"a\":1}"),
@@ -77,6 +78,82 @@ mod tests {
                 },
             ],
         }
+    }
+
+    #[test]
+    fn codemode_wire_codes_preserve_shell_and_round_trip_tool_json() {
+        assert_eq!(PROTOCOL_VERSION, 4);
+        assert!(CODEMODE_ADDRESS_SPACE_BYTES > 64 * 1024 * 1024);
+        assert_eq!(Primitive::Sh.code(), 11);
+        for (kind, code) in [
+            (CallKind::Primitive(Primitive::Sh), 11),
+            (
+                CallKind::Tool {
+                    name: "echo".into(),
+                },
+                22,
+            ),
+        ] {
+            let message = WorkerMessage::HostCall(HostCall {
+                position: 7,
+                kind,
+                args: text("{\"a\":1}"),
+            });
+            let frame = encode_worker_frame(&message).unwrap();
+            assert_eq!(frame[13], code);
+            if code == 22 {
+                assert!(Primitive::ALL.iter().all(|p| p.code() < code));
+            }
+            assert_eq!(read_worker_message(&mut frame.as_slice()).unwrap(), message);
+        }
+        let mut shell = vec![102];
+        shell.extend_from_slice(&7u64.to_be_bytes());
+        shell.extend_from_slice(&[11, 0, 0, 0, 4]);
+        shell.extend_from_slice(b"null");
+        assert_eq!(
+            decode_worker_payload(&shell).unwrap(),
+            WorkerMessage::HostCall(HostCall {
+                position: 7,
+                kind: CallKind::Primitive(Primitive::Sh),
+                args: text("null"),
+            })
+        );
+    }
+
+    #[test]
+    fn codemode_activation_tools_round_trip_and_names_are_bounded() {
+        let message = ParentMessage::Activate(Box::new(sample_request()));
+        let frame = encode_parent_frame(&message).unwrap();
+        assert_eq!(read_parent_message(&mut frame.as_slice()).unwrap(), message);
+        for name in [String::new(), "a".repeat(MAX_NAME_BYTES + 1)] {
+            let mut req = sample_request();
+            req.tools = vec![name];
+            assert!(encode_parent_frame(&ParentMessage::Activate(Box::new(req))).is_err());
+        }
+    }
+
+    #[test]
+    fn codemode_welcome_reports_two_distinct_prelude_hashes() {
+        let message = WorkerMessage::Welcome(Welcome {
+            protocol_version: PROTOCOL_VERSION,
+            engine: "quickjs".into(),
+            prelude_hash: PreludeHash::of("flow"),
+            codemode_prelude_hash: PreludeHash::of("codemode"),
+            confinement: Confinement::None,
+        });
+        let frame = encode_worker_frame(&message).unwrap();
+        assert_eq!(read_worker_message(&mut frame.as_slice()).unwrap(), message);
+    }
+
+    #[test]
+    fn codemode_console_has_a_unique_worker_tag_and_round_trips() {
+        let message = WorkerMessage::Console {
+            line: "a 1\n".into(),
+        };
+        let frame = encode_worker_frame(&message).unwrap();
+        assert_eq!(frame[4], 106);
+        assert_eq!(read_worker_message(&mut frame.as_slice()).unwrap(), message);
+        assert!(decode_parent_payload(&frame[4..]).is_err());
     }
 
     #[test]
@@ -151,6 +228,7 @@ mod tests {
                 protocol_version: PROTOCOL_VERSION,
                 engine: "quickjs".into(),
                 prelude_hash: PreludeHash::of("p"),
+                codemode_prelude_hash: PreludeHash::of("c"),
                 confinement: Confinement::Seatbelt,
             }),
             WorkerMessage::HostCall(HostCall {
@@ -202,14 +280,15 @@ mod tests {
             protocol_version: PROTOCOL_VERSION,
             engine: String::new(),
             prelude_hash: PreludeHash([0; 32]),
+            codemode_prelude_hash: PreludeHash([0; 32]),
             confinement,
         })
     }
 
     fn confinement_payload(suffix: &[u8]) -> Vec<u8> {
-        // A version-3 Welcome with an empty engine name and a zero prelude hash.
-        let mut payload = vec![101, 0, 0, 0, 3, 0, 0, 0, 0];
-        payload.extend_from_slice(&[0; 32]);
+        // A version-4 Welcome with an empty engine name and two zero hashes.
+        let mut payload = vec![101, 0, 0, 0, 4, 0, 0, 0, 0];
+        payload.extend_from_slice(&[0; 64]);
         payload.extend_from_slice(suffix);
         payload
     }

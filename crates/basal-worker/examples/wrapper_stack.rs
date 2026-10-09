@@ -12,6 +12,7 @@ fn request(work: &str, stack: u64) -> ActivationRequest {
         activation_id: 1,
         profile: Profile::Flow,
         prelude_hash: engine::prelude_hash(),
+        tools: vec![],
         script: format!("return 1\n}}); {work} (async function () {{ return 1;"),
         trigger: JsonText::null(),
         self_input: JsonText::null(),

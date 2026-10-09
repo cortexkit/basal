@@ -458,7 +458,7 @@ fn engine_stack_fixture(stack: u64) -> basal_proto::ActivationResult {
     use basal_proto::{ActivationRequest, Budgets, JsonText, Profile};
     use std::{cell::RefCell, rc::Rc};
     let request = ActivationRequest {
-        activation_id: 1, profile: Profile::Flow, prelude_hash: crate::engine::prelude_hash(),
+        activation_id: 1, profile: Profile::Flow, tools: vec![], prelude_hash: crate::engine::prelude_hash(),
         script: "return 1\n}); function f(n) { return n ? 1 + f(n - 1) : 0; } f(50); (async function () { return 1;".into(),
         trigger: JsonText::null(), self_input: JsonText::null(),
         budgets: Budgets { stack_bytes: stack, ..Default::default() }, prefix: vec![],

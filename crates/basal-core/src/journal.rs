@@ -184,7 +184,7 @@ pub fn insert_call(
     call: &NewCall<'_>,
 ) -> Result<String> {
     let key = idempotency_key(flow_id, &lease.run_id, call.position);
-    let (code, module, op) = kind_columns(call.kind);
+    let (code, module, op) = kind_columns(call.kind)?;
     let digest = ArgsDigest::of(call.args);
     let (dispatch, attempts) = match call.class {
         StoredClass::Sync | StoredClass::Local => (DispatchState::None, 0),
