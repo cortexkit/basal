@@ -777,9 +777,11 @@ fn a_stalled_scope_activation_deadline_reaps_its_worker() {
     let driver = {
         let rt = f.rt.clone();
         std::thread::spawn(move || {
+            let started = Instant::now();
             let end = rt.activate(&run, &mut worker);
+            let took = started.elapsed();
             tx.send(()).expect("deadline observer still exists");
-            (end, worker)
+            (end, took, worker)
         })
     };
     // The provider reply is held forever, so the activation can only end by
@@ -797,10 +799,24 @@ fn a_stalled_scope_activation_deadline_reaps_its_worker() {
         || driver.is_finished(),
     )
     .expect("driver cleanup");
-    let (end, mut worker) = driver.join().expect("driver thread");
+    let (end, took, mut worker) = driver.join().expect("driver thread");
     let reaped = worker.exited(ACTIVATION_WAIT);
     worker.kill();
     f.rt.quiesce();
+    // A deadline failure alone cannot say which deadline fired: a fixture that
+    // kept the production activation deadline would also end this activation
+    // with a deadline failure, just later. That deadline is measured from
+    // inside `activate`, so such an activation can never end before it, while
+    // the fixture's short deadline ends it long before. The bound is the same
+    // generous one the hang check relies on, so a loaded machine that fires the
+    // short deadline late still passes. It is checked first because a deadline
+    // as long as the hang bound may lose the race to it, and the hang message
+    // would then hide which deadline was configured.
+    let production_deadline = Config::default().activation_deadline;
+    assert!(
+        took < production_deadline,
+        "the stalled activation took {took:?}, at least the production activation deadline of {production_deadline:?}, so the fixture's own deadline did not end it"
+    );
     waited.expect("the stalled scope activation never ended");
     let end = end.expect("activation");
     assert!(
