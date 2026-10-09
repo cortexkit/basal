@@ -9320,3 +9320,20 @@ only = true
 platforms = ["linux"]
 timeout_s = 600
 build_timeout_s = 3600
+
+[[control]]
+id = "worker-network-probe-accepts-only-sandbox-denials"
+guards = "The worker verification gate accepts only a sandbox denial, not a refused connection"
+file = "script/sign-worker.sh"
+old = "return error_number in (1, 13)"
+new = "return error_number != 0 # NON-VACUITY BREAK"
+edits = []
+test_file = "script/tests/sign_worker.py"
+runner = "command"
+platforms = ["linux"]
+command = ["python3.14", "-m", "unittest", "{test}"]
+test_count_pattern = "Ran {count} test"
+expect_red = ["script.tests.sign_worker.SignWorkerVerifyChecks.test_connection_refused_fails_gate"]
+only = false
+timeout_s = 120
+build_timeout_s = 1800
