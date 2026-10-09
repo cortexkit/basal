@@ -11,7 +11,7 @@ basal runs as a module supervised by the subc daemon, with the binary `ck-basal`
 | Crate | What |
 |---|---|
 | `basal-proto` | The versioned IPC protocol between the parent and its worker processes. |
-| `basal-worker` | `ck-basal-worker`: the confined QuickJS engine. It applies its own Seatbelt sandbox before reading anything, so it runs on macOS only. |
+| `basal-worker` | `ck-basal-worker`: the confined QuickJS engine. It confines itself before reading anything: Seatbelt on macOS, seccomp and Landlock on Linux. See [docs/sandbox.md](docs/sandbox.md). |
 | `basal-core` | Runtime state: the SQLite store, admission, the run state machine, the journal and mailbox, manifests and authorization, the scheduler and the activation driver. |
 | `basal-host` | The `Host` boundary that flow calls go through (module ops, facts, model calls, sinks), the adapters to the fleet's modules, and a deterministic mock. |
 | `basal-module` | `ck-basal`: the supervised module, with its subc manifest, the worker pool, the flow ops, dry runs and consent cards. |
@@ -20,7 +20,7 @@ basal runs as a module supervised by the subc daemon, with the binary `ck-basal`
 
 ## Building and testing
 
-basal needs Rust 1.88 or newer (edition 2024) on macOS. Dependencies are published on crates.io or pinned to an immutable Git revision.
+basal needs Rust 1.88 or newer (edition 2024) on macOS or Linux (x86_64 or aarch64). Dependencies are published on crates.io or pinned to an immutable Git revision.
 
 ```sh
 cargo build --workspace
@@ -77,6 +77,7 @@ ckdev-mutate prove --id worker-closes-descriptors-proof \
 - [docs/script.md](docs/script.md): how a flow script runs, and two deliberate limits of the script runtime.
 - [docs/ops.md](docs/ops.md): the operations agents reach through prefrontal-core's relay, with their request and reply shapes.
 - [docs/deploy.md](docs/deploy.md): staging, signing and placing the two binaries, and rolling them back.
+- [docs/sandbox.md](docs/sandbox.md): how the worker is confined on each operating system, what it can still do, and the differences between systems.
 
 ## License
 
