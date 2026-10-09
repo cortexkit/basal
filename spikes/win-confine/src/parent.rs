@@ -990,6 +990,13 @@ fn launch_variant(
         };
         let process = Handle(pi.hProcess);
         let main_thread = Handle(pi.hThread);
+        let handles_before_resume = if inspect_ambient {
+            handle_table_for(process.0)
+                .map(|handles| json!(handles))
+                .unwrap_or_else(|error| json!({"error":error}))
+        } else {
+            Value::Null
+        };
         let loader_threads = crate::handles::loader_threads(
             process.0,
             (sequence == "full-gui-parameter-1").then_some(1),
@@ -1143,7 +1150,7 @@ fn launch_variant(
             || json!({"parse_error":format!("{reports:?}"),"stdout":String::from_utf8_lossy(&stdout)}),
         );
         Ok(
-            json!({"sequence":sequence,"pid":pi.dwProcessId,"creation_flags":hex(flags),"requested_context":context.as_ref().map(|c|&c.report),"handle_trace_enablement":handle_trace_enablement,"loader_setting":loader_setting.as_ref().map(|setting| &setting.report),"loader_threads":loader_threads,"parent_handle_inspection":parent_handles,"debug":{"requested":debug,"loader_snaps_enablement":loader_snaps_enablement,"setup":debug_setup,"attached_before_resume":attached,"creation_error":debug_creation_error,"trace":debug_events},"exit_code":hex(exit),"timeout":wait!=WAIT_OBJECT_0,"input_write":{"success":write_ok,"error":if write_ok{0}else{write_error},"bytes":written},"stderr":String::from_utf8_lossy(&stderr),"job":job.as_ref().map(|j|&j.1),"constructed_tokens":tokens.as_ref().map(|t|&t.report),"parent_before_resume":{"startup_context":birth_startup,"primary":birth_primary,"assigned_loader":assigned_loader,"initial_handle_closed":initial_closed_before_resume},"stdio_handles":{"stdin":handles[0] as usize,"stdout":handles[1] as usize,"stderr":handles[2] as usize},"child":child}),
+            json!({"sequence":sequence,"pid":pi.dwProcessId,"creation_flags":hex(flags),"requested_context":context.as_ref().map(|c|&c.report),"handle_trace_enablement":handle_trace_enablement,"loader_setting":loader_setting.as_ref().map(|setting| &setting.report),"loader_threads":loader_threads,"parent_handle_inspection":parent_handles,"debug":{"requested":debug,"loader_snaps_enablement":loader_snaps_enablement,"setup":debug_setup,"attached_before_resume":attached,"creation_error":debug_creation_error,"trace":debug_events},"exit_code":hex(exit),"timeout":wait!=WAIT_OBJECT_0,"input_write":{"success":write_ok,"error":if write_ok{0}else{write_error},"bytes":written},"stderr":String::from_utf8_lossy(&stderr),"job":job.as_ref().map(|j|&j.1),"constructed_tokens":tokens.as_ref().map(|t|&t.report),"parent_before_resume":{"handles":handles_before_resume,"startup_context":birth_startup,"primary":birth_primary,"assigned_loader":assigned_loader,"initial_handle_closed":initial_closed_before_resume},"stdio_handles":{"stdin":handles[0] as usize,"stdout":handles[1] as usize,"stderr":handles[2] as usize},"child":child}),
         )
     }
 }

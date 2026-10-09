@@ -75,10 +75,19 @@ jobs:
         run: |
           $kits = "${env:ProgramFiles(x86)}\Windows Kits\10"
           $candidates = @(Get-ChildItem $kits -Filter dbghelp.dll -Recurse -ErrorAction SilentlyContinue | Where-Object { Test-Path (Join-Path $_.DirectoryName 'symsrv.dll') })
-          $toolkit = $candidates | Where-Object { $_.FullName -notmatch '\\x86\\|\\arm64\\' } | Select-Object -First 1
+          $toolkit = $candidates | Where-Object { $_.FullName -match '\\Debuggers\\x64\\dbghelp.dll$' } | Select-Object -First 1
+          if (-not $toolkit) { $toolkit = $candidates | Where-Object { $_.FullName -notmatch '\\x86\\|\\arm64\\' } | Select-Object -First 1 }
           if ($toolkit) {
             $env:BASAL_DBGHELP = $toolkit.FullName
             $env:BASAL_SYMSRV = Join-Path $toolkit.DirectoryName 'symsrv.dll'
+            $symchk = Join-Path $toolkit.DirectoryName 'symchk.exe'
+            if (Test-Path $symchk) {
+              New-Item -ItemType Directory -Force evidence/symbols | Out-Null
+              foreach ($dll in @('ntdll.dll', 'kernelbase.dll', 'rpcrt4.dll', 'sechost.dll', 'bcrypt.dll')) {
+                & $symchk /v "$env:SystemRoot\System32\$dll" /s "SRV*$PWD\evidence\symbols*https://msdl.microsoft.com/download/symbols" 2>&1 | Out-File "evidence/symchk-$dll.txt"
+                "symchk exit: $LASTEXITCODE" | Out-File -Append "evidence/symchk-$dll.txt"
+              }
+            }
           }
           $candidates | Select-Object FullName, @{n='Version';e={$_.VersionInfo.FileVersion}} | ConvertTo-Json | Out-File evidence/symbol-toolkit.json
           systeminfo | Out-File evidence/host.txt
