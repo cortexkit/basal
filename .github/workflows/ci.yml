@@ -30,14 +30,21 @@ env:
 jobs:
   checks:
     if: github.event_name != 'schedule'
-    # Compilation and portable tests need no Seatbelt. Worker tests, including
-    # their codesign and privacy-disclaim probes, must stay on a macOS host.
+    # The worker confines itself on macOS (Seatbelt) and on Linux (seccomp and
+    # Landlock), so every leg runs the worker packages. Their macOS-only probes
+    # (codesign, privacy disclaim) are compiled only on macOS. The Linux
+    # seccomp filter has a separate syscall table per architecture, so Linux
+    # runs natively on both x86_64 and aarch64. Analysis, script checks and
+    # catalogue validation run once, on the x86_64 Linux leg; the aarch64 leg
+    # replays no mutation rows, so it installs no mutation runner.
     strategy:
       fail-fast: false
       matrix:
         include:
           - platform: linux
             os: ubuntu-latest
+          - platform: linux-arm64
+            os: ubuntu-24.04-arm
           - platform: macos
             os: macos-latest
     runs-on: ${{ matrix.os }}
@@ -64,12 +71,13 @@ jobs:
             ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-checks-
             ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-
       - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        if: matrix.platform != 'linux-arm64'
         id: mutate-cache
         with:
           path: ~/.cargo/bin/ckdev-mutate
           key: ${{ runner.os }}-${{ runner.arch }}-ckdev-mutate-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-${{ env.CK_MUTATE_REV }}
       - name: Install pinned mutation runner
-        if: steps.mutate-cache.outputs.cache-hit != 'true'
+        if: matrix.platform != 'linux-arm64' && steps.mutate-cache.outputs.cache-hit != 'true'
         run: cargo install --locked --git https://github.com/cortexkit/commons --rev "$CK_MUTATE_REV" cortexkit-mutate
       - run: cargo fmt --all --check
         if: matrix.platform == 'linux'
@@ -78,19 +86,25 @@ jobs:
       - run: cargo clippy --workspace --all-targets --features basal-module/rig-kill-hook -- -D warnings
         if: matrix.platform == 'linux'
       - name: Test portable crates
-        if: matrix.platform == 'linux'
+        if: runner.os == 'Linux'
         run: cargo test --locked -p basal-proto -p basal-core -p basal-host
       # The module feature propagates to basal-host, so portable tests need both
       # modes as well. Enable it on the selected host crate without selecting the
-      # worker-using module. Worker packages run both modes only on macOS.
+      # worker-using module. Worker packages run both modes on every leg.
       - name: Test portable crates with the rig kill hook
-        if: matrix.platform == 'linux'
+        if: runner.os == 'Linux'
         run: cargo test --locked -p basal-proto -p basal-core -p basal-host --features basal-host/rig-kill-hook
+      # A procfs mounted with hidepid hides the confined worker from its parent,
+      # and the Linux startup tests then accept a weaker self-reported status.
+      # GitHub's runners show every process, so require the exact parent-side
+      # /proc/<pid>/status readback here; the variable has no effect on macOS.
       - name: Test confined worker packages
-        if: matrix.platform == 'macos'
+        env:
+          BASAL_REQUIRE_VISIBLE_PROC: ${{ runner.os == 'Linux' && '1' || '' }}
         run: cargo test --locked -p basal-worker -p basal-module -p basal-testkit -p basal-rig
       - name: Test confined worker packages with the rig kill hook
-        if: matrix.platform == 'macos'
+        env:
+          BASAL_REQUIRE_VISIBLE_PROC: ${{ runner.os == 'Linux' && '1' || '' }}
         run: cargo test --locked -p basal-worker -p basal-module -p basal-testkit -p basal-rig --features basal-module/rig-kill-hook
       - name: Check shell scripts
         if: matrix.platform == 'linux'
@@ -130,6 +144,35 @@ jobs:
       # so no worker starts. Rows marked for the other OS are skipped, so each
       # host validates the rows it will replay.
       - run: ckdev-mutate check
+        if: matrix.platform != 'linux-arm64'
+
+  # Native aarch64 evidence for the Linux seccomp allowlist. The filter has a
+  # separate aarch64 syscall table, and only a native trace shows which calls
+  # glibc and the release worker actually make there. The script fails when no
+  # confined worker was traced or a panic/abort probe misbehaves; its reduced
+  # traces are uploaded for review against
+  # crates/basal-worker/sandbox/linux/syscall-admission.md.
+  aarch64-syscall-trace:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install stable Rust and strace
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends strace
+      - name: Trace the native release worker
+        run: |
+          rm -rf crates/basal-worker/sandbox/linux/traces/aarch64
+          env -u BASAL_WORKER_BIN bash crates/basal-worker/sandbox/linux/trace-native.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: syscall-trace-aarch64
+          path: crates/basal-worker/sandbox/linux/traces/aarch64
+          if-no-files-found: error
 
   mutations-pr:
     if: github.event_name == 'pull_request'

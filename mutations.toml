@@ -5,10 +5,11 @@
 # Build and test deadlines are separate: 3600 s for loaded-host builds,
 # 600 s for test binaries unless a row extends the bound for many stalled tests.
 # Reports belong in target/mutations/.
-# Each proof has one CI host: worker-using packages require macOS Seatbelt;
-# portable crates and offline command fixtures run only on Linux to avoid
-# replaying them twice. Offline signing/debugger probes replace macOS tools
-# with fixtures rather than invoking codesign or lldb.
+# Each proof has one CI host. Worker-using packages run on macOS (Seatbelt)
+# or Linux (seccomp and Landlock); rows editing Linux-only confinement code
+# run on Linux. Portable crates and offline command fixtures run only on Linux
+# to avoid replaying them twice. Offline signing/debugger probes replace macOS
+# tools with fixtures rather than invoking codesign or lldb.
 
 # worker: 32 controls
 [[control]]
@@ -9320,3 +9321,241 @@ only = true
 platforms = ["linux"]
 timeout_s = 600
 build_timeout_s = 3600
+
+# linux confinement: 14 controls
+# Each row removes one layer of the Linux worker's startup lockdown, or of the
+# module's handling of Linux workers, and names the live test that catches it.
+# They run on Linux because the code they edit is compiled only there.
+[[control]]
+id = "linux-seccomp-filter-is-never-installed"
+guards = "Linux worker runs without its seccomp allowlist"
+test_file = "crates/basal-worker/tests/linux_startup.rs"
+runner = "cargo"
+package = "basal-worker"
+platforms = ["linux"]
+target = "--test linux_startup"
+expect_red = ["seccomp_kills_raw_open_even_with_a_sigsys_handler", "engine_is_single_threaded_no_new_privs_and_seccomp_before_first_read"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-worker/src/confinement/linux.rs"
+old = """
+        seccompiler::apply_filter_all_threads(&program)
+            .map_err(|_| refuse("seccomp-install-failed"))?;"""
+new = """
+        let _ = &program; // NON-VACUITY BREAK"""
+
+[[control]]
+id = "linux-landlock-ruleset-is-never-applied"
+guards = "Linux worker runs without its Landlock ruleset"
+test_file = "crates/basal-worker/tests/linux_startup.rs"
+runner = "cargo"
+package = "basal-worker"
+platforms = ["linux"]
+target = "--test linux_startup"
+expect_red = ["landlock_only_denies_raw_open_and_reports_its_applied_abi", "engine_landlock_readback_is_required_after_blocked_first_read"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-worker/src/confinement/linux.rs"
+old = "let landlock = apply_landlock(options.landlock)?;"
+new = "let landlock: Option<LandlockReport> = None; // NON-VACUITY BREAK"
+
+[[control]]
+id = "linux-inherited-descriptors-are-never-closed"
+guards = "Linux worker keeps descriptors above stdio that it inherited"
+test_file = "crates/basal-worker/tests/linux_startup.rs"
+runner = "cargo"
+package = "basal-worker"
+platforms = ["linux"]
+target = "--test linux_startup"
+expect_red = ["descriptor_inventory_alone_reports_only_stdio_after_inherited_close", "descriptor_inventory_and_independent_sweep_revoke_planted_fds"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-worker/src/confinement/linux.rs"
+old = "let close_range = close_descriptors(options.fixtures.legacy_close)?;"
+new = "let close_range = false; // NON-VACUITY BREAK"
+
+[[control]]
+id = "linux-worker-stays-dumpable"
+guards = "Linux worker can be ptrace-attached by its parent"
+test_file = "crates/basal-worker/tests/linux_startup.rs"
+runner = "cargo"
+package = "basal-worker"
+platforms = ["linux"]
+target = "--test linux_startup"
+expect_red = ["dumpable_denies_parent_ptrace_and_proc_mem_with_unconfined_control"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-worker/src/confinement/linux.rs"
+old = "unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) } as _,"
+new = "0 as _, // NON-VACUITY BREAK"
+
+[[control]]
+id = "linux-step-zero-accepts-a-missing-or-foreign-proc"
+guards = "Linux worker starts without a genuine procfs"
+test_file = "crates/basal-worker/tests/linux_startup.rs"
+runner = "cargo"
+package = "basal-worker"
+platforms = ["linux"]
+target = "--test linux_startup"
+expect_red = ["refuses_proc_missing", "refuses_proc_untrusted"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-worker/src/confinement/linux.rs"
+old = "decide_proc(fixtures.proc_magic.unwrap_or(Some(actual)))?;"
+new = "let _ = (actual, &fixtures.proc_magic); // NON-VACUITY BREAK"
+
+[[control]]
+id = "linux-step-zero-accepts-read-implies-exec"
+guards = "Linux worker starts with the READ_IMPLIES_EXEC personality"
+test_file = "crates/basal-worker/tests/linux_startup.rs"
+runner = "cargo"
+package = "basal-worker"
+platforms = ["linux"]
+target = "--test linux_startup"
+expect_red = ["refuses_read_implies_exec"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-worker/src/confinement/linux.rs"
+old = "if value & 0x0400000 != 0 {"
+new = "if false && value & 0x0400000 != 0 { // NON-VACUITY BREAK"
+
+[[control]]
+id = "linux-step-zero-accepts-several-threads"
+guards = "Linux worker starts with more than one thread"
+test_file = "crates/basal-worker/tests/linux_startup.rs"
+runner = "cargo"
+package = "basal-worker"
+platforms = ["linux"]
+target = "--test linux_startup"
+expect_red = ["refuses_not_one_thread"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-worker/src/confinement/linux.rs"
+old = "decide_threads(fixtures.task_count.unwrap_or(tasks.len()))?;"
+new = "let _ = (tasks, fixtures.task_count); // NON-VACUITY BREAK"
+
+[[control]]
+id = "linux-step-zero-accepts-stdio-that-is-not-a-pipe"
+guards = "Linux worker starts with a file or named FIFO as stdio"
+test_file = "crates/basal-worker/tests/linux_startup.rs"
+runner = "cargo"
+package = "basal-worker"
+platforms = ["linux"]
+target = "--test linux_startup"
+expect_red = ["refuses_stdio_not_pipe_regular_file_and_named_fifo"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-worker/src/confinement/linux.rs"
+old = "if magic != 0x50495045 {"
+new = "if false && magic != 0x50495045 { // NON-VACUITY BREAK"
+
+[[control]]
+id = "linux-step-zero-accepts-stdio-with-the-wrong-access-mode"
+guards = "Linux worker starts with a stdio pipe end of the wrong direction"
+test_file = "crates/basal-worker/tests/linux_startup.rs"
+runner = "cargo"
+package = "basal-worker"
+platforms = ["linux"]
+target = "--test linux_startup"
+expect_red = ["refuses_stdio_wrong_mode"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-worker/src/confinement/linux.rs"
+old = "if mode & libc::O_ACCMODE"
+new = "if false /* NON-VACUITY BREAK */ && mode & libc::O_ACCMODE"
+
+[[control]]
+id = "linux-step-zero-accepts-writable-executable-mappings"
+guards = "Linux worker starts with a writable and executable mapping"
+test_file = "crates/basal-worker/tests/linux_startup.rs"
+runner = "cargo"
+package = "basal-worker"
+platforms = ["linux"]
+target = "--test linux_startup"
+expect_red = ["refuses_mapping_wx"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-worker/src/confinement/linux.rs"
+old = "if perms[1] == b'w' && perms[2] == b'x' {"
+new = "if false && perms[1] == b'w' && perms[2] == b'x' { // NON-VACUITY BREAK"
+
+[[control]]
+id = "linux-step-zero-accepts-an-executable-stack"
+guards = "Linux worker starts with an executable stack mapping"
+test_file = "crates/basal-worker/tests/linux_startup.rs"
+runner = "cargo"
+package = "basal-worker"
+platforms = ["linux"]
+target = "--test linux_startup"
+expect_red = ["refuses_mapping_exec_stack"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-worker/src/confinement/linux.rs"
+old = "if perms[2] == b'x' && fields.iter().any(|f| f.starts_with(\"[stack\")) {"
+new = "if false && perms[2] == b'x' && fields.iter().any(|f| f.starts_with(\"[stack\")) { // NON-VACUITY BREAK"
+
+# Removing only the shared-mapping branch would still refuse the mapping as an
+# unknown kind, so the mutant also admits 's' in the private-mapping check.
+[[control]]
+id = "linux-step-zero-accepts-shared-mappings"
+guards = "Linux worker starts with a shared mapping"
+test_file = "crates/basal-worker/tests/linux_startup.rs"
+runner = "cargo"
+package = "basal-worker"
+platforms = ["linux"]
+target = "--test linux_startup"
+expect_red = ["refuses_mapping_shared"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-worker/src/confinement/linux.rs"
+old = """
+        if perms[3] == b's' {
+            return Err(refuse("mapping-shared"));
+        }
+        if perms[3] != b'p' {"""
+new = """
+        if perms[3] != b'p' && perms[3] != b's' { // NON-VACUITY BREAK"""
+
+[[control]]
+id = "linux-module-accepts-a-worker-without-seccomp"
+guards = "the module hands out a Linux worker whose Welcome reports no seccomp"
+test_file = "crates/basal-module/tests/confinement.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test confinement"
+expect_red = ["spawn_refuses_a_stand_in_worker_with_seccomp_false"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/pool.rs"
+old = "if !accepts_welcome(process.welcome(), self.landlock) {"
+new = "if false && !accepts_welcome(process.welcome(), self.landlock) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "linux-budget-exhausted-worker-is-reused"
+guards = "a worker that reported an exhausted CPU, memory or stack budget is handed out again"
+test_file = "crates/basal-module/tests/pool.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test pool"
+expect_red = ["js_time_exhaustion_retires_the_worker_before_the_next_handout", "memory_exhaustion_retires_the_worker_before_the_next_handout", "stack_exhaustion_retires_the_worker_before_the_next_handout"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "self.fail(\"budget_exhausted\", format!(\"{kind:?}\"), false)"
+new = "self.fail(\"budget_exhausted\", format!(\"{kind:?}\"), true) // NON-VACUITY BREAK"
