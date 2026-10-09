@@ -1,0 +1,4186 @@
+[
+  {
+    "sequence": "chrome-default-dacl-control",
+    "pid": 5052,
+    "exit_code": "0xc0000142",
+    "event_count": 71,
+    "operations": [
+      "CloseFile",
+      "CreateFile",
+      "CreateFileMapping",
+      "FASTIO_RELEASE_FOR_SECTION_SYNCHRONIZATION",
+      "IRP_MJ_CLOSE",
+      "Load Image",
+      "Process Exit",
+      "Process Start",
+      "QuerySecurityFile",
+      "RegCloseKey",
+      "RegOpenKey",
+      "RegQueryValue",
+      "Thread Create",
+      "Thread Exit"
+    ],
+    "process_start_seen": true,
+    "process_exit_seen": true,
+    "non_success": [
+      {
+        "Time of Day": "7:03:29.9100087 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "5052",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Nls\\CodePage",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Read",
+        "capture_order": 12861
+      },
+      {
+        "Time of Day": "7:03:29.9100916 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "5052",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 12872
+      },
+      {
+        "Time of Day": "7:03:29.9101067 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "5052",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager\\RaiseExceptionOnPossibleDeadlock",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 80",
+        "capture_order": 12874
+      },
+      {
+        "Time of Day": "7:03:29.9101396 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "5052",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\UseFilter",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 544",
+        "capture_order": 12880
+      },
+      {
+        "Time of Day": "7:03:29.9101464 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "5052",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\DisableHeapLookaside",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 12882
+      },
+      {
+        "Time of Day": "7:03:29.9101525 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "5052",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\FrontEndHeapDebugOptions",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 12884
+      },
+      {
+        "Time of Day": "7:03:29.9101591 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "5052",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\ShutdownFlags",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 12885
+      },
+      {
+        "Time of Day": "7:03:29.9101649 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "5052",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\UnloadEventTraceDepth",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 12887
+      },
+      {
+        "Time of Day": "7:03:29.9101705 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "5052",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\MaxLoaderThreads",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 12888
+      },
+      {
+        "Time of Day": "7:03:29.9101758 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "5052",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\UseImpersonatedDeviceMap",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 12889
+      },
+      {
+        "Time of Day": "7:03:29.9101809 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "5052",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\TracingFlags",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 12890
+      },
+      {
+        "Time of Day": "7:03:29.9101861 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "5052",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\RaiseExceptionOnPossibleDeadlock",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 12891
+      },
+      {
+        "Time of Day": "7:03:29.9101914 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "5052",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\CFGOptions",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 12892
+      },
+      {
+        "Time of Day": "7:03:29.9101972 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "5052",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\MinimumStackCommitInBytes",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 12893
+      },
+      {
+        "Time of Day": "7:03:29.9102297 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "5052",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\BreakOnInitializeProcessFailure",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 12896
+      },
+      {
+        "Time of Day": "7:03:29.9102364 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "5052",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\KeepActivationContextsAlive",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 12897
+      },
+      {
+        "Time of Day": "7:03:29.9102429 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "5052",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\TrackActivationContextReleases",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 12899
+      },
+      {
+        "Time of Day": "7:03:29.9102484 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "5052",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\MaxDeadActivationContexts",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 12901
+      },
+      {
+        "Time of Day": "7:03:29.9102606 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "5052",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\GlobalFlag2",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 12906
+      },
+      {
+        "Time of Day": "7:03:29.9102673 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "5052",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\QueryProcessModuleInformationLoopDetectorCount",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 12908
+      },
+      {
+        "Time of Day": "7:03:29.9102779 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "5052",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Segment Heap",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 12910
+      },
+      {
+        "Time of Day": "7:03:29.9102973 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "5052",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager\\Segment Heap",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 12911
+      },
+      {
+        "Time of Day": "7:03:29.9103068 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "5052",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\CWDIllegalInDLLSearch",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 12912
+      },
+      {
+        "Time of Day": "7:03:29.9104027 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "5052",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\WMI\\Security\\57a6ed1a-79f7-5011-b242-4784e5620cf7",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 528",
+        "capture_order": 12928
+      },
+      {
+        "Time of Day": "7:03:29.9104830 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "5052",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 12936
+      },
+      {
+        "Time of Day": "7:03:29.9104984 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "5052",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager\\ResourcePolicies",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 24",
+        "capture_order": 12938
+      },
+      {
+        "Time of Day": "7:03:29.9106291 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "5052",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\DebugProcessHeapOnly",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 12950
+      },
+      {
+        "Time of Day": "7:03:29.9118654 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "5052",
+        "Operation": "CreateFileMapping",
+        "Path": "C:\\Windows\\System32\\conhost.exe",
+        "Result": "FILE LOCKED WITH ONLY READERS",
+        "Detail": "SyncType: SyncTypeCreateSection, PageProtection: PAGE_EXECUTE",
+        "capture_order": 13029
+      },
+      {
+        "Time of Day": "7:03:29.9118924 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "5052",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\Conhost.exe",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 13035
+      },
+      {
+        "Time of Day": "7:03:29.9121336 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "5052",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Services\\bam\\State\\UserSettings\\S-1-5-21-1000861503-3182281758-1041194900-500\\\\Device\\HarddiskVolume6\\a\\basal\\basal\\spikes\\win-confine\\target\\release\\placed\\win-confine.exe",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 40",
+        "capture_order": 13060
+      }
+    ],
+    "last_denied": null
+  },
+  {
+    "sequence": "post-load-primary-control",
+    "pid": 4712,
+    "exit_code": "0xc0000142",
+    "event_count": 38,
+    "operations": [
+      "CloseFile",
+      "CreateFile",
+      "CreateFileMapping",
+      "FASTIO_RELEASE_FOR_SECTION_SYNCHRONIZATION",
+      "IRP_MJ_CLOSE",
+      "Load Image",
+      "Process Exit",
+      "Process Start",
+      "QuerySecurityFile",
+      "RegCloseKey",
+      "RegOpenKey",
+      "RegQueryValue",
+      "Thread Create",
+      "Thread Exit"
+    ],
+    "process_start_seen": true,
+    "process_exit_seen": true,
+    "non_success": [
+      {
+        "Time of Day": "7:03:29.9252871 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "4712",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Nls\\CodePage",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Read",
+        "capture_order": 14105
+      },
+      {
+        "Time of Day": "7:03:29.9252976 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "4712",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Nls\\CodePage",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Read",
+        "capture_order": 14106
+      },
+      {
+        "Time of Day": "7:03:29.9253586 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "4712",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 14111
+      },
+      {
+        "Time of Day": "7:03:29.9253655 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "4712",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 14113
+      },
+      {
+        "Time of Day": "7:03:29.9253787 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "4712",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 14115
+      },
+      {
+        "Time of Day": "7:03:29.9253941 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "4712",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Segment Heap",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 14118
+      },
+      {
+        "Time of Day": "7:03:29.9254012 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "4712",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager\\Segment Heap",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 14119
+      },
+      {
+        "Time of Day": "7:03:29.9255186 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "4712",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 14123
+      },
+      {
+        "Time of Day": "7:03:29.9255251 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "4712",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 14125
+      },
+      {
+        "Time of Day": "7:03:29.9256726 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "4712",
+        "Operation": "CreateFile",
+        "Path": "D:\\a\\basal\\basal\\spikes\\win-confine",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Execute/Traverse, Synchronize, Disposition: Open, Options: Directory, Synchronous IO Non-Alert, Attributes: n/a, ShareMode: Read, Write, AllocationSize: n/a, Impersonating: runnervmtn0fv\\runneradmin",
+        "capture_order": 14138
+      },
+      {
+        "Time of Day": "7:03:29.9263095 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "4712",
+        "Operation": "CreateFileMapping",
+        "Path": "C:\\Windows\\System32\\conhost.exe",
+        "Result": "FILE LOCKED WITH ONLY READERS",
+        "Detail": "SyncType: SyncTypeCreateSection, PageProtection: PAGE_EXECUTE",
+        "capture_order": 14184
+      },
+      {
+        "Time of Day": "7:03:29.9263364 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "4712",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\Conhost.exe",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 14189
+      },
+      {
+        "Time of Day": "7:03:29.9265461 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "4712",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Services\\bam\\State\\UserSettings\\S-1-5-21-1000861503-3182281758-1041194900-500\\\\Device\\HarddiskVolume6\\a\\basal\\basal\\spikes\\win-confine\\target\\release\\placed\\win-confine.exe",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 40",
+        "capture_order": 14215
+      }
+    ],
+    "last_denied": {
+      "Time of Day": "7:03:29.9256726 AM",
+      "Process Name": "win-confine.exe",
+      "PID": "4712",
+      "Operation": "CreateFile",
+      "Path": "D:\\a\\basal\\basal\\spikes\\win-confine",
+      "Result": "ACCESS DENIED",
+      "Detail": "Desired Access: Execute/Traverse, Synchronize, Disposition: Open, Options: Directory, Synchronous IO Non-Alert, Attributes: n/a, ShareMode: Read, Write, AllocationSize: n/a, Impersonating: runnervmtn0fv\\runneradmin",
+      "capture_order": 14138
+    }
+  },
+  {
+    "sequence": "chrome-context-control",
+    "pid": 6332,
+    "exit_code": "0xc0000142",
+    "event_count": 65,
+    "operations": [
+      "CloseFile",
+      "CreateFile",
+      "CreateFileMapping",
+      "FASTIO_RELEASE_FOR_SECTION_SYNCHRONIZATION",
+      "IRP_MJ_CLOSE",
+      "Load Image",
+      "Process Exit",
+      "Process Start",
+      "QuerySecurityFile",
+      "RegCloseKey",
+      "RegOpenKey",
+      "RegQueryValue",
+      "Thread Create",
+      "Thread Exit"
+    ],
+    "process_start_seen": true,
+    "process_exit_seen": true,
+    "non_success": [
+      {
+        "Time of Day": "7:03:29.9327331 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6332",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Nls\\CodePage",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Read",
+        "capture_order": 14612
+      },
+      {
+        "Time of Day": "7:03:29.9328033 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6332",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 14619
+      },
+      {
+        "Time of Day": "7:03:29.9328151 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6332",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager\\RaiseExceptionOnPossibleDeadlock",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 80",
+        "capture_order": 14621
+      },
+      {
+        "Time of Day": "7:03:29.9328368 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6332",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\UseFilter",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 544",
+        "capture_order": 14625
+      },
+      {
+        "Time of Day": "7:03:29.9328414 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6332",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\DisableHeapLookaside",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 14626
+      },
+      {
+        "Time of Day": "7:03:29.9328452 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6332",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\FrontEndHeapDebugOptions",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 14627
+      },
+      {
+        "Time of Day": "7:03:29.9328497 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6332",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\ShutdownFlags",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 14628
+      },
+      {
+        "Time of Day": "7:03:29.9328535 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6332",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\UnloadEventTraceDepth",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 14629
+      },
+      {
+        "Time of Day": "7:03:29.9328576 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6332",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\MaxLoaderThreads",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 14630
+      },
+      {
+        "Time of Day": "7:03:29.9328612 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6332",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\UseImpersonatedDeviceMap",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 14631
+      },
+      {
+        "Time of Day": "7:03:29.9328650 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6332",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\TracingFlags",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 14632
+      },
+      {
+        "Time of Day": "7:03:29.9328688 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6332",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\RaiseExceptionOnPossibleDeadlock",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 14633
+      },
+      {
+        "Time of Day": "7:03:29.9328724 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6332",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\CFGOptions",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 14634
+      },
+      {
+        "Time of Day": "7:03:29.9328760 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6332",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\MinimumStackCommitInBytes",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 14635
+      },
+      {
+        "Time of Day": "7:03:29.9328797 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6332",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\BreakOnInitializeProcessFailure",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 14636
+      },
+      {
+        "Time of Day": "7:03:29.9328835 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6332",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\KeepActivationContextsAlive",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 14637
+      },
+      {
+        "Time of Day": "7:03:29.9328872 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6332",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\TrackActivationContextReleases",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 14638
+      },
+      {
+        "Time of Day": "7:03:29.9328908 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6332",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\MaxDeadActivationContexts",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 14639
+      },
+      {
+        "Time of Day": "7:03:29.9328990 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6332",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\GlobalFlag2",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 14641
+      },
+      {
+        "Time of Day": "7:03:29.9329032 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6332",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\QueryProcessModuleInformationLoopDetectorCount",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 14642
+      },
+      {
+        "Time of Day": "7:03:29.9329084 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6332",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Segment Heap",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 14643
+      },
+      {
+        "Time of Day": "7:03:29.9329129 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6332",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager\\Segment Heap",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 14644
+      },
+      {
+        "Time of Day": "7:03:29.9329186 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6332",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\CWDIllegalInDLLSearch",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 14645
+      },
+      {
+        "Time of Day": "7:03:29.9329907 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6332",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\WMI\\Security\\57a6ed1a-79f7-5011-b242-4784e5620cf7",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 528",
+        "capture_order": 14647
+      },
+      {
+        "Time of Day": "7:03:29.9330419 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6332",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\DebugProcessHeapOnly",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 14650
+      },
+      {
+        "Time of Day": "7:03:29.9331205 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6332",
+        "Operation": "CreateFile",
+        "Path": "D:\\a\\basal\\basal\\spikes\\win-confine\\target\\release\\placed",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Execute/Traverse, Synchronize, Disposition: Open, Options: Directory, Synchronous IO Non-Alert, Attributes: n/a, ShareMode: Read, Write, AllocationSize: n/a, Impersonating: runnervmtn0fv\\runneradmin",
+        "capture_order": 14651
+      },
+      {
+        "Time of Day": "7:03:29.9341466 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6332",
+        "Operation": "CreateFileMapping",
+        "Path": "C:\\Windows\\System32\\conhost.exe",
+        "Result": "FILE LOCKED WITH ONLY READERS",
+        "Detail": "SyncType: SyncTypeCreateSection, PageProtection: PAGE_EXECUTE",
+        "capture_order": 14659
+      },
+      {
+        "Time of Day": "7:03:29.9341725 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6332",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\Conhost.exe",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 14663
+      },
+      {
+        "Time of Day": "7:03:29.9343772 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6332",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Services\\bam\\State\\UserSettings\\S-1-5-21-1000861503-3182281758-1041194900-500\\\\Device\\HarddiskVolume6\\a\\basal\\basal\\spikes\\win-confine\\target\\release\\placed\\win-confine.exe",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 40",
+        "capture_order": 14669
+      }
+    ],
+    "last_denied": {
+      "Time of Day": "7:03:29.9331205 AM",
+      "Process Name": "win-confine.exe",
+      "PID": "6332",
+      "Operation": "CreateFile",
+      "Path": "D:\\a\\basal\\basal\\spikes\\win-confine\\target\\release\\placed",
+      "Result": "ACCESS DENIED",
+      "Detail": "Desired Access: Execute/Traverse, Synchronize, Disposition: Open, Options: Directory, Synchronous IO Non-Alert, Attributes: n/a, ShareMode: Read, Write, AllocationSize: n/a, Impersonating: runnervmtn0fv\\runneradmin",
+      "capture_order": 14651
+    }
+  },
+  {
+    "sequence": "lpac-context-control",
+    "pid": 7992,
+    "exit_code": "0xc0000142",
+    "event_count": 38,
+    "operations": [
+      "CloseFile",
+      "CreateFile",
+      "CreateFileMapping",
+      "FASTIO_RELEASE_FOR_SECTION_SYNCHRONIZATION",
+      "IRP_MJ_CLOSE",
+      "Load Image",
+      "Process Exit",
+      "Process Start",
+      "QuerySecurityFile",
+      "RegCloseKey",
+      "RegOpenKey",
+      "RegQueryValue",
+      "Thread Create",
+      "Thread Exit"
+    ],
+    "process_start_seen": true,
+    "process_exit_seen": true,
+    "non_success": [
+      {
+        "Time of Day": "7:03:29.9386047 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7992",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Nls\\CodePage",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Read",
+        "capture_order": 14980
+      },
+      {
+        "Time of Day": "7:03:29.9386143 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7992",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Nls\\CodePage",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Read",
+        "capture_order": 14982
+      },
+      {
+        "Time of Day": "7:03:29.9387046 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7992",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 14993
+      },
+      {
+        "Time of Day": "7:03:29.9387150 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7992",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 14995
+      },
+      {
+        "Time of Day": "7:03:29.9387342 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7992",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 14996
+      },
+      {
+        "Time of Day": "7:03:29.9387490 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7992",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Segment Heap",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 14997
+      },
+      {
+        "Time of Day": "7:03:29.9387553 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7992",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager\\Segment Heap",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 14998
+      },
+      {
+        "Time of Day": "7:03:29.9394907 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7992",
+        "Operation": "CreateFileMapping",
+        "Path": "C:\\Windows\\System32\\conhost.exe",
+        "Result": "FILE LOCKED WITH ONLY READERS",
+        "Detail": "SyncType: SyncTypeCreateSection, PageProtection: PAGE_EXECUTE",
+        "capture_order": 15036
+      },
+      {
+        "Time of Day": "7:03:29.9395133 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7992",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\Conhost.exe",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 15040
+      },
+      {
+        "Time of Day": "7:03:29.9396893 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7992",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Services\\bam\\State\\UserSettings\\S-1-5-21-1000861503-3182281758-1041194900-500\\\\Device\\HarddiskVolume6\\a\\basal\\basal\\spikes\\win-confine\\target\\release\\placed\\win-confine.exe",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 40",
+        "capture_order": 15046
+      }
+    ],
+    "last_denied": {
+      "Time of Day": "7:03:29.9387342 AM",
+      "Process Name": "win-confine.exe",
+      "PID": "7992",
+      "Operation": "RegOpenKey",
+      "Path": "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options",
+      "Result": "ACCESS DENIED",
+      "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+      "capture_order": 14996
+    }
+  },
+  {
+    "sequence": "post-load-cwd-grant-control",
+    "pid": 2304,
+    "exit_code": "0xc0000142",
+    "event_count": 40,
+    "operations": [
+      "CloseFile",
+      "CreateFile",
+      "CreateFileMapping",
+      "FASTIO_RELEASE_FOR_SECTION_SYNCHRONIZATION",
+      "IRP_MJ_CLOSE",
+      "Load Image",
+      "Process Exit",
+      "Process Start",
+      "QuerySecurityFile",
+      "RegCloseKey",
+      "RegOpenKey",
+      "RegQueryValue",
+      "Thread Create",
+      "Thread Exit"
+    ],
+    "process_start_seen": true,
+    "process_exit_seen": true,
+    "non_success": [
+      {
+        "Time of Day": "7:03:30.0222521 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2304",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Nls\\CodePage",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Read",
+        "capture_order": 24488
+      },
+      {
+        "Time of Day": "7:03:30.0223554 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2304",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Nls\\CodePage",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Read",
+        "capture_order": 24495
+      },
+      {
+        "Time of Day": "7:03:30.0225653 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2304",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 24515
+      },
+      {
+        "Time of Day": "7:03:30.0226453 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2304",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 24522
+      },
+      {
+        "Time of Day": "7:03:30.0227592 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2304",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 24534
+      },
+      {
+        "Time of Day": "7:03:30.0228757 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2304",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Segment Heap",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 24544
+      },
+      {
+        "Time of Day": "7:03:30.0229726 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2304",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager\\Segment Heap",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 24556
+      },
+      {
+        "Time of Day": "7:03:30.0232501 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2304",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 24572
+      },
+      {
+        "Time of Day": "7:03:30.0233705 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2304",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 24578
+      },
+      {
+        "Time of Day": "7:03:30.0254000 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2304",
+        "Operation": "CreateFileMapping",
+        "Path": "C:\\Windows\\System32\\conhost.exe",
+        "Result": "FILE LOCKED WITH ONLY READERS",
+        "Detail": "SyncType: SyncTypeCreateSection, PageProtection: PAGE_EXECUTE",
+        "capture_order": 24696
+      },
+      {
+        "Time of Day": "7:03:30.0254708 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2304",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\Conhost.exe",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 24704
+      },
+      {
+        "Time of Day": "7:03:30.0431559 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2304",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Services\\bam\\State\\UserSettings\\S-1-5-21-1000861503-3182281758-1041194900-500\\\\Device\\HarddiskVolume6\\a\\basal\\basal\\spikes\\win-confine\\target\\release\\placed\\win-confine.exe",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 40",
+        "capture_order": 26782
+      }
+    ],
+    "last_denied": {
+      "Time of Day": "7:03:30.0233705 AM",
+      "Process Name": "win-confine.exe",
+      "PID": "2304",
+      "Operation": "RegOpenKey",
+      "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+      "Result": "ACCESS DENIED",
+      "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+      "capture_order": 24578
+    }
+  },
+  {
+    "sequence": "post-load-detached-control",
+    "pid": 2448,
+    "exit_code": "0x00000000",
+    "event_count": 437,
+    "operations": [
+      "CloseFile",
+      "CreateFile",
+      "IRP_MJ_CLOSE",
+      "Load Image",
+      "Process Exit",
+      "Process Start",
+      "QueryNameInformationFile",
+      "QuerySecurityFile",
+      "ReadFile",
+      "RegCloseKey",
+      "RegOpenKey",
+      "RegQueryValue",
+      "Thread Create",
+      "Thread Exit",
+      "WriteFile"
+    ],
+    "process_start_seen": true,
+    "process_exit_seen": true,
+    "non_success": [
+      {
+        "Time of Day": "7:03:30.0474555 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2448",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Nls\\CodePage",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Read",
+        "capture_order": 27124
+      },
+      {
+        "Time of Day": "7:03:30.0474666 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2448",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Nls\\CodePage",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Read",
+        "capture_order": 27126
+      },
+      {
+        "Time of Day": "7:03:30.0475217 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2448",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 27131
+      },
+      {
+        "Time of Day": "7:03:30.0475292 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2448",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 27132
+      },
+      {
+        "Time of Day": "7:03:30.0475445 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2448",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 27135
+      },
+      {
+        "Time of Day": "7:03:30.0475606 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2448",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Segment Heap",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 27137
+      },
+      {
+        "Time of Day": "7:03:30.0475678 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2448",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager\\Segment Heap",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 27138
+      },
+      {
+        "Time of Day": "7:03:30.0477617 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2448",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 27155
+      },
+      {
+        "Time of Day": "7:03:30.0477712 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2448",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 27158
+      },
+      {
+        "Time of Day": "7:03:30.0480447 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2448",
+        "Operation": "CreateFile",
+        "Path": "D:\\a\\basal\\basal\\spikes\\win-confine",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Execute/Traverse, Synchronize, Disposition: Open, Options: Directory, Synchronous IO Non-Alert, Attributes: n/a, ShareMode: Read, Write, AllocationSize: n/a, Impersonating: runnervmtn0fv\\runneradmin",
+        "capture_order": 27181
+      },
+      {
+        "Time of Day": "7:03:30.0511272 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2448",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\StateSeparation\\RedirectionMap\\Keys",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Read",
+        "capture_order": 27588
+      },
+      {
+        "Time of Day": "7:03:30.0511364 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2448",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\StateSeparation\\RedirectionMap\\Keys",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Read",
+        "capture_order": 27590
+      },
+      {
+        "Time of Day": "7:03:30.0513668 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2448",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 27633
+      },
+      {
+        "Time of Day": "7:03:30.0515193 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2448",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\SafeBoot\\Option",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value, Set Value",
+        "capture_order": 27634
+      },
+      {
+        "Time of Day": "7:03:30.0515290 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2448",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\SafeBoot\\Option",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Query Value, Set Value",
+        "capture_order": 27635
+      },
+      {
+        "Time of Day": "7:03:30.0515411 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2448",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Srp\\GP\\DLL",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Read",
+        "capture_order": 27636
+      },
+      {
+        "Time of Day": "7:03:30.0515489 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2448",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Srp\\GP\\DLL",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Read",
+        "capture_order": 27637
+      },
+      {
+        "Time of Day": "7:03:30.0516073 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2448",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\Software\\Policies\\Microsoft\\Windows\\Safer\\CodeIdentifiers",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 27638
+      },
+      {
+        "Time of Day": "7:03:30.0519065 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2448",
+        "Operation": "RegOpenKey",
+        "Path": "HKCU\\Software\\Policies\\Microsoft\\Windows\\Safer\\CodeIdentifiers",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 27674
+      },
+      {
+        "Time of Day": "7:03:30.0522294 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2448",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\FileSystem\\",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Read",
+        "capture_order": 27710
+      },
+      {
+        "Time of Day": "7:03:30.0522401 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2448",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\FileSystem",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Read",
+        "capture_order": 27711
+      },
+      {
+        "Time of Day": "7:03:30.0744739 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2448",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 30517
+      },
+      {
+        "Time of Day": "7:03:30.0744857 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2448",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 30518
+      },
+      {
+        "Time of Day": "7:03:30.0746750 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2448",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Nls\\Sorting\\Versions",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Read",
+        "capture_order": 30527
+      },
+      {
+        "Time of Day": "7:03:30.0746837 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2448",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Nls\\Sorting\\Versions",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Read",
+        "capture_order": 30528
+      },
+      {
+        "Time of Day": "7:03:30.0751292 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2448",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 30545
+      },
+      {
+        "Time of Day": "7:03:30.0751375 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2448",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 30546
+      },
+      {
+        "Time of Day": "7:03:30.0768292 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2448",
+        "Operation": "ReadFile",
+        "Path": "\\Device\\NamedPipe",
+        "Result": "FAST IO DISALLOWED",
+        "Detail": "Offset: 0, Length: 48,679",
+        "capture_order": 30645
+      },
+      {
+        "Time of Day": "7:03:30.0768338 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2448",
+        "Operation": "ReadFile",
+        "Path": "\\Device\\NamedPipe",
+        "Result": "PIPE BROKEN",
+        "Detail": "Offset: 0, Length: 48,679, Priority: Low",
+        "capture_order": 30646
+      },
+      {
+        "Time of Day": "7:03:30.0942489 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2448",
+        "Operation": "WriteFile",
+        "Path": "\\Device\\NamedPipe",
+        "Result": "FAST IO DISALLOWED",
+        "Detail": "Offset: 0, Length: 1,024",
+        "capture_order": 31093
+      },
+      {
+        "Time of Day": "7:03:30.0972264 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2448",
+        "Operation": "WriteFile",
+        "Path": "\\Device\\NamedPipe",
+        "Result": "FAST IO DISALLOWED",
+        "Detail": "Offset: 0, Length: 1,024",
+        "capture_order": 31611
+      },
+      {
+        "Time of Day": "7:03:30.0981320 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2448",
+        "Operation": "WriteFile",
+        "Path": "\\Device\\NamedPipe",
+        "Result": "FAST IO DISALLOWED",
+        "Detail": "Offset: 0, Length: 1,019",
+        "capture_order": 31758
+      },
+      {
+        "Time of Day": "7:03:30.1021885 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2448",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Services\\bam\\State\\UserSettings\\S-1-5-21-1000861503-3182281758-1041194900-500\\\\Device\\HarddiskVolume6\\a\\basal\\basal\\spikes\\win-confine\\target\\release\\placed\\win-confine.exe",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 40",
+        "capture_order": 32025
+      }
+    ],
+    "last_denied": {
+      "Time of Day": "7:03:30.0751375 AM",
+      "Process Name": "win-confine.exe",
+      "PID": "2448",
+      "Operation": "RegOpenKey",
+      "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+      "Result": "ACCESS DENIED",
+      "Detail": "Desired Access: Query Value",
+      "capture_order": 30546
+    }
+  },
+  {
+    "sequence": "chrome-detached-control",
+    "pid": 1224,
+    "exit_code": "0x00000000",
+    "event_count": 495,
+    "operations": [
+      "CloseFile",
+      "CreateFile",
+      "IRP_MJ_CLOSE",
+      "Load Image",
+      "Process Exit",
+      "Process Start",
+      "QueryNameInformationFile",
+      "QuerySecurityFile",
+      "ReadFile",
+      "RegCloseKey",
+      "RegOpenKey",
+      "RegQueryValue",
+      "Thread Create",
+      "Thread Exit",
+      "WriteFile"
+    ],
+    "process_start_seen": true,
+    "process_exit_seen": true,
+    "non_success": [
+      {
+        "Time of Day": "7:03:30.1249310 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Nls\\CodePage",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Read",
+        "capture_order": 32540
+      },
+      {
+        "Time of Day": "7:03:30.1250367 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 32547
+      },
+      {
+        "Time of Day": "7:03:30.1250539 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager\\RaiseExceptionOnPossibleDeadlock",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 80",
+        "capture_order": 32551
+      },
+      {
+        "Time of Day": "7:03:30.1250887 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\UseFilter",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 544",
+        "capture_order": 32555
+      },
+      {
+        "Time of Day": "7:03:30.1250952 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\DisableHeapLookaside",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 32556
+      },
+      {
+        "Time of Day": "7:03:30.1251002 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\FrontEndHeapDebugOptions",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 32557
+      },
+      {
+        "Time of Day": "7:03:30.1251052 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\ShutdownFlags",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 32558
+      },
+      {
+        "Time of Day": "7:03:30.1251101 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\UnloadEventTraceDepth",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 32559
+      },
+      {
+        "Time of Day": "7:03:30.1251148 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\MaxLoaderThreads",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 32560
+      },
+      {
+        "Time of Day": "7:03:30.1251364 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\UseImpersonatedDeviceMap",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 32561
+      },
+      {
+        "Time of Day": "7:03:30.1251486 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\TracingFlags",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 32562
+      },
+      {
+        "Time of Day": "7:03:30.1251653 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\RaiseExceptionOnPossibleDeadlock",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 32564
+      },
+      {
+        "Time of Day": "7:03:30.1252043 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\CFGOptions",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 32565
+      },
+      {
+        "Time of Day": "7:03:30.1252200 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\MinimumStackCommitInBytes",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 32566
+      },
+      {
+        "Time of Day": "7:03:30.1252371 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\BreakOnInitializeProcessFailure",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 32567
+      },
+      {
+        "Time of Day": "7:03:30.1252425 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\KeepActivationContextsAlive",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 32569
+      },
+      {
+        "Time of Day": "7:03:30.1252474 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\TrackActivationContextReleases",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 32570
+      },
+      {
+        "Time of Day": "7:03:30.1252527 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\MaxDeadActivationContexts",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 32571
+      },
+      {
+        "Time of Day": "7:03:30.1252667 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\GlobalFlag2",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 32573
+      },
+      {
+        "Time of Day": "7:03:30.1252739 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\QueryProcessModuleInformationLoopDetectorCount",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 32574
+      },
+      {
+        "Time of Day": "7:03:30.1252837 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Segment Heap",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 32576
+      },
+      {
+        "Time of Day": "7:03:30.1252924 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager\\Segment Heap",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 32578
+      },
+      {
+        "Time of Day": "7:03:30.1253021 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\CWDIllegalInDLLSearch",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 32581
+      },
+      {
+        "Time of Day": "7:03:30.1254324 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\WMI\\Security\\57a6ed1a-79f7-5011-b242-4784e5620cf7",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 528",
+        "capture_order": 32590
+      },
+      {
+        "Time of Day": "7:03:30.1255195 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 32594
+      },
+      {
+        "Time of Day": "7:03:30.1255418 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager\\ResourcePolicies",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 24",
+        "capture_order": 32597
+      },
+      {
+        "Time of Day": "7:03:30.1257429 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\DebugProcessHeapOnly",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 32612
+      },
+      {
+        "Time of Day": "7:03:30.1271352 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\WMI\\Security\\3c74afb9-8d82-44e3-b52c-365dbf48382a",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 528",
+        "capture_order": 32660
+      },
+      {
+        "Time of Day": "7:03:30.1272655 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\StateSeparation\\RedirectionMap\\Keys",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Read",
+        "capture_order": 32661
+      },
+      {
+        "Time of Day": "7:03:30.1272733 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\StateSeparation\\RedirectionMap\\Keys",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Read",
+        "capture_order": 32662
+      },
+      {
+        "Time of Day": "7:03:30.1273087 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\WMI\\Security\\05f95efe-7f75-49c7-a994-60a55cc09571",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 528",
+        "capture_order": 32663
+      },
+      {
+        "Time of Day": "7:03:30.1273450 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\UseFilter",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 544",
+        "capture_order": 32665
+      },
+      {
+        "Time of Day": "7:03:30.1273498 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\SearchPathMode",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 32666
+      },
+      {
+        "Time of Day": "7:03:30.1276115 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\SafeBoot\\Option",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value, Set Value",
+        "capture_order": 32668
+      },
+      {
+        "Time of Day": "7:03:30.1276163 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\SafeBoot\\Option",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Query Value, Set Value",
+        "capture_order": 32669
+      },
+      {
+        "Time of Day": "7:03:30.1276229 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Srp\\GP\\DLL",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Read",
+        "capture_order": 32670
+      },
+      {
+        "Time of Day": "7:03:30.1276272 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Srp\\GP\\DLL",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Read",
+        "capture_order": 32671
+      },
+      {
+        "Time of Day": "7:03:30.1276463 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\safer\\codeidentifiers\\TransparentEnabled",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 80",
+        "capture_order": 32673
+      },
+      {
+        "Time of Day": "7:03:30.1276626 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegOpenKey",
+        "Path": "HKCU\\Software\\Policies\\Microsoft\\Windows\\Safer\\CodeIdentifiers",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 32675
+      },
+      {
+        "Time of Day": "7:03:30.1276824 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\FileSystem\\",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Read",
+        "capture_order": 32676
+      },
+      {
+        "Time of Day": "7:03:30.1277282 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\FileSystem\\",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Read",
+        "capture_order": 32680
+      },
+      {
+        "Time of Day": "7:03:30.1277424 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\FileSystem\\LPGO",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 20",
+        "capture_order": 32683
+      },
+      {
+        "Time of Day": "7:03:30.1297515 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\WMI\\Security\\d0f1a5c6-fc43-48ae-99bf-efb1c38be9d1",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 528",
+        "capture_order": 32765
+      },
+      {
+        "Time of Day": "7:03:30.1299176 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 32776
+      },
+      {
+        "Time of Day": "7:03:30.1299403 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager\\ResourcePolicies",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 24",
+        "capture_order": 32779
+      },
+      {
+        "Time of Day": "7:03:30.1299811 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Nls\\Sorting\\Versions",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Read",
+        "capture_order": 32784
+      },
+      {
+        "Time of Day": "7:03:30.1301148 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\WMI\\Security\\f3a71a4b-6118-4257-8ccb-39a33ba059d4",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 528",
+        "capture_order": 32796
+      },
+      {
+        "Time of Day": "7:03:30.1302268 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\WMI\\Security\\ca967c75-04bf-40b5-9a16-98b5f9332a92",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 528",
+        "capture_order": 32803
+      },
+      {
+        "Time of Day": "7:03:30.1302923 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\WMI\\Security\\b6fd710b-f783-4b1c-ab9c-c68099dcc0c7",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 528",
+        "capture_order": 32807
+      },
+      {
+        "Time of Day": "7:03:30.1303766 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\WMI\\Security\\bf30465b-e93c-46fd-9cdf-f41c8904a01f",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 528",
+        "capture_order": 32812
+      },
+      {
+        "Time of Day": "7:03:30.1304032 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\WMI\\Security\\c1376338-0984-48b8-b933-9c7d779fd84d",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 528",
+        "capture_order": 32813
+      },
+      {
+        "Time of Day": "7:03:30.1304234 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 32814
+      },
+      {
+        "Time of Day": "7:03:30.1304409 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager\\DelayExecutionThreshold",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 80",
+        "capture_order": 32816
+      },
+      {
+        "Time of Day": "7:03:30.1318337 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "ReadFile",
+        "Path": "\\Device\\NamedPipe",
+        "Result": "FAST IO DISALLOWED",
+        "Detail": "Offset: 0, Length: 48,679",
+        "capture_order": 32895
+      },
+      {
+        "Time of Day": "7:03:30.1318383 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "ReadFile",
+        "Path": "\\Device\\NamedPipe",
+        "Result": "PIPE BROKEN",
+        "Detail": "Offset: 0, Length: 48,679, Priority: Low",
+        "capture_order": 32896
+      },
+      {
+        "Time of Day": "7:03:30.1351235 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\cmd.exe",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 32916
+      },
+      {
+        "Time of Day": "7:03:30.1425515 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "WriteFile",
+        "Path": "\\Device\\NamedPipe",
+        "Result": "FAST IO DISALLOWED",
+        "Detail": "Offset: 0, Length: 1,020",
+        "capture_order": 33652
+      },
+      {
+        "Time of Day": "7:03:30.1435006 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "WriteFile",
+        "Path": "\\Device\\NamedPipe",
+        "Result": "FAST IO DISALLOWED",
+        "Detail": "Offset: 0, Length: 1,011",
+        "capture_order": 33819
+      },
+      {
+        "Time of Day": "7:03:30.1477913 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1224",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Services\\bam\\State\\UserSettings\\S-1-5-21-1000861503-3182281758-1041194900-500\\\\Device\\HarddiskVolume6\\a\\basal\\basal\\spikes\\win-confine\\target\\release\\placed\\win-confine.exe",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 40",
+        "capture_order": 34192
+      }
+    ],
+    "last_denied": null
+  },
+  {
+    "sequence": "lpac-context-detached-control",
+    "pid": 2980,
+    "exit_code": "0x00000000",
+    "event_count": 439,
+    "operations": [
+      "CloseFile",
+      "CreateFile",
+      "IRP_MJ_CLOSE",
+      "Load Image",
+      "Process Exit",
+      "Process Start",
+      "QueryNameInformationFile",
+      "QueryOpen",
+      "QuerySecurityFile",
+      "ReadFile",
+      "RegCloseKey",
+      "RegOpenKey",
+      "RegQueryValue",
+      "Thread Create",
+      "Thread Exit",
+      "WriteFile"
+    ],
+    "process_start_seen": true,
+    "process_exit_seen": true,
+    "non_success": [
+      {
+        "Time of Day": "7:03:30.1678284 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2980",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Nls\\CodePage",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Read",
+        "capture_order": 34942
+      },
+      {
+        "Time of Day": "7:03:30.1678413 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2980",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Nls\\CodePage",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Read",
+        "capture_order": 34943
+      },
+      {
+        "Time of Day": "7:03:30.1679331 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2980",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 34948
+      },
+      {
+        "Time of Day": "7:03:30.1679423 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2980",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 34949
+      },
+      {
+        "Time of Day": "7:03:30.1679581 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2980",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 34951
+      },
+      {
+        "Time of Day": "7:03:30.1679758 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2980",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Segment Heap",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 34953
+      },
+      {
+        "Time of Day": "7:03:30.1679843 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2980",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager\\Segment Heap",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 34954
+      },
+      {
+        "Time of Day": "7:03:30.1704398 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2980",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\StateSeparation\\RedirectionMap\\Keys",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Read",
+        "capture_order": 35037
+      },
+      {
+        "Time of Day": "7:03:30.1704516 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2980",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\StateSeparation\\RedirectionMap\\Keys",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Read",
+        "capture_order": 35038
+      },
+      {
+        "Time of Day": "7:03:30.1705033 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2980",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 35039
+      },
+      {
+        "Time of Day": "7:03:30.1706414 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2980",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\SafeBoot\\Option",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value, Set Value",
+        "capture_order": 35040
+      },
+      {
+        "Time of Day": "7:03:30.1706484 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2980",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\SafeBoot\\Option",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Query Value, Set Value",
+        "capture_order": 35041
+      },
+      {
+        "Time of Day": "7:03:30.1706577 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2980",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Srp\\GP\\DLL",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Read",
+        "capture_order": 35042
+      },
+      {
+        "Time of Day": "7:03:30.1706633 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2980",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Srp\\GP\\DLL",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Read",
+        "capture_order": 35043
+      },
+      {
+        "Time of Day": "7:03:30.1706715 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2980",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\Software\\Policies\\Microsoft\\Windows\\Safer\\CodeIdentifiers",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 35044
+      },
+      {
+        "Time of Day": "7:03:30.1706927 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2980",
+        "Operation": "RegOpenKey",
+        "Path": "HKCU\\Software\\Policies\\Microsoft\\Windows\\Safer\\CodeIdentifiers",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 35046
+      },
+      {
+        "Time of Day": "7:03:30.1707101 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2980",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\FileSystem\\",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Read",
+        "capture_order": 35047
+      },
+      {
+        "Time of Day": "7:03:30.1707161 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2980",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\FileSystem",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Read",
+        "capture_order": 35049
+      },
+      {
+        "Time of Day": "7:03:30.1716695 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2980",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 35100
+      },
+      {
+        "Time of Day": "7:03:30.1716812 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2980",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 35101
+      },
+      {
+        "Time of Day": "7:03:30.1720385 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2980",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Nls\\Sorting\\Versions",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Read",
+        "capture_order": 35119
+      },
+      {
+        "Time of Day": "7:03:30.1720464 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2980",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Nls\\Sorting\\Versions",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Read",
+        "capture_order": 35121
+      },
+      {
+        "Time of Day": "7:03:30.1720958 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2980",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 35124
+      },
+      {
+        "Time of Day": "7:03:30.1721048 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2980",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 35125
+      },
+      {
+        "Time of Day": "7:03:30.1723386 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2980",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 35136
+      },
+      {
+        "Time of Day": "7:03:30.1723468 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2980",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 35137
+      },
+      {
+        "Time of Day": "7:03:30.1728614 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2980",
+        "Operation": "QueryOpen",
+        "Path": "D:\\a\\basal\\basal\\spikes\\win-confine\\target\\release\\placed\\netmsg.dll",
+        "Result": "NAME NOT FOUND",
+        "Detail": "",
+        "capture_order": 35176
+      },
+      {
+        "Time of Day": "7:03:30.1737554 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2980",
+        "Operation": "ReadFile",
+        "Path": "\\Device\\NamedPipe",
+        "Result": "FAST IO DISALLOWED",
+        "Detail": "Offset: 0, Length: 48,679",
+        "capture_order": 35248
+      },
+      {
+        "Time of Day": "7:03:30.1737611 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2980",
+        "Operation": "ReadFile",
+        "Path": "\\Device\\NamedPipe",
+        "Result": "PIPE BROKEN",
+        "Detail": "Offset: 0, Length: 48,679, Priority: Low",
+        "capture_order": 35249
+      },
+      {
+        "Time of Day": "7:03:30.1854557 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2980",
+        "Operation": "WriteFile",
+        "Path": "\\Device\\NamedPipe",
+        "Result": "FAST IO DISALLOWED",
+        "Detail": "Offset: 0, Length: 960",
+        "capture_order": 36080
+      },
+      {
+        "Time of Day": "7:03:30.1855311 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2980",
+        "Operation": "WriteFile",
+        "Path": "\\Device\\NamedPipe",
+        "Result": "FAST IO DISALLOWED",
+        "Detail": "Offset: 0, Length: 1,024",
+        "capture_order": 36088
+      },
+      {
+        "Time of Day": "7:03:30.1906549 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "2980",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Services\\bam\\State\\UserSettings\\S-1-5-21-1000861503-3182281758-1041194900-500\\\\Device\\HarddiskVolume6\\a\\basal\\basal\\spikes\\win-confine\\target\\release\\placed\\win-confine.exe",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 40",
+        "capture_order": 36531
+      }
+    ],
+    "last_denied": {
+      "Time of Day": "7:03:30.1723468 AM",
+      "Process Name": "win-confine.exe",
+      "PID": "2980",
+      "Operation": "RegOpenKey",
+      "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+      "Result": "ACCESS DENIED",
+      "Detail": "Desired Access: Query Value",
+      "capture_order": 35137
+    }
+  },
+  {
+    "sequence": "chrome-context-detached-control",
+    "pid": 7904,
+    "exit_code": "0x00000000",
+    "event_count": 491,
+    "operations": [
+      "CloseFile",
+      "CreateFile",
+      "IRP_MJ_CLOSE",
+      "Load Image",
+      "Process Exit",
+      "Process Start",
+      "QueryNameInformationFile",
+      "QuerySecurityFile",
+      "ReadFile",
+      "RegCloseKey",
+      "RegOpenKey",
+      "RegQueryValue",
+      "Thread Create",
+      "Thread Exit",
+      "WriteFile"
+    ],
+    "process_start_seen": true,
+    "process_exit_seen": true,
+    "non_success": [
+      {
+        "Time of Day": "7:03:30.2129065 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Nls\\CodePage",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Read",
+        "capture_order": 37244
+      },
+      {
+        "Time of Day": "7:03:30.2130265 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 37250
+      },
+      {
+        "Time of Day": "7:03:30.2130633 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager\\RaiseExceptionOnPossibleDeadlock",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 80",
+        "capture_order": 37253
+      },
+      {
+        "Time of Day": "7:03:30.2131066 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\UseFilter",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 544",
+        "capture_order": 37259
+      },
+      {
+        "Time of Day": "7:03:30.2131135 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\DisableHeapLookaside",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 37260
+      },
+      {
+        "Time of Day": "7:03:30.2131185 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\FrontEndHeapDebugOptions",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 37261
+      },
+      {
+        "Time of Day": "7:03:30.2131457 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\ShutdownFlags",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 37262
+      },
+      {
+        "Time of Day": "7:03:30.2131507 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\UnloadEventTraceDepth",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 37263
+      },
+      {
+        "Time of Day": "7:03:30.2131607 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\MaxLoaderThreads",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 37264
+      },
+      {
+        "Time of Day": "7:03:30.2131655 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\UseImpersonatedDeviceMap",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 37265
+      },
+      {
+        "Time of Day": "7:03:30.2131730 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\TracingFlags",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 37266
+      },
+      {
+        "Time of Day": "7:03:30.2131834 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\RaiseExceptionOnPossibleDeadlock",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 37267
+      },
+      {
+        "Time of Day": "7:03:30.2131912 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\CFGOptions",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 37268
+      },
+      {
+        "Time of Day": "7:03:30.2131962 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\MinimumStackCommitInBytes",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 37269
+      },
+      {
+        "Time of Day": "7:03:30.2132011 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\BreakOnInitializeProcessFailure",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 37270
+      },
+      {
+        "Time of Day": "7:03:30.2132060 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\KeepActivationContextsAlive",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 37271
+      },
+      {
+        "Time of Day": "7:03:30.2132115 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\TrackActivationContextReleases",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 37272
+      },
+      {
+        "Time of Day": "7:03:30.2132164 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\MaxDeadActivationContexts",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 37274
+      },
+      {
+        "Time of Day": "7:03:30.2132471 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\GlobalFlag2",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 37277
+      },
+      {
+        "Time of Day": "7:03:30.2132548 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\QueryProcessModuleInformationLoopDetectorCount",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 37279
+      },
+      {
+        "Time of Day": "7:03:30.2132654 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Segment Heap",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 37280
+      },
+      {
+        "Time of Day": "7:03:30.2132750 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager\\Segment Heap",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 37282
+      },
+      {
+        "Time of Day": "7:03:30.2132845 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\CWDIllegalInDLLSearch",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 37283
+      },
+      {
+        "Time of Day": "7:03:30.2134162 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\WMI\\Security\\57a6ed1a-79f7-5011-b242-4784e5620cf7",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 528",
+        "capture_order": 37285
+      },
+      {
+        "Time of Day": "7:03:30.2134860 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\DebugProcessHeapOnly",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 37288
+      },
+      {
+        "Time of Day": "7:03:30.2136039 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "CreateFile",
+        "Path": "D:\\a\\basal\\basal\\spikes\\win-confine\\target\\release\\placed",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Execute/Traverse, Synchronize, Disposition: Open, Options: Directory, Synchronous IO Non-Alert, Attributes: n/a, ShareMode: Read, Write, AllocationSize: n/a, Impersonating: runnervmtn0fv\\runneradmin",
+        "capture_order": 37289
+      },
+      {
+        "Time of Day": "7:03:30.2147899 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\WMI\\Security\\3c74afb9-8d82-44e3-b52c-365dbf48382a",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 528",
+        "capture_order": 37306
+      },
+      {
+        "Time of Day": "7:03:30.2149143 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\StateSeparation\\RedirectionMap\\Keys",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Read",
+        "capture_order": 37313
+      },
+      {
+        "Time of Day": "7:03:30.2149293 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\StateSeparation\\RedirectionMap\\Keys",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Read",
+        "capture_order": 37316
+      },
+      {
+        "Time of Day": "7:03:30.2149728 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\WMI\\Security\\05f95efe-7f75-49c7-a994-60a55cc09571",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 528",
+        "capture_order": 37319
+      },
+      {
+        "Time of Day": "7:03:30.2150234 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\UseFilter",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 544",
+        "capture_order": 37322
+      },
+      {
+        "Time of Day": "7:03:30.2150312 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\win-confine.exe\\SearchPathMode",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 1,024",
+        "capture_order": 37324
+      },
+      {
+        "Time of Day": "7:03:30.2154571 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\SafeBoot\\Option",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value, Set Value",
+        "capture_order": 37352
+      },
+      {
+        "Time of Day": "7:03:30.2154654 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\SafeBoot\\Option",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Query Value, Set Value",
+        "capture_order": 37354
+      },
+      {
+        "Time of Day": "7:03:30.2154746 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Srp\\GP\\DLL",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Read",
+        "capture_order": 37355
+      },
+      {
+        "Time of Day": "7:03:30.2154790 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Srp\\GP\\DLL",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Read",
+        "capture_order": 37356
+      },
+      {
+        "Time of Day": "7:03:30.2155004 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\safer\\codeidentifiers\\TransparentEnabled",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 80",
+        "capture_order": 37361
+      },
+      {
+        "Time of Day": "7:03:30.2155134 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegOpenKey",
+        "Path": "HKCU\\Software\\Policies\\Microsoft\\Windows\\Safer\\CodeIdentifiers",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 37363
+      },
+      {
+        "Time of Day": "7:03:30.2155315 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\FileSystem\\",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Read",
+        "capture_order": 37364
+      },
+      {
+        "Time of Day": "7:03:30.2155610 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\FileSystem\\",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Read",
+        "capture_order": 37369
+      },
+      {
+        "Time of Day": "7:03:30.2155708 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\FileSystem\\LPGO",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 20",
+        "capture_order": 37371
+      },
+      {
+        "Time of Day": "7:03:30.2167944 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 37427
+      },
+      {
+        "Time of Day": "7:03:30.2168225 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager\\ResourcePolicies",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 24",
+        "capture_order": 37429
+      },
+      {
+        "Time of Day": "7:03:30.2177312 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\WMI\\Security\\d0f1a5c6-fc43-48ae-99bf-efb1c38be9d1",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 528",
+        "capture_order": 37459
+      },
+      {
+        "Time of Day": "7:03:30.2178691 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Nls\\Sorting\\Versions",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Read",
+        "capture_order": 37468
+      },
+      {
+        "Time of Day": "7:03:30.2179557 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 37482
+      },
+      {
+        "Time of Day": "7:03:30.2179684 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager\\ResourcePolicies",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 24",
+        "capture_order": 37484
+      },
+      {
+        "Time of Day": "7:03:30.2180510 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\WMI\\Security\\f3a71a4b-6118-4257-8ccb-39a33ba059d4",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 528",
+        "capture_order": 37488
+      },
+      {
+        "Time of Day": "7:03:30.2181476 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\WMI\\Security\\ca967c75-04bf-40b5-9a16-98b5f9332a92",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 528",
+        "capture_order": 37492
+      },
+      {
+        "Time of Day": "7:03:30.2182012 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\WMI\\Security\\b6fd710b-f783-4b1c-ab9c-c68099dcc0c7",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 528",
+        "capture_order": 37495
+      },
+      {
+        "Time of Day": "7:03:30.2182780 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\WMI\\Security\\bf30465b-e93c-46fd-9cdf-f41c8904a01f",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 528",
+        "capture_order": 37503
+      },
+      {
+        "Time of Day": "7:03:30.2183034 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\WMI\\Security\\c1376338-0984-48b8-b933-9c7d779fd84d",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 528",
+        "capture_order": 37506
+      },
+      {
+        "Time of Day": "7:03:30.2183222 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 37509
+      },
+      {
+        "Time of Day": "7:03:30.2183395 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager\\DelayExecutionThreshold",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 80",
+        "capture_order": 37513
+      },
+      {
+        "Time of Day": "7:03:30.2194805 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "ReadFile",
+        "Path": "\\Device\\NamedPipe",
+        "Result": "FAST IO DISALLOWED",
+        "Detail": "Offset: 0, Length: 48,679",
+        "capture_order": 37585
+      },
+      {
+        "Time of Day": "7:03:30.2195151 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "ReadFile",
+        "Path": "\\Device\\NamedPipe",
+        "Result": "PIPE BROKEN",
+        "Detail": "Offset: 0, Length: 48,679, Priority: Low",
+        "capture_order": 37587
+      },
+      {
+        "Time of Day": "7:03:30.2228661 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\cmd.exe",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 37669
+      },
+      {
+        "Time of Day": "7:03:30.2365263 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "7904",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Services\\bam\\State\\UserSettings\\S-1-5-21-1000861503-3182281758-1041194900-500\\\\Device\\HarddiskVolume6\\a\\basal\\basal\\spikes\\win-confine\\target\\release\\placed\\win-confine.exe",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 40",
+        "capture_order": 38827
+      }
+    ],
+    "last_denied": {
+      "Time of Day": "7:03:30.2136039 AM",
+      "Process Name": "win-confine.exe",
+      "PID": "7904",
+      "Operation": "CreateFile",
+      "Path": "D:\\a\\basal\\basal\\spikes\\win-confine\\target\\release\\placed",
+      "Result": "ACCESS DENIED",
+      "Detail": "Desired Access: Execute/Traverse, Synchronize, Disposition: Open, Options: Directory, Synchronous IO Non-Alert, Attributes: n/a, ShareMode: Read, Write, AllocationSize: n/a, Impersonating: runnervmtn0fv\\runneradmin",
+      "capture_order": 37289
+    }
+  },
+  {
+    "sequence": "full-detached-control",
+    "pid": 6940,
+    "exit_code": "0x00000000",
+    "event_count": 433,
+    "operations": [
+      "CloseFile",
+      "CreateFile",
+      "IRP_MJ_CLOSE",
+      "Load Image",
+      "Process Exit",
+      "Process Start",
+      "QueryNameInformationFile",
+      "QuerySecurityFile",
+      "ReadFile",
+      "RegCloseKey",
+      "RegOpenKey",
+      "RegQueryValue",
+      "Thread Create",
+      "Thread Exit",
+      "WriteFile"
+    ],
+    "process_start_seen": true,
+    "process_exit_seen": true,
+    "non_success": [
+      {
+        "Time of Day": "7:03:30.2524261 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6940",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Nls\\CodePage",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Read",
+        "capture_order": 39220
+      },
+      {
+        "Time of Day": "7:03:30.2524367 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6940",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Nls\\CodePage",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Read",
+        "capture_order": 39221
+      },
+      {
+        "Time of Day": "7:03:30.2524892 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6940",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 39222
+      },
+      {
+        "Time of Day": "7:03:30.2524941 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6940",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 39223
+      },
+      {
+        "Time of Day": "7:03:30.2525059 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6940",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 39224
+      },
+      {
+        "Time of Day": "7:03:30.2525246 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6940",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Segment Heap",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 39225
+      },
+      {
+        "Time of Day": "7:03:30.2525308 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6940",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager\\Segment Heap",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 39226
+      },
+      {
+        "Time of Day": "7:03:30.2526920 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6940",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 39231
+      },
+      {
+        "Time of Day": "7:03:30.2527005 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6940",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 39233
+      },
+      {
+        "Time of Day": "7:03:30.2528972 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6940",
+        "Operation": "CreateFile",
+        "Path": "D:\\a\\basal\\basal\\spikes\\win-confine",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Execute/Traverse, Synchronize, Disposition: Open, Options: Directory, Synchronous IO Non-Alert, Attributes: n/a, ShareMode: Read, Write, AllocationSize: n/a, Impersonating: runnervmtn0fv\\runneradmin",
+        "capture_order": 39241
+      },
+      {
+        "Time of Day": "7:03:30.2536532 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6940",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\StateSeparation\\RedirectionMap\\Keys",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Read",
+        "capture_order": 39271
+      },
+      {
+        "Time of Day": "7:03:30.2536618 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6940",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\StateSeparation\\RedirectionMap\\Keys",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Read",
+        "capture_order": 39272
+      },
+      {
+        "Time of Day": "7:03:30.2536999 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6940",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 39274
+      },
+      {
+        "Time of Day": "7:03:30.2538303 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6940",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\SafeBoot\\Option",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value, Set Value",
+        "capture_order": 39282
+      },
+      {
+        "Time of Day": "7:03:30.2538372 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6940",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\SafeBoot\\Option",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Query Value, Set Value",
+        "capture_order": 39283
+      },
+      {
+        "Time of Day": "7:03:30.2538463 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6940",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Srp\\GP\\DLL",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Read",
+        "capture_order": 39284
+      },
+      {
+        "Time of Day": "7:03:30.2538518 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6940",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Srp\\GP\\DLL",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Read",
+        "capture_order": 39285
+      },
+      {
+        "Time of Day": "7:03:30.2538606 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6940",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\Software\\Policies\\Microsoft\\Windows\\Safer\\CodeIdentifiers",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 39286
+      },
+      {
+        "Time of Day": "7:03:30.2538838 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6940",
+        "Operation": "RegOpenKey",
+        "Path": "HKCU\\Software\\Policies\\Microsoft\\Windows\\Safer\\CodeIdentifiers",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 39289
+      },
+      {
+        "Time of Day": "7:03:30.2539020 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6940",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\FileSystem\\",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Read",
+        "capture_order": 39290
+      },
+      {
+        "Time of Day": "7:03:30.2539082 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6940",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\FileSystem",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Read",
+        "capture_order": 39292
+      },
+      {
+        "Time of Day": "7:03:30.2552982 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6940",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 39367
+      },
+      {
+        "Time of Day": "7:03:30.2553099 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6940",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 39368
+      },
+      {
+        "Time of Day": "7:03:30.2553533 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6940",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Nls\\Sorting\\Versions",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Read",
+        "capture_order": 39375
+      },
+      {
+        "Time of Day": "7:03:30.2553606 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6940",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Nls\\Sorting\\Versions",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Read",
+        "capture_order": 39376
+      },
+      {
+        "Time of Day": "7:03:30.2556178 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6940",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 39390
+      },
+      {
+        "Time of Day": "7:03:30.2556250 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6940",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 39391
+      },
+      {
+        "Time of Day": "7:03:30.2567897 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6940",
+        "Operation": "ReadFile",
+        "Path": "\\Device\\NamedPipe",
+        "Result": "FAST IO DISALLOWED",
+        "Detail": "Offset: 0, Length: 48,679",
+        "capture_order": 39426
+      },
+      {
+        "Time of Day": "7:03:30.2567947 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6940",
+        "Operation": "ReadFile",
+        "Path": "\\Device\\NamedPipe",
+        "Result": "PIPE BROKEN",
+        "Detail": "Offset: 0, Length: 48,679, Priority: Low",
+        "capture_order": 39427
+      },
+      {
+        "Time of Day": "7:03:30.2719573 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "6940",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Services\\bam\\State\\UserSettings\\S-1-5-21-1000861503-3182281758-1041194900-500\\\\Device\\HarddiskVolume6\\a\\basal\\basal\\spikes\\win-confine\\target\\release\\placed\\win-confine.exe",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 40",
+        "capture_order": 40697
+      }
+    ],
+    "last_denied": {
+      "Time of Day": "7:03:30.2556250 AM",
+      "Process Name": "win-confine.exe",
+      "PID": "6940",
+      "Operation": "RegOpenKey",
+      "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+      "Result": "ACCESS DENIED",
+      "Detail": "Desired Access: Query Value",
+      "capture_order": 39391
+    }
+  },
+  {
+    "sequence": "chrome-untrusted-detached-control",
+    "pid": 1664,
+    "exit_code": "0xc00000a5",
+    "event_count": 25,
+    "operations": [
+      "CloseFile",
+      "IRP_MJ_CLOSE",
+      "Load Image",
+      "Process Exit",
+      "Process Start",
+      "RegCloseKey",
+      "RegOpenKey",
+      "RegQueryValue",
+      "Thread Create",
+      "Thread Exit"
+    ],
+    "process_start_seen": true,
+    "process_exit_seen": true,
+    "non_success": [
+      {
+        "Time of Day": "7:03:30.2891126 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1664",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Nls\\CodePage",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Read",
+        "capture_order": 41338
+      },
+      {
+        "Time of Day": "7:03:30.2891237 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1664",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Nls\\CodePage",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Read",
+        "capture_order": 41340
+      },
+      {
+        "Time of Day": "7:03:30.2891708 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1664",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 41344
+      },
+      {
+        "Time of Day": "7:03:30.2891777 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1664",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 41345
+      },
+      {
+        "Time of Day": "7:03:30.2891862 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1664",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 41346
+      },
+      {
+        "Time of Day": "7:03:30.2891972 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1664",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Segment Heap",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 41347
+      },
+      {
+        "Time of Day": "7:03:30.2892018 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1664",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager\\Segment Heap",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 41348
+      },
+      {
+        "Time of Day": "7:03:30.2893079 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1664",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 41349
+      },
+      {
+        "Time of Day": "7:03:30.2893147 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1664",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 41350
+      },
+      {
+        "Time of Day": "7:03:30.2896069 AM",
+        "Process Name": "win-confine.exe",
+        "PID": "1664",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Services\\bam\\State\\UserSettings\\S-1-5-21-1000861503-3182281758-1041194900-500\\\\Device\\HarddiskVolume6\\a\\basal\\basal\\spikes\\win-confine\\target\\release\\placed\\win-confine.exe",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 40",
+        "capture_order": 41365
+      }
+    ],
+    "last_denied": {
+      "Time of Day": "7:03:30.2893147 AM",
+      "Process Name": "win-confine.exe",
+      "PID": "1664",
+      "Operation": "RegOpenKey",
+      "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+      "Result": "ACCESS DENIED",
+      "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+      "capture_order": 41350
+    }
+  },
+  {
+    "sequence": "full-gui-control",
+    "pid": 4836,
+    "exit_code": "0x00000000",
+    "event_count": 523,
+    "operations": [
+      "CloseFile",
+      "CreateFile",
+      "CreateFileMapping",
+      "FASTIO_RELEASE_FOR_SECTION_SYNCHRONIZATION",
+      "IRP_MJ_CLOSE",
+      "Load Image",
+      "Process Exit",
+      "Process Start",
+      "QueryBasicInformationFile",
+      "QueryNameInformationFile",
+      "QueryOpen",
+      "QuerySecurityFile",
+      "QueryStandardInformationFile",
+      "ReadFile",
+      "RegCloseKey",
+      "RegOpenKey",
+      "RegQueryValue",
+      "Thread Create",
+      "Thread Exit",
+      "WriteFile"
+    ],
+    "process_start_seen": true,
+    "process_exit_seen": true,
+    "non_success": [
+      {
+        "Time of Day": "7:03:30.2944917 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Nls\\CodePage",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Read",
+        "capture_order": 41597
+      },
+      {
+        "Time of Day": "7:03:30.2945017 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Nls\\CodePage",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Read",
+        "capture_order": 41598
+      },
+      {
+        "Time of Day": "7:03:30.2945508 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 41603
+      },
+      {
+        "Time of Day": "7:03:30.2945573 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 41604
+      },
+      {
+        "Time of Day": "7:03:30.2945715 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Segment Heap",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 41605
+      },
+      {
+        "Time of Day": "7:03:30.2945776 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager\\Segment Heap",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 41606
+      },
+      {
+        "Time of Day": "7:03:30.2946990 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 41607
+      },
+      {
+        "Time of Day": "7:03:30.2947061 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 41608
+      },
+      {
+        "Time of Day": "7:03:30.2948914 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "CreateFile",
+        "Path": "D:\\a\\basal\\basal\\spikes\\win-confine",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Execute/Traverse, Synchronize, Disposition: Open, Options: Directory, Synchronous IO Non-Alert, Attributes: n/a, ShareMode: Read, Write, AllocationSize: n/a, Impersonating: runnervmtn0fv\\runneradmin",
+        "capture_order": 41612
+      },
+      {
+        "Time of Day": "7:03:30.2956063 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\StateSeparation\\RedirectionMap\\Keys",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Read",
+        "capture_order": 41617
+      },
+      {
+        "Time of Day": "7:03:30.2956143 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\StateSeparation\\RedirectionMap\\Keys",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Read",
+        "capture_order": 41618
+      },
+      {
+        "Time of Day": "7:03:30.2957398 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\SafeBoot\\Option",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value, Set Value",
+        "capture_order": 41619
+      },
+      {
+        "Time of Day": "7:03:30.2957442 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\SafeBoot\\Option",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Query Value, Set Value",
+        "capture_order": 41620
+      },
+      {
+        "Time of Day": "7:03:30.2957512 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Srp\\GP\\DLL",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Read",
+        "capture_order": 41621
+      },
+      {
+        "Time of Day": "7:03:30.2957552 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Srp\\GP\\DLL",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Read",
+        "capture_order": 41622
+      },
+      {
+        "Time of Day": "7:03:30.2957612 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\Software\\Policies\\Microsoft\\Windows\\Safer\\CodeIdentifiers",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 41623
+      },
+      {
+        "Time of Day": "7:03:30.2957807 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "RegOpenKey",
+        "Path": "HKCU\\Software\\Policies\\Microsoft\\Windows\\Safer\\CodeIdentifiers",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 41624
+      },
+      {
+        "Time of Day": "7:03:30.2957934 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\FileSystem\\",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Read",
+        "capture_order": 41625
+      },
+      {
+        "Time of Day": "7:03:30.2957985 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\FileSystem",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Read",
+        "capture_order": 41626
+      },
+      {
+        "Time of Day": "7:03:30.2958644 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "QueryOpen",
+        "Path": "C:\\Windows\\System32\\apphelp.dll",
+        "Result": "FAST IO DISALLOWED",
+        "Detail": "",
+        "capture_order": 41627
+      },
+      {
+        "Time of Day": "7:03:30.2959734 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "CreateFileMapping",
+        "Path": "C:\\Windows\\System32\\apphelp.dll",
+        "Result": "FILE LOCKED WITH ONLY READERS",
+        "Detail": "SyncType: SyncTypeCreateSection, PageProtection: PAGE_EXECUTE",
+        "capture_order": 41633
+      },
+      {
+        "Time of Day": "7:03:30.2962101 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 41641
+      },
+      {
+        "Time of Day": "7:03:30.2962250 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\OSDATA\\Software\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 41642
+      },
+      {
+        "Time of Day": "7:03:30.2962734 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 41643
+      },
+      {
+        "Time of Day": "7:03:30.2963496 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "QuerySecurityFile",
+        "Path": "D:\\a\\basal\\basal\\spikes\\win-confine\\target\\release\\placed\\win-confine-gui.exe",
+        "Result": "BUFFER OVERFLOW",
+        "Detail": "Information: Owner",
+        "capture_order": 41645
+      },
+      {
+        "Time of Day": "7:03:30.2964155 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "QuerySecurityFile",
+        "Path": "C:\\Windows\\System32\\ntdll.dll",
+        "Result": "BUFFER OVERFLOW",
+        "Detail": "Information: Owner",
+        "capture_order": 41650
+      },
+      {
+        "Time of Day": "7:03:30.2964730 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "QuerySecurityFile",
+        "Path": "C:\\Windows\\System32\\kernel32.dll",
+        "Result": "BUFFER OVERFLOW",
+        "Detail": "Information: Owner",
+        "capture_order": 41655
+      },
+      {
+        "Time of Day": "7:03:30.2965219 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "QuerySecurityFile",
+        "Path": "C:\\Windows\\System32\\KernelBase.dll",
+        "Result": "BUFFER OVERFLOW",
+        "Detail": "Information: Owner",
+        "capture_order": 41660
+      },
+      {
+        "Time of Day": "7:03:30.2965911 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "CreateFileMapping",
+        "Path": "C:\\Windows\\apppatch\\sysmain.sdb",
+        "Result": "FILE LOCKED WITH ONLY READERS",
+        "Detail": "SyncType: SyncTypeCreateSection, PageProtection: PAGE_READONLY",
+        "capture_order": 41667
+      },
+      {
+        "Time of Day": "7:03:30.2967055 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "RegOpenKey",
+        "Path": "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Shell Folders",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 41673
+      },
+      {
+        "Time of Day": "7:03:30.2968329 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "RegOpenKey",
+        "Path": "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Shell Folders",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 41683
+      },
+      {
+        "Time of Day": "7:03:30.2984775 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "QuerySecurityFile",
+        "Path": "C:\\Windows\\System32\\rpcrt4.dll",
+        "Result": "BUFFER OVERFLOW",
+        "Detail": "Information: Owner",
+        "capture_order": 41797
+      },
+      {
+        "Time of Day": "7:03:30.2986167 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "QuerySecurityFile",
+        "Path": "C:\\Windows\\System32\\ws2_32.dll",
+        "Result": "BUFFER OVERFLOW",
+        "Detail": "Information: Owner",
+        "capture_order": 41806
+      },
+      {
+        "Time of Day": "7:03:30.2987683 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "QuerySecurityFile",
+        "Path": "C:\\Windows\\System32\\msvcrt.dll",
+        "Result": "BUFFER OVERFLOW",
+        "Detail": "Information: Owner",
+        "capture_order": 41822
+      },
+      {
+        "Time of Day": "7:03:30.2988654 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "QuerySecurityFile",
+        "Path": "C:\\Windows\\System32\\bcrypt.dll",
+        "Result": "BUFFER OVERFLOW",
+        "Detail": "Information: Owner",
+        "capture_order": 41833
+      },
+      {
+        "Time of Day": "7:03:30.2990280 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "QuerySecurityFile",
+        "Path": "C:\\Windows\\System32\\sechost.dll",
+        "Result": "BUFFER OVERFLOW",
+        "Detail": "Information: Owner",
+        "capture_order": 41841
+      },
+      {
+        "Time of Day": "7:03:30.2992368 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "QuerySecurityFile",
+        "Path": "C:\\Windows\\System32\\advapi32.dll",
+        "Result": "BUFFER OVERFLOW",
+        "Detail": "Information: Owner",
+        "capture_order": 41858
+      },
+      {
+        "Time of Day": "7:03:30.2995038 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 41890
+      },
+      {
+        "Time of Day": "7:03:30.2995172 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 41891
+      },
+      {
+        "Time of Day": "7:03:30.2995629 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Nls\\Sorting\\Versions",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Read",
+        "capture_order": 41893
+      },
+      {
+        "Time of Day": "7:03:30.2995706 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Nls\\Sorting\\Versions",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Read",
+        "capture_order": 41894
+      },
+      {
+        "Time of Day": "7:03:30.2998374 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 41916
+      },
+      {
+        "Time of Day": "7:03:30.2998455 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 41917
+      },
+      {
+        "Time of Day": "7:03:30.3014113 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "ReadFile",
+        "Path": "\\Device\\NamedPipe",
+        "Result": "FAST IO DISALLOWED",
+        "Detail": "Offset: 0, Length: 48,679",
+        "capture_order": 42015
+      },
+      {
+        "Time of Day": "7:03:30.3014161 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "ReadFile",
+        "Path": "\\Device\\NamedPipe",
+        "Result": "PIPE BROKEN",
+        "Detail": "Offset: 0, Length: 48,679, Priority: Low",
+        "capture_order": 42017
+      },
+      {
+        "Time of Day": "7:03:30.3102818 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "WriteFile",
+        "Path": "\\Device\\NamedPipe",
+        "Result": "FAST IO DISALLOWED",
+        "Detail": "Offset: 0, Length: 1,022",
+        "capture_order": 42280
+      },
+      {
+        "Time of Day": "7:03:30.3145078 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "WriteFile",
+        "Path": "\\Device\\NamedPipe",
+        "Result": "FAST IO DISALLOWED",
+        "Detail": "Offset: 0, Length: 956",
+        "capture_order": 42902
+      },
+      {
+        "Time of Day": "7:03:30.3191320 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "4836",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Services\\bam\\State\\UserSettings\\S-1-5-21-1000861503-3182281758-1041194900-500\\\\Device\\HarddiskVolume6\\a\\basal\\basal\\spikes\\win-confine\\target\\release\\placed\\win-confine-gui.exe",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 40",
+        "capture_order": 43151
+      }
+    ],
+    "last_denied": {
+      "Time of Day": "7:03:30.2998455 AM",
+      "Process Name": "win-confine-gui.exe",
+      "PID": "4836",
+      "Operation": "RegOpenKey",
+      "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+      "Result": "ACCESS DENIED",
+      "Detail": "Desired Access: Query Value",
+      "capture_order": 41917
+    }
+  },
+  {
+    "sequence": "chrome-untrusted-gui-control",
+    "pid": 7284,
+    "exit_code": "0xc00000a5",
+    "event_count": 24,
+    "operations": [
+      "CloseFile",
+      "IRP_MJ_CLOSE",
+      "Load Image",
+      "Process Exit",
+      "Process Start",
+      "RegCloseKey",
+      "RegOpenKey",
+      "RegQueryValue",
+      "Thread Create",
+      "Thread Exit"
+    ],
+    "process_start_seen": true,
+    "process_exit_seen": true,
+    "non_success": [
+      {
+        "Time of Day": "7:03:30.3381751 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "7284",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Nls\\CodePage",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Read",
+        "capture_order": 43371
+      },
+      {
+        "Time of Day": "7:03:30.3381861 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "7284",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Nls\\CodePage",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Read",
+        "capture_order": 43373
+      },
+      {
+        "Time of Day": "7:03:30.3382335 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "7284",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 43376
+      },
+      {
+        "Time of Day": "7:03:30.3382416 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "7284",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 43377
+      },
+      {
+        "Time of Day": "7:03:30.3382528 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "7284",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Segment Heap",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 43378
+      },
+      {
+        "Time of Day": "7:03:30.3382588 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "7284",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager\\Segment Heap",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Desired Access: Query Value",
+        "capture_order": 43379
+      },
+      {
+        "Time of Day": "7:03:30.3383798 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "7284",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "REPARSE",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 43385
+      },
+      {
+        "Time of Day": "7:03:30.3383880 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "7284",
+        "Operation": "RegOpenKey",
+        "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+        "Result": "ACCESS DENIED",
+        "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+        "capture_order": 43386
+      },
+      {
+        "Time of Day": "7:03:30.3387285 AM",
+        "Process Name": "win-confine-gui.exe",
+        "PID": "7284",
+        "Operation": "RegQueryValue",
+        "Path": "HKLM\\System\\CurrentControlSet\\Services\\bam\\State\\UserSettings\\S-1-5-21-1000861503-3182281758-1041194900-500\\\\Device\\HarddiskVolume6\\a\\basal\\basal\\spikes\\win-confine\\target\\release\\placed\\win-confine-gui.exe",
+        "Result": "NAME NOT FOUND",
+        "Detail": "Length: 40",
+        "capture_order": 43400
+      }
+    ],
+    "last_denied": {
+      "Time of Day": "7:03:30.3383880 AM",
+      "Process Name": "win-confine-gui.exe",
+      "PID": "7284",
+      "Operation": "RegOpenKey",
+      "Path": "HKLM\\System\\CurrentControlSet\\Control\\Session Manager",
+      "Result": "ACCESS DENIED",
+      "Detail": "Desired Access: Query Value, Enumerate Sub Keys",
+      "capture_order": 43386
+    }
+  }
+]

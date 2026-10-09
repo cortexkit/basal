@@ -1,0 +1,3 @@
+Microsoft-Windows-Kernel-File 0xffffffffffffffff 0xff
+Microsoft-Windows-Kernel-Registry 0xffffffffffffffff 0xff
+Microsoft-Windows-Kernel-Object 0xffffffffffffffff 0xff

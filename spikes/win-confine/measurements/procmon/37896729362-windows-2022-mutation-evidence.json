@@ -1,0 +1,9 @@
+[
+  {
+    "control": "neutralize token_handles_absent while the test holds a live TOKEN_QUERY handle",
+    "expected_red": "native::tests::live_token_handle_is_visible_to_handle_inventory",
+    "captured_output": "thread 'native::tests::live_token_handle_is_visible_to_handle_inventory' (7780) panicked at src\\native.rs:1126:13:\nassertion failed: !token_handles_absent(&snapshot)\ntest native::tests::live_token_handle_is_visible_to_handle_inventory ... FAILED\n    native::tests::live_token_handle_is_visible_to_handle_inventory\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finish",
+    "applied_evidence": "spikes/win-confine/src/native.rs: before empty; during spikes/win-confine/src/native.rs | 6 +++---\n 1 file changed, 3 insertions(+), 3 deletions(-); after empty",
+    "outcome": "reddened"
+  }
+]

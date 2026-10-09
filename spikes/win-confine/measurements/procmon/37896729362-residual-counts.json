@@ -1,0 +1,2050 @@
+{
+  "post-load-detached-control": {
+    "latest": {
+      "pid": 8376,
+      "exit_code": "0x00000000",
+      "probe_count": 2134,
+      "successful_probes": [
+        {
+          "access": "in-process thread",
+          "kind": "thread",
+          "result": {
+            "code": 0,
+            "domain": "Win32"
+          },
+          "success": true,
+          "target": "CreateThread"
+        }
+      ],
+      "probe_results_by_kind": {
+        "file": {
+          "Win32 5": 4
+        },
+        "directory": {
+          "Win32 5": 4
+        },
+        "registry": {
+          "Win32 5": 3
+        },
+        "file_query": {
+          "Win32 5": 4
+        },
+        "file_zero": {
+          "Win32 5": 4
+        },
+        "directory_query": {
+          "Win32 5": 4
+        },
+        "directory_zero": {
+          "Win32 5": 4
+        },
+        "registry_native": {
+          "NTSTATUS 0xc0000022": 1
+        },
+        "pipe": {
+          "Win32 5": 39
+        },
+        "object_directory": {
+          "NTSTATUS 0xc0000022": 8
+        },
+        "alpc": {
+          "NTSTATUS 0xc0000022": 264
+        },
+        "section": {
+          "NTSTATUS 0xc0000022": 182
+        },
+        "section_read": {
+          "NTSTATUS 0xc0000022": 182
+        },
+        "section_write": {
+          "NTSTATUS 0xc0000022": 182
+        },
+        "mutant": {
+          "NTSTATUS 0xc0000022": 363
+        },
+        "event": {
+          "NTSTATUS 0xc0000022": 223
+        },
+        "event_modify": {
+          "NTSTATUS 0xc0000022": 223
+        },
+        "symbolic_link": {
+          "NTSTATUS 0xc0000022": 10
+        },
+        "job": {
+          "NTSTATUS 0xc0000022": 4
+        },
+        "semaphore": {
+          "NTSTATUS 0xc0000022": 413
+        },
+        "file_create": {
+          "Win32 5": 3
+        },
+        "registry_write_native": {
+          "NTSTATUS 0xc0000022": 1
+        },
+        "registry_write": {
+          "Win32 5": 1
+        },
+        "tcp": {
+          "Winsock 10093": 1
+        },
+        "udp": {
+          "Winsock 10093": 1
+        },
+        "process_create": {
+          "Win32 5": 1
+        },
+        "parent_process": {
+          "Win32 5": 2
+        },
+        "executable_memory": {
+          "Win32 1655": 2
+        },
+        "thread": {
+          "Win32 0": 1
+        }
+      },
+      "handles_by_type_access": [
+        {
+          "type": "ALPC Port",
+          "access": "0x001f0001",
+          "count": 1
+        },
+        {
+          "type": "Directory",
+          "access": "0x00000003",
+          "count": 1
+        },
+        {
+          "type": "Event",
+          "access": "0x001f0003",
+          "count": 7
+        },
+        {
+          "type": "File",
+          "access": "0x00120189",
+          "count": 1
+        },
+        {
+          "type": "File",
+          "access": "0x00120196",
+          "count": 2
+        },
+        {
+          "type": "IRTimer",
+          "access": "0x00100002",
+          "count": 4
+        },
+        {
+          "type": "IoCompletion",
+          "access": "0x001f0003",
+          "count": 2
+        },
+        {
+          "type": "SchedulerSharedData",
+          "access": "0x00000001",
+          "count": 1
+        },
+        {
+          "type": "TpWorkerFactory",
+          "access": "0x000f00ff",
+          "count": 2
+        },
+        {
+          "type": "WaitCompletionPacket",
+          "access": "0x00000001",
+          "count": 6
+        }
+      ],
+      "handle_count": 27
+    },
+    "2022": {
+      "pid": 2448,
+      "exit_code": "0x00000000",
+      "probe_count": 1870,
+      "successful_probes": [
+        {
+          "access": "in-process thread",
+          "kind": "thread",
+          "result": {
+            "code": 0,
+            "domain": "Win32"
+          },
+          "success": true,
+          "target": "CreateThread"
+        }
+      ],
+      "probe_results_by_kind": {
+        "file": {
+          "Win32 5": 4
+        },
+        "directory": {
+          "Win32 5": 4
+        },
+        "registry": {
+          "Win32 5": 3
+        },
+        "file_query": {
+          "Win32 5": 4
+        },
+        "file_zero": {
+          "Win32 5": 4
+        },
+        "directory_query": {
+          "Win32 5": 4
+        },
+        "directory_zero": {
+          "Win32 5": 4
+        },
+        "registry_native": {
+          "NTSTATUS 0xc0000022": 1
+        },
+        "pipe": {
+          "Win32 5": 39
+        },
+        "object_directory": {
+          "NTSTATUS 0xc0000022": 7
+        },
+        "alpc": {
+          "NTSTATUS 0xc0000022": 215
+        },
+        "section": {
+          "NTSTATUS 0xc0000022": 160
+        },
+        "section_read": {
+          "NTSTATUS 0xc0000022": 160
+        },
+        "section_write": {
+          "NTSTATUS 0xc0000022": 160
+        },
+        "mutant": {
+          "NTSTATUS 0xc0000022": 377
+        },
+        "event": {
+          "NTSTATUS 0xc0000022": 153
+        },
+        "event_modify": {
+          "NTSTATUS 0xc0000022": 153
+        },
+        "semaphore": {
+          "NTSTATUS 0xc0000022": 389
+        },
+        "timer": {
+          "NTSTATUS 0xc0000022": 1
+        },
+        "symbolic_link": {
+          "NTSTATUS 0xc0000022": 11
+        },
+        "job": {
+          "NTSTATUS 0xc0000022": 4
+        },
+        "file_create": {
+          "Win32 5": 3
+        },
+        "registry_write_native": {
+          "NTSTATUS 0xc0000022": 1
+        },
+        "registry_write": {
+          "Win32 5": 1
+        },
+        "tcp": {
+          "Winsock 10093": 1
+        },
+        "udp": {
+          "Winsock 10093": 1
+        },
+        "process_create": {
+          "Win32 5": 1
+        },
+        "parent_process": {
+          "Win32 5": 2
+        },
+        "executable_memory": {
+          "Win32 1655": 2
+        },
+        "thread": {
+          "Win32 0": 1
+        }
+      },
+      "handles_by_type_access": [
+        {
+          "type": "ALPC Port",
+          "access": "0x001f0001",
+          "count": 1
+        },
+        {
+          "type": "Directory",
+          "access": "0x00000003",
+          "count": 1
+        },
+        {
+          "type": "Event",
+          "access": "0x001f0003",
+          "count": 7
+        },
+        {
+          "type": "File",
+          "access": "0x00100003",
+          "count": 1
+        },
+        {
+          "type": "File",
+          "access": "0x00120189",
+          "count": 1
+        },
+        {
+          "type": "File",
+          "access": "0x00120196",
+          "count": 2
+        },
+        {
+          "type": "IRTimer",
+          "access": "0x00100002",
+          "count": 4
+        },
+        {
+          "type": "IoCompletion",
+          "access": "0x001f0003",
+          "count": 2
+        },
+        {
+          "type": "Semaphore",
+          "access": "0x00100003",
+          "count": 2
+        },
+        {
+          "type": "TpWorkerFactory",
+          "access": "0x000f00ff",
+          "count": 2
+        },
+        {
+          "type": "WaitCompletionPacket",
+          "access": "0x00000001",
+          "count": 5
+        }
+      ],
+      "handle_count": 28
+    }
+  },
+  "chrome-detached-control": {
+    "latest": {
+      "pid": 3648,
+      "exit_code": "0x00000000",
+      "probe_count": 2134,
+      "successful_probes": [
+        {
+          "access": "in-process thread",
+          "kind": "thread",
+          "result": {
+            "code": 0,
+            "domain": "Win32"
+          },
+          "success": true,
+          "target": "CreateThread"
+        }
+      ],
+      "probe_results_by_kind": {
+        "file": {
+          "Win32 5": 4
+        },
+        "directory": {
+          "Win32 5": 4
+        },
+        "registry": {
+          "Win32 5": 3
+        },
+        "file_query": {
+          "Win32 5": 4
+        },
+        "file_zero": {
+          "Win32 5": 4
+        },
+        "directory_query": {
+          "Win32 5": 4
+        },
+        "directory_zero": {
+          "Win32 5": 4
+        },
+        "registry_native": {
+          "NTSTATUS 0xc0000022": 1
+        },
+        "pipe": {
+          "Win32 5": 39
+        },
+        "object_directory": {
+          "NTSTATUS 0xc0000022": 8
+        },
+        "alpc": {
+          "NTSTATUS 0xc0000022": 264
+        },
+        "section": {
+          "NTSTATUS 0xc0000022": 182
+        },
+        "section_read": {
+          "NTSTATUS 0xc0000022": 182
+        },
+        "section_write": {
+          "NTSTATUS 0xc0000022": 182
+        },
+        "mutant": {
+          "NTSTATUS 0xc0000022": 363
+        },
+        "event": {
+          "NTSTATUS 0xc0000022": 223
+        },
+        "event_modify": {
+          "NTSTATUS 0xc0000022": 223
+        },
+        "symbolic_link": {
+          "NTSTATUS 0xc0000022": 10
+        },
+        "job": {
+          "NTSTATUS 0xc0000022": 4
+        },
+        "semaphore": {
+          "NTSTATUS 0xc0000022": 413
+        },
+        "file_create": {
+          "Win32 5": 3
+        },
+        "registry_write_native": {
+          "NTSTATUS 0xc0000022": 1
+        },
+        "registry_write": {
+          "Win32 5": 1
+        },
+        "tcp": {
+          "Winsock 10093": 1
+        },
+        "udp": {
+          "Winsock 10093": 1
+        },
+        "process_create": {
+          "Win32 5": 1
+        },
+        "parent_process": {
+          "Win32 5": 2
+        },
+        "executable_memory": {
+          "Win32 1655": 2
+        },
+        "thread": {
+          "Win32 0": 1
+        }
+      },
+      "handles_by_type_access": [
+        {
+          "type": "ALPC Port",
+          "access": "0x001f0001",
+          "count": 1
+        },
+        {
+          "type": "Directory",
+          "access": "0x00000003",
+          "count": 1
+        },
+        {
+          "type": "EtwRegistration",
+          "access": "0x00000804",
+          "count": 21
+        },
+        {
+          "type": "Event",
+          "access": "0x001f0003",
+          "count": 7
+        },
+        {
+          "type": "File",
+          "access": "0x00100020",
+          "count": 1
+        },
+        {
+          "type": "File",
+          "access": "0x00120189",
+          "count": 1
+        },
+        {
+          "type": "File",
+          "access": "0x00120196",
+          "count": 2
+        },
+        {
+          "type": "IRTimer",
+          "access": "0x00100002",
+          "count": 4
+        },
+        {
+          "type": "IoCompletion",
+          "access": "0x001f0003",
+          "count": 2
+        },
+        {
+          "type": "Key",
+          "access": "0x00000009",
+          "count": 1
+        },
+        {
+          "type": "Key",
+          "access": "0x00020019",
+          "count": 1
+        },
+        {
+          "type": "SchedulerSharedData",
+          "access": "0x00000001",
+          "count": 1
+        },
+        {
+          "type": "TpWorkerFactory",
+          "access": "0x000f00ff",
+          "count": 2
+        },
+        {
+          "type": "WaitCompletionPacket",
+          "access": "0x00000001",
+          "count": 6
+        }
+      ],
+      "handle_count": 51
+    },
+    "2022": {
+      "pid": 1224,
+      "exit_code": "0x00000000",
+      "probe_count": 1870,
+      "successful_probes": [
+        {
+          "access": "in-process thread",
+          "kind": "thread",
+          "result": {
+            "code": 0,
+            "domain": "Win32"
+          },
+          "success": true,
+          "target": "CreateThread"
+        }
+      ],
+      "probe_results_by_kind": {
+        "file": {
+          "Win32 5": 4
+        },
+        "directory": {
+          "Win32 5": 4
+        },
+        "registry": {
+          "Win32 5": 3
+        },
+        "file_query": {
+          "Win32 5": 4
+        },
+        "file_zero": {
+          "Win32 5": 4
+        },
+        "directory_query": {
+          "Win32 5": 4
+        },
+        "directory_zero": {
+          "Win32 5": 4
+        },
+        "registry_native": {
+          "NTSTATUS 0xc0000022": 1
+        },
+        "pipe": {
+          "Win32 5": 39
+        },
+        "object_directory": {
+          "NTSTATUS 0xc0000022": 7
+        },
+        "alpc": {
+          "NTSTATUS 0xc0000022": 215
+        },
+        "section": {
+          "NTSTATUS 0xc0000022": 160
+        },
+        "section_read": {
+          "NTSTATUS 0xc0000022": 160
+        },
+        "section_write": {
+          "NTSTATUS 0xc0000022": 160
+        },
+        "mutant": {
+          "NTSTATUS 0xc0000022": 377
+        },
+        "event": {
+          "NTSTATUS 0xc0000022": 153
+        },
+        "event_modify": {
+          "NTSTATUS 0xc0000022": 153
+        },
+        "semaphore": {
+          "NTSTATUS 0xc0000022": 389
+        },
+        "timer": {
+          "NTSTATUS 0xc0000022": 1
+        },
+        "symbolic_link": {
+          "NTSTATUS 0xc0000022": 11
+        },
+        "job": {
+          "NTSTATUS 0xc0000022": 4
+        },
+        "file_create": {
+          "Win32 5": 3
+        },
+        "registry_write_native": {
+          "NTSTATUS 0xc0000022": 1
+        },
+        "registry_write": {
+          "Win32 5": 1
+        },
+        "tcp": {
+          "Winsock 10093": 1
+        },
+        "udp": {
+          "Winsock 10093": 1
+        },
+        "process_create": {
+          "Win32 5": 1
+        },
+        "parent_process": {
+          "Win32 5": 2
+        },
+        "executable_memory": {
+          "Win32 1655": 2
+        },
+        "thread": {
+          "Win32 0": 1
+        }
+      },
+      "handles_by_type_access": [
+        {
+          "type": "ALPC Port",
+          "access": "0x001f0001",
+          "count": 1
+        },
+        {
+          "type": "Directory",
+          "access": "0x00000003",
+          "count": 1
+        },
+        {
+          "type": "EtwRegistration",
+          "access": "0x00000804",
+          "count": 20
+        },
+        {
+          "type": "Event",
+          "access": "0x001f0003",
+          "count": 8
+        },
+        {
+          "type": "File",
+          "access": "0x00100003",
+          "count": 1
+        },
+        {
+          "type": "File",
+          "access": "0x00100020",
+          "count": 1
+        },
+        {
+          "type": "File",
+          "access": "0x00120189",
+          "count": 1
+        },
+        {
+          "type": "File",
+          "access": "0x00120196",
+          "count": 2
+        },
+        {
+          "type": "IRTimer",
+          "access": "0x00100002",
+          "count": 4
+        },
+        {
+          "type": "IoCompletion",
+          "access": "0x001f0003",
+          "count": 2
+        },
+        {
+          "type": "Key",
+          "access": "0x00000009",
+          "count": 1
+        },
+        {
+          "type": "Key",
+          "access": "0x00020019",
+          "count": 1
+        },
+        {
+          "type": "Semaphore",
+          "access": "0x00100003",
+          "count": 2
+        },
+        {
+          "type": "TpWorkerFactory",
+          "access": "0x000f00ff",
+          "count": 2
+        },
+        {
+          "type": "WaitCompletionPacket",
+          "access": "0x00000001",
+          "count": 6
+        }
+      ],
+      "handle_count": 53
+    }
+  },
+  "lpac-context-detached-control": {
+    "latest": {
+      "pid": 9408,
+      "exit_code": "0x00000000",
+      "probe_count": 2134,
+      "successful_probes": [
+        {
+          "access": "in-process thread",
+          "kind": "thread",
+          "result": {
+            "code": 0,
+            "domain": "Win32"
+          },
+          "success": true,
+          "target": "CreateThread"
+        }
+      ],
+      "probe_results_by_kind": {
+        "file": {
+          "Win32 5": 4
+        },
+        "directory": {
+          "Win32 5": 4
+        },
+        "registry": {
+          "Win32 5": 3
+        },
+        "file_query": {
+          "Win32 5": 4
+        },
+        "file_zero": {
+          "Win32 5": 4
+        },
+        "directory_query": {
+          "Win32 5": 4
+        },
+        "directory_zero": {
+          "Win32 5": 4
+        },
+        "registry_native": {
+          "NTSTATUS 0xc0000022": 1
+        },
+        "pipe": {
+          "Win32 5": 39
+        },
+        "object_directory": {
+          "NTSTATUS 0xc0000022": 8
+        },
+        "alpc": {
+          "NTSTATUS 0xc0000022": 264
+        },
+        "section": {
+          "NTSTATUS 0xc0000022": 182
+        },
+        "section_read": {
+          "NTSTATUS 0xc0000022": 182
+        },
+        "section_write": {
+          "NTSTATUS 0xc0000022": 182
+        },
+        "mutant": {
+          "NTSTATUS 0xc0000022": 363
+        },
+        "event": {
+          "NTSTATUS 0xc0000022": 223
+        },
+        "event_modify": {
+          "NTSTATUS 0xc0000022": 223
+        },
+        "symbolic_link": {
+          "NTSTATUS 0xc0000022": 10
+        },
+        "job": {
+          "NTSTATUS 0xc0000022": 4
+        },
+        "semaphore": {
+          "NTSTATUS 0xc0000022": 413
+        },
+        "file_create": {
+          "Win32 5": 3
+        },
+        "registry_write_native": {
+          "NTSTATUS 0xc0000022": 1
+        },
+        "registry_write": {
+          "Win32 5": 1
+        },
+        "tcp": {
+          "Winsock 10093": 1
+        },
+        "udp": {
+          "Winsock 10093": 1
+        },
+        "process_create": {
+          "Win32 5": 1
+        },
+        "parent_process": {
+          "Win32 5": 2
+        },
+        "executable_memory": {
+          "Win32 1655": 2
+        },
+        "thread": {
+          "Win32 0": 1
+        }
+      },
+      "handles_by_type_access": [
+        {
+          "type": "ALPC Port",
+          "access": "0x001f0001",
+          "count": 1
+        },
+        {
+          "type": "Directory",
+          "access": "0x00000003",
+          "count": 1
+        },
+        {
+          "type": "Event",
+          "access": "0x001f0003",
+          "count": 7
+        },
+        {
+          "type": "File",
+          "access": "0x00100020",
+          "count": 1
+        },
+        {
+          "type": "File",
+          "access": "0x00120189",
+          "count": 1
+        },
+        {
+          "type": "File",
+          "access": "0x00120196",
+          "count": 2
+        },
+        {
+          "type": "IRTimer",
+          "access": "0x00100002",
+          "count": 4
+        },
+        {
+          "type": "IoCompletion",
+          "access": "0x001f0003",
+          "count": 2
+        },
+        {
+          "type": "SchedulerSharedData",
+          "access": "0x00000001",
+          "count": 1
+        },
+        {
+          "type": "TpWorkerFactory",
+          "access": "0x000f00ff",
+          "count": 2
+        },
+        {
+          "type": "WaitCompletionPacket",
+          "access": "0x00000001",
+          "count": 6
+        }
+      ],
+      "handle_count": 28
+    },
+    "2022": {
+      "pid": 2980,
+      "exit_code": "0x00000000",
+      "probe_count": 1870,
+      "successful_probes": [
+        {
+          "access": "in-process thread",
+          "kind": "thread",
+          "result": {
+            "code": 0,
+            "domain": "Win32"
+          },
+          "success": true,
+          "target": "CreateThread"
+        }
+      ],
+      "probe_results_by_kind": {
+        "file": {
+          "Win32 5": 4
+        },
+        "directory": {
+          "Win32 5": 4
+        },
+        "registry": {
+          "Win32 5": 3
+        },
+        "file_query": {
+          "Win32 5": 4
+        },
+        "file_zero": {
+          "Win32 5": 4
+        },
+        "directory_query": {
+          "Win32 5": 4
+        },
+        "directory_zero": {
+          "Win32 5": 4
+        },
+        "registry_native": {
+          "NTSTATUS 0xc0000022": 1
+        },
+        "pipe": {
+          "Win32 5": 39
+        },
+        "object_directory": {
+          "NTSTATUS 0xc0000022": 7
+        },
+        "alpc": {
+          "NTSTATUS 0xc0000022": 215
+        },
+        "section": {
+          "NTSTATUS 0xc0000022": 160
+        },
+        "section_read": {
+          "NTSTATUS 0xc0000022": 160
+        },
+        "section_write": {
+          "NTSTATUS 0xc0000022": 160
+        },
+        "mutant": {
+          "NTSTATUS 0xc0000022": 377
+        },
+        "event": {
+          "NTSTATUS 0xc0000022": 153
+        },
+        "event_modify": {
+          "NTSTATUS 0xc0000022": 153
+        },
+        "semaphore": {
+          "NTSTATUS 0xc0000022": 389
+        },
+        "timer": {
+          "NTSTATUS 0xc0000022": 1
+        },
+        "symbolic_link": {
+          "NTSTATUS 0xc0000022": 11
+        },
+        "job": {
+          "NTSTATUS 0xc0000022": 4
+        },
+        "file_create": {
+          "Win32 5": 3
+        },
+        "registry_write_native": {
+          "NTSTATUS 0xc0000022": 1
+        },
+        "registry_write": {
+          "Win32 5": 1
+        },
+        "tcp": {
+          "Winsock 10093": 1
+        },
+        "udp": {
+          "Winsock 10093": 1
+        },
+        "process_create": {
+          "Win32 5": 1
+        },
+        "parent_process": {
+          "Win32 5": 2
+        },
+        "executable_memory": {
+          "Win32 1655": 2
+        },
+        "thread": {
+          "Win32 0": 1
+        }
+      },
+      "handles_by_type_access": [
+        {
+          "type": "ALPC Port",
+          "access": "0x001f0001",
+          "count": 1
+        },
+        {
+          "type": "Directory",
+          "access": "0x00000003",
+          "count": 1
+        },
+        {
+          "type": "Event",
+          "access": "0x001f0003",
+          "count": 7
+        },
+        {
+          "type": "File",
+          "access": "0x00100003",
+          "count": 1
+        },
+        {
+          "type": "File",
+          "access": "0x00100020",
+          "count": 1
+        },
+        {
+          "type": "File",
+          "access": "0x00120189",
+          "count": 1
+        },
+        {
+          "type": "File",
+          "access": "0x00120196",
+          "count": 2
+        },
+        {
+          "type": "IRTimer",
+          "access": "0x00100002",
+          "count": 4
+        },
+        {
+          "type": "IoCompletion",
+          "access": "0x001f0003",
+          "count": 2
+        },
+        {
+          "type": "Semaphore",
+          "access": "0x00100003",
+          "count": 2
+        },
+        {
+          "type": "TpWorkerFactory",
+          "access": "0x000f00ff",
+          "count": 2
+        },
+        {
+          "type": "WaitCompletionPacket",
+          "access": "0x00000001",
+          "count": 5
+        }
+      ],
+      "handle_count": 29
+    }
+  },
+  "chrome-context-detached-control": {
+    "latest": {
+      "pid": 1032,
+      "exit_code": "0x00000000",
+      "probe_count": 2134,
+      "successful_probes": [
+        {
+          "access": "in-process thread",
+          "kind": "thread",
+          "result": {
+            "code": 0,
+            "domain": "Win32"
+          },
+          "success": true,
+          "target": "CreateThread"
+        }
+      ],
+      "probe_results_by_kind": {
+        "file": {
+          "Win32 5": 4
+        },
+        "directory": {
+          "Win32 5": 4
+        },
+        "registry": {
+          "Win32 5": 3
+        },
+        "file_query": {
+          "Win32 5": 4
+        },
+        "file_zero": {
+          "Win32 5": 4
+        },
+        "directory_query": {
+          "Win32 5": 4
+        },
+        "directory_zero": {
+          "Win32 5": 4
+        },
+        "registry_native": {
+          "NTSTATUS 0xc0000022": 1
+        },
+        "pipe": {
+          "Win32 5": 39
+        },
+        "object_directory": {
+          "NTSTATUS 0xc0000022": 8
+        },
+        "alpc": {
+          "NTSTATUS 0xc0000022": 264
+        },
+        "section": {
+          "NTSTATUS 0xc0000022": 182
+        },
+        "section_read": {
+          "NTSTATUS 0xc0000022": 182
+        },
+        "section_write": {
+          "NTSTATUS 0xc0000022": 182
+        },
+        "mutant": {
+          "NTSTATUS 0xc0000022": 363
+        },
+        "event": {
+          "NTSTATUS 0xc0000022": 223
+        },
+        "event_modify": {
+          "NTSTATUS 0xc0000022": 223
+        },
+        "symbolic_link": {
+          "NTSTATUS 0xc0000022": 10
+        },
+        "job": {
+          "NTSTATUS 0xc0000022": 4
+        },
+        "semaphore": {
+          "NTSTATUS 0xc0000022": 413
+        },
+        "file_create": {
+          "Win32 5": 3
+        },
+        "registry_write_native": {
+          "NTSTATUS 0xc0000022": 1
+        },
+        "registry_write": {
+          "Win32 5": 1
+        },
+        "tcp": {
+          "Winsock 10093": 1
+        },
+        "udp": {
+          "Winsock 10093": 1
+        },
+        "process_create": {
+          "Win32 5": 1
+        },
+        "parent_process": {
+          "Win32 5": 2
+        },
+        "executable_memory": {
+          "Win32 1655": 2
+        },
+        "thread": {
+          "Win32 0": 1
+        }
+      },
+      "handles_by_type_access": [
+        {
+          "type": "ALPC Port",
+          "access": "0x001f0001",
+          "count": 1
+        },
+        {
+          "type": "Directory",
+          "access": "0x00000003",
+          "count": 1
+        },
+        {
+          "type": "EtwRegistration",
+          "access": "0x00000804",
+          "count": 21
+        },
+        {
+          "type": "Event",
+          "access": "0x001f0003",
+          "count": 7
+        },
+        {
+          "type": "File",
+          "access": "0x00120189",
+          "count": 1
+        },
+        {
+          "type": "File",
+          "access": "0x00120196",
+          "count": 2
+        },
+        {
+          "type": "IRTimer",
+          "access": "0x00100002",
+          "count": 4
+        },
+        {
+          "type": "IoCompletion",
+          "access": "0x001f0003",
+          "count": 2
+        },
+        {
+          "type": "Key",
+          "access": "0x00000009",
+          "count": 1
+        },
+        {
+          "type": "Key",
+          "access": "0x00020019",
+          "count": 1
+        },
+        {
+          "type": "SchedulerSharedData",
+          "access": "0x00000001",
+          "count": 1
+        },
+        {
+          "type": "TpWorkerFactory",
+          "access": "0x000f00ff",
+          "count": 2
+        },
+        {
+          "type": "WaitCompletionPacket",
+          "access": "0x00000001",
+          "count": 6
+        }
+      ],
+      "handle_count": 50
+    },
+    "2022": {
+      "pid": 7904,
+      "exit_code": "0x00000000",
+      "probe_count": 1870,
+      "successful_probes": [
+        {
+          "access": "in-process thread",
+          "kind": "thread",
+          "result": {
+            "code": 0,
+            "domain": "Win32"
+          },
+          "success": true,
+          "target": "CreateThread"
+        }
+      ],
+      "probe_results_by_kind": {
+        "file": {
+          "Win32 5": 4
+        },
+        "directory": {
+          "Win32 5": 4
+        },
+        "registry": {
+          "Win32 5": 3
+        },
+        "file_query": {
+          "Win32 5": 4
+        },
+        "file_zero": {
+          "Win32 5": 4
+        },
+        "directory_query": {
+          "Win32 5": 4
+        },
+        "directory_zero": {
+          "Win32 5": 4
+        },
+        "registry_native": {
+          "NTSTATUS 0xc0000022": 1
+        },
+        "pipe": {
+          "Win32 5": 39
+        },
+        "object_directory": {
+          "NTSTATUS 0xc0000022": 7
+        },
+        "alpc": {
+          "NTSTATUS 0xc0000022": 215
+        },
+        "section": {
+          "NTSTATUS 0xc0000022": 160
+        },
+        "section_read": {
+          "NTSTATUS 0xc0000022": 160
+        },
+        "section_write": {
+          "NTSTATUS 0xc0000022": 160
+        },
+        "mutant": {
+          "NTSTATUS 0xc0000022": 377
+        },
+        "event": {
+          "NTSTATUS 0xc0000022": 153
+        },
+        "event_modify": {
+          "NTSTATUS 0xc0000022": 153
+        },
+        "semaphore": {
+          "NTSTATUS 0xc0000022": 389
+        },
+        "timer": {
+          "NTSTATUS 0xc0000022": 1
+        },
+        "symbolic_link": {
+          "NTSTATUS 0xc0000022": 11
+        },
+        "job": {
+          "NTSTATUS 0xc0000022": 4
+        },
+        "file_create": {
+          "Win32 5": 3
+        },
+        "registry_write_native": {
+          "NTSTATUS 0xc0000022": 1
+        },
+        "registry_write": {
+          "Win32 5": 1
+        },
+        "tcp": {
+          "Winsock 10093": 1
+        },
+        "udp": {
+          "Winsock 10093": 1
+        },
+        "process_create": {
+          "Win32 5": 1
+        },
+        "parent_process": {
+          "Win32 5": 2
+        },
+        "executable_memory": {
+          "Win32 1655": 2
+        },
+        "thread": {
+          "Win32 0": 1
+        }
+      },
+      "handles_by_type_access": [
+        {
+          "type": "ALPC Port",
+          "access": "0x001f0001",
+          "count": 1
+        },
+        {
+          "type": "Directory",
+          "access": "0x00000003",
+          "count": 1
+        },
+        {
+          "type": "EtwRegistration",
+          "access": "0x00000804",
+          "count": 20
+        },
+        {
+          "type": "Event",
+          "access": "0x001f0003",
+          "count": 8
+        },
+        {
+          "type": "File",
+          "access": "0x00100003",
+          "count": 1
+        },
+        {
+          "type": "File",
+          "access": "0x00120189",
+          "count": 1
+        },
+        {
+          "type": "File",
+          "access": "0x00120196",
+          "count": 2
+        },
+        {
+          "type": "IRTimer",
+          "access": "0x00100002",
+          "count": 4
+        },
+        {
+          "type": "IoCompletion",
+          "access": "0x001f0003",
+          "count": 2
+        },
+        {
+          "type": "Key",
+          "access": "0x00000009",
+          "count": 1
+        },
+        {
+          "type": "Key",
+          "access": "0x00020019",
+          "count": 1
+        },
+        {
+          "type": "Semaphore",
+          "access": "0x00100003",
+          "count": 2
+        },
+        {
+          "type": "TpWorkerFactory",
+          "access": "0x000f00ff",
+          "count": 2
+        },
+        {
+          "type": "WaitCompletionPacket",
+          "access": "0x00000001",
+          "count": 6
+        }
+      ],
+      "handle_count": 52
+    }
+  },
+  "full-detached-control": {
+    "latest": {
+      "pid": 5484,
+      "exit_code": "0x00000000",
+      "probe_count": 2134,
+      "successful_probes": [
+        {
+          "access": "in-process thread",
+          "kind": "thread",
+          "result": {
+            "code": 0,
+            "domain": "Win32"
+          },
+          "success": true,
+          "target": "CreateThread"
+        }
+      ],
+      "probe_results_by_kind": {
+        "file": {
+          "Win32 5": 4
+        },
+        "directory": {
+          "Win32 5": 4
+        },
+        "registry": {
+          "Win32 5": 3
+        },
+        "file_query": {
+          "Win32 5": 4
+        },
+        "file_zero": {
+          "Win32 5": 4
+        },
+        "directory_query": {
+          "Win32 5": 4
+        },
+        "directory_zero": {
+          "Win32 5": 4
+        },
+        "registry_native": {
+          "NTSTATUS 0xc0000022": 1
+        },
+        "pipe": {
+          "Win32 5": 39
+        },
+        "object_directory": {
+          "NTSTATUS 0xc0000022": 8
+        },
+        "alpc": {
+          "NTSTATUS 0xc0000022": 264
+        },
+        "section": {
+          "NTSTATUS 0xc0000022": 182
+        },
+        "section_read": {
+          "NTSTATUS 0xc0000022": 182
+        },
+        "section_write": {
+          "NTSTATUS 0xc0000022": 182
+        },
+        "mutant": {
+          "NTSTATUS 0xc0000022": 363
+        },
+        "event": {
+          "NTSTATUS 0xc0000022": 223
+        },
+        "event_modify": {
+          "NTSTATUS 0xc0000022": 223
+        },
+        "symbolic_link": {
+          "NTSTATUS 0xc0000022": 10
+        },
+        "job": {
+          "NTSTATUS 0xc0000022": 4
+        },
+        "semaphore": {
+          "NTSTATUS 0xc0000022": 413
+        },
+        "file_create": {
+          "Win32 5": 3
+        },
+        "registry_write_native": {
+          "NTSTATUS 0xc0000022": 1
+        },
+        "registry_write": {
+          "Win32 5": 1
+        },
+        "tcp": {
+          "Winsock 10093": 1
+        },
+        "udp": {
+          "Winsock 10093": 1
+        },
+        "process_create": {
+          "Win32 5": 1
+        },
+        "parent_process": {
+          "Win32 5": 2
+        },
+        "executable_memory": {
+          "Win32 1655": 2
+        },
+        "thread": {
+          "Win32 0": 1
+        }
+      },
+      "handles_by_type_access": [
+        {
+          "type": "ALPC Port",
+          "access": "0x001f0001",
+          "count": 1
+        },
+        {
+          "type": "Directory",
+          "access": "0x00000003",
+          "count": 1
+        },
+        {
+          "type": "Event",
+          "access": "0x001f0003",
+          "count": 7
+        },
+        {
+          "type": "File",
+          "access": "0x00120189",
+          "count": 1
+        },
+        {
+          "type": "File",
+          "access": "0x00120196",
+          "count": 2
+        },
+        {
+          "type": "IRTimer",
+          "access": "0x00100002",
+          "count": 4
+        },
+        {
+          "type": "IoCompletion",
+          "access": "0x001f0003",
+          "count": 2
+        },
+        {
+          "type": "SchedulerSharedData",
+          "access": "0x00000001",
+          "count": 1
+        },
+        {
+          "type": "TpWorkerFactory",
+          "access": "0x000f00ff",
+          "count": 2
+        },
+        {
+          "type": "WaitCompletionPacket",
+          "access": "0x00000001",
+          "count": 6
+        }
+      ],
+      "handle_count": 27
+    },
+    "2022": {
+      "pid": 6940,
+      "exit_code": "0x00000000",
+      "probe_count": 1870,
+      "successful_probes": [
+        {
+          "access": "in-process thread",
+          "kind": "thread",
+          "result": {
+            "code": 0,
+            "domain": "Win32"
+          },
+          "success": true,
+          "target": "CreateThread"
+        }
+      ],
+      "probe_results_by_kind": {
+        "file": {
+          "Win32 5": 4
+        },
+        "directory": {
+          "Win32 5": 4
+        },
+        "registry": {
+          "Win32 5": 3
+        },
+        "file_query": {
+          "Win32 5": 4
+        },
+        "file_zero": {
+          "Win32 5": 4
+        },
+        "directory_query": {
+          "Win32 5": 4
+        },
+        "directory_zero": {
+          "Win32 5": 4
+        },
+        "registry_native": {
+          "NTSTATUS 0xc0000022": 1
+        },
+        "pipe": {
+          "Win32 5": 39
+        },
+        "object_directory": {
+          "NTSTATUS 0xc0000022": 7
+        },
+        "alpc": {
+          "NTSTATUS 0xc0000022": 215
+        },
+        "section": {
+          "NTSTATUS 0xc0000022": 160
+        },
+        "section_read": {
+          "NTSTATUS 0xc0000022": 160
+        },
+        "section_write": {
+          "NTSTATUS 0xc0000022": 160
+        },
+        "mutant": {
+          "NTSTATUS 0xc0000022": 377
+        },
+        "event": {
+          "NTSTATUS 0xc0000022": 153
+        },
+        "event_modify": {
+          "NTSTATUS 0xc0000022": 153
+        },
+        "semaphore": {
+          "NTSTATUS 0xc0000022": 389
+        },
+        "timer": {
+          "NTSTATUS 0xc0000022": 1
+        },
+        "symbolic_link": {
+          "NTSTATUS 0xc0000022": 11
+        },
+        "job": {
+          "NTSTATUS 0xc0000022": 4
+        },
+        "file_create": {
+          "Win32 5": 3
+        },
+        "registry_write_native": {
+          "NTSTATUS 0xc0000022": 1
+        },
+        "registry_write": {
+          "Win32 5": 1
+        },
+        "tcp": {
+          "Winsock 10093": 1
+        },
+        "udp": {
+          "Winsock 10093": 1
+        },
+        "process_create": {
+          "Win32 5": 1
+        },
+        "parent_process": {
+          "Win32 5": 2
+        },
+        "executable_memory": {
+          "Win32 1655": 2
+        },
+        "thread": {
+          "Win32 0": 1
+        }
+      },
+      "handles_by_type_access": [
+        {
+          "type": "ALPC Port",
+          "access": "0x001f0001",
+          "count": 1
+        },
+        {
+          "type": "Directory",
+          "access": "0x00000003",
+          "count": 1
+        },
+        {
+          "type": "Event",
+          "access": "0x001f0003",
+          "count": 7
+        },
+        {
+          "type": "File",
+          "access": "0x00100003",
+          "count": 1
+        },
+        {
+          "type": "File",
+          "access": "0x00120189",
+          "count": 1
+        },
+        {
+          "type": "File",
+          "access": "0x00120196",
+          "count": 2
+        },
+        {
+          "type": "IRTimer",
+          "access": "0x00100002",
+          "count": 4
+        },
+        {
+          "type": "IoCompletion",
+          "access": "0x001f0003",
+          "count": 2
+        },
+        {
+          "type": "Semaphore",
+          "access": "0x00100003",
+          "count": 2
+        },
+        {
+          "type": "TpWorkerFactory",
+          "access": "0x000f00ff",
+          "count": 2
+        },
+        {
+          "type": "WaitCompletionPacket",
+          "access": "0x00000001",
+          "count": 5
+        }
+      ],
+      "handle_count": 28
+    }
+  },
+  "full-gui-control": {
+    "latest": {
+      "pid": 7600,
+      "exit_code": "0x00000000",
+      "probe_count": 2134,
+      "successful_probes": [
+        {
+          "access": "in-process thread",
+          "kind": "thread",
+          "result": {
+            "code": 0,
+            "domain": "Win32"
+          },
+          "success": true,
+          "target": "CreateThread"
+        }
+      ],
+      "probe_results_by_kind": {
+        "file": {
+          "Win32 5": 4
+        },
+        "directory": {
+          "Win32 5": 4
+        },
+        "registry": {
+          "Win32 5": 3
+        },
+        "file_query": {
+          "Win32 5": 4
+        },
+        "file_zero": {
+          "Win32 5": 4
+        },
+        "directory_query": {
+          "Win32 5": 4
+        },
+        "directory_zero": {
+          "Win32 5": 4
+        },
+        "registry_native": {
+          "NTSTATUS 0xc0000022": 1
+        },
+        "pipe": {
+          "Win32 5": 39
+        },
+        "object_directory": {
+          "NTSTATUS 0xc0000022": 8
+        },
+        "alpc": {
+          "NTSTATUS 0xc0000022": 264
+        },
+        "section": {
+          "NTSTATUS 0xc0000022": 182
+        },
+        "section_read": {
+          "NTSTATUS 0xc0000022": 182
+        },
+        "section_write": {
+          "NTSTATUS 0xc0000022": 182
+        },
+        "mutant": {
+          "NTSTATUS 0xc0000022": 363
+        },
+        "event": {
+          "NTSTATUS 0xc0000022": 223
+        },
+        "event_modify": {
+          "NTSTATUS 0xc0000022": 223
+        },
+        "symbolic_link": {
+          "NTSTATUS 0xc0000022": 10
+        },
+        "job": {
+          "NTSTATUS 0xc0000022": 4
+        },
+        "semaphore": {
+          "NTSTATUS 0xc0000022": 413
+        },
+        "file_create": {
+          "Win32 5": 3
+        },
+        "registry_write_native": {
+          "NTSTATUS 0xc0000022": 1
+        },
+        "registry_write": {
+          "Win32 5": 1
+        },
+        "tcp": {
+          "Winsock 10093": 1
+        },
+        "udp": {
+          "Winsock 10093": 1
+        },
+        "process_create": {
+          "Win32 5": 1
+        },
+        "parent_process": {
+          "Win32 5": 2
+        },
+        "executable_memory": {
+          "Win32 1655": 2
+        },
+        "thread": {
+          "Win32 0": 1
+        }
+      },
+      "handles_by_type_access": [
+        {
+          "type": "ALPC Port",
+          "access": "0x001f0001",
+          "count": 1
+        },
+        {
+          "type": "Directory",
+          "access": "0x00000003",
+          "count": 1
+        },
+        {
+          "type": "Event",
+          "access": "0x001f0003",
+          "count": 7
+        },
+        {
+          "type": "File",
+          "access": "0x00120189",
+          "count": 1
+        },
+        {
+          "type": "File",
+          "access": "0x00120196",
+          "count": 2
+        },
+        {
+          "type": "IRTimer",
+          "access": "0x00100002",
+          "count": 4
+        },
+        {
+          "type": "IoCompletion",
+          "access": "0x001f0003",
+          "count": 2
+        },
+        {
+          "type": "SchedulerSharedData",
+          "access": "0x00000001",
+          "count": 1
+        },
+        {
+          "type": "TpWorkerFactory",
+          "access": "0x000f00ff",
+          "count": 2
+        },
+        {
+          "type": "WaitCompletionPacket",
+          "access": "0x00000001",
+          "count": 6
+        }
+      ],
+      "handle_count": 27
+    },
+    "2022": {
+      "pid": 4836,
+      "exit_code": "0x00000000",
+      "probe_count": 1870,
+      "successful_probes": [
+        {
+          "access": "in-process thread",
+          "kind": "thread",
+          "result": {
+            "code": 0,
+            "domain": "Win32"
+          },
+          "success": true,
+          "target": "CreateThread"
+        }
+      ],
+      "probe_results_by_kind": {
+        "file": {
+          "Win32 5": 4
+        },
+        "directory": {
+          "Win32 5": 4
+        },
+        "registry": {
+          "Win32 5": 3
+        },
+        "file_query": {
+          "Win32 5": 4
+        },
+        "file_zero": {
+          "Win32 5": 4
+        },
+        "directory_query": {
+          "Win32 5": 4
+        },
+        "directory_zero": {
+          "Win32 5": 4
+        },
+        "registry_native": {
+          "NTSTATUS 0xc0000022": 1
+        },
+        "pipe": {
+          "Win32 5": 39
+        },
+        "object_directory": {
+          "NTSTATUS 0xc0000022": 7
+        },
+        "alpc": {
+          "NTSTATUS 0xc0000022": 215
+        },
+        "section": {
+          "NTSTATUS 0xc0000022": 160
+        },
+        "section_read": {
+          "NTSTATUS 0xc0000022": 160
+        },
+        "section_write": {
+          "NTSTATUS 0xc0000022": 160
+        },
+        "mutant": {
+          "NTSTATUS 0xc0000022": 377
+        },
+        "event": {
+          "NTSTATUS 0xc0000022": 153
+        },
+        "event_modify": {
+          "NTSTATUS 0xc0000022": 153
+        },
+        "semaphore": {
+          "NTSTATUS 0xc0000022": 389
+        },
+        "timer": {
+          "NTSTATUS 0xc0000022": 1
+        },
+        "symbolic_link": {
+          "NTSTATUS 0xc0000022": 11
+        },
+        "job": {
+          "NTSTATUS 0xc0000022": 4
+        },
+        "file_create": {
+          "Win32 5": 3
+        },
+        "registry_write_native": {
+          "NTSTATUS 0xc0000022": 1
+        },
+        "registry_write": {
+          "Win32 5": 1
+        },
+        "tcp": {
+          "Winsock 10093": 1
+        },
+        "udp": {
+          "Winsock 10093": 1
+        },
+        "process_create": {
+          "Win32 5": 1
+        },
+        "parent_process": {
+          "Win32 5": 2
+        },
+        "executable_memory": {
+          "Win32 1655": 2
+        },
+        "thread": {
+          "Win32 0": 1
+        }
+      },
+      "handles_by_type_access": [
+        {
+          "type": "ALPC Port",
+          "access": "0x001f0001",
+          "count": 1
+        },
+        {
+          "type": "Directory",
+          "access": "0x00000003",
+          "count": 1
+        },
+        {
+          "type": "Event",
+          "access": "0x001f0003",
+          "count": 7
+        },
+        {
+          "type": "File",
+          "access": "0x00100003",
+          "count": 1
+        },
+        {
+          "type": "File",
+          "access": "0x00120189",
+          "count": 1
+        },
+        {
+          "type": "File",
+          "access": "0x00120196",
+          "count": 2
+        },
+        {
+          "type": "IRTimer",
+          "access": "0x00100002",
+          "count": 4
+        },
+        {
+          "type": "IoCompletion",
+          "access": "0x001f0003",
+          "count": 2
+        },
+        {
+          "type": "Semaphore",
+          "access": "0x00100003",
+          "count": 2
+        },
+        {
+          "type": "TpWorkerFactory",
+          "access": "0x000f00ff",
+          "count": 2
+        },
+        {
+          "type": "WaitCompletionPacket",
+          "access": "0x00000001",
+          "count": 5
+        }
+      ],
+      "handle_count": 28
+    }
+  }
+}

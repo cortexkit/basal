@@ -1,0 +1,14 @@
+2026-10-09T07:02:36.3618684Z   stable-x86_64-pc-windows-msvc updated - rustc 1.99.0 (b940084d7 2026-09-28) (from rustc 1.98.1 (48a229cea 2026-09-01))
+2026-10-09T07:02:36.4188761Z   stable-x86_64-pc-windows-msvc unchanged - rustc 1.99.0 (b940084d7 2026-09-28)
+2026-10-09T07:02:37.0281373Z rustc 1.99.0 (b940084d7 2026-09-28)
+2026-10-09T07:02:37.6740679Z cargo 1.99.0 (5f94df478 2026-08-27)
+2026-10-09T07:02:37.8787362Z Python 3.12.10
+2026-10-09T07:03:00.2879841Z test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-10-09T07:03:01.4236725Z Ran 22 tests in 0.025s
+2026-10-09T07:03:23.7845563Z rustc 1.99.0 (b940084d7 2026-09-28)
+2026-10-09T07:03:23.7857561Z test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+2026-10-09T07:03:23.7868158Z test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+2026-10-09T07:03:24.8839161Z PE subsystem check: 2 images passed (CUI=3, GUI=2)
+2026-10-09T07:03:48.0821923Z full-policy child did not complete; inspect report for exact launch or attestation failure
+2026-10-09T07:03:50.1174634Z Process Monitor: 13 children, 3373 events, 375 non-success events
+2026-10-09T07:03:51.7754820Z INCOMPLETE: full: child did not produce a completed measurement

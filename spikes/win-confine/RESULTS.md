@@ -2,12 +2,22 @@
 
 ## Outcome
 
-**Do not enable a Windows worker from this prototype.** The original console
-births fail before Rust entry, but the console-free campaign below shows that
-`DETACHED_PROCESS` reaches entry, reverts and lowers to Untrusted under the same
-job and mitigations. Its enabled-group LPAC post-load token replacement fails
-with Win32 87, so that residual is **not** the requested NULL/deny-only LPAC
-primary. The three-stdio-only boundary is not established.
+**The NULL-only, all-deny-only LPAC primary now reaches entry and is attested
+Untrusted before input**, both as a detached console image and as a GUI-subsystem
+image without `DETACHED_PROCESS`. The earlier `0xc0000142` failures were not proof
+that restricted birth tokens cannot load: removing console initialization is
+sufficient in the measured comparisons. **Do not enable a Windows worker from
+this prototype yet.** The successful recipes retain **27 / 28 ambient handles**,
+including an ALPC port and, on 2022, a non-stdio read/write File handle. They do
+not establish the requested three-stdio-only boundary.
+
+The final recommendation is the **GUI-subsystem, NULL-only LPAC recipe with
+Low birth and an attested post-load Untrusted transition**, not the failed
+post-load primary-replacement route or non-AppContainer Untrusted birth. Its
+measured residual and the comparison with weaker controls are in
+[the final campaign](#final-campaign-original-lockdown-and-gui-subsystem).
+Earlier sections below describe their named historical campaigns; their missing
+entry reports are not the final outcome.
 
 The earlier control/residual baseline is [37840751756](https://github.com/cortexkit/basal/actions/runs/37840751756),
 compiled from `9235748f1b6cd5e15fcbf01b4406cd17d7375b95`. Both Windows images
@@ -511,8 +521,9 @@ source; they remain separate diagnostics, not full LPAC acceptance.
 | Non-AppContainer, enabled-logon variant; initial impersonation token retains all 24 broker-source privileges (only SeChangeNotify enabled) | Same pre-entry failure; primary privileges remain empty |
 | Non-AppContainer, enabled-logon, retained-loader-privilege variant; **match exact Chrome primary TokenDefaultDacl** user/BA/SY full-access grants | Parent readback exactly matches Chrome; same pre-entry `0xc0000142` |
 
-**None reaches Rust entry, so no new full-policy or non-AppContainer reachability
-residual is measured.** The normal complete probe path is wired for each variant,
+**None of that loader/Chrome campaign's variants reaches Rust entry, so it
+measures no new full-policy or non-AppContainer reachability residual.** The
+normal complete probe path is wired for each variant,
 but never executes. No empty residual is substituted for the LPAC-only table.
 These measurements isolate KernelBase attach and falsify logon-only, non-lowbox
 plus logon, retained-loader-privilege, and primary-default-DACL fixes as sufficient
@@ -690,59 +701,218 @@ No ETW data is claimed. Procmon's complete PID windows remain the authority;
 setup output and metadata preserve that coverage gap. A provider-file form is
 used for the subsequent GUI confirmation, rather than hiding this failed command.
 
+### Final campaign: original lockdown and GUI subsystem
+
+The last run is [37896729362](https://github.com/cortexkit/basal/actions/runs/37896729362),
+compiled from `b9c67e3852e6be16ec096139c93e3fdbd9df1865`. **The original NULL-only,
+all-deny-only LPAC primary reaches Rust entry**, both as a detached CUI image and
+as a GUI-subsystem image **without `DETACHED_PROCESS`**. Both revert, lower the
+actual primary from Low to Untrusted, close the adjustment handle before input,
+complete all probes and exit 0 on both images. No post-load primary replacement
+is needed. The earlier `0xc0000142` failures were not evidence that these tokens
+are intrinsically unloadable; removing console initialization was sufficient.
+The internal call or check responsible for console-dependent attach failure
+remains unidentified; Procmon supplies no return status for it.
+
+**Untrusted-at-birth non-AppContainer fails, even console-free.** Its suspended
+primary is Untrusted, but the assigned Low loader is downgraded to Identification
+(1); the detached and GUI attempts both exit `0xc00000a5` before entry on both
+images. The successful Chrome-style recipe instead starts Low, then self-lowers
+to Untrusted. No GUI non-AppContainer residual was produced; it must not be
+inferred from the successful LPAC GUI report or Low-birth detached control.
+
+Each completed diagnostic has **2,134 probes on windows-latest / 1,870 on
+windows-2022**, and exactly **one successful new operation: `CreateThread`**.
+All retain the exact owned job, full creation mitigations, child-process ban
+and three explicit pipe handles. Latest / 2022 values follow:
+
+| Final recipe | PID latest / 2022 | Entry and outcome | Ambient handles |
+|---|---|---|---:|
+| `full-detached-control`: NULL-only, all access groups deny-only, zero privileges, LPAC; Low birth to Untrusted | 5484 / 6940 | Complete report, exit 0 | 27 / 28 |
+| `full-gui-control`: same full LPAC token/transition; GUI image, no detached flag | 7600 / 4836 | Complete report, exit 0 | 27 / 28 |
+| `chrome-detached-control`: non-AppContainer NULL-only, deny-only except enabled logon SID; Low birth to Untrusted | 3648 / 1224 | Complete report, exit 0 | 51 / 53 |
+| `chrome-context-detached-control`: same Chrome-style token plus alternate station/desktop, minimal environment and install cwd | 1032 / 7904 | Complete report, exit 0 | 50 / 52 |
+| `post-load-detached-control`: enabled-group same-access LPAC, self-lowered Untrusted; replacement fails Win32 87 | 8376 / 2448 | Complete report, exit 0; **weaker primary** | 27 / 28 |
+| `lpac-context-detached-control`: same weaker LPAC token with changed context | 9408 / 2980 | Complete report, exit 0; replacement fails Win32 87 | 28 / 29 |
+| `chrome-untrusted-detached-control`: non-AppContainer, NULL/deny-only except logon, Untrusted at birth, Low loader | 7756 / 1664 | **No entry**, `0xc00000a5`; no residual | Not measured |
+| `chrome-untrusted-gui-control`: GUI image, no detached flag, same Untrusted-at-birth token | 8656 / 7284 | **No entry**, `0xc00000a5`; no residual | Not measured |
+
+The full LPAC actual final primary is type 1, Untrusted `S-1-16-0`, with exactly
+`S-1-0-0` restricting SID, all thirteen access groups deny-only including logon,
+zero privileges/capabilities, the basal package SID and `WIN://NOALLAPPPKG` UINT64
+`[1]`. After revert `OpenThreadToken` returns 1008; no Token or unknown-type handle
+survives. Birth primary/loader are Low and assigned loader is level 2; its handle
+is non-inheritable, excluded from the list and closed before resume. Job flags
+`0x2508`, UI `0xff`, process limit 1, 256 MiB memory and no breakaway are read back
+through the exact owned job. Policies read back dynamic-code 1, signature 5,
+image-load 7, strict-handle 3, extension-points 1, child-process 1, and Win32k
+**5 on latest / 1 on 2022**, not normalized to a desired value.
+
+The broker remains CUI. Independent PE inventories confirm CUI subsystem **3**
+and GUI subsystem **2**; both have seven normal import descriptors, zero delay
+imports and zero non-System32 imports. Explicit stdio works in the GUI image.
+It additionally loads **System32 `apphelp.dll`** at startup, but no User32/GDI/
+Win32u import is added. GUI creation flags are `0x08080004`, including
+`CREATE_NO_WINDOW` but not detached; the CUI detached flags are `0x0008000c`.
+The GUI suspended console field still reads `-3`, versus detached CUI's `-1`:
+that field alone is not proof of a console dependency.
+
+#### One side-by-side measured residual
+
+This table uses the **same final run** and the same targets per image. `F-D` is
+full NULL/deny-only LPAC detached; `F-G` is that primary in the GUI image; `C-D`
+is successful non-AppContainer **Low-birth then Untrusted** detached; `E-D` is
+enabled-group LPAC detached after failed replacement. The explicit-context
+variants have identical probe-kind/result counts to C-D/E-D respectively but
+different ambient inventories. Direct Untrusted-birth non-AppContainer columns
+would be **not measured**, not an empty residual.
+
+| Authority / operation | LPAC-only control | F-D | F-G | C-D | E-D |
+|---|---|---|---|---|---|
+| Completed probes / successful new operations (latest / 2022) | 2,134 / 1,870; **29 / 29 successes** | 2,134 / 1,870; **1 / 1** | 2,134 / 1,870; **1 / 1** | 2,134 / 1,870; **1 / 1** | 2,134 / 1,870; **1 / 1** |
+| Files, directories and metadata | kernel32.dll/cmd.exe data-read `0x100081`; package/install directory list; Q/Z metadata `0x100080` on all four objects | All 24 opens Win32 5 | All 24 opens Win32 5 | All 24 opens Win32 5 | All 24 opens Win32 5 |
+| File creates: TEMP / install / package | TEMP/install deny 5; **package CREATE_NEW succeeds**, `0x100082` | All three Win32 5 | All three Win32 5 | All three Win32 5 | All three Win32 5 |
+| Registry reads and actual writes | Native package hive query and binary **write succeed**; three Win32 opens and guessed-HKCU write deny 5 | Four Win32 operations deny 5; native query/write `0xc0000022` | Same | Same | Same |
+| Named-object directories / links / fixtures | Package directory/Global/Local/RPC Control/Session queries; event query/modify `1`/`2`; section query/read/write `1`/`4`/`2` succeed; global/session fixtures deny | Every enumerated directory/link/section/event/mutant/semaphore/timer/job open `0xc0000022` | Same | Same | Same |
+| Named pipes | All 39 attempted opens Win32 5 on each image | All 39 Win32 5 | All 39 Win32 5 | All 39 Win32 5 | All 39 Win32 5 |
+| New ALPC / epmapper | **epmapper succeeds**, grant `0x1f0001`; other 263 / 214 ports deny | All 264 / 215 connections `0xc0000022`, epmapper included | Same | Same | Same |
+| Native Winsock TCP/UDP | WSAStartup 10107; sockets 10093; no connect/send | Same | Same | Same | Same |
+| Executable allocation / RW-to-X | Both succeed | Both Win32 **1655** | Both Win32 **1655** | Both Win32 **1655** | Both Win32 **1655** |
+| In-process thread | **CreateThread succeeds** | **Succeeds** | **Succeeds** | **Succeeds** | **Succeeds** |
+| cmd.exe process creation / parent query-limited and VM_READ | All Win32 5 | All Win32 5 | All Win32 5 | All Win32 5 | All Win32 5 |
+| Pre-input ambient handles (latest / 2022; includes pipes) | **34 / 35** | **27 / 28** | **27 / 28** | **51 / 53** | **27 / 28** |
+| Existing startup ALPC / non-stdio files | One ALPC `0x1f0001`; three / four non-stdio files | One ALPC; **zero / one non-stdio file**, 2022 `0x100003` | Same | One ALPC; **one / two non-stdio files**, `0x100020` and on 2022 `0x100003`; also two Keys and 21 / 20 ETW registrations | Same as F-D |
+
+Q/Z are separate read-attributes and desired-access-zero opens, both returning
+metadata in the control. The full-mode parent observes zero TCP connections and
+zero UDP datagrams across its diagnostic children. Direct native calls to the
+Windows AFD network device, bypassing Winsock initialization, were not tested;
+neither were real ALPC protocols or collaborating workers. Each of the six completed
+diagnostic recipes has this entire **successful new-operation** residual:
+
+| Kind / successful object | Requested and actual access | Present | Risk assessment (files / state / peer / network) |
+|---|---|---|---|
+| Thread / `CreateThread` | In-process thread; actual creation succeeds, Win32 0 | Both images, all six recipes | No direct files / process-local lifetime / no direct peer / no direct network; concurrent use of reachable authority remains possible |
+
+**Pre-existing handles are authority too.** Full LPAC detached and GUI inventories
+are identical: seven Event `0x1f0003`, two IoCompletion `0x1f0003`, two
+TpWorkerFactory `0xf00ff`, four IRTimer `0x100002`, six / five
+WaitCompletionPacket `0x1`, one Directory `0x3`, one ALPC Port `0x1f0001`,
+one / zero SchedulerSharedData `0x1`, zero / two Semaphore `0x100003`,
+zero / one **non-stdio File `0x100003`**, plus stdin `0x120189` and two
+stdout/stderr `0x120196`. Counts sum to 27 / 28. The existing ALPC endpoint,
+cached credentials and possible brokered authority remain unknown. The 2022
+File has read/write rights and unknown identity. Failed new opens do not revoke
+those handles; the three-stdio-only requirement is **not established**.
+
+All final measurements are retained in [latest births](measurements/procmon/37896729362-windows-latest-births.json)
+and [2022 births](measurements/procmon/37896729362-windows-2022-births.json).
+[Per-recipe residual tables](measurements/procmon/37896729362-residuals.md) give
+every successful probe, every probe-kind/result count and every ambient
+type/access combination for each completed diagnostic separately.
+[Detailed findings](measurements/procmon/37896729362-findings.md) include the
+full attestation, risk tables, module differences and failed attempts;
+[manifest.json](measurements/procmon/manifest.json) records source/artifact/retained
+hashes. F-D and F-G use inherited startup parameters and follow earlier
+diagnostics that modified the disposable install ACL; they are not proof of
+fully scrubbed environment/cwd authority.
+
+Both images passed Rust **1.99.0** fmt/fetch/check, **seven Rust tests**, Python
+**3.12.10 / 22 tests**, static-CRT builds, independent import/subsystem checks and
+the live-token mutation/restoration witness. The unchanged baseline acceptance
+gates remain red because they select the ordinary failing console birth, not
+the completed diagnostic. Diagnostic-only inspection of the unchanged validator
+also finds exact-word policy mismatches: signature **5 versus expected 1** on
+both images, and Win32k **5 versus 1** on latest. No gate was rewritten to accept
+a missing child or hide those readbacks.
+
+Process Monitor **4.11** captures all thirteen selected PID start/exit windows:
+3,373 events / 375 non-success rows on latest and 3,119 / 373 on 2022. Version and
+hashes match prior runs; readiness/termination/export return 0, while the capture
+instance's separate exit 1 is retained. All non-success rows remain in the
+[latest](measurements/procmon/37896729362-windows-latest-procmon-events.md) and
+[2022](measurements/procmon/37896729362-windows-2022-procmon-events.md) tables.
+The ETW adjunct again produces **no trace**: provider-file `logman create` returns
+`0x80070490`, "Element not found," on both images. No provider or internal
+console operation is blamed without data. No further native run was launched.
+
 ## Recommended Windows design changes
 
-1. **Keep Windows unsupported/fail-closed until a runnable primary-token sequence
-   is measured.** Neither LPAC-only nor an impersonation-only lockdown is a
-   replacement for the specified final primary. `RevertToSelf` would expose a
-   broader primary; it must never become an escape hatch.
-2. **Separate birth requirements from final requirements.** Query the actual
-   suspended process and assigned thread, not only the input handles. Account
-   for the observed Low integrity reset and Identification downgrade. Chrome's
-   later Untrusted/no-thread-token observation supports distinct startup and
-   input phases, not LPAC compatibility. Treat
-   post-load Untrusted as a transition requiring an independently attested
-   result, not a paper property of CreateRestrictedToken.
-3. **Do not yet conclude a privileged service solves this.** The bare LPAC
-   control needs a privilege the hosted account lacks, but the final enabled
-   same-access birth still failed DLL init, so post-load primary replacement
-   never executed. A privileged broker versus a revised unprivileged boundary
-   is a design decision requiring another native campaign, not a result here.
-4. **Classify LPAC by measured claim when the reserved API is unavailable.**
-   Preserve class-46 errors and verify native `WIN://NOALLAPPPKG` UINT64 `[1]`,
-   exact package SID and empty capabilities. Do not accept an arbitrary
-   AppContainer, or silently label a failed getter as true.
-5. **Minimize and inventory the worker's actual imports/startup objects.**
-   Static CRT is not proof of no DLL side effects. Broker-only APIs should not
-   load GUI/COM into the worker. Unknown ambient File, Directory and ALPC
-   handles must be closed safely or explicitly contracted after object-specific
-   probes; the LPAC control demonstrably has more authority than its stdio.
-6. **Use profile isolation for any weaker floor.** LPAC-only can create a package
-   file, write its registry and modify/map shared named fixtures. A reused
-   fixed profile is a durable-state and cross-worker channel, not deny-all.
-   Per-worker/per-flow profile and cleanup are necessary but do not alone prove
-   the stronger no-state invariant or eliminate system IPC.
-7. **Keep the initial handle lifecycle exact:** non-inheritable, never listed,
-   successful close before resume; after revert/transition reject every Token
-   or unidentified handle before input. Existing ALPC channels may still hold
-   cached security context, which a handle-type check alone cannot rule out.
-8. **Keep resource claims honest:** threads succeed in the measured control,
-   and Windows thread creation is not a claimed denial. Whole-process wall
-   deadlines and pool retirement must bound all threads, not just main-thread
-   CPU. Job membership must use the parent's exact handle, never NULL/outer-job
-   queries.
-9. **Remaining coverage work:** identify ambient handle objects and exercise
-   their operations; inspect all thread security contexts; test bare NT AFD,
-   real ALPC protocols and collaborating worker endpoints; inventory modules
-   after probes; scrub inherited environment/current-directory authority.
-   This finite parent-enumerated sample is evidence, not a universal capability
-   proof. KernelBase's attach is now the measured DLL failure location; its
-   internal failing object/syscall and Chrome desktop ACL remain unknown.
-10. **Compare complete startup contexts, not token fields alone.** Chrome uses
-    an alternate station/desktop, a versioned install cwd and a seven-variable
-    environment, unlike the inherited runner context. Its renderer is not LPAC.
-    Neither enabling the logon SID nor matching its primary default DACL fixed
-    this recipe. Preserve these as separately testable differences, scrub
-    inherited environment authority, and do not infer a successful transition
-    from loader function names: the initial token was still present at the
-    observed KernelBase init call.
+1. **Use a GUI-subsystem worker with the original NULL-only LPAC primary as the
+   recommended next implementation path.** On both images this image reaches
+   entry without `DETACHED_PROCESS`, with every access group deny-only (logon
+   included), zero privileges/capabilities, the required job/mitigations, and an
+   actual Untrusted primary before input. The detached CUI variant is a measured
+   fallback/control, not a reason to keep a console dependency in the image.
+   System32 apphelp is observed only in the GUI startup module list; its
+   object operations were not separately measured. The GUI image does not reduce
+   handle totals relative to detached CUI; prefer it for its demonstrated
+   console-free
+   image contract, not for an unmeasured residual improvement. Keep explicit
+   stdio pipes and independent PE subsystem/import checks.
+2. **Keep production Windows fail-closed until the ambient authority is bounded.**
+   A runnable token sequence is now measured, but 27 / 28 startup handles are not
+   three pipes. Identify and exercise the ALPC port, Directory, timer/thread-pool
+   objects and the 2022 read/write File; safely remove or explicitly contract
+   their authority before accepting untrusted input. Unknown identity, cached
+   credentials or brokered file/state/peer/network authority is not harmless.
+   Absence of Token handles alone is insufficient.
+3. **Construct the final restrictions before creation; lower only integrity after
+   load.** The successful full recipes start with NULL-only restricting SID,
+   deny-only groups and no privileges, then revert and lower the actual Low
+   primary to Untrusted. No wholesale primary replacement is needed. Do not use
+   the enabled-group LPAC fallback whose post-load CreateRestrictedToken fails
+   Win32 87, and do not infer a privileged service is required from that error:
+   the successful original-primary sequence did not take that route.
+4. **Attest birth and input phases separately.** Use the measured matching Low
+   LPAC initial token, assigned at SecurityImpersonation (2), and query the actual
+   suspended primary/thread. Preserve the non-inheritable initial handle,
+   explicit exclusion from the three-handle list and successful close before
+   resume. After entry, require revert/ERROR_NO_TOKEN, actual Untrusted primary,
+   closed adjustment handle and complete token/handle/policy attestation before
+   input. Supplying an Untrusted primary or requesting level 2 is not readback.
+   Non-AppContainer Untrusted-at-birth still downgraded its Low loader to level 1
+   and failed; the Low-to-Untrusted Chrome-style control is a different recipe.
+5. **Keep LPAC and non-AppContainer comparisons distinct.** Full LPAC and the
+   successful non-AppContainer Low-to-Untrusted floor have the same one-success
+   new-operation sample, but the latter retains logon and 51 / 53 ambient
+   handles, including Keys and ETW registrations. It is not the specified token
+   or a GUI success reference. LPAC's class-46 getter remains unsupported;
+   require the native WIN://NOALLAPPPKG UINT64 `[1]` claim, exact package SID and
+   empty capabilities, while retaining query errors.
+6. **Reject LPAC-only as a substitute for lockdown.** Its repeated 29 successes
+   include package file creation, actual registry writes, shared event/section
+   rights and epmapper connection. Profile reuse is a state/peer channel.
+   Per-worker profile isolation and cleanup remain necessary hygiene, not an
+   independently proven no-state boundary. Keep these positive controls so
+   denial results cannot be mistaken for missing targets or constant-denial code.
+7. **Make console-free startup explicit and scrub the rest of the context.**
+   CREATE_NO_WINDOW on a CUI image did not prevent the measured console path;
+   DETACHED_PROCESS or a GUI-subsystem image fixes entry without relaxing policy.
+   Do not add broad system-object grants to cure that failure. Alternate
+   station/desktop, minimal environment and install cwd alone did not fix it.
+   The recommended successful GUI recipe inherited runner parameters and used
+   the disposable install directory modified by earlier diagnostics; separately
+   minimize environment/cwd/station authority and measure the resulting process.
+8. **Preserve object-specific imports and policy evidence.** Keep Userenv/Ole32/
+   User32 broker-only, record GUI apphelp and other actual startup paths, and
+   inventory modules after probes as well. Retain signature 5 versus the
+   validator's expected 1 and latest's Win32k 5 versus 1 rather than claiming
+   exact-word equivalence. Existing baseline acceptance selects the
+   failing console recipe; a future gate must explicitly select and verify the
+   intended GUI recipe, never silently replace a missing baseline child.
+9. **Bound all threads and resources for the whole process.** CreateThread
+   succeeds in every completed recipe, including full LPAC; executable-memory
+   operations fail with 1655 under the measured dynamic-code policy. Use wall
+   deadlines and pool retirement across all threads, and exact owned-job
+   membership/readback with no breakaway. Do not call thread creation denied or
+   infer runtime isolation from a job's existence alone.
+10. **Treat the residual as finite evidence, not universal non-reachability.**
+    All tested new file/registry/named-object/ALPC opens deny under full LPAC, and
+    native Winsock never reaches connect/send, but bare NT AFD, real ALPC
+    protocols, collaborating workers and ambient-handle operations remain
+    unmeasured. The failed ETW adjunct supplies no Kernel-Object trace. Keep
+    ordered Procmon non-success rows, real access witnesses and separate
+    capture errors; the exact internal console failure and Chrome desktop ACL
+    remain unknown. No unmeasured grant, protocol denial or privileged-broker
+    requirement should become a production assumption.

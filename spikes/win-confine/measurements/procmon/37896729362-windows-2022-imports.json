@@ -1,0 +1,723 @@
+{
+  "image": "target/release/win-confine.exe",
+  "subsystem": 3,
+  "normal": [
+    {
+      "dll": "ntdll.dll",
+      "symbols": [
+        {
+          "name": "NtWriteFile"
+        },
+        {
+          "name": "RtlPcToFileHeader"
+        },
+        {
+          "name": "RtlNtStatusToDosError"
+        },
+        {
+          "name": "NtReadFile"
+        },
+        {
+          "name": "RtlUnwindEx"
+        },
+        {
+          "name": "NtOpenFile"
+        },
+        {
+          "name": "NtQueryObject"
+        },
+        {
+          "name": "NtQueryInformationProcess"
+        },
+        {
+          "name": "NtCreateSection"
+        },
+        {
+          "name": "NtCreateEvent"
+        },
+        {
+          "name": "NtCreateLowBoxToken"
+        },
+        {
+          "name": "NtQueryDirectoryObject"
+        },
+        {
+          "name": "NtQuerySecurityObject"
+        },
+        {
+          "name": "NtSetValueKey"
+        },
+        {
+          "name": "NtSetInformationProcess"
+        },
+        {
+          "name": "NtQueryInformationToken"
+        },
+        {
+          "name": "NtQueryKey"
+        },
+        {
+          "name": "NtOpenSymbolicLinkObject"
+        },
+        {
+          "name": "NtOpenKey"
+        },
+        {
+          "name": "NtOpenEvent"
+        },
+        {
+          "name": "NtOpenKeyedEvent"
+        },
+        {
+          "name": "NtAlpcConnectPort"
+        },
+        {
+          "name": "NtOpenTimer"
+        },
+        {
+          "name": "NtOpenMutant"
+        },
+        {
+          "name": "NtOpenSemaphore"
+        },
+        {
+          "name": "NtOpenSection"
+        },
+        {
+          "name": "NtOpenDirectoryObject"
+        },
+        {
+          "name": "NtOpenJobObject"
+        }
+      ],
+      "system32_file": "C:\\Windows\\System32\\ntdll.dll",
+      "api_set_contract": false
+    },
+    {
+      "dll": "kernel32.dll",
+      "symbols": [
+        {
+          "name": "CreateFileMappingW"
+        },
+        {
+          "name": "CreateEventW"
+        },
+        {
+          "name": "ReadFile"
+        },
+        {
+          "name": "IsProcessInJob"
+        },
+        {
+          "name": "DebugSetProcessKillOnExit"
+        },
+        {
+          "name": "DebugActiveProcess"
+        },
+        {
+          "name": "QueryInformationJobObject"
+        },
+        {
+          "name": "SetInformationJobObject"
+        },
+        {
+          "name": "CreateJobObjectW"
+        },
+        {
+          "name": "CreatePipe"
+        },
+        {
+          "name": "GetHandleInformation"
+        },
+        {
+          "name": "SetHandleInformation"
+        },
+        {
+          "name": "GetFinalPathNameByHandleW"
+        },
+        {
+          "name": "ReadProcessMemory"
+        },
+        {
+          "name": "GetLastError"
+        },
+        {
+          "name": "OpenThread"
+        },
+        {
+          "name": "WriteProcessMemory"
+        },
+        {
+          "name": "WaitForDebugEventEx"
+        },
+        {
+          "name": "ContinueDebugEvent"
+        },
+        {
+          "name": "HeapSize"
+        },
+        {
+          "name": "DebugActiveProcessStop"
+        },
+        {
+          "name": "LocalFree"
+        },
+        {
+          "name": "CreateToolhelp32Snapshot"
+        },
+        {
+          "name": "Thread32First"
+        },
+        {
+          "name": "GetExitCodeProcess"
+        },
+        {
+          "name": "CreateProcessW"
+        },
+        {
+          "name": "Thread32Next"
+        },
+        {
+          "name": "GetThreadTimes"
+        },
+        {
+          "name": "OpenProcess"
+        },
+        {
+          "name": "DeleteProcThreadAttributeList"
+        },
+        {
+          "name": "WaitForSingleObject"
+        },
+        {
+          "name": "TerminateProcess"
+        },
+        {
+          "name": "FreeLibrary"
+        },
+        {
+          "name": "CloseHandle"
+        },
+        {
+          "name": "UpdateProcThreadAttribute"
+        },
+        {
+          "name": "FlsGetValue"
+        },
+        {
+          "name": "GetCommandLineA"
+        },
+        {
+          "name": "TlsFree"
+        },
+        {
+          "name": "TlsSetValue"
+        },
+        {
+          "name": "TlsGetValue"
+        },
+        {
+          "name": "TlsAlloc"
+        },
+        {
+          "name": "EncodePointer"
+        },
+        {
+          "name": "RaiseException"
+        },
+        {
+          "name": "DuplicateHandle"
+        },
+        {
+          "name": "LoadLibraryExW"
+        },
+        {
+          "name": "GetProcAddress"
+        },
+        {
+          "name": "GetFileInformationByHandle"
+        },
+        {
+          "name": "Module32FirstW"
+        },
+        {
+          "name": "ResumeThread"
+        },
+        {
+          "name": "CreateFileW"
+        },
+        {
+          "name": "GetCurrentProcess"
+        },
+        {
+          "name": "GetAppContainerNamedObjectPath"
+        },
+        {
+          "name": "GetCurrentProcessId"
+        },
+        {
+          "name": "InitializeProcThreadAttributeList"
+        },
+        {
+          "name": "ProcessIdToSessionId"
+        },
+        {
+          "name": "Module32NextW"
+        },
+        {
+          "name": "IsProcessorFeaturePresent"
+        },
+        {
+          "name": "GetProcessMitigationPolicy"
+        },
+        {
+          "name": "GetCurrentThread"
+        },
+        {
+          "name": "WriteFile"
+        },
+        {
+          "name": "VirtualAlloc"
+        },
+        {
+          "name": "VirtualFree"
+        },
+        {
+          "name": "VirtualProtect"
+        },
+        {
+          "name": "CreateThread"
+        },
+        {
+          "name": "GetStartupInfoW"
+        },
+        {
+          "name": "IsDebuggerPresent"
+        },
+        {
+          "name": "SetErrorMode"
+        }
+      ],
+      "system32_file": "C:\\Windows\\System32\\kernel32.dll",
+      "api_set_contract": false
+    },
+    {
+      "dll": "ws2_32.dll",
+      "symbols": [
+        {
+          "name": "select"
+        },
+        {
+          "name": "connect"
+        },
+        {
+          "name": "ioctlsocket"
+        },
+        {
+          "name": "WSAGetLastError"
+        },
+        {
+          "name": "getsockopt"
+        },
+        {
+          "name": "socket"
+        },
+        {
+          "name": "WSACleanup"
+        },
+        {
+          "name": "WSAStartup"
+        },
+        {
+          "name": "closesocket"
+        },
+        {
+          "name": "sendto"
+        }
+      ],
+      "system32_file": "C:\\Windows\\System32\\ws2_32.dll",
+      "api_set_contract": false
+    },
+    {
+      "dll": "advapi32.dll",
+      "symbols": [
+        {
+          "name": "LookupPrivilegeNameW"
+        },
+        {
+          "name": "RegOpenKeyExW"
+        },
+        {
+          "name": "RegSetValueExW"
+        },
+        {
+          "name": "AccessCheck"
+        },
+        {
+          "name": "ImpersonateLoggedOnUser"
+        },
+        {
+          "name": "FreeSid"
+        },
+        {
+          "name": "SetFileSecurityW"
+        },
+        {
+          "name": "CreateProcessAsUserW"
+        },
+        {
+          "name": "GetNamedSecurityInfoW"
+        },
+        {
+          "name": "SetEntriesInAclW"
+        },
+        {
+          "name": "SetNamedSecurityInfoW"
+        },
+        {
+          "name": "GetKernelObjectSecurity"
+        },
+        {
+          "name": "GetFileSecurityW"
+        },
+        {
+          "name": "CreateWellKnownSid"
+        },
+        {
+          "name": "CreateRestrictedToken"
+        },
+        {
+          "name": "AdjustTokenPrivileges"
+        },
+        {
+          "name": "SetKernelObjectSecurity"
+        },
+        {
+          "name": "DuplicateTokenEx"
+        },
+        {
+          "name": "GetSecurityDescriptorDacl"
+        },
+        {
+          "name": "ConvertStringSecurityDescriptorToSecurityDescriptorW"
+        },
+        {
+          "name": "SetTokenInformation"
+        },
+        {
+          "name": "GetLengthSid"
+        },
+        {
+          "name": "GetTokenInformation"
+        },
+        {
+          "name": "ConvertSecurityDescriptorToStringSecurityDescriptorW"
+        },
+        {
+          "name": "OpenProcessToken"
+        },
+        {
+          "name": "SetThreadToken"
+        },
+        {
+          "name": "OpenThreadToken"
+        },
+        {
+          "name": "SetSecurityDescriptorDacl"
+        },
+        {
+          "name": "InitializeSecurityDescriptor"
+        },
+        {
+          "name": "RegCloseKey"
+        },
+        {
+          "name": "RevertToSelf"
+        },
+        {
+          "name": "ConvertSidToStringSidW"
+        }
+      ],
+      "system32_file": "C:\\Windows\\System32\\advapi32.dll",
+      "api_set_contract": false
+    },
+    {
+      "dll": "api-ms-win-core-synch-l1-2-0.dll",
+      "symbols": [
+        {
+          "name": "WakeByAddressAll"
+        },
+        {
+          "name": "WaitOnAddress"
+        },
+        {
+          "name": "WakeByAddressSingle"
+        }
+      ],
+      "system32_file": "C:\\Windows\\System32\\api-ms-win-core-synch-l1-2-0.dll",
+      "api_set_contract": true
+    },
+    {
+      "dll": "KERNEL32.dll",
+      "symbols": [
+        {
+          "name": "HeapFree"
+        },
+        {
+          "name": "GetACP"
+        },
+        {
+          "name": "IsValidCodePage"
+        },
+        {
+          "name": "InitializeCriticalSectionAndSpinCount"
+        },
+        {
+          "name": "DeleteCriticalSection"
+        },
+        {
+          "name": "LeaveCriticalSection"
+        },
+        {
+          "name": "EnterCriticalSection"
+        },
+        {
+          "name": "SetUnhandledExceptionFilter"
+        },
+        {
+          "name": "UnhandledExceptionFilter"
+        },
+        {
+          "name": "InitializeSListHead"
+        },
+        {
+          "name": "GetSystemTimeAsFileTime"
+        },
+        {
+          "name": "FindNextFileW"
+        },
+        {
+          "name": "SetStdHandle"
+        },
+        {
+          "name": "QueryPerformanceFrequency"
+        },
+        {
+          "name": "GetTempPathW"
+        },
+        {
+          "name": "GetModuleHandleA"
+        },
+        {
+          "name": "FormatMessageW"
+        },
+        {
+          "name": "GetFileType"
+        },
+        {
+          "name": "FlsSetValue"
+        },
+        {
+          "name": "IsThreadAFiber"
+        },
+        {
+          "name": "GetModuleHandleW"
+        },
+        {
+          "name": "GetModuleHandleExW"
+        },
+        {
+          "name": "FlsAlloc"
+        },
+        {
+          "name": "LCMapStringW"
+        },
+        {
+          "name": "FlsFree"
+        },
+        {
+          "name": "GetConsoleOutputCP"
+        },
+        {
+          "name": "GetConsoleMode"
+        },
+        {
+          "name": "WriteConsoleW"
+        },
+        {
+          "name": "MultiByteToWideChar"
+        },
+        {
+          "name": "ReadConsoleW"
+        },
+        {
+          "name": "GetModuleFileNameW"
+        },
+        {
+          "name": "HeapAlloc"
+        },
+        {
+          "name": "SetEnvironmentVariableW"
+        },
+        {
+          "name": "GetEnvironmentVariableW"
+        },
+        {
+          "name": "DeleteFileW"
+        },
+        {
+          "name": "ReleaseMutex"
+        },
+        {
+          "name": "CreateMutexA"
+        },
+        {
+          "name": "LoadLibraryA"
+        },
+        {
+          "name": "WaitForSingleObjectEx"
+        },
+        {
+          "name": "WideCharToMultiByte"
+        },
+        {
+          "name": "SwitchToThread"
+        },
+        {
+          "name": "ExitProcess"
+        },
+        {
+          "name": "FindClose"
+        },
+        {
+          "name": "FindFirstFileExW"
+        },
+        {
+          "name": "lstrlenW"
+        },
+        {
+          "name": "GetCommandLineW"
+        },
+        {
+          "name": "GetCurrentDirectoryW"
+        },
+        {
+          "name": "SetThreadStackGuarantee"
+        },
+        {
+          "name": "AddVectoredExceptionHandler"
+        },
+        {
+          "name": "SetFilePointerEx"
+        },
+        {
+          "name": "CreateDirectoryW"
+        },
+        {
+          "name": "GetEnvironmentStringsW"
+        },
+        {
+          "name": "GetFileInformationByHandleEx"
+        },
+        {
+          "name": "SetFileTime"
+        },
+        {
+          "name": "GetSystemTimePreciseAsFileTime"
+        },
+        {
+          "name": "RtlVirtualUnwind"
+        },
+        {
+          "name": "RtlLookupFunctionEntry"
+        },
+        {
+          "name": "RtlCaptureContext"
+        },
+        {
+          "name": "FlushFileBuffers"
+        },
+        {
+          "name": "QueryPerformanceCounter"
+        },
+        {
+          "name": "HeapReAlloc"
+        },
+        {
+          "name": "GetProcessHeap"
+        },
+        {
+          "name": "CopyFileExW"
+        },
+        {
+          "name": "GetStdHandle"
+        },
+        {
+          "name": "SetFileInformationByHandle"
+        },
+        {
+          "name": "GetCurrentThreadId"
+        },
+        {
+          "name": "GetFullPathNameW"
+        },
+        {
+          "name": "SetLastError"
+        },
+        {
+          "name": "FreeEnvironmentStringsW"
+        },
+        {
+          "name": "GetCPInfo"
+        },
+        {
+          "name": "GetStringTypeW"
+        },
+        {
+          "name": "InitializeCriticalSectionEx"
+        },
+        {
+          "name": "CompareStringW"
+        },
+        {
+          "name": "GetOEMCP"
+        }
+      ],
+      "system32_file": "C:\\Windows\\System32\\KERNEL32.dll",
+      "api_set_contract": false
+    },
+    {
+      "dll": "WS2_32.dll",
+      "symbols": [
+        {
+          "ordinal": 13
+        },
+        {
+          "ordinal": 2
+        },
+        {
+          "ordinal": 6
+        },
+        {
+          "name": "freeaddrinfo"
+        },
+        {
+          "name": "WSASocketW"
+        },
+        {
+          "name": "getaddrinfo"
+        },
+        {
+          "ordinal": 1
+        },
+        {
+          "ordinal": 17
+        }
+      ],
+      "system32_file": "C:\\Windows\\System32\\WS2_32.dll",
+      "api_set_contract": false
+    }
+  ],
+  "delay": [],
+  "non_system32_imports": []
+}
