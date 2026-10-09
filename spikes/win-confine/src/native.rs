@@ -877,47 +877,37 @@ fn file_name(handle: HANDLE) -> Value {
     }
 }
 #[repr(C)]
+#[allow(dead_code)]
 struct AlpcBasicInformation {
     flags: u32,
     sequence: u32,
     context: *mut c_void,
 }
-// NtAlpcQueryInformation class 0 returns port flags; class 2 returns the
-// connected SID information documented by the public ntdll headers. A failed
-// query stays in the report. This call sends no ALPC message.
+// NtAlpcQueryInformation class 0 returns port flags. Classes 1 through 4
+// are the remaining published port queries; each result is retained, including
+// a failure. None of these calls sends an ALPC message.
 fn alpc_identity(handle: HANDLE) -> Value {
     unsafe {
-        let mut basic: AlpcBasicInformation = zeroed();
-        let mut returned = 0;
-        let basic_status = NtAlpcQueryInformation(
-            handle,
-            0,
-            (&mut basic as *mut AlpcBasicInformation).cast(),
-            size_of::<AlpcBasicInformation>() as u32,
-            &mut returned,
-        );
-        let basic_returned = returned;
-        let mut server = vec![0u8; 256];
-        returned = 0;
-        let server_status = NtAlpcQueryInformation(
-            handle,
-            2,
-            server.as_mut_ptr().cast(),
-            server.len() as u32,
-            &mut returned,
-        );
-        json!({
-            "basic": if basic_status < 0 {
-                json!({"NTSTATUS": hex(basic_status as u32), "returned": basic_returned})
-            } else {
-                json!({"NTSTATUS": "0x00000000", "flags": hex(basic.flags), "sequence": basic.sequence, "returned": basic_returned})
-            },
-            "server": if server_status < 0 {
-                json!({"NTSTATUS": hex(server_status as u32), "returned": returned})
-            } else {
-                json!({"NTSTATUS": "0x00000000", "returned": returned, "bytes": hex_bytes(&server[..returned as usize])})
-            }
-        })
+        let mut queries = Vec::new();
+        for class in 0..5u32 {
+            let mut buffer = vec![0u8; 512];
+            let mut returned = 0;
+            let status = NtAlpcQueryInformation(
+                handle,
+                class,
+                buffer.as_mut_ptr().cast(),
+                buffer.len() as u32,
+                &mut returned,
+            );
+            let shown = returned.min(buffer.len() as u32) as usize;
+            queries.push(json!({
+                "class": class,
+                "NTSTATUS": hex(status as u32),
+                "returned": returned,
+                "bytes": if status < 0 { Value::Null } else { json!(hex_bytes(&buffer[..shown])) },
+            }));
+        }
+        json!(queries)
     }
 }
 fn hex_bytes(bytes: &[u8]) -> String {

@@ -765,6 +765,7 @@ fn launch_variant(
             "full-gui-close-alpc" => " --close-ambient --close-types alpc",
             "full-gui-close-directory" => " --close-ambient --close-types directory",
             "full-gui-close-file" => " --close-ambient --close-types file",
+            "full-gui-close-pool" => " --close-ambient --close-types pool",
             _ => "",
         };
         let _cwd_grant = if sequence == "post-load-cwd-grant-control" {
@@ -1620,8 +1621,8 @@ pub fn run() -> Result<()> {
                         "chrome-untrusted-detached-control",
                         "full-gui-control",
                         "full-gui-close-alpc",
-                        "full-gui-close-directory",
                         "full-gui-close-file",
+                        "full-gui-close-pool",
                         "chrome-untrusted-gui-control",
                     ] {
                         let gui = sequence.contains("gui");
