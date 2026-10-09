@@ -7,7 +7,6 @@ use basal_proto::CallKind;
 use crate::codemode::store::tests::{DIGEST, completed, new_run};
 use crate::codemode::store::{
     CallStart, Lookup, NewRun, Outcome, commit_terminal, insert_call, insert_run, lookup,
-    record_outcome,
 };
 use crate::{Clock, Config, InstallGate, NoHooks, Runtime};
 
@@ -77,13 +76,21 @@ fn fixture(now: i64) -> Fixture {
 
 const ENDED_AT: i64 = 5_000;
 
-/// A run admitted at 100 with one answered call, ended at `ENDED_AT`.
+/// 24 hours, written out rather than read from `RETENTION_MS`, so changing
+/// the retention period fails these tests instead of moving them along.
+const DAY_MS: i64 = 24 * 60 * 60 * 1000;
+
+/// A run admitted at 100 with one call the parent refused before sending,
+/// ended at `ENDED_AT`.
 fn ended_run(f: &Fixture, run_id: &str) {
     f.rt.store()
         .write(|tx| {
             assert!(insert_run(tx, &new_run(run_id), None)?);
-            insert_call(tx, run_id, 0, "find", 2, CallStart::Intent { at: 200 })?;
-            record_outcome(tx, run_id, 0, Outcome::Ok, None, 300)?;
+            let refused = CallStart::Settled {
+                outcome: Outcome::Refused,
+                code: Some("unknown_tool"),
+            };
+            insert_call(tx, run_id, 0, "find", 2, refused)?;
             commit_terminal(tx, run_id, &completed(), ENDED_AT)
         })
         .unwrap();
@@ -106,15 +113,15 @@ fn a_run_is_pruned_24_hours_and_1_ms_after_it_ends() {
     f.rt.enforce_deadlines().unwrap();
     assert_eq!(
         f.rt.next_wake_at(None).unwrap(),
-        Some(ENDED_AT + RETENTION_MS + 1)
+        Some(ENDED_AT + DAY_MS + 1)
     );
     assert_eq!(
         f.rt.store().read(next_sweep_at).unwrap(),
-        Some(ENDED_AT + RETENTION_MS + 1)
+        Some(ENDED_AT + DAY_MS + 1)
     );
 
     // Exactly 24 hours after the end the run is still readable.
-    f.clock.set(ENDED_AT + RETENTION_MS);
+    f.clock.set(ENDED_AT + DAY_MS);
     f.rt.enforce_deadlines().unwrap();
     assert!(matches!(lookup_in(&f, "r1"), Lookup::Found(_)));
 
@@ -129,7 +136,7 @@ fn a_run_is_pruned_24_hours_and_1_ms_after_it_ends() {
             &f,
             "SELECT pruned_at FROM codemode_tombstones WHERE run_id = 'r1'"
         ),
-        ENDED_AT + RETENTION_MS + 1
+        ENDED_AT + DAY_MS + 1
     );
     assert_eq!(f.rt.store().read(next_sweep_at).unwrap(), None);
 
@@ -154,7 +161,7 @@ fn a_running_run_is_never_pruned() {
             insert_call(tx, "live", 0, "find", 2, CallStart::Intent { at: 100 })
         })
         .unwrap();
-    f.clock.set(100 + 10 * RETENTION_MS);
+    f.clock.set(100 + 10 * DAY_MS);
     assert_eq!(
         sweep(f.rt.store(), f.clock.now_ms()).unwrap(),
         Vec::<String>::new()
@@ -182,7 +189,7 @@ fn the_sweep_prunes_oldest_first_in_bounded_batches() {
             Ok(())
         })
         .unwrap();
-    let now = RETENTION_MS + 1_000;
+    let now = DAY_MS + 1_000;
     let first = sweep(f.rt.store(), now).unwrap();
     assert_eq!(first.len(), BATCH);
     assert_eq!(first[0], ids[ids.len() - 1]);
@@ -199,7 +206,7 @@ fn the_sweep_prunes_oldest_first_in_bounded_batches() {
 fn the_schema_refuses_to_reuse_a_pruned_run_id() {
     let f = fixture(ENDED_AT);
     ended_run(&f, "r1");
-    f.clock.set(ENDED_AT + RETENTION_MS + 1);
+    f.clock.set(ENDED_AT + DAY_MS + 1);
     assert_eq!(sweep(f.rt.store(), f.clock.now_ms()).unwrap(), ["r1"]);
     let err =
         f.rt.store()
@@ -244,7 +251,7 @@ fn the_schema_deletes_a_run_only_behind_its_tombstone() {
 fn tombstones_are_permanent() {
     let f = fixture(ENDED_AT);
     ended_run(&f, "r1");
-    f.clock.set(ENDED_AT + RETENTION_MS + 1);
+    f.clock.set(ENDED_AT + DAY_MS + 1);
     sweep(f.rt.store(), f.clock.now_ms()).unwrap();
     for sql in [
         "DELETE FROM codemode_tombstones",
@@ -279,7 +286,7 @@ fn flow_paths_never_see_codemode_rows() {
     // flow run lookups all leave codemode rows alone; the host panics if
     // anything is dispatched.
     assert!(f.rt.recover().unwrap().is_empty());
-    f.clock.set(100 + 10 * RETENTION_MS);
+    f.clock.set(100 + 10 * DAY_MS);
     assert!(f.rt.enforce_deadlines().unwrap().is_empty());
     f.rt.prune(f.clock.now_ms(), 0).unwrap();
     assert!(f.rt.startable().unwrap().is_empty());

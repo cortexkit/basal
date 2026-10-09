@@ -18,6 +18,11 @@ pub const RETENTION_MS: i64 = 24 * 60 * 60 * 1000;
 
 const BATCH: usize = 128;
 
+/// The candidate test, shared by the candidate scan and the re-check under the
+/// write transaction so the two can never disagree: `?1` is the cutoff. A
+/// running run has no `ended_at` and never matches.
+const PRUNABLE: &str = "ended_at IS NOT NULL AND ended_at < ?1";
+
 /// When the earliest ended run becomes prunable, if any run has ended. A run
 /// is prunable once more than [`RETENTION_MS`] has passed since it ended.
 pub fn next_sweep_at(conn: &Connection) -> Result<Option<i64>> {
@@ -36,7 +41,7 @@ pub fn sweep(store: &Store, now_ms: i64) -> Result<Vec<String>> {
     let cutoff = now_ms.saturating_sub(RETENTION_MS);
     let ids: Vec<String> = store.read(|c| {
         let mut stmt = c.prepare(&format!(
-            "SELECT run_id FROM codemode_runs WHERE ended_at IS NOT NULL AND ended_at < ?1 \
+            "SELECT run_id FROM codemode_runs WHERE {PRUNABLE} \
              ORDER BY ended_at, run_id LIMIT {BATCH}"
         ))?;
         Ok(stmt
@@ -56,9 +61,8 @@ fn prune(tx: &Transaction, run_id: &str, cutoff: i64, now_ms: i64) -> Result<boo
     // Re-check under the write transaction; the candidate read released the
     // connection.
     let due: bool = tx.query_row(
-        "SELECT EXISTS (SELECT 1 FROM codemode_runs WHERE run_id = ?1 \
-         AND ended_at IS NOT NULL AND ended_at < ?2)",
-        params![run_id, cutoff],
+        &format!("SELECT EXISTS (SELECT 1 FROM codemode_runs WHERE {PRUNABLE} AND run_id = ?2)"),
+        params![cutoff, run_id],
         |r| r.get(0),
     )?;
     if !due {

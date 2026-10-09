@@ -10036,3 +10036,485 @@ only = false
 file = "crates/basal-core/src/driver.rs"
 old = "return self.fail(\n                        \"profile_violation\",\n                        \"console output is not available to flows\".into(),\n                        false,\n                    );"
 new = "continue; // NON-VACUITY BREAK"
+
+# codemode store, canonical JSON and input schemas: 34 controls
+# The run and call tables are guarded twice: each conditional write in
+# codemode::store, and a schema trigger that aborts a writer that forgot
+# the condition. A store-function mutant is therefore caught by the test
+# that expects `false`, not by a silent overwrite.
+
+[[control]]
+id = "codemode-outcome-write-requires-pending"
+guards = "a recorded codemode call outcome is never replaced, and a late answer after termination is dropped"
+test_file = "crates/basal-core/src/codemode/store_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::store::tests::a_recorded_outcome_never_changes", "codemode::store::tests::termination_cancels_queued_calls_and_marks_sent_calls_unknown"]
+only = false
+file = "crates/basal-core/src/codemode/store.rs"
+old = "WHERE run_id = ?1 AND position = ?2 AND outcome = 'pending'\","
+new = "WHERE run_id = ?1 AND position = ?2\","
+
+[[control]]
+id = "codemode-terminal-write-requires-running"
+guards = "the first terminal write is a codemode run's end; a later one changes nothing"
+test_file = "crates/basal-core/src/codemode/store_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::store::tests::a_terminal_write_never_overwrites_another"]
+only = false
+file = "crates/basal-core/src/codemode/store.rs"
+old = "WHERE run_id = ?1 AND status = 'running'\","
+new = "WHERE run_id = ?1\","
+
+[[control]]
+id = "codemode-termination-cancels-queued-calls"
+guards = "termination marks queued codemode calls cancelled"
+test_file = "crates/basal-core/src/codemode/store_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::store::tests::termination_cancels_queued_calls_and_marks_sent_calls_unknown", "codemode::store::tests::committing_a_terminal_status_settles_pending_calls_in_the_same_transaction"]
+only = false
+file = "crates/basal-core/src/codemode/store.rs"
+old = "WHERE run_id = ?1 AND outcome = 'pending' AND intent_at IS NULL\","
+new = "WHERE run_id = ?1 AND 0\","
+
+[[control]]
+id = "codemode-termination-marks-sent-calls-no-outcome"
+guards = "termination marks a sent codemode call without an outcome outcome_unknown / no_outcome"
+test_file = "crates/basal-core/src/codemode/store_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::store::tests::termination_cancels_queued_calls_and_marks_sent_calls_unknown", "codemode::store::tests::committing_a_terminal_status_settles_pending_calls_in_the_same_transaction"]
+only = false
+file = "crates/basal-core/src/codemode/store.rs"
+old = "params![run_id, NO_OUTCOME, at],"
+new = "params![run_id, \"worker_lost\", at], // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-termination-keeps-recorded-outcomes"
+guards = "termination never relabels a codemode call outcome already recorded"
+test_file = "crates/basal-core/src/codemode/store_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::store::tests::termination_cancels_queued_calls_and_marks_sent_calls_unknown"]
+only = false
+file = "crates/basal-core/src/codemode/store.rs"
+old = "WHERE run_id = ?1 AND outcome = 'pending' AND intent_at IS NOT NULL\","
+new = "WHERE run_id = ?1 AND intent_at IS NOT NULL\","
+
+[[control]]
+id = "codemode-insert-skips-pruned-run-id"
+guards = "a pruned codemode run id is never admitted again"
+test_file = "crates/basal-core/src/codemode/retention_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::retention::tests::a_run_is_pruned_24_hours_and_1_ms_after_it_ends"]
+only = false
+file = "crates/basal-core/src/codemode/store.rs"
+old = 'WHERE NOT EXISTS (SELECT 1 FROM codemode_tombstones WHERE run_id = ?1)'
+new = 'WHERE 1'
+
+[[control]]
+id = "codemode-insert-keeps-first-admission"
+guards = "a known codemode run id keeps the program and description it was first admitted with"
+test_file = "crates/basal-core/src/codemode/store_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::store::tests::a_known_run_id_keeps_its_first_admission"]
+only = false
+file = "crates/basal-core/src/codemode/store.rs"
+old = 'ON CONFLICT (run_id) DO NOTHING",'
+new = 'ON CONFLICT (run_id) DO UPDATE SET program = excluded.program",'
+
+[[control]]
+id = "codemode-calls-recorded-only-while-running"
+guards = "a codemode call issued after its run ended is not recorded"
+test_file = "crates/basal-core/src/codemode/store_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::store::tests::a_run_admitted_at_its_deadline_is_stored_already_ended", "codemode::store::tests::committing_a_terminal_status_settles_pending_calls_in_the_same_transaction"]
+only = false
+file = "crates/basal-core/src/codemode/store.rs"
+old = "WHERE EXISTS (SELECT 1 FROM codemode_runs WHERE run_id = ?1 AND status = 'running')\","
+new = "WHERE EXISTS (SELECT 1 FROM codemode_runs WHERE run_id = ?1)\","
+
+[[control]]
+id = "codemode-queued-call-intent-once"
+guards = "a queued codemode call gets its single intent only while it is still queued"
+test_file = "crates/basal-core/src/codemode/store_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::store::tests::a_queued_call_is_sent_only_while_it_is_still_queued"]
+only = false
+file = "crates/basal-core/src/codemode/store.rs"
+old = "WHERE run_id = ?1 AND position = ?2 AND outcome = 'pending' AND intent_at IS NULL\","
+new = "WHERE run_id = ?1 AND position = ?2 AND outcome = 'pending'\","
+
+[[control]]
+id = "codemode-call-key-namespace"
+guards = "codemode per-call keys are idempotency_key(\"codemode\", run_id, position)"
+test_file = "crates/basal-core/src/codemode/store_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::store::tests::call_keys_are_the_codemode_idempotency_keys"]
+only = false
+file = "crates/basal-core/src/codemode/store.rs"
+old = 'pub const CALL_KEY_NAMESPACE: &str = "codemode";'
+new = 'pub const CALL_KEY_NAMESPACE: &str = "flow"; // NON-VACUITY BREAK'
+
+[[control]]
+id = "codemode-schema-call-outcome-is-final"
+guards = "the schema refuses to change a recorded codemode call outcome"
+test_file = "crates/basal-core/src/codemode/store_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::store::tests::the_schema_refuses_to_change_a_recorded_outcome"]
+only = false
+file = "crates/basal-core/src/schema.rs"
+old = "WHEN OLD.outcome <> 'pending'"
+new = "WHEN 0"
+
+[[control]]
+id = "codemode-schema-calls-only-while-running"
+guards = "the schema refuses a codemode call row for a run that is not running"
+test_file = "crates/basal-core/src/codemode/store_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::store::tests::the_schema_refuses_a_call_for_a_run_that_is_not_running"]
+only = false
+file = "crates/basal-core/src/schema.rs"
+old = "WHEN NOT EXISTS (SELECT 1 FROM codemode_runs WHERE run_id = NEW.run_id AND status = 'running')"
+new = "WHEN 0"
+
+[[control]]
+id = "codemode-schema-terminal-run-is-final"
+guards = "the schema refuses to change a terminal codemode run"
+test_file = "crates/basal-core/src/codemode/store_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::store::tests::the_schema_refuses_to_change_a_terminal_run"]
+only = false
+file = "crates/basal-core/src/schema.rs"
+old = "WHEN OLD.status <> 'running'"
+new = "WHEN 0"
+
+[[control]]
+id = "codemode-schema-run-ends-with-no-pending-call"
+guards = "the schema refuses to end a codemode run while one of its calls is pending"
+test_file = "crates/basal-core/src/codemode/store_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::store::tests::the_schema_refuses_to_end_a_run_with_a_pending_call"]
+only = false
+file = "crates/basal-core/src/schema.rs"
+old = "AND EXISTS (SELECT 1 FROM codemode_calls WHERE run_id = NEW.run_id AND outcome = 'pending')"
+new = "AND 0"
+
+[[control]]
+id = "codemode-schema-pruned-id-never-reused"
+guards = "the schema refuses to insert a codemode run under a tombstoned id"
+test_file = "crates/basal-core/src/codemode/retention_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::retention::tests::the_schema_refuses_to_reuse_a_pruned_run_id"]
+only = false
+file = "crates/basal-core/src/schema.rs"
+old = "WHEN EXISTS (SELECT 1 FROM codemode_tombstones WHERE run_id = NEW.run_id)"
+new = "WHEN 0"
+
+[[control]]
+id = "codemode-schema-delete-behind-tombstone"
+guards = "the schema deletes a codemode run only once it has ended and been tombstoned"
+test_file = "crates/basal-core/src/codemode/retention_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::retention::tests::the_schema_deletes_a_run_only_behind_its_tombstone"]
+only = false
+file = "crates/basal-core/src/schema.rs"
+old = "WHEN OLD.status = 'running'\n    OR NOT EXISTS (SELECT 1 FROM codemode_tombstones WHERE run_id = OLD.run_id)"
+new = "WHEN 0"
+
+[[control]]
+id = "codemode-schema-tombstones-not-deleted"
+guards = "the schema refuses to delete a codemode tombstone"
+test_file = "crates/basal-core/src/codemode/retention_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::retention::tests::tombstones_are_permanent"]
+only = false
+file = "crates/basal-core/src/schema.rs"
+old = "CREATE TRIGGER codemode_tombstones_no_delete BEFORE DELETE ON codemode_tombstones\nBEGIN"
+new = "CREATE TRIGGER codemode_tombstones_no_delete BEFORE DELETE ON codemode_tombstones WHEN 0\nBEGIN"
+
+[[control]]
+id = "codemode-schema-tombstones-not-updated"
+guards = "the schema refuses to change a codemode tombstone"
+test_file = "crates/basal-core/src/codemode/retention_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::retention::tests::tombstones_are_permanent"]
+only = false
+file = "crates/basal-core/src/schema.rs"
+old = "CREATE TRIGGER codemode_tombstones_no_update BEFORE UPDATE ON codemode_tombstones\nBEGIN"
+new = "CREATE TRIGGER codemode_tombstones_no_update BEFORE UPDATE ON codemode_tombstones WHEN 0\nBEGIN"
+
+[[control]]
+id = "codemode-schema-description-bound"
+guards = "the schema keeps a codemode description to 1,024 bytes without line breaks"
+test_file = "crates/basal-core/src/codemode/store_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::store::tests::the_schema_bounds_the_description"]
+only = false
+file = "crates/basal-core/src/schema.rs"
+old = "description    TEXT CHECK (description IS NULL OR (length("
+new = "description    TEXT CHECK (1 OR (length("
+
+[[control]]
+id = "codemode-retention-after-24-hours"
+guards = "an ended codemode run is kept 24 runtime-clock hours"
+test_file = "crates/basal-core/src/codemode/retention_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::retention::tests::a_run_is_pruned_24_hours_and_1_ms_after_it_ends"]
+only = false
+file = "crates/basal-core/src/codemode/retention.rs"
+old = "pub const RETENTION_MS: i64 = 24 * 60 * 60 * 1000;"
+new = "pub const RETENTION_MS: i64 = 60 * 60 * 1000; // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-retention-strictly-after-the-horizon"
+guards = "a codemode run ended exactly 24 hours ago is still readable"
+test_file = "crates/basal-core/src/codemode/retention_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::retention::tests::a_run_is_pruned_24_hours_and_1_ms_after_it_ends"]
+only = false
+file = "crates/basal-core/src/codemode/retention.rs"
+old = 'const PRUNABLE: &str = "ended_at IS NOT NULL AND ended_at < ?1";'
+new = 'const PRUNABLE: &str = "ended_at IS NOT NULL AND ended_at <= ?1";'
+
+[[control]]
+id = "codemode-retention-runs-from-deadline-pass"
+guards = "the runtime deadline pass sweeps due codemode runs"
+test_file = "crates/basal-core/src/codemode/retention_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::retention::tests::a_run_is_pruned_24_hours_and_1_ms_after_it_ends"]
+only = false
+file = "crates/basal-core/src/retention.rs"
+old = "crate::codemode::retention::sweep(self.store(), now)?;"
+new = "// NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-retention-wakes-the-engine"
+guards = "the engine's next wake includes the next codemode prune"
+test_file = "crates/basal-core/src/codemode/retention_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::retention::tests::a_run_is_pruned_24_hours_and_1_ms_after_it_ends"]
+only = false
+file = "crates/basal-core/src/maintenance.rs"
+old = "let codemode = crate::codemode::retention::next_sweep_at(c)?;"
+new = "let codemode: Option<i64> = None; // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-retention-leaves-a-tombstone"
+guards = "pruning a codemode run leaves its permanent tombstone"
+test_file = "crates/basal-core/src/codemode/retention_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::retention::tests::a_run_is_pruned_24_hours_and_1_ms_after_it_ends", "codemode::retention::tests::the_sweep_prunes_oldest_first_in_bounded_batches", "codemode::retention::tests::the_schema_refuses_to_reuse_a_pruned_run_id", "codemode::retention::tests::tombstones_are_permanent"]
+only = false
+file = "crates/basal-core/src/codemode/retention.rs"
+old = '"INSERT INTO codemode_tombstones (run_id, pruned_at) VALUES (?1, ?2)",'
+new = '"INSERT INTO codemode_tombstones (run_id, pruned_at) SELECT ?1, ?2 WHERE 0",'
+
+[[control]]
+id = "codemode-digest-sorts-entries-by-name"
+guards = "the catalog digest sorts entries by name"
+test_file = "crates/basal-core/src/codemode/catalog.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::catalog::tests::reordered_entries_keys_and_number_spellings_share_one_digest"]
+only = false
+file = "crates/basal-core/src/codemode/catalog.rs"
+old = "    named.sort_by(|a, b| a.0.encode_utf16().cmp(b.0.encode_utf16()));"
+new = "    // NON-VACUITY BREAK: entries keep the sender's order"
+
+[[control]]
+id = "codemode-canonical-names-sort-by-utf16"
+guards = "canonical JSON sorts member names by UTF-16 code units"
+test_file = "crates/basal-core/src/codemode/canonical.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::canonical::tests::member_names_sort_by_utf16_code_units"]
+only = false
+file = "crates/basal-core/src/codemode/canonical.rs"
+old = "            members.sort_by(|a, b| a.0.encode_utf16().cmp(b.0.encode_utf16()));"
+new = "            members.sort_by(|a, b| a.0.cmp(b.0)); // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-canonical-number-closest-digits"
+guards = "canonical JSON numbers use ECMAScript's closest shortest digits, ties to even"
+test_file = "crates/basal-core/src/codemode/canonical.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::canonical::tests::numbers_match_the_rfc_8785_appendix_b_table"]
+only = false
+file = "crates/basal-core/src/codemode/canonical.rs"
+old = "let chosen = if closest.parse::<f64>() == Ok(x) {"
+new = "let chosen = if false && closest.parse::<f64>() == Ok(x) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-canonical-control-escapes-lowercase"
+guards = "canonical JSON escapes other controls as lowercase \\u00xx"
+test_file = "crates/basal-core/src/codemode/canonical.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::canonical::tests::strings_use_the_shortest_escapes_and_lowercase_hex", "codemode::canonical::tests::the_rfc_8785_example_canonicalizes_exactly"]
+only = false
+file = "crates/basal-core/src/codemode/canonical.rs"
+old = 'c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),'
+new = 'c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04X}", c as u32)),'
+
+[[control]]
+id = "codemode-canonical-parses-nearest-double"
+guards = "JSON numbers parse to the nearest double before canonicalization"
+test_file = "crates/basal-core/src/codemode/canonical.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::canonical::tests::json_text_parses_to_the_nearest_double", "codemode::canonical::tests::the_rfc_8785_example_canonicalizes_exactly"]
+only = false
+file = "crates/basal-core/Cargo.toml"
+old = 'serde_json = { workspace = true, features = ["float_roundtrip"] }'
+new = 'serde_json = { workspace = true }'
+
+[[control]]
+id = "codemode-schema-same-document-refs-only"
+guards = "tool input schemas refuse any $ref other than # or #/..."
+test_file = "crates/basal-core/src/codemode/catalog.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::catalog::tests::references_outside_the_document_are_refused_even_when_they_would_compile"]
+only = false
+file = "crates/basal-core/src/codemode/catalog.rs"
+old = 'reference == "#" || reference.starts_with("#/")'
+new = 'reference.len() < usize::MAX // NON-VACUITY BREAK'
+
+[[control]]
+id = "codemode-schema-draft-2020-12-only"
+guards = "tool input schemas refuse a $schema naming another draft"
+test_file = "crates/basal-core/src/codemode/catalog.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::catalog::tests::schemas_are_draft_2020_12"]
+only = false
+file = "crates/basal-core/src/codemode/catalog.rs"
+old = "dialect.strip_suffix('#').unwrap_or(dialect) == \"https://json-schema.org/draft/2020-12/schema\""
+new = 'dialect.len() < usize::MAX // NON-VACUITY BREAK'
+
+[[control]]
+id = "codemode-schema-never-retrieves"
+guards = "tool input schema compilation never loads a remote or file resource"
+test_file = "crates/basal-core/src/codemode/catalog.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::catalog::tests::the_compiler_never_retrieves_an_external_schema"]
+only = false
+file = "crates/basal-core/src/codemode/catalog.rs"
+old = 'Err(format!("codemode schemas cannot load {}", uri.as_str()).into())'
+new = 'Ok(Value::Bool(uri.as_str().len() < usize::MAX)) // NON-VACUITY BREAK'
+
+[[control]]
+id = "codemode-schema-formats-are-annotations"
+guards = "tool input schema format keywords are not assertions"
+test_file = "crates/basal-core/src/codemode/catalog.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::catalog::tests::formats_are_annotations_not_assertions"]
+only = false
+file = "crates/basal-core/src/codemode/catalog.rs"
+old = ".should_validate_formats(false)"
+new = ".should_validate_formats(true)"
+
+[[control]]
+id = "codemode-schema-uses-draft-2020-12"
+guards = "tool input schemas compile as draft 2020-12"
+test_file = "crates/basal-core/src/codemode/catalog.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::catalog::tests::schemas_are_draft_2020_12"]
+only = false
+file = "crates/basal-core/src/codemode/catalog.rs"
+old = "jsonschema::draft202012::options()"
+new = "jsonschema::draft7::options()"

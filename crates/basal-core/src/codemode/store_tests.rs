@@ -323,7 +323,7 @@ fn termination_cancels_queued_calls_and_marks_sent_calls_unknown() {
     let sent = call(&t.store, "r1", 1);
     assert_eq!(
         (sent.outcome, sent.code.as_deref(), sent.duration_ms),
-        (Outcome::OutcomeUnknown, Some(NO_OUTCOME), Some(10))
+        (Outcome::OutcomeUnknown, Some("no_outcome"), Some(10))
     );
     let queued = call(&t.store, "r1", 2);
     assert_eq!(
@@ -365,7 +365,7 @@ fn committing_a_terminal_status_settles_pending_calls_in_the_same_transaction() 
     assert_eq!(
         outcomes,
         [
-            (Outcome::OutcomeUnknown, Some(NO_OUTCOME.to_owned())),
+            (Outcome::OutcomeUnknown, Some("no_outcome".to_owned())),
             (Outcome::Cancelled, None)
         ]
     );
