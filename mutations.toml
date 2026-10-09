@@ -10517,4 +10517,4 @@ expect_red = ["codemode::catalog::tests::schemas_are_draft_2020_12"]
 only = false
 file = "crates/basal-core/src/codemode/catalog.rs"
 old = "jsonschema::draft202012::options()"
-new = "jsonschema::draft7::options()"
+new = "jsonschema::draft201909::options()"
