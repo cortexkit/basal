@@ -31,6 +31,8 @@ new = "for fd in Vec::<i32>::new() { // NON-VACUITY BREAK"
 
 [[control]]
 id = "lockdown-forbidden-globals-are-not-removed"
+hub = "Forbidden globals are removed before script code runs, asserted by the lockdown tests and the top-level wrapper lockdown test"
+hub_targets = ["sandbox_integrity"]
 guards = "lockdown: forbidden globals are not removed"
 test_file = "crates/basal-worker/tests/lockdown.rs"
 runner = "cargo"
@@ -47,6 +49,8 @@ new = "for (const key of []) {"
 
 [[control]]
 id = "lockdown-forbidden-globals-are-not-removed-inventory"
+hub = "Forbidden globals are removed before script code runs, asserted by the lockdown tests and the top-level wrapper lockdown test"
+hub_targets = ["sandbox_integrity"]
 guards = "lockdown: forbidden globals are not removed (inventory)"
 test_file = "crates/basal-worker/tests/lockdown.rs"
 runner = "cargo"
@@ -129,6 +133,8 @@ new = "const JSONParse = ((evaluate) => (text) => evaluate('(' + text + ')'))(ev
 
 [[control]]
 id = "intrinsics-are-not-frozen"
+hub = "Intrinsics and the global object are frozen before script code runs, asserted by lockdown, wrapper-declaration unit and sandbox integrity tests"
+hub_targets = ["basal_worker", "sandbox_integrity"]
 guards = "intrinsics are not frozen"
 test_file = "crates/basal-worker/tests/lockdown.rs"
 runner = "cargo"
@@ -145,6 +151,8 @@ new = "drop(roots);"
 
 [[control]]
 id = "recorded-clock-and-random-outcomes-are-not-served-from-the-prefix"
+hub = "Recorded clock and random outcomes are replayed from the journal prefix, asserted by the clock tests and the top-level wrapper journal test"
+hub_targets = ["sandbox_integrity"]
 guards = "recorded clock and random outcomes are not served from the prefix"
 test_file = "crates/basal-worker/tests/clock.rs"
 runner = "cargo"
@@ -161,6 +169,8 @@ new = "match recorded.outcome.take().filter(|_| false) {"
 
 [[control]]
 id = "math-random-is-not-a-host-call"
+hub = "Math.random is a journaled host call, asserted by the clock replay test, the prelude wire-code unit test and the top-level wrapper journal test"
+hub_targets = ["basal_worker", "sandbox_integrity"]
 guards = "Math.random is not a host call"
 test_file = "crates/basal-worker/tests/clock.rs"
 runner = "cargo"
@@ -307,8 +317,8 @@ new = "if false && all_long {"
 
 [[control]]
 id = "interrupt-handler-never-stops-the-engine-cpu-loop"
-hub = "The JS CPU budget interrupts unbounded scripts, including loops and regex payloads, asserted by budgets and fuzz tests"
-hub_targets = ["fuzz"]
+hub = "The JS CPU budget interrupts unbounded scripts, including loops, regex payloads and top-level wrapper code, asserted by budgets, fuzz and sandbox integrity tests"
+hub_targets = ["fuzz", "sandbox_integrity"]
 guards = "interrupt handler never stops the engine (CPU loop)"
 test_file = "crates/basal-worker/tests/budgets.rs"
 runner = "cargo"
@@ -325,8 +335,8 @@ new = "false && (interrupt.halted.get() || interrupt.clock.over_budget())"
 
 [[control]]
 id = "interrupt-handler-never-stops-the-engine-catastrophic-regex"
-hub = "The JS CPU budget interrupts unbounded scripts, including loops and regex payloads, asserted by fuzz and budgets tests"
-hub_targets = ["budgets"]
+hub = "The JS CPU budget interrupts unbounded scripts, including loops, regex payloads and top-level wrapper code, asserted by fuzz, budgets and sandbox integrity tests"
+hub_targets = ["budgets", "sandbox_integrity"]
 guards = "interrupt handler never stops the engine (catastrophic regex)"
 test_file = "crates/basal-worker/tests/fuzz.rs"
 runner = "cargo"
@@ -362,6 +372,8 @@ edits = [
 
 [[control]]
 id = "memory-limit-not-applied"
+hub = "Each activation's allocations are capped by its memory budget, asserted by the budget test, the allocator unit test and the top-level wrapper budget test"
+hub_targets = ["basal_worker", "sandbox_integrity"]
 guards = "memory limit not applied"
 test_file = "crates/basal-worker/tests/budgets.rs"
 runner = "cargo"
@@ -378,6 +390,8 @@ new = "if false && !self.permits(size, 0) { // NON-VACUITY BREAK"
 
 [[control]]
 id = "stack-limit-not-applied"
+hub = "Each activation runs under its configured stack budget, asserted by the budget test and the top-level wrapper budget test"
+hub_targets = ["sandbox_integrity"]
 guards = "stack limit not applied"
 test_file = "crates/basal-worker/tests/budgets.rs"
 runner = "cargo"
@@ -1011,6 +1025,8 @@ new = 'const OBLIGATIONS: &str = "0 AND EXISTS (SELECT 1 FROM journal'
 
 [[control]]
 id = "pruning-touches-runs-that-have-not-ended"
+hub = "Pruning spares pending and suspended runs, asserted by the journal admin test and the deadline tests whose pending second run must survive the deadline pass"
+hub_targets = ["dispatch_slots"]
 guards = "pruning touches runs that have not ended"
 test_file = "crates/basal-testkit/tests/journal_admin.rs"
 runner = "cargo"
@@ -1181,6 +1197,8 @@ new = "Ok(InstallStatus::Revoked { .. }) => return Ok(Gate::Open),\n            
 
 [[control]]
 id = "install-gate-a-version-core-does-not-know-activates"
+hub = "A version core reports as unknown never activates and is revoked, asserted by install-gate tests and the package instance revocation test"
+hub_targets = ["package_instances"]
 guards = "install gate: a version core does not know activates"
 test_file = "crates/basal-testkit/tests/install_gate.rs"
 runner = "cargo"
@@ -2335,8 +2353,8 @@ new = "params![flow_id, row.next_due.map(to_ms), last_fired, at],"
 
 [[control]]
 id = "planned-fires-are-not-persisted-with-the-advance"
-hub = "Planned fires are durably queued with the schedule advance before admission, asserted by tick and installed-flow tests reading the queue"
-hub_targets = ["schedule_flows"]
+hub = "Planned fires are durably queued with the schedule advance before admission, asserted by tick, installed-flow and package instance tests reading the queue"
+hub_targets = ["package_instances", "schedule_flows"]
 guards = "planned fires are not persisted with the advance"
 test_file = "crates/basal-testkit/tests/schedule_tick.rs"
 runner = "cargo"
@@ -2353,8 +2371,8 @@ new = "for fire in fires.iter().filter(|_| false) {"
 
 [[control]]
 id = "planned-fires-are-not-persisted-restart-mid-admission"
-hub = "Planned fires are durably queued with the schedule advance before admission, asserted by tick and installed-flow tests reading the queue"
-hub_targets = ["schedule_flows"]
+hub = "Planned fires are durably queued with the schedule advance before admission, asserted by tick, installed-flow and package instance tests reading the queue"
+hub_targets = ["package_instances", "schedule_flows"]
 guards = "planned fires are not persisted (restart mid-admission)"
 test_file = "crates/basal-testkit/tests/schedule_tick.rs"
 runner = "cargo"
@@ -2462,8 +2480,8 @@ edits = [
 
 [[control]]
 id = "enabling-resumes-from-the-stale-next-due-time-and-catches-up-the-disabled-hours"
-hub = "Enabling a schedule starts from the enable time rather than catching up disabled hours, asserted by both lifecycle targets"
-hub_targets = ["schedule_flows"]
+hub = "Resuming a stopped schedule, by enabling its flow or restoring its package instance, starts from the resume time rather than catching up stopped hours, asserted by both lifecycle targets and package instance tests"
+hub_targets = ["package_instances", "schedule_flows"]
 guards = "enabling resumes from the stale next due time and catches up the disabled hours"
 test_file = "crates/basal-testkit/tests/schedule_tick.rs"
 runner = "cargo"
@@ -2666,8 +2684,8 @@ new = "if false && old.state == ScheduleState::Active {"
 
 [[control]]
 id = "disabling-a-flow-leaves-its-schedule-ticking"
-hub = "Disabling a flow stops its schedule, asserted by installed-flow integration and scheduler lifecycle tests"
-hub_targets = ["schedule_tick"]
+hub = "Disabling a flow stops its schedule and instance changes leave it stopped, asserted by installed-flow, scheduler lifecycle and package instance tests"
+hub_targets = ["package_instances", "schedule_tick"]
 guards = "disabling a flow leaves its schedule ticking"
 test_file = "crates/basal-testkit/tests/schedule_flows.rs"
 runner = "cargo"
@@ -3064,8 +3082,8 @@ new = "Some(Principal::Reserved { .. }) => Caller::Operator,"
 
 [[control]]
 id = "a-local-caller-refused-an-operator-action-is-told-not-permitted-not-operator-attestation-required"
-hub = "A local caller refused an operator-only action receives operator_attestation_required, asserted by binding and authorization tests"
-hub_targets = ["caller_binding"]
+hub = "A local caller refused an operator-only action, including package and instance operations, receives operator_attestation_required, asserted by binding, authorization, lifecycle and package tests"
+hub_targets = ["caller_binding", "module_lifecycle", "packages"]
 guards = "a local caller refused an operator action is told not_permitted, not operator_attestation_required"
 test_file = "crates/basal-module/tests/ops.rs"
 runner = "cargo"
@@ -3347,6 +3365,8 @@ new = "if activations >= u32::MAX => None,"
 
 [[control]]
 id = "a-bound-worker-is-never-retired-for-idling"
+hub = "A worker idle past its idle period is retired, asserted by the pool retirement test and the engine lifecycle retirement wake test"
+hub_targets = ["basal_module"]
 guards = "a bound worker is never retired for idling"
 test_file = "crates/basal-module/tests/pool.rs"
 runner = "cargo"
@@ -3396,8 +3416,8 @@ new = "if active.runs.len() >= usize::MAX {"
 
 [[control]]
 id = "a-storage-error-does-not-raise-the-fatal-latch-in-process"
-hub = "A storage error raises the fatal latch so the engine stops and the process exits for recovery; decision and host cut tests assert this too"
-hub_targets = ["decisions", "e2e", "hosts"]
+hub = "The fatal latch records the first fatal error, a storage failure or a panicked activation, so the engine stops and the process exits for recovery; decision, host, end-to-end and engine lifecycle tests assert this too"
+hub_targets = ["basal_module", "decisions", "e2e", "hosts"]
 guards = "a storage error does not raise the fatal latch (in process)"
 test_file = "crates/basal-module/tests/engine.rs"
 runner = "cargo"
@@ -3414,8 +3434,8 @@ new = "        if false {\n            *slot = Some(why);"
 
 [[control]]
 id = "a-storage-error-does-not-end-the-process"
-hub = "A storage error raises the fatal latch so the engine stops and the process exits for recovery; decision and host cut tests assert this too"
-hub_targets = ["decisions", "engine", "hosts"]
+hub = "The fatal latch records the first fatal error, a storage failure or a panicked activation, so the engine stops and the process exits for recovery; decision, host and engine lifecycle tests assert this too"
+hub_targets = ["basal_module", "decisions", "engine", "hosts"]
 guards = "a storage error does not end the process"
 test_file = "crates/basal-module/tests/e2e.rs"
 runner = "cargo"
@@ -3451,7 +3471,7 @@ new = "let recovered: Vec<String> = Vec::new();"
 [[control]]
 id = "a-card-s-approval-is-applied-as-a-rejection"
 hub = "An approved install card approves its version, asserted both by the install test and by fixtures verifying approval before running flows"
-hub_targets = ["caller_binding", "decisions", "dry_run", "e2e", "engine", "health_contract", "hosts", "install_gate", "list_contract", "pool"]
+hub_targets = ["caller_binding", "decisions", "dry_run", "e2e", "engine", "health_contract", "hosts", "idle_wake", "install_gate", "list_contract", "module_lifecycle", "pool"]
 guards = "a card's approval is applied as a rejection"
 test_file = "crates/basal-module/tests/ops.rs"
 runner = "cargo"
@@ -3874,8 +3894,8 @@ new = "(None, _) => if enabled { \"enabled\" } else { \"disabled\" },"
 
 [[control]]
 id = "health-does-not-say-who-disabled-a-flow"
-hub = "Health normalizes a disable's author to its documented operator/owner/auto/core category, asserted by ops and strict health decoding"
-hub_targets = ["health_contract"]
+hub = "Health and list normalize a disable's author to its documented operator/owner/auto/core category, asserted by ops, lifecycle and strict health decoding"
+hub_targets = ["health_contract", "module_lifecycle"]
 guards = "health does not say who disabled a flow"
 test_file = "crates/basal-module/tests/ops.rs"
 runner = "cargo"
@@ -4756,6 +4776,8 @@ edits = [
 
 [[control]]
 id = "broca-acknowledged-completion-is-delivered-again"
+hub = "A completion the sink accepted is persisted as acknowledged and never delivered again, asserted by the restart, unknown-run and corrupt-snapshot Broca tests"
+hub_targets = ["broca_dispatch_regressions"]
 guards = "Broca acknowledged completion is delivered again"
 test_file = "crates/basal-host/tests/broca.rs"
 runner = "cargo"
@@ -6179,6 +6201,8 @@ new = "if false { // NON-VACUITY BREAK"
 
 [[control]]
 id = "net-redirect-hops-are-not-checked-against-the-allowlist"
+hub = "Every redirect hop is checked against the fetch allowlist and port policy before connecting, asserted by builtin net and fetch regression tests"
+hub_targets = ["net_fetch_regressions"]
 guards = "net: redirect hops are not checked against the allowlist"
 test_file = "crates/basal-testkit/tests/builtins_net.rs"
 runner = "cargo"
@@ -7456,6 +7480,8 @@ build_timeout_s = 3600
 
 [[control]]
 id = "package-core-only-callers"
+hub = "Package and instance operations refuse every caller but core, and the operator only for registration, including the local caller, asserted by package and module lifecycle tests"
+hub_targets = ["module_lifecycle"]
 guards = "package get and instance management admit only unscoped core"
 file = "crates/basal-module/src/ops.rs"
 old = "if !permitted {"
@@ -7467,7 +7493,10 @@ package = "basal-module"
 platforms = ["macos"]
 target = "--test packages"
 expect_red = ["package_callers_are_core_only_except_operator_registration"]
-only = true
+# When this row was proved, the named test was the only red test in its own
+# target. The package-wide audit also reds the hub targets, which assert the
+# same property, so `only` cannot hold there.
+only = false
 timeout_s = 600
 build_timeout_s = 3600
 
@@ -7651,6 +7680,8 @@ build_timeout_s = 3600
 
 [[control]]
 id = "worker-file-name-follows-parent"
+hub = "The module finds its worker as the sibling named after its own executable, asserted by the name mapping unit test and the production launch from development file names"
+hub_targets = ["e2e"]
 guards = "sibling worker lookup follows the parent executable file name without changing the production path"
 file = "crates/basal-module/src/pool.rs"
 old = 'name.push("-worker");'
@@ -7662,7 +7693,10 @@ package = "basal-module"
 platforms = ["macos"]
 target = "--lib"
 expect_red = ["pool::names::worker_file_name_follows_parent_in_production_and_development"]
-only = true
+# When this row was proved, the named test was the only red test in its own
+# target. The package-wide audit also reds the hub targets, which assert the
+# same property, so `only` cannot hold there.
+only = false
 timeout_s = 600
 build_timeout_s = 3600
 
@@ -8221,6 +8255,8 @@ build_timeout_s = 3600
 
 [[control]]
 id = "production-retention-prunes-runs"
+hub = "The production deadline pass prunes expired runs, asserted by the deadline-pass retention regression and the full-batch backlog catch-up test"
+hub_targets = ["retention_backlog"]
 guards = "retention runs from the production deadline pass"
 file = "crates/basal-core/src/retention.rs"
 old = "let runs = self.prune(now, millis(config.runs))?;"
@@ -8232,7 +8268,10 @@ package = "basal-core"
 platforms = ["linux"]
 target = "--lib"
 expect_red = ["runtime::regressions::retention_runs_from_the_production_deadline_pass"]
-only = true
+# When this row was proved, the named test was the only red test in its own
+# target. The package-wide audit also reds the hub targets, which assert the
+# same property, so `only` cannot hold there.
+only = false
 timeout_s = 600
 build_timeout_s = 3600
 
@@ -8437,6 +8476,8 @@ build_timeout_s = 3600
 
 [[control]]
 id = "worker-prelude-primitive-code-diverges"
+hub = "Prelude primitive calls carry the Rust wire codes, asserted by the engine wire-code test and the replay test that names the diverging primitive"
+hub_targets = ["replay"]
 guards = "worker prelude primitive code diverges"
 file = "crates/basal-worker/src/prelude.js"
 old = "FACTS = 3, CLASSIFY = 4"
@@ -8448,12 +8489,17 @@ package = "basal-worker"
 platforms = ["macos"]
 target = "--lib"
 expect_red = ["engine::tests::prelude_primitive_calls_match_the_rust_wire_codes"]
-only = true
+# When this row was proved, the named test was the only red test in its own
+# target. The package-wide audit also reds the hub targets, which assert the
+# same property, so `only` cannot hold there.
+only = false
 timeout_s = 600
 build_timeout_s = 3600
 
 [[control]]
 id = "worker-top-level-evaluation-skips-js-time-metering"
+hub = "Every engine entry is metered against the JS time budget, so wrapper code, CPU loops and regex payloads are all stopped, asserted by sandbox, budget and fuzz tests"
+hub_targets = ["budgets", "fuzz"]
 guards = "worker top level evaluation skips js time metering"
 file = "crates/basal-worker/src/engine.rs"
 old = """
@@ -8469,7 +8515,10 @@ package = "basal-worker"
 platforms = ["macos"]
 target = "--test sandbox_integrity"
 expect_red = ["top_level_wrapper_code_has_activation_budgets"]
-only = true
+# When this row was proved, the named test was the only red test in its own
+# target. The package-wide audit also reds the hub targets, which assert the
+# same property, so `only` cannot hold there.
+only = false
 timeout_s = 600
 build_timeout_s = 3600
 
@@ -8509,6 +8558,8 @@ build_timeout_s = 3600
 
 [[control]]
 id = "health-index-predicate-selects-deferred"
+hub = "The pending Broca index covers exactly the unacknowledged, undeferred calls, asserted by the migration health test and the store's pending-lookup query plan test"
+hub_targets = ["broca_store"]
 guards = "migration 11 must retain the exact pending Broca predicate on populated stores"
 file = "crates/basal-core/src/schema.rs"
 old = "CREATE INDEX broca_calls_pending ON broca_calls(send_id) WHERE json_extract(snapshot, '$.acknowledged') = 0 AND COALESCE(json_extract(snapshot, '$.deferred'), 0) = 0;"
@@ -8520,12 +8571,17 @@ package = "basal-core"
 platforms = ["linux"]
 target = "--lib"
 expect_red = ["schema::health_tests::additive_health_indexes_preserve_populated_tables_in_every_state"]
-only = true
+# When this row was proved, the named test was the only red test in its own
+# target. The package-wide audit also reds the hub targets, which assert the
+# same property, so `only` cannot hold there.
+only = false
 timeout_s = 600
 build_timeout_s = 7200
 
 [[control]]
 id = "builtin-encoded-result-becomes-null"
+hub = "A builtin result over the encoded size cap is a typed too-large refusal, never a null fulfilment, asserted by the encoder unit test and the escaped directory listing regression"
+hub_targets = ["builtin_host_regressions"]
 guards = "builtin encoded result becomes null"
 file = "crates/basal-host/src/builtins/mod.rs"
 old = "    JsonText::new(value.to_string()).map_err(|_| {"
@@ -8537,7 +8593,10 @@ package = "basal-host"
 platforms = ["linux"]
 target = "--lib"
 expect_red = ["builtins::tests::encoded_result_limit_never_fulfills_null"]
-only = true
+# When this row was proved, the named test was the only red test in its own
+# target. The package-wide audit also reds the hub targets, which assert the
+# same property, so `only` cannot hold there.
+only = false
 timeout_s = 600
 build_timeout_s = 7200
 
@@ -8674,6 +8733,8 @@ build_timeout_s = 3600
 
 [[control]]
 id = "production-retention-prunes-history"
+hub = "The production deadline pass prunes expired history, asserted by the obligation-keeping retention regression and the full-batch backlog catch-up test"
+hub_targets = ["retention_backlog"]
 guards = "retention prunes old history but keeps live obligations and card episodes"
 file = "crates/basal-core/src/retention.rs"
 old = "let history_full = self.prune_history(now, now.saturating_sub(millis(config.history)))?;"
@@ -8685,12 +8746,17 @@ package = "basal-core"
 platforms = ["linux"]
 target = "--lib"
 expect_red = ["runtime::regressions::retention_prunes_old_history_but_keeps_live_obligations_and_card_episodes"]
-only = true
+# When this row was proved, the named test was the only red test in its own
+# target. The package-wide audit also reds the hub targets, which assert the
+# same property, so `only` cannot hold there.
+only = false
 timeout_s = 600
 build_timeout_s = 3600
 
 [[control]]
 id = "module-owner-disable-leaks-raw-actor-kind"
+hub = "An owner's disable is reported as the documented owner kind, never the raw actor, asserted by lifecycle and list contract tests"
+hub_targets = ["list_contract"]
 guards = "health and list encode owner disables with the same closed owner kind"
 file = "crates/basal-module/src/ops.rs"
 old = """
@@ -8919,6 +8985,8 @@ build_timeout_s = 7200
 
 [[control]]
 id = "builtin-write-carries-special-permission-bits"
+hub = "Builtin file writes strip setuid, setgid and sticky bits from the replacement mode, asserted by the mode unit test and the atomic write regression"
+hub_targets = ["builtin_host_regressions"]
 guards = "builtin write carries special permission bits"
 file = "crates/basal-host/src/builtins/fs.rs"
 old = "    mode & 0o777"
@@ -8930,7 +8998,10 @@ package = "basal-host"
 platforms = ["linux"]
 target = "--lib"
 expect_red = ["builtins::fs::tests::replacement_mode_never_carries_setuid_or_setgid"]
-only = true
+# When this row was proved, the named test was the only red test in its own
+# target. The package-wide audit also reds the hub targets, which assert the
+# same property, so `only` cannot hold there.
+only = false
 timeout_s = 600
 build_timeout_s = 7200
 
@@ -9055,6 +9126,8 @@ build_timeout_s = 7200
 
 [[control]]
 id = "builtin-git-leaves-descendant-pipes-open"
+hub = "A git timeout kills git's whole process group and reaps it, so no descendant outlives it holding the output pipe, asserted by the git waiter unit test and the builtin host regression"
+hub_targets = ["basal_host"]
 guards = "builtin git leaves descendant pipes open"
 file = "crates/basal-host/src/builtins/git.rs"
 old = "            libc::kill(-(self.pid as i32), libc::SIGKILL);"
@@ -9066,7 +9139,10 @@ package = "basal-host"
 platforms = ["linux"]
 target = "--test builtin_host_regressions"
 expect_red = ["git_reaps_descendants_that_keep_its_output_pipe_open"]
-only = true
+# When this row was proved, the named test was the only red test in its own
+# target. The package-wide audit also reds the hub targets, which assert the
+# same property, so `only` cannot hold there.
+only = false
 timeout_s = 600
 build_timeout_s = 7200
 
