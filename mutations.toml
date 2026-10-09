@@ -7493,9 +7493,10 @@ package = "basal-module"
 platforms = ["macos"]
 target = "--test packages"
 expect_red = ["package_callers_are_core_only_except_operator_registration"]
-# When this row was proved, the named test was the only red test in its own
-# target. The package-wide audit also reds the hub targets, which assert the
-# same property, so `only` cannot hold there.
+# Replayed on this row's own target, the named test is the only red test.
+# `ckdev-mutate run --broad` replays every test target in the package, and
+# there the mutant also reds the hub targets' tests of the same property.
+# `only = true` would reject those, so the row reviews them as a hub instead.
 only = false
 timeout_s = 600
 build_timeout_s = 3600
@@ -7693,9 +7694,10 @@ package = "basal-module"
 platforms = ["macos"]
 target = "--lib"
 expect_red = ["pool::names::worker_file_name_follows_parent_in_production_and_development"]
-# When this row was proved, the named test was the only red test in its own
-# target. The package-wide audit also reds the hub targets, which assert the
-# same property, so `only` cannot hold there.
+# Replayed on this row's own target, the named test is the only red test.
+# `ckdev-mutate run --broad` replays every test target in the package, and
+# there the mutant also reds the hub targets' tests of the same property.
+# `only = true` would reject those, so the row reviews them as a hub instead.
 only = false
 timeout_s = 600
 build_timeout_s = 3600
@@ -8268,9 +8270,10 @@ package = "basal-core"
 platforms = ["linux"]
 target = "--lib"
 expect_red = ["runtime::regressions::retention_runs_from_the_production_deadline_pass"]
-# When this row was proved, the named test was the only red test in its own
-# target. The package-wide audit also reds the hub targets, which assert the
-# same property, so `only` cannot hold there.
+# Replayed on this row's own target, the named test is the only red test.
+# `ckdev-mutate run --broad` replays every test target in the package, and
+# there the mutant also reds the hub targets' tests of the same property.
+# `only = true` would reject those, so the row reviews them as a hub instead.
 only = false
 timeout_s = 600
 build_timeout_s = 3600
@@ -8489,9 +8492,10 @@ package = "basal-worker"
 platforms = ["macos"]
 target = "--lib"
 expect_red = ["engine::tests::prelude_primitive_calls_match_the_rust_wire_codes"]
-# When this row was proved, the named test was the only red test in its own
-# target. The package-wide audit also reds the hub targets, which assert the
-# same property, so `only` cannot hold there.
+# Replayed on this row's own target, the named test is the only red test.
+# `ckdev-mutate run --broad` replays every test target in the package, and
+# there the mutant also reds the hub targets' tests of the same property.
+# `only = true` would reject those, so the row reviews them as a hub instead.
 only = false
 timeout_s = 600
 build_timeout_s = 3600
@@ -8515,9 +8519,10 @@ package = "basal-worker"
 platforms = ["macos"]
 target = "--test sandbox_integrity"
 expect_red = ["top_level_wrapper_code_has_activation_budgets"]
-# When this row was proved, the named test was the only red test in its own
-# target. The package-wide audit also reds the hub targets, which assert the
-# same property, so `only` cannot hold there.
+# Replayed on this row's own target, the named test is the only red test.
+# `ckdev-mutate run --broad` replays every test target in the package, and
+# there the mutant also reds the hub targets' tests of the same property.
+# `only = true` would reject those, so the row reviews them as a hub instead.
 only = false
 timeout_s = 600
 build_timeout_s = 3600
@@ -8571,9 +8576,10 @@ package = "basal-core"
 platforms = ["linux"]
 target = "--lib"
 expect_red = ["schema::health_tests::additive_health_indexes_preserve_populated_tables_in_every_state"]
-# When this row was proved, the named test was the only red test in its own
-# target. The package-wide audit also reds the hub targets, which assert the
-# same property, so `only` cannot hold there.
+# Replayed on this row's own target, the named test is the only red test.
+# `ckdev-mutate run --broad` replays every test target in the package, and
+# there the mutant also reds the hub targets' tests of the same property.
+# `only = true` would reject those, so the row reviews them as a hub instead.
 only = false
 timeout_s = 600
 build_timeout_s = 7200
@@ -8593,9 +8599,10 @@ package = "basal-host"
 platforms = ["linux"]
 target = "--lib"
 expect_red = ["builtins::tests::encoded_result_limit_never_fulfills_null"]
-# When this row was proved, the named test was the only red test in its own
-# target. The package-wide audit also reds the hub targets, which assert the
-# same property, so `only` cannot hold there.
+# Replayed on this row's own target, the named test is the only red test.
+# `ckdev-mutate run --broad` replays every test target in the package, and
+# there the mutant also reds the hub targets' tests of the same property.
+# `only = true` would reject those, so the row reviews them as a hub instead.
 only = false
 timeout_s = 600
 build_timeout_s = 7200
@@ -8746,9 +8753,10 @@ package = "basal-core"
 platforms = ["linux"]
 target = "--lib"
 expect_red = ["runtime::regressions::retention_prunes_old_history_but_keeps_live_obligations_and_card_episodes"]
-# When this row was proved, the named test was the only red test in its own
-# target. The package-wide audit also reds the hub targets, which assert the
-# same property, so `only` cannot hold there.
+# Replayed on this row's own target, the named test is the only red test.
+# `ckdev-mutate run --broad` replays every test target in the package, and
+# there the mutant also reds the hub targets' tests of the same property.
+# `only = true` would reject those, so the row reviews them as a hub instead.
 only = false
 timeout_s = 600
 build_timeout_s = 3600
@@ -8998,9 +9006,10 @@ package = "basal-host"
 platforms = ["linux"]
 target = "--lib"
 expect_red = ["builtins::fs::tests::replacement_mode_never_carries_setuid_or_setgid"]
-# When this row was proved, the named test was the only red test in its own
-# target. The package-wide audit also reds the hub targets, which assert the
-# same property, so `only` cannot hold there.
+# Replayed on this row's own target, the named test is the only red test.
+# `ckdev-mutate run --broad` replays every test target in the package, and
+# there the mutant also reds the hub targets' tests of the same property.
+# `only = true` would reject those, so the row reviews them as a hub instead.
 only = false
 timeout_s = 600
 build_timeout_s = 7200
@@ -9139,9 +9148,10 @@ package = "basal-host"
 platforms = ["linux"]
 target = "--test builtin_host_regressions"
 expect_red = ["git_reaps_descendants_that_keep_its_output_pipe_open"]
-# When this row was proved, the named test was the only red test in its own
-# target. The package-wide audit also reds the hub targets, which assert the
-# same property, so `only` cannot hold there.
+# Replayed on this row's own target, the named test is the only red test.
+# `ckdev-mutate run --broad` replays every test target in the package, and
+# there the mutant also reds the hub targets' tests of the same property.
+# `only = true` would reject those, so the row reviews them as a hub instead.
 only = false
 timeout_s = 600
 build_timeout_s = 7200
