@@ -4,8 +4,37 @@ A flow script runs in `ck-basal-worker`, a separate process that confines
 itself before it reads anything from basal. The script reaches the world only
 through host calls: `sink.*`, `facts`, `ops.call`, `llm`, `classify`, `kv` and
 the built-ins. basal checks each one against the approved manifest, in the
-parent process, and journals it there. This note records two behaviours of
-the script runtime that are deliberate limits, not guarantees.
+parent process, and journals it there. This note documents the digest item
+shape, then two behaviours of the script runtime that are deliberate limits,
+not guarantees.
+
+## Digest items
+
+`sink.digest(agent, item, action)` delivers `item` to the agent's digest
+through prefrontal-core, which validates it strictly. `action` is `silent`,
+`piggyback` or `wake`, capped by the manifest's `digest_max`. The item must
+have exactly these four fields, and core refuses a missing or extra field with
+`sink_item_invalid`:
+
+| Field | Type | Limit |
+| --- | --- | --- |
+| `title` | string, not blank | 200 characters |
+| `body` | string, not blank | 4,096 bytes |
+| `data` | object, `{}` when there is none | 8,192 bytes as canonical JSON |
+| `links` | array, `[]` when there are none | 8 entries |
+
+A link is either `{ kind: 'url', url: 'https://…' }`, an HTTPS URL with a
+host, or `{ kind: 'work', id: 'wi_…' }`. The whole item may be at most 16,384
+bytes as canonical JSON.
+
+```js
+await sink.digest('BASAL', {
+  title: 'basal nightly CI: failure',
+  body: 'Commit 0123abc, started 2026-10-09T03:17:00Z.',
+  data: { run_id: 123 },
+  links: [{ kind: 'url', url: 'https://github.com/cortexkit/basal/actions/runs/123' }],
+}, 'wake');
+```
 
 ## The script body is not a syntactic boundary
 
