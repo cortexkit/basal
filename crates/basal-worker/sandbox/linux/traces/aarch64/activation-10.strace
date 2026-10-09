@@ -1,0 +1,39 @@
+# Native release worker, post-confinement trace. Loader/setup calls omitted.
+# All non-clock calls retained; first/last 8 thread-CPU samples retained.
+seccomp(SECCOMP_SET_MODE_FILTER, SECCOMP_FILTER_FLAG_TSYNC, 0xffffd42930a0) = 0
+read(0, 0xaaca6e05d230, 8192)           = 9
+write(1, 0xaaca6e05f240, 80)            = 80
+write(1, 0xaaca6e05a500, 13)            = 13
+read(0, 0xaaca6e05d230, 8192)           = 5
+write(1, 0xaaca6e05a500, 43)            = 43
+read(0, 0xaaca6e05d230, 8192)           = 8
+write(1, 0xaaca6e05a500, 57)            = 57
+read(0, 0xaaca6e05d230, 8192)           = 28
+write(1, 0xaaca6e05a500, 44)            = 44
+read(0, 0xaaca6e05d230, 8192)           = 9
+write(1, 0xaaca6e05a500, 44)            = 44
+read(0, 0xaaca6e05d230, 8192)           = 6
+write(1, 0xaaca6e05a500, 40)            = 40
+read(0, 0xaaca6e05d230, 8192)           = 107
+getrandom(0xffffd4292470, 16, GRND_INSECURE) = 16
+brk(0xaaca6e09c000)                     = 0xaaca6e09c000
+brk(0xaaca6e09b000)                     = 0xaaca6e09b000
+futex(0xaaca6a6d0b20, FUTEX_WAKE_PRIVATE, 2147483647) = 0
+brk(0xaaca6e0bc000)                     = 0xaaca6e0bc000
+brk(0xaaca6e0dd000)                     = 0xaaca6e0dd000
+brk(0xaaca6e0dc000)                     = 0xaaca6e0dc000
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0xffffd42926f0) = 0
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0xffffd42926e0) = 0
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0xffffd42927a0) = 0
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0xffffd42926e0) = 0
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0xffffd42927a0) = 0
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0xffffd42926e0) = 0
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0xffffd42927a0) = 0
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0xffffd42926e0) = 0
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0xffffd42926f0) = 0
+clock_gettime(CLOCK_THREAD_CPUTIME_ID, 0xffffd42926e0) = 0
+brk(0xaaca6e0d7000)                     = 0xaaca6e0d7000
+write(1, 0xaaca6e05a500, 20)            = 20
+read(0, 0xaaca6e05d230, 8192)           = 5
+exit_group(0)                           = ?
++++ exited with 0 +++
