@@ -10,7 +10,7 @@ sufficient in the measured comparisons. **Do not enable a Windows worker from
 this prototype yet.** The GUI worker initially retains **27 / 28 ambient
 handles**, rather than three stdio pipes. A combined pre-input ALPC/KsecDD close
 now leaves **26 handles on both images** and completes every probe. Closing all
-four independently removable pool types in that same process further leaves
+four removable synchronization/completion types in that same process further leaves
 **14 / 13 handles**, also with complete probes and exit 0. Creator and remaining-authority evidence is in
 [the provenance campaign](#handle-provenance-and-combined-closes). This is not a
 three-stdio-only boundary.
@@ -867,17 +867,17 @@ inventory-call difference, not evidence that a particular close unloaded apphelp
 
 | Handle | Latest / 2022 | Name and query | Creator evidence | Close result |
 |---|---:|---|---|---|
-| Directory `0x3` | 1 / 1 | `\KnownDlls`; object name succeeds | ntdll loader cache. Procmon shows no userspace open of this directory during the measured window, so the handle is already open when the snapshot starts. | Close succeeds, then the process dies `0xc0000008` (`STATUS_INVALID_HANDLE`) after input and before probe results. **Cannot be closed.** |
+| Directory `0x3` | 1 / 1 | `\KnownDlls`; object name succeeds | PDB-resolved `ntdll!LdrpInitializeProcess -> NtOpenDirectoryObject`; the suspended birth table contains only three pipes. Procmon's earlier missing object-directory event was a coverage limit, not evidence of inheritance. | Close succeeds, then the process dies `0xc0000008` (`STATUS_INVALID_HANDLE`) after input and before probe results. **Cannot be closed.** |
 | ALPC Port `0x1f0001` | 1 / 1 | Unnamed client object; flags `0x30000`. The later hardware trace names the connection destination `\Sessions\2\Windows\ApiPort`; class 12 identifies session-2 csrss. | CSR connection: ntdll `NtConnectPort`, with CSR/KernelBase frames in the open trace. This is not the denied `AudioClientRpc` attempt. No observer-generated message; post-lowering protocol acceptance untested. | Combined ALPC/KsecDD and whole removable-set closes complete all probes and exit 0. **Close before input.** |
-| File `0x100003` | 0 / 1 | `\Device\KsecDD`. Object name succeeds. `FileNameInformation` returns `0xc0000003` because this device handle does not support that class. | Kernel security device, present only on Server 2022. Procmon records no userspace `CreateFile` for it in the GUI startup window. | Close succeeds. The handle is absent afterward. Probes complete and the process exits 0. **Close it before input on 2022.** |
+| File `0x100003` | 0 / 1 | `\Device\KsecDD`. Object name succeeds; FileNameInformation unsupported. | PDB-resolved `bcrypt!_IoOpenDevice -> NtOpenFile`, from CNG configuration-cache initialization. | Removed together with ALPC and the removable completion/timer/wait/semaphore types; probes complete and exit 0. |
 | File `0x120189`, two File `0x120196` | 3 / 3 | Anonymous pipes. Object name returns `0xc0000039`; file name is empty. Handle attribute `0x2` marks them inheritable, unlike every other handle. | The three handles in `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`. | Not closed. These are the intended stdio pipes. |
-| Event `0x1f0003` | 7 / 7 | Empty object name | Open stacks have ntdll `NtCreateEvent` and some KernelBase/RPCRT4 frames; exact internal callers require PDBs, not nearest-export labels. No foreign matching object handles in the later snapshot. | Type-isolated close is fatal on both images; not isolated per individual Event. |
+| Event `0x1f0003` | 7 / 7 | Empty object name | PDB-resolved per-handle creators are enumerated below: ntdll loader/ETW/WNF, Server 2022 CNG, and RPCRT4 initialization. No foreign matching object handles in the sampled system table. | Type-isolated close is fatal on both images; not isolated per individual Event. |
 | IoCompletion `0x1f0003` | 2 / 2 | Empty object name | ntdll completion-creation syscall in open stack. | Closes with the complete removable set; all probes complete. |
-| TpWorkerFactory `0xf00ff` | 2 / 2 | Empty object name | ntdll worker-factory creation syscall in open stack. Basic-information query names the worker's own PID and an ntdll start routine. | Type-isolated close is fatal on both images. |
+| TpWorkerFactory `0xf00ff` | 2 / 2 | Empty object name | PDB-resolved `ntdll!TpAllocPoolInternal`: one loader-parallel pool, one global pool (WNF on latest / ETW on 2022). Basic-information queries identify the worker's own PID. | Type-isolated close is fatal on both images. |
 | IRTimer `0x100002` | 4 / 4 | Empty object name | ntdll timer-creation syscall in open stack. | Closes with the complete removable set; all probes complete. |
 | WaitCompletionPacket `0x1` | 6 / 5 | Empty object name | ntdll wait-packet creation syscall in open stack; one-count difference retained. | Closes with the complete removable set; all probes complete. |
-| Semaphore `0x100003` | 0 / 2 | Empty object name | Server 2022 only; open stack retained. | Closes with the complete removable set; all probes complete. |
-| SchedulerSharedData `0x1` | 1 / 0 | Empty object name | Open trace records ntdll `NtSetInformationProcess` during initialization; no foreign matching object handle in the later snapshot. Exact bit-1 semantics remain undocumented here. | Type-isolated close is fatal on windows-latest. |
+| Semaphore `0x100003` | 0 / 2 | Empty object name | `ntdll!RtlInitializeResource` from bcrypt's CNG cache initializer, not a pool. | Closes with the complete removable set; all probes complete. |
+| SchedulerSharedData `0x1` | 1 / 0 | Empty object name | PDB-resolved `ntdll!LdrpAllocateSchedulerSharedData -> NtSetInformationProcess`; no foreign matching object handle in the sample. The sole observed access bit (`0x1`) has no established operation contract here; cached authority was not exercised. | Type-isolated close is fatal on windows-latest. |
 
 Closing the unnamed Event, IoCompletion, TpWorkerFactory, IRTimer,
 WaitCompletionPacket and Semaphore handles together dies at `0xc0000008` during
@@ -1065,6 +1065,106 @@ other ntdll initialization paths. Neither IFEO nor the applied parameter stopped
 the measured pools; the provenance gap must not be filled by assuming that Rust
 std, the CRT or apphelp created them.
 
+### Final PDB-resolved creators and bounded authority
+
+The final run is
+[37992223089](https://github.com/cortexkit/basal/actions/runs/37992223089), compiled
+from `f8c0b3427dd34d2dfe460530a73b63c43be0fccf`. It uses the installed SDK's
+**x64 Debuggers** DbgHelp rather than the first discovered copy, and independently
+checks/caches public PDBs with `symchk`. The retained
+[latest metadata](measurements/handle-provenance/37992223089-windows-latest-metadata.json)
+and [2022 metadata](measurements/handle-provenance/37992223089-windows-2022-metadata.json)
+contain identities, open stacks, module ranges, PDB paths, factory queries,
+suspended birth inventories, closures and final token attestation. Summaries and
+manifests are adjacent; the complete probe arrays and raw reports remain in the
+run artifacts, with their hashes in those manifests. The ntdll controls report
+**matched PDBs, zero failed files, one passed file**. The in-process resolver now
+reports **`SymPdb` (3)** for the relevant user-mode frames, rather than export
+fallback. Unresolved kernel frames remain explicitly error **126**.
+
+The entire removal recipe is repeated without debugger attachment: latest PID
+**9396** completes **2,132 probes**, exits **0**, and holds **14 handles** before
+input; 2022 PID **7500** completes **1,924 probes**, exits **0**, and holds **13**.
+Both have exactly the type/access inventory above, and only `CreateThread`
+succeeds. The ALPC/KsecDD-only combination also repeats successfully with 26
+handles on both images. No additional native run followed this final campaign.
+
+**Both pools have measured loader paths, but not the same trigger.** One factory
+is created by `ntdll!LdrpEnableParallelLoading -> TpAllocPoolInternal ->
+NtCreateWorkerFactory` on both images. The other is the global/default pool:
+on latest it comes through `LdrpEnableUMGLTracingStateSync ->
+RtlpSubscribeWnfStateChangeNotificationInternal -> RtlpInitializeWnf ->
+TpAllocTimer -> TppPoolpReferenceGlobalPool -> TpAllocPoolInternal`; on 2022 it
+comes through `EtwpRegisterTpNotificationOnce` into that global-pool allocation.
+This is ntdll loader/runtime initialization, not a measured Rust std, CRT or
+apphelp pool-creation stack. The direct `LoaderThreads=1` experiment still shows
+these allocation paths and two factories, with readback 1 before resume and after
+load; the IFEO 0/1 experiments likewise leave 27 / 28 handles. The controls did not
+avoid the pool objects. They do not establish that the loader ignored every
+setting or that every possible no-pool image is impossible.
+
+The following is a **per-handle attribution of the `full-gui-inspect` startup
+samples** (latest PID 3316 / 2022 PID 4168), not reuse of handle values across
+processes. Creator chains are PDB-resolved open stacks; every listed Event reaches
+`NtCreateEvent`, directly or through KernelBase's `CreateEventW`.
+
+| Remaining object | Latest handle / 2022 handle | Creator in measured startup sample |
+|---|---|---|
+| Stdin / stdout / stderr pipes | `804,808,820` / `732,760,772` | Parent `CreatePipe`, selected in `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`; these are the **only three handles before resume**. |
+| `\KnownDlls` Directory | `52` / `44` | `ntdll!LdrpInitializeProcess -> NtOpenDirectoryObject`; absent at suspended birth, opened during loader execution. |
+| Event | `4` / `4` | `ntdll!LdrpInitializeInternal` |
+| Event | `8` / `8` | `ntdll!LdrpInitialize` |
+| Event | `60` / `52` | `ntdll!LdrpCreateLoaderEvents` |
+| Event | `64` / `56` | `ntdll!LdrpCreateLoaderEvents` |
+| Event | `44` / `12` | `ntdll!EtwpRegisterTpNotificationOnce`, during provider registration |
+| Event | `36` / absent | `ntdll!RtlpWnfRegisterTpNotification`, through WNF/UMGL tracing-state initialization |
+| Event | absent / `144` | `bcrypt!BcpRegisterConfigChangeNotifyNoLogging`, from `InitializeSystemPreferredCache -> InitializeCNG -> DllMain`, via KernelBase `CreateEventW` |
+| Event | `152` / `156` | `RPCRT4!RPC_SERVER::RPC_SERVER -> EVENT::EVENT`, during RPC server initialization invoked through `advapi32!LsaOpenPolicy` |
+| Global-pool TpWorkerFactory | `16` / `24` | `ntdll!TpAllocPoolInternal`, from WNF initialization on latest / ETW provider-notification initialization on 2022 |
+| Parallel-loader TpWorkerFactory | `100` / `88` | `ntdll!TpAllocPoolInternal`, from `LdrpEnableParallelLoading` |
+| SchedulerSharedData | `68` / absent | `ntdll!LdrpAllocateSchedulerSharedData -> NtSetInformationProcess` |
+
+The seven Events are therefore **not seven pool handles**: loader barriers,
+ETW/WNF notification, CNG configuration and RPC initialization also contribute.
+The Server 2022 `KsecDD` handle has a separate measured creation chain:
+`bcrypt!DllMain -> InitializeCNG -> InitializeSystemPreferredCache ->
+BcpRegisterConfigChangeNotifyNoLogging -> IoCallKernelDriver -> _IoOpenDevice ->
+ntdll!NtOpenFile`. Its two Semaphores come through `RtlInitializeResource` from
+that CNG cache initializer, not from a thread pool. Timer/packet creation is
+`TppInitializeTimerSubQueue`/`TppInitializeTimerQueue` or `TpAllocWait`; completion
+and factory creation are in `TpAllocPoolInternal`. Those objects are all removed
+by the complete-close recipe.
+
+For each handle type left by the complete close recipe, the bounded invariant
+justification and its limits
+are explicit below. This is object-specific authority analysis, not a claim that
+every native API or callback has been exhaustively tested.
+
+| Remaining type / measured grant | What the handle grants | Basis for no additional file/network/peer/durable-state capability, and limits |
+|---|---|---|
+| Stdio File `0x120189`, `0x120196` | Input pipe data read; output pipe data write, with metadata, READ_CONTROL and synchronize rights in the raw masks | Parent writes child stdin; parent reads child stdout/stderr, all through the three local anonymous pipes supplied at creation. This is the explicit broker-communication exception, not a filesystem-file or network grant; pipe state is transient. |
+| KnownDlls Directory `0x3` | `DIRECTORY_QUERY` and `DIRECTORY_TRAVERSE`; **no create-object/subdirectory or security-write rights** | Read-only known-image namespace, not a File, socket or Process handle. It cannot write durable state through these rights. The object is shared across processes, but no message or namespace-write right is granted. Relative section opens are separate operations/access checks, not authority proved by the directory handle alone. |
+| Each unnamed Event `0x1f0003` | Query, set/reset/pulse, wait; DELETE, READ_CONTROL, WRITE_DAC, WRITE_OWNER and SYNCHRONIZE | Private loader/runtime synchronization objects in the sample: the system snapshot finds **no foreign matching handle**. These rights operate on event state, not file bytes, sockets or another process. The notification-creator stack does not itself grant WNF or ETW publish authority. No operation/durable persistence or future handle transfer was tested exhaustively. |
+| Each TpWorkerFactory `0xf00ff` | Worker-factory query/configuration, worker release/wait/shutdown and standard security rights | Basic-information queries return **the worker's own PID** (3316 / 4168 for both factories) and an ntdll start routine; no matching foreign object handle is observed. Scheduling is in this process, not a file/network/foreign-process handle. Creation stacks and process IDs do **not** attest every pool thread's later impersonation state. |
+| SchedulerSharedData `0x1` (latest only) | Loader scheduler shared-data handle; the **exact bit-1 operation contract is not established here** | Created by the loader, unnamed, with no foreign matching handle in the sample; not a File/socket/Process handle. Its creator is now measured, but its full operation/cached-context semantics are not. **A strict no-peer/no-durable-state proof for this internal handle remains a gap**, not an invented harmless classification. |
+
+Attest that the main thread has reverted (no thread token) and the actual primary
+is Untrusted. Those checks do not attest every already-existing runtime thread. Before a production
+claim, verify all relevant thread impersonation states and the remaining internal
+scheduling contract. The finite new-open probes, complete closes and private
+object snapshot support a **14 / 13-handle bounded residual**, not universal
+non-reachability. No ALPC protocol request was sent by this investigation;
+post-lowering CSR message acceptance is still untested and the port is closed
+before input.
+
+The final run passes Rust/cargo **1.99.0** fmt/check/build, **nine native tests**,
+Python **3.12.10 / 22 tests**, the real-token mutation/restoration witness,
+two-image PE subsystem/import checks and **14 Windows-SDK x64 CONTEXT checks**
+per runner (MSVC **19.51.36260 / 19.44.35229**). The existing console acceptance
+and its validator remain red as expected; no test or gate was changed to accept
+an absent console child. Exactly four workflow runs were used in this campaign,
+including the preparatory formatting refusal.
+
 ## Recommended Windows design changes
 
 1. **Use a GUI-subsystem worker with the original NULL-only LPAC primary as the
@@ -1090,8 +1190,9 @@ std, the CRT or apphelp created them.
    **14 / 13 handles**, including three pipes. Do not close `\KnownDlls`, Event,
    TpWorkerFactory or latest's SchedulerSharedData: their isolated closes are
    fatal. Disabling parallel-loader settings did not remove the measured pools.
-   Creator and exact scheduling-authority gaps remain explicit; absence of Token
-   handles is not the boundary.
+   Creator stacks now distinguish loader, ETW/WNF, CNG and RPC objects. Keep
+   the SchedulerSharedData operation contract and all-thread impersonation
+   attestation as explicit gaps; absence of Token handles is not the boundary.
 3. **Construct the final restrictions before creation; lower only integrity after
    load.** The successful full recipes start with NULL-only restricting SID,
    deny-only groups and no privileges, then revert and lower the actual Low

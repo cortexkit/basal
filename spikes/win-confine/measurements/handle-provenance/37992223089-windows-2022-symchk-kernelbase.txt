@@ -1,0 +1,62 @@
+[SYMCHK] Searching for symbols to C:\Windows\System32\kernelbase.dll in path SRV*D:\a\basal\basal\spikes\win-confine\evidence\symbols*https://msdl.microsoft.com/download/symbols
+[SYMCHK] Using search path "SRV*D:\a\basal\basal\spikes\win-confine\evidence\symbols*https://msdl.microsoft.com/download/symbols"
+DBGHELP: Symbol Search Path: SRV*D:\a\basal\basal\spikes\win-confine\evidence\symbols*https://msdl.microsoft.com/download/symbols
+DBGHELP: No header for C:\Windows\System32\KernelBase.dll.  Searching for image on disk
+DBGHELP: C:\Windows\System32\KernelBase.dll - OK
+SYMSRV:  BYINDEX: 0x1
+         D:\a\basal\basal\spikes\win-confine\evidence\symbols*https://msdl.microsoft.com/download/symbols
+         kernelbase.pdb
+         FE021BA8B8F1757B4BAF1A6D18B8119E1
+
+SYMCHK: FAILED files = 0
+SYMCHK: PASSED + IGNORED files = 1
+SYMSRV:  UNC: D:\a\basal\basal\spikes\win-confine\evidence\symbols\kernelbase.pdb\FE021BA8B8F1757B4BAF1A6D18B8119E1\kernelbase.pdb - path not found
+SYMSRV:  UNC: D:\a\basal\basal\spikes\win-confine\evidence\symbols\kernelbase.pdb\FE021BA8B8F1757B4BAF1A6D18B8119E1\kernelbase.pd_ - path not found
+SYMSRV:  UNC: D:\a\basal\basal\spikes\win-confine\evidence\symbols\kernelbase.pdb\FE021BA8B8F1757B4BAF1A6D18B8119E1\file.ptr - path not found
+SYMSRV:  HTTPGET: /download/symbols/index2.txt
+SYMSRV:  HttpQueryInfo: 80190194 - HTTP_STATUS_NOT_FOUND
+SYMSRV:  HTTPGET: /download/symbols/kernelbase.pdb/FE021BA8B8F1757B4BAF1A6D18B8119E1/kernelbase.pdb
+SYMSRV:  HttpQueryInfo: 801900c8 - HTTP_STATUS_OK
+SYMSRV:  UNC: D:\a\basal\basal\spikes\win-confine\evidence\symbols\kernelbase.pdb\FE021BA8B8F1757B4BAF1A6D18B8119E1\kernelbase.pdb - path not found
+SYMSRV:  UNC: D:\a\basal\basal\spikes\win-confine\evidence\symbols\kernelbase.pdb\FE021BA8B8F1757B4BAF1A6D18B8119E1\kernelbase.pd_ - path not found
+SYMSRV:  UNC: D:\a\basal\basal\spikes\win-confine\evidence\symbols\kernelbase.pdb\FE021BA8B8F1757B4BAF1A6D18B8119E1\file.ptr - path not found
+SYMSRV:  kernelbase.pdb from https://msdl.microsoft.com/download/symbols: 11071488 bytes -                0 percent   0 percent copied      
+SYMSRV:  PATH: D:\a\basal\basal\spikes\win-confine\evidence\symbols\kernelbase.pdb\FE021BA8B8F1757B4BAF1A6D18B8119E1\kernelbase.pdb
+SYMSRV:  RESULT: 0x00000000
+DBGHELP: KernelBase - public symbols  
+        D:\a\basal\basal\spikes\win-confine\evidence\symbols\kernelbase.pdb\FE021BA8B8F1757B4BAF1A6D18B8119E1\kernelbase.pdb
+[SYMCHK] MODULE64 Info ----------------------
+[SYMCHK] Struct size: 1680 bytes
+[SYMCHK] Base: 0x180000000
+[SYMCHK] Image size: 3608576 bytes
+[SYMCHK] Date: 0xd935aa2c
+[SYMCHK] Checksum: 0x00385516
+[SYMCHK] NumSyms: 0
+[SYMCHK] SymType: SymPDB
+[SYMCHK] ModName: KernelBase
+[SYMCHK] ImageName: C:\Windows\System32\KernelBase.dll
+[SYMCHK] LoadedImage: C:\Windows\System32\KernelBase.dll
+[SYMCHK] PDB: "D:\a\basal\basal\spikes\win-confine\evidence\symbols\kernelbase.pdb\FE021BA8B8F1757B4BAF1A6D18B8119E1\kernelbase.pdb"
+[SYMCHK] CV: RSDS
+[SYMCHK] CV DWORD: 0x53445352
+[SYMCHK] CV Data:  kernelbase.pdb
+[SYMCHK] PDB Sig:  0
+[SYMCHK] PDB7 Sig: {FE021BA8-B8F1-757B-4BAF-1A6D18B8119E}
+[SYMCHK] Age: 1
+[SYMCHK] PDB Matched:  TRUE
+[SYMCHK] DBG Matched:  TRUE
+[SYMCHK] Line numbers: FALSE
+[SYMCHK] Global syms:  FALSE
+[SYMCHK] Type Info:    FALSE
+[SYMCHK] ------------------------------------
+SymbolCheckVersion  0x00000002
+Result              0x00030001
+DbgFilename         
+DbgTimeDateStamp    0xd935aa2c
+DbgSizeOfImage      0x00371000
+DbgChecksum         0x00385516
+PdbFilename         D:\a\basal\basal\spikes\win-confine\evidence\symbols\kernelbase.pdb\FE021BA8B8F1757B4BAF1A6D18B8119E1\kernelbase.pdb
+PdbSignature        {FE021BA8-B8F1-757B-4BAF-1A6D18B8119E}
+PdbDbiAge           0x00000001
+[SYMCHK] [ 0x00000000 - 0x00030001 ] Checked "C:\Windows\System32\KernelBase.dll"
+symchk exit: 0

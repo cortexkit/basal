@@ -1,0 +1,62 @@
+[SYMCHK] Using search path "SRV*D:\a\basal\basal\spikes\win-confine\evidence\symbols*https://msdl.microsoft.com/download/symbols"
+[SYMCHK] Searching for symbols to C:\Windows\System32\bcrypt.dll in path SRV*D:\a\basal\basal\spikes\win-confine\evidence\symbols*https://msdl.microsoft.com/download/symbols
+
+DBGHELP: Symbol Search Path: SRV*D:\a\basal\basal\spikes\win-confine\evidence\symbols*https://msdl.microsoft.com/download/symbols
+DBGHELP: No header for C:\Windows\System32\bcrypt.dll.  Searching for image on disk
+SYMCHK: FAILED files = 0
+DBGHELP: C:\Windows\System32\bcrypt.dll - OK
+SYMCHK: PASSED + IGNORED files = 1
+SYMSRV:  BYINDEX: 0x1
+         D:\a\basal\basal\spikes\win-confine\evidence\symbols*https://msdl.microsoft.com/download/symbols
+         bcrypt.pdb
+         AE88F3A56189B7E6912A2E9B147E845A1
+SYMSRV:  UNC: D:\a\basal\basal\spikes\win-confine\evidence\symbols\bcrypt.pdb\AE88F3A56189B7E6912A2E9B147E845A1\bcrypt.pdb - path not found
+SYMSRV:  UNC: D:\a\basal\basal\spikes\win-confine\evidence\symbols\bcrypt.pdb\AE88F3A56189B7E6912A2E9B147E845A1\bcrypt.pd_ - path not found
+SYMSRV:  UNC: D:\a\basal\basal\spikes\win-confine\evidence\symbols\bcrypt.pdb\AE88F3A56189B7E6912A2E9B147E845A1\file.ptr - path not found
+SYMSRV:  HTTPGET: /download/symbols/index2.txt
+SYMSRV:  HttpQueryInfo: 80190194 - HTTP_STATUS_NOT_FOUND
+SYMSRV:  HTTPGET: /download/symbols/bcrypt.pdb/AE88F3A56189B7E6912A2E9B147E845A1/bcrypt.pdb
+SYMSRV:  HttpQueryInfo: 801900c8 - HTTP_STATUS_OK
+SYMSRV:  UNC: D:\a\basal\basal\spikes\win-confine\evidence\symbols\bcrypt.pdb\AE88F3A56189B7E6912A2E9B147E845A1\bcrypt.pdb - path not found
+SYMSRV:  UNC: D:\a\basal\basal\spikes\win-confine\evidence\symbols\bcrypt.pdb\AE88F3A56189B7E6912A2E9B147E845A1\bcrypt.pd_ - path not found
+SYMSRV:  UNC: D:\a\basal\basal\spikes\win-confine\evidence\symbols\bcrypt.pdb\AE88F3A56189B7E6912A2E9B147E845A1\file.ptr - path not found
+SYMSRV:  bcrypt.pdb from https://msdl.microsoft.com/download/symbols: 192512 bytes -                0 percent   2 percent copied      
+SYMSRV:  PATH: D:\a\basal\basal\spikes\win-confine\evidence\symbols\bcrypt.pdb\AE88F3A56189B7E6912A2E9B147E845A1\bcrypt.pdb
+SYMSRV:  RESULT: 0x00000000
+DBGHELP: bcrypt - public symbols  
+        D:\a\basal\basal\spikes\win-confine\evidence\symbols\bcrypt.pdb\AE88F3A56189B7E6912A2E9B147E845A1\bcrypt.pdb
+[SYMCHK] MODULE64 Info ----------------------
+[SYMCHK] Struct size: 1680 bytes
+[SYMCHK] Base: 0x180000000
+[SYMCHK] Image size: 172032 bytes
+[SYMCHK] Date: 0xda37513e
+[SYMCHK] Checksum: 0x0003bcd4
+[SYMCHK] NumSyms: 0
+[SYMCHK] SymType: SymPDB
+[SYMCHK] ModName: bcrypt
+[SYMCHK] ImageName: C:\Windows\System32\bcrypt.dll
+[SYMCHK] LoadedImage: C:\Windows\System32\bcrypt.dll
+[SYMCHK] PDB: "D:\a\basal\basal\spikes\win-confine\evidence\symbols\bcrypt.pdb\AE88F3A56189B7E6912A2E9B147E845A1\bcrypt.pdb"
+[SYMCHK] CV: RSDS
+[SYMCHK] CV DWORD: 0x53445352
+[SYMCHK] CV Data:  bcrypt.pdb
+[SYMCHK] PDB Sig:  0
+[SYMCHK] PDB7 Sig: {AE88F3A5-6189-B7E6-912A-2E9B147E845A}
+[SYMCHK] Age: 1
+[SYMCHK] PDB Matched:  TRUE
+[SYMCHK] DBG Matched:  TRUE
+[SYMCHK] Line numbers: FALSE
+[SYMCHK] Global syms:  FALSE
+[SYMCHK] Type Info:    FALSE
+[SYMCHK] ------------------------------------
+SymbolCheckVersion  0x00000002
+Result              0x00030001
+DbgFilename         
+DbgTimeDateStamp    0xda37513e
+DbgSizeOfImage      0x0002a000
+DbgChecksum         0x0003bcd4
+PdbFilename         D:\a\basal\basal\spikes\win-confine\evidence\symbols\bcrypt.pdb\AE88F3A56189B7E6912A2E9B147E845A1\bcrypt.pdb
+PdbSignature        {AE88F3A5-6189-B7E6-912A-2E9B147E845A}
+PdbDbiAge           0x00000001
+[SYMCHK] [ 0x00000000 - 0x00030001 ] Checked "C:\Windows\System32\bcrypt.dll"
+symchk exit: 0

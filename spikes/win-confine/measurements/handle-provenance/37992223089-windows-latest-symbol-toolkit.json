@@ -1,0 +1,18 @@
+[
+  {
+    "FullName": "C:\\Program Files (x86)\\Windows Kits\\10\\App Certification Kit\\DbgHelp.dll",
+    "Version": "10.0.26100.8249 (WinBuild.160101.0800)"
+  },
+  {
+    "FullName": "C:\\Program Files (x86)\\Windows Kits\\10\\Debuggers\\arm64\\dbghelp.dll",
+    "Version": "10.0.26100.8249 (WinBuild.160101.0800)"
+  },
+  {
+    "FullName": "C:\\Program Files (x86)\\Windows Kits\\10\\Debuggers\\x64\\dbghelp.dll",
+    "Version": "10.0.26100.8249 (WinBuild.160101.0800)"
+  },
+  {
+    "FullName": "C:\\Program Files (x86)\\Windows Kits\\10\\Debuggers\\x86\\dbghelp.dll",
+    "Version": "10.0.26100.8249 (WinBuild.160101.0800)"
+  }
+]

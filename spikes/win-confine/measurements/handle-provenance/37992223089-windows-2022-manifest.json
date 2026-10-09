@@ -1,0 +1,9 @@
+{
+  "run_id": "37992223089",
+  "source_sha": "f8c0b3427dd34d2dfe460530a73b63c43be0fccf",
+  "image": "windows-2022",
+  "raw_report_sha256": "8881fc015211f2a9b2a4f21038b2ac97e5adab64b1826ad267a71d304ad1aeb7",
+  "retained_sha256": "f2fca187134db8555671ad995c75ed3b9d567cff9b1557082d821f6f8046d27a",
+  "summary_sha256": "69ddffdc2c3e40af5cddf61095429c3008f7d663a02e6db97511bfff982cc4ac",
+  "metadata_sha256": "ae46ace9ccbf88a8efd24361c69331ae2e01331fdfe39f263d0a12d12a5dd174"
+}

@@ -1,0 +1,62 @@
+[SYMCHK] Using search path "SRV*D:\a\basal\basal\spikes\win-confine\evidence\symbols*https://msdl.microsoft.com/download/symbols"
+
+SYMCHK: FAILED files = 0
+SYMCHK: PASSED + IGNORED files = 1
+[SYMCHK] Searching for symbols to C:\Windows\System32\rpcrt4.dll in path SRV*D:\a\basal\basal\spikes\win-confine\evidence\symbols*https://msdl.microsoft.com/download/symbols
+DBGHELP: Symbol Search Path: SRV*D:\a\basal\basal\spikes\win-confine\evidence\symbols*https://msdl.microsoft.com/download/symbols
+DBGHELP: No header for C:\Windows\System32\rpcrt4.dll.  Searching for image on disk
+DBGHELP: C:\Windows\System32\rpcrt4.dll - OK
+SYMSRV:  BYINDEX: 0x1
+         D:\a\basal\basal\spikes\win-confine\evidence\symbols*https://msdl.microsoft.com/download/symbols
+         rpcrt4.pdb
+         56799CC6780BE6B9BA2D20973BDFDC911
+SYMSRV:  UNC: D:\a\basal\basal\spikes\win-confine\evidence\symbols\rpcrt4.pdb\56799CC6780BE6B9BA2D20973BDFDC911\rpcrt4.pdb - path not found
+SYMSRV:  UNC: D:\a\basal\basal\spikes\win-confine\evidence\symbols\rpcrt4.pdb\56799CC6780BE6B9BA2D20973BDFDC911\rpcrt4.pd_ - path not found
+SYMSRV:  UNC: D:\a\basal\basal\spikes\win-confine\evidence\symbols\rpcrt4.pdb\56799CC6780BE6B9BA2D20973BDFDC911\file.ptr - path not found
+SYMSRV:  HTTPGET: /download/symbols/index2.txt
+SYMSRV:  HttpQueryInfo: 80190194 - HTTP_STATUS_NOT_FOUND
+SYMSRV:  HTTPGET: /download/symbols/rpcrt4.pdb/56799CC6780BE6B9BA2D20973BDFDC911/rpcrt4.pdb
+SYMSRV:  HttpQueryInfo: 801900c8 - HTTP_STATUS_OK
+SYMSRV:  UNC: D:\a\basal\basal\spikes\win-confine\evidence\symbols\rpcrt4.pdb\56799CC6780BE6B9BA2D20973BDFDC911\rpcrt4.pdb - path not found
+SYMSRV:  UNC: D:\a\basal\basal\spikes\win-confine\evidence\symbols\rpcrt4.pdb\56799CC6780BE6B9BA2D20973BDFDC911\rpcrt4.pd_ - path not found
+SYMSRV:  UNC: D:\a\basal\basal\spikes\win-confine\evidence\symbols\rpcrt4.pdb\56799CC6780BE6B9BA2D20973BDFDC911\file.ptr - path not found
+SYMSRV:  rpcrt4.pdb from https://msdl.microsoft.com/download/symbols: 1421312 bytes -                0 percent   0 percent copied      
+SYMSRV:  PATH: D:\a\basal\basal\spikes\win-confine\evidence\symbols\rpcrt4.pdb\56799CC6780BE6B9BA2D20973BDFDC911\rpcrt4.pdb
+SYMSRV:  RESULT: 0x00000000
+DBGHELP: rpcrt4 - public symbols  
+        D:\a\basal\basal\spikes\win-confine\evidence\symbols\rpcrt4.pdb\56799CC6780BE6B9BA2D20973BDFDC911\rpcrt4.pdb
+[SYMCHK] MODULE64 Info ----------------------
+[SYMCHK] Struct size: 1680 bytes
+[SYMCHK] Base: 0x180000000
+[SYMCHK] Image size: 1175552 bytes
+[SYMCHK] Date: 0x3f677b0e
+[SYMCHK] Checksum: 0x001278c4
+[SYMCHK] NumSyms: 0
+[SYMCHK] SymType: SymPDB
+[SYMCHK] ModName: rpcrt4
+[SYMCHK] ImageName: C:\Windows\System32\rpcrt4.dll
+[SYMCHK] LoadedImage: C:\Windows\System32\rpcrt4.dll
+[SYMCHK] PDB: "D:\a\basal\basal\spikes\win-confine\evidence\symbols\rpcrt4.pdb\56799CC6780BE6B9BA2D20973BDFDC911\rpcrt4.pdb"
+[SYMCHK] CV: RSDS
+[SYMCHK] CV DWORD: 0x53445352
+[SYMCHK] CV Data:  rpcrt4.pdb
+[SYMCHK] PDB Sig:  0
+[SYMCHK] PDB7 Sig: {56799CC6-780B-E6B9-BA2D-20973BDFDC91}
+[SYMCHK] Age: 1
+[SYMCHK] PDB Matched:  TRUE
+[SYMCHK] DBG Matched:  TRUE
+[SYMCHK] Line numbers: FALSE
+[SYMCHK] Global syms:  FALSE
+[SYMCHK] Type Info:    FALSE
+[SYMCHK] ------------------------------------
+SymbolCheckVersion  0x00000002
+Result              0x00030001
+DbgFilename         
+DbgTimeDateStamp    0x3f677b0e
+DbgSizeOfImage      0x0011f000
+DbgChecksum         0x001278c4
+PdbFilename         D:\a\basal\basal\spikes\win-confine\evidence\symbols\rpcrt4.pdb\56799CC6780BE6B9BA2D20973BDFDC911\rpcrt4.pdb
+PdbSignature        {56799CC6-780B-E6B9-BA2D-20973BDFDC91}
+PdbDbiAge           0x00000001
+[SYMCHK] [ 0x00000000 - 0x00030001 ] Checked "C:\Windows\System32\rpcrt4.dll"
+symchk exit: 0

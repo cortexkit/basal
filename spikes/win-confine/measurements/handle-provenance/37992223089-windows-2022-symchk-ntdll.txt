@@ -1,0 +1,62 @@
+[SYMCHK] Using search path "SRV*D:\a\basal\basal\spikes\win-confine\evidence\symbols*https://msdl.microsoft.com/download/symbols"
+
+SYMCHK: FAILED files = 0
+SYMCHK: PASSED + IGNORED files = 1
+[SYMCHK] Searching for symbols to C:\Windows\System32\ntdll.dll in path SRV*D:\a\basal\basal\spikes\win-confine\evidence\symbols*https://msdl.microsoft.com/download/symbols
+DBGHELP: Symbol Search Path: SRV*D:\a\basal\basal\spikes\win-confine\evidence\symbols*https://msdl.microsoft.com/download/symbols
+DBGHELP: No header for C:\Windows\System32\ntdll.dll.  Searching for image on disk
+DBGHELP: C:\Windows\System32\ntdll.dll - OK
+SYMSRV:  BYINDEX: 0x1
+         D:\a\basal\basal\spikes\win-confine\evidence\symbols*https://msdl.microsoft.com/download/symbols
+         ntdll.pdb
+         06D1C1456B12EF306389A4D17D891BF61
+SYMSRV:  UNC: D:\a\basal\basal\spikes\win-confine\evidence\symbols\ntdll.pdb\06D1C1456B12EF306389A4D17D891BF61\ntdll.pdb - path not found
+SYMSRV:  UNC: D:\a\basal\basal\spikes\win-confine\evidence\symbols\ntdll.pdb\06D1C1456B12EF306389A4D17D891BF61\ntdll.pd_ - path not found
+SYMSRV:  UNC: D:\a\basal\basal\spikes\win-confine\evidence\symbols\ntdll.pdb\06D1C1456B12EF306389A4D17D891BF61\file.ptr - path not found
+SYMSRV:  HTTPGET: /download/symbols/index2.txt
+SYMSRV:  HttpQueryInfo: 80190194 - HTTP_STATUS_NOT_FOUND
+SYMSRV:  HTTPGET: /download/symbols/ntdll.pdb/06D1C1456B12EF306389A4D17D891BF61/ntdll.pdb
+SYMSRV:  HttpQueryInfo: 801900c8 - HTTP_STATUS_OK
+SYMSRV:  UNC: D:\a\basal\basal\spikes\win-confine\evidence\symbols\ntdll.pdb\06D1C1456B12EF306389A4D17D891BF61\ntdll.pdb - path not found
+SYMSRV:  UNC: D:\a\basal\basal\spikes\win-confine\evidence\symbols\ntdll.pdb\06D1C1456B12EF306389A4D17D891BF61\ntdll.pd_ - path not found
+SYMSRV:  UNC: D:\a\basal\basal\spikes\win-confine\evidence\symbols\ntdll.pdb\06D1C1456B12EF306389A4D17D891BF61\file.ptr - path not found
+SYMSRV:  ntdll.pdb from https://msdl.microsoft.com/download/symbols: 2322432 bytes -                0 percent   0 percent copied      
+SYMSRV:  PATH: D:\a\basal\basal\spikes\win-confine\evidence\symbols\ntdll.pdb\06D1C1456B12EF306389A4D17D891BF61\ntdll.pdb
+SYMSRV:  RESULT: 0x00000000
+DBGHELP: ntdll - public symbols  
+        D:\a\basal\basal\spikes\win-confine\evidence\symbols\ntdll.pdb\06D1C1456B12EF306389A4D17D891BF61\ntdll.pdb
+[SYMCHK] MODULE64 Info ----------------------
+[SYMCHK] Struct size: 1680 bytes
+[SYMCHK] Base: 0x180000000
+[SYMCHK] Image size: 2105344 bytes
+[SYMCHK] Date: 0xc2eada64
+[SYMCHK] Checksum: 0x0020a55b
+[SYMCHK] NumSyms: 0
+[SYMCHK] SymType: SymPDB
+[SYMCHK] ModName: ntdll
+[SYMCHK] ImageName: C:\Windows\System32\ntdll.dll
+[SYMCHK] LoadedImage: C:\Windows\System32\ntdll.dll
+[SYMCHK] PDB: "D:\a\basal\basal\spikes\win-confine\evidence\symbols\ntdll.pdb\06D1C1456B12EF306389A4D17D891BF61\ntdll.pdb"
+[SYMCHK] CV: RSDS
+[SYMCHK] CV DWORD: 0x53445352
+[SYMCHK] CV Data:  ntdll.pdb
+[SYMCHK] PDB Sig:  0
+[SYMCHK] PDB7 Sig: {06D1C145-6B12-EF30-6389-A4D17D891BF6}
+[SYMCHK] Age: 1
+[SYMCHK] PDB Matched:  TRUE
+[SYMCHK] DBG Matched:  TRUE
+[SYMCHK] Line numbers: FALSE
+[SYMCHK] Global syms:  FALSE
+[SYMCHK] Type Info:    TRUE
+[SYMCHK] ------------------------------------
+SymbolCheckVersion  0x00000002
+Result              0x00130001
+DbgFilename         
+DbgTimeDateStamp    0xc2eada64
+DbgSizeOfImage      0x00202000
+DbgChecksum         0x0020a55b
+PdbFilename         D:\a\basal\basal\spikes\win-confine\evidence\symbols\ntdll.pdb\06D1C1456B12EF306389A4D17D891BF61\ntdll.pdb
+PdbSignature        {06D1C145-6B12-EF30-6389-A4D17D891BF6}
+PdbDbiAge           0x00000001
+[SYMCHK] [ 0x00000000 - 0x00130001 ] Checked "C:\Windows\System32\ntdll.dll"
+symchk exit: 0

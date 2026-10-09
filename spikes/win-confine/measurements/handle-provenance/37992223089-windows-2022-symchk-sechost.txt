@@ -1,0 +1,62 @@
+[SYMCHK] Using search path "SRV*D:\a\basal\basal\spikes\win-confine\evidence\symbols*https://msdl.microsoft.com/download/symbols"
+
+SYMCHK: FAILED files = 0
+SYMCHK: PASSED + IGNORED files = 1
+[SYMCHK] Searching for symbols to C:\Windows\System32\sechost.dll in path SRV*D:\a\basal\basal\spikes\win-confine\evidence\symbols*https://msdl.microsoft.com/download/symbols
+DBGHELP: Symbol Search Path: SRV*D:\a\basal\basal\spikes\win-confine\evidence\symbols*https://msdl.microsoft.com/download/symbols
+DBGHELP: No header for C:\Windows\System32\sechost.dll.  Searching for image on disk
+DBGHELP: C:\Windows\System32\sechost.dll - OK
+SYMSRV:  BYINDEX: 0x1
+         D:\a\basal\basal\spikes\win-confine\evidence\symbols*https://msdl.microsoft.com/download/symbols
+         sechost.pdb
+         3E422BC2B9392BF14CAC01136F2302E01
+SYMSRV:  UNC: D:\a\basal\basal\spikes\win-confine\evidence\symbols\sechost.pdb\3E422BC2B9392BF14CAC01136F2302E01\sechost.pdb - path not found
+SYMSRV:  UNC: D:\a\basal\basal\spikes\win-confine\evidence\symbols\sechost.pdb\3E422BC2B9392BF14CAC01136F2302E01\sechost.pd_ - path not found
+SYMSRV:  UNC: D:\a\basal\basal\spikes\win-confine\evidence\symbols\sechost.pdb\3E422BC2B9392BF14CAC01136F2302E01\file.ptr - path not found
+SYMSRV:  HTTPGET: /download/symbols/index2.txt
+SYMSRV:  HttpQueryInfo: 80190194 - HTTP_STATUS_NOT_FOUND
+SYMSRV:  HTTPGET: /download/symbols/sechost.pdb/3E422BC2B9392BF14CAC01136F2302E01/sechost.pdb
+SYMSRV:  HttpQueryInfo: 801900c8 - HTTP_STATUS_OK
+SYMSRV:  UNC: D:\a\basal\basal\spikes\win-confine\evidence\symbols\sechost.pdb\3E422BC2B9392BF14CAC01136F2302E01\sechost.pdb - path not found
+SYMSRV:  UNC: D:\a\basal\basal\spikes\win-confine\evidence\symbols\sechost.pdb\3E422BC2B9392BF14CAC01136F2302E01\sechost.pd_ - path not found
+SYMSRV:  UNC: D:\a\basal\basal\spikes\win-confine\evidence\symbols\sechost.pdb\3E422BC2B9392BF14CAC01136F2302E01\file.ptr - path not found
+SYMSRV:  sechost.pdb from https://msdl.microsoft.com/download/symbols: 872448 bytes -                0 percent   0 percent copied      
+SYMSRV:  PATH: D:\a\basal\basal\spikes\win-confine\evidence\symbols\sechost.pdb\3E422BC2B9392BF14CAC01136F2302E01\sechost.pdb
+SYMSRV:  RESULT: 0x00000000
+DBGHELP: sechost - public symbols  
+        D:\a\basal\basal\spikes\win-confine\evidence\symbols\sechost.pdb\3E422BC2B9392BF14CAC01136F2302E01\sechost.pdb
+[SYMCHK] MODULE64 Info ----------------------
+[SYMCHK] Struct size: 1680 bytes
+[SYMCHK] Base: 0x180000000
+[SYMCHK] Image size: 663552 bytes
+[SYMCHK] Date: 0x83d3d6c3
+[SYMCHK] Checksum: 0x000a7c11
+[SYMCHK] NumSyms: 0
+[SYMCHK] SymType: SymPDB
+[SYMCHK] ModName: sechost
+[SYMCHK] ImageName: C:\Windows\System32\sechost.dll
+[SYMCHK] LoadedImage: C:\Windows\System32\sechost.dll
+[SYMCHK] PDB: "D:\a\basal\basal\spikes\win-confine\evidence\symbols\sechost.pdb\3E422BC2B9392BF14CAC01136F2302E01\sechost.pdb"
+[SYMCHK] CV: RSDS
+[SYMCHK] CV DWORD: 0x53445352
+[SYMCHK] CV Data:  sechost.pdb
+[SYMCHK] PDB Sig:  0
+[SYMCHK] PDB7 Sig: {3E422BC2-B939-2BF1-4CAC-01136F2302E0}
+[SYMCHK] Age: 1
+[SYMCHK] PDB Matched:  TRUE
+[SYMCHK] DBG Matched:  TRUE
+[SYMCHK] Line numbers: FALSE
+[SYMCHK] Global syms:  FALSE
+[SYMCHK] Type Info:    FALSE
+[SYMCHK] ------------------------------------
+SymbolCheckVersion  0x00000002
+Result              0x00030001
+DbgFilename         
+DbgTimeDateStamp    0x83d3d6c3
+DbgSizeOfImage      0x000a2000
+DbgChecksum         0x000a7c11
+PdbFilename         D:\a\basal\basal\spikes\win-confine\evidence\symbols\sechost.pdb\3E422BC2B9392BF14CAC01136F2302E01\sechost.pdb
+PdbSignature        {3E422BC2-B939-2BF1-4CAC-01136F2302E0}
+PdbDbiAge           0x00000001
+[SYMCHK] [ 0x00000000 - 0x00030001 ] Checked "C:\Windows\System32\sechost.dll"
+symchk exit: 0
