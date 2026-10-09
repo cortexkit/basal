@@ -83,7 +83,11 @@ mod tests {
     #[test]
     fn codemode_wire_codes_preserve_shell_and_round_trip_tool_json() {
         assert_eq!(PROTOCOL_VERSION, 4);
-        assert!(CODEMODE_ADDRESS_SPACE_BYTES > 64 * 1024 * 1024);
+        // Checked at run time, not in a const block, so lowering the ceiling
+        // fails this test instead of the build, and the mutation control for
+        // the ceiling sees a red test.
+        let ceiling = std::hint::black_box(CODEMODE_ADDRESS_SPACE_BYTES);
+        assert!(ceiling > 64 * 1024 * 1024);
         assert_eq!(Primitive::Sh.code(), 11);
         for (kind, code) in [
             (CallKind::Primitive(Primitive::Sh), 11),
