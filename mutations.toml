@@ -9430,6 +9430,8 @@ build_timeout_s = 1800
 # They run on Linux because the code they edit is compiled only there.
 [[control]]
 id = "linux-seccomp-filter-is-never-installed"
+hub = "The Linux worker installs its seccomp allowlist before its first read, asserted by the startup attestation and every production probe that must die with SIGSYS"
+hub_targets = ["linux_probes"]
 guards = "Linux worker runs without its seccomp allowlist"
 test_file = "crates/basal-worker/tests/linux_startup.rs"
 runner = "cargo"
@@ -9449,6 +9451,8 @@ new = """
 
 [[control]]
 id = "linux-landlock-ruleset-is-never-applied"
+hub = "The Linux worker applies Landlock and reports its ABI in the handshake, asserted by the startup readback, the Landlock-only probes and the handshake and required-Welcome tests"
+hub_targets = ["ipc", "linux_probes"]
 guards = "Linux worker runs without its Landlock ruleset"
 test_file = "crates/basal-worker/tests/linux_startup.rs"
 runner = "cargo"
@@ -9513,6 +9517,8 @@ new = "let _ = (actual, &fixtures.proc_magic); // NON-VACUITY BREAK"
 
 [[control]]
 id = "linux-step-zero-accepts-read-implies-exec"
+hub = "A Linux worker refuses this startup condition before its first read, asserted by the live refusal test and the pure startup-decision unit test"
+hub_targets = ["basal_worker"]
 guards = "Linux worker starts with the READ_IMPLIES_EXEC personality"
 test_file = "crates/basal-worker/tests/linux_startup.rs"
 runner = "cargo"
@@ -9520,7 +9526,9 @@ package = "basal-worker"
 platforms = ["linux"]
 target = "--test linux_startup"
 expect_red = ["refuses_read_implies_exec"]
-only = true
+# Another target asserts the same refusal decision, so this row is a reviewed
+# shared-property catch rather than an exclusive one.
+only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-worker/src/confinement/linux.rs"
@@ -9545,6 +9553,8 @@ new = "let _ = (tasks, fixtures.task_count); // NON-VACUITY BREAK"
 
 [[control]]
 id = "linux-step-zero-accepts-stdio-that-is-not-a-pipe"
+hub = "A Linux worker refuses this startup condition before its first read, asserted by the live refusal test and the pure startup-decision unit test"
+hub_targets = ["basal_worker"]
 guards = "Linux worker starts with a file or named FIFO as stdio"
 test_file = "crates/basal-worker/tests/linux_startup.rs"
 runner = "cargo"
@@ -9552,7 +9562,9 @@ package = "basal-worker"
 platforms = ["linux"]
 target = "--test linux_startup"
 expect_red = ["refuses_stdio_not_pipe_regular_file_and_named_fifo"]
-only = true
+# Another target asserts the same refusal decision, so this row is a reviewed
+# shared-property catch rather than an exclusive one.
+only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-worker/src/confinement/linux.rs"
@@ -9561,6 +9573,8 @@ new = "if false && magic != 0x50495045 { // NON-VACUITY BREAK"
 
 [[control]]
 id = "linux-step-zero-accepts-stdio-with-the-wrong-access-mode"
+hub = "A Linux worker refuses this startup condition before its first read, asserted by the live refusal test and the pure startup-decision unit test"
+hub_targets = ["basal_worker"]
 guards = "Linux worker starts with a stdio pipe end of the wrong direction"
 test_file = "crates/basal-worker/tests/linux_startup.rs"
 runner = "cargo"
@@ -9568,7 +9582,9 @@ package = "basal-worker"
 platforms = ["linux"]
 target = "--test linux_startup"
 expect_red = ["refuses_stdio_wrong_mode"]
-only = true
+# Another target asserts the same refusal decision, so this row is a reviewed
+# shared-property catch rather than an exclusive one.
+only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-worker/src/confinement/linux.rs"
@@ -9577,6 +9593,8 @@ new = "if false /* NON-VACUITY BREAK */ && mode & libc::O_ACCMODE"
 
 [[control]]
 id = "linux-step-zero-accepts-writable-executable-mappings"
+hub = "A Linux worker refuses this startup condition before its first read, asserted by the live refusal test and the pure startup-decision unit test"
+hub_targets = ["basal_worker"]
 guards = "Linux worker starts with a writable and executable mapping"
 test_file = "crates/basal-worker/tests/linux_startup.rs"
 runner = "cargo"
@@ -9584,7 +9602,9 @@ package = "basal-worker"
 platforms = ["linux"]
 target = "--test linux_startup"
 expect_red = ["refuses_mapping_wx"]
-only = true
+# Another target asserts the same refusal decision, so this row is a reviewed
+# shared-property catch rather than an exclusive one.
+only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-worker/src/confinement/linux.rs"
@@ -9593,6 +9613,8 @@ new = "if false && perms[1] == b'w' && perms[2] == b'x' { // NON-VACUITY BREAK"
 
 [[control]]
 id = "linux-step-zero-accepts-an-executable-stack"
+hub = "A Linux worker refuses this startup condition before its first read, asserted by the live refusal test and the pure startup-decision unit test"
+hub_targets = ["basal_worker"]
 guards = "Linux worker starts with an executable stack mapping"
 test_file = "crates/basal-worker/tests/linux_startup.rs"
 runner = "cargo"
@@ -9600,7 +9622,9 @@ package = "basal-worker"
 platforms = ["linux"]
 target = "--test linux_startup"
 expect_red = ["refuses_mapping_exec_stack"]
-only = true
+# Another target asserts the same refusal decision, so this row is a reviewed
+# shared-property catch rather than an exclusive one.
+only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-worker/src/confinement/linux.rs"
@@ -9611,6 +9635,8 @@ new = "if false && perms[2] == b'x' && fields.iter().any(|f| f.starts_with(\"[st
 # unknown kind, so the mutant also admits 's' in the private-mapping check.
 [[control]]
 id = "linux-step-zero-accepts-shared-mappings"
+hub = "A Linux worker refuses this startup condition before its first read, asserted by the live refusal test and the pure startup-decision unit test"
+hub_targets = ["basal_worker"]
 guards = "Linux worker starts with a shared mapping"
 test_file = "crates/basal-worker/tests/linux_startup.rs"
 runner = "cargo"
@@ -9618,7 +9644,9 @@ package = "basal-worker"
 platforms = ["linux"]
 target = "--test linux_startup"
 expect_red = ["refuses_mapping_shared"]
-only = true
+# Another target asserts the same refusal decision, so this row is a reviewed
+# shared-property catch rather than an exclusive one.
+only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-worker/src/confinement/linux.rs"
