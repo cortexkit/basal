@@ -54,6 +54,7 @@ pub fn serve<R: Read + 'static, W: Write + 'static>(
                         protocol_version: PROTOCOL_VERSION,
                         engine: ENGINE.into(),
                         prelude_hash: prelude_hash(),
+                        codemode_prelude_hash: crate::engine::codemode_prelude_hash(),
                         confinement,
                     })
                 } else {

@@ -111,6 +111,12 @@ impl MockHost {
             sleep: Duration::ZERO,
         };
         match &call.kind {
+            CallKind::Tool { .. } => ready(
+                Settlement::Rejected,
+                text(
+                    &json!({"code": "profile_violation", "message": "catalog tools are not flow host calls"}),
+                ),
+            ),
             CallKind::Op { module, op } if module == "mock" => match op.as_str() {
                 "fail" => {
                     let message = args

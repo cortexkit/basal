@@ -181,6 +181,7 @@ fn op_names(kind: &CallKind) -> (String, String) {
     match kind {
         CallKind::Op { module, op } => (module.clone(), op.clone()),
         CallKind::Primitive(p) => ("primitive".to_owned(), p.name().to_owned()),
+        CallKind::Tool { .. } => ("unsupported".into(), "tool".into()),
     }
 }
 
@@ -546,6 +547,9 @@ impl MockHost {
             honours_idempotency_keys: true,
         };
         match kind {
+            CallKind::Tool { .. } => CallClass::Mutation {
+                honours_idempotency_keys: false,
+            },
             CallKind::Op { module, op } if module == "mock" => match op.as_str() {
                 "send" | "long" => keyed,
                 "post" => CallClass::Mutation {
@@ -592,6 +596,11 @@ impl Host for MockHost {
     }
 
     fn dispatch(&self, request: &CallRequest) -> Result<Dispatched, TransportError> {
+        if matches!(request.kind, CallKind::Tool { .. }) {
+            return Err(TransportError::unsent(
+                "catalog tools are not flow host calls",
+            ));
+        }
         if let Some(done) = self.builtin(request, None) {
             return done;
         }

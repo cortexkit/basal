@@ -435,6 +435,7 @@ fn message_name(message: &WorkerMessage) -> &'static str {
         WorkerMessage::Blocked { .. } => "Blocked",
         WorkerMessage::Finished { .. } => "Finished",
         WorkerMessage::Refused(_) => "Refused",
+        WorkerMessage::Console { .. } => "Console",
     }
 }
 

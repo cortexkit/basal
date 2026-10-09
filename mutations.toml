@@ -331,8 +331,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-worker/src/engine.rs"
-old = "interrupt.halted.get() || interrupt.clock.over_budget()"
-new = "false && (interrupt.halted.get() || interrupt.clock.over_budget())"
+old = "interrupt.halted.get()\n            || interrupt.clock.over_budget()"
+new = "false && (interrupt.halted.get()\n            || interrupt.clock.over_budget())"
 
 [[control]]
 id = "interrupt-handler-never-stops-the-engine-catastrophic-regex"
@@ -349,8 +349,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-worker/src/engine.rs"
-old = "interrupt.halted.get() || interrupt.clock.over_budget()"
-new = "false && (interrupt.halted.get() || interrupt.clock.over_budget())"
+old = "interrupt.halted.get()\n            || interrupt.clock.over_budget()"
+new = "false && (interrupt.halted.get()\n            || interrupt.clock.over_budget())"
 
 [[control]]
 id = "js-time-measured-as-wall-time-from-the-first-engine-entry"
@@ -9689,3 +9689,350 @@ timeout_s = 600
 file = "crates/basal-core/src/driver.rs"
 old = "self.fail(\"budget_exhausted\", format!(\"{kind:?}\"), false)"
 new = "self.fail(\"budget_exhausted\", format!(\"{kind:?}\"), true) // NON-VACUITY BREAK"
+
+# Codemode wire and worker-profile guards. These basal-proto library and
+# basal-worker codemode tests exercise platform-independent behavior. Mutation
+# proofs run once on Linux; workspace gates run the tests on both supported OSes.
+[[control]]
+id = "codemode-protocol-version"
+hub = "Both the codemode version assertion and the fixed Welcome wire fixture pin version 4"
+hub_targets = ["basal_proto"]
+guards = "codemode wire requires protocol version 4"
+test_file = "crates/basal-proto/src/lib.rs"
+runner = "cargo"
+package = "basal-proto"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["tests::codemode_wire_codes_preserve_shell_and_round_trip_tool_json"]
+only = false
+file = "crates/basal-proto/src/limits.rs"
+old = "pub const PROTOCOL_VERSION: u32 = 4;"
+new = "pub const PROTOCOL_VERSION: u32 = 3; // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-address-space-headroom"
+guards = "codemode process ceiling exceeds the heap cap"
+test_file = "crates/basal-proto/src/lib.rs"
+runner = "cargo"
+package = "basal-proto"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["tests::codemode_wire_codes_preserve_shell_and_round_trip_tool_json"]
+only = false
+file = "crates/basal-proto/src/limits.rs"
+old = "pub const CODEMODE_ADDRESS_SPACE_BYTES: u64 = 512 * 1024 * 1024;"
+new = "pub const CODEMODE_ADDRESS_SPACE_BYTES: u64 = 64 * 1024 * 1024; // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-tool-wire-code"
+hub = "Shell code 11 remains decodable, asserted by the codemode wire test and the generic worker-message roundtrip"
+hub_targets = ["basal_proto"]
+guards = "tool code is above primitives and never reuses shell code 11"
+test_file = "crates/basal-proto/src/lib.rs"
+runner = "cargo"
+package = "basal-proto"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["tests::codemode_wire_codes_preserve_shell_and_round_trip_tool_json"]
+only = false
+file = "crates/basal-proto/src/wire.rs"
+old = "const CALL_TOOL: u8 = 22;"
+new = "const CALL_TOOL: u8 = 11; // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-activation-tools-wire"
+hub = "Catalog names survive activation encoding, asserted by the codemode and generic parent-message roundtrips"
+hub_targets = ["basal_proto"]
+guards = "activation carries the catalog tool names"
+test_file = "crates/basal-proto/src/lib.rs"
+runner = "cargo"
+package = "basal-proto"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["tests::codemode_activation_tools_round_trip_and_names_are_bounded"]
+only = false
+file = "crates/basal-proto/src/wire.rs"
+old = "enc.count(req.tools.len());"
+new = "enc.count(0); // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-welcome-hash-wire"
+hub = "The codemode Welcome hash survives encoding, asserted by the codemode and generic worker-message roundtrips"
+hub_targets = ["basal_proto"]
+guards = "welcome reports the codemode hash independently of the flow hash"
+test_file = "crates/basal-proto/src/lib.rs"
+runner = "cargo"
+package = "basal-proto"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["tests::codemode_welcome_reports_two_distinct_prelude_hashes"]
+only = false
+file = "crates/basal-proto/src/wire.rs"
+old = "enc.fixed(&w.codemode_prelude_hash.0);"
+new = "enc.fixed(&w.prelude_hash.0); // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-console-wire-tag"
+guards = "console uses a unique worker-to-parent tag"
+test_file = "crates/basal-proto/src/lib.rs"
+runner = "cargo"
+package = "basal-proto"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["tests::codemode_console_has_a_unique_worker_tag_and_round_trips"]
+only = false
+file = "crates/basal-proto/src/wire.rs"
+old = "const TAG_CONSOLE: u8 = 106;"
+new = "const TAG_CONSOLE: u8 = 105; // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-prelude-hash-independence"
+guards = "changing codemode source cannot change the flow hash"
+test_file = "crates/basal-worker/tests/codemode.rs"
+runner = "cargo"
+package = "basal-worker"
+platforms = ["linux"]
+target = "--test codemode"
+expect_red = ["codemode_prelude_hash_is_independent_of_flow_source"]
+only = false
+file = "crates/basal-worker/src/engine.rs"
+old = "PreludeHash::of(PRELUDE)"
+new = "PreludeHash::of(&format!(\"{PRELUDE}{CODEMODE_PRELUDE}\")) /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "codemode-prelude-mismatch"
+guards = "codemode activation refuses a mismatched profile prelude"
+test_file = "crates/basal-worker/tests/codemode.rs"
+runner = "cargo"
+package = "basal-worker"
+platforms = ["linux"]
+target = "--test codemode"
+expect_red = ["codemode_rejects_the_wrong_profile_prelude_hash"]
+only = false
+file = "crates/basal-worker/src/engine.rs"
+old = "if request.prelude_hash != actual {"
+new = "if request.profile == Profile::Flow && request.prelude_hash != actual { // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-removed-globals"
+guards = "codemode removes eval, Function and unsupported globals"
+test_file = "crates/basal-worker/tests/codemode.rs"
+runner = "cargo"
+package = "basal-worker"
+platforms = ["linux"]
+target = "--test codemode"
+expect_red = ["codemode_exposes_only_tools_console_and_frozen_intrinsics"]
+only = false
+file = "crates/basal-worker/src/codemode_prelude.js"
+old = "for (const key of REMOVED_GLOBALS) {"
+new = "for (const key of []) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-tool-null-prototype"
+guards = "tools has no inherited names or prototype"
+test_file = "crates/basal-worker/tests/codemode.rs"
+runner = "cargo"
+package = "basal-worker"
+platforms = ["linux"]
+target = "--test codemode"
+expect_red = ["codemode_exposes_only_tools_console_and_frozen_intrinsics"]
+only = false
+file = "crates/basal-worker/src/codemode_prelude.js"
+old = "const tools = Object.create(null);"
+new = "const tools = {}; // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-frozen-intrinsics"
+guards = "codemode freezes tools, console and reachable intrinsics"
+test_file = "crates/basal-worker/tests/codemode.rs"
+runner = "cargo"
+package = "basal-worker"
+platforms = ["linux"]
+target = "--test codemode"
+expect_red = ["codemode_exposes_only_tools_console_and_frozen_intrinsics"]
+only = false
+file = "crates/basal-worker/src/engine.rs"
+old = "harden(&ctx, roots)?;"
+new = "if !codemode { harden(&ctx, roots)?; } // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-worker-native-clock"
+guards = "Date uses the worker's native clock"
+test_file = "crates/basal-worker/tests/codemode.rs"
+runner = "cargo"
+package = "basal-worker"
+platforms = ["linux"]
+target = "--test codemode"
+expect_red = ["codemode_clock_and_random_are_worker_native"]
+only = false
+file = "crates/basal-worker/src/codemode_prelude.js"
+old = "const nativeNow = Date.now;"
+new = "const nativeNow = () => 0; // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-worker-native-random"
+guards = "Math.random remains a native source, not a constant or host call"
+test_file = "crates/basal-worker/tests/codemode.rs"
+runner = "cargo"
+package = "basal-worker"
+platforms = ["linux"]
+target = "--test codemode"
+expect_red = ["codemode_clock_and_random_are_worker_native"]
+only = false
+file = "crates/basal-worker/src/codemode_prelude.js"
+old = "const NativeDate = Date;"
+new = "const NativeDate = Date; Math.random = () => 0.5; // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-utc-date-parsing"
+guards = "codemode refuses timezone-dependent date strings"
+test_file = "crates/basal-worker/tests/codemode.rs"
+runner = "cargo"
+package = "basal-worker"
+platforms = ["linux"]
+target = "--test codemode"
+expect_red = ["codemode_dates_are_utc_only"]
+only = false
+file = "crates/basal-worker/src/codemode_prelude.js"
+old = "return apply(regexpTest, ISO_DATE, [text]) ? dateParse(text) : NaN;"
+new = "return dateParse(text); // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-local-date-methods"
+guards = "codemode cannot recover local-time Date methods"
+test_file = "crates/basal-worker/tests/codemode.rs"
+runner = "cargo"
+package = "basal-worker"
+platforms = ["linux"]
+target = "--test codemode"
+expect_red = ["codemode_dates_are_utc_only"]
+only = false
+file = "crates/basal-worker/src/codemode_prelude.js"
+old = "for (const key of LOCAL_TIME) remove(dateProto, key);"
+new = "// NON-VACUITY BREAK: local-time methods retained"
+
+[[control]]
+id = "codemode-date-constructor"
+guards = "the Date prototype cannot recover the unrestricted native constructor"
+test_file = "crates/basal-worker/tests/codemode.rs"
+runner = "cargo"
+package = "basal-worker"
+platforms = ["linux"]
+target = "--test codemode"
+expect_red = ["codemode_dates_are_utc_only"]
+only = false
+file = "crates/basal-worker/src/codemode_prelude.js"
+old = "define(dateProto, 'constructor', { value: RunDate, writable: true, configurable: true });"
+new = "// NON-VACUITY BREAK: constructor retained"
+
+[[control]]
+id = "codemode-function-constructors"
+guards = "codemode cannot compile source through function-kind constructors"
+test_file = "crates/basal-worker/tests/codemode.rs"
+runner = "cargo"
+package = "basal-worker"
+platforms = ["linux"]
+target = "--test codemode"
+expect_red = ["codemode_exposes_only_tools_console_and_frozen_intrinsics"]
+only = false
+file = "crates/basal-worker/src/codemode_prelude.js"
+old = "for (const fn of [function () {}, async function () {}, function* () {}, async function* () {}]) {"
+new = "for (const fn of []) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-console-line-format"
+guards = "console joins JSON and string arguments with one space"
+test_file = "crates/basal-worker/tests/codemode.rs"
+runner = "cargo"
+package = "basal-worker"
+platforms = ["linux"]
+target = "--test codemode"
+expect_red = ["codemode_console_formats_and_sends_lines_without_host_calls"]
+only = false
+file = "crates/basal-worker/src/codemode_prelude.js"
+old = "emitConsole(parts.join(' ') + '\\n');"
+new = "emitConsole(parts.join('') + '\\n'); // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-tool-call-kind"
+guards = "codemode native tool issue sends Tool, not flow Op"
+test_file = "crates/basal-worker/tests/codemode.rs"
+runner = "cargo"
+package = "basal-worker"
+platforms = ["linux"]
+target = "--test codemode"
+expect_red = ["codemode_tool_input_crosses_as_json_and_unawaited_calls_drain"]
+only = false
+file = "crates/basal-worker/src/engine.rs"
+old = "s.issue(CallKind::Tool { name }, args)"
+new = "s.issue(CallKind::Op { module: name, op: \"echo\".into() }, args) /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "codemode-sticky-memory"
+guards = "caught allocation refusal cannot complete codemode or send another tool call"
+test_file = "crates/basal-worker/tests/codemode.rs"
+runner = "cargo"
+package = "basal-worker"
+platforms = ["linux"]
+target = "--test codemode"
+expect_red = ["codemode_caught_memory_exhaustion_is_sticky"]
+only = false
+file = "crates/basal-worker/src/engine.rs"
+old = "if self.memory_exhausted.get() {\n            return Some(ActivationResult::BudgetExhausted(BudgetKind::Memory));"
+new = "if false { // NON-VACUITY BREAK\n            return Some(ActivationResult::BudgetExhausted(BudgetKind::Memory));"
+
+[[control]]
+id = "codemode-sticky-stack"
+guards = "caught stack overflow cannot complete codemode or send another tool call"
+test_file = "crates/basal-worker/tests/codemode.rs"
+runner = "cargo"
+package = "basal-worker"
+platforms = ["linux"]
+target = "--test codemode"
+expect_red = ["codemode_caught_stack_exhaustion_is_sticky"]
+only = false
+file = "crates/basal-worker/src/engine.rs"
+old = "if self.stack_exhausted.get() {"
+new = "if false { // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-tool-arguments-limit"
+guards = "tool JSON input beyond MAX_VALUE_BYTES fails arguments_too_large before parent issue"
+test_file = "crates/basal-worker/tests/codemode.rs"
+runner = "cargo"
+package = "basal-worker"
+platforms = ["linux"]
+target = "--test codemode"
+expect_red = ["codemode_tool_arguments_cap_is_inclusive_and_cannot_be_caught"]
+only = false
+file = "crates/basal-worker/src/engine.rs"
+old = "if args.len() > bridge.max_value {"
+new = "if args.len() > bridge.max_value && !matches!(kind, CallKind::Tool { .. }) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-flow-driver-tool-fence"
+guards = "a compromised flow worker cannot issue a Tool call"
+test_file = "crates/basal-testkit/tests/dispatch_authorization.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test dispatch_authorization"
+expect_red = ["a_compromised_worker_cannot_issue_tool"]
+only = false
+file = "crates/basal-core/src/driver.rs"
+old = "if matches!(call.kind, CallKind::Tool { .. }) {"
+new = "if false { // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-flow-driver-console-fence"
+guards = "a compromised flow worker cannot send codemode console output"
+test_file = "crates/basal-testkit/tests/dispatch_authorization.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test dispatch_authorization"
+expect_red = ["a_compromised_worker_cannot_send_console"]
+only = false
+file = "crates/basal-core/src/driver.rs"
+old = "return self.fail(\n                        \"profile_violation\",\n                        \"console output is not available to flows\".into(),\n                        false,\n                    );"
+new = "continue; // NON-VACUITY BREAK"

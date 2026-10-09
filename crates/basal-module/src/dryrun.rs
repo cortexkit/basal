@@ -539,6 +539,7 @@ fn describe_call(call: &CallRow, config: &DryRunConfig) -> Value {
     let (kind, module, op) = match &call.kind {
         CallKind::Op { module, op } => ("op".to_owned(), Some(module.clone()), Some(op.clone())),
         CallKind::Primitive(p) => (p.name().to_owned(), None, None),
+        CallKind::Tool { .. } => ("unsupported_tool".to_owned(), None, None),
     };
     let args = call.args.as_str();
     let shown = if args.len() <= config.max_arg_bytes_shown {

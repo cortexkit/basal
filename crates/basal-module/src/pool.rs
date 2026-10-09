@@ -920,6 +920,7 @@ fn unreachable_welcome() -> &'static Welcome {
         protocol_version: 0,
         engine: String::from("none"),
         prelude_hash: basal_proto::PreludeHash([0; 32]),
+        codemode_prelude_hash: basal_proto::PreludeHash([0; 32]),
         confinement: basal_proto::Confinement::None,
     })
 }

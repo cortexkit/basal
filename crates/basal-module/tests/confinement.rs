@@ -25,6 +25,7 @@ fn spawn_refuses_a_stand_in_worker_with_seccomp_false() {
         protocol_version: PROTOCOL_VERSION,
         engine: "stand-in".into(),
         prelude_hash: PreludeHash([0; 32]),
+        codemode_prelude_hash: PreludeHash([0; 32]),
         confinement: Confinement::Linux {
             seccomp: false,
             landlock: Some(LandlockReport {
@@ -104,6 +105,7 @@ fn production_spawner_requires_landlock_completes_activation_and_shuts_down() {
             activation_id: 1,
             profile: Profile::Flow,
             prelude_hash: worker.welcome().prelude_hash,
+            tools: vec![],
             script: "return 4;".into(),
             trigger: JsonText::null(),
             self_input: JsonText::null(),

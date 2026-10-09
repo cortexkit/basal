@@ -273,8 +273,15 @@ impl Primitive {
 /// one dotted string, so no check ever depends on parsing a name.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CallKind {
-    Op { module: String, op: String },
+    Op {
+        module: String,
+        op: String,
+    },
     Primitive(Primitive),
+    /// A catalog tool; its JSON input is carried in `HostCall::args`.
+    Tool {
+        name: String,
+    },
 }
 
 impl CallKind {
@@ -296,6 +303,7 @@ impl fmt::Display for CallKind {
         match self {
             Self::Op { module, op } => write!(f, "op ({module}, {op})"),
             Self::Primitive(p) => write!(f, "{}", p.name()),
+            Self::Tool { name } => write!(f, "tool ({name})"),
         }
     }
 }
@@ -369,6 +377,8 @@ pub struct ActivationRequest {
     /// a result to the activation it started.
     pub activation_id: u64,
     pub profile: Profile,
+    /// Catalog names exposed by the codemode prelude. Empty for `Profile::Flow`.
+    pub tools: Vec<String>,
     /// The prelude the parent expects. A worker with a different lockdown
     /// prelude refuses the activation: the replayed run would not execute in
     /// the same environment as the recorded run, so its calls could differ.
@@ -430,8 +440,12 @@ pub struct Welcome {
     /// "quickjs-ng 0.16.2 via rquickjs 0.14.0"), part of a run's runtime
     /// fingerprint together with the prelude hash.
     pub engine: String,
+    /// Fingerprint of `prelude.js`, the source used by `Profile::Flow`.
     pub prelude_hash: PreludeHash,
     pub confinement: Confinement,
+    /// Fingerprint of `codemode_prelude.js`, used by `Profile::Codemode`. Keeping
+    /// it separate lets that API change without changing a flow's fingerprint.
+    pub codemode_prelude_hash: PreludeHash,
 }
 
 /// A call's identity for replay comparison.
@@ -610,6 +624,10 @@ pub enum ParentMessage {
 /// Frames the worker sends.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkerMessage {
+    /// A complete console line, including its trailing newline; not a host call.
+    Console {
+        line: String,
+    },
     Welcome(Welcome),
     HostCall(HostCall),
     /// The script can make no progress until one of these calls settles. The

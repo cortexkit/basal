@@ -237,6 +237,7 @@ impl TestParent {
         let request = ActivationRequest {
             activation_id: self.next_activation,
             profile: self.profile,
+            tools: vec![],
             prelude_hash: self.prelude_hash(),
             script: script.to_owned(),
             trigger: self.trigger.clone(),
@@ -314,7 +315,17 @@ impl TestParent {
                         refusals.push(r);
                         continue;
                     }
+                    WorkerMessage::Console { .. } => {
+                        return Ending::Broken(ParentError::Protocol(
+                            "console output is not supported by the flow test parent".into(),
+                        ));
+                    }
                     WorkerMessage::HostCall(call) => {
+                        if matches!(call.kind, basal_proto::CallKind::Tool { .. }) {
+                            return Ending::Finished(basal_proto::ActivationResult::Failed(
+                                basal_proto::Failure::ProfileViolation { kind: call.kind },
+                            ));
+                        }
                         host_calls.push(call.clone());
                         if call.position != journal.entries.len() as u64 {
                             // A sync call recorded without an outcome comes

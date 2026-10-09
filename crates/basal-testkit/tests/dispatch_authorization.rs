@@ -181,12 +181,13 @@ fn listed_op_on_the_denylist_is_refused_at_dispatch() {
     assert!(world.mock.effects().is_empty());
 }
 
-/// A worker channel that, once activated, issues `sh` at position 0: what
+/// A worker channel that, once activated, issues a forbidden call at position 0: what
 /// a compromised worker could send, since the worker itself never would.
 struct Compromised {
     welcome: Welcome,
     activated: bool,
     killed: Arc<AtomicBool>,
+    message: WorkerMessage,
 }
 
 impl WorkerChannel for Compromised {
@@ -203,11 +204,7 @@ impl WorkerChannel for Compromised {
 
     fn recv(&mut self, _timeout: Duration) -> Result<WorkerMessage, ChannelError> {
         if std::mem::take(&mut self.activated) {
-            return Ok(WorkerMessage::HostCall(HostCall {
-                position: 0,
-                kind: CallKind::Primitive(Primitive::Sh),
-                args: JsonText::new("{\"command\":\"id\"}").expect("small"),
-            }));
+            return Ok(self.message.clone());
         }
         Err(ChannelError::Closed)
     }
@@ -228,6 +225,11 @@ fn a_compromised_worker_cannot_issue_sh() {
         welcome: real.welcome().clone(),
         activated: false,
         killed: killed.clone(),
+        message: WorkerMessage::HostCall(HostCall {
+            position: 0,
+            kind: CallKind::Primitive(Primitive::Sh),
+            args: JsonText::new("{\"command\":\"id\"}").expect("small"),
+        }),
     };
     real.kill();
     let end = rt.activate(&run_id, &mut fake).expect("activation");
@@ -236,6 +238,64 @@ fn a_compromised_worker_cannot_issue_sh() {
         "{end:?}"
     );
     assert!(killed.load(Ordering::SeqCst), "the worker was not killed");
+    assert!(rt.calls(&run_id).expect("calls").is_empty());
+    assert_eq!(query_i64(&rt, "SELECT COUNT(*) FROM call_audit"), 0);
+    assert_eq!(world.mock.total_sends(), 0);
+}
+
+#[test]
+fn a_compromised_worker_cannot_issue_tool() {
+    let world = World::new("auth-tool-worker");
+    let rt = runtime(&world);
+    let run_id = admit(&rt, &world, "return 1;");
+    let mut real = world.source.spawn().expect("worker");
+    let killed = Arc::new(AtomicBool::new(false));
+    let mut fake = Compromised {
+        welcome: real.welcome().clone(),
+        activated: false,
+        killed: killed.clone(),
+        message: WorkerMessage::HostCall(HostCall {
+            position: 0,
+            kind: CallKind::Tool {
+                name: "echo".into(),
+            },
+            args: JsonText::null(),
+        }),
+    };
+    real.kill();
+    let end = rt.activate(&run_id, &mut fake).expect("activation");
+    assert!(
+        matches!(&end, ActivationEnd::Failed { kind, .. } if kind == "profile_violation"),
+        "{end:?}"
+    );
+    assert!(killed.load(Ordering::SeqCst), "the worker was not killed");
+    assert!(rt.calls(&run_id).expect("calls").is_empty());
+    assert_eq!(query_i64(&rt, "SELECT COUNT(*) FROM call_audit"), 0);
+    assert_eq!(world.mock.total_sends(), 0);
+}
+
+#[test]
+fn a_compromised_worker_cannot_send_console() {
+    let world = World::new("auth-console-worker");
+    let rt = runtime(&world);
+    let run_id = admit(&rt, &world, "return 1;");
+    let mut real = world.source.spawn().expect("worker");
+    let killed = Arc::new(AtomicBool::new(false));
+    let mut fake = Compromised {
+        welcome: real.welcome().clone(),
+        activated: false,
+        killed: killed.clone(),
+        message: WorkerMessage::Console {
+            line: "a 1\n".into(),
+        },
+    };
+    real.kill();
+    let end = rt.activate(&run_id, &mut fake).expect("activation");
+    assert!(
+        matches!(&end, ActivationEnd::Failed { kind, .. } if kind == "profile_violation"),
+        "{end:?}"
+    );
+    assert!(killed.load(Ordering::SeqCst));
     assert!(rt.calls(&run_id).expect("calls").is_empty());
     assert_eq!(query_i64(&rt, "SELECT COUNT(*) FROM call_audit"), 0);
     assert_eq!(world.mock.total_sends(), 0);

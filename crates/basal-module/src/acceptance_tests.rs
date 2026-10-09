@@ -6,6 +6,7 @@ fn welcome(confinement: Confinement) -> Welcome {
         protocol_version: PROTOCOL_VERSION,
         engine: "fixture".into(),
         prelude_hash: PreludeHash([0; 32]),
+        codemode_prelude_hash: PreludeHash([0; 32]),
         confinement,
     }
 }

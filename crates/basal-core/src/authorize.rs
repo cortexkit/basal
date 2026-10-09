@@ -190,6 +190,10 @@ pub fn check(
     args: &Value,
 ) -> Result<(), Refusal> {
     match kind {
+        CallKind::Tool { .. } => Err(Refusal::new(
+            "profile_violation",
+            "catalog tools are not available to flows",
+        )),
         CallKind::Op { module, op } => {
             // The shell check comes first, so a shell-capable op is refused
             // the same way whether or not the manifest lists it.

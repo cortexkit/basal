@@ -1,8 +1,7 @@
-//! The profile fence: no shell in the flow profile (the one unattended,
-//! operator-approved flows run under), by any route a script can take. The
-//! codemode profile, used interactively by an agent, does get `sh`. (The native bridge itself is covered by the engine's unit test
-//! `raw_bridge_cannot_issue_sh_in_flow_profile`, because a script cannot
-//! reach it.)
+//! Operator-approved flow scripts cannot reach a shell through the exposed API.
+//! Codemode exposes only catalog tools and console, tested in codemode.rs. The
+//! engine unit test `raw_bridge_cannot_issue_sh_in_flow_profile` also checks the
+//! Rust refusal when a call bypasses the script's API.
 
 mod common;
 
@@ -73,19 +72,5 @@ fn sh_is_unreachable_in_the_flow_profile() {
             .all(|c| c.kind != CallKind::Primitive(Primitive::Sh)),
         "{:?}",
         report.host_calls
-    );
-
-    // The control: the same call in the codemode profile reaches the host.
-    let mut codemode = common::parent();
-    codemode.profile = Profile::Codemode;
-    let report = codemode.run("c", "return await sh('ls');");
-    assert_eq!(report.value(), json!({"stdout": "mock shell", "exit": 0}));
-    assert_eq!(
-        report
-            .host_calls
-            .iter()
-            .map(|c| c.kind.clone())
-            .collect::<Vec<_>>(),
-        vec![CallKind::Primitive(Primitive::Sh)]
     );
 }

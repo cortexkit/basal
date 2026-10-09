@@ -171,11 +171,16 @@ pub fn parse_settlement(s: &str) -> Result<Settlement> {
 
 /// The stored form of a call kind: code 0 with module and op names for a
 /// module op, otherwise the primitive's wire code.
-pub fn kind_columns(kind: &CallKind) -> (i64, Option<&str>, Option<&str>) {
-    match kind {
+pub fn kind_columns(kind: &CallKind) -> Result<(i64, Option<&str>, Option<&str>)> {
+    Ok(match kind {
         CallKind::Op { module, op } => (0, Some(module.as_str()), Some(op.as_str())),
         CallKind::Primitive(p) => (i64::from(p.code()), None, None),
-    }
+        CallKind::Tool { .. } => {
+            return Err(CoreError::Corrupt(
+                "catalog tool cannot enter the flow journal".into(),
+            ));
+        }
+    })
 }
 
 pub fn kind_from_columns(

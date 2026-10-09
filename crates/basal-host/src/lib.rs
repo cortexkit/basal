@@ -177,6 +177,7 @@ pub fn op_label(kind: &CallKind) -> String {
         CallKind::Primitive(Primitive::Llm | Primitive::Classify) => "broca.session.send".into(),
         // Local primitives and the built-ins, which basal carries out itself.
         CallKind::Primitive(p) => p.name().into(),
+        CallKind::Tool { name } => format!("unsupported tool ({name})"),
     }
 }
 
