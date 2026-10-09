@@ -836,6 +836,81 @@ The ETW adjunct again produces **no trace**: provider-file `logman create` retur
 `0x80070490`, "Element not found," on both images. No provider or internal
 console operation is blamed without data. No further native run was launched.
 
+ No provider or internal
+ console operation is blamed without data. No further native run was launched
+ in that campaign.
+
+## Named ambient handles before input
+
+The identification runs are
+[37979376928](https://github.com/cortexkit/basal/actions/runs/37979376928),
+[37980061335](https://github.com/cortexkit/basal/actions/runs/37980061335), and
+[37980492496](https://github.com/cortexkit/basal/actions/runs/37980492496), compiled
+from `7d7ea8c8a5de233a61abfb382d6faf97a6c2c108`,
+`5798847db119dc83d3febc162f55fd795489de0e`, and
+`1e6135b5ad1ef0001746fe7438f91ad9885394aa`. Each names a handle by duplicating it
+and calling `NtQueryObject` `ObjectNameInformation`. Files also get
+`NtQueryInformationFile` `FileNameInformation`. The ALPC port also gets
+`NtAlpcQueryInformation` classes 0 through 4. No ALPC message is sent. The
+unchanged `full-gui-control` still completes with one successful new operation,
+`CreateThread`, and the same 27 / 28 handle totals. Its module list still includes
+System32 `apphelp.dll`.
+
+The close recipes use the same GUI full-LPAC token, job, mitigations and three
+pipes. They write the named inventory before probes. Their later module list omits
+`apphelp.dll` even in the recipe that closes no handle, so that omission is an
+inventory-call difference, not evidence that a particular close unloaded apphelp.
+
+| Handle | Latest / 2022 | Name and query | Creator evidence | Close result |
+|---|---:|---|---|---|
+| Directory `0x3` | 1 / 1 | `\KnownDlls`; object name succeeds | ntdll loader cache. Procmon shows no userspace open of this directory during the measured window, so the handle is already open when the snapshot starts. | Close succeeds, then the process dies `0xc0000008` (`STATUS_INVALID_HANDLE`) after input and before probe results. **Cannot be closed.** |
+| ALPC Port `0x1f0001` | 1 / 1 | Object name empty. Class 0 returns 16 bytes, flags `0x30000`, sequence 1. Classes 1, 2 and 4 return `0xc000000d`; class 3 returns `0xc0000078`. No server name or SID was returned. | Not established. It is not a named `\RPC Control` port: a new epmapper connection is separately denied. It is also not identified as the apphelp port. | Close succeeds on both images. The handle is absent from the second snapshot. The worker then completes every probe and exits 0, with the same one success, `CreateThread`. **Close it before input.** |
+| File `0x100003` | 0 / 1 | `\Device\KsecDD`. Object name succeeds. `FileNameInformation` returns `0xc0000003` because this device handle does not support that class. | Kernel security device, present only on Server 2022. Procmon records no userspace `CreateFile` for it in the GUI startup window. | Close succeeds. The handle is absent afterward. Probes complete and the process exits 0. **Close it before input on 2022.** |
+| File `0x120189`, two File `0x120196` | 3 / 3 | Anonymous pipes. Object name returns `0xc0000039`; file name is empty. Handle attribute `0x2` marks them inheritable, unlike every other handle. | The three handles in `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`. | Not closed. These are the intended stdio pipes. |
+| Event `0x1f0003` | 7 / 7 | Empty object name | Unnamed. Counts and access match ntdll thread-pool/wait objects, but no creation stack attributes each handle to ntdll, kernelbase, the CRT or Rust. | Not closed individually. |
+| IoCompletion `0x1f0003` | 2 / 2 | Empty object name | Same unnamed thread-pool attribution limit. | Same. |
+| TpWorkerFactory `0xf00ff` | 2 / 2 | Empty object name | The type itself is the thread-pool worker factory. | Same. |
+| IRTimer `0x100002` | 4 / 4 | Empty object name | Same unnamed thread-pool attribution limit. | Same. |
+| WaitCompletionPacket `0x1` | 6 / 5 | Empty object name | Same. The one-count image difference is measured, not explained by a creation stack. | Same. |
+| Semaphore `0x100003` | 0 / 2 | Empty object name | Server 2022 only. Same attribution limit. | Same. |
+| SchedulerSharedData `0x1` | 1 / 0 | Empty object name | Windows 11 only. No userspace open was observed. Its owner is not established beyond the kernel object type. | Not closed. Closing it was not isolated from the fatal thread-pool close. |
+
+Closing the unnamed Event, IoCompletion, TpWorkerFactory, IRTimer,
+WaitCompletionPacket and Semaphore handles together dies at `0xc0000008` during
+Rust entry, before the inventory write, on both images. That recipe therefore
+proves the set is load-owned and unsafe to remove wholesale. It does not prove
+that every member is required, because the fatal member was not isolated. A
+creation stack was not available: the kernel-object ETW session still returns
+`0x80070490` and Process Monitor does not record these object-manager creates.
+
+The thread-pool handles grant process-local wait, timer, completion and worker
+control on unnamed objects. They do not name a file, a network endpoint, another
+process, or a durable object. That is not a proof that no operation on them can
+reach another process; it is the measured identity and access. `CreateThread`
+remains the one successful new operation, so a thread-pool handle is not the only
+way the process can run concurrent work.
+
+`\KnownDlls` at access `0x3` grants directory query and traverse for the loader's
+known-DLL cache. It is not a writable namespace and not the package namespace.
+It still must stay: the worker cannot complete input after it is closed. The ALPC
+port remains the unresolved IPC object. Its server name and protocol were not
+returned by the five published port queries, so its cached context is unknown.
+The successful close removes that unknown channel before input; it does not
+identify which service had accepted the connection.
+
+After the two successful closes, the pre-input table is:
+
+| Image | Closed | Remaining besides three pipes | Must remain | Unnamed thread-pool residual |
+|---|---|---:|---|---|
+| windows-latest | ALPC port | 23 | `\KnownDlls`, `SchedulerSharedData` | 7 Event, 2 IoCompletion, 2 TpWorkerFactory, 4 IRTimer, 6 WaitCompletionPacket |
+| windows-2022 | ALPC port and `\Device\KsecDD` | 23 | `\KnownDlls` | 7 Event, 2 IoCompletion, 2 TpWorkerFactory, 4 IRTimer, 5 WaitCompletionPacket, 2 Semaphore |
+
+That is the bounded residual. It is not a three-pipe table. The two closes were
+measured in separate processes, not together in one process. Production acceptance
+still fails closed until a gate explicitly selects the GUI recipe, checks these
+names, checks that the ALPC and KsecDD handles are gone, and refuses a `\KnownDlls`
+handle that is missing or writable.
+
 ## Recommended Windows design changes
 
 1. **Use a GUI-subsystem worker with the original NULL-only LPAC primary as the
@@ -844,19 +919,22 @@ console operation is blamed without data. No further native run was launched.
    included), zero privileges/capabilities, the required job/mitigations, and an
    actual Untrusted primary before input. The detached CUI variant is a measured
    fallback/control, not a reason to keep a console dependency in the image.
-   System32 apphelp is observed only in the GUI startup module list; its
-   object operations were not separately measured. The GUI image does not reduce
+    System32 apphelp is observed only in the unchanged GUI startup module list.
+    Its shim database opens are closed before the handle snapshot; the startup
+    ALPC port was not identified as an apphelp port. The GUI image does not reduce
    handle totals relative to detached CUI; prefer it for its demonstrated
    console-free
    image contract, not for an unmeasured residual improvement. Keep explicit
    stdio pipes and independent PE subsystem/import checks.
-2. **Keep production Windows fail-closed until the ambient authority is bounded.**
-   A runnable token sequence is now measured, but 27 / 28 startup handles are not
-   three pipes. Identify and exercise the ALPC port, Directory, timer/thread-pool
-   objects and the 2022 read/write File; safely remove or explicitly contract
-   their authority before accepting untrusted input. Unknown identity, cached
-   credentials or brokered file/state/peer/network authority is not harmless.
-   Absence of Token handles alone is insufficient.
+2. **Keep production Windows fail-closed, and keep the measured residual explicit.**
+   The runnable GUI recipe still holds more than three pipes before input. The
+   [named inventory](#named-ambient-handles-before-input) identifies every one.
+   Close the unnamed ALPC port and, on Server 2022, `\Device\KsecDD` after load:
+   both closes succeed and the worker still completes its probes. Do not close
+   `\KnownDlls`; that close is fatal under the strict-handle policy. Keep the
+   unnamed thread-pool objects as a named residual: closing them together is also
+   fatal, and no creation stack separates a removable subset. Absence of Token
+   handles is not the boundary.
 3. **Construct the final restrictions before creation; lower only integrity after
    load.** The successful full recipes start with NULL-only restricting SID,
    deny-only groups and no privileges, then revert and lower the actual Low
@@ -895,8 +973,10 @@ console operation is blamed without data. No further native run was launched.
    the disposable install directory modified by earlier diagnostics; separately
    minimize environment/cwd/station authority and measure the resulting process.
 8. **Preserve object-specific imports and policy evidence.** Keep Userenv/Ole32/
-   User32 broker-only, record GUI apphelp and other actual startup paths, and
-   inventory modules after probes as well. Retain signature 5 versus the
+    User32 broker-only, record the actual startup module list, and
+    inventory modules after probes as well. The close recipes omit apphelp from
+    the post-probe list even when they close no handle, so do not treat that
+    omission as a successful apphelp removal. Retain signature 5 versus the
    validator's expected 1 and latest's Win32k 5 versus 1 rather than claiming
    exact-word equivalence. Existing baseline acceptance selects the
    failing console recipe; a future gate must explicitly select and verify the
