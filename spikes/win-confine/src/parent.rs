@@ -760,6 +760,7 @@ fn launch_variant(
             || sequence == "post-load-detached-control"
             || sequence == "lpac-context-control"
             || sequence == "lpac-context-detached-control";
+        let close_ambient = sequence == "full-gui-close-ambient";
         let _cwd_grant = if sequence == "post-load-cwd-grant-control" {
             Some(CwdGrant::new(sid)?)
         } else {
@@ -871,11 +872,16 @@ fn launch_variant(
         }
         let mut pi: PROCESS_INFORMATION = zeroed();
         let mut command = wide(&format!(
-            "\"{image}\" --child{}{}{}",
+            "\"{image}\" --child{}{}{}{}",
             if start_low { " --lower-integrity" } else { "" },
             if leak_only { " --probe-leak" } else { "" },
             if same_primary {
                 " --replace-primary"
+            } else {
+                ""
+            },
+            if close_ambient {
+                " --close-ambient"
             } else {
                 ""
             }
@@ -1611,6 +1617,7 @@ pub fn run() -> Result<()> {
                         "full-detached-control",
                         "chrome-untrusted-detached-control",
                         "full-gui-control",
+                        "full-gui-close-ambient",
                         "chrome-untrusted-gui-control",
                     ] {
                         let gui = sequence.contains("gui");

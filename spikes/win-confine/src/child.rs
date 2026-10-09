@@ -9,7 +9,7 @@ use windows_sys::Win32::{
     Foundation::*,
     Security::*,
     Storage::FileSystem::*,
-    System::{Diagnostics::ToolHelp::*, Memory::*, Registry::*, Threading::*},
+    System::{Console::*, Diagnostics::ToolHelp::*, Memory::*, Registry::*, Threading::*},
 };
 
 fn mitigations() -> Vec<Value> {
@@ -123,6 +123,7 @@ pub fn run() -> Result<()> {
         // No untrusted input is consumed under the loader's more permissive token.
         let lower_requested = std::env::args().any(|a| a == "--lower-integrity");
         let replacement_requested = std::env::args().any(|a| a == "--replace-primary");
+        let close_ambient = std::env::args().any(|a| a == "--close-ambient");
         // Borrow only the primary's adjustment right under the loader token.
         // No token handle with that right may survive into the input phase.
         let adjustment = if lower_requested {
@@ -192,6 +193,28 @@ pub fn run() -> Result<()> {
         if !no_token_handles {
             return Err("token handle or unidentified handle survived lockdown".into());
         }
+        // Name every handle present before input, then close ALPC, Directory and
+        // non-stdio File handles. Event, completion, worker-factory, timer and
+        // wait-packet handles stay open: closing them is a separate measurement
+        // because the loader may still use them. The second snapshot shows
+        // whether each close removed that handle before the first input byte.
+        let ambient = if close_ambient {
+            let stdio = [
+                GetStdHandle(STD_INPUT_HANDLE),
+                GetStdHandle(STD_OUTPUT_HANDLE),
+                GetStdHandle(STD_ERROR_HANDLE),
+            ];
+            Some(identify_and_close(
+                &stdio,
+                &["ALPC Port", "Directory", "File"],
+            )?)
+        } else {
+            None
+        };
+        let input_handles = ambient
+            .as_ref()
+            .and_then(|ambient| ambient["after"].as_array().cloned())
+            .unwrap_or(handles);
         let modules = loaded_modules()
             .map(|v| json!(v))
             .unwrap_or_else(|e| json!({"error":e}));
@@ -383,7 +406,7 @@ pub fn run() -> Result<()> {
                 error,
             ));
         }
-        let report = json!({"mode":input.mode,"self_lowering":self_lowering,"token_handles_absent":no_token_handles,"after_revert":{"present":still_impersonating,"open_error":no_token_error},"primary_token_open":{"success":token_opened,"error":token_open_error,"pseudo_handle_fallback":!token_opened},"primary_token":attestation,"mitigations":policies,"handle_table":handles,"loaded_modules":modules,"probes":probes});
+        let report = json!({"mode":input.mode,"self_lowering":self_lowering,"token_handles_absent":no_token_handles,"after_revert":{"present":still_impersonating,"open_error":no_token_error},"primary_token_open":{"success":token_opened,"error":token_open_error,"pseudo_handle_fallback":!token_opened},"primary_token":attestation,"mitigations":policies,"ambient_close":ambient,"handle_table":input_handles,"loaded_modules":modules,"probes":probes});
         serde_json::to_writer(std::io::stdout().lock(), &report).map_err(|e| e.to_string())?;
         std::io::stdout().flush().map_err(|e| e.to_string())?;
         Ok(())

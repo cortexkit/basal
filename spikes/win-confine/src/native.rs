@@ -7,7 +7,8 @@ use std::{
     ptr::null_mut,
 };
 use windows_sys::Win32::{
-    Foundation::*, Security::Authorization::*, Security::*, System::Threading::*,
+    Foundation::*, Security::Authorization::*, Security::*, System::IO::IO_STATUS_BLOCK,
+    System::Threading::*,
 };
 
 pub type Result<T> = std::result::Result<T, String>;
@@ -413,6 +414,7 @@ struct DirectoryEntry {
     kind: UnicodeString,
 }
 #[repr(C)]
+#[derive(Clone, Copy)]
 struct HandleEntry {
     handle: HANDLE,
     count: usize,
@@ -618,6 +620,29 @@ unsafe extern "system" {
         size: u32,
         returned: *mut u32,
     ) -> i32;
+    fn NtQueryInformationFile(
+        handle: HANDLE,
+        io: *mut IO_STATUS_BLOCK,
+        buffer: *mut c_void,
+        size: u32,
+        class: u32,
+    ) -> i32;
+    fn NtDuplicateObject(
+        source_process: HANDLE,
+        source: HANDLE,
+        target_process: HANDLE,
+        target: *mut HANDLE,
+        access: u32,
+        attributes: u32,
+        options: u32,
+    ) -> i32;
+    fn NtAlpcQueryInformation(
+        port: HANDLE,
+        class: u32,
+        buffer: *mut c_void,
+        size: u32,
+        returned: *mut u32,
+    ) -> i32;
     fn NtOpenSection(out: *mut HANDLE, access: u32, attrs: *mut ObjectAttributes) -> i32;
     fn NtOpenEvent(out: *mut HANDLE, access: u32, attrs: *mut ObjectAttributes) -> i32;
     fn NtOpenMutant(out: *mut HANDLE, access: u32, attrs: *mut ObjectAttributes) -> i32;
@@ -752,6 +777,15 @@ pub fn handle_table() -> Result<Vec<Value>> {
     handle_table_for(unsafe { GetCurrentProcess() })
 }
 pub fn handle_table_for(process: HANDLE) -> Result<Vec<Value>> {
+    let entries = handle_entries(process)?;
+    // A snapshot handle can close on a DLL-owned background thread before
+    // its type is queried. The process mitigation that rejects an invalid
+    // handle makes that race fatal, so type names come from the global
+    // type list and its stable indices.
+    let types = object_types()?;
+    Ok(entries.iter().map(|h|json!({"handle":h.handle as usize,"type_index":h.type_index,"type":types.get(&h.type_index),"granted_access":hex(h.access),"attributes":hex(h.attributes)})).collect())
+}
+fn handle_entries(process: HANDLE) -> Result<Vec<HandleEntry>> {
     unsafe {
         let mut buffer = vec![0usize; 16384];
         let mut returned = 0;
@@ -766,12 +800,222 @@ pub fn handle_table_for(process: HANDLE) -> Result<Vec<Value>> {
             return Err(format!("ProcessHandleInformation: {}", hex(status as u32)));
         }
         let snapshot = &*buffer.as_ptr().cast::<HandleSnapshot>();
-        let entries = std::slice::from_raw_parts(snapshot.handles.as_ptr(), snapshot.count);
-        // A snapshot handle can close on a DLL-owned background thread before
-        // querying its type. Strict-handle policy makes that race fatal. Resolve
-        // stable kernel type indices from the global type list instead.
+        Ok(std::slice::from_raw_parts(snapshot.handles.as_ptr(), snapshot.count).to_vec())
+    }
+}
+#[repr(C)]
+struct ObjectNameInformation {
+    name: UnicodeString,
+}
+// ObjectNameInformation is class 1. The name bytes follow the fixed
+// header, so a short buffer returns the required length and is retried once.
+// A successful empty name is recorded as empty; a negative status is recorded
+// unchanged. Neither result is replaced with a guessed object name.
+fn object_name(handle: HANDLE) -> Value {
+    unsafe {
+        let mut bytes = 1024u32;
+        let mut buffer = vec![0u8; bytes as usize];
+        let mut returned = 0;
+        let mut status = NtQueryObject(handle, 1, buffer.as_mut_ptr().cast(), bytes, &mut returned);
+        if (status as u32 == 0xc0000004 || status as u32 == 0x80000005) && returned > bytes {
+            bytes = returned;
+            buffer.resize(bytes as usize, 0);
+            status = NtQueryObject(handle, 1, buffer.as_mut_ptr().cast(), bytes, &mut returned);
+        }
+        if status < 0 {
+            return json!({"NTSTATUS": hex(status as u32), "returned": returned});
+        }
+        if (returned as usize) < size_of::<ObjectNameInformation>() {
+            return json!({"NTSTATUS": "0x00000000", "truncated": returned});
+        }
+        let info = &*buffer.as_ptr().cast::<ObjectNameInformation>();
+        let name = if info.name.buffer.is_null() || info.name.length == 0 {
+            String::new()
+        } else {
+            let start = info.name.buffer as usize;
+            let end = start + info.name.length as usize;
+            let base = buffer.as_ptr() as usize;
+            if start < base || end > base + returned as usize {
+                return json!({"NTSTATUS": "0x00000000", "name_outside_buffer": true});
+            }
+            String::from_utf16_lossy(std::slice::from_raw_parts(
+                info.name.buffer,
+                info.name.length as usize / 2,
+            ))
+        };
+        json!({"NTSTATUS": "0x00000000", "name": name})
+    }
+}
+// FileNameInformation is class 9. Its returned name begins after the
+// length DWORD and is the NT path, which can differ from the object-manager
+// name. A negative status is retained instead of guessing the file.
+fn file_name(handle: HANDLE) -> Value {
+    unsafe {
+        let mut buffer = vec![0u8; 1024];
+        let mut io: IO_STATUS_BLOCK = zeroed();
+        let status = NtQueryInformationFile(
+            handle,
+            &mut io,
+            buffer.as_mut_ptr().cast(),
+            buffer.len() as u32,
+            9,
+        );
+        if status < 0 {
+            return json!({"NTSTATUS": hex(status as u32)});
+        }
+        let length = *buffer.as_ptr().cast::<u32>() as usize;
+        if 4 + length > buffer.len() {
+            return json!({"NTSTATUS": "0x00000000", "truncated": length});
+        }
+        json!({
+            "NTSTATUS": "0x00000000",
+            "name": String::from_utf16_lossy(std::slice::from_raw_parts(
+                buffer.as_ptr().add(4).cast::<u16>(),
+                length / 2,
+            ))
+        })
+    }
+}
+#[repr(C)]
+struct AlpcBasicInformation {
+    flags: u32,
+    sequence: u32,
+    context: *mut c_void,
+}
+// NtAlpcQueryInformation class 0 returns port flags; class 2 returns the
+// connected SID information documented by the public ntdll headers. A failed
+// query stays in the report. This call sends no ALPC message.
+fn alpc_identity(handle: HANDLE) -> Value {
+    unsafe {
+        let mut basic: AlpcBasicInformation = zeroed();
+        let mut returned = 0;
+        let basic_status = NtAlpcQueryInformation(
+            handle,
+            0,
+            (&mut basic as *mut AlpcBasicInformation).cast(),
+            size_of::<AlpcBasicInformation>() as u32,
+            &mut returned,
+        );
+        let basic_returned = returned;
+        let mut server = vec![0u8; 256];
+        returned = 0;
+        let server_status = NtAlpcQueryInformation(
+            handle,
+            2,
+            server.as_mut_ptr().cast(),
+            server.len() as u32,
+            &mut returned,
+        );
+        json!({
+            "basic": if basic_status < 0 {
+                json!({"NTSTATUS": hex(basic_status as u32), "returned": basic_returned})
+            } else {
+                json!({"NTSTATUS": "0x00000000", "flags": hex(basic.flags), "sequence": basic.sequence, "returned": basic_returned})
+            },
+            "server": if server_status < 0 {
+                json!({"NTSTATUS": hex(server_status as u32), "returned": returned})
+            } else {
+                json!({"NTSTATUS": "0x00000000", "returned": returned, "bytes": hex_bytes(&server[..returned as usize])})
+            }
+        })
+    }
+}
+fn hex_bytes(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+// Identify one stable handle without using the process snapshot as a query
+// target. The duplicate is closed here; the caller's handle is not.
+fn identify_handle(process: HANDLE, entry: &HandleEntry, kind: Option<&str>) -> Value {
+    unsafe {
+        let mut duplicate = null_mut();
+        let status = NtDuplicateObject(
+            process,
+            entry.handle,
+            GetCurrentProcess(),
+            &mut duplicate,
+            0,
+            0,
+            2, // DUPLICATE_SAME_ACCESS
+        );
+        if status < 0 {
+            return json!({
+                "handle": entry.handle as usize,
+                "type": kind,
+                "granted_access": hex(entry.access),
+                "duplicate": hex(status as u32),
+            });
+        }
+        let duplicate = Handle(duplicate);
+        let mut identity = json!({
+            "handle": entry.handle as usize,
+            "type": kind,
+            "type_index": entry.type_index,
+            "granted_access": hex(entry.access),
+            "attributes": hex(entry.attributes),
+            "object_name": object_name(duplicate.0),
+        });
+        if kind == Some("File") {
+            identity["file_name"] = file_name(duplicate.0);
+        }
+        if kind == Some("ALPC Port") {
+            identity["alpc"] = alpc_identity(duplicate.0);
+        }
+        identity
+    }
+}
+// Name every handle, then close the requested ambient types and prove the
+// close against a second snapshot. Stdio pipes are never candidates. A close
+// that fails is recorded and the handle stays in the surviving inventory.
+pub fn identify_and_close(keep_stdio: &[HANDLE], close_types: &[&str]) -> Result<Value> {
+    unsafe {
+        let process = GetCurrentProcess();
         let types = object_types()?;
-        Ok(entries.iter().map(|h|json!({"handle":h.handle as usize,"type_index":h.type_index,"type":types.get(&h.type_index),"granted_access":hex(h.access),"attributes":hex(h.attributes)})).collect())
+        let before = handle_entries(process)?;
+        let identified: Vec<Value> = before
+            .iter()
+            .map(|entry| {
+                identify_handle(
+                    process,
+                    entry,
+                    types.get(&entry.type_index).map(String::as_str),
+                )
+            })
+            .collect();
+        let mut closed = Vec::new();
+        for entry in &before {
+            if keep_stdio.contains(&entry.handle) {
+                continue;
+            }
+            let kind = types.get(&entry.type_index).map(String::as_str);
+            if !kind.is_some_and(|kind| close_types.contains(&kind)) {
+                continue;
+            }
+            let ok = CloseHandle(entry.handle) != 0;
+            closed.push(json!({
+                "handle": entry.handle as usize,
+                "type": kind,
+                "granted_access": hex(entry.access),
+                "success": ok,
+                "error": if ok { 0 } else { GetLastError() },
+            }));
+        }
+        let after = handle_table()?;
+        let closed_values: Vec<u64> = closed
+            .iter()
+            .filter(|entry| entry["success"] == true)
+            .map(|entry| entry["handle"].as_u64().unwrap())
+            .collect();
+        let surviving: Vec<Value> = after
+            .iter()
+            .filter(|entry| closed_values.contains(&entry["handle"].as_u64().unwrap_or(0)))
+            .cloned()
+            .collect();
+        Ok(json!({
+            "before": identified,
+            "closed": closed,
+            "after": after,
+            "closed_handles_still_present": surviving,
+        }))
     }
 }
 pub fn granted_access(handle: HANDLE) -> Value {
@@ -1146,6 +1390,40 @@ mod tests {
         assert_eq!(std::mem::offset_of!(ObjectTypeInfo, index), 90);
         assert_eq!(size_of::<SecurityAttribute>(), 40);
         assert_eq!(size_of::<SecurityAttributes>(), 16);
+        assert_eq!(size_of::<ObjectNameInformation>(), 16);
+        assert_eq!(size_of::<AlpcBasicInformation>(), 16);
+        assert_eq!(size_of::<IO_STATUS_BLOCK>(), 16);
+    }
+    #[test]
+    fn named_object_query_returns_its_path_and_closes_only_the_duplicate() {
+        unsafe {
+            let mut name = wide("\\BaseNamedObjects");
+            let mut unicode = us(&mut name);
+            let mut attrs = oa(&mut unicode);
+            let mut directory = null_mut();
+            let status = NtOpenDirectoryObject(&mut directory, 1, &mut attrs);
+            assert_eq!(status, 0, "{}", hex(status as u32));
+            let directory = Handle(directory);
+            let before = handle_table().unwrap();
+            let entry = HandleEntry {
+                handle: directory.0,
+                count: 0,
+                pointers: 0,
+                access: 1,
+                type_index: 0,
+                attributes: 0,
+                reserved: 0,
+            };
+            let identity = identify_handle(GetCurrentProcess(), &entry, Some("Directory"));
+            assert_eq!(identity["object_name"]["NTSTATUS"], "0x00000000");
+            assert_eq!(identity["object_name"]["name"], "\\BaseNamedObjects");
+            let after = handle_table().unwrap();
+            assert!(after.iter().any(|h| h["handle"] == directory.0 as usize));
+            assert_eq!(
+                after.iter().filter(|h| h["type"] == "Directory").count(),
+                before.iter().filter(|h| h["type"] == "Directory").count()
+            );
+        }
     }
     #[test]
     fn token_buffer_can_back_a_zero_entry_c_declaration() {
