@@ -202,7 +202,19 @@ struct Isolation {
 }
 impl Isolation {
     fn new() -> Result<Self, Denial> {
-        let base = drive_path(&std::env::temp_dir())?;
+        Self::in_base(&std::env::temp_dir())
+    }
+
+    fn in_base(base: &Path) -> Result<Self, Denial> {
+        let base = drive_path(base)?;
+        // GetTempPathW normally includes a trailing separator. Remove only that
+        // separator from this host-selected base, not from repository inputs;
+        // the fs walk still rejects ambiguous components and reparse points.
+        let mut units: Vec<u16> = base.as_os_str().encode_wide().collect();
+        while units.len() > 3 && units.last() == Some(&(b'\\' as u16)) {
+            units.pop();
+        }
+        let base = PathBuf::from(OsString::from_wide(&units));
         let base = base
             .to_str()
             .ok_or_else(|| Denial::invalid("temp directory is not Unicode"))?;
