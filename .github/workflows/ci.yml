@@ -347,3 +347,77 @@ jobs:
         run: |
           cargo +1.88.0 check --workspace --all-targets --locked
           cargo +1.88.0 check --workspace --all-targets --locked --features basal-module/rig-kill-hook
+
+  # Windows build baseline. basal does not build on Windows yet, and the causes
+  # are measured here rather than guessed. The job runs the workspace check and
+  # tests on windows-latest and records what fails without failing the
+  # workflow: every build and test step continues on error, the job itself
+  # continues on error, and no other job depends on it. When a step fails, a
+  # second run collects the complete list (`--keep-going` for the check,
+  # `--no-fail-fast` for the tests), since the plain commands stop at the
+  # first failure. Every log is uploaded as the windows-baseline-logs artifact.
+  windows-baseline:
+    if: github.event_name != 'schedule'
+    runs-on: windows-latest
+    continue-on-error: true
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install stable Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+          cargo --version
+      - name: Record installed Rust version
+        id: rust
+        run: echo "version=$(rustc --version | cut -d ' ' -f 2)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-windows-baseline-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-windows-baseline-
+      - name: Prepare the log directory
+        run: mkdir -p "$RUNNER_TEMP/windows-baseline"
+      - name: Check every workspace target
+        id: check
+        continue-on-error: true
+        timeout-minutes: 40
+        run: cargo check --workspace --all-targets --locked 2>&1 | tee "$RUNNER_TEMP/windows-baseline/check.log"
+      - name: Check every workspace target, continuing past failed crates
+        if: steps.check.outcome == 'failure'
+        continue-on-error: true
+        timeout-minutes: 40
+        run: cargo check --workspace --all-targets --locked --keep-going 2>&1 | tee "$RUNNER_TEMP/windows-baseline/check-keep-going.log"
+      - name: Test the workspace
+        id: test
+        continue-on-error: true
+        timeout-minutes: 40
+        run: cargo test --workspace --locked 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test.log"
+      - name: Test the workspace, continuing past failed tests
+        if: steps.test.outcome == 'failure'
+        continue-on-error: true
+        timeout-minutes: 40
+        run: cargo test --workspace --locked --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-no-fail-fast.log"
+      - name: Summarize the baseline
+        if: always()
+        run: |
+          {
+            echo "## Windows baseline ($(rustc --version))"
+            echo
+            echo "- cargo check --workspace --all-targets --locked: ${{ steps.check.outcome }}"
+            echo "- cargo test --workspace --locked: ${{ steps.test.outcome }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: windows-baseline-logs
+          path: ${{ runner.temp }}/windows-baseline
+          if-no-files-found: error
