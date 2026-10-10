@@ -14,7 +14,11 @@ use windows_sys::Win32::System::Threading::{
 
 pub(super) fn basal_pid() -> Option<String> {
     let home = PathBuf::from(std::env::var_os("HOME")?);
-    let expected = home.parent()?.join("bin/ckdev-basal.exe");
+    let expected = home.parent()?.join("bin").join("ckdev-basal.exe");
+    pid_of_image(&expected)
+}
+
+fn pid_of_image(expected: &std::path::Path) -> Option<String> {
     // SAFETY: snapshot handles are newly owned unless the call returns INVALID_HANDLE_VALUE.
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snapshot == INVALID_HANDLE_VALUE {
@@ -49,6 +53,21 @@ pub(super) fn basal_pid() -> Option<String> {
         more = unsafe { Process32NextW(snapshot.as_raw_handle(), &mut row) };
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn process_snapshot_finds_the_current_image_and_refuses_an_absent_image() {
+        let image = std::env::current_exe().unwrap();
+        assert_eq!(pid_of_image(&image), Some(std::process::id().to_string()));
+        assert_eq!(
+            pid_of_image(&image.with_file_name("absent-rig-image.exe")),
+            None
+        );
+    }
 }
 
 pub(super) fn ck_output(
