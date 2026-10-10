@@ -82,7 +82,7 @@ mod tests {
 
     #[test]
     fn codemode_wire_codes_preserve_shell_and_round_trip_tool_json() {
-        assert_eq!(PROTOCOL_VERSION, 5);
+        assert_eq!(PROTOCOL_VERSION, 6);
         // Checked at run time, not in a const block, so lowering the ceiling
         // fails this test instead of the build, and the mutation control for
         // the ceiling sees a red test.
@@ -156,6 +156,17 @@ mod tests {
         };
         let frame = encode_worker_frame(&message).unwrap();
         assert_eq!(frame[4], 106);
+        assert_eq!(read_worker_message(&mut frame.as_slice()).unwrap(), message);
+        assert!(decode_parent_payload(&frame[4..]).is_err());
+    }
+
+    #[test]
+    fn codemode_warning_has_a_distinct_tag_and_round_trips() {
+        let message = WorkerMessage::Warning {
+            message: "unhandled rejection".into(),
+        };
+        let frame = encode_worker_frame(&message).unwrap();
+        assert_eq!(frame[4], 107);
         assert_eq!(read_worker_message(&mut frame.as_slice()).unwrap(), message);
         assert!(decode_parent_payload(&frame[4..]).is_err());
     }
@@ -290,8 +301,8 @@ mod tests {
     }
 
     fn confinement_payload(suffix: &[u8]) -> Vec<u8> {
-        // A version-5 Welcome with an empty engine name and two zero hashes.
-        let mut payload = vec![101, 0, 0, 0, 5, 0, 0, 0, 0];
+        // A version-6 Welcome with an empty engine name and two zero hashes.
+        let mut payload = vec![101, 0, 0, 0, 6, 0, 0, 0, 0];
         payload.extend_from_slice(&[0; 64]);
         payload.extend_from_slice(suffix);
         payload

@@ -2,11 +2,11 @@
 
 Core's scoped relay exposes these five operations: `flow.install`, `flow.dry_run`, `flow.disable`, `flow.enable` and `flow.list`. Caller identity comes from the daemon's route stamp, never request parameters. `flow.health` is not relayed: core uses it to decide whether a flow's claim to replace a source remains healthy, and the operator uses its runtime-wide figures.
 
-The codemode operations `codemode.run`, `codemode.result` and `codemode.cancel` are core-only and not agent-relayed. See [codemode operations](#codemode-operations).
+Basal also provides the agent-facing `codemode` tool directly: the daemon delivers named tool requests to basal, rather than core forwarding them. See [codemode](#codemode).
 
 Package management is not agent-relayed: `package.register` is available to the attested operator and core; `package.get`, `flow.instance.ensure`, and `flow.instance.remove` are core-only. The attested operator is a caller on a route the daemon stamps as the reserved `callosum` module, the operator's own module. A plain local caller is a process holding the daemon's direct connection key, on a route with no scope, which the daemon cannot vouch for. A plain local caller refused any of these receives `operator_attestation_required`, consistently with the other management operations; other unauthorized callers receive `not_permitted`. See [package manifests](packages.md).
 
-Shapes below use type names, `|` for alternatives, and a one-element array to describe each array item. `?` on a request key means optional. Reply keys are always present, except in the codemode result shape, where `?` marks a key that is omitted when absent. `object` and `any` describe open JSON values.
+Shapes below use type names, `|` for alternatives, and a one-element array to describe each array item. `?` on a request key means optional. Reply keys are always present unless a key is marked optional with `?`. `object` and `any` describe open JSON values.
 
 ## flow.install
 
@@ -100,125 +100,47 @@ Reply (machine-checked by `list_contract`):
 ```
 `disabled` and `last_run` may each be null, but their keys must be present. All times are Unix epoch milliseconds. `pending_version` is the newest version with an open card, or null; `approved_version` is null until approval. `state` uses the same approval-first computation as `flow.health`. `last_run` is the most recent finished run, not an in-flight run. `needs_reconcile` is true if any run awaits reconciliation. The disable's actor kind, reason and time are the recorded disable, or null after enabling. `by` is `operator`, `owner` (the owning agent), `auto` (the runtime's loop protection) or `core`. A `core` disable may mean core revoked the version, holds no install of that version, or approved a different code hash for it; it may also mean `grant_lost` or `agent_retired`. Losing core's approval also clears the approved version, so the flow lists as `unapproved`; approval of a newer version clears that stop, but does not override an operator or owner stop.
 
-## Codemode operations
+## Codemode
 
-Codemode runs one short JavaScript program that calls tools from a catalog and returns one result. prefrontal-core owns the agent-facing tool, builds the catalog and issues the run's scope; basal runs the program in a fresh confined worker and dispatches each tool call on that scope.
+Basal is a `tool-provider/v1` provider with one agent tool, `codemode`. Core grants access and owns each ephemeral run scope; it does not carry the tool or provide its input schemas. The daemon verifies the caller's principal and stamps the incoming route with scope owner, ref, epoch and authoritative attributes including `agent_id`; basal takes its agent and invoking scope only from that stamp. Arguments cannot override either. Each child provider route carries the invoking route's `BindIdentity` unchanged (project root, harness, session and any other protocol identity fields), so relative paths and shell working directories resolve as for the agent's direct calls. Bind identity is configuration only: basal never derives agent or scope authority from it.
 
-`codemode.run`, `codemode.result` and `codemode.cancel` are core-only and not agent-relayed: only prefrontal-core, on its own route stamped `reserved:prefrontal-core`, may call them, and core's scoped relay never forwards them for an agent. A plain local caller is refused `operator_attestation_required`; the operator, agents and every other caller are refused `not_permitted`. A refusal is an op error with a code and a message and has no result body. Every success reply is the [codemode result](#codemode-result).
-
-## codemode.run
-
-Core-only, not agent-relayed. Kind: mutate.
-
-Params:
+The named tool request uses the daemon wire protocol's [`ToolCallRequest`](https://docs.rs/subc-protocol/0.30.0/subc_protocol/tool_call/struct.ToolCallRequest.html):
 ```json
-{"run_id":"string","agent_id":"string","program":"string","catalog":[{"name":"string","input_schema":"any","module":"string","op":"string"}],"limits?":{"wall_ms?":"integer","tool_calls?":"integer","output_bytes?":"integer"},"description?":"string","scope":{"owner":"object","ref":"string","epoch":"integer"},"deadline_ms":"integer"}
+{"name":"codemode","arguments":{"code":"string","description?":"string","limits?":{"wall_ms?":"integer","tool_calls?":"integer","output_bytes?":"integer"}},"call_key?":"string","schema_pin?":"string"}
 ```
-- `program` is a function body, wrapped the way flow scripts are; its return value is the run's `value`. It sees only `tools` (one async function per catalog `name`), `console.log` and the frozen JavaScript intrinsics.
-- `catalog` entries have exactly these four keys. `op` is the tool name sent to `module`'s tool provider; the program calls `tools[name]`. `input_schema` is a JSON Schema draft 2020-12 that checks every input before it is sent; it may refer only to itself (`#` or `#/...`). An empty array is valid.
-- `limits` may hold only `wall_ms`, `tool_calls` (1 to 200, default 200) and `output_bytes` (1 to 65,536, default 65,536). The run's wall deadline is `min(deadline_ms, admission time + wall_ms)`; omitted `wall_ms` means `deadline_ms`.
-- `description` is optional: the one-line summary the agent wrote, which the person's phone shows. It is a string of at most 1,024 UTF-8 bytes with no line break (U+000A, U+000D, U+2028 or U+2029). basal stores it with the run and `codemode.result` returns it unchanged. It plays no part in idempotency.
-- `scope` is the live scope core issued for this run: `owner` is a reserved principal (`{"kind":"reserved","module_id":"..."}`), `ref` is non-blank, and `epoch` is the scope epoch. basal asks the daemon to describe the scope and admits the run only if it is live at that epoch and its attested `agent_id` and `run_id` equal the request's. Every tool call is dispatched on that scope, so the daemon stamps it on each call.
-- `deadline_ms` is an absolute Unix-millisecond time on basal's runtime clock.
 
-The reply is returned as soon as the run is recorded; the program keeps running if the caller disconnects. Its `status` is `running`, or terminal if the run ended at admission. A run admitted at or after `deadline_ms` is recorded `budget_exhausted:wall` with `duration_ms` 0 and never starts a worker.
+The JavaScript function body sees only `tools.<name>(input)`, `console.log(...)`, and frozen intrinsics. Each tool has the same input and provider permission rules as the agent's direct calls, including writes and shell. Only codemode itself is excluded. Model tools are not implemented yet.
 
-Admission checks run in this order; the first failure refuses with the code shown and records nothing:
-1. A known `run_id` returns the stored run, whatever the other parameters are (program, catalog, scope, limits or description), with its admitted `catalog_digest` and `description`. It never starts a second run or sends a call. A `run_id` pruned by retention is refused `unknown_run`.
-2. `unsupported_platform` on Windows.
-3. `no_scope`: `scope` missing or malformed, an owner that is not a reserved principal, or a blank `ref`.
-4. `no_scope` when the daemon's description of the scope is not `live` at `epoch`; `scope_mismatch` when its attested `agent_id` or `run_id` differs from the request's.
-5. `invalid_request`: a missing or non-string `run_id`, `agent_id` or `program`; a missing `catalog`; a missing or non-integer `deadline_ms`; a `program` over 1 MiB; a non-string, over-long or multi-line `description`.
-6. `invalid_limits`: an unknown key, a non-integer, a value below 1, or a value above its maximum.
-7. `invalid_catalog`: not an array; an entry with a missing or extra key; a duplicate `name`; a `name` not matching `^[A-Za-z_][A-Za-z0-9_]*$`, longer than 128 bytes, or one of `__proto__`, `constructor`, `prototype`, `tools` and `console`; an empty or over-128-byte `module` or `op`; an `input_schema` that does not compile or refers outside itself.
-8. `busy`: the attested agent already has 2 running codemode runs, or basal has 16.
+- A keyed run's ID is domain-separated BLAKE3 over length-framed `(agent_id, call_key)`. A repeated key attaches to its running run or returns its finished result, never starting another worker or dispatching another call.
+- Without a key, a fresh OS-random run ID executes once, with no deduplication, withdrawal or late result. Its result warns that a lost reply cannot be recovered.
+- `description` is optional, at most 1,024 UTF-8 bytes, and has no line breaks.
+- `limits` may only lower wall time (1–1,800,000 ms), tool calls (1–200), and captured output (1–65,536 bytes).
+- The parent enforces 30 minutes of wall time, excluding intervals when the worker is blocked and every in-flight call is held on a person. Person wait has one cumulative 10-minute cap per run. The confined worker enforces 10 seconds of JavaScript CPU, 64 MiB heap and 1 MiB stack.
+- Windows refuses `unsupported_platform` until worker confinement is available there.
 
-Reply: the [codemode result](#codemode-result).
-
-## codemode.result
-
-Core-only, not agent-relayed. Kind: query.
-
-Params:
+Basal records the run before calling core's `codemode.run_scope.open` over its own route stamped `reserved:basal` (the daemon-verified basal module principal), never by borrowing a program's agent authority:
 ```json
-{"run_id":"string"}
+{"agent_id":"string","invoking_scope":{"ref":"string","epoch":"integer"},"run_id":"string","expires_at_ms":"integer"}
 ```
-Returns the run's current or final state. An unknown run id, a flow run id, or a run pruned 24 hours after it ended is refused `unknown_run`; a non-string `run_id` is refused `invalid_request`.
-
-Reply: the [codemode result](#codemode-result).
-
-## codemode.cancel
-
-Core-only, not agent-relayed. Kind: mutate.
-
-Params:
+Core replies:
 ```json
-{"run_id":"string"}
+{"scope":{"ref":"string","epoch":"integer"},"expires_at_ms":"integer","catalog":[{"tool":"string","module":"string","op":"string"}]}
 ```
-An unknown or pruned run id is refused `unknown_run`. A run that has already ended returns its stored state unchanged. A running run is stopped: its worker is killed, its queued calls become `cancelled`, calls already sent without a recorded answer become `outcome_unknown` / `no_outcome`, its scope is released, and it ends `cancelled`. An answer that arrives after the cancel is not recorded.
+Expiry is fixed at admission time + 41 minutes. Basal checks the returned scope's daemon stamp for matching agent and run, and reads input schemas only from the daemon's declarations for the returned module/op. Core refusal codes, messages and optional details are preserved unchanged. No worker starts after a refused open or mismatched stamp.
 
-Reply: the [codemode result](#codemode-result).
+Every terminal path calls core's `codemode.run_scope.close` with `{run_id, epoch}` before exposing the result. Close replies `{closed, already_closed}`. Cancellation closes the scope before killing the worker. Startup interrupts unfinished runs, closes leftover scopes and never resends a call. If close fails, the result carries a warning and the scope's fixed expiry remains its outer bound.
 
-## Codemode result
+### Results and long calls
 
-Result (machine-checked by `codemode_results_decode_against_documented_shape`):
-```json
-{"status":"running|completed|failed|budget_exhausted:js_cpu|budget_exhausted:memory|budget_exhausted:stack|budget_exhausted:wall|budget_exhausted:tool_calls|cancelled|interrupted","value?":"any","error?":{"code":"string","message":"string"},"output":"string","calls":[{"tool":"string","outcome":"pending|ok|error|refused|consent_unavailable|tool_unavailable|outcome_unknown|cancelled","code?":"string","duration_ms?":"integer"}],"warnings":[{"code":"output_truncated","message":"string"}],"catalog_digest":"string","description?":"string","duration_ms":"integer"}
-```
-Keys marked `?` are omitted when absent, never null:
-- `value` is the program's JSON return value, present only when `status` is `completed`.
-- `error` is `{code, message}`, present exactly when `status` is `failed`, `budget_exhausted:*` or `interrupted`, with a code from the terminal table below and a non-empty message.
-- `description` is present only when the admitted run carried one.
-- In each call, `code` is present only for the outcomes that carry one (see the call outcomes table), and `duration_ms` only once basal handed the call to the daemon for its provider (a call still queued, or refused before sending, has none).
+The tool returns a rendered `text` containing a status line (status, duration, call count and person-wait time), JSON return value (at most 16 KiB), captured output, a per-call outcome/person-wait/duration table, and warnings. The reply also carries those fields as structured JSON. Budget termination preserves partial output and known call outcomes; sent calls without a recorded answer are `outcome_unknown`, never retried. Queued calls proven unsent are `cancelled`.
 
-The other keys are always present:
-- `output` is the kept `console.log` text: each call's arguments (strings as they are, other values as JSON) joined by one space, with a newline after each line. Lines are kept while the total stays within the output budget; the line that would cross it and every later line are dropped, with one `output_truncated` warning. Output kept before a cancel or a kill is still returned.
-- `calls` lists every tool call in the order the program made them. Provider answers are never returned. A call's `duration_ms` is runtime-clock milliseconds from dispatch to its recorded outcome, or to the run's end for a call that ends `outcome_unknown` / `no_outcome`; time spent queued is excluded.
-- `warnings` is an array of `{code, message}`; the only code is `output_truncated`, at most once.
-- `catalog_digest` is the lowercase hex BLAKE3-256 of the admitted catalog's RFC 8785 canonical JSON, entries sorted by `name`. See [catalog digest vectors](#catalog-digest-vectors).
-- `duration_ms` is runtime-clock milliseconds since admission, frozen when the run ends.
+Keyed calls that outlive the foreground wait reply with `status: "running"` and `run_id`. Basal declares the `late_results` session capability. The custodian pulls `late_results {since: null | cursor, limit?}` and acknowledges with `late_results.ack {through: cursor}`; replies use the tool-provider contract's entries/cursor/more shapes. Only the custodian principal verified by the daemon on its route receives entries: the scope owner for a direct call, or the carrier for an onward call. A changed incarnation or future cursor refuses `cursor_incarnation_changed`. Unacked results survive scope closure and remain for 24 hours, then become identity-preserving `expired` entries; retention is bounded to 1,000 results per session and 1,000 expired entries per owner.
 
-### Terminal codes
-
-| Terminal path | `status` | `error.code` |
-| --- | --- | --- |
-| The program returned a JSON value of at most 16,384 bytes | `completed` | none |
-| A budget was exhausted (JS CPU, memory, stack, wall or tool calls) | `budget_exhausted:<kind>` | equal to `status` |
-| The worker made a call other than a tool call | `failed` | `profile_violation` |
-| The worker's prelude (the JavaScript that sets up `tools` and `console` before the program runs) does not match the one basal expects | `failed` | `engine_mismatch` |
-| A tool input over 1 MiB | `failed` | `arguments_too_large` (the message has the size) |
-| A return value over 16,384 bytes of JSON | `failed` | `result_too_large` (the message has the size) |
-| A return value that is not JSON | `failed` | `result_not_json` |
-| An uncaught error in the program | `failed` | `script` |
-| The program awaits a promise no call will settle | `failed` | `stalled` |
-| Any other engine failure | `failed` | `engine_error` |
-| The worker exited, or could not start, without basal stopping it | `failed` | `worker_lost` |
-| The scope closed and a later call was refused | `interrupted` | the scope reason: `scope_ended`, `scope_not_live`, `scope_not_synced` or `scope_changed` |
-| basal restarted while the run was running | `interrupted` | `basal_restarted` |
-| `codemode.cancel` | `cancelled` | none |
-
-When basal itself stops the worker (on a cancel, at the wall deadline, or at any other end of the run), the run is never reported `worker_lost`.
-
-### Call outcomes
-
-| Outcome | Produced when | `code` | Ends the run |
-| --- | --- | --- | --- |
-| `pending` | queued, or sent with no answer yet; only while the run is `running` | none | no |
-| `ok` | the provider answered with a value of at most 1 MiB | none | no |
-| `error` | the provider answered with a value over 1 MiB, or refused the call | `value_too_large`, or the provider's refusal code | no |
-| `refused` | basal refused the call before sending it | `unknown_tool`, `invalid_input`, `shell_capable`, `not_in_catalog` or `queue_full` | no |
-| `refused` | the daemon refused the call because the scope closed | `scope_ended`, `scope_not_live`, `scope_not_synced` or `scope_changed` | yes, `interrupted` |
-| `consent_unavailable` | the provider could not obtain consent | `consent_unavailable` | no |
-| `tool_unavailable` | the call could not be routed to a ready provider | `tool_unavailable` | no |
-| `outcome_unknown` | the connection was lost, the reply timed out, or the reply could not be read | `connection_lost`, `reply_timeout` or `reply_unreadable` | no |
-| `outcome_unknown` | the run ended after the call was sent and before an answer was recorded | `no_outcome` | already ended |
-| `cancelled` | the run ended while the call was still queued | none | already ended |
-
-Each call is sent at most once and never retried; an unknown outcome is reported, never re-sent. A call outcome other than `ok` that does not end the run rejects the program's promise with an `Error` carrying `code`, `tool` and `outcome`, which the program can catch.
+`tool.withdraw {call_key, carrier?, scope?}` follows the tool-provider contract's carrier/owner/scope checks. It cancels the run. A call proven not to have started replies `withdrawn`; an already started call replies `already_started` with an outcome, or `unknown`; a completed call returns its retained result. Basal stores the first withdrawal answer and returns identical bytes to every permitted caller and repeat. Role ops (`role.describe`, `tool.catalog`, `tool.withdraw`, `late_results`, `late_results.ack`) are named requests on the tool route, never model tools.
 
 ## Catalog digest vectors
 
-`catalog_digest` is the lowercase hex BLAKE3-256 of the catalog array's RFC 8785 (JCS) canonical JSON, with its entries sorted by `name`. Canonical JSON sorts object members by name, has no whitespace, writes numbers the way JavaScript does (`1.0` is `1`, `1e21` is `1e+21`), writes non-ASCII text as itself and escapes control characters. Core computes the same digest; these vectors pin it. Each shows a catalog as sent, its canonical JSON, and its digest. `crates/basal-core/tests/codemode_digest_vectors.rs` reproduces every vector with its own canonical JSON and BLAKE3 code and checks basal's digest against them.
+`catalog_digest` is the lowercase hex BLAKE3-256 of the catalog array's RFC 8785 (JCS) canonical JSON, with its entries sorted by `name`. Canonical JSON sorts object members by name, has no whitespace, writes numbers the way JavaScript does (`1.0` is `1`, `1e21` is `1e+21`), writes non-ASCII text as itself and escapes control characters. basal computes this digest for its run records; these vectors pin it. Each shows a catalog as sent, its canonical JSON, and its digest. `crates/basal-core/tests/codemode_digest_vectors.rs` reproduces every vector with its own canonical JSON and BLAKE3 code and checks basal's digest against them.
 
 ### Vector `base`
 

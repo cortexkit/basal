@@ -17,6 +17,7 @@ pub mod https;
 pub mod mock;
 pub mod parent;
 pub mod process;
+pub mod run_scopes;
 
 pub use binaries::{DevBinaries, dev_binary};
 pub use channel::{FrameCounts, ProcessChannel, ProcessSource, worker_binary};

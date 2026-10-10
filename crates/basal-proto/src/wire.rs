@@ -20,6 +20,7 @@ const TAG_BLOCKED: u8 = 103;
 const TAG_FINISHED: u8 = 104;
 const TAG_REFUSED: u8 = 105;
 const TAG_CONSOLE: u8 = 106;
+const TAG_WARNING: u8 = 107;
 
 // Codes 1..=21 are primitives, including the permanently assigned shell code 11.
 const CALL_TOOL: u8 = 22;
@@ -51,6 +52,7 @@ pub(crate) fn worker_hint(message: &WorkerMessage) -> usize {
     match message {
         WorkerMessage::HostCall(call) => call.args.len().saturating_add(2 * MAX_NAME_BYTES + 32),
         WorkerMessage::Console { line } => line.len().saturating_add(5),
+        WorkerMessage::Warning { message } => message.len().saturating_add(5),
         WorkerMessage::Blocked { awaiting } => awaiting.len().saturating_mul(8).saturating_add(5),
         WorkerMessage::Finished {
             result: ActivationResult::Completed { value },
@@ -695,6 +697,10 @@ pub(crate) fn encode_worker(enc: &mut Encoder, m: &WorkerMessage) {
             enc.u8(TAG_CONSOLE);
             enc.limited_str("console line", line, MAX_VALUE_BYTES);
         }
+        WorkerMessage::Warning { message } => {
+            enc.u8(TAG_WARNING);
+            enc.limited_str("warning", message, MAX_VALUE_BYTES);
+        }
     }
 }
 
@@ -754,6 +760,9 @@ pub(crate) fn decode_worker(dec: &mut Decoder<'_>) -> Result<WorkerMessage, Deco
         TAG_REFUSED => Ok(WorkerMessage::Refused(read_refusal(dec)?)),
         TAG_CONSOLE => Ok(WorkerMessage::Console {
             line: dec.string("console line", MAX_VALUE_BYTES)?,
+        }),
+        TAG_WARNING => Ok(WorkerMessage::Warning {
+            message: dec.string("warning", MAX_VALUE_BYTES)?,
         }),
         tag => Err(DecodeError::UnknownTag {
             field: "worker message",

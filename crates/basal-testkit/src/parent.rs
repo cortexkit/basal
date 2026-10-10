@@ -320,6 +320,11 @@ impl TestParent {
                             "console output is not supported by the flow test parent".into(),
                         ));
                     }
+                    WorkerMessage::Warning { .. } => {
+                        return Ending::Broken(ParentError::Protocol(
+                            "rejection warnings are not supported by the flow test parent".into(),
+                        ));
+                    }
                     WorkerMessage::HostCall(call) => {
                         if matches!(call.kind, basal_proto::CallKind::Tool { .. }) {
                             return Ending::Finished(basal_proto::ActivationResult::Failed(

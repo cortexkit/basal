@@ -32,6 +32,9 @@ pub enum WaitReply {
 /// names a position the activation is waiting on and carries a delivery
 /// order greater than `last_order`.
 pub trait HostLink {
+    fn warning(&mut self, _message: &str) -> Result<(), LinkError> {
+        Ok(())
+    }
     /// Sends console output without allocating a host-call position.
     fn console(&mut self, _line: &str) -> Result<(), LinkError> {
         Err(LinkError("console output unsupported by this link".into()))
@@ -188,6 +191,11 @@ fn unexpected(message: &ParentMessage) -> Refusal {
 }
 
 impl<R: Read, W: Write> HostLink for Channel<R, W> {
+    fn warning(&mut self, message: &str) -> Result<(), LinkError> {
+        self.send(&WorkerMessage::Warning {
+            message: message.into(),
+        })
+    }
     fn console(&mut self, line: &str) -> Result<(), LinkError> {
         self.send(&WorkerMessage::Console { line: line.into() })
     }

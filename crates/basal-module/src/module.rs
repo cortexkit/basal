@@ -74,6 +74,35 @@ pub struct Module {
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(60);
 
 impl Module {
+    /// The tool surface for an embedding with a bound daemon route. Context
+    /// must contain that route's verified principal and ScopeStamp, as supplied
+    /// by the daemon; model arguments are never a source of caller authority.
+    pub fn handle_tool(
+        &self,
+        context: &crate::tool::Context,
+        request: cortexkit_role_tool_provider::call::ToolCallRequest,
+        foreground: Duration,
+    ) -> Result<serde_json::Value, subc_protocol::ErrorBody> {
+        if request.name != "codemode" {
+            return self.codemode.role(context, &request);
+        }
+        let keyed = request.call_key.is_some();
+        let id = self.codemode.begin(context, &request)?;
+        let timeout = if keyed {
+            foreground
+        } else {
+            Duration::from_secs(42 * 60)
+        };
+        match self.codemode.wait(&id, timeout)? {
+            Some(result) => Ok(result),
+            None if keyed => Ok(serde_json::json!({"status":"running","run_id":id})),
+            None => Err(subc_protocol::ErrorBody::new(
+                "outcome_unknown",
+                "keyless reply was lost",
+            )),
+        }
+    }
+
     /// Opens the store, recovers, and builds the rest. Nothing reads or
     /// drives a run before `Runtime::recover` has put every run a previous
     /// process left `running` back in line. The engine's loop is not

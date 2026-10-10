@@ -662,15 +662,25 @@ fn classify_exception<'js>(value: Value<'js>) -> ActivationResult {
     })
 }
 
+type Rejections = Rc<RefCell<Vec<(Persistent<Value<'static>>, String)>>>;
+
 struct Activation {
     // Field order is drop order: persistent handles must be released before
     // the context, and the context before the runtime.
     hooks: Option<Hooks>,
+    rejections: Rejections,
     ctx: Context,
     rt: Runtime,
     shared: Rc<Shared>,
     #[cfg(test)]
     expose_raw_bridge: bool,
+}
+
+impl Drop for Activation {
+    fn drop(&mut self) {
+        self.rt.set_host_promise_rejection_tracker(None);
+        self.rejections.borrow_mut().clear();
+    }
 }
 
 /// Runs one activation to its end.
@@ -739,6 +749,32 @@ fn run(
     // outside the VM where no script can set it, so a memory refusal is told
     // apart from a script that merely throws an out-of-memory error.
     rt.set_memory_limit(0);
+    let warnings: Rejections = Rc::default();
+    if request.profile == Profile::Codemode {
+        let tracked = warnings.clone();
+        // Retain rejected JavaScript promise objects until handled or finished.
+        // Otherwise garbage collection can reuse an object's address, allowing
+        // a later handled promise to erase an earlier rejection warning. At most
+        // 256 objects are retained; release them before their context/runtime.
+        rt.set_host_promise_rejection_tracker(Some(Box::new(
+            move |ctx, promise, reason, handled| {
+                let mut tracked = tracked.borrow_mut();
+                if handled {
+                    if let Some(index) = tracked.iter().position(|(root, _)| {
+                        root.clone().restore(&ctx).is_ok_and(|root| root == promise)
+                    }) {
+                        tracked.remove(index);
+                    }
+                } else if tracked.len() < 256 {
+                    let text = reason
+                        .as_string()
+                        .and_then(|reason| reason.to_string().ok())
+                        .unwrap_or_else(|| "unhandled promise rejection".into());
+                    tracked.push((Persistent::save(&ctx, promise), truncate(text)));
+                }
+            },
+        )));
+    }
     rt.set_max_stack_size(request.budgets.stack_bytes as usize);
     let interrupt = shared.clone();
     rt.set_interrupt_handler(Some(Box::new(move || {
@@ -759,6 +795,7 @@ fn run(
     };
     let mut activation = Activation {
         hooks: None,
+        rejections: warnings.clone(),
         ctx,
         rt,
         shared,
@@ -766,6 +803,20 @@ fn run(
         expose_raw_bridge,
     };
     let result = activation.drive(request);
+    let messages = warnings
+        .borrow()
+        .iter()
+        .map(|(_, message)| message.clone())
+        .collect::<Vec<_>>();
+    activation.rt.set_host_promise_rejection_tracker(None);
+    warnings.borrow_mut().clear();
+    for message in messages {
+        if let Err(error) = activation.shared.link.borrow_mut().warning(&message) {
+            return failed(Failure::Engine {
+                detail: error.to_string(),
+            });
+        }
+    }
     // Drop the VM before answering, so nothing of this activation's heap
     // outlives it in the worker.
     drop(activation);

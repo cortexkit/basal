@@ -495,6 +495,13 @@ impl Activation<'_> {
                         false,
                     );
                 }
+                WorkerMessage::Warning { .. } => {
+                    return self.fail(
+                        "profile_violation",
+                        "rejection warnings are not available to flows".into(),
+                        false,
+                    );
+                }
             };
             if let Flow::Done { .. } = flow {
                 return Ok(flow);

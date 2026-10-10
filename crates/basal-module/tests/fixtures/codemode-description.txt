@@ -1,0 +1,9 @@
+Run a short JavaScript program that calls your own tools and returns one result.
+
+- Call a tool with `await tools.<name>(input)`: any of your tools except codemode, with the same input you'd pass to it directly. The tool decides allow, ask and deny exactly as for a direct call, and an ask waits for its answer.
+- `console.log(...)` output is captured, up to 64 KiB.
+- The program's last `return value` is the result, as JSON, up to 16 KiB.
+- There is no file, network, shell or other global access except through your tools.
+- Limits: 10 s of JavaScript CPU, 30 min wall time (time spent waiting on a person doesn't count, up to 10 min), 200 tool calls.
+
+The result lists each call with its outcome. A call whose outcome is unknown was never retried, so check before repeating it.

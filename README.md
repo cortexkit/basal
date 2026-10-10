@@ -1,10 +1,16 @@
 # basal
 
-basal is the flow engine for the CortexKit fleet. A flow is a small script with a manifest: it reacts to an event or a schedule, reads facts and module data, decides, and writes what an agent should hear about into that agent's sinks through prefrontal-core. Every flow is approved by the operator before it runs, and approval binds to the exact code: any edit is a new version that needs a new approval.
+basal is the flow engine and the `codemode` tool provider for the CortexKit fleet. A flow is a small script with a manifest: it reacts to an event or a schedule, reads facts and module data, decides, and writes what an agent should hear about into that agent's sinks through prefrontal-core. Every flow is approved by the operator before it runs, and approval binds to the exact code: any edit is a new version that needs a new approval.
 
 The name comes from the basal ganglia, the part of the brain that selects actions and runs habits and routines.
 
 basal runs as a module supervised by the subc daemon, with the binary `ck-basal`. Scripts run in a separate, confined QuickJS worker, `ck-basal-worker`, that holds no durable state: the parent process checks every call a script makes against its approved manifest, journals it before it leaves and records its outcome when it comes back, so a crash anywhere resumes the run without repeating an effect.
+
+## Codemode
+
+Basal provides one agent-facing tool, `codemode({code, description?, limits?})`, on its tool route, where the daemon verifies the caller's principal and stamps its agent and scope identities. A short JavaScript program can await the agent's own tools, capture console output and return one JSON result. Core grants access and opens the run scope; basal owns the description, run records, budgets and rendered result. Tool schemas come from the daemon catalog, and each provider decides allow, ask and deny from the agent's stamp, just as for a direct call. Model tools are a later extension.
+
+A keyed call derives its run ID from the stamped agent and call key; retries attach without replay. A keyless call executes once under an OS-random ID and warns that its reply cannot be recovered. Basal's parent process (outside the confined worker) caps wall time at 30 minutes plus a separate cumulative 10 minutes waiting only on people: the worker must be blocked and every in-flight call held on a person. It closes the scope before cancellation kills its worker, and interrupts leftover runs at startup. Long keyed calls are collected through `late_results` and cancelled through `tool.withdraw`. Windows refuses `unsupported_platform`. See [the tool and role operations](docs/ops.md#codemode).
 
 ## Crates
 
@@ -14,7 +20,7 @@ basal runs as a module supervised by the subc daemon, with the binary `ck-basal`
 | `basal-worker` | `ck-basal-worker`: the confined QuickJS engine. It confines itself before reading anything: Seatbelt on macOS, seccomp and Landlock on Linux. See [docs/sandbox.md](docs/sandbox.md). |
 | `basal-core` | Runtime state: the SQLite store, admission, the run state machine, the journal and mailbox, manifests and authorization, the scheduler and the activation driver. |
 | `basal-host` | The `Host` boundary that flow calls go through (module ops, facts, model calls, sinks), the adapters to the fleet's modules, and a deterministic mock. |
-| `basal-module` | `ck-basal`: the supervised module, with its subc manifest, the worker pool, the flow ops, dry runs and consent cards. |
+| `basal-module` | `ck-basal`: the supervised module, with its subc manifest, the codemode tool-provider role, the worker pool, the flow ops, dry runs and consent cards. |
 | `basal-testkit` | Test parents, crash and cut harnesses, and benchmarks. |
 | `basal-rig` | Test support for the isolated ckdev-flows rig only: a callosum stub and the live contract suite against a real prefrontal-core. Never deployed. |
 

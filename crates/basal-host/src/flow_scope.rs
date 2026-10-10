@@ -329,6 +329,14 @@ impl<H: Copy + Eq> ScopedRoutes<H> {
         }
         Ok(())
     }
+
+    pub fn ended(&self, flow: &str) -> bool {
+        self.flows.get(flow).is_some_and(|(_, scope)| {
+            self.routes
+                .iter()
+                .any(|(key, (_, handle, _))| &key.scope == scope && handle.is_none())
+        })
+    }
 }
 
 impl FlowScope {

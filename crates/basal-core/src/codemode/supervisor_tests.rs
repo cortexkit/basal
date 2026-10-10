@@ -37,9 +37,25 @@ struct FakeTransport {
     readiness_clock: Mutex<Option<(Clock, i64)>>,
     store: Arc<Store>,
     provider: Mutex<Option<Arc<Provider>>>,
+    scope_end: Mutex<Option<Arc<basal_host::transport::RunScopeEnded>>>,
 }
 
 impl Transport for FakeTransport {
+    fn tool_for_run(
+        &self,
+        run: &str,
+        module: &str,
+        name: &str,
+        input: Value,
+        key: &str,
+        _: &basal_host::transport::RunToolOptions,
+    ) -> std::result::Result<Value, WireError> {
+        self.tool_for_flow(run, module, name, input, key)
+    }
+    fn watch_run_scope(&self, run: &str, ended: Arc<basal_host::transport::RunScopeEnded>) {
+        assert_eq!(run, "codemode:r");
+        *self.scope_end.lock().unwrap() = Some(ended);
+    }
     fn catalog(&self) -> std::result::Result<Value, WireError> {
         self.events.lock().unwrap().push("catalog".into());
         if self.catalog_error.load(Ordering::SeqCst) {
@@ -89,8 +105,17 @@ impl Transport for FakeTransport {
         }
         self.readiness.lock().unwrap().clone().map_or(Ok(()), Err)
     }
-    fn management(&self, _: &str, _: &str, _: Value) -> std::result::Result<Value, WireError> {
-        panic!("no management calls")
+    fn management(
+        &self,
+        module: &str,
+        op: &str,
+        params: Value,
+    ) -> std::result::Result<Value, WireError> {
+        assert_eq!(module, "prefrontal-core");
+        assert_eq!(op, "codemode.run_scope.close");
+        assert_eq!(params, json!({"run_id":"r","epoch":7}));
+        self.events.lock().unwrap().push("core_close".into());
+        Ok(json!({"closed":true,"already_closed":false}))
     }
     fn tool(&self, _: &str, _: &str, _: Value, _: &str) -> std::result::Result<Value, WireError> {
         panic!("no unscoped calls")
@@ -310,6 +335,7 @@ impl Fixture {
             readiness_clock: Mutex::new(None),
             store: store.clone(),
             provider: Mutex::new(provider),
+            scope_end: Mutex::new(None),
         });
         let catalog = Arc::new(MockCatalog::new());
         catalog.set_op(
@@ -574,7 +600,7 @@ fn supervisor_registers_routes_records_before_delivery_and_releases() {
     assert_eq!(pending["status"], "running");
     assert_eq!(
         pending["calls"][0],
-        json!({"tool":"read", "outcome":"pending"})
+        json!({"tool":"read", "outcome":"pending", "waited_on_person":false})
     );
     f.clock.advance(37);
     sent.reply.send(Ok(json!({"answer":42}))).unwrap();
@@ -681,13 +707,15 @@ fn per_call_checks_are_ordered_and_never_write_intent_before_readiness() {
     );
     f.host.catalog_error.store(false, Ordering::SeqCst);
     for (position, name, code) in [
-        (3, "shell", "shell_capable"),
-        (4, "marked", "shell_capable"),
+        (3, "shell", "not_in_catalog"),
         (5, "absent", "not_in_catalog"),
     ] {
         f.issue(position, name, json!(null));
         rejection(f.delivery(), name, "refused", code);
     }
+    f.issue(4, "marked", json!(null));
+    f.attempt().reply.send(Ok(json!(true))).unwrap();
+    assert_eq!(f.delivery().settlement, Settlement::Fulfilled);
     *f.host.readiness.lock().unwrap() = Some(FlowRefusal::new(
         RefusalReason::NoFlowScope,
         "notes",
@@ -704,6 +732,7 @@ fn per_call_checks_are_ordered_and_never_write_intent_before_readiness() {
     assert!(
         f.calls()
             .iter()
+            .filter(|c| c.tool != "marked")
             .all(|c| c.intent_at.is_none() && c.duration_ms.is_none())
     );
     assert!(f.attempts.try_recv().is_err());
@@ -842,7 +871,7 @@ fn every_non_scope_wire_error_is_recorded_then_rejected_without_ending_run() {
                 code: "denied".into(),
                 message: "no".into(),
             },
-            "error",
+            "denied",
             "denied",
         ),
         (
@@ -870,7 +899,7 @@ fn every_non_scope_wire_error_is_recorded_then_rejected_without_ending_run() {
         ConsentUnavailable,
     ] {
         let (outcome, code) = if reason == ConsentUnavailable {
-            ("consent_unavailable", "consent_unavailable")
+            ("refused", "consent_unavailable")
         } else {
             ("tool_unavailable", "tool_unavailable")
         };
@@ -1602,4 +1631,235 @@ fn shutdown_joins_the_worker_reader_of_a_cancelled_run() {
         "cancelled"
     );
     drop(held);
+}
+
+fn block_worker(f: &Fixture) {
+    let awaiting = f
+        .calls()
+        .iter()
+        .filter(|call| call.outcome == Outcome::Pending)
+        .map(|call| call.position)
+        .collect();
+    f.worker.send(WorkerMessage::Blocked { awaiting }).unwrap();
+    let deadline = Instant::now() + TIMEOUT;
+    while !f.supervisor.0.worker_blocked.load(Ordering::SeqCst) {
+        assert!(Instant::now() < deadline, "blocked frame was not processed");
+        thread::yield_now();
+    }
+}
+
+fn save_core_scope(f: &Fixture) {
+    f.host.store.write(|tx| {
+        tx.execute("INSERT INTO codemode_scopes(run_id,request,opened) VALUES ('r',?1,?2)",rusqlite::params![
+            json!({"agent_id":"agent","invoking_scope":{"ref":"agent","epoch":2},"run_id":"r","expires_at_ms":2_460_100}).to_string(),
+            json!({"scope":{"ref":"scope-r","epoch":7},"expires_at_ms":2_460_100,"catalog":[]}).to_string()])?;
+        Ok(())
+    }).unwrap();
+}
+
+#[test]
+fn person_wait_hook_exhausts_one_accumulated_run_budget() {
+    let f = Fixture::new();
+    f.start(
+        &[("read", "notes", "read", json!({}))],
+        Limits::default(),
+        1_800_100,
+    );
+    f.parent.recv_timeout(TIMEOUT).unwrap();
+    f.issue(0, "read", json!({}));
+    let sent = f.attempt();
+    block_worker(&f);
+    f.supervisor.held("r", 0, true).unwrap();
+    f.clock.advance(200_000);
+    f.supervisor.held("r", 0, false).unwrap();
+    sent.reply.send(Ok(json!(1))).unwrap();
+    f.delivery();
+    f.clock.advance(100);
+    f.issue(1, "read", json!({}));
+    let second = f.attempt();
+    block_worker(&f);
+    f.supervisor.held("r", 1, true).unwrap();
+    f.clock.advance(400_000);
+    let result = f.terminal();
+    assert_eq!(result["status"], "budget_exhausted:person_wait");
+    assert_eq!(result["person_wait_ms"], 600_000);
+    assert_eq!(result["calls"][0]["outcome"], "ok");
+    assert_eq!(result["calls"][1]["outcome"], "outcome_unknown");
+    assert_eq!(result["calls"][1]["waited_on_person"], true);
+    drop(second);
+}
+
+#[test]
+fn person_time_requires_blocked_worker_and_every_flight_held() {
+    let f = Fixture::new();
+    f.start(
+        &[("read", "notes", "read", json!({}))],
+        Limits::default(),
+        1_800_100,
+    );
+    f.parent.recv_timeout(TIMEOUT).unwrap();
+    f.issue(0, "read", json!({}));
+    let first = f.attempt();
+    f.supervisor.held("r", 0, true).unwrap();
+    f.clock.advance(100);
+    f.supervisor.held("r", 0, true).unwrap();
+    f.issue(1, "read", json!({}));
+    let second = f.attempt();
+    block_worker(&f);
+    f.clock.advance(100);
+    f.supervisor.held("r", 1, true).unwrap();
+    f.clock.advance(500);
+    f.supervisor.held("r", 0, false).unwrap();
+    first.reply.send(Ok(json!(1))).unwrap();
+    f.delivery();
+    second.reply.send(Ok(json!(2))).unwrap();
+    f.delivery();
+    f.finish("3");
+    assert_eq!(f.terminal()["person_wait_ms"], 500);
+}
+
+#[test]
+fn cancel_closes_core_scope_before_worker_kill() {
+    let f = Fixture::new();
+    f.standard();
+    save_core_scope(&f);
+    f.supervisor.cancel("r").unwrap();
+    let events = f.host.events.lock().unwrap();
+    assert!(
+        events.iter().position(|e| e == "core_close").unwrap()
+            < events.iter().position(|e| e == "kill").unwrap(),
+        "{events:?}"
+    );
+    assert_eq!(events.iter().filter(|e| *e == "core_close").count(), 1);
+}
+
+#[test]
+fn restart_closes_leftover_core_scope_without_starting_worker() {
+    let f = Fixture::new();
+    f.host
+        .store
+        .write(|tx| store::insert_run(tx, &new_run("r"), None))
+        .unwrap();
+    save_core_scope(&f);
+    f.supervisor.recover().unwrap();
+    assert_eq!(
+        f.supervisor.result("r").unwrap().unwrap()["status"],
+        "interrupted"
+    );
+    assert_eq!(
+        f.host
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| *e == "core_close")
+            .count(),
+        1
+    );
+    assert!(f.source.0.lock().unwrap().is_some());
+}
+
+#[test]
+fn tool_provider_migration_preserves_calls_and_schedules_legacy_scope_close() {
+    let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.pragma_update(None, "foreign_keys", true).unwrap();
+    for migration in &crate::schema::MIGRATIONS[..19] {
+        conn.execute_batch(migration.statements).unwrap();
+    }
+    let tx = conn.transaction().unwrap();
+    let mut run = new_run("r");
+    run.scope =
+        r#"{"owner":{"kind":"reserved","module_id":"prefrontal-core"},"ref":"legacy","epoch":7}"#;
+    store::insert_run(&tx, &run, None).unwrap();
+    store::insert_call(&tx, "r", 0, "read", 4, CallStart::Intent { at: 100 }).unwrap();
+    store::record_outcome(&tx, "r", 0, Outcome::Ok, None, 137).unwrap();
+    store::insert_call(&tx, "r", 1, "read", 4, CallStart::Queued).unwrap();
+    tx.commit().unwrap();
+    conn.execute_batch(crate::schema::MIGRATIONS[19].statements)
+        .unwrap();
+    let calls = store::calls(&conn, "r").unwrap();
+    assert_eq!(calls[0].outcome, Outcome::Ok);
+    assert_eq!(calls[0].entered_at, Some(100));
+    assert_eq!(calls[0].duration_ms, Some(37));
+    assert_eq!(calls[1].outcome, Outcome::Pending);
+    assert_eq!(calls[1].intent_at, None);
+    let opened: String = conn
+        .query_row(
+            "SELECT opened FROM codemode_scopes WHERE run_id='r'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let opened: basal_host::run_scope::Opened = serde_json::from_str(&opened).unwrap();
+    assert_eq!(
+        opened.scope,
+        basal_host::run_scope::Scope {
+            reference: "legacy".into(),
+            epoch: 7
+        }
+    );
+    assert!(
+        conn.execute(
+            "UPDATE codemode_calls SET outcome='error',code='bad' WHERE run_id='r' AND position=0",
+            []
+        )
+        .is_err()
+    );
+    let tx = conn.transaction().unwrap();
+    store::settle_pending_calls(&tx, "r", 140).unwrap();
+    store::commit_terminal(&tx, "r", &exhausted(Budget::PersonWait), 140).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(
+        store::calls(&conn, "r").unwrap()[1].outcome,
+        Outcome::Cancelled
+    );
+    assert!(
+        conn.execute(
+            "UPDATE codemode_runs SET output='changed' WHERE run_id='r'",
+            []
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn daemon_scope_end_interrupts_without_waiting_for_another_dispatch() {
+    let f = Fixture::new();
+    f.standard();
+    f.issue(0, "read", json!({}));
+    let sent = f.attempt();
+    f.host.scope_end.lock().unwrap().as_ref().unwrap()("scope_expired");
+    let result = f.terminal();
+    assert_eq!(result["status"], "interrupted");
+    assert_eq!(result["error"]["code"], "scope_expired");
+    assert_eq!(result["calls"][0]["outcome"], "outcome_unknown");
+    drop(sent);
+}
+
+#[test]
+fn raw_scope_expired_refusal_and_provider_denial_have_distinct_outcomes() {
+    let f = Fixture::new();
+    f.standard();
+    f.issue(0, "read", json!({}));
+    f.attempt()
+        .reply
+        .send(Err(WireError::Refused {
+            code: "denied".into(),
+            message: "provider policy".into(),
+        }))
+        .unwrap();
+    rejection(f.delivery(), "read", "denied", "denied");
+    f.issue(1, "read", json!({}));
+    f.attempt()
+        .reply
+        .send(Err(WireError::RefusedDetails {
+            code: "scope_expired".into(),
+            message: "expired epoch".into(),
+            detail: json!({}),
+        }))
+        .unwrap();
+    let result = f.terminal();
+    assert_eq!(result["status"], "interrupted");
+    assert_eq!(result["error"]["code"], "scope_expired");
+    assert_eq!(result["calls"][0]["outcome"], "denied");
 }

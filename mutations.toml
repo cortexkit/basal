@@ -2859,8 +2859,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-module/src/manifest.rs"
-old = ".capabilities(None)"
-new = ".capabilities(Some(subc_protocol::manifest::CapabilityDeclarations { provides: vec![\"Not A Capability\".into()], requires: Vec::new(), must_never_reach: Vec::new() }))"
+old = 'provides: vec![cortexkit_role_tool_provider::PROVIDES.into()],'
+new = 'provides: vec!["Not A Capability".into()], // NON-VACUITY BREAK'
 
 [[control]]
 id = "the-manifest-leaves-out-an-op-the-module-serves"
@@ -2875,8 +2875,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-module/src/manifest.rs"
-old = "operations: OPERATIONS\n                .iter()"
-new = "operations: OPERATIONS\n                .iter()\n                .skip(1)"
+old = "operations: OPERATIONS\n                    .iter()"
+new = "operations: OPERATIONS\n                    .iter()\n                    .skip(1) // NON-VACUITY BREAK"
 
 [[control]]
 id = "an-agent-id-in-a-scope-nobody-vouched-for-is-taken-as-the-caller"
@@ -9935,8 +9935,8 @@ target = "--lib"
 expect_red = ["tests::codemode_wire_codes_preserve_shell_and_round_trip_tool_json"]
 only = false
 file = "crates/basal-proto/src/limits.rs"
-old = "pub const PROTOCOL_VERSION: u32 = 5;"
-new = "pub const PROTOCOL_VERSION: u32 = 4; // NON-VACUITY BREAK"
+old = "pub const PROTOCOL_VERSION: u32 = 6;"
+new = "pub const PROTOCOL_VERSION: u32 = 5; // NON-VACUITY BREAK"
 
 [[control]]
 id = "codemode-address-space-headroom"
@@ -11572,8 +11572,20 @@ target = "--lib"
 expect_red = ["codemode::admission::tests::injected_windows_is_refused_before_scope_or_request_checks"]
 only = false
 file = "crates/basal-core/src/codemode/admission.rs"
-old = "if platform == Platform::Windows {"
-new = "if platform == Platform::Windows && false { // NON-VACUITY BREAK"
+old = '''if platform == Platform::Windows {
+        return Ok(Admission::Refused(Refusal::new(
+            "unsupported_platform",
+            "codemode is not supported on Windows",
+        )));
+    }
+    let checked = (|| {'''
+new = '''if platform == Platform::Windows && false { // NON-VACUITY BREAK
+        return Ok(Admission::Refused(Refusal::new(
+            "unsupported_platform",
+            "codemode is not supported on Windows",
+        )));
+    }
+    let checked = (|| {'''
 
 [[control]]
 id = "codemode-admission-reserved-owner"
@@ -12666,34 +12678,6 @@ old = "if self.shared.transport.catalog().is_err() {"
 new = "if false && self.shared.transport.catalog().is_err() { // NON-VACUITY BREAK"
 
 [[control]]
-id = "s5-codemode-shell-denylist"
-guards = "the shell denylist is checked directly before daemon-catalog presence"
-test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
-runner = "cargo"
-package = "basal-core"
-platforms = ["linux"]
-target = "--lib"
-expect_red = ["codemode::supervisor::tests::per_call_checks_are_ordered_and_never_write_intent_before_readiness"]
-only = false
-file = "crates/basal-core/src/codemode/supervisor.rs"
-old = "if self.shared.denylist.contains(&tool.module, &tool.op)"
-new = "if false && self.shared.denylist.contains(&tool.module, &tool.op) // NON-VACUITY BREAK"
-
-[[control]]
-id = "s5-codemode-shell-marker"
-guards = "a daemon-catalog shell-capable operation cannot be sent"
-test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
-runner = "cargo"
-package = "basal-core"
-platforms = ["linux"]
-target = "--lib"
-expect_red = ["codemode::supervisor::tests::per_call_checks_are_ordered_and_never_write_intent_before_readiness"]
-only = false
-file = "crates/basal-core/src/codemode/supervisor.rs"
-old = "|| declaration.as_ref().is_some_and(|op| op.shell_capable)"
-new = "|| declaration.as_ref().is_some_and(|_op| false) // NON-VACUITY BREAK"
-
-[[control]]
 id = "s5-codemode-not-in-catalog"
 guards = "an operation absent from the daemon catalog is refused without intent"
 test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
@@ -12877,7 +12861,7 @@ new = "if false && mapped.scope_loss { // NON-VACUITY BREAK"
 
 [[control]]
 id = "s5-codemode-consent-outcome"
-guards = "ConsentUnavailable has its own non-terminal outcome"
+guards = "ConsentUnavailable remains a non-terminal refusal with its provider code"
 test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
 runner = "cargo"
 package = "basal-core"
@@ -12886,7 +12870,7 @@ target = "--lib"
 expect_red = ["codemode::supervisor::tests::every_non_scope_wire_error_is_recorded_then_rejected_without_ending_run"]
 only = false
 file = "crates/basal-core/src/codemode/supervisor.rs"
-old = 'ConsentUnavailable => (Outcome::ConsentUnavailable, "consent_unavailable", false),'
+old = 'ConsentUnavailable => (Outcome::Refused, "consent_unavailable", false),'
 new = 'ConsentUnavailable => (Outcome::Error, "consent_unavailable", false), // NON-VACUITY BREAK'
 
 [[control]]
@@ -12961,7 +12945,7 @@ new = 'Mapped::rejected(Outcome::Error, "reply_unreadable", &message) // NON-VAC
 
 [[control]]
 id = "s5-codemode-provider-refused"
-guards = "both provider refusal variants are errors with the provider's code"
+guards = "ordinary provider errors preserve their code without being relabelled as pre-dispatch refusals"
 test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
 runner = "cargo"
 package = "basal-core"
@@ -12970,8 +12954,14 @@ target = "--lib"
 expect_red = ["codemode::supervisor::tests::every_non_scope_wire_error_is_recorded_then_rejected_without_ending_run"]
 only = false
 file = "crates/basal-core/src/codemode/supervisor.rs"
-old = ") => Mapped::rejected(Outcome::Error, &code, &message),"
-new = ") => Mapped::rejected(Outcome::Refused, &code, &message), // NON-VACUITY BREAK"
+old = '''} else if code == "tool_unavailable" {
+                Outcome::ToolUnavailable
+            } else {
+                Outcome::Error'''
+new = '''} else if code == "tool_unavailable" {
+                Outcome::ToolUnavailable
+            } else {
+                Outcome::Refused // NON-VACUITY BREAK'''
 
 [[control]]
 id = "s5-codemode-answer-cap"
@@ -13124,8 +13114,14 @@ target = "--lib"
 expect_red = ["codemode::supervisor::tests::manual_clock_fires_omitted_wall_at_deadline_and_wall_one_at_admission_plus_one"]
 only = false
 file = "crates/basal-core/src/codemode/supervisor.rs"
-old = "self.shared.clock.now_ms() >= self.start.wall_deadline_ms"
-new = "self.shared.clock.now_ms() > self.start.wall_deadline_ms /* NON-VACUITY BREAK */"
+old = '''>= self
+                    .start
+                    .wall_deadline_ms
+                    .saturating_add(self.person_wait_ms)'''
+new = '''> self
+                    .start
+                    .wall_deadline_ms
+                    .saturating_add(self.person_wait_ms) /* NON-VACUITY BREAK */'''
 
 [[control]]
 id = "s5-codemode-wall-after-readiness"
@@ -13845,110 +13841,6 @@ old = '''return Err(ConsentError::Unavailable(
 new = 'return self.withdraw_decision(elicitation_id); // NON-VACUITY BREAK'
 
 [[control]]
-id = "s7-codemode-manifest-names"
-guards = "codemode operations are declared under their public names"
-test_file = "crates/basal-module/tests/codemode.rs"
-runner = "cargo"
-package = "basal-module"
-platforms = ["linux"]
-target = "--test codemode"
-expect_red = ["codemode_manifest_declares_core_only_operation_kinds", "ops_doc_documents_codemode_ops_as_core_only_against_operations"]
-only = true
-file = "crates/basal-module/src/manifest.rs"
-old = '"codemode.result",'
-new = '"codemode.missing", // NON-VACUITY BREAK'
-
-[[control]]
-id = "s7-codemode-manifest-kinds"
-guards = "codemode run is a mutation, result a query, and cancel a mutation"
-test_file = "crates/basal-module/tests/codemode.rs"
-runner = "cargo"
-package = "basal-module"
-platforms = ["linux"]
-target = "--test codemode"
-expect_red = ["codemode_manifest_declares_core_only_operation_kinds", "ops_doc_documents_codemode_ops_as_core_only_against_operations"]
-only = true
-file = "crates/basal-module/src/manifest.rs"
-old = '''"codemode.cancel",
-        ManagementOperationKind::Mutate,'''
-new = '''"codemode.cancel",
-        ManagementOperationKind::Query, // NON-VACUITY BREAK'''
-
-[[control]]
-id = "s7-codemode-manifest-core-only"
-guards = "each codemode operation's description declares core-only authority"
-test_file = "crates/basal-module/tests/codemode.rs"
-runner = "cargo"
-package = "basal-module"
-platforms = ["linux"]
-target = "--test codemode"
-expect_red = ["codemode_manifest_declares_core_only_operation_kinds", "ops_doc_documents_codemode_ops_as_core_only_against_operations"]
-only = true
-file = "crates/basal-module/src/manifest.rs"
-old = '"Admit a scoped JavaScript run and return its state; core only.",'
-new = '"Admit a scoped JavaScript run and return its state.", // NON-VACUITY BREAK'
-
-[[control]]
-id = "s7-codemode-core-callers"
-guards = "all three codemode handlers refuse every caller other than attested core"
-test_file = "crates/basal-module/tests/codemode.rs"
-runner = "cargo"
-package = "basal-module"
-platforms = ["linux"]
-target = "--test codemode"
-expect_red = ["codemode_ops_refuse_every_non_core_caller_before_decoding"]
-only = true
-file = "crates/basal-module/src/ops.rs"
-old = 'if *caller != Caller::Core {'
-new = 'if *caller == Caller::Local { // NON-VACUITY BREAK'
-
-[[control]]
-id = "s7-codemode-nonblocking-admission"
-guards = "codemode admission replies without waiting for a held provider"
-test_file = "crates/basal-module/tests/codemode.rs"
-runner = "cargo"
-package = "basal-module"
-platforms = ["linux"]
-target = "--test codemode"
-expect_red = ["codemode_run_returns_while_provider_is_held_and_other_ops_are_served"]
-only = false
-file = "crates/basal-module/src/codemode.rs"
-old = 'self.supervisor.start(*run, *start)?;'
-new = '''let id = run.run_id.clone(); // NON-VACUITY BREAK
-                        self.supervisor.start(*run, *start)?;
-                        while self.supervisor.result(&id)?.is_some_and(|v| v["status"] == "running") {
-                            std::thread::park_timeout(std::time::Duration::from_millis(10));
-                        }'''
-
-[[control]]
-id = "s7-codemode-unknown-run"
-guards = "missing codemode rows are refused unknown_run, including flow run ids"
-test_file = "crates/basal-module/tests/codemode.rs"
-runner = "cargo"
-package = "basal-module"
-platforms = ["linux"]
-target = "--test codemode"
-expect_red = ["codemode_cancel_unknown_terminal_and_running_and_hide_flow_ids"]
-only = true
-file = "crates/basal-module/src/codemode.rs"
-old = 'code: "unknown_run",'
-new = 'code: "not_found", // NON-VACUITY BREAK'
-
-[[control]]
-id = "s7-codemode-cancel-route"
-guards = "cancel invokes termination instead of returning a still-running snapshot"
-test_file = "crates/basal-module/tests/codemode.rs"
-runner = "cargo"
-package = "basal-module"
-platforms = ["linux"]
-target = "--test codemode"
-expect_red = ["codemode_cancel_unknown_terminal_and_running_and_hide_flow_ids", "codemode_results_decode_against_documented_shape"]
-only = true
-file = "crates/basal-module/src/codemode.rs"
-old = 'self.known(self.supervisor.cancel(&id)?, &id)'
-new = 'self.result(&id) // NON-VACUITY BREAK'
-
-[[control]]
 id = "s7-codemode-separate-pool"
 guards = "codemode execution cannot acquire a flow-pool worker or change flow PoolStats"
 test_file = "crates/basal-module/tests/codemode.rs"
@@ -14095,8 +13987,8 @@ expect_red = ["module_drop_releases_codemode_store_before_a_held_provider_return
 only = false
 file = "crates/basal-core/src/codemode/supervisor.rs"
 old = '''drop(store);
-                                transport.tool_for_flow(&route, &module, &op, input, &key)'''
-new = '''let result = transport.tool_for_flow(&route, &module, &op, input, &key); // NON-VACUITY BREAK
+                                transport.tool_for_run(&route, &module, &op, input, &key, &options)'''
+new = '''let result = transport.tool_for_run(&route, &module, &op, input, &key, &options); // NON-VACUITY BREAK
                                 drop(store);
                                 result'''
 
@@ -14153,8 +14045,12 @@ target = "--test codemode_scope"
 expect_red = ["codemode_handler_attests_via_real_sdk_and_replaces_the_describe_connection"]
 only = true
 file = "crates/basal-module/src/serve.rs"
-old = 'tokio::task::spawn_blocking(move || module.handle(&caller, &method, params))'
-new = 'tokio::spawn(async move { module.handle(&caller, &method, params) }) /* NON-VACUITY BREAK */'
+old = '''tokio::task::spawn_blocking(move || {
+            codemode.begin_guarded(&context, &request, || cancellation.is_cancelled())
+        })'''
+new = '''tokio::spawn(async move {
+            codemode.begin_guarded(&context, &request, || cancellation.is_cancelled())
+        }) /* NON-VACUITY BREAK */'''
 
 [[control]]
 id = "s7-codemode-reconnect-keeps-module"
@@ -14170,11 +14066,9 @@ file = "crates/basal-module/src/serve.rs"
 old = '.swap(true, std::sync::atomic::Ordering::SeqCst)'
 new = '.swap(false, std::sync::atomic::Ordering::SeqCst) /* NON-VACUITY BREAK */'
 
-# The codemode section of docs/ops.md is checked against the served code: the
-# published catalog digest vectors against an independent oracle and basal's
-# digest, the op sections against OPERATIONS, and the documented result shape
-# against real run results. Portable digest rows and the worker-using module
-# rows run on Linux.
+# crates/basal-core/tests/codemode_digest_vectors.rs computes JCS and BLAKE3
+# independently of the production implementation. The tool-route tests execute
+# the real module to check provider contracts and its rendered results.
 [[control]]
 id = "s8-codemode-digest-entries-unsorted"
 hub = "Catalog entries are sorted by name before hashing, asserted by the published entries-reordered vector and the digest unit tests"
@@ -14209,33 +14103,338 @@ old = 'Digest: `c57fc8b429409c4fbd9ba5d30f9c13561a7a6a3a4c2011d85791d2a67a2a8cda
 new = 'Digest: `c57fc8b429409c4fbd9ba5d30f9c13561a7a6a3a4c2011d85791d2a67a2a8cdb` NON-VACUITY BREAK'
 
 [[control]]
-id = "s8-codemode-op-kind-differs-from-docs"
-guards = "OPERATIONS declares a codemode op with a kind other than the one docs/ops.md documents"
-test_file = "crates/basal-module/tests/codemode.rs"
-runner = "cargo"
-package = "basal-module"
-platforms = ["linux"]
-target = "--test codemode"
-expect_red = ["ops_doc_documents_codemode_ops_as_core_only_against_operations", "codemode_manifest_declares_core_only_operation_kinds"]
-only = true
-file = "crates/basal-module/src/manifest.rs"
-old = '''
-        "codemode.result",
-        ManagementOperationKind::Query,'''
-new = '''
-        "codemode.result",
-        ManagementOperationKind::Mutate, // NON-VACUITY BREAK'''
-
-[[control]]
 id = "s8-codemode-result-absent-description-is-null"
-guards = "a codemode result reports an absent description as null instead of omitting the key, against the documented shape"
+guards = "a codemode result omits an absent description rather than reporting null"
 test_file = "crates/basal-module/tests/codemode.rs"
 runner = "cargo"
 package = "basal-module"
 platforms = ["linux"]
 target = "--test codemode"
-expect_red = ["codemode_results_decode_against_documented_shape", "codemode_run_returns_while_provider_is_held_and_other_ops_are_served", "codemode_cancel_unknown_terminal_and_running_and_hide_flow_ids"]
+expect_red = ["daemon_schema_not_program_arguments_governs_dispatch_and_result_renders"]
 only = true
 file = "crates/basal-core/src/codemode/supervisor.rs"
 old = 'if let Some(description) = run.description { value["description"] = description.into(); }'
 new = 'value["description"] = run.description.into(); // NON-VACUITY BREAK: null when absent'
+
+[[control]]
+id = "codemode-tool-stamped-agent"
+guards = "a run whose daemon stamp names another agent cannot start a worker"
+test_file = "crates/basal-module/tests/codemode.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test codemode"
+expect_red = ["core_scope_shapes_and_stamp_mismatch_prevent_worker_start"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/codemode/admission.rs"
+old = ".is_some_and(|id| id != agent_id)"
+new = ".is_some_and(|_id| false) /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "codemode-tool-open-refusal"
+guards = "a core run-scope refusal prevents worker acquisition even with a valid daemon stamp"
+test_file = "crates/basal-module/tests/codemode.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test codemode"
+expect_red = ["refused_open_preserves_core_code_and_detail_without_worker"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/run_scope.rs"
+old = 'call(transport, "codemode.run_scope.open", request)'
+new = '''call::<Open,Opened>(transport,"codemode.run_scope.open",request).or_else(|_| Ok(Opened {
+        scope:Scope { reference:request.run_id.clone(),epoch:19 },expires_at_ms:request.expires_at_ms,catalog:vec![]
+    })) /* NON-VACUITY BREAK */'''
+
+[[control]]
+id = "codemode-tool-keyed-attach"
+guards = "a retried call key attaches to its committed run rather than attempting a second admission"
+test_file = "crates/basal-module/tests/codemode.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test codemode"
+expect_red = ["retried_key_attaches_to_running_run_and_finished_result"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/codemode/admission.rs"
+old = "Lookup::Found(run) => Some(Admission::Existing(run)),"
+new = "Lookup::Found(_run) => None, /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "codemode-tool-cancel-close-first"
+guards = "cancellation closes the core run scope before killing its worker"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::cancel_closes_core_scope_before_worker_kill"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = '''    if let Err(error) = super::scope::close(&shared.store, shared.transport.as_ref(), id) {
+        let mut warnings: Vec<Value> = serde_json::from_str(&terminal.warnings)
+            .map_err(|e| CoreError::Corrupt(e.to_string()))?;
+        warnings.push(json!({"code":"scope_close_failed","message":error.to_string()}));
+        terminal.warnings = serde_json::to_string(&warnings).unwrap();
+    }
+    if let Some(worker) = worker {
+        worker.kill();
+    }'''
+new = '''    if let Some(worker) = worker { worker.kill(); } // NON-VACUITY BREAK
+    if let Err(error) = super::scope::close(&shared.store, shared.transport.as_ref(), id) {
+        let mut warnings: Vec<Value> = serde_json::from_str(&terminal.warnings)
+            .map_err(|e| CoreError::Corrupt(e.to_string()))?;
+        warnings.push(json!({"code":"scope_close_failed","message":error.to_string()}));
+        terminal.warnings = serde_json::to_string(&warnings).unwrap();
+    }'''
+
+[[control]]
+id = "codemode-tool-restart-scope-close"
+guards = "startup recovery closes leftover run scopes without starting or replaying a worker"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::restart_closes_leftover_core_scope_without_starting_worker"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/codemode/scope.rs"
+old = "if closed || refused {"
+new = "if true || closed || refused { // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-tool-person-wait-cap"
+guards = "held person intervals consume one cumulative ten-minute run budget and end budget_exhausted person_wait"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::person_wait_hook_exhausts_one_accumulated_run_budget"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "self.person_wait_ms >= basal_host::run_scope::PERSON_WAIT_MS"
+new = "false && self.person_wait_ms >= basal_host::run_scope::PERSON_WAIT_MS /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "codemode-tool-keyless-random"
+guards = "keyless calls execute independently under fresh OS-random run identities"
+test_file = "crates/basal-module/tests/codemode.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test codemode"
+expect_red = ["keyless_calls_run_twice_have_no_withdrawal_or_late_result_and_warn"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/codemode.rs"
+old = "None => random_id()?,"
+new = 'None => run_id(&agent_id,"keyless"), /* NON-VACUITY BREAK */'
+
+[[control]]
+id = "codemode-tool-late-custodian"
+guards = "late results are pulled only by the recorded verified custodian principal"
+test_file = "crates/basal-module/tests/tool_provider_conformance.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test tool_provider_conformance"
+expect_red = ["real_route_late_cursor_ack_and_custodian_only_serving"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/codemode.rs"
+old = "FROM codemode_late_results WHERE custodian=?1 AND seq>?2 ORDER BY seq LIMIT ?3"
+new = "FROM codemode_late_results WHERE (custodian=?1 OR true) AND seq>?2 /* NON-VACUITY BREAK */ ORDER BY seq LIMIT ?3"
+
+[[control]]
+id = "codemode-tool-late-ack-once"
+guards = "acked terminal results stay published and cannot be recreated by a later pull"
+test_file = "crates/basal-module/tests/tool_provider_conformance.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test tool_provider_conformance"
+expect_red = ["real_route_late_cursor_ack_and_custodian_only_serving"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/codemode.rs"
+old = "SET published=1 WHERE carrier=?1 AND call_key=?2"
+new = "SET published=0 /* NON-VACUITY BREAK */ WHERE carrier=?1 AND call_key=?2"
+
+[[control]]
+id = "codemode-tool-late-retention-boundary"
+guards = "unacked late results become identity-preserving expired entries at twenty-four hours"
+test_file = "crates/basal-module/tests/tool_provider_conformance.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test tool_provider_conformance"
+expect_red = ["real_route_late_retention_and_direct_call_owner_custody"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/codemode.rs"
+old = "clock.now_ms().saturating_sub(24 * 60 * 60 * 1000)"
+new = "clock.now_ms().saturating_sub(25 * 60 * 60 * 1000) /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "codemode-tool-person-worker-blocked"
+guards = "person time accrues only while the worker is blocked"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::person_time_requires_blocked_worker_and_every_flight_held"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "self.blocked && self.in_flight > 0"
+new = "true /* NON-VACUITY BREAK */ && self.in_flight > 0"
+
+[[control]]
+id = "codemode-tool-person-all-held"
+guards = "person time excludes intervals with any in-flight call not held on a person"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::person_time_requires_blocked_worker_and_every_flight_held"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "self.held_positions.len() == self.in_flight"
+new = "!self.held_positions.is_empty() /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "codemode-tool-bind-identity"
+guards = "actual child provider routes preserve the invoking project harness session and project id"
+test_file = "crates/basal-host/src/transport.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["transport::tests::run_tool_routes_copy_bind_identity_and_outlive_transport_fallback_wait"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/transport.rs"
+old = "options.identity.clone(),"
+new = 'BindIdentity::new("/","basal","wrong-session"), /* NON-VACUITY BREAK */'
+
+[[control]]
+id = "codemode-tool-unhandled-rejections"
+guards = "unhandled JavaScript rejections are emitted by the confined worker as warnings distinct from console output"
+test_file = "crates/basal-module/tests/codemode.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test codemode"
+expect_red = ["unhandled_rejections_warn_but_handled_rejections_and_logs_do_not"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-worker/src/engine.rs"
+old = '''if request.profile == Profile::Codemode {
+        let tracked = warnings.clone();'''
+new = '''if false && request.profile == Profile::Codemode { // NON-VACUITY BREAK
+        let tracked = warnings.clone();'''
+
+[[control]]
+id = "codemode-tool-late-incarnation"
+guards = "a cursor from a previous provider incarnation is refused while event identity survives restart"
+test_file = "crates/basal-module/tests/tool_provider_conformance.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test tool_provider_conformance"
+expect_red = ["real_route_late_incarnation_changes_and_event_identity_survives_restart"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/codemode.rs"
+old = "late_results::check_since(&self.incarnation, head, request.since.as_ref())?;"
+new = "let _ = (&self.incarnation,head,request.since.as_ref()); /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "codemode-tool-withdraw-record-scope"
+guards = "withdrawal refuses a record under a different stamped scope as a route error"
+test_file = "crates/basal-module/tests/tool_provider_conformance.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test tool_provider_conformance"
+expect_red = ["basal_tool_provider_conforms_for_declared_capabilities"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/codemode.rs"
+old = '''withdraw::check_record_scope(record_scope.as_ref(), scope.as_ref())
+            .map_err(|e| e.error())?;'''
+new = "let _ = (record_scope.as_ref(),scope.as_ref()); /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "codemode-tool-late-session-cap"
+guards = "late-result retention drops oldest results beyond one thousand per session"
+test_file = "crates/basal-module/src/codemode.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--lib"
+expect_red = ["codemode::tests::late_retention_bounds_each_session_then_expired_owner"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/codemode.rs"
+old = "WHERE expired=0) WHERE n>1000"
+new = "WHERE expired=0) WHERE n>1001 /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "codemode-tool-late-expired-owner-cap"
+guards = "expired late entries are bounded to one thousand per scope owner across sessions"
+test_file = "crates/basal-module/src/codemode.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--lib"
+expect_red = ["codemode::tests::late_retention_bounds_each_session_then_expired_owner"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/codemode.rs"
+old = "WHERE expired=1) WHERE n>1000"
+new = "WHERE expired=1) WHERE n>1001 /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "codemode-tool-rpc-wait-budget"
+guards = "run-scoped provider calls use the run reply budget rather than a short transport fallback"
+test_file = "crates/basal-host/src/transport.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["transport::tests::run_tool_routes_copy_bind_identity_and_outlive_transport_fallback_wait"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/transport.rs"
+old = "timeout: options.reply_timeout,"
+new = "timeout: self.timeout, /* NON-VACUITY BREAK */"

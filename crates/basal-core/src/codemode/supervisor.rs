@@ -10,7 +10,7 @@
 //! a cancel, or a move of a manual clock. Its only timeout is the run's wall
 //! deadline, so a run waiting on a slow tool costs no CPU.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread;
@@ -49,9 +49,15 @@ enum Event {
     /// A provider answer from a dispatch thread.
     Answer(Answer),
     Cancel(mpsc::SyncSender<Result<()>>),
+    Held {
+        position: u64,
+        held: bool,
+        ack: mpsc::SyncSender<()>,
+    },
     /// A manual clock moved, so the wall deadline may have passed without
     /// any real time elapsing.
     ClockMoved,
+    ScopeEnded(String),
 }
 
 #[derive(Default)]
@@ -104,10 +110,11 @@ struct Shared {
     workers: Arc<dyn WorkerSource>,
     clock: Clock,
     prelude_hash: PreludeHash,
-    denylist: ShellDenylist,
     active: Mutex<BTreeMap<String, mpsc::Sender<Event>>>,
     drivers: Mutex<Drivers>,
     dispatch_starts: Arc<DispatchStarts>,
+    terminal_changed: (Mutex<u64>, Condvar),
+    terminal_hook: Mutex<Option<Arc<TerminalHook>>>,
     #[cfg(test)]
     before_entry: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
@@ -119,12 +126,16 @@ struct Shared {
     /// How many times a driver has returned from its wait for an event.
     #[cfg(test)]
     wakes: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    worker_blocked: AtomicBool,
 }
 
 /// Owns codemode supervisors only. Supply a fresh-worker source, never a flow
 /// pool, and the parent's codemode prelude hash, never the worker's claim.
 #[derive(Clone)]
 pub struct Supervisor(Arc<Shared>);
+
+pub type TerminalHook = dyn Fn(&str, Value) -> Result<()> + Send + Sync;
 
 impl Supervisor {
     /// Recover durable runs before exposing any operation. A recovery failure
@@ -136,7 +147,7 @@ impl Supervisor {
         workers: Arc<dyn WorkerSource>,
         clock: Clock,
         prelude_hash: PreludeHash,
-        denylist: ShellDenylist,
+        _denylist: ShellDenylist,
     ) -> Result<Self> {
         let supervisor = Self(Arc::new(Shared {
             store,
@@ -145,10 +156,11 @@ impl Supervisor {
             workers,
             clock,
             prelude_hash,
-            denylist,
             active: Mutex::new(BTreeMap::new()),
             drivers: Mutex::new(Drivers::default()),
             dispatch_starts: Arc::new(DispatchStarts::default()),
+            terminal_changed: (Mutex::new(0), Condvar::new()),
+            terminal_hook: Mutex::new(None),
             #[cfg(test)]
             before_entry: Mutex::new(None),
             #[cfg(test)]
@@ -159,6 +171,8 @@ impl Supervisor {
             before_reader_exit: Mutex::new(None),
             #[cfg(test)]
             wakes: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            worker_blocked: AtomicBool::new(false),
         }));
         supervisor.recover()?;
         Ok(supervisor)
@@ -173,6 +187,13 @@ impl Supervisor {
         }
         let (events, rx) = mpsc::channel();
         let mut active = self.0.active.lock().unwrap();
+        if run.status == Status::Running
+            && let Lookup::Found(current) =
+                self.0.store.read(|conn| store::lookup(conn, &run.run_id))?
+            && current.status.is_terminal()
+        {
+            return Ok(());
+        }
         if active.contains_key(&run.run_id) || run.status != Status::Running {
             return Err(CoreError::Invalid("run cannot be started twice".into()));
         }
@@ -253,30 +274,89 @@ impl Supervisor {
     /// Unknown and pruned ids return `None`. Running durations use the same
     /// injected clock as deadlines; terminal durations are the stored ones.
     pub fn result(&self, id: &str) -> Result<Option<Value>> {
-        self.0.store.read(|conn| {
+        Self::result_for(&self.0.store, &self.0.clock, id)
+    }
+
+    pub fn on_terminal(&self, hook: Arc<TerminalHook>) {
+        *self.0.terminal_hook.lock().unwrap() = Some(hook);
+    }
+
+    pub fn result_for(store: &Store, clock: &Clock, id: &str) -> Result<Option<Value>> {
+        store.read(|conn| {
             let Lookup::Found(run) = store::lookup(conn, id)? else { return Ok(None) };
-            let calls = store::calls(conn, id)?.into_iter().map(|call| {
+            let calls = store::calls(conn, id)?.into_iter().map(|call| -> Result<Value> {
                 let mut value = json!({"tool": call.tool, "outcome": call.outcome.as_str()});
+                let waited: bool = conn.query_row("SELECT waited_on_person FROM codemode_calls WHERE run_id=?1 AND position=?2",rusqlite::params![id,call.position],|row| row.get(0))?;
+                value["waited_on_person"] = waited.into();
                 if let Some(code) = call.code { value["code"] = code.into(); }
                 if let Some(duration) = call.duration_ms { value["duration_ms"] = duration.into(); }
-                value
-            }).collect::<Vec<_>>();
+                Ok(value)
+            }).collect::<Result<Vec<_>>>()?;
             let mut value = json!({
                 "status": run.status.as_str(), "output": run.output, "calls": calls,
                 "warnings": parse(&run.warnings)?, "catalog_digest": run.catalog_digest,
-                "duration_ms": run.duration_ms.unwrap_or_else(|| self.0.clock.now_ms().saturating_sub(run.admitted_at).max(0))
+                "duration_ms": run.duration_ms.unwrap_or_else(|| clock.now_ms().saturating_sub(run.admitted_at).max(0))
             });
+            let (keyless,person,count): (bool,i64,u64) = conn.query_row("SELECT keyless,person_wait_ms,tool_call_count FROM codemode_runs WHERE run_id=?1",[id],|row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?;
+            value["keyless"] = keyless.into();
+            value["person_wait_ms"] = person.into();
+            value["call_count"] = count.into();
             if let Some(result) = run.value { value["value"] = parse(&result)?; }
             if let Some(error) = run.error { value["error"] = json!({"code": error.code, "message": error.message}); }
             if let Some(description) = run.description { value["description"] = description.into(); }
+            use rusqlite::OptionalExtension;
+            let refusal: Option<(Option<String>,bool)> = conn.query_row("SELECT refusal,refused FROM codemode_scopes WHERE run_id=?1",[id],|row| Ok((row.get(0)?,row.get(1)?))).optional()?;
+            if let Some((Some(error),refused)) = refusal {
+                let error = parse(&error)?;
+                if refused { value["status"] = error["code"].clone(); }
+                if let Some(detail) = error.get("detail") { value["detail"] = detail.clone(); }
+                value["error"] = error;
+            }
             Ok(Some(value))
         })
+    }
+
+    /// Sleep on terminal commits, not a polling loop. A caller may leave a
+    /// keyed run alive after its foreground wait and collect the late result.
+    pub fn wait(&self, id: &str, timeout: Duration) -> Result<Option<Value>> {
+        let (generation, changed) = &self.0.terminal_changed;
+        let mut generation = generation.lock().unwrap();
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            if let Some(result) = self.result(id)?
+                && result["status"] != "running"
+            {
+                return Ok(Some(result));
+            }
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return Ok(None);
+            }
+            let (next, expired) = changed.wait_timeout(generation, remaining).unwrap();
+            generation = next;
+            if expired.timed_out() {
+                return Ok(None);
+            }
+        }
     }
 
     /// Cancellation is serialized with answer recording by the run's driver.
     /// Its acknowledgement follows scope release and the terminal commit.
     pub fn cancel(&self, id: &str) -> Result<Option<Value>> {
-        let sender = self.0.active.lock().unwrap().get(id).cloned();
+        self.cancel_with_started(id).map(|(result, _)| result)
+    }
+
+    pub fn cancel_with_started(&self, id: &str) -> Result<(Option<Value>, bool)> {
+        let active = self.0.active.lock().unwrap();
+        let sender = active.get(id).cloned();
+        let started = sender.is_some();
+        if sender.is_none()
+            && let Lookup::Found(run) = self.0.store.read(|conn| store::lookup(conn, id))?
+            && run.status == Status::Running
+        {
+            terminate(&self.0, id, None, terminal(Status::Cancelled, None, None))?;
+        }
+        drop(active);
         if let Some(sender) = sender {
             let (tx, rx) = mpsc::sync_channel(1);
             if sender.send(Event::Cancel(tx)).is_ok() {
@@ -286,14 +366,34 @@ impl Supervisor {
                         if let Some(value) = self.result(id)?
                             && value["status"] != "running"
                         {
-                            return Ok(Some(value));
+                            return Ok((Some(value), started));
                         }
                         return Err(CoreError::Invalid("supervisor lost during cancel".into()));
                     }
                 }
             }
         }
-        self.result(id)
+        self.result(id).map(|result| (result, started))
+    }
+
+    /// Late-result intake marks only an already dispatched call held on a
+    /// person. A held reply is not a final answer and never settles its promise.
+    pub fn held(&self, id: &str, position: u64, held: bool) -> Result<()> {
+        let sender = self.0.active.lock().unwrap().get(id).cloned();
+        if let Some(sender) = sender {
+            let (ack, done) = mpsc::sync_channel(1);
+            if sender
+                .send(Event::Held {
+                    position,
+                    held,
+                    ack,
+                })
+                .is_ok()
+            {
+                let _ = done.recv();
+            }
+        }
+        Ok(())
     }
 
     // Construction is the only production caller: there can be no live driver
@@ -312,6 +412,18 @@ impl Supervisor {
             terminal.output = run.output;
             terminal.warnings = run.warnings;
             terminate(&self.0, &run.run_id, None, terminal)?;
+        }
+        let leftover = self.0.store.read(|conn| {
+            let mut statement =
+                conn.prepare("SELECT run_id FROM codemode_scopes WHERE closed=0 AND refused=0")?;
+            Ok(statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?)
+        })?;
+        for id in leftover {
+            if let Err(error) = super::scope::close(&self.0.store, self.0.transport.as_ref(), &id) {
+                tracing::warn!(%error, "leftover run scope relies on its fixed expiry");
+            }
         }
         Ok(())
     }
@@ -346,12 +458,18 @@ struct Driver {
     queue: VecDeque<HostCall>,
     queued_bytes: usize,
     in_flight: usize,
+    flight_positions: BTreeSet<u64>,
+    held_positions: BTreeSet<u64>,
+    blocked: bool,
+    person_wait_ms: i64,
+    last_tick_ms: i64,
     invocations: u64,
     delivery_order: u64,
     completion: Option<Terminal>,
     stopping: bool,
     parent_owned_kill: bool,
     output_truncated: bool,
+    identity: Option<subc_protocol::BindIdentity>,
 }
 
 impl Driver {
@@ -362,6 +480,7 @@ impl Driver {
         event_tx: mpsc::Sender<Event>,
         events: mpsc::Receiver<Event>,
     ) -> Self {
+        let last_tick_ms = run.admitted_at;
         Self {
             shared,
             run,
@@ -376,12 +495,18 @@ impl Driver {
             queue: VecDeque::new(),
             queued_bytes: 0,
             in_flight: 0,
+            flight_positions: BTreeSet::new(),
+            held_positions: BTreeSet::new(),
+            blocked: false,
+            person_wait_ms: 0,
+            last_tick_ms,
             invocations: 0,
             delivery_order: 0,
             completion: None,
             stopping: false,
             parent_owned_kill: false,
             output_truncated: false,
+            identity: None,
         }
     }
 
@@ -390,6 +515,17 @@ impl Driver {
     }
 
     fn drive(&mut self) -> Result<()> {
+        let identity: Option<String> = self.shared.store.read(|conn| {
+            Ok(conn.query_row(
+                "SELECT bind_identity FROM codemode_runs WHERE run_id=?1",
+                [&self.run.run_id],
+                |row| row.get(0),
+            )?)
+        })?;
+        self.identity = identity
+            .map(|identity| serde_json::from_str(&identity))
+            .transpose()
+            .map_err(|e| CoreError::Corrupt(e.to_string()))?;
         self.watch_clock();
         if self.wall()? {
             return Ok(());
@@ -397,6 +533,13 @@ impl Driver {
         self.shared
             .transport
             .configure_flow(&self.key(), false, Some(self.start.scope.clone()));
+        let scope_events = self.event_tx.clone();
+        self.shared.transport.watch_run_scope(
+            &self.key(),
+            Arc::new(move |code| {
+                let _ = scope_events.send(Event::ScopeEnded(code.into()));
+            }),
+        );
         self.worker = match self.shared.workers.worker() {
             Ok(worker) => Some(worker),
             Err(error) => {
@@ -454,6 +597,36 @@ impl Driver {
                 Some(Event::ClockMoved) => self.clock_moved.store(false, Ordering::SeqCst),
                 Some(Event::Cancel(ack)) => self.cancel(ack)?,
                 Some(Event::Answer(answer)) => self.answer(answer)?,
+                Some(Event::ScopeEnded(code)) => {
+                    if !self.wall()? {
+                        self.end(interrupted(&code, "the daemon ended the run scope"))?;
+                    }
+                }
+                Some(Event::Held {
+                    position,
+                    held,
+                    ack,
+                }) => {
+                    if self.wall()? {
+                        let _ = ack.send(());
+                        break;
+                    }
+                    let entered = self.shared.store.read(|conn| Ok(conn.query_row(
+                        "SELECT EXISTS (SELECT 1 FROM codemode_calls WHERE run_id=?1 AND position=?2 AND entered_at IS NOT NULL AND outcome='pending')",
+                        rusqlite::params![self.run.run_id,position],|row| row.get::<_,bool>(0))?))?;
+                    if self.flight_positions.contains(&position) && entered {
+                        if held {
+                            self.held_positions.insert(position);
+                            self.shared.store.write(|tx| {
+                                tx.execute("UPDATE codemode_calls SET waited_on_person=1 WHERE run_id=?1 AND position=?2 AND outcome='pending'", rusqlite::params![self.run.run_id, position])?;
+                                Ok(())
+                            })?;
+                        } else {
+                            self.held_positions.remove(&position);
+                        }
+                    }
+                    let _ = ack.send(());
+                }
                 Some(Event::Worker(Ok(message))) => {
                     if self.wall()? {
                         break;
@@ -479,11 +652,15 @@ impl Driver {
     /// Sleeps until an event arrives or the wall deadline, measured on the
     /// injected clock, comes due. `None` means the deadline came due.
     fn next_event(&mut self) -> Option<Event> {
-        let remaining = self
-            .start
-            .wall_deadline_ms
-            .saturating_sub(self.shared.clock.now_ms())
-            .max(0);
+        let remaining = if self.person_only() {
+            basal_host::run_scope::PERSON_WAIT_MS.saturating_sub(self.person_wait_ms)
+        } else {
+            self.start
+                .wall_deadline_ms
+                .saturating_add(self.person_wait_ms)
+                .saturating_sub(self.shared.clock.now_ms())
+        }
+        .max(0);
         let wait = Duration::from_millis(remaining as u64);
         let event = self.events.recv_timeout(wait).ok();
         #[cfg(test)]
@@ -554,6 +731,8 @@ impl Driver {
             return Ok(());
         }
         self.in_flight -= 1;
+        self.flight_positions.remove(&answer.call.position);
+        self.held_positions.remove(&answer.call.position);
         let mapped = map_answer(answer.result);
         if self.shared.store.write(|tx| {
             store::record_outcome(
@@ -580,6 +759,10 @@ impl Driver {
     }
 
     fn cancel(&mut self, ack: mpsc::SyncSender<Result<()>>) -> Result<()> {
+        if self.wall()? {
+            let _ = ack.send(Ok(()));
+            return Ok(());
+        }
         let result = self.end(terminal(Status::Cancelled, None, None));
         let failed = result.is_err();
         let _ = ack.send(result);
@@ -589,15 +772,58 @@ impl Driver {
         Ok(())
     }
 
+    fn account_time(&mut self) {
+        let now = self.shared.clock.now_ms();
+        if !self.stopping && self.person_only() {
+            self.person_wait_ms = self
+                .person_wait_ms
+                .saturating_add(now.saturating_sub(self.last_tick_ms).max(0));
+        }
+        self.last_tick_ms = now;
+    }
+
     fn wall(&mut self) -> Result<bool> {
-        if !self.stopping && self.shared.clock.now_ms() >= self.start.wall_deadline_ms {
-            self.end(exhausted(Budget::Wall))?;
+        self.account_time();
+        let now = self.shared.clock.now_ms();
+        if !self.stopping {
+            if self.person_wait_ms >= basal_host::run_scope::PERSON_WAIT_MS {
+                self.end(exhausted(Budget::PersonWait))?;
+            } else if now
+                >= self
+                    .start
+                    .wall_deadline_ms
+                    .saturating_add(self.person_wait_ms)
+            {
+                self.end(exhausted(Budget::Wall))?;
+            }
         }
         Ok(self.stopping)
     }
 
+    fn person_only(&self) -> bool {
+        self.blocked && self.in_flight > 0 && self.held_positions.len() == self.in_flight
+    }
+
     fn message(&mut self, message: WorkerMessage) -> Result<()> {
+        self.blocked = matches!(message, WorkerMessage::Blocked { .. });
+        #[cfg(test)]
+        self.shared
+            .worker_blocked
+            .store(self.blocked, Ordering::SeqCst);
         match message {
+            WorkerMessage::Warning { message } => {
+                let mut warnings: Vec<Value> = serde_json::from_str(&self.run.warnings)
+                    .map_err(|e| CoreError::Corrupt(e.to_string()))?;
+                if warnings.len() < 256 && self.run.warnings.len() < 65_536 {
+                    warnings.push(json!({"code":"unhandled_rejection","message":message}));
+                    self.run.warnings = serde_json::to_string(&warnings).unwrap();
+                    self.shared.store.write(|tx| {
+                        tx.execute("UPDATE codemode_runs SET warnings=?2 WHERE run_id=?1 AND status='running'",rusqlite::params![self.run.run_id,self.run.warnings])?;
+                        Ok(())
+                    })?;
+                }
+                Ok(())
+            }
             WorkerMessage::Console { line } => self.console(line),
             WorkerMessage::HostCall(call) if self.completion.is_none() => self.call(call),
             WorkerMessage::HostCall(_) => self.end(failed(
@@ -646,6 +872,13 @@ impl Driver {
             ));
         };
         self.invocations += 1;
+        self.shared.store.write(|tx| {
+            tx.execute(
+                "UPDATE codemode_runs SET tool_call_count=?2 WHERE run_id=?1 AND status='running'",
+                rusqlite::params![self.run.run_id, self.invocations],
+            )?;
+            Ok(())
+        })?;
         if self.invocations > self.start.limits.tool_calls {
             return self.end(exhausted(Budget::ToolCalls));
         }
@@ -663,11 +896,6 @@ impl Driver {
             return self.refuse(call, Outcome::ToolUnavailable, "tool_unavailable", true);
         }
         let declaration = self.shared.catalog.op(&tool.module, &tool.op);
-        if self.shared.denylist.contains(&tool.module, &tool.op)
-            || declaration.as_ref().is_some_and(|op| op.shell_capable)
-        {
-            return self.refuse(call, Outcome::Refused, "shell_capable", true);
-        }
         if declaration.is_none() {
             return self.refuse(call, Outcome::Refused, "not_in_catalog", true);
         }
@@ -763,14 +991,33 @@ impl Driver {
         );
         let id = self.run.run_id.clone();
         let clock = self.shared.clock.clone();
-        let deadline = self.start.wall_deadline_ms;
+        let deadline = self
+            .start
+            .wall_deadline_ms
+            .saturating_add(self.person_wait_ms);
         let key = store::call_key(&self.run.run_id, call.position);
         let route = self.key();
         let transport = self.shared.transport.clone();
+        let options = basal_host::transport::RunToolOptions {
+            identity: self.identity.clone().unwrap_or_else(|| {
+                subc_protocol::BindIdentity::new("/", "basal", format!("basal:flow:{}", self.key()))
+            }),
+            // Basal's parent process kills the worker at the first elapsed-wall
+            // (30 minutes, excluding person waits) or person-wait (10 minutes)
+            // cap. A longer RPC wait avoids cancelling a legitimate slow tool;
+            // the fixed run-scope expiry remains its outer deadline.
+            reply_timeout: Duration::from_millis(
+                self.run
+                    .deadline_ms
+                    .saturating_sub(self.shared.clock.now_ms())
+                    .max(1) as u64,
+            ),
+        };
         let events = self.event_tx.clone();
         #[cfg(test)]
         let before_entry = self.shared.before_entry.lock().unwrap().clone();
         self.in_flight += 1;
+        self.flight_positions.insert(call.position);
         if let Err(error) = thread::Builder::new()
             .name(format!("{route}:tool"))
             .spawn(move || {
@@ -797,7 +1044,7 @@ impl Driver {
                                 // A blocked provider must not keep the module's
                                 // SQLite writer lease alive after shutdown.
                                 drop(store);
-                                transport.tool_for_flow(&route, &module, &op, input, &key)
+                                transport.tool_for_run(&route, &module, &op, input, &key, &options)
                             }
                             Ok(false) => return,
                             Err(error) => Err(WireError::NeverSent(error.to_string())),
@@ -827,6 +1074,9 @@ impl Driver {
     }
 
     fn deliver(&mut self, call: &HostCall, mapped: Mapped) -> Result<()> {
+        self.blocked = false;
+        #[cfg(test)]
+        self.shared.worker_blocked.store(false, Ordering::SeqCst);
         let CallKind::Tool { name } = &call.kind else {
             unreachable!()
         };
@@ -860,16 +1110,25 @@ impl Driver {
     }
 
     fn end(&mut self, mut terminal: Terminal) -> Result<()> {
+        self.account_time();
         self.stopping = true;
         self.parent_owned_kill = true;
         terminal.output = self.run.output.clone();
         terminal.warnings = self.run.warnings.clone();
-        terminate(
+        let accounting = self.shared.store.write(|tx| {
+            tx.execute(
+                "UPDATE codemode_runs SET person_wait_ms=?2 WHERE run_id=?1 AND status='running'",
+                rusqlite::params![self.run.run_id, self.person_wait_ms],
+            )?;
+            Ok(())
+        });
+        let ended = terminate(
             &self.shared,
             &self.run.run_id,
             self.worker.as_deref_mut(),
             terminal,
-        )
+        );
+        ended.and(accounting)
     }
 }
 
@@ -877,12 +1136,18 @@ fn terminate(
     shared: &Shared,
     id: &str,
     worker: Option<&mut (dyn WorkerChannel + 'static)>,
-    terminal: Terminal,
+    mut terminal: Terminal,
 ) -> Result<()> {
     // The driver has stopped accepting calls and marked the worker kill as
     // parent-initiated. Cancel calls not yet sent, mark unanswered attempts as
     // unknown, then release the registered scope before making the run terminal.
     // Admission counts running rows, so the terminal commit frees its slot.
+    if let Err(error) = super::scope::close(&shared.store, shared.transport.as_ref(), id) {
+        let mut warnings: Vec<Value> = serde_json::from_str(&terminal.warnings)
+            .map_err(|e| CoreError::Corrupt(e.to_string()))?;
+        warnings.push(json!({"code":"scope_close_failed","message":error.to_string()}));
+        terminal.warnings = serde_json::to_string(&warnings).unwrap();
+    }
     if let Some(worker) = worker {
         worker.kill();
     }
@@ -896,7 +1161,16 @@ fn terminate(
     shared
         .store
         .write(|tx| store::commit_terminal(tx, id, &terminal, at))?;
-    Ok(())
+    let hook_result = if let Some(hook) = shared.terminal_hook.lock().unwrap().clone() {
+        Supervisor::result_for(&shared.store, &shared.clock, id)?
+            .map_or(Ok(()), |result| hook(id, result))
+    } else {
+        Ok(())
+    };
+    let (generation, changed) = &shared.terminal_changed;
+    *generation.lock().unwrap() += 1;
+    changed.notify_all();
+    hook_result
 }
 
 /// The body of a run's reader thread. It forwards one frame, then waits for
@@ -969,7 +1243,7 @@ fn map_answer(result: std::result::Result<Value, WireError>) -> Mapped {
                 ScopeEnded | ScopeNotLive | ScopeNotSynced | ScopeChanged => {
                     (Outcome::Refused, refusal.reason.as_str(), true)
                 }
-                ConsentUnavailable => (Outcome::ConsentUnavailable, "consent_unavailable", false),
+                ConsentUnavailable => (Outcome::Refused, "consent_unavailable", false),
                 ScopeNotCarrier
                 | ScopeEpochRequired
                 | ScopeUnsupported
@@ -999,7 +1273,28 @@ fn map_answer(result: std::result::Result<Value, WireError>) -> Mapped {
         }
         Err(
             WireError::Refused { code, message } | WireError::RefusedDetails { code, message, .. },
-        ) => Mapped::rejected(Outcome::Error, &code, &message),
+        ) if matches!(
+            code.as_str(),
+            "scope_ended" | "scope_expired" | "scope_not_synced"
+        ) =>
+        {
+            let mut mapped = Mapped::rejected(Outcome::Refused, &code, &message);
+            mapped.scope_loss = true;
+            mapped
+        }
+        Err(
+            WireError::Refused { code, message } | WireError::RefusedDetails { code, message, .. },
+        ) => Mapped::rejected(
+            if code == "denied" {
+                Outcome::Denied
+            } else if code == "tool_unavailable" {
+                Outcome::ToolUnavailable
+            } else {
+                Outcome::Error
+            },
+            &code,
+            &message,
+        ),
     }
 }
 

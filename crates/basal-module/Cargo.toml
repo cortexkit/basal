@@ -31,6 +31,9 @@ basal-host.workspace = true
 basal-proto.workspace = true
 async-trait.workspace = true
 cortexkit-log.workspace = true
+cortexkit-role-tool-provider.workspace = true
+blake3.workspace = true
+getrandom.workspace = true
 cortexkit-store-types.workspace = true
 jiff.workspace = true
 libc.workspace = true
@@ -48,5 +51,8 @@ sha2.workspace = true
 
 [dev-dependencies]
 basal-testkit.workspace = true
+cortexkit-role-tool-provider-conformance.workspace = true
+cortexkit-role-harness = "=0.1.0"
+subc-client-rs = { workspace = true, features = ["test-support"] }
 sha2.workspace = true
 subc-transport.workspace = true
