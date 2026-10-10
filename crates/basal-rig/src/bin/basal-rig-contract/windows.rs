@@ -14,8 +14,12 @@ use windows_sys::Win32::System::Threading::{
 
 pub(super) fn basal_pid() -> Option<String> {
     let home = PathBuf::from(std::env::var_os("HOME")?);
-    let expected = home.parent()?.join("bin").join("ckdev-basal.exe");
+    let expected = module_image(&home)?;
     pid_of_image(&expected)
+}
+
+fn module_image(home: &std::path::Path) -> Option<PathBuf> {
+    Some(home.parent()?.join("bin").join("ckdev-basal.exe"))
 }
 
 fn pid_of_image(expected: &std::path::Path) -> Option<String> {
@@ -53,21 +57,6 @@ fn pid_of_image(expected: &std::path::Path) -> Option<String> {
         more = unsafe { Process32NextW(snapshot.as_raw_handle(), &mut row) };
     }
     None
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn process_snapshot_finds_the_current_image_and_refuses_an_absent_image() {
-        let image = std::env::current_exe().unwrap();
-        assert_eq!(pid_of_image(&image), Some(std::process::id().to_string()));
-        assert_eq!(
-            pid_of_image(&image.with_file_name("absent-rig-image.exe")),
-            None
-        );
-    }
 }
 
 pub(super) fn ck_output(
@@ -116,4 +105,26 @@ pub(super) fn ck_output(
         stdout,
         stderr,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn process_snapshot_finds_the_current_image_and_refuses_an_absent_image() {
+        let module = module_image(std::path::Path::new(r"C:\rig\home")).unwrap();
+        // Path equality normalizes separators, but the native image-name
+        // comparison uses raw spelling, so assert the spelling itself here.
+        assert_eq!(
+            module.as_os_str(),
+            std::ffi::OsStr::new(r"C:\rig\bin\ckdev-basal.exe")
+        );
+        let image = std::env::current_exe().unwrap();
+        assert_eq!(pid_of_image(&image), Some(std::process::id().to_string()));
+        assert_eq!(
+            pid_of_image(&image.with_file_name("absent-rig-image.exe")),
+            None
+        );
+    }
 }
