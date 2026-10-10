@@ -405,6 +405,10 @@ pub(super) fn run() -> Result<(), String> {
             let mut stack = Vec::new();
             if let Some(trace) = trace {
                 for address in trace.stack.iter().copied().filter(|address| *address != 0) {
+                    if address >= 0xffff_8000_0000_0000 {
+                        stack.push(json!({"address":format!("{address:#x}"), "module":"kernel (unsymbolized)"}));
+                        continue;
+                    }
                     match symbols.resolve(address) {
                         Ok(frame) => stack.push(frame),
                         Err(error) => {
@@ -432,7 +436,14 @@ pub(super) fn run() -> Result<(), String> {
                         || (module == "kernelbase"
                             && (symbol.contains("Initialize") || symbol.contains("Init"))))
             });
-            if !anchored {
+            let first_user = stack
+                .iter()
+                .find(|frame| frame["module"] != "kernel (unsymbolized)");
+            let creator_resolved = first_user.is_some_and(|frame| {
+                frame["symbol_type"] == 3
+                    && matches!(frame["module"].as_str(), Some("ntdll" | "kernelbase"))
+            });
+            if !anchored || !creator_resolved {
                 unresolved.push(format!(
                     "{} {:#x}: creator not resolved to ntdll/KernelBase initialization",
                     handle.type_name, handle.value
@@ -448,6 +459,15 @@ pub(super) fn run() -> Result<(), String> {
         serde_json::to_vec_pretty(&measured).map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
+    // The snapshot is complete. Remove only the diagnostic trace database
+    // before releasing the worker; permanent strict-handle checks are unchanged.
+    let disabled = unsafe { NtSetInformationProcess(process, 32, std::ptr::null(), 0) };
+    if disabled != 0 {
+        return Err(format!(
+            "disable ProcessHandleTracing: {:#x}",
+            disabled as u32
+        ));
+    }
     child
         .stdin
         .as_mut()

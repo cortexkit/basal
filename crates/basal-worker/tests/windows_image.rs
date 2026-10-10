@@ -187,24 +187,23 @@ fn the_worker_is_a_gui_image_without_gui_com_or_c_runtime_imports() {
         !all.iter().any(|name| name == "ws2_32.dll"),
         "Winsock belongs only to dynamically resolved probe mode"
     );
-    // Once the import list read from a production build of the worker is
-    // committed at this path, every import must be on it, so a new DLL
-    // dependency is a reviewed change. API-set names (`api-ms-win-*`) are names, not paths.
+    // Every import must be on the committed production inventory, so adding a
+    // DLL dependency requires an explicit update. API-set names are names, not
+    // filesystem paths; normal and delay imports use the same fixed allowlist.
     let listed = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/windows-imports.txt");
-    if let Ok(text) = std::fs::read_to_string(&listed) {
-        let allowed: Vec<String> = text
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty() && !line.starts_with('#'))
-            .map(str::to_ascii_lowercase)
-            .collect();
-        for name in &all {
-            assert!(
-                allowed.contains(name),
-                "{name} is not in {}",
-                listed.display()
-            );
-        }
+    let text = std::fs::read_to_string(&listed).expect("committed production import inventory");
+    let allowed: Vec<String> = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(str::to_ascii_lowercase)
+        .collect();
+    for name in &all {
+        assert!(
+            allowed.contains(name),
+            "{name} is not in {}",
+            listed.display()
+        );
     }
 }
 

@@ -117,6 +117,17 @@ pub fn run(args: &[String]) -> u8 {
             return 64;
         }
     };
+    let winsock = if matches!(probe.as_str(), "tcp" | "udp" | "loopback") {
+        match unsafe { winsock::preload() } {
+            Ok(backend) => Some(backend),
+            Err(error) => {
+                eprintln!("confinement probe: {error}");
+                return 71;
+            }
+        }
+    } else {
+        None
+    };
     if sandbox {
         if let Err(error) = windows::enter(&package, &arguments) {
             eprintln!("ck-basal-worker: refusing to run unconfined: {error}");
@@ -132,7 +143,7 @@ pub fn run(args: &[String]) -> u8 {
     }
     let result = (|| {
         marker(&probe)?;
-        let codes = unsafe { attempt(&probe, &target, number)? };
+        let codes = unsafe { attempt(&probe, &target, number, winsock.as_ref())? };
         println!(
             "windows-probe-result:{probe}:{}",
             codes
@@ -155,7 +166,12 @@ unsafe extern "system" fn thread_entry(_: *mut c_void) -> u32 {
     0
 }
 
-unsafe fn attempt(probe: &str, target: &str, number: usize) -> Result<Vec<u32>, String> {
+unsafe fn attempt(
+    probe: &str,
+    target: &str,
+    number: usize,
+    winsock: Option<&winsock::Backend>,
+) -> Result<Vec<u32>, String> {
     let code = match probe {
         "read" | "stat" | "create" | "pipe" => {
             let handle = CreateFileW(
@@ -198,7 +214,11 @@ unsafe fn attempt(probe: &str, target: &str, number: usize) -> Result<Vec<u32>, 
         "registry" => objects::registry_write(target),
         "alpc" => objects::alpc(target),
         "section" => objects::section(target),
-        "tcp" | "udp" | "loopback" => return winsock::attempt(probe, number as u16),
+        "tcp" | "udp" | "loopback" => {
+            return Ok(winsock
+                .expect("socket mode preloaded Winsock")
+                .attempt(probe, number as u16));
+        }
         "process" => {
             let mut startup: STARTUPINFOW = zeroed();
             startup.cb = size_of::<STARTUPINFOW>() as u32;

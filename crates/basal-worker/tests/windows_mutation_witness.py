@@ -18,7 +18,17 @@ CONTROLS = [
         "new": "    let _ = allowlist::check(&table); // NON-VACUITY BREAK",
         "target": "windows_probes",
         "test": "planted_handle_startup_refuses_and_the_allowlist_mutant_writes_the_fixture",
+        "description": "remove startup allowlist enforcement",
         "witness": "fixture bytes [101, 115, 99, 97, 112, 101, 100]",
+    },
+    {
+        "file": "crates/basal-worker/tests/data/windows-imports.txt",
+        "old": "kernel32.dll\n",
+        "new": "# NON-VACUITY BREAK\n",
+        "target": "windows_image",
+        "test": "the_worker_is_a_gui_image_without_gui_com_or_c_runtime_imports",
+        "description": "remove the real kernel32 import from the committed inventory",
+        "witness": "kernel32.dll is not in",
     },
 ]
 
@@ -52,7 +62,7 @@ for control in CONTROLS:
         if after:
             raise SystemExit("mutation safety: restored diff is not empty")
     proof = {
-        "control": control["file"] + ": remove startup allowlist enforcement",
+        "control": control["file"] + ": " + control["description"],
         "expected_red": control["test"],
         "captured_output": expected + "; 0 passed; 1 failed; other tests filtered; " + control["witness"],
         "applied_evidence": f"{control['file']}; during: {during}; after: {after or '(empty)'}",
