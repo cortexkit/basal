@@ -11,7 +11,10 @@
 //!   policies, child-process ban and an explicit list of inherited handles;
 //! - a minimal environment, working directory, window station and desktop;
 //! - the checks the parent makes on the suspended process before it lets the
-//!   first instruction run, and the owned process wrapper afterwards.
+//!   first instruction run, and the owned process wrapper afterwards;
+//! - the one way to start an unconfined child (`spawn_plain`), and the
+//!   process-wide spawn lock every Windows spawn in basal takes while it
+//!   holds inheritable handles (`spawn_lock`).
 //!
 //! The worker's own checks, made after it starts and before it reads any
 //! input, live in the worker.

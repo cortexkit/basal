@@ -6,8 +6,10 @@ mod error;
 mod job;
 mod launch;
 mod native;
+mod plain;
 mod process;
 mod profile;
+mod spawn_lock;
 mod token;
 
 pub use deviation::Deviation;
@@ -19,8 +21,10 @@ pub use launch::{
     MITIGATION_PREFER_SYSTEM32_IMAGES, MITIGATION_PROHIBIT_DYNAMIC_CODE,
     MITIGATION_STRICT_HANDLE_CHECKS, MITIGATION_WIN32K_SYSTEM_CALL_DISABLE, launch,
 };
-pub use process::{ConfinedProcess, KILL_EXIT_CODE};
+pub use plain::{PlainCommand, PlainStdio, spawn_plain};
+pub use process::{ConfinedProcess, KILL_EXIT_CODE, OwnedProcess};
 pub use profile::{PROFILE_NAME, PackageSid, create_or_open_profile, grant_test_binary_directory};
+pub use spawn_lock::{SpawnLock, make_inheritable, spawn_lock, spawn_lock_held};
 pub use token::{
     IMPERSONATION_LEVEL, LOW_INTEGRITY, NULL_SID, TOKEN_IMPERSONATION, TOKEN_PRIMARY, TokenFacts,
 };
