@@ -255,6 +255,35 @@ fn check_root(field: &str, root: &str) -> Result<(), ManifestError> {
     if root.chars().any(char::is_control) {
         return Err(invalid(field, format!("{root:?} has a control character")));
     }
+    if cfg!(windows) {
+        check_windows_root(field, root)
+    } else {
+        check_unix_root(field, root)
+    }
+}
+
+/// A Windows root is spelt exactly as the Windows `fs` built-in accepts a
+/// path: an absolute drive path (`C:\dir`), never a UNC, device,
+/// extended-length or drive-relative path, an alternate data stream, a `.`
+/// or `..` component, or a reserved device name. `~` and `~/...` (the
+/// user's profile folder) stay accepted as on Unix, with each component
+/// under `~/` held to the same rules.
+fn check_windows_root(field: &str, root: &str) -> Result<(), ManifestError> {
+    let spelling = if root == "~" {
+        return Ok(());
+    } else if let Some(rest) = root.strip_prefix("~/") {
+        // The components are checked as if under a drive root; the drive
+        // letter itself is never used.
+        format!("C:\\{}", rest.replace('/', "\\"))
+    } else {
+        root.to_owned()
+    };
+    basal_host::builtins::fs::windows::validate_raw_spelling(&spelling)
+        .map_err(|denial| invalid(field, format!("{root:?}: {}", denial.message)))
+}
+
+/// A Unix root starts with `/` or `~/` (or is `~`).
+fn check_unix_root(field: &str, root: &str) -> Result<(), ManifestError> {
     let rest = if root == "~" {
         ""
     } else if let Some(rest) = root.strip_prefix("~/") {
@@ -725,6 +754,69 @@ impl Manifest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_roots_are_the_fs_built_ins_drive_paths_or_under_the_profile() {
+        for root in [
+            r"C:\x",
+            r"C:\",
+            r"d:\Users\me\notes",
+            "~",
+            "~/",
+            "~/notes",
+            "~/notes/2026",
+        ] {
+            assert_eq!(check_windows_root("fs.read", root), Ok(()), "{root}");
+        }
+        for root in [
+            r"\\server\share\x",
+            "//server/share/x",
+            r"\\?\C:\x",
+            r"\\.\C:\x",
+            r"\??\C:\x",
+            r"C:x",
+            "C:",
+            r"C:\x\file.txt:stream",
+            r"C:\x::$DATA",
+            r"C:\x\..\y",
+            r"C:\x\.",
+            r"C:\x\CON",
+            "C:/x",
+            "/x",
+            "x",
+            "~/../x",
+            "~/a:b",
+            r"~\x",
+        ] {
+            assert!(
+                matches!(
+                    check_windows_root("fs.write", root),
+                    Err(ManifestError::Invalid { ref field, .. }) if field == "fs.write"
+                ),
+                "{root} was accepted"
+            );
+        }
+    }
+
+    /// The platform's own grammar is the one a manifest is parsed with.
+    #[test]
+    fn manifest_roots_follow_this_platforms_spelling() {
+        let parse = |root: &str| {
+            Manifest::parse(
+                &serde_json::json!({
+                    "id":"roots", "version":1, "purpose":"test",
+                    "trigger":{"events":[{"module":"echo","name":"tick","version":1}]},
+                    "fs": {"read": [root]}
+                })
+                .to_string(),
+            )
+            .map(|_| ())
+        };
+        assert!(parse("~/notes").is_ok());
+        assert_eq!(parse(r"C:\x").is_ok(), cfg!(windows));
+        assert_eq!(parse("/x").is_ok(), !cfg!(windows));
+        assert!(parse(r"\\server\share").is_err());
+    }
 
     #[test]
     fn multibyte_durations_are_refused_without_panicking() {

@@ -178,3 +178,47 @@ remaining assertions in mixed tests still run on Windows.
 - `crates/basal-host/tests/builtin_host_regressions.rs::git_reaps_descendants_that_keep_its_output_pipe_open` — `/bin/sh`/`sleep` fixture and POSIX process-group cleanup; native Windows job/descendant tests run in basal-host and basal-testkit.
 - `crates/basal-testkit/src/https.rs::tests::idle_https_accept_blocks_and_shutdown_wakes_it_without_a_request` (`fcntl` flag readback only) — POSIX socket flags; shutdown wakeup and absence of HTTPS requests remain tested on Windows.
 - `crates/basal-testkit/src/process.rs::tests::subprocess_deadline_reaps_descendants_holding_output_pipes` — `/bin/sh`/`sleep` process-group fixture; `crates/basal-testkit/tests/windows_process.rs::subprocess_deadline_reaps_descendants_holding_output_pipes` tests the Windows job equivalent by the same test name.
+
+## Tests gated on Windows
+
+These tests are compiled out (`cfg(unix)`) or ignored (`cfg_attr(windows,
+ignore)`) on Windows rather than rewritten. Each entry below gives its
+reason. They were gated when basal-module's tests first ran on Windows, after
+basal-module started, supervised and killed its workers through
+`basal-launch`.
+
+- **POSIX-only semantics** (`cfg(unix)`):
+  - `crates/basal-module/tests/pool.rs`:
+    `sigsys_deaths_are_counted_in_flow_health` and
+    `sigkill_deaths_are_not_confinement_violations` send signals and observe
+    them with `waitid`. The Windows fault accounting is covered by
+    `pool::bookkeeping_tests::a_fatal_status_exit_counts_as_a_confinement_fault_and_exit_70_does_not`.
+  - `crates/basal-module/tests/pool.rs`:
+    `a_wait_deadline_stops_and_reaps_its_workers` checks reaping with
+    `waitpid`.
+  - `crates/basal-module/tests/e2e.rs`: `e2e_fixture_drop_reaps_its_child`
+    checks that no zombie is left, with `waitpid`.
+  - `crates/basal-module/src/process.rs`:
+    `buffer_tests::a_reaped_worker_handle_never_signals_a_recycled_pid`
+    runs `/usr/bin/true` and guards a pid signal; on Windows the kill goes
+    through the process handle, which no other process can reuse.
+- **Codemode is refused on Windows** (`cfg_attr(windows, ignore)`):
+  basal-core's codemode admission refuses Windows with
+  `unsupported_platform`. Every test that runs codemode is ignored there:
+  in `crates/basal-module/tests/codemode.rs`,
+  `codemode_run_returns_while_provider_is_held_and_other_ops_are_served`,
+  `codemode_cancel_unknown_terminal_and_running_and_hide_flow_ids`,
+  `codemode_workers_are_separate_from_flow_pool_and_never_shared`,
+  `codemode_spawn_failure_is_failed_worker_lost`,
+  `codemode_shutdown_after_store_cut_revokes_a_held_worker`,
+  `module_drop_releases_codemode_store_before_a_held_provider_returns`,
+  `codemode_js_cpu_within_budget_completes_end_to_end`,
+  `codemode_js_cpu_exceeding_budget_is_exact_end_to_end`,
+  `codemode_memory_within_budget_completes_end_to_end`,
+  `codemode_memory_exceeding_budget_is_exact_even_when_caught_end_to_end`,
+  `codemode_stack_within_budget_completes_end_to_end`,
+  `codemode_stack_exceeding_budget_is_exact_even_when_caught_end_to_end` and
+  `codemode_results_decode_against_documented_shape`; and in
+  `crates/basal-module/tests/codemode_scope.rs`,
+  `codemode_handler_attests_via_real_sdk_and_replaces_the_describe_connection`.
+  `codemode_run_is_refused_on_windows` asserts the refusal instead.

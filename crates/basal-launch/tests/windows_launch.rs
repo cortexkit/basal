@@ -158,6 +158,38 @@ fn full_confinement_denies_a_file_in_the_childs_temp_directory() {
     kill_and_reap(&child);
 }
 
+/// A launch's TEMP directory used to be named from the process id and a
+/// counter, so a process killed before cleaning up left a directory a later
+/// process with the same id collided with. Directories with every such name
+/// this process could have used do not block a launch.
+#[test]
+fn leftover_directories_with_pid_based_names_do_not_block_a_launch() {
+    let leftovers: Vec<PathBuf> = (0..64)
+        .map(|counter| {
+            std::env::temp_dir().join(format!("cortexkit_basal_{}_{counter}", std::process::id()))
+        })
+        .collect();
+    for leftover in &leftovers {
+        let _ = std::fs::create_dir(leftover);
+        assert!(leftover.is_dir());
+    }
+    let mut child = start(Deviation::Full, &[]);
+    let ready = lines(&mut child, 1).remove(0);
+    assert!(ready.starts_with("ready "), "{ready}");
+    assert!(
+        !leftovers
+            .iter()
+            .any(|leftover| child.temp_dir().file_name() == leftover.file_name()),
+        "the launch reused a leftover directory: {}",
+        child.temp_dir().display()
+    );
+    kill_and_reap(&child);
+    drop(child);
+    for leftover in &leftovers {
+        let _ = std::fs::remove_dir(leftover);
+    }
+}
+
 #[cfg(feature = "deviations")]
 mod deviations {
     use super::*;

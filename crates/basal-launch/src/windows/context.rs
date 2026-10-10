@@ -8,9 +8,11 @@ use std::mem::size_of;
 use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
 use windows_sys::Win32::Foundation::{HANDLE, LocalFree};
 use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
+use windows_sys::Win32::Security::Cryptography::{
+    BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom,
+};
 use windows_sys::Win32::Security::{
     DACL_SECURITY_INFORMATION, LABEL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
     PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, SetFileSecurityW, TOKEN_USER, TokenGroups,
@@ -42,8 +44,6 @@ type CloseObject = unsafe extern "system" fn(HANDLE) -> i32;
 /// Creating a desktop uses the process's current window station, which is
 /// process-wide state; launches that switch it must not interleave.
 static STATION_SWITCH: Mutex<()> = Mutex::new(());
-
-static NEXT_CONTEXT: AtomicU64 = AtomicU64::new(0);
 
 /// A worker's start-up context. Dropping it closes the station and desktop
 /// and removes the TEMP directory, so it must outlive the worker.
@@ -207,11 +207,7 @@ pub(crate) fn create(image: &Path, parent_token: HANDLE, package: &PackageSid) -
             "D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;{user}){logon_desktop}(A;;0x20081;;;S-1-0-0)(A;;0x20081;;;{package})S:(ML;;NW;;;LW)"
         ))?;
 
-        let name = format!(
-            "cortexkit_basal_{}_{}",
-            std::process::id(),
-            NEXT_CONTEXT.fetch_add(1, Ordering::Relaxed)
-        );
+        let name = context_name()?;
         let station = create_station(
             wide(&name).as_ptr(),
             0,
@@ -258,6 +254,9 @@ pub(crate) fn create(image: &Path, parent_token: HANDLE, package: &PackageSid) -
             .parent()
             .ok_or_else(|| format!("{} has no parent directory", image.display()))?;
         context.cwd = wide(directory);
+        // `create_dir` fails on an existing name, so a directory that is
+        // already there (left by a killed process, or planted) is never
+        // reused; with an unpredictable name nobody can plant it in advance.
         let temp = std::env::temp_dir().join(&name);
         std::fs::create_dir(&temp)
             .map_err(|error| format!("create {}: {error}", temp.display()))?;
@@ -283,6 +282,27 @@ pub(crate) fn create(image: &Path, parent_token: HANDLE, package: &PackageSid) -
     }
 }
 
+/// A fresh name for one launch's window station and TEMP directory: 128
+/// bits from the system's random number generator. A name made from the
+/// process id and a counter repeats when a later process gets the same id,
+/// and can be guessed and created by someone else first.
+pub(crate) fn context_name() -> Result<String> {
+    let mut random = [0u8; 16];
+    let status = unsafe {
+        BCryptGenRandom(
+            null_mut(),
+            random.as_mut_ptr(),
+            random.len() as u32,
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+        )
+    };
+    if status < 0 {
+        return Err(format!("BCryptGenRandom: NTSTATUS {status:#x}"));
+    }
+    let hex: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+    Ok(format!("cortexkit_basal_{hex}"))
+}
+
 /// The long form of an existing path, without the `\\?\` prefix that
 /// canonicalization adds, or the path unchanged if it has no such form.
 fn long_path(path: &Path) -> PathBuf {
@@ -293,5 +313,22 @@ fn long_path(path: &Path) -> PathBuf {
     match text.strip_prefix(r"\\?\") {
         Some(rest) if rest.as_bytes().get(1) == Some(&b':') => PathBuf::from(rest),
         _ => path.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn context_names_are_random_and_never_repeat() {
+        let names: std::collections::BTreeSet<String> =
+            (0..64).map(|_| context_name().unwrap()).collect();
+        assert_eq!(names.len(), 64);
+        for name in &names {
+            let hex = name.strip_prefix("cortexkit_basal_").unwrap();
+            assert_eq!(hex.len(), 32, "{name}");
+            assert!(hex.bytes().all(|b| b.is_ascii_hexdigit()), "{name}");
+        }
     }
 }
