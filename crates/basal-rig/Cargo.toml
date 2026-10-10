@@ -33,6 +33,7 @@ tokio = { workspace = true, features = ["sync", "time"] }
 
 [target.'cfg(windows)'.dependencies]
 basal-launch.workspace = true
+rusqlite = { workspace = true, features = ["bundled"] }
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_System_Diagnostics_ToolHelp",

@@ -120,8 +120,7 @@ fn discovered_worker_launches_with_full_confinement_without_an_extra_acl_grant()
             .to_string_lossy()
             .starts_with("ckdev-")
     );
-    let options =
-        basal_launch::LaunchOptions::new(&binary, basal_proto::limits::FLOW_JOB_COMMIT_BYTES);
+    let options = basal_launch::LaunchOptions::new(&binary, basal_proto::FLOW_JOB_COMMIT_BYTES);
     let mut child = basal_launch::launch(&options).unwrap();
     child
         .stdin

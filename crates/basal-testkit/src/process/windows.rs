@@ -36,7 +36,7 @@ pub(super) struct Child {
 }
 
 pub(super) fn spawn_worker(binary: &Path, args: &[&str]) -> io::Result<Child> {
-    let mut options = LaunchOptions::new(binary, basal_proto::limits::FLOW_JOB_COMMIT_BYTES);
+    let mut options = LaunchOptions::new(binary, basal_proto::FLOW_JOB_COMMIT_BYTES);
     options.args = args.iter().map(|arg| (*arg).into()).collect();
     let mut process = basal_launch::launch(&options).map_err(io::Error::other)?;
     let stdin = process.stdin.take();

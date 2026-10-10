@@ -387,7 +387,7 @@ fn a_crash_mid_write_is_cleaned_up_by_recovery_without_following_a_swapped_path(
         assert!(temp.is_file(), "{tamper:?}: {temp:?}");
         let sub = files.root.join("sub");
         // Where the recorded file is after tampering, if it is anywhere.
-        let left = match tamper {
+        let left: Option<PathBuf> = match tamper {
             Tamper::None => None,
             #[cfg(unix)]
             Tamper::SymlinkedTemp => {
