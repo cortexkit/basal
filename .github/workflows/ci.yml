@@ -386,6 +386,16 @@ jobs:
             ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-windows-baseline-
       - name: Prepare the log directory
         run: mkdir -p "$RUNNER_TEMP/windows-baseline"
+      # The Windows launcher's own tests start real confined children, so
+      # they can only run here. The deviations feature adds the test-only
+      # launch variants, one per confinement check. They run first and print
+      # what the parent read back, so the log shows it even when the
+      # workspace steps below fail.
+      - name: Test the Windows launcher with its test variants
+        id: test-launch
+        continue-on-error: true
+        timeout-minutes: 20
+        run: cargo test -p basal-launch --features deviations --locked -- --show-output 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-launch.log"
       - name: Check every workspace target
         id: check
         continue-on-error: true
@@ -421,6 +431,7 @@ jobs:
             echo
             echo "- cargo check --workspace --all-targets --locked: ${{ steps.check.outcome }}"
             echo "- cargo test --workspace --locked: ${{ steps.test.outcome }}"
+            echo "- cargo test -p basal-launch --features deviations --locked: ${{ steps.test-launch.outcome }}"
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()

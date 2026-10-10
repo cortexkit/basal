@@ -1,0 +1,42 @@
+[package]
+name = "basal-launch"
+version = "0.1.0"
+description = "Starts basal's worker process under the Windows confinement: AppContainer profile, restricted tokens, job, mitigations and the checks made before the worker runs."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+# A tiny GUI-subsystem child image used only by this crate's tests. It is a
+# binary of this package so that `cargo test` builds it next to the tests.
+[[bin]]
+name = "basal-launch-test-helper"
+path = "src/bin/test-helper.rs"
+test = false
+bench = false
+
+[features]
+default = []
+# Test-only launch variants: the weaker positive controls and one variant per
+# confinement check, each built so that exactly that check must catch it.
+# A build without this feature contains only the full confinement.
+deviations = []
+
+# User32 (window stations and desktops) and Userenv (AppContainer profiles)
+# are loaded at run time from System32 instead of being linked, so that no
+# image linking this crate imports them.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_JobObjects",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Pipes",
+    "Win32_System_SystemInformation",
+    "Win32_System_SystemServices",
+    "Win32_System_Threading",
+    "Win32_System_WindowsProgramming",
+] }
