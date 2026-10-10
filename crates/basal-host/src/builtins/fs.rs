@@ -52,7 +52,9 @@ use std::sync::atomic::Ordering;
 #[cfg(unix)]
 use serde_json::{Value, json};
 
-use super::{Denial, codes, expand_home};
+#[cfg(unix)]
+use super::expand_home;
+use super::{Denial, codes};
 
 #[cfg(target_os = "linux")]
 pub use linux::{
@@ -129,6 +131,7 @@ fn io_denial(path: &Path, e: &std::io::Error) -> Denial {
 }
 
 /// The script's path as an absolute path, with `~` expanded.
+#[cfg(unix)]
 fn absolute(path: &str) -> Result<PathBuf, Denial> {
     if path.len() > MAX_PATH_BYTES || path.contains('\0') {
         return Err(Denial::invalid(format!(
