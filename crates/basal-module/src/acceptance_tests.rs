@@ -66,6 +66,16 @@ fn macos_accepts_seatbelt_but_refuses_linux() {
             }),
             mode
         ));
+        assert!(!accepts_welcome(
+            &welcome(Confinement::Windows {
+                lpac: true,
+                untrusted: true,
+                no_thread_token: true,
+                mitigations: true,
+                handle_table: true,
+            }),
+            mode
+        ));
     }
 }
 
@@ -96,6 +106,16 @@ mod linux {
     fn linux_refuses_the_wrong_os_variant() {
         for mode in [LandlockPolicy::Required, LandlockPolicy::Optional] {
             assert!(!accepts_welcome(&welcome(Confinement::Seatbelt), mode));
+            assert!(!accepts_welcome(
+                &welcome(Confinement::Windows {
+                    lpac: true,
+                    untrusted: true,
+                    no_thread_token: true,
+                    mitigations: true,
+                    handle_table: true,
+                }),
+                mode
+            ));
         }
     }
 
@@ -155,6 +175,54 @@ mod linux {
                     mode
                 ));
             }
+        }
+    }
+}
+
+#[test]
+fn windows_confinement_acceptance() {
+    let all_true = welcome(Confinement::Windows {
+        lpac: true,
+        untrusted: true,
+        no_thread_token: true,
+        mitigations: true,
+        handle_table: true,
+    });
+    for mode in [LandlockPolicy::Required, LandlockPolicy::Optional] {
+        assert_eq!(accepts_welcome(&all_true, mode), cfg!(windows));
+    }
+    for i in 0..5 {
+        let mut fields = [true; 5];
+        fields[i] = false;
+        let w = welcome(Confinement::Windows {
+            lpac: fields[0],
+            untrusted: fields[1],
+            no_thread_token: fields[2],
+            mitigations: fields[3],
+            handle_table: fields[4],
+        });
+        for mode in [LandlockPolicy::Required, LandlockPolicy::Optional] {
+            assert!(!accepts_welcome(&w, mode));
+        }
+    }
+}
+
+#[cfg(windows)]
+mod windows {
+    use super::*;
+
+    #[test]
+    fn windows_refuses_other_os_variants() {
+        for mode in [LandlockPolicy::Required, LandlockPolicy::Optional] {
+            assert!(!accepts_welcome(&welcome(Confinement::Seatbelt), mode));
+            assert!(!accepts_welcome(
+                &welcome(Confinement::Linux {
+                    seccomp: true,
+                    landlock: None,
+                }),
+                mode
+            ));
+            assert!(!accepts_welcome(&welcome(Confinement::None), mode));
         }
     }
 }

@@ -2,11 +2,25 @@
 //! side will read before it allocates, independent of any activation budget.
 
 /// The current protocol version, exchanged in the handshake.
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Linux codemode process ceiling, including the 64 MiB JS heap, native
 /// stacks, executable mappings and allocator overhead.
 pub const CODEMODE_ADDRESS_SPACE_BYTES: u64 = 512 * 1024 * 1024;
+
+/// The largest flow memory budget QuickJS will accept.
+pub const MAX_MEMORY_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+
+/// The JavaScript heap budget allocated to a codemode activation.
+pub const CODEMODE_HEAP_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Windows job object commit limit for codemode workers.
+pub const CODEMODE_JOB_COMMIT_BYTES: u64 = CODEMODE_ADDRESS_SPACE_BYTES;
+
+/// Windows job object commit limit for flow workers, allowing for the maximum
+/// memory budget plus the non-heap baseline overhead.
+pub const FLOW_JOB_COMMIT_BYTES: u64 =
+    MAX_MEMORY_BYTES + (CODEMODE_ADDRESS_SPACE_BYTES - CODEMODE_HEAP_BYTES);
 
 /// The highest Landlock ABI supported by the worker's pinned `landlock`
 /// crate, version `=0.4.7`. Update this together with the worker's crate pin

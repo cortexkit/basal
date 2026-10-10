@@ -421,6 +421,14 @@ pub enum Confinement {
         seccomp: bool,
         landlock: Option<LandlockReport>,
     },
+    /// Windows AppContainer with LPAC, restricted tokens, and mitigation policies.
+    Windows {
+        lpac: bool,
+        untrusted: bool,
+        no_thread_token: bool,
+        mitigations: bool,
+        handle_table: bool,
+    },
     /// No OS sandbox. A production parent refuses such a worker.
     None,
 }
