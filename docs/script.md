@@ -12,16 +12,17 @@ not guarantees.
 
 `sink.digest(agent, item, action)` delivers `item` to the agent's digest
 through prefrontal-core, which validates it strictly. `action` is `silent`,
-`piggyback` or `wake`, capped by the manifest's `digest_max`. The item must
-have exactly these four fields, and core refuses a missing or extra field with
-`sink_item_invalid`:
+`piggyback` or `wake`, capped by the manifest's `digest_max`. The item has
+these four fields. `data` and `links` may be omitted, and then default to
+empty. Core refuses a missing `title` or `body`, or any field not listed
+here, with `sink_item_invalid`, and the refusal names the field:
 
 | Field | Type | Limit |
 | --- | --- | --- |
 | `title` | string, not blank | 200 characters |
 | `body` | string, not blank | 4,096 bytes |
-| `data` | object, `{}` when there is none | 8,192 bytes as canonical JSON |
-| `links` | array, `[]` when there are none | 8 entries |
+| `data` | object, optional, default `{}` | 8,192 bytes as canonical JSON |
+| `links` | array, optional, default `[]` | 8 entries |
 
 A link is either `{ kind: 'url', url: 'https://…' }`, an HTTPS URL with a
 host, or `{ kind: 'work', id: 'wi_…' }`. The whole item may be at most 16,384
