@@ -20,7 +20,18 @@ pub(crate) fn connection() -> Connection {
 
 pub(crate) struct TestRuntime {
     pub rt: Runtime,
-    path: std::path::PathBuf,
+    // Declared after the runtime so it drops after it: on Windows an open
+    // file blocks deleting its directory, so the store must close first.
+    _dir: ScratchDir,
+}
+
+/// Removes the runtime's scratch directory when dropped.
+struct ScratchDir(std::path::PathBuf);
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(&self.0).unwrap();
+    }
 }
 
 impl TestRuntime {
@@ -43,13 +54,10 @@ impl TestRuntime {
             None,
             Config::default(),
         );
-        Self { rt, path }
-    }
-}
-
-impl Drop for TestRuntime {
-    fn drop(&mut self) {
-        std::fs::remove_dir_all(&self.path).unwrap();
+        Self {
+            rt,
+            _dir: ScratchDir(path),
+        }
     }
 }
 

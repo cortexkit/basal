@@ -740,6 +740,8 @@ fn module_drop_joins_activation_after_slot_release() {
     );
     // The consent adapter is deliberately still alive and attached here.
     drop(consent);
+    // On Windows an open database blocks deleting its directory.
+    drop(reopened);
     std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
 

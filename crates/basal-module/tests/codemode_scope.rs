@@ -26,6 +26,10 @@ fn frame(kind: FrameType, channel: u16, epoch: u32, corr: u64, body: Value) -> F
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "codemode is refused on Windows (unsupported_platform)"
+)]
 fn codemode_handler_attests_via_real_sdk_and_replaces_the_describe_connection() {
     // A single-thread executor makes an accidental block_on from handle()
     // fail, rather than letting a spare Tokio worker conceal the mistake.
