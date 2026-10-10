@@ -11512,13 +11512,15 @@ timeout_s = 600
 
 [[control]]
 id = "module-drop-detaches-activation-tail"
+# The stalled-drop test stalls inside the engine's thread join, so it also
+# observes whether drop reaches that join at all.
 guards = "Module drop joins an activation after its reservation is released"
 test_file = "crates/basal-module/src/engine_tests.rs"
 runner = "cargo"
 package = "basal-module"
 platforms = ["linux"]
 target = "--lib"
-expect_red = ["engine::lifecycle_tests::module_drop_joins_activation_after_slot_release"]
+expect_red = ["engine::lifecycle_tests::module_drop_joins_activation_after_slot_release", "engine::lifecycle_tests::a_stalled_module_drop_panics_when_not_unwinding"]
 only = true
 build_timeout_s = 3600
 timeout_s = 600
@@ -14025,13 +14027,15 @@ new = 'Ok(()) // NON-VACUITY BREAK: skip shutdown'
 
 [[control]]
 id = "s7-codemode-shutdown-joins-drivers"
+# A driver joins its worker reader after releasing its active slot, so
+# shutdown waits for that reader only by joining the driver.
 guards = "shutdown waits for driver exit even after its active slot has been released"
 test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
 runner = "cargo"
 package = "basal-core"
 platforms = ["linux"]
 target = "--lib"
-expect_red = ["codemode::supervisor::tests::shutdown_joins_a_driver_after_its_active_slot_is_released"]
+expect_red = ["codemode::supervisor::tests::shutdown_joins_a_driver_after_its_active_slot_is_released", "codemode::supervisor::tests::shutdown_joins_the_worker_reader_of_a_cancelled_run"]
 only = true
 file = "crates/basal-core/src/codemode/supervisor.rs"
 old = 'if handle.join().is_err() {'

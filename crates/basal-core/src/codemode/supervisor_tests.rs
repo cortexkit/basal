@@ -1583,6 +1583,15 @@ fn shutdown_joins_the_worker_reader_of_a_cancelled_run() {
     at_exit.recv_timeout(TIMEOUT).unwrap();
     let prematurely_returned = finished.recv_timeout(Duration::from_millis(500)).is_ok();
     release.wait();
+    // A driver that never exits keeps shutdown joining it forever, and a bare
+    // join on the shutdown thread would hang the whole test run instead of
+    // failing this test. A disconnect means shutdown panicked; the join below
+    // reports that panic.
+    if !prematurely_returned
+        && let Err(mpsc::RecvTimeoutError::Timeout) = finished.recv_timeout(TIMEOUT)
+    {
+        panic!("shutdown did not return after the run's worker reader exited");
+    }
     shutdown.join().unwrap();
     assert!(
         !prematurely_returned,
