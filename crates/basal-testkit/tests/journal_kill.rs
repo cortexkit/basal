@@ -2,9 +2,10 @@
 //! representative run, and separately of the worker. Every killed run must
 //! recover to the uncut run's final state and effect counts.
 
+use basal_testkit::command::Command;
+#[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
-use std::process::Command;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
@@ -27,7 +28,10 @@ fn parent(dir: &Path, kill_at: Option<&Point>) -> (bool, Option<Value>, String) 
     }
     let out = basal_testkit::process::output_until(&mut cmd, std::time::Duration::from_secs(950))
         .expect("test parent must finish within its cleanup deadline");
+    #[cfg(unix)]
     let killed = out.status.signal() == Some(libc::SIGKILL);
+    #[cfg(windows)]
+    let killed = out.status.code() == Some(basal_launch::KILL_EXIT_CODE as i32);
     let json = String::from_utf8_lossy(&out.stdout)
         .lines()
         .last()
@@ -133,6 +137,10 @@ fn killing_the_worker_at_every_boundary_recovers_to_the_uncut_state() {
                     let probe = Arc::new(Probe::act_at(point.clone(), move |_, _| {
                         let pid = source.counts.live_pid.load(Ordering::SeqCst);
                         if pid != 0 {
+                            #[cfg(windows)]
+                            basal_testkit::process::terminate_process(pid)
+                                .expect("terminate live worker");
+                            #[cfg(unix)]
                             // SAFETY: kill(2) has no memory-safety
                             // preconditions; the pid is a worker this test
                             // spawned and has not reaped.

@@ -154,3 +154,27 @@ the failures above are fixed.
   dev-depend on `basal-host`.
 - **Tests:** every test in the workspace. Both test commands stopped while
   compiling `basal-host`.
+
+## Test-kit and rig portability
+
+The original measured baseline above is retained. The following tests, or the
+explicitly named fixture subcases of mixed tests, require POSIX semantics. The
+remaining assertions in mixed tests still run on Windows.
+
+- `crates/basal-worker/tests/inherited_descriptors.rs::worker_closes_extra_inherited_descriptors_at_startup` — POSIX descriptor numbers, `dup2`, and close-on-exec flags; Windows inherited-handle checks run in the launcher and Windows confinement suites.
+- `crates/basal-testkit/src/git.rs::tests::fixture_git_commands_ignore_injected_global_hooks` — executable `/bin/sh` hook fixture; Windows built-in config/hook isolation has native coverage in basal-host.
+- `crates/basal-testkit/tests/builtins_git.rs::a_repository_config_cannot_make_a_built_in_run_a_program` — executable `/bin/sh` fsmonitor, pager, diff and hook fixtures; Windows built-in isolation has native coverage in basal-host.
+- `crates/basal-testkit/tests/builtins_fs.rs::a_symlink_resolving_outside_the_root_is_refused` — symlink creation requiring Windows privilege, and Unix in-root-link traversal semantics.
+- `crates/basal-testkit/tests/builtins_fs.rs::a_symlink_swapped_into_the_last_component_after_the_check_is_not_followed` — privilege-dependent symlink fixture.
+- `crates/basal-testkit/tests/builtins_fs.rs::a_directory_swapped_for_a_symlink_after_the_check_is_caught_after_the_open` — privilege-dependent symlink fixture.
+- `crates/basal-testkit/tests/builtins_fs.rs::list_names_entries_and_their_kinds` (symlink entry only) — privilege-dependent symlink creation; ordinary entries and the listing cap remain tested on Windows.
+- `crates/basal-testkit/tests/builtins_fs.rs::write_replaces_the_whole_file_inside_a_write_root_only` (symlink paths only) — privilege-dependent symlink creation; writes, outside-root refusal, relative-component refusal, size cap and temp cleanup remain tested on Windows.
+- `crates/basal-testkit/tests/fs_write_temps.rs::a_crash_mid_write_is_cleaned_up_by_recovery_without_following_a_swapped_path` (three symlink tamper variants only) — privilege-dependent symlink creation; untampered crash recovery runs on Windows.
+- `crates/basal-testkit/tests/fs_write_temps.rs::a_crash_record_whose_directory_left_its_root_is_not_acted_on` — privilege-dependent symlink creation and retargeting a granted Unix symlink root.
+- `crates/basal-testkit/tests/fs_write_temps.rs::legacy_temporary_files_are_removed_once_from_written_directories` (symlink temp only) — privilege-dependent symlink creation; regular temp cleanup, decoy names, outside files and once-per-store behavior remain tested on Windows.
+- `crates/basal-rig/src/bin/basal-rig-contract/tests.rs::seeded_fixture_rejects_foreign_paths_and_symlinked_stores` (symlinked store only) — privilege-dependent symlink creation; foreign-path and module refusal assertions remain tested on Windows.
+- `crates/basal-host/tests/builtin_host_regressions.rs::escaped_listing_exceeds_encoded_cap_as_a_typed_refusal` — Unix control-character filenames, which NTFS refuses; escaped-file dispatch limits remain tested on Windows.
+- `crates/basal-host/tests/builtin_host_regressions.rs::atomic_write_drops_special_permission_bits` — POSIX setuid/setgid/mode bits; Windows replacement-DACL behavior has native basal-host coverage.
+- `crates/basal-host/tests/builtin_host_regressions.rs::git_reaps_descendants_that_keep_its_output_pipe_open` — `/bin/sh`/`sleep` fixture and POSIX process-group cleanup; native Windows job/descendant tests run in basal-host and basal-testkit.
+- `crates/basal-testkit/src/https.rs::tests::idle_https_accept_blocks_and_shutdown_wakes_it_without_a_request` (`fcntl` flag readback only) — POSIX socket flags; shutdown wakeup and absence of HTTPS requests remain tested on Windows.
+- `crates/basal-testkit/src/process.rs::tests::subprocess_deadline_reaps_descendants_holding_output_pipes` — `/bin/sh`/`sleep` process-group fixture; `crates/basal-testkit/tests/windows_process.rs::subprocess_deadline_reaps_descendants_holding_output_pipes` tests the Windows job equivalent by the same test name.

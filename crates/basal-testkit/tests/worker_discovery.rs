@@ -1,18 +1,27 @@
 //! Cargo owns the build-time worker path; runtime discovery never invokes it.
 
+use basal_testkit::command::Command;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+#[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
-use std::process::Command;
 
 fn child_exit(status: &std::process::ExitStatus) -> String {
-    match status.code() {
-        Some(code) => format!("exit code {code}"),
-        None => format!(
-            "terminated by signal {}",
-            status
-                .signal()
-                .map_or_else(|| "unknown".to_owned(), |signal| signal.to_string())
-        ),
+    #[cfg(windows)]
+    {
+        status.to_string()
+    }
+    #[cfg(unix)]
+    {
+        match status.code() {
+            Some(code) => format!("exit code {code}"),
+            None => format!(
+                "terminated by signal {}",
+                status
+                    .signal()
+                    .map_or_else(|| "unknown".to_owned(), |signal| signal.to_string())
+            ),
+        }
     }
 }
 
@@ -49,13 +58,18 @@ fn every_test_process_uses_the_built_worker_without_invoking_cargo() {
         return;
     }
     let dir = basal_testkit::harness::scratch("worker-discovery");
+    #[cfg(unix)]
     let cargo = dir.join("cargo-fixture");
+    #[cfg(windows)]
+    let cargo = std::path::PathBuf::from(env!("CARGO_BIN_EXE_basal-test-parent"));
     let calls = dir.join("calls");
+    #[cfg(unix)]
     std::fs::write(
         &cargo,
         "#!/bin/sh\necho build >> \"$BASAL_DISCOVERY_CALLS\"\nexit 1\n",
     )
     .unwrap();
+    #[cfg(unix)]
     std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755)).unwrap();
     for _ in 0..2 {
         let result = Command::new(std::env::current_exe().unwrap())

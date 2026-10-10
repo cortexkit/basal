@@ -1,7 +1,5 @@
 //! The real worker must discard inherited authority even in probe mode.
-
-// Windows: gated until basal-testkit builds there.
-#![cfg(not(windows))]
+#![cfg(unix)]
 
 mod common;
 

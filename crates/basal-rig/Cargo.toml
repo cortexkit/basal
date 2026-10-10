@@ -31,6 +31,14 @@ subc-client-rs.workspace = true
 subc-protocol.workspace = true
 tokio = { workspace = true, features = ["sync", "time"] }
 
+[target.'cfg(windows)'.dependencies]
+basal-launch.workspace = true
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 basal-host.workspace = true
 basal-proto.workspace = true

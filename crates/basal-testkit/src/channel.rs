@@ -155,9 +155,9 @@ pub fn worker_binary() -> PathBuf {
     static PATH: OnceLock<PathBuf> = OnceLock::new();
     PATH.get_or_init(|| {
         if let Some(p) = std::env::var_os("BASAL_WORKER_BIN") {
-            return crate::dev_binary(PathBuf::from(p));
+            return crate::binaries::dev_worker_binary(PathBuf::from(p));
         }
-        crate::dev_binary(env!("BASAL_TEST_WORKER_BIN"))
+        crate::binaries::dev_worker_binary(env!("BASAL_TEST_WORKER_BIN"))
     })
     .clone()
 }

@@ -412,6 +412,16 @@ jobs:
         continue-on-error: true
         timeout-minutes: 30
         run: cargo test -p basal-worker --features deviations --locked --no-fail-fast -- --show-output 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-worker-deviations.log"
+      - name: Test the shared test kit on its own
+        id: test-testkit
+        continue-on-error: true
+        timeout-minutes: 30
+        run: cargo test -p basal-testkit --locked --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-testkit.log"
+      - name: Test the integration rig on its own
+        id: test-rig
+        continue-on-error: true
+        timeout-minutes: 30
+        run: cargo test -p basal-rig --locked --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-rig.log"
       - name: Check every workspace target
         id: check
         continue-on-error: true
@@ -448,6 +458,8 @@ jobs:
             echo "- cargo check --workspace --all-targets --locked: ${{ steps.check.outcome }}"
             echo "- cargo test --workspace --locked: ${{ steps.test.outcome }}"
             echo "- cargo test -p basal-launch --features deviations --locked: ${{ steps.test-launch.outcome }}"
+            echo "- cargo test -p basal-testkit --locked --no-fail-fast: ${{ steps.test-testkit.outcome }}"
+            echo "- cargo test -p basal-rig --locked --no-fail-fast: ${{ steps.test-rig.outcome }}"
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
