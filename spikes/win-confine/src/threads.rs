@@ -308,6 +308,7 @@ pub unsafe fn inspect_all_threads(pid: u32) -> Result<Value> {
 struct PoolContext {
     entered: AtomicUsize,
     departed: AtomicUsize,
+    done: HANDLE,
     ready: HANDLE,
     release: HANDLE,
     records: Mutex<Vec<Value>>,
@@ -316,17 +317,33 @@ struct PoolContext {
 unsafe fn record_callback(param: *mut c_void, kind: &str) {
     let ctx = &*(param as *const PoolContext);
     let (s, c, ns, nc) = query_thread_tokens(GetCurrentThread());
+    let mut scheduler_slot = 0usize;
+    let mut returned = 0;
+    let slot_status = NtQueryInformationThread(
+        GetCurrentThread(),
+        57,
+        (&mut scheduler_slot as *mut usize).cast(),
+        size_of::<usize>() as u32,
+        &mut returned,
+    );
     ctx.records
         .lock()
         .unwrap()
         .push(json!({"kind":kind,"tid":GetCurrentThreadId(),
+        "scheduler_slot_query_57_bytes8":{"status":hex(slot_status as u32),"slot":format!("0x{scheduler_slot:016x}"),"returned_bytes":returned},
         "open_as_self":s,"open_as_client":c,"nt_open_as_self":ns,"nt_open_as_client":nc}));
-    if ctx.entered.fetch_add(1, Ordering::SeqCst) + 1 == 3 {
+    if ctx.entered.fetch_add(1, Ordering::SeqCst) + 1 == 4 {
         SetEvent(ctx.ready);
     }
     // Keep the callbacks alive until both enumerators and token queries have run.
     WaitForSingleObject(ctx.release, INFINITE);
-    ctx.departed.fetch_add(1, Ordering::SeqCst);
+    if ctx.departed.fetch_add(1, Ordering::SeqCst) + 1 == 4 {
+        SetEvent(ctx.done);
+    }
+}
+unsafe extern "system" fn legacy_callback(ctx: *mut c_void) -> u32 {
+    record_callback(ctx, "legacy_work");
+    0
 }
 unsafe extern "system" fn work_callback(_: PTP_CALLBACK_INSTANCE, ctx: *mut c_void, _: PTP_WORK) {
     record_callback(ctx, "work");
@@ -358,23 +375,25 @@ fn observer_checkpoint(stage: &str) -> Result<Value> {
     serde_json::from_str(&reply).map_err(|e| e.to_string())
 }
 
-/// Exercise work, a signaled wait and a relative timer on the default pool.
-/// The context remains alive until all callbacks have drained, even on timeout.
+/// Exercise modern work, a signaled wait, a relative timer and legacy work on
+/// the default pools. Drain callbacks before releasing their context storage.
 pub unsafe fn force_pool_activity(use_observer: bool) -> Result<Value> {
     let ready = Handle(CreateEventW(null(), 1, 0, null()));
     let release = Handle(CreateEventW(null(), 1, 0, null()));
+    let done = Handle(CreateEventW(null(), 1, 0, null()));
     let trigger = Handle(CreateEventW(null(), 1, 1, null()));
-    if ready.0.is_null() || release.0.is_null() || trigger.0.is_null() {
+    if ready.0.is_null() || release.0.is_null() || trigger.0.is_null() || done.0.is_null() {
         return Err(last("CreateEventW(pool)"));
     }
-    let ctx = PoolContext {
+    let ctx = Box::new(PoolContext {
         entered: AtomicUsize::new(0),
         departed: AtomicUsize::new(0),
+        done: done.0,
         ready: ready.0,
         release: release.0,
         records: Mutex::new(Vec::new()),
-    };
-    let param = (&ctx as *const PoolContext).cast_mut().cast();
+    });
+    let param = (&*ctx as *const PoolContext).cast_mut().cast();
     let work = CreateThreadpoolWork(Some(work_callback), param, null());
     let wait = CreateThreadpoolWait(Some(wait_callback), param, null());
     let timer = CreateThreadpoolTimer(Some(timer_callback), param, null());
@@ -391,14 +410,20 @@ pub unsafe fn force_pool_activity(use_observer: bool) -> Result<Value> {
         }
         return Err(error);
     }
+    eprintln!("pool-stage: SubmitThreadpoolWork");
     SubmitThreadpoolWork(work);
+    eprintln!("pool-stage: SetThreadpoolWait");
     SetThreadpoolWait(wait, trigger.0, null());
     let due = (-10_000i64).to_ne_bytes();
     let due = FILETIME {
         dwLowDateTime: u32::from_ne_bytes(due[..4].try_into().unwrap()),
         dwHighDateTime: u32::from_ne_bytes(due[4..].try_into().unwrap()),
     };
+    eprintln!("pool-stage: SetThreadpoolTimer");
     SetThreadpoolTimer(timer, &due, 0, 0);
+    eprintln!("pool-stage: QueueUserWorkItem");
+    let legacy_queued = QueueUserWorkItem(Some(legacy_callback), param, 0) != 0;
+    let legacy_error = if legacy_queued { 0 } else { GetLastError() };
     let ready_status = WaitForSingleObject(ready.0, 10_000);
     let observer = if use_observer {
         observer_checkpoint("callbacks_held")
@@ -407,7 +432,7 @@ pub unsafe fn force_pool_activity(use_observer: bool) -> Result<Value> {
     };
     let local = inspect_all_threads(GetCurrentProcessId());
     let records = ctx.records.lock().unwrap().clone();
-    let held = ctx.entered.load(Ordering::SeqCst) == 3 && ctx.departed.load(Ordering::SeqCst) == 0;
+    let held = ctx.entered.load(Ordering::SeqCst) == 4 && ctx.departed.load(Ordering::SeqCst) == 0;
     SetEvent(release.0);
     SetThreadpoolWait(wait, null_mut(), null());
     SetThreadpoolTimer(timer, null(), 0, 0);
@@ -417,8 +442,22 @@ pub unsafe fn force_pool_activity(use_observer: bool) -> Result<Value> {
     CloseThreadpoolWork(work);
     CloseThreadpoolWait(wait);
     CloseThreadpoolTimer(timer);
+    let drained = if legacy_queued {
+        WaitForSingleObject(done.0, 10_000) == WAIT_OBJECT_0
+    } else {
+        true
+    };
+    if !drained {
+        // QueueUserWorkItem has no cancellation API. On timeout keep its context
+        // and signaling handles alive until the process deadline, rather than
+        // allowing a late callback to dereference freed memory.
+        std::mem::forget(ctx);
+        std::mem::forget(ready);
+        std::mem::forget(release);
+        std::mem::forget(done);
+    }
     Ok(
-        json!({"ready_status":ready_status,"callbacks_held_during_snapshot":held,"callback_inspections":records,
+        json!({"ready_status":ready_status,"legacy_queued":legacy_queued,"legacy_error":legacy_error,"callbacks_drained":drained,"callbacks_held_during_snapshot":held,"callback_inspections":records,
         "observer":observer?,"local":local?}),
     )
 }
@@ -441,7 +480,8 @@ pub unsafe fn measure_thread_impersonation(pid: u32) -> Result<Value> {
         .all(|c| c["tid"].as_u64().is_some_and(|tid| tids.contains(&tid)));
     let complete = activity["ready_status"] == 0
         && activity["callbacks_held_during_snapshot"] == true
-        && callbacks.len() == 3
+        && callbacks.len() == 4
+        && activity["callbacks_drained"] == true
         && included
         && pre["all_threads_have_no_impersonation_token"] == true
         && post["all_threads_have_no_impersonation_token"] == true

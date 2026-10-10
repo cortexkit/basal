@@ -35,8 +35,10 @@ def violations(measurement: dict[str, Any]) -> list[str]:
     tids = {t.get("tid") for t in threads.get("post_pool_activity", {}).get("threads", [])}
     if activity.get('callbacks_held_during_snapshot') is not True:
         issues.append('callback liveness at snapshot not proved')
-    if activity.get("ready_status") != 0 or {c.get("kind") for c in callbacks} != {"work", "wait", "timer"}:
-        issues.append("work/wait/timer callbacks did not all run")
+    if activity.get("ready_status") != 0 or {c.get("kind") for c in callbacks} != {"work", "wait", "timer", "legacy_work"}:
+        issues.append("work/wait/timer/legacy callbacks did not all run")
+    if activity.get('callbacks_drained') is not True:
+        issues.append('callback drain not proved')
     if not callbacks or any(c.get("tid") not in tids for c in callbacks):
         issues.append("callback TID missing from enumeration")
     for callback in callbacks:
@@ -69,7 +71,10 @@ def render(measurement: dict[str, Any]) -> str:
         by_tid = {t['tid']: t for t in symbols.get(symbol_key, [])}
         for t in snapshot.get("threads", []):
             s = by_tid.get(t['tid'], t).get('win32_symbol') or {}
-            symbol = f"{s.get('module', '')}!{s.get('symbol', '?')}+{s.get('displacement', '?')} (type {s.get('symbol_type')})"
+            module = s.get('module') or {}
+            module_name = module.get('name', '') if isinstance(module, dict) else str(module)
+            symbol_type = module.get('symbol_type') if isinstance(module, dict) else None
+            symbol = f"{module_name}!{s.get('symbol', '?')}+{s.get('displacement', '?')} (type {symbol_type}; error {s.get('error')})"
             token = t.get('nt_open_as_self', {}).get('token') or t.get('nt_open_as_client', {}).get('token')
             lines.append(f"| {t['tid']} | `{t.get('win32_start_address')}` | `{symbol}` | `{t.get('nt_open_as_self', {}).get('status')}` | `{t.get('nt_open_as_client', {}).get('status')}` | {json.dumps(token) if token else 'absent only if STATUS_NO_TOKEN'} |")
     activity = threads.get('forced_pool_activity', {})
@@ -112,7 +117,7 @@ def retain(source, destination, run_id, source_sha, image):
         parent = v.get('parent_handle_inspection') or {}
         checkpoints = {c['stage']: c['observation'] for c in v.get('thread_checkpoints', [])}
         partial_threads = dict(pre_pool_activity=checkpoints.get('before_activity', {}), post_pool_activity=checkpoints.get('callbacks_held', {}), post_release=checkpoints.get('after_release', {}))
-        compact = dict(run_id=str(run_id), source_sha=source_sha, image=image,
+        compact = dict(schema=2, run_id=str(run_id), source_sha=source_sha, image=image,
                        sequence=sequence, pid=v.get('pid'), exit_code=v.get('exit_code'), stderr=v.get('stderr'),
                        completed_probe_count=len(child.get('probes', [])), successes=[p for p in child.get('probes', []) if p.get('success')],
                        primary_token=child.get('primary_token') or start.get('primary_token'), self_lowering=child.get('self_lowering') or start.get('self_lowering'),
@@ -129,7 +134,7 @@ def retain(source, destination, run_id, source_sha, image):
         base.with_suffix('.json').write_text(json.dumps(compact, indent=2) + '\n', encoding='utf-8')
         base.with_suffix('.md').write_text(render(compact), encoding='utf-8')
         problems = violations(compact)
-        print(f'Windows gap coverage {sequence}: 3 snapshots, work/wait/timer, scheduler duplicate grants; {len(problems)} violations: {problems}')
+        print(f'Windows gap coverage {sequence}: 3 snapshots, work/wait/timer/legacy, scheduler duplicate grants; {len(problems)} violations: {problems}')
         failed |= bool(problems)
     return failed
 

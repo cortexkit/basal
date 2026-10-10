@@ -3,9 +3,10 @@
 use crate::native::*;
 use serde_json::{Value, json};
 use std::ffi::c_void;
-use std::mem::{size_of, zeroed};
+use std::mem::{size_of, size_of_val, zeroed};
 use std::ptr::{null, null_mut};
 use windows_sys::Win32::Foundation::*;
+use windows_sys::Win32::Security::*;
 use windows_sys::Win32::Storage::FileSystem::*;
 use windows_sys::Win32::System::Threading::*;
 
@@ -50,6 +51,35 @@ unsafe extern "system" {
         options: u32,
     ) -> i32;
 
+    fn NtQuerySection(
+        handle: HANDLE,
+        class: u32,
+        buffer: *mut c_void,
+        bytes: usize,
+        returned: *mut usize,
+    ) -> i32;
+    fn NtReadFile(
+        handle: HANDLE,
+        event: HANDLE,
+        apc: *mut c_void,
+        context: *mut c_void,
+        io: *mut c_void,
+        buffer: *mut c_void,
+        bytes: u32,
+        offset: *mut i64,
+        key: *mut u32,
+    ) -> i32;
+    fn NtWriteFile(
+        handle: HANDLE,
+        event: HANDLE,
+        apc: *mut c_void,
+        context: *mut c_void,
+        io: *mut c_void,
+        buffer: *mut c_void,
+        bytes: u32,
+        offset: *mut i64,
+        key: *mut u32,
+    ) -> i32;
     fn NtMapViewOfSection(
         section: HANDLE,
         process: HANDLE,
@@ -78,6 +108,7 @@ unsafe extern "system" {
         send_msg: *mut c_void,
         send_attr: *mut c_void,
         recv_msg: *mut c_void,
+        recv_length: *mut usize,
         recv_attr: *mut c_void,
         timeout: *mut i64,
     ) -> i32;
@@ -174,6 +205,12 @@ unsafe fn duplicate_details(handle: HANDLE, status: i32) -> Value {
     };
     result["security_read_status"] = json!(hex(read as u32));
     if read == 0 {
+        result["security_returned_bytes"] = json!(returned);
+        result["security_descriptor_hex"] = json!(hex_bytes(
+            &security[..(returned as usize).min(security.len())]
+        ));
+        result["security_descriptor_valid"] =
+            json!(IsValidSecurityDescriptor(security.as_mut_ptr().cast()) != 0);
         // Reapply the same descriptor: measure security-write authority without
         // making the scheduler object more accessible to any other principal.
         let write = NtSetSecurityObject(handle, 4, security.as_mut_ptr().cast());
@@ -181,6 +218,43 @@ unsafe fn duplicate_details(handle: HANDLE, status: i32) -> Value {
         let owner = NtSetSecurityObject(handle, 1, security.as_mut_ptr().cast());
         result["same_owner_write_status"] = json!(hex(owner as u32));
     }
+    // A rejected readback descriptor is not an access denial. Also supply a
+    // separately initialized, valid empty DACL (restrictive, never permissive).
+    let mut descriptor: SECURITY_DESCRIPTOR = zeroed();
+    let mut acl = [0usize; 8];
+    let descriptor_ptr = (&mut descriptor as *mut SECURITY_DESCRIPTOR).cast();
+    let acl_ptr = acl.as_mut_ptr().cast::<ACL>();
+    let constructed = InitializeSecurityDescriptor(descriptor_ptr, 1) != 0
+        && InitializeAcl(acl_ptr, size_of_val(&acl) as u32, 2) != 0
+        && SetSecurityDescriptorDacl(descriptor_ptr, 1, acl_ptr, 0) != 0;
+    result["empty_dacl_input_valid"] =
+        json!(constructed && IsValidSecurityDescriptor(descriptor_ptr) != 0);
+    if constructed {
+        let write = NtSetSecurityObject(handle, 4, descriptor_ptr);
+        result["valid_empty_dacl_write_status"] = json!(hex(write as u32));
+        if write == 0 {
+            let mut readback = [0u8; 4096];
+            let mut bytes = 0;
+            let status = NtQuerySecurityObject(
+                handle,
+                4,
+                readback.as_mut_ptr().cast(),
+                readback.len() as u32,
+                &mut bytes,
+            );
+            result["empty_dacl_readback"] = json!({"status":hex(status as u32),"returned_bytes":bytes,"hex":if status == 0 {Some(hex_bytes(&readback[..(bytes as usize).min(readback.len())]))} else {None}});
+        }
+        if let Ok(user) = token_buffer(-4isize as HANDLE, TokenUser) {
+            let sid = (*user.as_ptr().cast::<TOKEN_USER>()).User.Sid;
+            if SetSecurityDescriptorOwner(descriptor_ptr, sid, 0) != 0 {
+                result["valid_current_user_owner_write_status"] =
+                    json!(hex(NtSetSecurityObject(handle, 1, descriptor_ptr) as u32));
+            }
+        }
+    }
+    let wait = WaitForSingleObject(handle, 0);
+    result["wait_zero"] =
+        json!({"result":wait,"Win32_error":if wait == WAIT_FAILED {GetLastError()} else {0}});
     result["make_temporary_status"] = json!(hex(NtMakeTemporaryObject(handle) as u32));
     result
 }
@@ -398,6 +472,43 @@ pub unsafe fn probe_scheduler_shared_data_handle(h: HANDLE, granted: u32) -> Val
         "permitted": read_ok || write_ok || ioctl_ok,
     });
 
+    let mut io_status = [0usize; 2];
+    let native_read = NtReadFile(
+        h,
+        null_mut(),
+        null_mut(),
+        null_mut(),
+        io_status.as_mut_ptr().cast(),
+        io_buf.as_mut_ptr().cast(),
+        io_buf.len() as u32,
+        null_mut(),
+        null_mut(),
+    );
+    let native_write = NtWriteFile(
+        h,
+        null_mut(),
+        null_mut(),
+        null_mut(),
+        io_status.as_mut_ptr().cast(),
+        io_buf.as_mut_ptr().cast(),
+        io_buf.len() as u32,
+        null_mut(),
+        null_mut(),
+    );
+    operations["native_file_io"] =
+        json!({"NtReadFile":hex(native_read as u32),"NtWriteFile":hex(native_write as u32)});
+    let mut section_info = [0usize; 8];
+    let mut section_returned = 0;
+    let section_query = NtQuerySection(
+        h,
+        0,
+        section_info.as_mut_ptr().cast(),
+        size_of_val(&section_info),
+        &mut section_returned,
+    );
+    operations["query_section_basic"] =
+        json!({"status":hex(section_query as u32),"returned_bytes":section_returned});
+
     // 8. Section mapping check
     let mut base_addr = null_mut();
     let mut view_sz = 0usize;
@@ -467,12 +578,14 @@ pub unsafe fn probe_scheduler_shared_data_handle(h: HANDLE, granted: u32) -> Val
 
     // 10. ALPC IPC escape test (can it be used as an ALPC communication port?)
     let mut timeout = 0i64;
+    let mut receive_length = 0usize;
     let alpc_st = NtAlpcSendWaitReceivePort(
         h,
         0,
         null_mut(),
         null_mut(),
         null_mut(),
+        &mut receive_length,
         null_mut(),
         &mut timeout,
     );
@@ -543,6 +656,22 @@ pub unsafe fn probe_scheduler_shared_data_handle(h: HANDLE, granted: u32) -> Val
         }
     }
     operations["thread_scheduler_shared_data_slot_class_57"] = json!({"class":57,"structure_bytes":size_of::<SchedulerSlotInfo>(),"trials":slot_operations});
+    let mut size_trials = Vec::new();
+    for bytes in [8usize, 16, 24, 32, 48, 64] {
+        let mut buffer = [0usize; 8];
+        buffer[0] = 2;
+        buffer[1] = h as usize;
+        let mut returned = 0;
+        let status = NtQueryInformationThread(
+            GetCurrentThread(),
+            57,
+            buffer.as_mut_ptr().cast(),
+            bytes as u32,
+            &mut returned,
+        );
+        size_trials.push(json!({"buffer_bytes":bytes,"status":hex(status as u32),"returned_bytes":returned,"output_hex":hex_bytes(std::slice::from_raw_parts(buffer.as_ptr().cast::<u8>(),bytes))}));
+    }
+    operations["thread_class_57_query_size_trials"] = json!(size_trials);
 
     let mut allocated = null_mut();
     let set_status = NtSetInformationProcess(
