@@ -49,7 +49,7 @@ pub unsafe fn set_integrity(token: HANDLE, level: WELL_KNOWN_SID_TYPE) -> Result
         if CreateWellKnownSid(level, null_mut(), sid.as_mut_ptr().cast(), &mut bytes) == 0 {
             return Err(last_win32_error("CreateWellKnownSid(integrity)"));
         }
-        let mut label = TOKEN_MANDATORY_LABEL {
+        let label = TOKEN_MANDATORY_LABEL {
             Label: SID_AND_ATTRIBUTES {
                 Sid: sid.as_mut_ptr().cast(),
                 Attributes: SE_GROUP_INTEGRITY,
@@ -58,7 +58,7 @@ pub unsafe fn set_integrity(token: HANDLE, level: WELL_KNOWN_SID_TYPE) -> Result
         if SetTokenInformation(
             token,
             TokenIntegrityLevel,
-            (&mut label as *mut TOKEN_MANDATORY_LABEL).cast(),
+            (&label as *const TOKEN_MANDATORY_LABEL).cast(),
             size_of::<TOKEN_MANDATORY_LABEL>() as u32,
         ) == 0
         {
@@ -81,13 +81,17 @@ pub fn construct_tokens(
     unsafe {
         let _ = deviation;
         let mut parent_token = null_mut();
-        if OpenProcessToken(
-            GetCurrentProcess(),
-            TOKEN_QUERY | TOKEN_DUPLICATE,
-            &mut parent_token,
-        ) == 0
-        {
-            return Err(last_win32_error("OpenProcessToken(current process)"));
+        // Open parent token with TOKEN_ALL_ACCESS.
+        // If TOKEN_ALL_ACCESS fails, fall back to the exact required rights including TOKEN_ADJUST_DEFAULT.
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_ALL_ACCESS, &mut parent_token) == 0 {
+            let fallback = TOKEN_QUERY
+                | TOKEN_DUPLICATE
+                | TOKEN_ADJUST_DEFAULT
+                | TOKEN_ADJUST_PRIVILEGES
+                | TOKEN_ASSIGN_PRIMARY;
+            if OpenProcessToken(GetCurrentProcess(), fallback, &mut parent_token) == 0 {
+                return Err(last_win32_error("OpenProcessToken(current process)"));
+            }
         }
         let parent_token = Handle(parent_token);
 
@@ -181,10 +185,28 @@ pub fn construct_tokens(
             medium_integrity = true;
         }
 
-        if medium_integrity {
-            set_integrity(lockdown.0, WinMediumLabelSid)?;
+        let current = token_buffer(lockdown.0, TokenIntegrityLevel)?;
+        let current_label = &*current.as_ptr().cast::<TOKEN_MANDATORY_LABEL>();
+        let sub_count = *GetSidSubAuthorityCount(current_label.Label.Sid);
+        let current_sub = if sub_count > 0 {
+            *GetSidSubAuthority(current_label.Label.Sid, (sub_count - 1) as u32)
         } else {
-            set_integrity(lockdown.0, WinLowLabelSid)?;
+            0
+        };
+        let target_sub = if medium_integrity {
+            SECURITY_MANDATORY_MEDIUM_RID
+        } else {
+            SECURITY_MANDATORY_LOW_RID
+        };
+        if current_sub != target_sub {
+            set_integrity(
+                lockdown.0,
+                if medium_integrity {
+                    WinMediumLabelSid
+                } else {
+                    WinLowLabelSid
+                },
+            )?;
         }
 
         // Now construct the initial thread token
@@ -232,7 +254,18 @@ pub fn construct_tokens(
             ));
         }
 
-        set_integrity(loader.0, WinLowLabelSid)?;
+        // Lower integrity to Low before lowboxing
+        let level = token_buffer(loader.0, TokenIntegrityLevel)?;
+        let level_label = &*level.as_ptr().cast::<TOKEN_MANDATORY_LABEL>();
+        let sub_count = *GetSidSubAuthorityCount(level_label.Label.Sid);
+        let current_sub = if sub_count > 0 {
+            *GetSidSubAuthority(level_label.Label.Sid, (sub_count - 1) as u32)
+        } else {
+            0
+        };
+        if current_sub != SECURITY_MANDATORY_LOW_RID {
+            set_integrity(loader.0, WinLowLabelSid)?;
+        }
 
         // Lowbox the loader token
         let mut attrs = ObjectAttributes {

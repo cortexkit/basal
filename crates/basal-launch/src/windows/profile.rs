@@ -169,11 +169,15 @@ impl AppContainerProfile {
     }
 }
 
+static PROFILE_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Creates or opens the named AppContainer profile with zero capabilities.
 ///
 /// If the profile already exists, derives the same package SID.
+/// Thread-safe and idempotent under concurrent calls.
 /// Failure produces `LaunchError::AppContainerProfileUnavailable`.
 pub fn create_or_open_profile(name: &str) -> Result<AppContainerProfile, LaunchError> {
+    let _guard = PROFILE_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let module = UserEnvModule::load()?;
     let create: CreateAppContainerProfileFn =
         unsafe { module.symbol(b"CreateAppContainerProfile\0")? };
@@ -204,8 +208,11 @@ pub fn create_or_open_profile(name: &str) -> Result<AppContainerProfile, LaunchE
     }
 
     // Check for ERROR_ALREADY_EXISTS (183 = 0xB7; HRESULT = 0x800700B7)
-    let is_already_exists = (hr as u32) == 0x800700B7 || (hr as u32 & 0xFFFF) == 183;
-    if is_already_exists {
+    // or E_UNEXPECTED (0x8000FFFF) from concurrent creation
+    let hr_u32 = hr as u32;
+    let is_already_exists_or_unexpected =
+        hr_u32 == 0x800700B7 || hr_u32 == 0x8000FFFF || (hr_u32 & 0xFFFF) == 183;
+    if is_already_exists_or_unexpected {
         let mut derived_sid = null_mut();
         let hr_derive = unsafe { derive(wide_name.as_ptr(), &mut derived_sid) };
         if hr_derive >= 0 {

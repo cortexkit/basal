@@ -410,7 +410,7 @@ jobs:
         id: test-basal-launch
         continue-on-error: true
         timeout-minutes: 20
-        run: cargo test -p basal-launch --features deviations 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-launch.log"
+        run: cargo test -p basal-launch --features deviations --locked 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-launch.log"
       - name: Summarize the baseline
         if: always()
         run: |
