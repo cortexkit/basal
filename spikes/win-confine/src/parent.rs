@@ -760,7 +760,9 @@ fn launch_variant(
             || sequence == "post-load-detached-control"
             || sequence == "lpac-context-control"
             || sequence == "lpac-context-detached-control";
-        let inspect_ambient = sequence == "full-gui-inspect" || sequence == "full-gui-parameter-1";
+        let inspect_ambient = sequence == "full-gui-inspect"
+            || sequence == "full-gui-parameter-1"
+            || sequence == "full-gui-close-removable";
         let close_ambient = sequence.starts_with("full-gui-close-")
             || inspect_ambient
             || sequence.starts_with("full-gui-serial-")

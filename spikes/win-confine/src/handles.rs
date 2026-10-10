@@ -456,8 +456,214 @@ pub fn inspect(process: HANDLE, main_thread: HANDLE, pid: u32, inventory: &Value
             json!({"system_handle_count":entries.len(),"worker_ports":identified,"worker_object_correlations":correlations})
         }
     };
-    let factories: Vec<_> = handles.iter().filter(|handle| handle["type"] == "TpWorkerFactory").map(|handle| json!({"handle":handle["handle"],"basic":remote_worker_factory(process, handle["handle"].as_u64().unwrap_or(0) as HANDLE)})).collect();
-    json!({"privilege":privilege_report,"modules":modules,"symbols":symbol_setup,"tracing":trace_report,"alpc":alpc,"worker_factories":factories,"loader_threads_after_load":loader_threads(process,None),"messages_sent":0})
+    let factories: Vec<_> = handles
+        .iter()
+        .filter(|handle| handle["type"] == "TpWorkerFactory")
+        .map(|handle| {
+            json!({
+                "handle": handle["handle"],
+                "basic": remote_worker_factory(
+                    process,
+                    handle["handle"].as_u64().unwrap_or(0) as HANDLE,
+                )
+            })
+        })
+        .collect();
+
+    let symbolize_addr = |addr_val: &Value| -> Value {
+        if let Some(s) = addr_val.as_str() {
+            if let Ok(addr) = usize::from_str_radix(s.trim_start_matches("0x"), 16) {
+                if let Some(syms) = symbols.as_ref().ok() {
+                    return syms.address(addr);
+                }
+            }
+        }
+        Value::Null
+    };
+
+    let symbolize_thread_list = |threads_json: &Value| -> Vec<Value> {
+        threads_json
+            .as_array()
+            .map(|list| {
+                list.iter()
+                    .map(|t| {
+                        let mut item = t.clone();
+                        let win32_sym = symbolize_addr(&t["win32_start_address"]);
+                        let nt_sym = symbolize_addr(&t["nt_start_address"]);
+                        item["win32_symbol"] = win32_sym;
+                        item["nt_symbol"] = nt_sym;
+                        item
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
+    let threads_report = if inventory.get("threads").is_some() {
+        let pre = symbolize_thread_list(&inventory["threads"]["pre_pool_activity"]["threads"]);
+        let post = symbolize_thread_list(&inventory["threads"]["post_pool_activity"]["threads"]);
+        let parent_observed = unsafe {
+            let snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+            if snap != INVALID_HANDLE_VALUE {
+                let snap = Handle(snap);
+                let mut te: THREADENTRY32 = zeroed();
+                te.dwSize = size_of::<THREADENTRY32>() as u32;
+                let mut observed = Vec::new();
+                if Thread32First(snap.0, &mut te) != 0 {
+                    loop {
+                        if te.th32OwnerProcessID == pid {
+                            let th = OpenThread(THREAD_QUERY_INFORMATION, 0, te.th32ThreadID);
+                            if !th.is_null() {
+                                let th = Handle(th);
+                                let mut t_self = null_mut();
+                                let ok_self =
+                                    OpenThreadToken(th.0, TOKEN_QUERY, 1, &mut t_self) != 0;
+                                let err_self = if ok_self { 0 } else { GetLastError() };
+                                let self_val = if ok_self {
+                                    let t = Handle(t_self);
+                                    crate::threads::query_token_attributes(t.0)
+                                } else {
+                                    json!({"error": err_self})
+                                };
+                                let mut t_client = null_mut();
+                                let ok_client =
+                                    OpenThreadToken(th.0, TOKEN_QUERY, 0, &mut t_client) != 0;
+                                let err_client = if ok_client { 0 } else { GetLastError() };
+                                let client_val = if ok_client {
+                                    let t = Handle(t_client);
+                                    crate::threads::query_token_attributes(t.0)
+                                } else {
+                                    json!({"error": err_client})
+                                };
+                                observed.push(json!({
+                                    "tid": te.th32ThreadID,
+                                    "parent_open_as_self": {"has_token": ok_self, "token": self_val},
+                                    "parent_open_as_client": {"has_token": ok_client, "token": client_val},
+                                }));
+                            } else {
+                                observed.push(json!({
+                                    "tid": te.th32ThreadID,
+                                    "open_thread_error": GetLastError(),
+                                }));
+                            }
+                        }
+                        if Thread32Next(snap.0, &mut te) == 0 {
+                            break;
+                        }
+                    }
+                }
+                json!(observed)
+            } else {
+                json!({"error": GetLastError()})
+            }
+        };
+
+        json!({
+            "pre_pool_threads_symbolized": pre,
+            "post_pool_threads_symbolized": post,
+            "parent_observed_threads": parent_observed,
+            "pre_pool_all_no_token": inventory["threads"]["pre_activity_all_no_token"],
+            "post_pool_all_no_token": inventory["threads"]["post_activity_all_no_token"],
+            "conclusion": inventory["threads"]["conclusion"],
+        })
+    } else {
+        Value::Null
+    };
+
+    let scheduler_report = if let Ok(ref entries) = system {
+        let sched_handle = handles
+            .iter()
+            .find(|h| h["type"] == "SchedulerSharedData")
+            .and_then(|h| h["handle"].as_u64());
+
+        if let Some(sh) = sched_handle {
+            let match_entry = entries
+                .iter()
+                .find(|e| e.pid == pid as usize && e.handle == sh as usize);
+            let obj_addr = match_entry.map(|e| e.object).unwrap_or(0);
+            let foreign: Vec<_> = entries
+                .iter()
+                .filter(|other| obj_addr != 0 && other.object == obj_addr && other.pid != pid as usize)
+                .map(|other| json!({"pid": other.pid, "handle": other.handle, "access": hex(other.access)}))
+                .collect();
+
+            let ldr_analysis = if let Some(syms) = symbols.as_ref().ok() {
+                let frame_addr = trace_report["entries"].as_array().and_then(|entries| {
+                    entries
+                        .iter()
+                        .find(|e| e["handle"].as_u64() == Some(sh))
+                        .and_then(|e| {
+                            e["trace"].as_array().and_then(|frames| {
+                                frames.iter().find_map(|f| {
+                                    if f["symbol"].as_str()
+                                        == Some("LdrpAllocateSchedulerSharedData")
+                                    {
+                                        f["address"].as_str().and_then(|s| {
+                                            usize::from_str_radix(s.trim_start_matches("0x"), 16)
+                                                .ok()
+                                        })
+                                    } else {
+                                        None
+                                    }
+                                })
+                            })
+                        })
+                });
+
+                if let Some(addr) = frame_addr {
+                    let mut code = [0u8; 64];
+                    let mut read_bytes = 0usize;
+                    let read_ok = unsafe {
+                        ReadProcessMemory(
+                            process,
+                            addr as *const c_void,
+                            code.as_mut_ptr().cast(),
+                            code.len(),
+                            &mut read_bytes,
+                        ) != 0
+                    };
+                    json!({
+                        "function": "LdrpAllocateSchedulerSharedData",
+                        "address": format!("0x{:016x}", addr),
+                        "read_success": read_ok,
+                        "raw_bytes": hex_bytes(&code[..read_bytes]),
+                        "process_information_class": 112,
+                        "class_name": "ProcessSchedulerSharedData",
+                    })
+                } else {
+                    json!({"note": "creation frame not in trace or already resolved"})
+                }
+            } else {
+                json!({"error": "symbols unavailable"})
+            };
+
+            json!({
+                "present": true,
+                "handle": sh,
+                "object": format!("0x{:016x}", obj_addr),
+                "foreign_handles": foreign,
+                "ldr_analysis": ldr_analysis,
+                "is_shared_across_processes": !foreign.is_empty(),
+            })
+        } else {
+            json!({"present": false, "reason": "absent on Windows Server 2022"})
+        }
+    } else {
+        json!({"error": "system handles unavailable"})
+    };
+
+    json!({
+        "privilege": privilege_report,
+        "modules": modules,
+        "symbols": symbol_setup,
+        "tracing": trace_report,
+        "alpc": alpc,
+        "worker_factories": factories,
+        "loader_threads_after_load": loader_threads(process, None),
+        "threads": threads_report,
+        "scheduler_shared_data": scheduler_report,
+        "messages_sent": 0,
+    })
 }
 
 #[cfg(test)]

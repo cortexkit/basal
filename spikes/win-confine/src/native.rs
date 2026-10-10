@@ -916,7 +916,7 @@ fn alpc_identity(handle: HANDLE) -> Value {
         json!(queries)
     }
 }
-fn hex_bytes(bytes: &[u8]) -> String {
+pub fn hex_bytes(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 pub fn remote_alpc_name(process: HANDLE, handle: HANDLE) -> Value {

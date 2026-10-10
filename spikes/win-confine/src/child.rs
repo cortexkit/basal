@@ -117,8 +117,44 @@ unsafe extern "system" fn thread_entry(_: *mut std::ffi::c_void) -> u32 {
 fn win_probe(kind: &str, name: &str, access: &str, ok: bool, error: u32) -> Probe {
     Probe::win(&Target::new(kind, name, access), ok, error)
 }
+#[repr(C)]
+struct ExceptionRecord {
+    code: u32,
+    flags: u32,
+    record: *mut ExceptionRecord,
+    address: *mut std::ffi::c_void,
+    number_parameters: u32,
+    information: [usize; 15],
+}
+
+#[repr(C)]
+struct ExceptionPointers {
+    record: *mut ExceptionRecord,
+    context: *mut std::ffi::c_void,
+}
+
+unsafe extern "system" fn vectored_exception_handler(info: *mut ExceptionPointers) -> i32 {
+    if !info.is_null() && !(*info).record.is_null() {
+        let rec = &*(*info).record;
+        eprintln!(
+            "EXCEPTION: code=0x{:08x} address=0x{:016x}",
+            rec.code, rec.address as usize
+        );
+    }
+    0 // EXCEPTION_CONTINUE_SEARCH
+}
+
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn AddVectoredExceptionHandler(
+        first: u32,
+        handler: Option<unsafe extern "system" fn(*mut ExceptionPointers) -> i32>,
+    ) -> *mut std::ffi::c_void;
+}
+
 pub fn run() -> Result<()> {
     unsafe {
+        AddVectoredExceptionHandler(1, Some(vectored_exception_handler));
         eprintln!("probe-stage: Rust entry");
         // No untrusted input is consumed under the loader's more permissive token.
         let lower_requested = std::env::args().any(|a| a == "--lower-integrity");
@@ -251,8 +287,12 @@ pub fn run() -> Result<()> {
             .unwrap_or_else(|e| json!({"error":e}));
         let policies = mitigations();
         eprintln!("probe-stage: attestation complete");
+        let thread_attestation =
+            crate::threads::measure_thread_impersonation(GetCurrentProcessId())
+                .unwrap_or_else(|e| json!({"error": e}));
+        let sched_probe = crate::scheduler::probe_scheduler_shared_data_in_process();
         if let Some(ambient) = &ambient {
-            let preliminary = json!({"mode":"preliminary","ambient_close":ambient,"handle_table":input_handles,"loaded_modules":modules,"mitigations":policies,"self_lowering":self_lowering,"primary_token":attestation});
+            let preliminary = json!({"mode":"preliminary","ambient_close":ambient,"handle_table":input_handles,"loaded_modules":modules,"mitigations":policies,"self_lowering":self_lowering,"primary_token":attestation,"threads":thread_attestation,"scheduler_shared_data":sched_probe});
             if serde_json::to_writer(std::io::stdout().lock(), &preliminary).is_ok() {
                 println!();
                 let _ = std::io::stdout().flush();
@@ -268,7 +308,15 @@ pub fn run() -> Result<()> {
         let leak_only = std::env::args().any(|a| a == "--probe-leak");
         eprintln!("probe-stage: input complete; leak_only={leak_only}");
         if !leak_only {
-            for t in &input.targets {
+            for (idx, t) in input.targets.iter().enumerate() {
+                if idx % 500 == 0 || idx < 5 {
+                    eprintln!(
+                        "probe-progress: {idx}/{} ({}: {})",
+                        input.targets.len(),
+                        t.kind,
+                        t.name
+                    );
+                }
                 probes.push(match t.kind.as_str() {
                     "file" | "directory" | "file_query" | "directory_query" | "file_zero"
                     | "directory_zero" | "pipe" => file_probe(t, false),
@@ -445,7 +493,7 @@ pub fn run() -> Result<()> {
                 error,
             ));
         }
-        let report = json!({"mode":input.mode,"self_lowering":self_lowering,"token_handles_absent":no_token_handles,"after_revert":{"present":still_impersonating,"open_error":no_token_error},"primary_token_open":{"success":token_opened,"error":token_open_error,"pseudo_handle_fallback":!token_opened},"primary_token":attestation,"mitigations":policies,"ambient_close":ambient,"handle_table":input_handles,"loaded_modules":modules,"probes":probes});
+        let report = json!({"mode":input.mode,"self_lowering":self_lowering,"token_handles_absent":no_token_handles,"after_revert":{"present":still_impersonating,"open_error":no_token_error},"primary_token_open":{"success":token_opened,"error":token_open_error,"pseudo_handle_fallback":!token_opened},"primary_token":attestation,"mitigations":policies,"ambient_close":ambient,"handle_table":input_handles,"loaded_modules":modules,"threads":thread_attestation,"scheduler_shared_data":sched_probe,"probes":probes});
         serde_json::to_writer(std::io::stdout().lock(), &report).map_err(|e| e.to_string())?;
         std::io::stdout().flush().map_err(|e| e.to_string())?;
         Ok(())
