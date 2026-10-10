@@ -263,8 +263,9 @@ mod tests {
             json!({"$ref": "https://example.com/schema.json"}),
             json!({"$ref": "file:///etc/passwd"}),
             json!({"properties": {"a": {"$ref": "other.json#/x"}}}),
-            // Each of these resolves inside the document, so the compiler
-            // alone would accept it; the rule still refuses it.
+            // These two resolve inside the document, so the compiler alone
+            // would accept them; they are still refused because neither is
+            // `#` nor starts with `#/`.
             json!({"$id": "https://example.com/s", "$defs": {"a": {"type": "string"}},
                    "$ref": "https://example.com/s#/$defs/a"}),
             json!({"$defs": {"a": {"$anchor": "a", "type": "string"}}, "$ref": "#a"}),
@@ -283,8 +284,9 @@ mod tests {
 
     #[test]
     fn the_compiler_alone_resolves_in_document_absolute_references() {
-        // Shows the case the reference rule exists for: the compiler itself
-        // admits an absolute reference that names an `$id` in the document.
+        // The compiler itself accepts an absolute reference that names an
+        // `$id` in the document; `compile_input_schema` refuses it because
+        // only `#` and `#/...` references are allowed.
         let schema = json!({"$id": "https://example.com/s", "$defs": {"a": {"type": "string"}},
                             "$ref": "https://example.com/s#/$defs/a"});
         assert!(options().build(&schema).is_ok());
@@ -292,8 +294,9 @@ mod tests {
 
     #[test]
     fn the_compiler_never_retrieves_an_external_schema() {
-        // Bypasses the reference rule to show the compiler's own loader
-        // refuses remote and file URIs.
+        // Builds with the compiler options directly, skipping the `#`-only
+        // reference check, to show the compiler's own loader refuses remote
+        // and file URIs.
         for uri in [
             "https://example.com/schema.json",
             "http://127.0.0.1:9/schema.json",

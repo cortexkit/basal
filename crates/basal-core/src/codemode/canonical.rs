@@ -232,7 +232,8 @@ mod tests {
         );
     }
 
-    // The worked example of RFC 8785 section 3.2.4.
+    // The worked example of RFC 8785 section 3.2.4: numbers, escaped
+    // strings and literals in one object, with its published canonical form.
     #[test]
     fn the_rfc_8785_example_canonicalizes_exactly() {
         let input = r#"{

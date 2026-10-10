@@ -444,8 +444,10 @@ pub fn insert_call(
     Ok(inserted == 1)
 }
 
-/// Commits the intent to send a queued call, at `at`. Returns `false` when
-/// the call is no longer queued (termination cancelled it).
+/// Commits the intent to send a queued call, at `at`. Returns `false`,
+/// changing nothing, unless the call exists, is still pending and has no
+/// intent yet: a call termination already cancelled, or one whose intent was
+/// already committed, is never sent again.
 pub fn begin_queued(tx: &Transaction, run_id: &str, position: u64, at: i64) -> Result<bool> {
     let changed = tx.execute(
         "UPDATE codemode_calls SET intent_at = ?3 \
