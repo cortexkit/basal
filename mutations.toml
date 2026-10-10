@@ -1380,9 +1380,10 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/schema.rs"
-# The final table is rebuilt to add deferred dispatches, so its constraint,
-# rather than the superseded ALTER TABLE constraint, must be neutralized.
-old = "        CHECK (dispatch <> 'unknown' OR unknown_reason IS NOT NULL),"
+# Later migrations rebuild the journal table with their own copy of this
+# constraint. Migration 16 (grant losses) is the last rebuild, so its copy is
+# the one the current schema carries and the one that must be neutralized.
+old = "        CHECK (dispatch<>'unknown' OR unknown_reason IS NOT NULL),"
 new = "        , -- NON-VACUITY BREAK"
 
 # dispatch: 47 controls
@@ -6752,19 +6753,39 @@ new = ".management_for_flow(&request.flow_id, \"prefrontal-routing\", \"route.se
 
 [[control]]
 id = "flow-no-selector-is-deferred"
-guards = "no_flow_scope cannot be represented as deferred state"
+guards = "no_flow_scope cannot be represented as deferred state in the current schema"
 test_file = "crates/basal-core/src/schema_flow_deferral_tests.rs"
 runner = "cargo"
 package = "basal-core"
 platforms = ["linux"]
 target = "--lib"
-expect_red = ["schema::flow_deferral_tests::deferred_state_requires_closed_typed_refusal_and_retry_metadata"]
-only = false
+expect_red = ["schema::flow_deferral_tests::current_store_refuses_a_deferred_call_with_a_refusal_outside_the_closed_set"]
+only = true
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/schema.rs"
-old = "'scope_unsupported', 'resource_busy', 'consent_unavailable'))"
-new = "'scope_unsupported', 'resource_busy', 'consent_unavailable', 'no_flow_scope')) /* NON-VACUITY BREAK */"
+# Migration 16 (grant losses) is the last migration to rebuild the journal
+# table, so its refusal list is the one the current schema enforces. The list
+# migration 9 created is replaced by it.
+old = "'module_grant_absent','agent_grant_absent')),"
+new = "'module_grant_absent','agent_grant_absent','no_flow_scope')), /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "journal-refusal-check-accepts-an-unlisted-refusal"
+guards = "the current schema refuses a deferred call whose refusal code is outside the closed set"
+test_file = "crates/basal-core/src/schema_flow_deferral_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["schema::flow_deferral_tests::current_store_refuses_a_deferred_call_with_a_refusal_outside_the_closed_set"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/schema.rs"
+# Widens the refusal list of migration 16, the governing journal definition.
+old = "'module_grant_absent','agent_grant_absent')),"
+new = "'module_grant_absent','agent_grant_absent','new_reason')), /* NON-VACUITY BREAK */"
 
 [[control]]
 id = "flow-target-readiness-preflight-is-disabled"
@@ -8800,6 +8821,40 @@ package = "basal-module"
 platforms = ["macos"]
 target = "--lib"
 expect_red = ["engine::lifecycle_tests::panicking_activation_releases_run_and_flow_slots"]
+only = false
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "module-drop-panics-while-unwinding"
+guards = "a stalled module shutdown dropped during unwinding logs and returns instead of aborting the process with a second panic"
+file = "crates/basal-module/src/module.rs"
+old = "Err(std::sync::mpsc::RecvTimeoutError::Timeout) if unwinding => {"
+new = "Err(std::sync::mpsc::RecvTimeoutError::Timeout) if false => { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-module/src/engine_tests.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--lib"
+expect_red = ["engine::lifecycle_tests::a_stalled_module_drop_while_unwinding_does_not_abort_the_process"]
+only = false
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "module-drop-swallows-a-stalled-shutdown"
+guards = "a stalled module shutdown dropped outside unwinding still panics"
+file = "crates/basal-module/src/module.rs"
+old = "Err(std::sync::mpsc::RecvTimeoutError::Timeout) if unwinding => {"
+new = "Err(std::sync::mpsc::RecvTimeoutError::Timeout) if true => { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-module/src/engine_tests.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--lib"
+expect_red = ["engine::lifecycle_tests::a_stalled_module_drop_panics_when_not_unwinding"]
 only = false
 timeout_s = 600
 build_timeout_s = 3600
@@ -13795,7 +13850,7 @@ runner = "cargo"
 package = "basal-module"
 platforms = ["linux"]
 target = "--test codemode"
-expect_red = ["codemode_manifest_declares_core_only_operation_kinds"]
+expect_red = ["codemode_manifest_declares_core_only_operation_kinds", "ops_doc_documents_codemode_ops_as_core_only_against_operations"]
 only = true
 file = "crates/basal-module/src/manifest.rs"
 old = '"codemode.result",'
@@ -13809,7 +13864,7 @@ runner = "cargo"
 package = "basal-module"
 platforms = ["linux"]
 target = "--test codemode"
-expect_red = ["codemode_manifest_declares_core_only_operation_kinds"]
+expect_red = ["codemode_manifest_declares_core_only_operation_kinds", "ops_doc_documents_codemode_ops_as_core_only_against_operations"]
 only = true
 file = "crates/basal-module/src/manifest.rs"
 old = '''"codemode.cancel",
@@ -13825,7 +13880,7 @@ runner = "cargo"
 package = "basal-module"
 platforms = ["linux"]
 target = "--test codemode"
-expect_red = ["codemode_manifest_declares_core_only_operation_kinds"]
+expect_red = ["codemode_manifest_declares_core_only_operation_kinds", "ops_doc_documents_codemode_ops_as_core_only_against_operations"]
 only = true
 file = "crates/basal-module/src/manifest.rs"
 old = '"Admit a scoped JavaScript run and return its state; core only.",'
@@ -13885,7 +13940,7 @@ runner = "cargo"
 package = "basal-module"
 platforms = ["linux"]
 target = "--test codemode"
-expect_red = ["codemode_cancel_unknown_terminal_and_running_and_hide_flow_ids"]
+expect_red = ["codemode_cancel_unknown_terminal_and_running_and_hide_flow_ids", "codemode_results_decode_against_documented_shape"]
 only = true
 file = "crates/basal-module/src/codemode.rs"
 old = 'self.known(self.supervisor.cancel(&id)?, &id)'
