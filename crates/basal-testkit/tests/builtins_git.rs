@@ -170,6 +170,7 @@ fn git_reads_only_approved_repositories() {
     };
     let refused = git::run(&other.path(), &approved.repos(), &op).expect_err("refused");
     assert_eq!(refused.code, codes::DENIED);
+    assert!(git::run(&approved.path(), &approved.repos(), &op).is_ok());
     // A directory inside an approved repository is not itself approved.
     std::fs::create_dir_all(approved.dir.join("sub")).expect("sub");
     let sub = approved.dir.join("sub").display().to_string();
@@ -179,10 +180,16 @@ fn git_reads_only_approved_repositories() {
             .code,
         codes::DENIED
     );
-    // The same repository reached through `..` resolves to the approved
-    // path and is allowed.
-    let around = approved.dir.join("sub/..").display().to_string();
+    // Unix canonicalizes relative components; Windows refuses them before
+    // opening a root, just as the Windows filesystem built-in does.
+    let around = approved.dir.join("sub").join("..").display().to_string();
+    #[cfg(unix)]
     assert!(git::run(&around, &approved.repos(), &op).is_ok());
+    #[cfg(windows)]
+    assert_eq!(
+        git::run(&around, &approved.repos(), &op).unwrap_err().code,
+        codes::DENIED
+    );
 }
 
 #[test]
