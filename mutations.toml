@@ -10696,3 +10696,233 @@ only = false
 file = "crates/basal-core/src/codemode/catalog.rs"
 old = "jsonschema::draft202012::options()"
 new = "jsonschema::draft201909::options()"
+
+# Before admitting a program, the host asks the daemon to attest its scope and agent identity.
+# Missing connections and describe failures must remain errors, never fabricated answers.
+[[control]]
+id = "codemode-host-describe-default"
+guards = "a host without describe support returns success instead of a typed error"
+test_file = "crates/basal-host/tests/scope_describe.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--test scope_describe"
+expect_red = ["a_host_without_describe_support_fails_closed"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/lib.rs"
+old = "Err(ScopeDescribeError::Unavailable)"
+new = '''Ok(ScopeDescription { // NON-VACUITY BREAK
+            status: ScopeStatus::Live, scope_epoch: Some(1),
+            daemon_incarnation: "fabricated".into(), owner_synced: true,
+            owner_configured: true, scope: None,
+        })'''
+
+[[control]]
+id = "codemode-host-describe-unwired"
+guards = "an unwired module host supplies a successful describe answer"
+test_file = "crates/basal-host/tests/scope_describe.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--test scope_describe"
+expect_red = ["an_unwired_module_host_fails_closed"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/routing.rs"
+old = '''self.scope_describer
+            .as_ref()'''
+new = '''if self.scope_describer.is_none() { // NON-VACUITY BREAK
+            return Ok(crate::ScopeDescription {
+                status: crate::ScopeStatus::Live, scope_epoch: Some(1),
+                daemon_incarnation: "fabricated".into(), owner_synced: true,
+                owner_configured: true, scope: None,
+            });
+        }
+        self.scope_describer
+            .as_ref()'''
+
+[[control]]
+id = "codemode-host-describe-routing"
+guards = "scope attestation is routed to a host without the daemon connection"
+test_file = "crates/basal-host/tests/scope_describe.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--test scope_describe"
+expect_red = ["routing_describe_uses_only_the_ops_host_and_keeps_typed_errors"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/routing.rs"
+old = "self.ops.scope_describe(owner, scope_ref)"
+new = "self.core.scope_describe(owner, scope_ref) // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-host-describe-mock-selector"
+guards = "the describe fake returns another owner or ref's attestation"
+test_file = "crates/basal-host/tests/scope_describe.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--test scope_describe"
+expect_red = ["mock_describe_is_injected_per_owner_and_ref"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/mock.rs"
+old = ".find(|(o, r, _)| o == owner && r == scope_ref)"
+new = ".next() // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-host-describe-mock-refresh"
+guards = "the describe fake ignores a replacement answer or injected transport error"
+test_file = "crates/basal-host/tests/scope_describe.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--test scope_describe"
+expect_red = ["routing_describe_uses_only_the_ops_host_and_keeps_typed_errors"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/mock.rs"
+old = ".retain(|(o, r, _)| o != &owner || r != scope_ref)"
+new = ".retain(|_| true); // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-host-describe-selector"
+guards = "scope.describe sends a different selector than admission requested"
+test_file = "crates/basal-host/tests/scope_describe.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--test scope_describe"
+expect_red = ["module_describe_preserves_live_and_non_live_answers"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/scope_describe.rs"
+old = "scope_ref.to_owned()"
+new = '''format!("{scope_ref}:changed") // NON-VACUITY BREAK
+'''
+
+[[control]]
+id = "codemode-host-describe-status"
+guards = "a non-live daemon description is turned into a live answer"
+test_file = "crates/basal-host/tests/scope_describe.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--test scope_describe"
+expect_red = ["module_describe_preserves_live_and_non_live_answers"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/scope_describe.rs"
+old = "status: reply.status,"
+new = "status: ScopeStatus::Live, // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-host-describe-stamp"
+guards = "a live daemon description drops its epoch and attested attributes"
+test_file = "crates/basal-host/tests/scope_describe.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--test scope_describe"
+expect_red = ["module_describe_preserves_live_and_non_live_answers"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/scope_describe.rs"
+old = "scope: reply.scope,"
+new = "scope: None, // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-host-describe-readiness"
+guards = "an owner that has not re-synced after restart is reported synced"
+test_file = "crates/basal-host/tests/scope_describe.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--test scope_describe"
+expect_red = ["module_describe_preserves_live_and_non_live_answers"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/scope_describe.rs"
+old = "owner_synced: reply.owner_synced,"
+new = "owner_synced: true, // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-host-describe-errors"
+guards = "a describe refusal loses the daemon's typed error code and message"
+test_file = "crates/basal-host/tests/scope_describe.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--test scope_describe"
+expect_red = ["module_describe_preserves_typed_daemon_failures"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/scope_describe.rs"
+old = ".map_err(ScopeDescribeError::Daemon)"
+new = '''.map_err(|error| match error { // NON-VACUITY BREAK
+                ScopeCallError::Refused { .. } => ScopeDescribeError::Unavailable,
+                other => ScopeDescribeError::Daemon(other),
+            })'''
+
+[[control]]
+id = "codemode-host-route-register"
+guards = "a codemode route key is silently ignored at registration"
+test_file = "crates/basal-host/tests/flow_scope_routes.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--test flow_scope_routes"
+expect_red = ["configure_flow_registers_a_codemode_route_key"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/flow_scope.rs"
+old = "if let Some((_, key)) = self.flows.remove(flow) {"
+new = '''if flow.starts_with("codemode:") && scope.is_some() { return Vec::new(); } // NON-VACUITY BREAK
+        if let Some((_, key)) = self.flows.remove(flow) {'''
+
+[[control]]
+id = "codemode-host-route-release"
+guards = "a released codemode route key retains authority to dispatch"
+test_file = "crates/basal-host/tests/flow_scope_routes.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--test flow_scope_routes"
+expect_red = ["configure_flow_releases_a_codemode_route_key_without_releasing_other_users"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/flow_scope.rs"
+old = "if let Some((_, key)) = self.flows.remove(flow) {"
+new = '''if flow.starts_with("codemode:") && scope.is_none() { return Vec::new(); } // NON-VACUITY BREAK
+        if let Some((_, key)) = self.flows.remove(flow) {'''
+
+[[control]]
+id = "codemode-host-route-unregistered-release"
+guards = "releasing a never-registered codemode key is not a no-op"
+test_file = "crates/basal-host/tests/flow_scope_routes.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--test flow_scope_routes"
+expect_red = ["configure_flow_release_of_an_unregistered_codemode_key_is_a_noop"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/flow_scope.rs"
+old = "if let Some((_, key)) = self.flows.remove(flow) {"
+new = '''if flow.starts_with("codemode:") && scope.is_none() && !self.flows.contains_key(flow) { panic!("NON-VACUITY BREAK"); }
+        if let Some((_, key)) = self.flows.remove(flow) {'''

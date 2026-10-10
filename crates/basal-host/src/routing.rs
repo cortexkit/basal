@@ -13,6 +13,7 @@ pub struct ModuleOpsHost {
     transport: Arc<dyn Transport>,
     catalog: Arc<SubcCatalog>,
     keyed: BTreeSet<(String, String)>,
+    scope_describer: Option<crate::scope_describe::ModuleScopeDescriber>,
 }
 impl ModuleOpsHost {
     pub fn new(transport: Arc<dyn Transport>, catalog: Arc<SubcCatalog>) -> Self {
@@ -20,7 +21,21 @@ impl ModuleOpsHost {
             transport,
             catalog,
             keyed: BTreeSet::new(),
+            scope_describer: None,
         }
+    }
+    /// Attach the registered module connection that may read daemon scopes.
+    /// The module's serve future must keep running on `runtime`; admission
+    /// invokes this blocking host from a separate thread.
+    pub fn with_scope_describer(
+        mut self,
+        handle: subc_client_rs::ModuleHandle,
+        runtime: tokio::runtime::Handle,
+    ) -> Self {
+        self.scope_describer = Some(crate::scope_describe::ModuleScopeDescriber::new(
+            handle, runtime,
+        ));
+        self
     }
     /// Only operator-approved tool contracts may make a mutation repeatable.
     /// Management calls have no typed call-key field in this protocol.
@@ -113,6 +128,16 @@ impl ModuleOpsHost {
     }
 }
 impl Host for ModuleOpsHost {
+    fn scope_describe(
+        &self,
+        owner: &subc_protocol::Principal,
+        scope_ref: &str,
+    ) -> Result<crate::ScopeDescription, crate::ScopeDescribeError> {
+        self.scope_describer
+            .as_ref()
+            .ok_or(crate::ScopeDescribeError::Unavailable)?
+            .describe(owner, scope_ref)
+    }
     fn provider_ready(
         &self,
         flow_id: &str,
@@ -195,6 +220,13 @@ impl RoutingHost {
     }
 }
 impl Host for RoutingHost {
+    fn scope_describe(
+        &self,
+        owner: &subc_protocol::Principal,
+        scope_ref: &str,
+    ) -> Result<crate::ScopeDescription, crate::ScopeDescribeError> {
+        self.ops.scope_describe(owner, scope_ref)
+    }
     fn provider_ready(
         &self,
         flow_id: &str,

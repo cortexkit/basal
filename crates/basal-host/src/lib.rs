@@ -38,6 +38,7 @@ pub mod flow_refusal;
 pub mod flow_scope;
 pub mod mock;
 pub mod routing;
+pub mod scope_describe;
 pub mod selector;
 pub mod subc_catalog;
 pub mod transport;
@@ -47,6 +48,8 @@ pub use consent::{
     CardDecision, Consent, ConsentError, DecisionAnswer, DecisionCard, DecisionContext,
     DecisionEvent, DecisionKind, DecisionOption, DecisionSink, InstallCard, MockConsent,
 };
+pub use scope_describe::{ScopeDescribeError, ScopeDescription};
+pub use subc_protocol::scope::{ScopeStamp, ScopeStatus};
 
 /// The usage fields of a Broca outcome, in Broca's canonical names: fresh
 /// input, cache write, output (reasoning is already inside it) and cached
@@ -401,6 +404,16 @@ pub trait CompletionSink: Send + Sync {
 /// The hosts a flow reaches. Implementations must be safe to call from
 /// several threads at once: the runtime runs a run's calls concurrently.
 pub trait Host: Send + Sync {
+    /// Reads the daemon's current scope attestation before admission. The
+    /// response keeps the status and optional live stamp together; an absent
+    /// daemon must not be mistaken for authority to start a run.
+    fn scope_describe(
+        &self,
+        _owner: &subc_protocol::Principal,
+        _scope_ref: &str,
+    ) -> Result<ScopeDescription, ScopeDescribeError> {
+        Err(ScopeDescribeError::Unavailable)
+    }
     /// Only flow-owned provider calls use scope readiness. Plumbing and local
     /// built-ins keep the default so they cannot accidentally acquire a scope.
     fn provider_ready(
@@ -415,7 +428,8 @@ pub trait Host: Send + Sync {
     /// when recovering pending calls. Offline simulations can disable these
     /// checks when they have no core connection.
     fn scope_checks(&self, _enabled: bool) {}
-    /// The activation gate supplies fresh core authority before any run calls.
+    /// Registers authority under a route key (a flow id or `codemode:<run_id>`).
+    /// Passing no scope releases the key, including one never registered.
     fn configure_flow(
         &self,
         _flow_id: &str,
