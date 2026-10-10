@@ -1,6 +1,6 @@
 # basal
 
-basal is the flow engine and the `codemode` tool provider for the CortexKit fleet. A flow is a small script with a manifest: it reacts to an event or a schedule, reads facts and module data, decides, and writes what an agent should hear about into that agent's sinks through prefrontal-core. Every flow is approved by the operator before it runs, and approval binds to the exact code: any edit is a new version that needs a new approval.
+basal runs approved automation scripts and provides the `codemode` tool for scripting an agent's tools. An automation flow reacts to an event or a schedule, reads facts and module data, decides what to do, and sends its output to an agent through prefrontal-core, the module that manages agents and their output destinations. The operator must approve each exact script version: an edit requires a new approval.
 
 The name comes from the basal ganglia, the part of the brain that selects actions and runs habits and routines.
 
@@ -8,9 +8,9 @@ basal runs as a module supervised by the subc daemon, with the binary `ck-basal`
 
 ## Codemode
 
-Basal provides one agent-facing tool, `codemode({code, description?, limits?})`, on its tool route, where the daemon verifies the caller's principal and stamps its agent and scope identities. A short JavaScript program can await the agent's own tools, capture console output and return one JSON result. Core grants access and opens the run scope; basal owns the description, run records, budgets and rendered result. Tool schemas come from the daemon catalog, and each provider decides allow, ask and deny from the agent's stamp, just as for a direct call. Model tools are a later extension.
+Basal provides one agent-facing tool, `codemode({code, description?, limits?})`, on its tool route, where the daemon verifies the caller's principal and stamps its agent and scope identities. A short JavaScript program can await the agent's own tools, capture console output and return one JSON result. prefrontal-core, which manages agents and their tool grants, grants access to codemode and opens the run scope; basal owns the description, run records, budgets and rendered result. Tool schemas come from the daemon catalog, and each provider decides allow, ask and deny using the daemon-recorded agent identity and run scope, just as for a direct call. Model tools are a later extension.
 
-A keyed call derives its run ID from the stamped agent and call key; retries attach without replay. A keyless call executes once under an OS-random ID and warns that its reply cannot be recovered. Basal's parent process (outside the confined worker) caps wall time at 30 minutes plus a separate cumulative 10 minutes waiting only on people: the worker must be blocked and every in-flight call held on a person. It closes the scope before cancellation kills its worker, and interrupts leftover runs at startup. Long keyed calls are collected through `late_results` and cancelled through `tool.withdraw`. Windows refuses `unsupported_platform`. See [the tool and role operations](docs/ops.md#codemode).
+A keyed call derives its run ID from the stamped agent and call key; retries attach without replay. A keyless call executes once under an OS-random ID and warns that its reply cannot be recovered. Basal's parent process (outside the confined worker) caps wall time at 30 minutes plus a separate cumulative 10 minutes waiting only on people: the worker must be blocked and every in-flight tool call waiting for a person's approval or decision. It closes the scope before cancellation kills its worker, and interrupts leftover runs at startup. Long keyed calls can return before the program finishes; `late_results` lets the caller retrieve the finished result later, and `tool.withdraw` cancels the run. Windows refuses `unsupported_platform`. See [the tool and role operations](docs/ops.md#codemode).
 
 ## Crates
 

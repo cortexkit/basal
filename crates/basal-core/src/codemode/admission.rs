@@ -436,8 +436,11 @@ fn valid_name(name: &str) -> bool {
 #[path = "admission_tests.rs"]
 mod tests;
 
-/// All authority-bearing fields are copied by the module from its bound route.
-/// Program arguments have no identity, scope, expiry or catalog fields.
+/// basal-module builds this invocation from the principal and scope the daemon
+/// records when binding the agent's codemode tool route. Agent identity and the
+/// invoking scope come only from that record; bind identity configures provider
+/// workspaces and sessions, not authority. Program arguments supply only code,
+/// a description and lower limits.
 pub struct ToolInvocation<'a> {
     pub run_id: &'a str,
     pub agent_id: &'a str,

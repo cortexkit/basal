@@ -44,9 +44,9 @@ enum Phase {
 
 type RouteKey = (u16, u32);
 
-/// What the daemon stamped on one route when it was bound. The bind
-/// identity is kept only as provider configuration (workspace and session),
-/// never as caller authority (see [`crate::caller`]).
+/// The daemon records the route's principal and scope when binding it. Keep
+/// those values to identify the caller. Bind identity configures the provider's
+/// workspace and session; it never establishes who the caller is.
 #[derive(Debug, Clone)]
 struct RouteStamp {
     principal: Option<Principal>,
@@ -149,8 +149,8 @@ impl BasalHandler {
         self
     }
 
-    /// Lower only the foreground wait; keyed runs continue under their own
-    /// budgets and retain their terminal result for the custodian to pull.
+    /// Shorten only the initial wait for a reply. Runs with a call key continue
+    /// within their budgets and keep their result available for later retrieval.
     pub fn with_tool_foreground(mut self, wait: Duration) -> Self {
         self.tool_foreground = wait.min(self.tool_foreground);
         self

@@ -1076,8 +1076,13 @@ mod retention_tests;
 
 // SQLite cannot alter the status CHECK to admit person_wait. Rebuild
 // codemode_runs and its referencing codemode_calls table, preserving outcomes,
-// intents and timestamps. Shared SQL fragments retain the previous migrations'
-// exact bytes and keep their safety guards effective after the rebuild.
+// intents and timestamps. Shared SQL keeps recorded outcomes and terminal runs
+// immutable, forbids calls outside running runs and termination with pending
+// calls, forbids reuse of tombstoned run ids, and requires a tombstone before
+// deleting a run.
+// It also preserves description bounds and provider-entry duration checks.
+// The store checksums applied migrations, so their exact SQL text must remain
+// unchanged for existing databases to reopen after this schema rebuild.
 const CODEMODE_TOOL_PROVIDER: &str = concat!(
     r#"
 CREATE TABLE codemode_saved_runs AS SELECT * FROM codemode_runs;

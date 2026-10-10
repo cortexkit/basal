@@ -128,7 +128,7 @@ pub trait Transport: Send + Sync {
 
 pub type RunScopeEnded = dyn Fn(&str) + Send + Sync;
 
-/// Configuration copied from the invoking bind, never an authority source.
+/// Configuration copied from the invoking bind; it doesn't establish who the caller is.
 pub struct RunToolOptions {
     pub identity: BindIdentity,
     pub reply_timeout: Duration,

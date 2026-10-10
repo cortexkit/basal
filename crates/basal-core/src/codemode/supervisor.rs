@@ -376,8 +376,10 @@ impl Supervisor {
         self.result(id).map(|result| (result, started))
     }
 
-    /// Late-result intake marks only an already dispatched call held on a
-    /// person. A held reply is not a final answer and never settles its promise.
+    /// A provider may report that a dispatched call is waiting for a person's
+    /// approval or decision, then deliver its final answer later as a late result.
+    /// Mark that call held: the program's await must remain pending until the
+    /// final answer arrives, so the initial held reply does not settle its promise.
     pub fn held(&self, id: &str, position: u64, held: bool) -> Result<()> {
         let sender = self.0.active.lock().unwrap().get(id).cloned();
         if let Some(sender) = sender {
@@ -1002,10 +1004,13 @@ impl Driver {
             identity: self.identity.clone().unwrap_or_else(|| {
                 subc_protocol::BindIdentity::new("/", "basal", format!("basal:flow:{}", self.key()))
             }),
-            // Basal's parent process kills the worker at the first elapsed-wall
-            // (30 minutes, excluding person waits) or person-wait (10 minutes)
-            // cap. A longer RPC wait avoids cancelling a legitimate slow tool;
-            // the fixed run-scope expiry remains its outer deadline.
+            // The ck-basal process supervises the separate ck-basal-worker and
+            // enforces 30 minutes of wall time, excluding person waits. A person
+            // wait means the worker is blocked and every in-flight provider call
+            // awaits a person's approval or decision; these intervals have one
+            // cumulative 10-minute cap. The supervisor closes the scope at the
+            // first cap, so a slow RPC can wait up to the fixed scope expiry
+            // without giving the program more execution time.
             reply_timeout: Duration::from_millis(
                 self.run
                     .deadline_ms
