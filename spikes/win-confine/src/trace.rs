@@ -226,7 +226,7 @@ unsafe fn collect_inner(process: HANDLE, pid: u32, watch_connections: bool) -> V
                     } else {
                         disposition = DBG_EXCEPTION_NOT_HANDLED;
                     }
-                    json!({"kind":"exception","code":hex(code as u32),"first_chance":info.dwFirstChance,"address":info.ExceptionRecord.ExceptionAddress as usize,"connection":observation})
+                    json!({"kind":"exception","code":hex(code as u32),"first_chance":info.dwFirstChance,"address":info.ExceptionRecord.ExceptionAddress as usize,"connection":observation,"fault_context":if code == EXCEPTION_ACCESS_VIOLATION || code as u32 == 0xc0000008 {crate::connections::fault_context(process,event.dwThreadId)} else {Value::Null}})
                 }
                 EXIT_PROCESS_DEBUG_EVENT => {
                     completed = true;

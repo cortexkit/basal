@@ -3,16 +3,19 @@
 use crate::native::*;
 use serde_json::{Value, json};
 use std::ffi::c_void;
+use std::io::{BufRead, Write};
 use std::mem::{size_of, zeroed};
 use std::ptr::{null, null_mut};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 use windows_sys::Win32::Foundation::*;
 use windows_sys::Win32::Security::*;
 use windows_sys::Win32::System::Diagnostics::ToolHelp::*;
 use windows_sys::Win32::System::Threading::*;
-
-const SE_GROUP_ENABLED: u32 = 0x00000004;
+fn tokens_absent(thread: &Value) -> bool {
+    thread["nt_open_as_self"]["status"] == "0xc000007c"
+        && thread["nt_open_as_client"]["status"] == "0xc000007c"
+}
 
 #[link(name = "ntdll")]
 unsafe extern "system" {
@@ -40,121 +43,9 @@ unsafe extern "system" {
     ) -> i32;
 }
 
-unsafe extern "system" {
-    fn QueueUserWorkItem(
-        function: Option<unsafe extern "system" fn(*mut c_void) -> u32>,
-        context: *mut c_void,
-        flags: u32,
-    ) -> i32;
-}
-
-/// Query detailed security attributes of an impersonation token.
+/// Preserve the complete token attestation, including restricting SIDs and capabilities.
 pub unsafe fn query_token_attributes(token: HANDLE) -> Value {
-    let mut details = json!({});
-
-    // Token type (Primary = 1, Impersonation = 2)
-    if let Ok(data) = token_buffer(token, TokenType) {
-        let ttype = *data.as_ptr().cast::<u32>();
-        details["token_type"] = json!(ttype);
-        details["token_type_name"] = json!(if ttype == 1 {
-            "Primary"
-        } else if ttype == 2 {
-            "Impersonation"
-        } else {
-            "Unknown"
-        });
-    }
-
-    // Impersonation level
-    if let Ok(data) = token_buffer(token, TokenImpersonationLevel) {
-        let level = *data.as_ptr().cast::<u32>();
-        details["impersonation_level"] = json!(level);
-        details["impersonation_level_name"] = json!(match level {
-            0 => "SecurityAnonymous",
-            1 => "SecurityIdentification",
-            2 => "SecurityImpersonation",
-            3 => "SecurityDelegation",
-            _ => "Unknown",
-        });
-    }
-
-    // Integrity level
-    if let Ok(data) = token_buffer(token, TokenIntegrityLevel) {
-        let sid = (*data.as_ptr().cast::<TOKEN_MANDATORY_LABEL>()).Label.Sid;
-        let sid_str = sid_string(sid);
-        details["integrity"] = json!(sid_str);
-        details["integrity_level"] = json!(if sid_str == "S-1-16-0" {
-            "Untrusted"
-        } else if sid_str == "S-1-16-4096" {
-            "Low"
-        } else if sid_str == "S-1-16-8192" {
-            "Medium"
-        } else if sid_str == "S-1-16-12288" {
-            "High"
-        } else if sid_str == "S-1-16-16384" {
-            "System"
-        } else {
-            "Other"
-        });
-    }
-
-    // AppContainer SID
-    if let Ok(data) = token_buffer(token, TokenAppContainerSid) {
-        let ac_sid = (*data.as_ptr().cast::<TOKEN_APPCONTAINER_INFORMATION>()).TokenAppContainer;
-        if !ac_sid.is_null() {
-            details["appcontainer_sid"] = json!(sid_string(ac_sid));
-        } else {
-            details["appcontainer_sid"] = Value::Null;
-        }
-    }
-
-    // User SID
-    if let Ok(data) = token_buffer(token, TokenUser) {
-        let user_sid = (*data.as_ptr().cast::<TOKEN_USER>()).User.Sid;
-        details["user"] = json!(sid_string(user_sid));
-    }
-
-    // Enabled groups
-    if let Ok(data) = token_buffer(token, TokenGroups) {
-        let grps = groups(&data);
-        let mut enabled_groups = Vec::new();
-        let mut all_groups = Vec::new();
-        for g in grps {
-            let s = sid_string(g.Sid);
-            let is_enabled = (g.Attributes & SE_GROUP_ENABLED) != 0;
-            let is_deny_only = (g.Attributes & 0x00000010) != 0; // SE_GROUP_USE_FOR_DENY_ONLY
-            let is_integrity = (g.Attributes & SE_GROUP_INTEGRITY) != 0;
-            if !is_integrity {
-                all_groups.push(json!({
-                    "sid": s,
-                    "attributes": hex(g.Attributes),
-                    "enabled": is_enabled,
-                    "deny_only": is_deny_only,
-                }));
-                if is_enabled && !is_deny_only {
-                    enabled_groups.push(s);
-                }
-            }
-        }
-        details["enabled_groups"] = json!(enabled_groups);
-        details["all_groups"] = json!(all_groups);
-    }
-
-    // Privileges
-    if let Ok(data) = token_buffer(token, TokenPrivileges) {
-        let p = &*data.as_ptr().cast::<TOKEN_PRIVILEGES>();
-        let mut privs = Vec::new();
-        for entry in std::slice::from_raw_parts(p.Privileges.as_ptr(), p.PrivilegeCount as usize) {
-            privs.push(json!({
-                "luid": format!("0x{:08x}:0x{:08x}", entry.Luid.HighPart, entry.Luid.LowPart),
-                "attributes": hex(entry.Attributes),
-                "enabled": (entry.Attributes & SE_PRIVILEGE_ENABLED) != 0,
-            }));
-        }
-        details["privileges"] = json!(privs);
-    }
-
-    details
+    token_attestation(token).unwrap_or_else(|error| json!({"error": error}))
 }
 
 /// Query impersonation token on a given thread handle via both Win32 and native NT interfaces.
@@ -168,7 +59,7 @@ unsafe fn query_thread_tokens(thread: HANDLE) -> (Value, Value, Value, Value) {
         let details = query_token_attributes(t.0);
         json!({"has_token": true, "error": 0, "token": details})
     } else {
-        json!({"has_token": false, "error": err_self})
+        json!({"has_token": if err_self == ERROR_NO_TOKEN {json!(false)} else {Value::Null}, "error": err_self})
     };
 
     // 2. OpenThreadToken with OpenAsSelf = FALSE
@@ -180,7 +71,7 @@ unsafe fn query_thread_tokens(thread: HANDLE) -> (Value, Value, Value, Value) {
         let details = query_token_attributes(t.0);
         json!({"has_token": true, "error": 0, "token": details})
     } else {
-        json!({"has_token": false, "error": err_client})
+        json!({"has_token": if err_client == ERROR_NO_TOKEN {json!(false)} else {Value::Null}, "error": err_client})
     };
 
     // 3. NtOpenThreadTokenEx with OpenAsSelf = TRUE
@@ -191,7 +82,7 @@ unsafe fn query_thread_tokens(thread: HANDLE) -> (Value, Value, Value, Value) {
         let details = query_token_attributes(t.0);
         json!({"has_token": true, "status": "0x00000000", "token": details})
     } else {
-        json!({"has_token": false, "status": hex(nt_self_st as u32)})
+        json!({"has_token": if nt_self_st as u32 == 0xc000007c {json!(false)} else {Value::Null}, "status": hex(nt_self_st as u32)})
     };
 
     // 4. NtOpenThreadTokenEx with OpenAsSelf = FALSE
@@ -202,7 +93,7 @@ unsafe fn query_thread_tokens(thread: HANDLE) -> (Value, Value, Value, Value) {
         let details = query_token_attributes(t.0);
         json!({"has_token": true, "status": "0x00000000", "token": details})
     } else {
-        json!({"has_token": false, "status": hex(nt_client_st as u32)})
+        json!({"has_token": if nt_client_st as u32 == 0xc000007c {json!(false)} else {Value::Null}, "status": hex(nt_client_st as u32)})
     };
 
     (val_self, val_client, val_nt_self, val_nt_client)
@@ -232,10 +123,10 @@ pub unsafe fn inspect_single_thread(tid: u32, is_current: bool) -> Value {
             "tid": tid,
             "is_current": is_current,
             "open_thread_error": open_err,
-            "open_as_self": {"has_token": false, "error": open_err},
-            "open_as_client": {"has_token": false, "error": open_err},
-            "nt_open_as_self": {"has_token": false, "status": hex(open_err)},
-            "nt_open_as_client": {"has_token": false, "status": hex(open_err)},
+            "open_as_self": {"has_token": null, "error": open_err},
+            "open_as_client": {"has_token": null, "error": open_err},
+            "nt_open_as_self": {"has_token": null, "not_attempted": true},
+            "nt_open_as_client": {"has_token": null, "not_attempted": true},
         });
     }
 
@@ -271,42 +162,52 @@ pub unsafe fn inspect_single_thread(tid: u32, is_current: bool) -> Value {
     })
 }
 
-/// Enumerate process thread IDs using Toolhelp snapshot.
+/// Enumerate the entire snapshot; an API failure is never an empty process.
 pub unsafe fn enumerate_toolhelp_tids(pid: u32) -> Result<Vec<u32>> {
     let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
     if snapshot == INVALID_HANDLE_VALUE {
         return Err(format!(
-            "CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD): {}",
+            "CreateToolhelp32Snapshot: Win32 {}",
             GetLastError()
         ));
     }
     let snapshot = Handle(snapshot);
     let mut te: THREADENTRY32 = zeroed();
     te.dwSize = size_of::<THREADENTRY32>() as u32;
+    if Thread32First(snapshot.0, &mut te) == 0 {
+        return Err(format!("Thread32First: Win32 {}", GetLastError()));
+    }
     let mut tids = Vec::new();
-    if Thread32First(snapshot.0, &mut te) != 0 {
-        loop {
-            if te.th32OwnerProcessID == pid {
-                tids.push(te.th32ThreadID);
+    loop {
+        if te.th32OwnerProcessID == pid {
+            tids.push(te.th32ThreadID);
+        }
+        te.dwSize = size_of::<THREADENTRY32>() as u32;
+        if Thread32Next(snapshot.0, &mut te) == 0 {
+            let error = GetLastError();
+            if error != ERROR_NO_MORE_FILES {
+                return Err(format!("Thread32Next: Win32 {error}"));
             }
-            if Thread32Next(snapshot.0, &mut te) == 0 {
-                break;
-            }
+            break;
         }
     }
+    tids.sort_unstable();
     Ok(tids)
 }
 
-/// Enumerate process threads and NT start addresses using NtQuerySystemInformation (SystemProcessInformation = 5).
+/// Read NumberOfThreads and every SYSTEM_THREAD_INFORMATION entry for the PID.
+/// Offsets are the x64 ABI; bounds are checked against the returned record length.
 pub unsafe fn system_process_threads(pid: u32) -> Result<Vec<(u32, usize)>> {
-    let mut bytes = 2 * 1024 * 1024; // 2 MB
+    let mut bytes = 2 * 1024 * 1024;
     loop {
-        let mut buffer = vec![0u8; bytes];
+        let mut buffer = vec![0usize; bytes / size_of::<usize>()];
         let mut returned = 0u32;
         let status =
             NtQuerySystemInformation(5, buffer.as_mut_ptr().cast(), bytes as u32, &mut returned);
-        if status as u32 == 0xc0000004 && bytes < (32 * 1024 * 1024) {
-            bytes = (bytes * 2).max(returned as usize + 8192);
+        if status as u32 == 0xc0000004 && bytes < 32 * 1024 * 1024 {
+            bytes = (bytes * 2)
+                .max(returned as usize + 8192)
+                .next_multiple_of(8);
             continue;
         }
         if status < 0 {
@@ -315,243 +216,268 @@ pub unsafe fn system_process_threads(pid: u32) -> Result<Vec<(u32, usize)>> {
                 hex(status as u32)
             ));
         }
+        let base = buffer.as_ptr().cast::<u8>();
+        let end = returned as usize;
+        if end > bytes {
+            return Err("SystemProcessInformation returned oversized buffer".into());
+        }
         let mut offset = 0usize;
-        let mut threads = Vec::new();
-        while offset < buffer.len() {
-            let next_offset = *buffer.as_ptr().add(offset).cast::<u32>() as usize;
-            let thread_count = *buffer.as_ptr().add(offset + 4).cast::<u32>() as usize;
-            let proc_id = *buffer.as_ptr().add(offset + 80).cast::<usize>() as u32;
-            if proc_id == pid {
-                // In x64 SYSTEM_PROCESS_INFORMATION, the Threads array starts at offset 256 (0x100).
-                let thread_base = offset + 256;
-                for i in 0..thread_count {
-                    let entry_offset = thread_base + i * 80;
-                    if entry_offset + 80 <= buffer.len() {
-                        let start_addr = *buffer.as_ptr().add(entry_offset + 32).cast::<usize>();
-                        let tid = *buffer.as_ptr().add(entry_offset + 48).cast::<usize>() as u32;
-                        threads.push((tid, start_addr));
+        while offset + 256 <= end {
+            let next = base.add(offset).cast::<u32>().read_unaligned() as usize;
+            let count = base.add(offset + 4).cast::<u32>().read_unaligned() as usize;
+            let record_end = if next == 0 { end } else { offset + next };
+            if record_end > end || record_end < offset + 256 {
+                return Err("Invalid process record size".into());
+            }
+            let process_id = base.add(offset + 80).cast::<usize>().read_unaligned();
+            if process_id == pid as usize {
+                if offset + 256 + count * 80 > record_end {
+                    return Err("Truncated thread array".into());
+                }
+                let mut threads = Vec::with_capacity(count);
+                for i in 0..count {
+                    let thread = base.add(offset + 256 + i * 80);
+                    let start = thread.add(32).cast::<usize>().read_unaligned();
+                    let owner = thread.add(40).cast::<usize>().read_unaligned();
+                    let tid = thread.add(48).cast::<usize>().read_unaligned();
+                    if owner != pid as usize || tid == 0 {
+                        return Err("Invalid thread CLIENT_ID".into());
                     }
+                    threads.push((tid as u32, start));
                 }
                 return Ok(threads);
             }
-            if next_offset == 0 {
+            if next == 0 {
                 break;
             }
-            offset += next_offset;
+            offset = record_end;
         }
-        return Ok(threads);
+        return Err(format!("PID {pid} missing from SystemProcessInformation"));
     }
 }
 
-/// Enumerate and inspect all threads belonging to the given PID.
+/// Require two independent enumerators to agree; never add the observer's own TID.
 pub unsafe fn inspect_all_threads(pid: u32) -> Result<Value> {
-    let current_tid = GetCurrentThreadId();
-    let nt_threads = system_process_threads(pid).unwrap_or_default();
-    let toolhelp_tids = enumerate_toolhelp_tids(pid).unwrap_or_default();
-
-    // Union of all thread IDs discovered
-    let mut all_tids = std::collections::BTreeSet::new();
-    all_tids.insert(current_tid);
-    for &(tid, _) in &nt_threads {
-        all_tids.insert(tid);
+    let nt = system_process_threads(pid);
+    let toolhelp = enumerate_toolhelp_tids(pid);
+    let mut tids = std::collections::BTreeSet::new();
+    if let Ok(entries) = &nt {
+        tids.extend(entries.iter().map(|e| e.0));
     }
-    for &tid in &toolhelp_tids {
-        all_tids.insert(tid);
+    if let Ok(entries) = &toolhelp {
+        tids.extend(entries.iter().copied());
     }
-
+    let nt_tids: std::collections::BTreeSet<_> = nt
+        .as_ref()
+        .map(|entries| entries.iter().map(|e| e.0).collect())
+        .unwrap_or_default();
+    let complete = nt.is_ok()
+        && toolhelp.is_ok()
+        && !nt_tids.is_empty()
+        && nt_tids == toolhelp.as_ref().unwrap().iter().copied().collect();
     let mut threads = Vec::new();
-    let mut any_token_found = false;
-    let mut any_stronger_token = false;
-
-    for &tid in &all_tids {
-        let mut info = inspect_single_thread(tid, tid == current_tid);
-        if let Some(&(_, start_addr)) = nt_threads.iter().find(|&&(t, _)| t == tid) {
-            info["nt_start_address"] = json!(format!("0x{:016x}", start_addr));
-        }
-
-        let has_self = info["open_as_self"]["has_token"] == true;
-        let has_client = info["open_as_client"]["has_token"] == true;
-        let has_nt_self = info["nt_open_as_self"]["has_token"] == true;
-        let has_nt_client = info["nt_open_as_client"]["has_token"] == true;
-
-        if has_self || has_client || has_nt_self || has_nt_client {
-            any_token_found = true;
-            // Check if stronger than Untrusted primary:
-            // Untrusted integrity is "S-1-16-0". Anything with higher integrity,
-            // non-empty enabled groups, or privileges is considered stronger.
-            let token_data = if has_self {
-                &info["open_as_self"]["token"]
-            } else if has_client {
-                &info["open_as_client"]["token"]
-            } else if has_nt_self {
-                &info["nt_open_as_self"]["token"]
-            } else {
-                &info["nt_open_as_client"]["token"]
-            };
-            let integrity = token_data["integrity"].as_str().unwrap_or("");
-            let enabled_groups = token_data["enabled_groups"]
-                .as_array()
-                .map(|a| a.len())
-                .unwrap_or(0);
-            let privileges = token_data["privileges"]
-                .as_array()
-                .map(|a| a.len())
-                .unwrap_or(0);
-            if integrity != "S-1-16-0" || enabled_groups > 0 || privileges > 0 {
-                any_stronger_token = true;
+    for tid in tids {
+        let mut info = inspect_single_thread(
+            tid,
+            pid == GetCurrentProcessId() && tid == GetCurrentThreadId(),
+        );
+        if let Ok(entries) = &nt {
+            if let Some((_, start)) = entries.iter().find(|e| e.0 == tid) {
+                info["nt_start_address"] = json!(format!("0x{start:016x}"));
             }
         }
-
         threads.push(info);
     }
-
+    let all_no_token = complete && threads.iter().all(tokens_absent);
+    let any_token = threads.iter().any(|t| {
+        t["nt_open_as_self"]["has_token"] == true || t["nt_open_as_client"]["has_token"] == true
+    });
     Ok(json!({
+        "enumeration_complete": complete,
         "thread_count": threads.len(),
-        "discovered_toolhelp_tids": toolhelp_tids,
-        "discovered_nt_thread_count": nt_threads.len(),
-        "all_threads_have_no_impersonation_token": !any_token_found,
-        "any_token_found": any_token_found,
-        "any_stronger_token": any_stronger_token,
+        "process_reported_thread_count": nt.as_ref().ok().map(Vec::len),
+        "nt_enumeration_error": nt.as_ref().err(),
+        "toolhelp_error": toolhelp.as_ref().err(),
+        "discovered_toolhelp_tids": toolhelp.as_ref().ok(),
+        "all_threads_have_no_impersonation_token": all_no_token,
+        "any_token_found": any_token,
         "threads": threads,
     }))
 }
 
 struct PoolContext {
-    remaining: AtomicUsize,
-    done_event: HANDLE,
+    entered: AtomicUsize,
+    ready: HANDLE,
+    release: HANDLE,
     records: Mutex<Vec<Value>>,
 }
 
-unsafe extern "system" fn pool_callback(param: *mut c_void) -> u32 {
+unsafe fn record_callback(param: *mut c_void, kind: &str) {
     let ctx = &*(param as *const PoolContext);
-    let tid = GetCurrentThreadId();
-    let (self_res, client_res, nt_self, nt_client) = query_thread_tokens(GetCurrentThread());
-
-    let has_token = self_res["has_token"] == true
-        || client_res["has_token"] == true
-        || nt_self["has_token"] == true
-        || nt_client["has_token"] == true;
-
-    let mut remedy = json!({"remedy_needed": false});
-    if has_token {
-        // If a thread carries an impersonation token, test the remedy in the same run:
-        // Drop it via SetThreadToken(NULL) from that thread.
-        let ok = SetThreadToken(null(), null_mut()) != 0;
-        let err = if ok { 0 } else { GetLastError() };
-        let (after_self, after_client, after_nt_self, after_nt_client) =
-            query_thread_tokens(GetCurrentThread());
-        remedy = json!({
-            "remedy_needed": true,
-            "set_thread_token_null_success": ok,
-            "set_thread_token_null_error": err,
-            "after_remedy": {
-                "open_as_self": after_self,
-                "open_as_client": after_client,
-                "nt_open_as_self": after_nt_self,
-                "nt_open_as_client": after_nt_client,
-            }
-        });
+    let (s, c, ns, nc) = query_thread_tokens(GetCurrentThread());
+    ctx.records
+        .lock()
+        .unwrap()
+        .push(json!({"kind":kind,"tid":GetCurrentThreadId(),
+        "open_as_self":s,"open_as_client":c,"nt_open_as_self":ns,"nt_open_as_client":nc}));
+    if ctx.entered.fetch_add(1, Ordering::SeqCst) + 1 == 3 {
+        SetEvent(ctx.ready);
     }
-
-    if let Ok(mut records) = ctx.records.lock() {
-        records.push(json!({
-            "tid": tid,
-            "open_as_self": self_res,
-            "open_as_client": client_res,
-            "nt_open_as_self": nt_self,
-            "nt_open_as_client": nt_client,
-            "remedy": remedy,
-        }));
-    }
-
-    let left = ctx.remaining.fetch_sub(1, Ordering::SeqCst);
-    if left == 1 {
-        SetEvent(ctx.done_event);
-    }
-    0
+    // Keep the callbacks alive until both enumerators and token queries have run.
+    WaitForSingleObject(ctx.release, 30_000);
+}
+unsafe extern "system" fn work_callback(_: PTP_CALLBACK_INSTANCE, ctx: *mut c_void, _: PTP_WORK) {
+    record_callback(ctx, "work");
+}
+unsafe extern "system" fn wait_callback(
+    _: PTP_CALLBACK_INSTANCE,
+    ctx: *mut c_void,
+    _: PTP_WAIT,
+    _: u32,
+) {
+    record_callback(ctx, "wait");
+}
+unsafe extern "system" fn timer_callback(_: PTP_CALLBACK_INSTANCE, ctx: *mut c_void, _: PTP_TIMER) {
+    record_callback(ctx, "timer");
 }
 
-/// Force pool activity by queuing multiple work items to the default thread pool,
-/// inspecting tokens from inside pool callbacks, and waiting for completion.
-pub unsafe fn force_pool_activity(count: usize) -> Result<Value> {
-    let event = CreateEventW(null(), 1, 0, null());
-    if event.is_null() {
-        return Err(format!("CreateEventW: {}", GetLastError()));
+/// The confined token cannot enumerate the system on all supported Windows builds.
+/// Request broker TIDs, start addresses and token queries over newline-delimited
+/// JSON on stdio. Only this spike understands those messages; the broker withholds
+/// the untrusted probe payload until the worker finishes every checkpoint.
+fn observer_checkpoint(stage: &str) -> Result<Value> {
+    println!("{}", json!({"mode":"thread_checkpoint","stage":stage}));
+    std::io::stdout().flush().map_err(|e| e.to_string())?;
+    let mut reply = String::new();
+    std::io::stdin()
+        .lock()
+        .read_line(&mut reply)
+        .map_err(|e| e.to_string())?;
+    serde_json::from_str(&reply).map_err(|e| e.to_string())
+}
+
+/// Exercise work, a signaled wait and a relative timer on the default pool.
+/// The context remains alive until all callbacks have drained, even on timeout.
+pub unsafe fn force_pool_activity() -> Result<Value> {
+    let ready = Handle(CreateEventW(null(), 1, 0, null()));
+    let release = Handle(CreateEventW(null(), 1, 0, null()));
+    let trigger = Handle(CreateEventW(null(), 1, 1, null()));
+    if ready.0.is_null() || release.0.is_null() || trigger.0.is_null() {
+        return Err(last("CreateEventW(pool)"));
     }
-    let event_h = Handle(event);
-    let ctx = Arc::new(PoolContext {
-        remaining: AtomicUsize::new(count),
-        done_event: event_h.0,
+    let ctx = PoolContext {
+        entered: AtomicUsize::new(0),
+        ready: ready.0,
+        release: release.0,
         records: Mutex::new(Vec::new()),
-    });
-
-    let mut queued = 0;
-    for _ in 0..count {
-        let ptr = Arc::as_ptr(&ctx) as *mut c_void;
-        if QueueUserWorkItem(Some(pool_callback), ptr, 0) != 0 {
-            queued += 1;
+    };
+    let param = (&ctx as *const PoolContext).cast_mut().cast();
+    let work = CreateThreadpoolWork(Some(work_callback), param, null());
+    let wait = CreateThreadpoolWait(Some(wait_callback), param, null());
+    let timer = CreateThreadpoolTimer(Some(timer_callback), param, null());
+    if work == 0 || wait == 0 || timer == 0 {
+        let error = last("CreateThreadpool work/wait/timer");
+        if work != 0 {
+            CloseThreadpoolWork(work);
         }
+        if wait != 0 {
+            CloseThreadpoolWait(wait);
+        }
+        if timer != 0 {
+            CloseThreadpoolTimer(timer);
+        }
+        return Err(error);
     }
-
-    // Wait up to 10 seconds for all work items to complete
-    let wait = WaitForSingleObject(event_h.0, 10_000);
-    // Brief sleep to allow worker threads to settle back into pool
-    Sleep(50);
-
-    let executed = ctx.records.lock().map(|r| r.clone()).unwrap_or_default();
-    Ok(json!({
-        "work_items_requested": count,
-        "work_items_queued": queued,
-        "wait_status": wait,
-        "executed_count": executed.len(),
-        "callback_inspections": executed,
-    }))
+    SubmitThreadpoolWork(work);
+    SetThreadpoolWait(wait, trigger.0, null());
+    let due = (-10_000i64).to_ne_bytes();
+    let due = FILETIME {
+        dwLowDateTime: u32::from_ne_bytes(due[..4].try_into().unwrap()),
+        dwHighDateTime: u32::from_ne_bytes(due[4..].try_into().unwrap()),
+    };
+    SetThreadpoolTimer(timer, &due, 0, 0);
+    let ready_status = WaitForSingleObject(ready.0, 10_000);
+    let observer = observer_checkpoint("callbacks_held");
+    let local = inspect_all_threads(GetCurrentProcessId());
+    let records = ctx.records.lock().unwrap().clone();
+    SetEvent(release.0);
+    SetThreadpoolWait(wait, null_mut(), null());
+    SetThreadpoolTimer(timer, null(), 0, 0);
+    WaitForThreadpoolWorkCallbacks(work, 1);
+    WaitForThreadpoolWaitCallbacks(wait, 1);
+    WaitForThreadpoolTimerCallbacks(timer, 1);
+    CloseThreadpoolWork(work);
+    CloseThreadpoolWait(wait);
+    CloseThreadpoolTimer(timer);
+    Ok(
+        json!({"ready_status":ready_status,"callback_inspections":records,
+        "observer":observer?,"local":local?}),
+    )
 }
 
-/// Complete pre-input thread impersonation measurement:
-/// 1. Enumerate and inspect every thread before input.
-/// 2. Force pool activity (wake/spawn dormant pool threads and inspect from worker).
-/// 3. Re-enumerate and inspect all threads.
-/// 4. Verify that either every thread has no impersonation token or tokens are no more privileged than Untrusted primary.
+/// Attest the live thread set before and after forcing pool activity.
 pub unsafe fn measure_thread_impersonation(pid: u32) -> Result<Value> {
-    eprintln!("thread-attestation: starting pre-pool enumeration");
-    let pre_activity = inspect_all_threads(pid)?;
-
-    eprintln!("thread-attestation: forcing pool activity (8 work items)");
-    let pool_activity = force_pool_activity(8)?;
-
-    eprintln!("thread-attestation: starting post-pool re-enumeration");
-    let post_activity = inspect_all_threads(pid)?;
-
-    let pre_clean = pre_activity["all_threads_have_no_impersonation_token"] == true;
-    let post_clean = post_activity["all_threads_have_no_impersonation_token"] == true;
-    let any_stronger =
-        pre_activity["any_stronger_token"] == true || post_activity["any_stronger_token"] == true;
-
-    let conclusion = if pre_clean && post_clean {
-        "verified: every thread has no impersonation token (pre-input and post-pool activity)"
-    } else if !any_stronger {
-        "verified: all observed thread tokens are no more privileged than Untrusted primary"
-    } else {
-        "gap: thread carries stronger token"
-    };
-
-    eprintln!("thread-attestation: complete. conclusion: {conclusion}");
-
-    Ok(json!({
-        "pre_pool_activity": pre_activity,
-        "forced_pool_activity": pool_activity,
-        "post_pool_activity": post_activity,
-        "pre_activity_all_no_token": pre_clean,
-        "post_activity_all_no_token": post_clean,
-        "any_stronger_token": any_stronger,
-        "conclusion": conclusion,
-    }))
+    let local_pre = inspect_all_threads(pid)?;
+    let pre = observer_checkpoint("before_activity")?;
+    let activity = force_pool_activity()?;
+    let post = activity["observer"].clone();
+    let callbacks = activity["callback_inspections"].as_array().unwrap();
+    let tids: std::collections::BTreeSet<_> = post["threads"]
+        .as_array()
+        .unwrap_or(&Vec::new())
+        .iter()
+        .filter_map(|t| t["tid"].as_u64())
+        .collect();
+    let included = callbacks
+        .iter()
+        .all(|c| c["tid"].as_u64().is_some_and(|tid| tids.contains(&tid)));
+    let complete = activity["ready_status"] == 0
+        && callbacks.len() == 3
+        && included
+        && pre["all_threads_have_no_impersonation_token"] == true
+        && post["all_threads_have_no_impersonation_token"] == true
+        && callbacks.iter().all(tokens_absent);
+    let post_release = observer_checkpoint("after_release")?;
+    let complete = complete && post_release["all_threads_have_no_impersonation_token"] == true;
+    Ok(
+        json!({"local_pre_pool_activity":local_pre,"pre_pool_activity":pre,
+        "forced_pool_activity":activity,"post_pool_activity":post,"post_release":post_release,
+        "callback_tids_in_enumerated_set":included,"pass":complete,
+        "conclusion":if complete {"complete enumerations and every thread has STATUS_NO_TOKEN"} else {"incomplete or token-bearing: no confinement claim"}}),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn both_enumerators_include_the_current_thread() {
+        unsafe {
+            let pid = GetCurrentProcessId();
+            let tid = GetCurrentThreadId();
+            assert!(
+                system_process_threads(pid)
+                    .unwrap()
+                    .iter()
+                    .any(|entry| entry.0 == tid)
+            );
+            assert!(enumerate_toolhelp_tids(pid).unwrap().contains(&tid));
+        }
+    }
+
+    #[test]
+    fn system_enumerator_rejects_a_missing_pid() {
+        unsafe {
+            assert!(system_process_threads(u32::MAX).is_err());
+        }
+    }
+
+    #[test]
+    fn denied_token_query_is_unknown_not_absent() {
+        let denied = json!({"nt_open_as_self":{"status":"0xc0000022"},"nt_open_as_client":{"status":"0xc000007c"}});
+        assert!(!tokens_absent(&denied));
+    }
 
     #[test]
     fn thread_query_current_thread_returns_valid_structure() {
@@ -564,4 +490,27 @@ mod tests {
             assert!(res["nt_open_as_client"].is_object());
         }
     }
+}
+
+/// Test removing every observed token conservatively; do not classify unreadable
+/// or partly attested tokens as weaker than the worker's primary.
+pub unsafe fn remove_observed_tokens(pid: u32, before: &Value) -> Value {
+    let mut attempts = Vec::new();
+    for thread in before["threads"].as_array().unwrap_or(&Vec::new()) {
+        if thread["nt_open_as_self"]["has_token"] != true
+            && thread["nt_open_as_client"]["has_token"] != true
+        {
+            continue;
+        }
+        let tid = thread["tid"].as_u64().unwrap() as u32;
+        let handle = OpenThread(THREAD_SET_THREAD_TOKEN, 0, tid);
+        if handle.is_null() {
+            attempts.push(json!({"tid":tid,"open_error":GetLastError()}));
+            continue;
+        }
+        let handle = Handle(handle);
+        let success = SetThreadToken(&handle.0, null_mut()) != 0;
+        attempts.push(json!({"tid":tid,"set_thread_token_null_success":success,"error":if success {0} else {GetLastError()}}));
+    }
+    json!({"attempts":attempts,"remeasured":inspect_all_threads(pid).unwrap_or_else(|error|json!({"error":error}))})
 }

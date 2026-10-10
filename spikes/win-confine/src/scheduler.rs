@@ -21,6 +21,9 @@ unsafe extern "system" {
         returned: *mut u32,
     ) -> i32;
 
+    fn NtUnmapViewOfSection(process: HANDLE, base: *mut c_void) -> i32;
+    fn NtMakeTemporaryObject(handle: HANDLE) -> i32;
+    fn NtSetSecurityObject(handle: HANDLE, info: u32, desc: *mut c_void) -> i32;
     fn NtQuerySecurityObject(
         handle: HANDLE,
         info: u32,
@@ -120,7 +123,61 @@ struct ObjectTypeInfoLocal {
     pool: [u32; 3],
 }
 
-/// Try all documented and observable operations on a SchedulerSharedData handle.
+unsafe fn duplicate_details(handle: HANDLE, status: i32) -> Value {
+    let mut result =
+        json!({"status":hex(status as u32),"success":status == 0 && !handle.is_null()});
+    if status != 0 || handle.is_null() {
+        return result;
+    }
+    let mut basic: ObjectBasicInfo = zeroed();
+    let mut returned = 0;
+    let query = NtQueryObject(
+        handle,
+        0,
+        (&mut basic as *mut ObjectBasicInfo).cast(),
+        size_of::<ObjectBasicInfo>() as u32,
+        &mut returned,
+    );
+    result["basic_query_status"] = json!(hex(query as u32));
+    if query == 0 {
+        result["granted_access"] = json!(hex(basic.granted_access));
+    }
+    let mut security = vec![0u8; 4096];
+    let read = NtQuerySecurityObject(
+        handle,
+        7,
+        security.as_mut_ptr().cast(),
+        security.len() as u32,
+        &mut returned,
+    );
+    if read as u32 == 0xc0000023 {
+        security.resize(returned as usize, 0);
+    }
+    let read = if read as u32 == 0xc0000023 {
+        NtQuerySecurityObject(
+            handle,
+            7,
+            security.as_mut_ptr().cast(),
+            security.len() as u32,
+            &mut returned,
+        )
+    } else {
+        read
+    };
+    result["security_read_status"] = json!(hex(read as u32));
+    if read == 0 {
+        // Reapply the same descriptor: measure security-write authority without
+        // making the scheduler object more accessible to any other principal.
+        let write = NtSetSecurityObject(handle, 4, security.as_mut_ptr().cast());
+        result["same_dacl_write_status"] = json!(hex(write as u32));
+        let owner = NtSetSecurityObject(handle, 1, security.as_mut_ptr().cast());
+        result["same_owner_write_status"] = json!(hex(owner as u32));
+    }
+    result["make_temporary_status"] = json!(hex(NtMakeTemporaryObject(handle) as u32));
+    result
+}
+
+/// Probe the finite native interfaces relevant to the measured scheduler grant.
 pub unsafe fn probe_scheduler_shared_data_handle(h: HANDLE, granted: u32) -> Value {
     let mut operations = json!({});
 
@@ -214,7 +271,7 @@ pub unsafe fn probe_scheduler_shared_data_handle(h: HANDLE, granted: u32) -> Val
     let mut sec_buf = vec![0u8; 512];
     let sec_st = NtQuerySecurityObject(
         h,
-        4, // DACL_SECURITY_INFORMATION
+        7, // OWNER | GROUP | DACL_SECURITY_INFORMATION
         sec_buf.as_mut_ptr().cast(),
         sec_buf.len() as u32,
         &mut ret_len,
@@ -222,7 +279,7 @@ pub unsafe fn probe_scheduler_shared_data_handle(h: HANDLE, granted: u32) -> Val
     operations["query_security_object"] = json!({
         "status": hex(sec_st as u32),
         "permitted": sec_st == 0,
-        "note": "denied (access 0x1 lacks READ_CONTROL 0x20000)",
+        "returned_bytes": ret_len,
     });
 
     // 5. NtDuplicateObject
@@ -237,6 +294,7 @@ pub unsafe fn probe_scheduler_shared_data_handle(h: HANDLE, granted: u32) -> Val
         2, // DUPLICATE_SAME_ACCESS
     );
     let dup_same_ok = dup_same_st == 0 && !dup_same.is_null();
+    let same_basic = duplicate_details(dup_same, dup_same_st);
     if dup_same_ok {
         CloseHandle(dup_same);
     }
@@ -251,13 +309,33 @@ pub unsafe fn probe_scheduler_shared_data_handle(h: HANDLE, granted: u32) -> Val
         0,
         0,
     );
+    let all_basic = duplicate_details(dup_all, dup_all_st);
     if dup_all_st == 0 && !dup_all.is_null() {
         CloseHandle(dup_all);
     }
-    operations["duplicate_object"] = json!({
-        "same_access": {"status": hex(dup_same_st as u32), "success": dup_same_ok},
-        "generic_all": {"status": hex(dup_all_st as u32), "permitted": dup_all_st == 0},
-    });
+    operations["duplicate_object"] = json!({"same_access":same_basic,"generic_all":all_basic});
+    let mut access_trials = Vec::new();
+    for access in [
+        0x80000000, 0x40000000, 0x20000000, 2, 0x02000000, 0x000e0000, 0x00100000,
+    ] {
+        let mut duplicate = null_mut();
+        let status = NtDuplicateObject(
+            GetCurrentProcess(),
+            h,
+            GetCurrentProcess(),
+            &mut duplicate,
+            access,
+            0,
+            0,
+        );
+        let mut details = duplicate_details(duplicate, status);
+        details["requested_access"] = json!(hex(access));
+        access_trials.push(details);
+        if status == 0 && !duplicate.is_null() {
+            CloseHandle(duplicate);
+        }
+    }
+    operations["duplicate_access_trials"] = json!(access_trials);
 
     // 6. WaitForSingleObject (synchronization check)
     SetLastError(0);
@@ -265,9 +343,8 @@ pub unsafe fn probe_scheduler_shared_data_handle(h: HANDLE, granted: u32) -> Val
     let wait_err = GetLastError();
     operations["wait_for_single_object"] = json!({
         "result": wait_res,
-        "error": wait_err,
+        "error": if wait_res == WAIT_FAILED { wait_err } else { 0 },
         "permitted": wait_res != WAIT_FAILED,
-        "note": "denied (access 0x1 lacks SYNCHRONIZE 0x100000)",
     });
 
     // 7. File/Device I/O operations
@@ -332,8 +409,10 @@ pub unsafe fn probe_scheduler_shared_data_handle(h: HANDLE, granted: u32) -> Val
     operations["section_map"] = json!({
         "status": hex(map_st as u32),
         "permitted": map_st == 0,
-        "note": "STATUS_OBJECT_TYPE_MISMATCH (0xc0000024)",
     });
+    if map_st == 0 {
+        NtUnmapViewOfSection(GetCurrentProcess(), base_addr);
+    }
 
     // 9. RootDirectory escape test (can it be used to open filesystem files or devices?)
     let mut file_test_h = null_mut();
@@ -375,10 +454,11 @@ pub unsafe fn probe_scheduler_shared_data_handle(h: HANDLE, granted: u32) -> Val
     operations["root_directory_escape"] = json!({
         "status": hex(open_st as u32),
         "permitted": open_st == 0,
-        "note": "cannot be used as RootDirectory for file opens",
+
     });
 
     // 10. ALPC IPC escape test (can it be used as an ALPC communication port?)
+    let mut timeout = 0i64;
     let alpc_st = NtAlpcSendWaitReceivePort(
         h,
         0,
@@ -386,61 +466,57 @@ pub unsafe fn probe_scheduler_shared_data_handle(h: HANDLE, granted: u32) -> Val
         null_mut(),
         null_mut(),
         null_mut(),
-        null_mut(),
+        &mut timeout,
     );
     operations["alpc_port_escape"] = json!({
         "status": hex(alpc_st as u32),
         "permitted": alpc_st == 0,
-        "note": "cannot be used as an ALPC communication port",
+
     });
 
-    // 11. ProcessSchedulerSharedData slot interface (class 112 / 0x70)
-    let mut slot_ptr = null_mut();
-    let mut assign_info = SchedulerSlotInfo {
-        action: 0, // SchedulerSharedSlotAssign
-        handle: h,
-        slot: &mut slot_ptr as *mut *mut c_void as *mut c_void,
-    };
-    let assign_st = NtSetInformationProcess(
-        GetCurrentProcess(),
-        112,
-        (&mut assign_info as *mut SchedulerSlotInfo).cast(),
-        size_of::<SchedulerSlotInfo>() as u32,
-    );
-
-    let mut query_slot_ptr = null_mut();
-    let mut query_info = SchedulerSlotInfo {
-        action: 2, // SchedulerSharedSlotQuery
-        handle: h,
-        slot: &mut query_slot_ptr as *mut *mut c_void as *mut c_void,
-    };
-    let query_st = NtQueryInformationProcess(
-        GetCurrentProcess(),
-        112,
-        (&mut query_info as *mut SchedulerSlotInfo).cast(),
-        size_of::<SchedulerSlotInfo>() as u32,
-        &mut ret_len,
-    );
-
-    let mut free_info = SchedulerSlotInfo {
-        action: 1, // SchedulerSharedSlotFree
-        handle: h,
-        slot: slot_ptr,
-    };
-    let free_st = NtSetInformationProcess(
-        GetCurrentProcess(),
-        112,
-        (&mut free_info as *mut SchedulerSlotInfo).cast(),
-        size_of::<SchedulerSlotInfo>() as u32,
-    );
-
-    operations["process_scheduler_shared_data_class_112"] = json!({
-        "class": 112,
-        "assign_action_0": hex(assign_st as u32),
-        "query_action_2": hex(query_st as u32),
-        "free_action_1": hex(free_st as u32),
-    });
-
+    // phnt describes Action, Handle and a direct Slot value (not a pointer-to-pointer).
+    // Its query/set annotations differ across versions, so measure both APIs.
+    let mut slot_operations = Vec::new();
+    for query_api in [true, false] {
+        let mut assigned_slot = null_mut();
+        for action in [2, 0, 1] {
+            let mut info = SchedulerSlotInfo {
+                action,
+                handle: h,
+                slot: if action == 1 {
+                    assigned_slot
+                } else {
+                    null_mut()
+                },
+            };
+            if action == 1 && assigned_slot.is_null() {
+                slot_operations.push(json!({"api":if query_api {"query"} else {"set"},"action":action,"not_attempted":"no successful assignment to free"}));
+                continue;
+            }
+            let status = if query_api {
+                NtQueryInformationProcess(
+                    GetCurrentProcess(),
+                    112,
+                    (&mut info as *mut SchedulerSlotInfo).cast(),
+                    size_of::<SchedulerSlotInfo>() as u32,
+                    &mut ret_len,
+                )
+            } else {
+                NtSetInformationProcess(
+                    GetCurrentProcess(),
+                    112,
+                    (&mut info as *mut SchedulerSlotInfo).cast(),
+                    size_of::<SchedulerSlotInfo>() as u32,
+                )
+            };
+            if action == 0 && status == 0 {
+                assigned_slot = info.slot;
+            }
+            slot_operations.push(json!({"api":if query_api {"query"} else {"set"},"action":action,
+                "status":hex(status as u32),"output_handle":info.handle as usize,"output_slot":format!("0x{:016x}",info.slot as usize)}));
+        }
+    }
+    operations["process_scheduler_shared_data_class_112"] = json!({"class":112,"structure_bytes":size_of::<SchedulerSlotInfo>(),"trials":slot_operations});
     // 12. Related scheduling process information queries
     let mut sched_classes = json!({});
     for &(class_id, class_name) in &[
@@ -470,11 +546,7 @@ pub unsafe fn probe_scheduler_shared_data_handle(h: HANDLE, granted: u32) -> Val
         "handle": h as usize,
         "granted_access": hex(granted),
         "operations": operations,
-        "reaches_file": false,
-        "reaches_network": false,
-        "reaches_peer_process": false,
-        "reaches_durable_state": false,
-        "summary": "SchedulerSharedData access 0x1 is a private in-process scheduler slot handle with no file, network, IPC or persistent capability",
+        "summary": "Finite operations measured under the worker primary; sharing and cached-context semantics are not inferred from object type.",
     })
 }
 
@@ -494,7 +566,7 @@ pub unsafe fn probe_scheduler_shared_data_in_process() -> Value {
         None => {
             return json!({
                 "present": false,
-                "reason": "SchedulerSharedData handle absent (Windows Server 2022)",
+                "reason": "SchedulerSharedData absent in this process snapshot",
             });
         }
     };

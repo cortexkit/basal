@@ -503,67 +503,16 @@ pub fn inspect(process: HANDLE, main_thread: HANDLE, pid: u32, inventory: &Value
         let pre = symbolize_thread_list(&inventory["threads"]["pre_pool_activity"]["threads"]);
         let post = symbolize_thread_list(&inventory["threads"]["post_pool_activity"]["threads"]);
         let parent_observed = unsafe {
-            let snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-            if snap != INVALID_HANDLE_VALUE {
-                let snap = Handle(snap);
-                let mut te: THREADENTRY32 = zeroed();
-                te.dwSize = size_of::<THREADENTRY32>() as u32;
-                let mut observed = Vec::new();
-                if Thread32First(snap.0, &mut te) != 0 {
-                    loop {
-                        if te.th32OwnerProcessID == pid {
-                            let th = OpenThread(THREAD_QUERY_INFORMATION, 0, te.th32ThreadID);
-                            if !th.is_null() {
-                                let th = Handle(th);
-                                let mut t_self = null_mut();
-                                let ok_self =
-                                    OpenThreadToken(th.0, TOKEN_QUERY, 1, &mut t_self) != 0;
-                                let err_self = if ok_self { 0 } else { GetLastError() };
-                                let self_val = if ok_self {
-                                    let t = Handle(t_self);
-                                    crate::threads::query_token_attributes(t.0)
-                                } else {
-                                    json!({"error": err_self})
-                                };
-                                let mut t_client = null_mut();
-                                let ok_client =
-                                    OpenThreadToken(th.0, TOKEN_QUERY, 0, &mut t_client) != 0;
-                                let err_client = if ok_client { 0 } else { GetLastError() };
-                                let client_val = if ok_client {
-                                    let t = Handle(t_client);
-                                    crate::threads::query_token_attributes(t.0)
-                                } else {
-                                    json!({"error": err_client})
-                                };
-                                observed.push(json!({
-                                    "tid": te.th32ThreadID,
-                                    "parent_open_as_self": {"has_token": ok_self, "token": self_val},
-                                    "parent_open_as_client": {"has_token": ok_client, "token": client_val},
-                                }));
-                            } else {
-                                observed.push(json!({
-                                    "tid": te.th32ThreadID,
-                                    "open_thread_error": GetLastError(),
-                                }));
-                            }
-                        }
-                        if Thread32Next(snap.0, &mut te) == 0 {
-                            break;
-                        }
-                    }
-                }
-                json!(observed)
-            } else {
-                json!({"error": GetLastError()})
-            }
+            crate::threads::inspect_all_threads(pid).unwrap_or_else(|error| json!({"error":error}))
         };
 
         json!({
             "pre_pool_threads_symbolized": pre,
             "post_pool_threads_symbolized": post,
+            "post_release_threads_symbolized": symbolize_thread_list(&inventory["threads"]["post_release"]["threads"]),
             "parent_observed_threads": parent_observed,
-            "pre_pool_all_no_token": inventory["threads"]["pre_activity_all_no_token"],
-            "post_pool_all_no_token": inventory["threads"]["post_activity_all_no_token"],
+            "pre_pool_all_no_token": inventory["threads"]["pre_pool_activity"]["all_threads_have_no_impersonation_token"],
+            "post_pool_all_no_token": inventory["threads"]["post_pool_activity"]["all_threads_have_no_impersonation_token"],
             "conclusion": inventory["threads"]["conclusion"],
         })
     } else {
@@ -643,7 +592,9 @@ pub fn inspect(process: HANDLE, main_thread: HANDLE, pid: u32, inventory: &Value
                 "object": format!("0x{:016x}", obj_addr),
                 "foreign_handles": foreign,
                 "ldr_analysis": ldr_analysis,
-                "is_shared_across_processes": !foreign.is_empty(),
+                "object_resolved": obj_addr != 0,
+                "system_handle_count": entries.len(),
+                "is_shared_across_processes": if obj_addr == 0 {Value::Null} else {json!(!foreign.is_empty())},
             })
         } else {
             json!({"present": false, "reason": "absent on Windows Server 2022"})
@@ -746,5 +697,15 @@ pub fn loader_threads(process: HANDLE, requested: Option<u32>) -> Value {
             )
         })();
         result.unwrap_or_else(|error| json!({"error":error}))
+    }
+}
+
+/// Resolve the fault instruction and candidate raw stack addresses while the process is stopped.
+pub fn symbolize_fault(process: HANDLE, rip: u64, stack: &[u64]) -> Value {
+    match Symbols::new(process) {
+        Ok(symbols) => {
+            json!({"instruction":symbols.address(rip as usize),"raw_stack_candidates":stack.iter().map(|address| symbols.address(*address as usize)).collect::<Vec<_>>()})
+        }
+        Err(error) => json!({"error":error}),
     }
 }

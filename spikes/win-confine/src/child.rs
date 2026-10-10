@@ -289,12 +289,20 @@ pub fn run() -> Result<()> {
             .unwrap_or_else(|e| json!({"error":e}));
         let policies = mitigations();
         eprintln!("probe-stage: attestation complete");
-        let thread_attestation =
+        let thread_attestation = if std::env::args().any(|a| a == "--measure-gaps") {
             crate::threads::measure_thread_impersonation(GetCurrentProcessId())
-                .unwrap_or_else(|e| json!({"error": e}));
-        let sched_probe = crate::scheduler::probe_scheduler_shared_data_in_process();
+                .unwrap_or_else(|e| json!({"error": e}))
+        } else {
+            Value::Null
+        };
+        let sched_probe = if std::env::args().any(|a| a == "--measure-gaps") {
+            crate::scheduler::probe_scheduler_shared_data_in_process()
+        } else {
+            Value::Null
+        };
+        let after_measurement_handles = handle_table()?;
         if let Some(ambient) = &ambient {
-            let preliminary = json!({"mode":"preliminary","ambient_close":ambient,"handle_table":input_handles,"loaded_modules":modules,"mitigations":policies,"self_lowering":self_lowering,"primary_token":attestation,"threads":thread_attestation,"scheduler_shared_data":sched_probe});
+            let preliminary = json!({"mode":"preliminary","ambient_close":ambient,"handle_table":input_handles,"loaded_modules":modules,"mitigations":policies,"self_lowering":self_lowering,"primary_token":attestation,"threads":thread_attestation,"scheduler_shared_data":sched_probe,"after_measurement_handles":after_measurement_handles});
             if serde_json::to_writer(std::io::stdout().lock(), &preliminary).is_ok() {
                 println!();
                 let _ = std::io::stdout().flush();
@@ -495,7 +503,7 @@ pub fn run() -> Result<()> {
                 error,
             ));
         }
-        let report = json!({"mode":input.mode,"self_lowering":self_lowering,"token_handles_absent":no_token_handles,"after_revert":{"present":still_impersonating,"open_error":no_token_error},"primary_token_open":{"success":token_opened,"error":token_open_error,"pseudo_handle_fallback":!token_opened},"primary_token":attestation,"mitigations":policies,"ambient_close":ambient,"handle_table":input_handles,"loaded_modules":modules,"threads":thread_attestation,"scheduler_shared_data":sched_probe,"probes":probes});
+        let report = json!({"mode":input.mode,"self_lowering":self_lowering,"token_handles_absent":no_token_handles,"after_revert":{"present":still_impersonating,"open_error":no_token_error},"primary_token_open":{"success":token_opened,"error":token_open_error,"pseudo_handle_fallback":!token_opened},"primary_token":attestation,"mitigations":policies,"ambient_close":ambient,"handle_table":input_handles,"loaded_modules":modules,"threads":thread_attestation,"scheduler_shared_data":sched_probe,"after_measurement_handles":after_measurement_handles,"probes":probes});
         serde_json::to_writer(std::io::stdout().lock(), &report).map_err(|e| e.to_string())?;
         std::io::stdout().flush().map_err(|e| e.to_string())?;
         Ok(())

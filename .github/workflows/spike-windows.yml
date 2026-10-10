@@ -41,7 +41,7 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           cargo test --locked
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          python -m unittest -v test_evidence test_reference test_procmon
+          python -m unittest -v test_evidence test_reference test_procmon test_gaps
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           cargo build --release --locked
           exit $LASTEXITCODE
@@ -97,6 +97,14 @@ jobs:
           $ifeo = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\win-confine-gui.exe'
           "GUI IFEO exists after campaign: $(Test-Path $ifeo)" | Out-File evidence/loader-threads-cleanup.txt
           exit $measurementExit
+      - name: Retain and validate complete gap measurements
+        if: always()
+        run: |
+          if (Test-Path evidence/report.json) {
+            python retain_gaps.py evidence/report.json evidence/gaps $env:GITHUB_RUN_ID $env:GITHUB_SHA '${{ matrix.os }}'
+            exit $LASTEXITCODE
+          }
+          throw 'No report: thread/scheduler coverage is unknown'
       - name: Print residual and comparison
         if: always()
         run: |
@@ -113,5 +121,11 @@ jobs:
         if: always()
         with:
           name: win-confine-${{ matrix.os }}
-          path: spikes/win-confine/evidence/
+          path: |
+            spikes/win-confine/evidence/gaps/
+            spikes/win-confine/evidence/handles/*-manifest.json
+            spikes/win-confine/evidence/imports*.json
+            spikes/win-confine/evidence/parent-stderr.txt
+            spikes/win-confine/evidence/host.txt
+            spikes/win-confine/evidence/context-layout.txt
           if-no-files-found: error

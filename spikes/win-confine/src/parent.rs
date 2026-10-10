@@ -798,7 +798,9 @@ fn launch_variant(
             && sequence != "chrome-loader-privileges-control"
             && !chrome_token;
         let bare = sequence == "bare-token-control";
-        let debug = sequence == "loader-trace" || sequence == "full-gui-connect-trace";
+        let debug = sequence == "loader-trace"
+            || sequence == "full-gui-connect-trace"
+            || sequence == "full-gui-close-scheduler";
         let mut tokens = if full {
             Some(restricted_tokens(
                 parent_token,
@@ -904,7 +906,7 @@ fn launch_variant(
             _ => None,
         };
         let mut command = wide(&format!(
-            "\"{image}\" --child{}{}{}{}",
+            "\"{image}\" --child{}{}{}{}{}",
             if start_low { " --lower-integrity" } else { "" },
             if leak_only { " --probe-leak" } else { "" },
             if same_primary {
@@ -912,7 +914,12 @@ fn launch_variant(
             } else {
                 ""
             },
-            if close_ambient { close_argument } else { "" }
+            if close_ambient { close_argument } else { "" },
+            if inspect_ambient {
+                " --measure-gaps"
+            } else {
+                ""
+            }
         ));
         let mut flags = if bare {
             CREATE_SUSPENDED | CREATE_NO_WINDOW
@@ -1098,11 +1105,42 @@ fn launch_variant(
         // The child flushes its inventory and blocks on stdin. Inspect that
         // live process before supplying any probe input; no ALPC message is sent.
         let parent_handles = if inspect_ambient {
-            match inventory_receiver.recv_timeout(std::time::Duration::from_secs(60)) {
-                Ok(inventory) => {
-                    crate::handles::inspect(process.0, main_thread.0, pi.dwProcessId, &inventory)
+            loop {
+                match inventory_receiver.recv_timeout(std::time::Duration::from_secs(60)) {
+                    Ok(inventory) if inventory["mode"] == "thread_checkpoint" => {
+                        let mut observation = crate::threads::inspect_all_threads(pi.dwProcessId)
+                            .unwrap_or_else(|error| json!({"error":error}));
+                        if observation["any_token_found"] == true {
+                            observation["removal_trial"] = crate::threads::remove_observed_tokens(
+                                pi.dwProcessId,
+                                &observation,
+                            );
+                        }
+                        let mut reply =
+                            serde_json::to_vec(&observation).map_err(|e| e.to_string())?;
+                        reply.push(b'\n');
+                        let mut written = 0;
+                        check(
+                            WriteFile(
+                                parent_in.0,
+                                reply.as_ptr(),
+                                reply.len() as u32,
+                                &mut written,
+                                null_mut(),
+                            ),
+                            "WriteFile(thread observation)",
+                        )?;
+                    }
+                    Ok(inventory) => {
+                        break crate::handles::inspect(
+                            process.0,
+                            main_thread.0,
+                            pi.dwProcessId,
+                            &inventory,
+                        );
+                    }
+                    Err(error) => break json!({"error":error.to_string()}),
                 }
-                Err(error) => json!({"error":error.to_string()}),
             }
         } else {
             Value::Null
@@ -1161,10 +1199,11 @@ fn read_pipe(h: HANDLE) -> Result<Vec<u8>> {
 }
 fn read_pipe_inventory(
     h: HANDLE,
-    mut sender: Option<std::sync::mpsc::Sender<Value>>,
+    sender: Option<std::sync::mpsc::Sender<Value>>,
 ) -> Result<Vec<u8>> {
     unsafe {
         let mut output = Vec::new();
+        let mut reported_until = 0;
         let mut chunk = [0u8; 8192];
         loop {
             let mut bytes = 0;
@@ -1186,12 +1225,17 @@ fn read_pipe_inventory(
                 break;
             }
             output.extend_from_slice(&chunk[..bytes as usize]);
-            if let Some(end) = output.iter().position(|byte| *byte == b'\n') {
-                if let Some(sender) = sender.take() {
-                    if let Ok(inventory) = serde_json::from_slice(&output[..end]) {
+            while let Some(relative_end) = output[reported_until..]
+                .iter()
+                .position(|byte| *byte == b'\n')
+            {
+                let end = reported_until + relative_end;
+                if let Some(sender) = &sender {
+                    if let Ok(inventory) = serde_json::from_slice(&output[reported_until..end]) {
                         let _ = sender.send(inventory);
                     }
                 }
+                reported_until = end + 1;
             }
         }
         Ok(output)

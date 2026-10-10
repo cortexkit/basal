@@ -1,0 +1,119 @@
+"""Compact evidence and fail-closed checks for thread tokens and scheduler handles."""
+import json
+import pathlib
+import sys
+from typing import Any
+
+
+def violations(measurement: dict[str, Any]) -> list[str]:
+    issues = []
+    if measurement.get("exit_code") != "0x00000000":
+        issues.append("complete-close worker did not exit successfully")
+    threads = measurement.get("threads") or {}
+    for phase in ("pre_pool_activity", "post_pool_activity", "post_release"):
+        snapshot = threads.get(phase, {})
+        rows = snapshot.get("threads", [])
+        tids = {t.get("tid") for t in rows}
+        if (not snapshot.get("enumeration_complete") or not rows
+                or len(rows) != len(tids)
+                or len(rows) != snapshot.get("process_reported_thread_count")
+                or tids != set(snapshot.get("discovered_toolhelp_tids") or [])):
+            issues.append(f"{phase}: incomplete enumeration")
+        for row in rows:
+            for mode in ("nt_open_as_self", "nt_open_as_client"):
+                if row.get(mode, {}).get("status") != "0xc000007c":
+                    issues.append(f"{phase}: TID {row.get('tid')} {mode} not STATUS_NO_TOKEN")
+            if not isinstance(row.get("win32_start_address"), str):
+                issues.append(f"{phase}: TID {row.get('tid')} start address unknown")
+    activity = threads.get("forced_pool_activity", {})
+    callbacks = activity.get("callback_inspections", [])
+    tids = {t.get("tid") for t in threads.get("post_pool_activity", {}).get("threads", [])}
+    if activity.get("ready_status") != 0 or {c.get("kind") for c in callbacks} != {"work", "wait", "timer"}:
+        issues.append("work/wait/timer callbacks did not all run")
+    if not callbacks or any(c.get("tid") not in tids for c in callbacks):
+        issues.append("callback TID missing from enumeration")
+    for callback in callbacks:
+        if any(callback.get(mode, {}).get("status") != "0xc000007c" for mode in ("nt_open_as_self", "nt_open_as_client")):
+            issues.append("callback token status unknown or token present")
+    scheduler = measurement.get("scheduler_shared_data") or {}
+    if scheduler.get("error") or "present" not in scheduler:
+        issues.append("scheduler inventory unknown")
+    if scheduler.get("present"):
+        correlation = measurement.get("scheduler_correlation") or {}
+        if not correlation.get("object_resolved"):
+            issues.append("scheduler object address unknown")
+        for name, operation in scheduler.get("probe", {}).get("operations", {}).get("duplicate_object", {}).items():
+            if operation.get("status") == "0x00000000" and "granted_access" not in operation:
+                issues.append(f"{name}: successful duplicate grant not queried")
+    return issues
+
+
+def render(measurement: dict[str, Any]) -> str:
+    lines = [f"# Windows gap measurements: run {measurement['run_id']} / {measurement['image']}", "",
+             f"Source `{measurement['source_sha']}`; recipe `{measurement['sequence']}`; PID {measurement['pid']}; exit `{measurement['exit_code']}`.", "",
+             "## Gap 1: all live threads", "",
+             "The broker enumerates with SystemProcessInformation and Toolhelp at worker-requested barriers. The confined worker's enumeration errors are retained separately. Callbacks remain alive during the second snapshot; these are not permanently suspended threads."]
+    threads = measurement.get("threads") or {}
+    symbols = measurement.get("thread_symbols") or {}
+    for phase, symbol_key in (("pre_pool_activity", "pre_pool_threads_symbolized"), ("post_pool_activity", "post_pool_threads_symbolized"), ("post_release", "post_release_threads_symbolized")):
+        snapshot = threads.get(phase, {})
+        lines += ["", f"### {phase}", f"Complete: {snapshot.get('enumeration_complete')}; SPI NumberOfThreads: {snapshot.get('process_reported_thread_count')}; Toolhelp TIDs: {snapshot.get('discovered_toolhelp_tids')}", "",
+                  "| TID | Start address | PDB symbol | NtOpenThreadTokenEx self=true | self=false | Token details |", "|---:|---|---|---|---|---|"]
+        by_tid = {t['tid']: t for t in symbols.get(symbol_key, [])}
+        for t in snapshot.get("threads", []):
+            s = by_tid.get(t['tid'], {}).get('win32_symbol') or {}
+            symbol = f"{s.get('module', '')}!{s.get('symbol', '?')}+{s.get('displacement', '?')} (type {s.get('symbol_type')})"
+            token = t.get('nt_open_as_self', {}).get('token') or t.get('nt_open_as_client', {}).get('token')
+            lines.append(f"| {t['tid']} | `{t.get('win32_start_address')}` | `{symbol}` | `{t.get('nt_open_as_self', {}).get('status')}` | `{t.get('nt_open_as_client', {}).get('status')}` | {json.dumps(token) if token else 'absent only if STATUS_NO_TOKEN'} |")
+    activity = threads.get('forced_pool_activity', {})
+    lines += ["", f"Callback barrier status: `{activity.get('ready_status')}`; callback TIDs included: `{threads.get('callback_tids_in_enumerated_set')}`.", "",
+              "| Callback | TID | self=true | self=false |", "|---|---:|---|---|"]
+    for c in activity.get('callback_inspections', []):
+        lines.append(f"| {c['kind']} | {c['tid']} | `{c['nt_open_as_self'].get('status')}` | `{c['nt_open_as_client'].get('status')}` |")
+    lines += ["", "## Gap 2: SchedulerSharedData", "",
+              f"Correlation snapshot: `{json.dumps(measurement.get('scheduler_correlation'), separators=(',', ':'))}`", "",
+              "| Operation | Exact measured result (NTSTATUS unless explicitly Win32) |", "|---|---|"]
+    scheduler = measurement.get('scheduler_shared_data') or {}
+    if not scheduler.get('present'):
+        lines.append(f"| inventory | `{json.dumps(scheduler)}` |")
+    for name, result in scheduler.get('probe', {}).get('operations', {}).items():
+        lines.append(f"| {name} | `{json.dumps(result, separators=(',', ':'))}` |")
+    lines += ["", "Loader syscall observations: `" + json.dumps(measurement.get('loader_scheduler_calls'), separators=(',', ':')) + "`", "",
+              "Scheduler-close trial: `" + json.dumps(measurement.get('scheduler_close'), separators=(',', ':')) + "`", "",
+              "Coverage violations: " + json.dumps(violations(measurement)), "",
+              "This validates coverage and token absence, not universal scheduler non-reachability. A successful duplicate is success; its grant and follow-up security operations must be assessed, not labelled denied."]
+    return "\n".join(lines) + "\n"
+
+
+def retain(source, destination, run_id, source_sha, image):
+    report = json.loads(pathlib.Path(source).read_text(encoding='utf-8-sig'))
+    variants = {d['result'].get('sequence'): d['result'] for r in report['runs'] for d in r.get('diagnostics', [])}
+    v = variants.get('full-gui-close-removable', {})
+    child = v.get('child', {})
+    parent = v.get('parent_handle_inspection', {})
+    trace = variants.get('full-gui-connect-trace', {}).get('debug', {}).get('trace') or {}
+    close = variants.get('full-gui-close-scheduler', {})
+    faults = [e for e in (close.get('debug', {}).get('trace') or {}).get('events', []) if e.get('event', {}).get('fault_context')]
+    compact = dict(run_id=str(run_id), source_sha=source_sha, image=image,
+                   sequence='full-gui-close-removable', pid=v.get('pid'), exit_code=v.get('exit_code'),
+                   completed_probe_count=len(child.get('probes', [])), successes=[p for p in child.get('probes', []) if p.get('success')],
+                   primary_token=child.get('primary_token'), self_lowering=child.get('self_lowering'),
+                   threads=child.get('threads'), thread_symbols=parent.get('threads'),
+                   scheduler_shared_data=child.get('scheduler_shared_data'), scheduler_correlation=parent.get('scheduler_shared_data'),
+                   post_close_handles=child.get('handle_table'), after_measurement_handles=child.get('after_measurement_handles'),
+                   loader_scheduler_calls=[e for e in trace.get('connections', []) if e.get('api') == 'NtSetInformationProcess'],
+                   scheduler_close=dict(pid=close.get('pid'), exit_code=close.get('exit_code'), stderr=close.get('stderr'), faults=faults),
+                   console_attempts=[dict(sequence=a.get('sequence'), exit_code=a.get('exit_code'), error=a.get('error'), stderr=a.get('stderr')) for r in report['runs'] if r['mode'] == 'full' for a in r.get('attempts', [])],
+                   profile_cleanup=report.get('profile_cleanup'))
+    destination = pathlib.Path(destination)
+    destination.mkdir(parents=True, exist_ok=True)
+    base = destination / f'{run_id}-{image}'
+    base.with_suffix('.json').write_text(json.dumps(compact, indent=2) + '\n', encoding='utf-8')
+    base.with_suffix('.md').write_text(render(compact), encoding='utf-8')
+    problems = violations(compact)
+    print(f'Windows gap coverage: {3} snapshots, work/wait/timer, scheduler duplicate grants; {len(problems)} violations: {problems}')
+    return bool(problems)
+
+
+if __name__ == '__main__':
+    sys.exit(retain(*sys.argv[1:]))
