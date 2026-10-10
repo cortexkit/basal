@@ -19,37 +19,27 @@ use basal_proto::{
 };
 use std::fs::File;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
-/// The worker binary cargo built for these tests.
-fn built_worker() -> &'static Path {
-    Path::new(env!("CARGO_BIN_EXE_ck-basal-worker"))
+mod windows_common;
+
+/// The worker cargo built for these tests, under a development name.
+fn worker() -> &'static Path {
+    windows_common::dev_binary(env!("CARGO_BIN_EXE_ck-basal-worker"))
 }
 
-/// The worker, copied into a directory of its own so that the package grant
-/// changes no ACL but that directory's. A build with the `deviations` feature
-/// gets its own directory, so the two test runs never replace each other's
-/// image.
+/// The worker, with its directory readable and executable by the worker's
+/// package, so that the confined process can load its own image.
 fn placed_worker() -> &'static Path {
-    static PLACED: OnceLock<PathBuf> = OnceLock::new();
-    PLACED.get_or_init(|| {
-        let directory = built_worker()
-            .parent()
-            .expect("the worker has a directory")
-            .join(if cfg!(feature = "deviations") {
-                "basal-worker-placed-deviations"
-            } else {
-                "basal-worker-placed"
-            });
-        std::fs::create_dir_all(&directory).expect("create the placement directory");
-        let placed = directory.join("ck-basal-worker.exe");
-        std::fs::copy(built_worker(), &placed).expect("place the worker");
+    static GRANTED: OnceLock<()> = OnceLock::new();
+    GRANTED.get_or_init(|| {
         let package = create_or_open_profile().expect("worker profile");
-        grant_test_binary_directory(&placed, &package).expect("grant the package read and execute");
-        placed
-    })
+        grant_test_binary_directory(worker(), &package)
+            .expect("grant the package read and execute");
+    });
+    worker()
 }
 
 fn start(deviation: Deviation) -> ConfinedProcess {
@@ -267,7 +257,7 @@ fn an_inherited_handle_beyond_the_pipes_is_refused_as_handle_not_allowed() {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation};
 
-    let fixture = built_worker()
+    let fixture = worker()
         .parent()
         .expect("the worker has a directory")
         .join(format!("basal-worker-planted-{}", std::process::id()));
@@ -346,7 +336,7 @@ fn a_skipped_lowering_is_refused_as_integrity_not_untrusted() {
 /// itself, as it does without its Landlock argument on Linux.
 #[test]
 fn a_missing_package_sid_exits_70_package_sid_argument_missing() {
-    let output = Command::new(built_worker())
+    let output = Command::new(worker())
         .stdin(Stdio::null())
         .output()
         .expect("run the worker");
@@ -371,7 +361,7 @@ fn a_missing_package_sid_exits_70_package_sid_argument_missing() {
 /// A package SID the system's SID parser rejects is a usage error.
 #[test]
 fn an_unparsable_package_sid_exits_64() {
-    let output = Command::new(built_worker())
+    let output = Command::new(worker())
         .arg("--package-sid=S-1-15-2-not-a-sid")
         .stdin(Stdio::null())
         .output()

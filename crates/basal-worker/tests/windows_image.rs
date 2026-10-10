@@ -13,6 +13,8 @@
 
 use std::path::Path;
 
+mod windows_common;
+
 /// `IMAGE_SUBSYSTEM_WINDOWS_GUI`.
 const GUI_SUBSYSTEM: u16 = 2;
 
@@ -147,7 +149,7 @@ fn is_c_runtime(name: &str) -> bool {
 
 #[test]
 fn the_worker_is_a_gui_image_without_gui_com_or_c_runtime_imports() {
-    let path = Path::new(env!("CARGO_BIN_EXE_ck-basal-worker"));
+    let path = windows_common::dev_binary(env!("CARGO_BIN_EXE_ck-basal-worker"));
     let image = parse(&std::fs::read(path).expect("read the worker image"));
     println!("subsystem: {}", image.subsystem);
     println!("imports: {:?}", image.imports);
