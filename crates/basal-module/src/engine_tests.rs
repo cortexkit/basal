@@ -276,6 +276,7 @@ fn a_decision_answer_wakes_the_sleeping_engine() {
             rt.decision_raised(card.seq, card.revision, "answer-id")
                 .unwrap();
             rt.answer_decision(&basal_host::DecisionAnswer {
+                grant_context: None,
                 elicitation_id: "answer-id".into(),
                 choice: Some(basal_core::decisions::KEEP.into()),
                 dedup_key: Some(card.dedup_key),

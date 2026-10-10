@@ -169,7 +169,7 @@ fn matches_shape(value: &Value, shape: &Value, nullable: bool) {
                 matches_shape(
                     object.get(key).expect("required field"),
                     ty,
-                    key == "disabled" || key == "last_run",
+                    key == "disabled" || key == "last_run" || key == "agent_retirement",
                 );
             }
         }

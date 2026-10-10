@@ -986,6 +986,15 @@ fn reenable_context() -> DecisionContext {
     }
 }
 
+fn grant_lost_context() -> DecisionContext {
+    DecisionContext::GrantLost {
+        provider: "github".into(),
+        grant: "opaque:owner/cortexkit/basal:create_issue".into(),
+        grant_label: "github: create_issue on cortexkit/basal (owner grant for BASAL)".into(),
+        refused_at_ms: 1_780_409_100_000,
+    }
+}
+
 fn options(list: &[(&str, &str, bool)]) -> Vec<DecisionOption> {
     list.iter()
         .map(|(id, label, decline)| DecisionOption {
@@ -1000,6 +1009,13 @@ fn options(list: &[(&str, &str, bool)]) -> Vec<DecisionOption> {
 /// and core's test title, prompt, option ids and labels, and expiry.
 fn vector_card(context: DecisionContext) -> DecisionCard {
     let (list, prompt): (&[(&str, &str, bool)], &str) = match context.kind() {
+        DecisionKind::GrantLost => (
+            &[
+                ("check_now", "Check now", false),
+                ("keep_disabled", "Keep disabled", true),
+            ],
+            "flow-x was disabled after github refused its grant at 2026-06-02 14:05 UTC. Check now re-checks the existing grant; keep disabled stops polling. No answer keeps background polling without applying a choice.",
+        ),
         DecisionKind::Reconcile => (
             &[
                 ("send_again", "Send again", false),
@@ -1036,9 +1052,11 @@ const VECTORS: &str = concat!(
     "/tests/vectors/flow-decision-card-v2"
 );
 
-/// Core's request vectors, copied from prefrontal tag
-/// `flow-decision-card-v2` (tag object 42071afba356, commit 1ea2a6225) and
-/// checked against the SHA-256 core's owner published; basal's builder
+/// The request files in prefrontal's test-vectors/flow-decision-card-v2:
+/// reconcile and re-enable from that repository's flow-decision-card-v2 tag,
+/// and grant-loss from its GrantLost extension. The grant hashes are published
+/// in prefrontal-core-module/tests/fixtures/consent_surface/SHA256SUMS.
+/// Each copy is checked against a pinned SHA-256; basal's builder
 /// produces each byte for byte from the vector's inputs. The vectors fix
 /// the shape; basal's own cards carry their own title, prompt, option ids,
 /// labels and expiry, plus `dedup_key` and `args_digest`, which core's
@@ -1056,6 +1074,11 @@ fn the_request_builder_reproduces_core_vectors_byte_for_byte() {
             "reenable-request.json",
             "b98a31398e173a86b90e85d4a97b9c7bab10490c71cfb87f2f7285fa9a2fa0b7",
             vector_card(reenable_context()),
+        ),
+        (
+            "grant_lost-request.json",
+            "5d06530c266b5fa2a9d6a067e8dc3cd42ffb356dd14054ba9a28413b3da9a8fc",
+            vector_card(grant_lost_context()),
         ),
     ] {
         let bytes = std::fs::read(format!("{VECTORS}/{file}")).unwrap();
@@ -1240,4 +1263,71 @@ fn decision_requests_follow_core_rules_and_the_fake_core_refuses_any_other() {
         ),
         Err(WireError::Refused { code, .. }) if code == "elicitation_invalid_execution"
     ));
+}
+
+#[test]
+fn grant_lost_phone_vector_and_production_prompt_are_pinned() {
+    use sha2::{Digest, Sha256};
+    let bytes = std::fs::read(format!("{VECTORS}/grant_lost-phone.json")).unwrap();
+    assert_eq!(
+        hex(&Sha256::digest(&bytes)),
+        "891c6ffb7200b6eab607204ddeb017bc8c35647e474841ad17f70f2aefb46364"
+    );
+    let phone: Value = serde_json::from_slice(&bytes).unwrap();
+    let request = decision_request(&vector_card(grant_lost_context())).unwrap();
+    assert_eq!(phone["flowDecision"], request["flow_decision"]);
+    assert!(request["flow_decision"].get("version").is_none());
+    assert_eq!(
+        basal_core::decisions::prompt("flow-x", &grant_lost_context()),
+        phone["prompt"].as_str().unwrap()
+    );
+    assert_eq!(phone["facts"][4]["value"], "2026-06-02 14:05 UTC");
+}
+
+#[test]
+fn repeated_grant_loss_raises_one_card_and_enable_retracts_it_after_restart() {
+    use basal_host::flow_refusal::{FlowRefusal, RefusalReason};
+    let mut rig = Rig::new("grant-card-restart", None);
+    rig.install(
+        "return await Promise.all([ops.call('mock','post',{n:1}),ops.call('mock','post',{n:2})]);",
+    );
+    // Both calls are committed before either refusal can disable the flow.
+    // The rendezvous makes the repeat independent of thread scheduling.
+    *rig.fake.post_barrier.lock().unwrap() = Some(Arc::new(std::sync::Barrier::new(2)));
+    let mut refusal = FlowRefusal::new(RefusalReason::ModuleGrantAbsent, "mock", "post");
+    refusal.detail = Some(json!({"grant":"opaque-grant","grant_label":"mock: post"}));
+    rig.fake.enqueue(
+        "post",
+        vec![
+            Err(WireError::Typed(refusal.clone())),
+            Err(WireError::Typed(refusal)),
+        ],
+    );
+    rig.admit("grant-loss").unwrap();
+    rig.pass();
+    let cards = rig.m().rt.decision_cards().unwrap();
+    assert_eq!(cards.len(), 1);
+    assert_eq!(cards[0].kind, DecisionKind::GrantLost);
+    assert_eq!(cards[0].revision, 2);
+    assert_eq!(rig.fake.decision_cards(&cards[0].dedup_key).len(), 1);
+    let requests = rig.fake.decision_cards(&cards[0].dedup_key)[0].1.clone();
+    assert_eq!(
+        requests.last().unwrap()["flow_decision"]["grant"],
+        "opaque-grant"
+    );
+    assert!(
+        requests.last().unwrap()["flow_decision"]
+            .get("version")
+            .is_none()
+    );
+    assert!(rig.fake.calls("grants.offer").is_empty());
+    *rig.fake.post_barrier.lock().unwrap() = None;
+    rig.m().rt.enable_flow(FLOW).unwrap();
+    assert_eq!(rig.m().rt.decision_withdrawals().unwrap().len(), 1);
+    rig.crash();
+    rig.start(Arc::new(NoHooks));
+    rig.pass();
+    assert!(rig.m().rt.decision_withdrawals().unwrap().is_empty());
+    assert_eq!(rig.fake.calls("elicitation.withdraw").len(), 1);
+    assert!(rig.fake.decisions.lock().unwrap().open.is_empty());
 }

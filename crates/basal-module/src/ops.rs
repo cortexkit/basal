@@ -130,6 +130,14 @@ impl Module {
             return OpError::new("store_failure", text);
         }
         match e {
+            InstallError::AgentRetired {
+                flow_id,
+                retirement,
+            } => OpError::new(
+                "agent_retired",
+                format!("flow {flow_id} involves a retired agent"),
+            )
+            .with_detail(serde_json::from_str(&retirement).ok()),
             InstallError::SelfRequiresPackage => OpError::new(
                 "self_requires_package",
                 "$self is available only in package manifests",
@@ -657,7 +665,7 @@ impl Module {
                     f.disabled_by, f.disabled_reason, f.disabled_at,
                     (SELECT MAX(version) FROM install_cards WHERE flow_id=f.flow_id AND state='pending'),
                     r.run_id, r.state, COALESCE(r.ended_at,r.admitted_at),
-                    EXISTS(SELECT 1 FROM runs WHERE flow_id=f.flow_id AND state='needs_reconcile')
+                    EXISTS(SELECT 1 FROM runs WHERE flow_id=f.flow_id AND state='needs_reconcile'), f.agent_retirement
                  FROM flows f LEFT JOIN runs r ON r.run_id=(
                     SELECT run_id FROM runs WHERE flow_id=f.flow_id
                     AND state IN ('succeeded','failed','engine_mismatch','cancelled')
@@ -667,7 +675,7 @@ impl Module {
                     AND EXISTS(SELECT 1 FROM installs WHERE flow_id=f.flow_id AND author=?2)
                     AND NOT EXISTS(SELECT 1 FROM installs WHERE flow_id=f.flow_id AND author<>?2)))
                  ORDER BY f.flow_id")?;
-            let rows = stmt.query_map(rusqlite::params![ids, owner], |r| {
+            let mut rows = stmt.query_map(rusqlite::params![ids, owner], |r| {
                 let approved: Option<u32> = r.get(1)?;
                 let disabled_by: Option<String> = r.get(3)?;
                 let run_id: Option<String> = r.get(7)?;
@@ -685,8 +693,19 @@ impl Module {
                         None => Value::Null,
                     },
                     "needs_reconcile": r.get::<_, bool>(10)?,
+                    "agent_retirement": r.get::<_, Option<String>>(11)?,
                 }))
             })?.collect::<rusqlite::Result<Vec<_>>>()?;
+            for row in &mut rows {
+                let flow_id = row["flow_id"].as_str().expect("flow id from store");
+                let losses = basal_core::grant_loss::losses(c, Some(flow_id))?
+                    .into_iter().filter(|g| matches!(g.state.as_str(), "polling" | "stopped")).collect::<Vec<_>>();
+                row["grant_losses"] = json!(losses);
+                if let Some(body) = row["agent_retirement"].as_str() {
+                    row["agent_retirement"] = serde_json::from_str(body)
+                        .map_err(|e| CoreError::Corrupt(e.to_string()))?;
+                }
+            }
             Ok(rows)
         }).map_err(|e| self.core_error(e))?;
         Ok(json!({"as_of": as_of, "flows": entries}))
@@ -779,6 +798,8 @@ impl Module {
                 "oldest_overdue_age_ms": f.oldest_overdue_ms.unwrap_or(0),
                 "consecutive_failures": f.consecutive_failures,
                 "waiting_reason": f.waiting_reason,
+                "grant_losses": f.grant_losses,
+                "agent_retirement": f.agent_retirement,
                 "needs_reconcile": !f.needs_reconcile.is_empty(),
                 // The event plane does not exist yet, so no backlog can
                 // overflow.

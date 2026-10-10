@@ -19,7 +19,8 @@ impl Runtime {
             let deadline: Option<i64> = c.query_row(NEXT_DEADLINE, [], |r| r.get(0))?;
             let retry: Option<i64> = c.query_row(NEXT_DEFERRED, [], |r| r.get(0))?;
             let codemode = crate::codemode::retention::next_sweep_at(c)?;
-            Ok([schedule, deadline, retry, codemode]
+            let grant: Option<i64> = c.query_row("SELECT MIN(next_poll_at) FROM flow_grant_losses WHERE state='polling' AND echoable=1", [], |r| r.get(0))?;
+            Ok([schedule, deadline, retry, codemode, grant]
                 .into_iter()
                 .flatten()
                 .min())

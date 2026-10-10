@@ -219,6 +219,7 @@ impl Engine {
             inner.fatal.raise(why.clone());
             why
         };
+        inner.rt.poll_lost_grants().map_err(fatal)?;
         let tick = inner.scheduler.tick().map_err(fatal)?;
         let admitted: Vec<String> = tick.new_runs().into_iter().map(str::to_owned).collect();
         let expired = inner.rt.enforce_deadlines().map_err(fatal)?;
@@ -257,6 +258,14 @@ impl Engine {
     /// returned, a consent error is logged and retried next pass.
     fn raise_decisions(&self) -> Result<(), CoreError> {
         let inner = &self.inner;
+        for id in inner.rt.decision_withdrawals()? {
+            match inner.consent.withdraw_decision(&id) {
+                Ok(()) => inner.rt.decision_withdrawn(&id)?,
+                Err(e) => {
+                    tracing::warn!(target:"consent", elicitation_id=%id, "withdrawing a decision card: {e}")
+                }
+            }
+        }
         for record in inner.rt.decisions_due()? {
             let card = record.to_card()?;
             match inner.consent.raise_decision(&card) {

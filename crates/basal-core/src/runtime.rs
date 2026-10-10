@@ -786,9 +786,38 @@ impl Runtime {
                 Err(TransportError::Refused(refusal)) => {
                     use basal_host::flow_refusal::RefusalReason;
                     if let Some(reason) = maybe_sent {
-                        self.shared
-                            .store
-                            .write(|tx| journal::record_unknown(tx, &run_id, position, reason))?;
+                        self.shared.store.write(|tx| {
+                            journal::record_unknown(tx, &run_id, position, reason)?;
+                            // Refusing a resend proves nothing about the earlier
+                            // send. Keep its outcome unknown while applying the
+                            // grant-loss or retirement disable now.
+                            if refusal.grant_absent() {
+                                crate::grant_loss::record(
+                                    tx,
+                                    &request.flow_id,
+                                    &run_id,
+                                    &refusal,
+                                    self.config.clock.now_ms(),
+                                )?;
+                            } else if refusal.reason == RefusalReason::AgentRetired {
+                                crate::grant_loss::record_retirement(
+                                    tx,
+                                    &request,
+                                    &refusal,
+                                    self.config.clock.now_ms(),
+                                    self.shared.catalog.as_ref(),
+                                )?;
+                                crate::install::disable(
+                                    tx,
+                                    &request.flow_id,
+                                    &crate::install::Actor::Core,
+                                    "agent_retired",
+                                    self.config.clock.now_ms(),
+                                )
+                                .map_err(|e| CoreError::Invalid(e.to_string()))?;
+                            }
+                            Ok(())
+                        })?;
                     } else if refusal.reason == RefusalReason::FlowScopeRequired {
                         tracing::error!(provider=%refusal.provider,action=%refusal.action,code="flow_scope_required","provider refused a flow call without its required scope");
                         self.accept(&run_id, position, None, &refusal.outcome(), Source::Host)?;
@@ -815,11 +844,24 @@ impl Runtime {
                             Ok(())
                         })?;
                         self.shared.host.refusal_committed(&request, &refusal);
+                    } else if refusal.grant_absent() {
+                        let now = self.config.clock.now_ms();
+                        self.shared.store.write(|tx| {
+                            journal::defer(tx, &run_id, position, &refusal, i64::MAX)?;
+                            crate::grant_loss::record(tx, &request.flow_id, &run_id, &refusal, now)
+                        })?;
                     } else if refusal.reason == RefusalReason::AgentRetired {
                         // A retired agent cannot authorize more calls. Fail the run
                         // and disable its flow together so recovery cannot retry it.
                         self.shared.store.write(|tx| {
                             let flow_id = &request.flow_id;
+                            crate::grant_loss::record_retirement(
+                                tx,
+                                &request,
+                                &refusal,
+                                self.config.clock.now_ms(),
+                                self.shared.catalog.as_ref(),
+                            )?;
                             crate::install::disable(
                                 tx,
                                 flow_id,
@@ -1112,3 +1154,7 @@ impl Runtime {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "grant_loss_tests.rs"]
+mod grant_loss_tests;

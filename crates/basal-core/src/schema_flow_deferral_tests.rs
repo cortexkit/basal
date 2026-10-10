@@ -78,3 +78,81 @@ fn deferred_state_requires_closed_typed_refusal_and_retry_metadata() {
     }
     conn.execute_batch("UPDATE journal SET dispatch='sent',refusal=NULL,retry_not_before=NULL,refusal_detail=NULL WHERE position=0").unwrap();
 }
+
+#[test]
+fn grant_loss_migration_preserves_journal_children_and_backfills_retirement() {
+    let conn = old_store();
+    for migration in MIGRATIONS.iter().filter(|m| (9..16).contains(&m.version)) {
+        conn.execute_batch(migration.statements).unwrap();
+    }
+    conn.execute_batch("UPDATE journal SET dispatch='deferred',refusal='consent_unavailable',retry_not_before=9223372036854775807,refusal_detail='{\"reason\":\"consent_unavailable\",\"provider\":\"plexus\",\"action\":\"github\"}' WHERE position=0; UPDATE flows SET state='disabled',owner='old-agent',disabled_by='core',disabled_reason='agent_retired',disabled_at=20").unwrap();
+    let count = conn
+        .prepare("SELECT * FROM journal")
+        .unwrap()
+        .column_count();
+    let journal = rows(&conn, "journal", count);
+    let mailbox = rows(&conn, "mailbox", 9);
+    let broca = rows(&conn, "broca_calls", 4);
+    let indexes = || {
+        conn.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name IN ('journal','mailbox','broca_calls') AND name NOT LIKE 'sqlite_autoindex_%' ORDER BY name")
+            .unwrap().query_map([], |r| r.get::<_,String>(0)).unwrap()
+            .collect::<Result<Vec<_>,_>>().unwrap()
+    };
+    let before_indexes = indexes();
+    conn.execute_batch(GRANT_LOSSES).unwrap();
+    assert_eq!(indexes(), before_indexes);
+    assert_eq!(rows(&conn, "journal", count), journal);
+    assert_eq!(rows(&conn, "mailbox", 9), mailbox);
+    assert_eq!(rows(&conn, "broca_calls", 4), broca);
+    assert_eq!(
+        conn.query_row(
+            "SELECT json_extract(agent_retirement,'$.agent_id') FROM flows WHERE flow_id='f'",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "old-agent"
+    );
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, u64>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+    for code in ["module_grant_absent", "agent_grant_absent"] {
+        conn.execute(
+            "UPDATE journal SET refusal=?1,refusal_detail=?2 WHERE position=0",
+            rusqlite::params![
+                code,
+                serde_json::json!({"reason":code,"provider":"plexus","action":"github"})
+                    .to_string()
+            ],
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn grant_decision_migration_preserves_existing_cards_and_named_indexes() {
+    let conn = old_store();
+    for migration in MIGRATIONS.iter().filter(|m| (9..17).contains(&m.version)) {
+        conn.execute_batch(migration.statements).unwrap();
+    }
+    conn.execute_batch("INSERT INTO decision_cards(seq,dedup_key,kind,flow_id,version,run_id,position,call_key,instance,card,state,created_at) VALUES (7,'reconcile-key','reconcile','f',1,'r',0,'call',1,'{}','open',0); INSERT INTO decision_cards(seq,dedup_key,kind,flow_id,version,instance,card,state,created_at,answered_at) VALUES (9,'reenable-key','reenable','f',1,1,'{}','expired',0,10)").unwrap();
+    let before = rows(&conn, "decision_cards", 17);
+    let indexes = || {
+        conn.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='decision_cards' AND name NOT LIKE 'sqlite_autoindex_%' ORDER BY name").unwrap().query_map([],|r|r.get::<_,String>(0)).unwrap().collect::<Result<Vec<_>,_>>().unwrap()
+    };
+    let before_indexes = indexes();
+    conn.execute_batch(GRANT_DECISIONS).unwrap();
+    assert_eq!(rows(&conn, "decision_cards", 17), before);
+    assert_eq!(indexes(), before_indexes);
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM decision_withdrawals", [], |r| r
+            .get::<_, u64>(0))
+            .unwrap(),
+        0
+    );
+}

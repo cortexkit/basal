@@ -287,6 +287,14 @@ ALTER TABLE installs ADD COLUMN revoked_reason TEXT;
         version: 15,
         statements: CODEMODE,
     },
+    Migration {
+        version: 16,
+        statements: GRANT_LOSSES,
+    },
+    Migration {
+        version: 17,
+        statements: GRANT_DECISIONS,
+    },
 ];
 
 // One row for each `fs.write` temporary file that may exist on disk. The row
@@ -424,6 +432,113 @@ BEGIN SELECT RAISE(ABORT, 'codemode tombstones are permanent'); END;
 
 CREATE TRIGGER codemode_tombstones_no_delete BEFORE DELETE ON codemode_tombstones
 BEGIN SELECT RAISE(ABORT, 'codemode tombstones are permanent'); END;
+"#;
+
+// SQLite CHECK constraints must be rebuilt to add a decision kind. Preserve
+// every old card and its sequence, including already settled decisions.
+const GRANT_DECISIONS: &str = r#"
+CREATE TABLE decision_cards_new (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT, dedup_key TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('reconcile','reenable','grant_lost')),
+    flow_id TEXT NOT NULL, version INTEGER NOT NULL CHECK (version>=0),
+    run_id TEXT, position INTEGER CHECK (position>=0), call_key TEXT,
+    instance INTEGER NOT NULL CHECK (instance>=0), card TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 1 CHECK (revision>=1), raised_revision INTEGER,
+    elicitation_id TEXT, state TEXT NOT NULL CHECK (state IN ('open','applied','declined','expired','stale')),
+    choice TEXT, created_at INTEGER NOT NULL, answered_at INTEGER,
+    UNIQUE (dedup_key,instance),
+    CHECK (kind<>'reconcile' OR (run_id IS NOT NULL AND position IS NOT NULL AND call_key IS NOT NULL)),
+    CHECK (kind<>'reenable' OR run_id IS NULL),
+    CHECK (kind<>'grant_lost' OR run_id IS NOT NULL),
+    CHECK (kind='reconcile' OR (position IS NULL AND call_key IS NULL)),
+    CHECK ((state='open')=(answered_at IS NULL))
+);
+INSERT INTO decision_cards_new SELECT * FROM decision_cards;
+DROP TABLE decision_cards;
+ALTER TABLE decision_cards_new RENAME TO decision_cards;
+CREATE UNIQUE INDEX decision_cards_one_open ON decision_cards(dedup_key) WHERE state='open';
+CREATE INDEX decision_cards_elicitation ON decision_cards(elicitation_id);
+CREATE INDEX decision_cards_kind_flow_instance ON decision_cards(kind,flow_id,instance DESC);
+CREATE INDEX decision_cards_open ON decision_cards(seq) WHERE state='open';
+CREATE INDEX decision_cards_subject ON decision_cards(kind,flow_id,run_id,call_key,seq DESC);
+CREATE INDEX decision_cards_retention ON decision_cards(answered_at) WHERE state<>'open';
+CREATE TABLE decision_withdrawals (elicitation_id TEXT PRIMARY KEY);
+"#;
+
+// Store one loss per (flow, provider, grant), shared by permission polling and
+// its decision card. Revisions prevent a permission check begun before a repeat
+// loss from clearing the newer loss. Hash oversized references rather than
+// truncating them into a different, apparently valid reference.
+const GRANT_LOSSES: &str = r#"
+CREATE TABLE migration_16_mailbox AS SELECT * FROM mailbox;
+CREATE TABLE migration_16_broca AS SELECT * FROM broca_calls;
+DROP TABLE mailbox;
+DROP TABLE broca_calls;
+CREATE TABLE journal_new (
+    run_id TEXT NOT NULL REFERENCES runs(run_id), position INTEGER NOT NULL CHECK (position>=0),
+    kind_code INTEGER NOT NULL, module TEXT, op TEXT, args TEXT NOT NULL,
+    args_digest BLOB NOT NULL CHECK (length(args_digest)=32), idempotency_key TEXT NOT NULL UNIQUE,
+    class TEXT NOT NULL CHECK (class IN ('sync','local','query','mutation','keyed_mutation')),
+    dispatch TEXT NOT NULL CHECK (dispatch IN ('none','sent','accepted','unknown','not_applied','deferred')),
+    attempts INTEGER NOT NULL DEFAULT 0, handle TEXT,
+    settlement TEXT CHECK (settlement IN ('fulfilled','rejected')), value TEXT, payload_hash BLOB,
+    delivery_order INTEGER CHECK (delivery_order>=0), clock_ms REAL, issued_generation INTEGER NOT NULL, request TEXT,
+    unknown_reason TEXT CHECK (unknown_reason IN ('basal_restarted','connection_lost','reply_timeout','reply_unreadable','retries_exhausted','provider_lost_run'))
+        CHECK (dispatch<>'unknown' OR unknown_reason IS NOT NULL),
+    refusal TEXT CHECK (refusal IN ('scope_not_carrier','scope_ended','scope_not_live','scope_epoch_required','scope_not_synced','scope_changed','scope_unsupported','resource_busy','consent_unavailable','module_grant_absent','agent_grant_absent')),
+    retry_not_before INTEGER, refusal_detail TEXT,
+    PRIMARY KEY (run_id,position),
+    CHECK ((kind_code=0)=(module IS NOT NULL AND op IS NOT NULL)),
+    CHECK ((settlement IS NULL)=(value IS NULL)), CHECK ((settlement IS NULL)=(payload_hash IS NULL)),
+    CHECK ((settlement IS NULL)=(delivery_order IS NULL)),
+    CHECK ((dispatch='deferred')=(refusal IS NOT NULL)), CHECK ((dispatch='deferred')=(retry_not_before IS NOT NULL)),
+    CHECK (retry_not_before IS NULL OR typeof(retry_not_before)='integer'),
+    CHECK ((dispatch='deferred')=(refusal_detail IS NOT NULL)),
+    CHECK (dispatch<>'deferred' OR (settlement IS NULL AND json_valid(refusal_detail)
+        AND json_type(refusal_detail)='object' AND json_extract(refusal_detail,'$.reason') IS refusal
+        AND json_type(refusal_detail,'$.provider') IS 'text' AND json_type(refusal_detail,'$.action') IS 'text'))
+);
+INSERT INTO journal_new SELECT * FROM journal;
+DROP TABLE journal;
+ALTER TABLE journal_new RENAME TO journal;
+CREATE UNIQUE INDEX journal_delivery_order ON journal(run_id,delivery_order) WHERE delivery_order IS NOT NULL;
+CREATE INDEX journal_deferred ON journal(run_id,position) WHERE dispatch='deferred';
+CREATE INDEX journal_deferred_retry ON journal(retry_not_before,run_id) WHERE dispatch='deferred' AND retry_not_before IS NOT NULL;
+CREATE TABLE mailbox (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, position INTEGER NOT NULL, handle TEXT,
+    settlement TEXT NOT NULL CHECK (settlement IN ('fulfilled','rejected')), value TEXT NOT NULL, payload_hash BLOB NOT NULL,
+    source TEXT NOT NULL CHECK (source IN ('host','completion','local','reconcile')), arrived_generation INTEGER NOT NULL,
+    UNIQUE (run_id,position), FOREIGN KEY (run_id,position) REFERENCES journal(run_id,position)
+);
+INSERT INTO mailbox SELECT * FROM migration_16_mailbox;
+DROP TABLE migration_16_mailbox;
+CREATE TABLE broca_calls (
+    send_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, position INTEGER NOT NULL CHECK (position>=0), snapshot TEXT NOT NULL,
+    UNIQUE (run_id,position), FOREIGN KEY (run_id,position) REFERENCES journal(run_id,position) ON DELETE CASCADE
+);
+INSERT INTO broca_calls SELECT * FROM migration_16_broca;
+DROP TABLE migration_16_broca;
+CREATE INDEX broca_calls_pending ON broca_calls (send_id) WHERE json_extract(snapshot, '$.acknowledged') = 0 AND COALESCE(json_extract(snapshot, '$.deferred'), 0) = 0;
+CREATE TABLE flow_grant_losses (
+    flow_id TEXT NOT NULL REFERENCES flows(flow_id),
+    provider TEXT NOT NULL,
+    grant_key TEXT NOT NULL,
+    grant_label TEXT NOT NULL,
+    echoable INTEGER NOT NULL CHECK (echoable IN (0,1)),
+    run_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 1,
+    state TEXT NOT NULL CHECK (state IN ('polling','stopped','restored','cleared')),
+    failures INTEGER NOT NULL DEFAULT 0,
+    next_poll_at INTEGER NOT NULL,
+    lost_at INTEGER NOT NULL,
+    PRIMARY KEY (flow_id,provider,grant_key)
+);
+CREATE INDEX flow_grant_losses_due ON flow_grant_losses(next_poll_at) WHERE state='polling' AND echoable=1;
+ALTER TABLE flows ADD COLUMN agent_retirement TEXT CHECK (agent_retirement IS NULL OR json_valid(agent_retirement));
+UPDATE flows SET agent_retirement=json_object('agent_id',CASE WHEN owner NOT IN ('operator','local:unverified') THEN owner END,
+    'agent_reference',NULL,'provider','prefrontal-core','action','unknown','at_ms',COALESCE(disabled_at,0))
+    WHERE disabled_reason='agent_retired';
 "#;
 
 // The idle engine sleeps until its earliest timer. Finding that timer takes the

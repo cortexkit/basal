@@ -53,6 +53,19 @@ impl WireError {
 
 /// Returns decoded provider payloads, not the management response envelope.
 pub trait Transport: Send + Sync {
+    /// Unlike the compatibility flow-call defaults, this read may never fall
+    /// back to an unscoped management call.
+    fn grant_would_ask(
+        &self,
+        _flow: &str,
+        _agent: Option<&str>,
+        _module: &str,
+        _grant: &str,
+    ) -> Result<bool, WireError> {
+        Err(WireError::NeverSent(
+            "scoped grant diagnostics unavailable".into(),
+        ))
+    }
     fn provider_ready(
         &self,
         _flow: &str,
@@ -535,6 +548,30 @@ impl SubcTransport {
     }
 }
 impl Transport for SubcTransport {
+    fn grant_would_ask(
+        &self,
+        flow: &str,
+        agent: Option<&str>,
+        module: &str,
+        grant: &str,
+    ) -> Result<bool, WireError> {
+        let mut params = json!({"flow_id":flow,"items":[{"grant":grant}]});
+        if let Some(agent) = agent {
+            params["agent_id"] = json!(agent);
+        }
+        let reply = self.call_for_flow(
+            flow,
+            RouteTarget::ManagementSurface {
+                module_id: module.into(),
+            },
+            serde_json::to_vec(&management_body("grants.would_ask", params))
+                .map_err(|e| WireError::NeverSent(e.to_string()))?,
+            true,
+            module,
+            "grants.would_ask",
+        )?;
+        grant_verdict(&reply, grant)
+    }
     fn provider_ready(
         &self,
         flow: &str,
@@ -666,6 +703,22 @@ pub fn contextual(error: WireError, module: &str, action: &str) -> WireError {
             }
         }
         other => other,
+    }
+}
+
+fn grant_verdict(reply: &Value, grant: &str) -> Result<bool, WireError> {
+    let bad = || WireError::Unreadable("invalid grant diagnostic reply".into());
+    let items = reply["items"].as_array().ok_or_else(bad)?;
+    if items.len() != 1
+        || items[0]["grant"].as_str() != Some(grant)
+        || items[0]["reason"].as_str().is_none()
+    {
+        return Err(bad());
+    }
+    match items[0]["verdict"].as_str() {
+        Some("yes") => Ok(true),
+        Some("no" | "would_ask") => Ok(false),
+        _ => Err(bad()),
     }
 }
 
@@ -975,6 +1028,8 @@ mod tests {
                     let mut records = records.lock().unwrap();
                     records.push(body);
                     json!({"op":"route.open","route_channel":10+records.len(),"route_epoch":1})
+                } else if body["method"] == "grants.would_ask" {
+                    json!({"result":{"items":[{"grant":body["params"]["items"][0]["grant"],"verdict":"yes","reason":"allowed"}]}})
                 } else if body["method"] == "refuse" {
                     json!({"error":{"code":"scope_ended","message":"ended"}})
                 } else if body["method"] == "session.send" {
@@ -1031,6 +1086,66 @@ mod tests {
         drop(transport);
         drop(runtime);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn grant_polling_never_uses_an_unscoped_route() {
+        with_scoped_transport(|transport, opens, calls, _| {
+            assert!(
+                transport
+                    .grant_would_ask("flow-a", Some("owner"), "mock", "g1.ref")
+                    .is_err()
+            );
+            assert!(opens.lock().unwrap().is_empty());
+            let mut scope = registered();
+            scope.targets.insert("mock".into());
+            transport.configure_flow("flow-a", true, Some(scope));
+            assert!(
+                transport
+                    .grant_would_ask("flow-a", Some("owner"), "mock", "g1.ref")
+                    .unwrap()
+            );
+            let opens = opens.lock().unwrap();
+            assert_eq!(opens.len(), 1);
+            assert!(opens[0].get("scope").is_some());
+            let calls = calls.lock().unwrap();
+            let poll = calls
+                .iter()
+                .find(|(_, body)| body["method"] == "grants.would_ask")
+                .unwrap();
+            assert_eq!(poll.0, 11);
+            assert_eq!(
+                poll.1["params"],
+                json!({"agent_id":"owner","flow_id":"flow-a","items":[{"grant":"g1.ref"}]})
+            );
+        });
+    }
+
+    #[test]
+    fn grant_reply_must_name_the_requested_reference_and_known_verdict() {
+        assert!(
+            grant_verdict(
+                &json!({"items":[{"grant":"g","verdict":"yes","reason":"allowed"}]}),
+                "g"
+            )
+            .unwrap()
+        );
+        for verdict in ["no", "would_ask"] {
+            assert!(
+                !grant_verdict(
+                    &json!({"items":[{"grant":"g","verdict":verdict,"reason":"blocked"}]}),
+                    "g"
+                )
+                .unwrap()
+            );
+        }
+        for reply in [
+            json!({"items":[]}),
+            json!({"items":[{"grant":"foreign","verdict":"yes","reason":"allowed"}]}),
+            json!({"items":[{"grant":"g","verdict":"unknown","reason":"allowed"}]}),
+        ] {
+            assert!(grant_verdict(&reply, "g").is_err());
+        }
     }
 
     #[test]

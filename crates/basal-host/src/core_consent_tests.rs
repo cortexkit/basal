@@ -133,3 +133,40 @@ fn open_cards_back_off_to_five_seconds_and_a_raise_resets_fast_polling() {
     }).unwrap();
     assert_ne!(consent.state.wake.lock().unwrap().0, seen);
 }
+
+#[test]
+fn grant_lost_request_has_closed_body_and_choice_ids() {
+    let mut card = crate::DecisionCard {
+        dedup_key: None,
+        flow_id: "flow".into(),
+        version: 9,
+        context: crate::DecisionContext::GrantLost {
+            provider: "plexus".into(),
+            grant: "opaque".into(),
+            grant_label: "restore grant".into(),
+            refused_at_ms: 0,
+        },
+        title: "Decide".into(),
+        prompt: "Check the existing grant".into(),
+        args_digest: None,
+        expires_in_ms: 60_000,
+        options: vec![
+            crate::DecisionOption {
+                id: "check_now".into(),
+                label: "Check now".into(),
+                decline: false,
+            },
+            crate::DecisionOption {
+                id: "keep_disabled".into(),
+                label: "Keep disabled".into(),
+                decline: true,
+            },
+        ],
+    };
+    assert_eq!(
+        crate::core_consent::decision_request(&card).unwrap()["flow_decision"],
+        serde_json::json!({"decision":"grant_lost","flow_id":"flow","provider":"plexus","grant":"opaque","grant_label":"restore grant","refused_at_ms":0})
+    );
+    card.options[0].id = "offer".into();
+    assert!(crate::core_consent::decision_request(&card).is_err());
+}
