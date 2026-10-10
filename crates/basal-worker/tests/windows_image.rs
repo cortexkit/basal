@@ -9,6 +9,11 @@
 //! so the worker never depends on a separately installed runtime DLL. The
 //! console subsystem would start a console host the confined token cannot
 //! initialise.
+//!
+//! The image also reserves at least 8 MiB for the main thread's stack (set
+//! by `build.rs`). The worker runs JavaScript on that thread with a QuickJS
+//! stack budget of up to 4 MiB; with the linker's default 1 MiB a deep
+//! recursion kills the worker instead of ending in a typed budget failure.
 #![cfg(windows)]
 
 use std::path::Path;
@@ -17,6 +22,9 @@ mod windows_common;
 
 /// `IMAGE_SUBSYSTEM_WINDOWS_GUI`.
 const GUI_SUBSYSTEM: u16 = 2;
+
+/// The smallest main-thread stack reserve the worker image may declare.
+const MIN_STACK_RESERVE: u64 = 8 * 1024 * 1024;
 
 /// DLLs whose import would load GUI or COM code into the worker.
 const FORBIDDEN: [&str; 5] = [
@@ -30,6 +38,7 @@ const FORBIDDEN: [&str; 5] = [
 /// What the import test reads from a PE image.
 struct Image {
     subsystem: u16,
+    stack_reserve: u64,
     imports: Vec<String>,
     delay_imports: Vec<String>,
 }
@@ -46,8 +55,8 @@ fn u64_at(bytes: &[u8], offset: usize) -> u64 {
     u64::from_le_bytes(bytes[offset..offset + 8].try_into().expect("eight bytes"))
 }
 
-/// Reads the subsystem and the import and delay-import DLL names of a
-/// 64-bit PE image.
+/// Reads the subsystem, the main-thread stack reserve and the import and
+/// delay-import DLL names of a 64-bit PE image.
 fn parse(bytes: &[u8]) -> Image {
     assert_eq!(&bytes[..2], b"MZ", "not a PE image");
     let pe = u32_at(bytes, 0x3c) as usize;
@@ -58,6 +67,9 @@ fn parse(bytes: &[u8]) -> Image {
     let optional = coff + 20;
     assert_eq!(u16_at(bytes, optional), 0x20b, "not a PE32+ image");
     let subsystem = u16_at(bytes, optional + 68);
+    // PE32+ optional header: Subsystem (2 bytes) at 68, DllCharacteristics
+    // (2 bytes) at 70, then SizeOfStackReserve (8 bytes) at 72.
+    let stack_reserve = u64_at(bytes, optional + 72);
     let image_base = u64_at(bytes, optional + 24);
     let directories = u32_at(bytes, optional + 108) as usize;
     let directory = |index: usize| -> (u32, u32) {
@@ -135,6 +147,7 @@ fn parse(bytes: &[u8]) -> Image {
     }
     Image {
         subsystem,
+        stack_reserve,
         imports,
         delay_imports,
     }
@@ -155,9 +168,15 @@ fn the_worker_is_a_gui_image_without_gui_com_or_c_runtime_imports() {
     };
     let image = parse(&std::fs::read(path).expect("read the worker image"));
     println!("subsystem: {}", image.subsystem);
+    println!("stack reserve: {}", image.stack_reserve);
     println!("imports: {:?}", image.imports);
     println!("delay imports: {:?}", image.delay_imports);
     assert_eq!(image.subsystem, GUI_SUBSYSTEM);
+    assert!(
+        image.stack_reserve >= MIN_STACK_RESERVE,
+        "main-thread stack reserve {} is below {MIN_STACK_RESERVE}",
+        image.stack_reserve
+    );
 
     let all: Vec<String> = image
         .imports
