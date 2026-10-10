@@ -149,7 +149,7 @@ fn flow_health_decodes_as_core_decodes_it() {
             json!({
                 "os": std::env::consts::OS,
                 "landlock": if cfg!(target_os = "linux") { json!("required") } else { Value::Null },
-                "sigsys_deaths": 0,
+                basal_module::pool::CONFINEMENT_FAULT_DEATHS: 0,
             })
         );
         let reply = decode(&raw);

@@ -5,8 +5,10 @@
 
 mod common;
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, mpsc};
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex, OnceLock};
+#[cfg(unix)]
+use std::sync::{atomic::AtomicBool, mpsc};
 use std::time::{Duration, Instant};
 
 use basal_core::{Boundary, Hooks, RunState, Step};
@@ -22,6 +24,7 @@ use serde_json::{Value, json};
 
 const SCRIPT: &str = "const r = await ops.call('mock', 'echo', { n: 1 }); return r.n;";
 const WAIT: Duration = Duration::from_secs(60);
+#[cfg(unix)]
 const STALLED_WAIT: Duration = Duration::from_secs(3);
 
 fn pool_config(o: &Options) -> PoolConfig {
@@ -241,6 +244,9 @@ fn a_caught_memory_failure_completes_and_reuses_the_worker() {
     assert_eq!(f.module.metrics.workers_killed.load(Ordering::Relaxed), 0);
 }
 
+// Signals and `waitid` are POSIX; the Windows fault accounting is tested in
+// the pool's unit tests.
+#[cfg(unix)]
 fn signal_crash_is_reported(signal: i32, expected_deaths: u64) {
     use basal_core::channel::WorkerChannel;
 
@@ -306,11 +312,13 @@ fn signal_crash_is_reported(signal: i32, expected_deaths: u64) {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn sigsys_deaths_are_counted_in_flow_health() {
     signal_crash_is_reported(libc::SIGSYS, 1);
 }
 
+#[cfg(unix)]
 #[test]
 fn sigkill_deaths_are_not_confinement_violations() {
     signal_crash_is_reported(libc::SIGKILL, 0);
@@ -516,12 +524,19 @@ fn the_run_deadline_starts_after_the_worker_answers_its_handshake() {
 
 struct RecordedSpawner {
     inner: Arc<dyn Spawn>,
-    pids: Mutex<Vec<libc::pid_t>>,
+    pids: Mutex<Vec<u32>>,
 }
 
 impl RecordedSpawner {
+    /// On Windows there is no zombie to reap: the pool's owned process
+    /// wrapper kills its worker's job and waits for it when dropped.
+    #[cfg(windows)]
+    fn reap_workers(&self) {}
+
+    #[cfg(unix)]
     fn reap_workers(&self) {
         for pid in self.pids.lock().unwrap().iter().copied() {
+            let pid = libc::pid_t::try_from(pid).expect("worker pid");
             let deadline = Instant::now() + WAIT;
             loop {
                 let mut status = 0;
@@ -551,14 +566,13 @@ impl RecordedSpawner {
 impl Spawn for RecordedSpawner {
     fn spawn(&self) -> Result<WorkerProcess, SpawnError> {
         let process = self.inner.spawn()?;
-        self.pids
-            .lock()
-            .unwrap()
-            .push(process.pid().try_into().expect("worker pid"));
+        self.pids.lock().unwrap().push(process.pid());
         Ok(process)
     }
 }
 
+// Reaping is checked with `waitpid`, a POSIX notion.
+#[cfg(unix)]
 #[test]
 fn a_wait_deadline_stops_and_reaps_its_workers() {
     let spawner = Arc::new(RecordedSpawner {
@@ -610,6 +624,7 @@ fn a_wait_deadline_stops_and_reaps_its_workers() {
         f.module.pool.stop();
     }
     for pid in pids {
+        let pid = libc::pid_t::try_from(pid).expect("worker pid");
         let mut status = 0;
         // SAFETY: this nonblocking wait probes a child started by this test.
         let waited = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };

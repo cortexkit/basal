@@ -5,6 +5,11 @@
 //! Rust's descriptors are close-on-exec; the worker also closes every inherited
 //! descriptor above stdio and confines itself before reading its first frame.
 //!
+//! On Windows the worker is started by `basal-launch` under the confinement
+//! the parent has to fix at creation (restricted token, AppContainer, job,
+//! mitigations), and the process is the launcher's owned wrapper rather than
+//! a `std::process::Child`; see `crate::windows`.
+//!
 //! **Disclaimed launch.** On macOS, a child normally shares its parent's
 //! "responsible process", the identity privacy (TCC) grants such as Files &
 //! Folders are checked against. So a worker launched plainly could use any
@@ -21,7 +26,9 @@ use std::io::{Read, Write};
 use std::path::Path;
 #[cfg(target_os = "macos")]
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
+use std::process::ExitStatus;
+#[cfg(unix)]
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -34,6 +41,14 @@ use basal_proto::{
 };
 #[cfg(target_os = "macos")]
 use subc_os::privacy_identity::DisclaimedCommand;
+
+/// The owned worker process: a `std::process::Child` on Unix, the
+/// launcher's wrapper (process, job and pipes) on Windows.
+#[cfg(windows)]
+type Child = basal_launch::ConfinedProcess;
+/// The parent's end of the worker's stdin.
+#[cfg(windows)]
+type ChildStdin = std::fs::File;
 
 /// Linux workers require Landlock unless the caller explicitly permits a
 /// seccomp-only worker on kernels where Landlock is unavailable.
@@ -185,68 +200,21 @@ impl WorkerProcess {
         landlock: LandlockPolicy,
         codemode: bool,
     ) -> Result<Self, SpawnError> {
-        #[cfg(target_os = "macos")]
-        let (mut command, confirmation) = match launch {
-            WorkerLaunch::Disclaimed { trampoline } => {
-                let mut builder = DisclaimedCommand::new(trampoline, binary);
-                builder
-                    .env_clear()
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped());
-                let (command, confirmation) = builder
-                    .into_command()
-                    .map_err(|e| SpawnError::Disclaim(e.to_string()))?;
-                (command, Some(confirmation))
-            }
-            WorkerLaunch::Plain => {
-                let mut command = Command::new(binary);
-                command
-                    .env_clear()
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped());
-                (command, None)
-            }
-        };
-        #[cfg(not(target_os = "macos"))]
-        let mut command = match launch {
-            WorkerLaunch::Plain => {
-                let mut command = Command::new(binary);
-                command
-                    .env_clear()
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped());
-                command
-            }
-        };
-        #[cfg(target_os = "linux")]
-        command.arg(format!("--landlock={}", landlock.as_str()));
-        #[cfg(not(target_os = "linux"))]
-        let _ = landlock;
-        codemode_address_space(&mut command, codemode);
         let deadline = Instant::now() + timeout;
-        let mut child = command
-            .spawn()
-            .map_err(|e| SpawnError::Exec(format!("{}: {e}", binary.display())))?;
-        // The command holds this process's copy of the trampoline's confirmation
-        // pipe. The confirmation reads that pipe to end-of-file, which never comes
-        // while a copy stays open here, so drop it before confirming.
-        drop(command);
-        #[cfg(target_os = "macos")]
-        if let Some(confirmation) = confirmation
-            && let Err(error) = confirmation.confirm(deadline)
-        {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(SpawnError::Disclaim(error.to_string()));
-        }
+        #[cfg(unix)]
+        let mut child = spawn_unix(binary, launch, landlock, codemode, deadline)?;
+        #[cfg(windows)]
+        let mut child = {
+            // Disclaimed launch is macOS-only; the Linux Landlock argument
+            // has no Windows counterpart.
+            let WorkerLaunch::Plain = launch;
+            let _ = landlock;
+            crate::windows::start(binary, codemode)?
+        };
         let stdin = child.stdin.take();
         let (Some(mut stdout), Some(mut stderr)) = (child.stdout.take(), child.stderr.take())
         else {
-            let _ = child.kill();
-            let _ = child.wait();
+            kill_and_reap(&mut child);
             return Err(SpawnError::Exec(
                 "the worker's pipes were not created".into(),
             ));
@@ -397,19 +365,111 @@ impl WorkerProcess {
     /// confinement violation from other deaths. An observation error also
     /// retires the worker: its liveness can no longer be established.
     pub fn exit_status(&mut self) -> Option<std::io::Result<ExitStatus>> {
-        self.child
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .try_wait()
-            .transpose()
+        try_wait(&mut self.child.lock().unwrap_or_else(|p| p.into_inner())).transpose()
     }
 
     pub fn kill(&mut self) {
         self.stdin = None;
         let mut child = self.child.lock().unwrap_or_else(|p| p.into_inner());
+        kill_and_reap(&mut child);
+    }
+}
+
+/// The exit status, if the process has ended. Never blocks.
+#[cfg(unix)]
+fn try_wait(child: &mut Child) -> std::io::Result<Option<ExitStatus>> {
+    child.try_wait()
+}
+
+#[cfg(windows)]
+fn try_wait(child: &mut Child) -> std::io::Result<Option<ExitStatus>> {
+    crate::windows::try_wait(child)
+}
+
+/// Kills the process and waits for it to end. Errors are ignored: a process
+/// that has already ended cannot be killed again, and is reaped either way.
+#[cfg(unix)]
+fn kill_and_reap(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[cfg(windows)]
+fn kill_and_reap(child: &mut Child) {
+    crate::windows::kill_and_reap(child);
+}
+
+/// Starts the worker with `Command`: through the disclaiming trampoline on
+/// macOS when asked, directly otherwise. A failed disclaim confirmation
+/// kills the child rather than falling back to a plain launch.
+#[cfg(unix)]
+fn spawn_unix(
+    binary: &Path,
+    launch: &WorkerLaunch,
+    landlock: LandlockPolicy,
+    codemode: bool,
+    deadline: Instant,
+) -> Result<Child, SpawnError> {
+    #[cfg(target_os = "macos")]
+    let (mut command, confirmation) = match launch {
+        WorkerLaunch::Disclaimed { trampoline } => {
+            let mut builder = DisclaimedCommand::new(trampoline, binary);
+            builder
+                .env_clear()
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let (command, confirmation) = builder
+                .into_command()
+                .map_err(|e| SpawnError::Disclaim(e.to_string()))?;
+            (command, Some(confirmation))
+        }
+        WorkerLaunch::Plain => {
+            let mut command = Command::new(binary);
+            command
+                .env_clear()
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            (command, None)
+        }
+    };
+    #[cfg(not(target_os = "macos"))]
+    let mut command = match launch {
+        WorkerLaunch::Plain => {
+            let mut command = Command::new(binary);
+            command
+                .env_clear()
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            command
+        }
+    };
+    #[cfg(target_os = "linux")]
+    command.arg(format!("--landlock={}", landlock.as_str()));
+    #[cfg(not(target_os = "linux"))]
+    let _ = landlock;
+    codemode_address_space(&mut command, codemode);
+    let child = command
+        .spawn()
+        .map_err(|e| SpawnError::Exec(format!("{}: {e}", binary.display())))?;
+    // The command holds this process's copy of the trampoline's confirmation
+    // pipe. The confirmation reads that pipe to end-of-file, which never comes
+    // while a copy stays open here, so drop it before confirming.
+    drop(command);
+    #[cfg(target_os = "macos")]
+    if let Some(confirmation) = confirmation
+        && let Err(error) = confirmation.confirm(deadline)
+    {
+        let mut child = child;
         let _ = child.kill();
         let _ = child.wait();
+        return Err(SpawnError::Disclaim(error.to_string()));
     }
+    #[cfg(not(target_os = "macos"))]
+    let _ = deadline;
+    Ok(child)
 }
 
 struct SharedIncoming(Arc<Mutex<Receiver<Incoming>>>);
@@ -430,6 +490,7 @@ impl WorkerReceiver for Ended {
     }
 }
 
+#[cfg(unix)]
 fn codemode_address_space(command: &mut Command, codemode: bool) {
     #[cfg(target_os = "linux")]
     if codemode {
@@ -477,6 +538,7 @@ mod codemode_limits {
 pub(crate) struct WorkerKiller(Arc<Mutex<Child>>);
 
 impl WorkerKiller {
+    #[cfg(unix)]
     fn signal_with(&self, signal: impl FnOnce(u32) -> bool) -> bool {
         let mut child = self.0.lock().unwrap_or_else(|p| p.into_inner());
         // A cached exit status means the pid may already belong to somebody
@@ -487,6 +549,7 @@ impl WorkerKiller {
         signal(child.id())
     }
 
+    #[cfg(unix)]
     pub(crate) fn kill(&self) -> bool {
         self.signal_with(|pid| {
             let Ok(pid) = libc::pid_t::try_from(pid) else {
@@ -496,6 +559,14 @@ impl WorkerKiller {
             unsafe { libc::kill(pid, libc::SIGKILL) == 0 }
         })
     }
+
+    /// Kills the worker's job and process through the handles the wrapper
+    /// owns. A handle names one process for as long as it is open, so no
+    /// recycled id can be hit.
+    #[cfg(windows)]
+    pub(crate) fn kill(&self) -> bool {
+        crate::windows::kill_if_running(&self.0.lock().unwrap_or_else(|p| p.into_inner()))
+    }
 }
 
 /// Kills a child that never became a [`WorkerProcess`].
@@ -504,8 +575,7 @@ struct KillOnDrop(Option<Child>);
 impl Drop for KillOnDrop {
     fn drop(&mut self) {
         if let Some(child) = self.0.as_mut() {
-            let _ = child.kill();
-            let _ = child.wait();
+            kill_and_reap(child);
         }
     }
 }
@@ -549,6 +619,7 @@ mod buffer_tests {
         assert!(tx.send(Err(ChannelError::Closed)).is_err());
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_reaped_worker_handle_never_signals_a_recycled_pid() {
         let mut child = Command::new("/usr/bin/true").spawn().unwrap();

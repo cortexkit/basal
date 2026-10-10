@@ -37,7 +37,7 @@ fn health_reports_the_explicit_policy_only_on_linux() {
             serde_json::json!({
                 "os": std::env::consts::OS,
                 "landlock": if cfg!(target_os = "linux") { serde_json::json!(mode.as_str()) } else { serde_json::Value::Null },
-                "sigsys_deaths": 0,
+                CONFINEMENT_FAULT_DEATHS: 0,
             })
         );
         pool.stop();

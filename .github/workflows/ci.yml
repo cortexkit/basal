@@ -412,6 +412,26 @@ jobs:
         continue-on-error: true
         timeout-minutes: 30
         run: cargo test -p basal-worker --features deviations --locked --no-fail-fast -- --show-output 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-worker-deviations.log"
+      # The module's tests: workers started, supervised and killed through
+      # the launcher; worker deaths from a confinement fault (an invalid
+      # handle or access violation) counted apart from other crashes; and
+      # the store directory and database readable by their owner only.
+      # basal-core's tests run with them: the module's store and runtime
+      # are basal-core's.
+      - name: Test the module and the core
+        id: test-module
+        continue-on-error: true
+        timeout-minutes: 40
+        run: cargo test -p basal-module -p basal-core --locked --no-fail-fast -- --show-output 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-module.log"
+      # Every Windows spawn takes one process-wide lock while its child's
+      # handles are inheritable. This test starts confined, plain and git
+      # children at once and checks that no child inherited another child's
+      # stdin, stdout or stderr.
+      - name: Test the shared spawn lock across the launcher and git
+        id: test-spawn-lock
+        continue-on-error: true
+        timeout-minutes: 20
+        run: cargo test -p basal-host --lib --locked -- spawn_lock_tests --show-output 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-spawn-lock.log"
       - name: Check every workspace target
         id: check
         continue-on-error: true
@@ -448,6 +468,8 @@ jobs:
             echo "- cargo check --workspace --all-targets --locked: ${{ steps.check.outcome }}"
             echo "- cargo test --workspace --locked: ${{ steps.test.outcome }}"
             echo "- cargo test -p basal-launch --features deviations --locked: ${{ steps.test-launch.outcome }}"
+            echo "- cargo test -p basal-module -p basal-core --locked --no-fail-fast: ${{ steps.test-module.outcome }}"
+            echo "- cargo test -p basal-host --lib --locked -- spawn_lock_tests: ${{ steps.test-spawn-lock.outcome }}"
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()

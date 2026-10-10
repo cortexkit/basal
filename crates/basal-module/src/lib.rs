@@ -16,6 +16,8 @@
 //! - [`unconfigured`]: the hosts the production binary runs with until real
 //!   adapters exist; [`harness`]: the same module against the mocks, driven
 //!   over stdio for tests.
+//! - `windows` (Windows only): the worker started through `basal-launch`,
+//!   its kill, and the exit codes that are confinement faults.
 //! - `rig_kill` (unit tests or the `rig-kill-hook` feature): the one-shot kill
 //!   switch the ckdev-flows rig's contract suite uses for its crash case.
 
@@ -39,3 +41,5 @@ pub mod rig_kill;
 pub mod scope_connection;
 pub mod serve;
 pub mod unconfigured;
+#[cfg(windows)]
+mod windows;
