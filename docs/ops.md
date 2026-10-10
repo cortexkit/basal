@@ -169,7 +169,7 @@ Keys marked `?` are omitted when absent, never null:
 - `value` is the program's JSON return value, present only when `status` is `completed`.
 - `error` is `{code, message}`, present exactly when `status` is `failed`, `budget_exhausted:*` or `interrupted`, with a code from the terminal table below and a non-empty message.
 - `description` is present only when the admitted run carried one.
-- In each call, `code` is present only for the outcomes that carry one (see the call outcomes table), and `duration_ms` only once basal began dispatching the call to its provider.
+- In each call, `code` is present only for the outcomes that carry one (see the call outcomes table), and `duration_ms` only once basal handed the call to the daemon for its provider (a call still queued, or refused before sending, has none).
 
 The other keys are always present:
 - `output` is the kept `console.log` text: each call's arguments (strings as they are, other values as JSON) joined by one space, with a newline after each line. Lines are kept while the total stays within the output budget; the line that would cross it and every later line are dropped, with one `output_truncated` warning. Output kept before a cancel or a kill is still returned.
@@ -185,7 +185,7 @@ The other keys are always present:
 | The program returned a JSON value of at most 16,384 bytes | `completed` | none |
 | A budget was exhausted (JS CPU, memory, stack, wall or tool calls) | `budget_exhausted:<kind>` | equal to `status` |
 | The worker made a call other than a tool call | `failed` | `profile_violation` |
-| The worker's prelude differs from basal's | `failed` | `engine_mismatch` |
+| The worker's prelude (the JavaScript that sets up `tools` and `console` before the program runs) does not match the one basal expects | `failed` | `engine_mismatch` |
 | A tool input over 1 MiB | `failed` | `arguments_too_large` (the message has the size) |
 | A return value over 16,384 bytes of JSON | `failed` | `result_too_large` (the message has the size) |
 | A return value that is not JSON | `failed` | `result_not_json` |
@@ -197,7 +197,7 @@ The other keys are always present:
 | basal restarted while the run was running | `interrupted` | `basal_restarted` |
 | `codemode.cancel` | `cancelled` | none |
 
-A worker basal stopped itself (a cancel, the wall deadline, or any other end of the run) is never reported `worker_lost`.
+When basal itself stops the worker (on a cancel, at the wall deadline, or at any other end of the run), the run is never reported `worker_lost`.
 
 ### Call outcomes
 
