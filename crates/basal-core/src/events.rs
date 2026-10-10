@@ -25,6 +25,10 @@ pub struct Notice {
     pub event_key: String,
     pub digest: String,
     pub headers: BTreeMap<String, String>,
+    /// JetStream's stored publish time, never a publisher-supplied header.
+    /// Older journaled triggers have no timestamp and still replay their body.
+    #[serde(default)]
+    pub published_at_ms: i64,
 }
 
 impl Notice {
@@ -65,6 +69,7 @@ impl Notice {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Report {
+    pub skipped_before_install: usize,
     pub matched: usize,
     pub admitted: usize,
     pub duplicate: usize,
@@ -86,6 +91,19 @@ fn receipt(tx: &Transaction, flow: &str, notice: &Notice, state: &str, now: i64)
     tx.execute("INSERT INTO event_receipts(flow_id,subject,event_key,notice,state,received_at) VALUES (?1,?2,?3,?4,?5,?6)",
         params![flow, notice.subject, notice.event_key, serde_json::to_string(notice).map_err(|e| CoreError::Invalid(e.to_string()))?, state, now])?;
     Ok(())
+}
+
+fn after_first_approval(
+    tx: &Transaction,
+    flow: &str,
+    notice: &Notice,
+    first_approved: Option<i64>,
+) -> Result<bool> {
+    if first_approved.is_some_and(|first| notice.published_at_ms >= first) {
+        return Ok(true);
+    }
+    tx.execute("INSERT INTO event_flow_health(flow_id,skipped_before_install) VALUES (?1,1) ON CONFLICT(flow_id) DO UPDATE SET skipped_before_install=skipped_before_install+1", [flow])?;
+    Ok(false)
 }
 
 fn offer(
@@ -155,21 +173,27 @@ impl Runtime {
         let ctx = self.admit_context()?;
         let store_id = self.store().store_id().to_owned();
         let report = self.store().write(|tx| {
-            let flows: Vec<String> = tx
-                .prepare("SELECT flow_id FROM flows WHERE state='enabled' ORDER BY flow_id")?
-                .query_map([], |r| r.get(0))?
+            let flows: Vec<(String, Option<i64>)> = tx
+                .prepare("SELECT flow_id,first_approved_at FROM flows WHERE state='enabled' ORDER BY flow_id")?
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
                 .collect::<rusqlite::Result<_>>()?;
             let approved = flows
                 .iter()
-                .map(|flow| Ok((flow, install::approved(tx, flow)?)))
+                .map(|(flow, first_approved)| Ok((flow, first_approved, install::approved(tx, flow)?)))
                 .collect::<Result<Vec<_>>>()?;
             let mut report = Report::default();
             for notice in notices {
                 notice.identity()?;
-                for (flow, approved) in &approved {
+                for (flow, first_approved, approved) in &approved {
                     if let Some(approved) = approved
                         && matches(&approved.manifest, notice)?
                     {
+                        // Upgrades retain the first approval point, so events
+                        // during an upgrade remain eligible for the current code.
+                        if !after_first_approval(tx, flow, notice, **first_approved)? {
+                            report.skipped_before_install += 1;
+                            continue;
+                        }
                         offer(tx, &store_id, flow, notice, &ctx, &mut report)?;
                     }
                 }
@@ -186,13 +210,17 @@ impl Runtime {
         let ctx = self.admit_context()?;
         let store_id = self.store().store_id().to_owned();
         let admitted = self.store().write(|tx| {
-            let pending: Vec<(i64, String, String)> = tx.prepare("SELECT e.rowid,e.flow_id,e.notice FROM event_receipts e JOIN flows f USING(flow_id) WHERE e.state='backlog' AND f.state='enabled' ORDER BY e.received_at,e.rowid LIMIT 128")?
-                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<rusqlite::Result<_>>()?;
+            let pending: Vec<(i64, String, String, Option<i64>)> = tx.prepare("SELECT e.rowid,e.flow_id,e.notice,f.first_approved_at FROM event_receipts e JOIN flows f USING(flow_id) WHERE e.state='backlog' AND f.state='enabled' ORDER BY e.received_at,e.rowid LIMIT 128")?
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect::<rusqlite::Result<_>>()?;
             let mut blocked = std::collections::BTreeSet::new();
             let mut admitted = 0;
-            for (rowid, flow, encoded) in pending {
+            for (rowid, flow, encoded, first_approved) in pending {
                 if blocked.contains(&flow) { continue; }
                 let notice: Notice = serde_json::from_str(&encoded).map_err(|e| CoreError::Corrupt(e.to_string()))?;
+                if !after_first_approval(tx, &flow, &notice, first_approved)? {
+                    tx.execute("UPDATE event_receipts SET state='refused' WHERE rowid=?1", [rowid])?;
+                    continue;
+                }
                 let approved = install::approved(tx, &flow)?;
                 if !approved.as_ref().map(|a| matches(&a.manifest, &notice)).transpose()?.unwrap_or(false) {
                     tx.execute("UPDATE event_receipts SET state='refused' WHERE rowid=?1", [rowid])?;

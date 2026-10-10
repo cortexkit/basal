@@ -87,13 +87,23 @@ impl Server {
         Self { child, dir, bus }
     }
     async fn publish(&self, n: u64, subject: &str) {
+        self.publish_with_headers(n, subject, Default::default())
+            .await;
+    }
+
+    async fn publish_with_headers(
+        &self,
+        n: u64,
+        subject: &str,
+        headers: cortexkit_bus_trait::Headers,
+    ) {
         self.bus
             .stream(STREAM)
             .publish(
                 subject,
                 &format!("{n:064x}"),
                 ContentDigest::of_bytes(b"{}"),
-                Default::default(),
+                headers,
             )
             .await
             .unwrap();
@@ -225,11 +235,11 @@ async fn per_flow_fanout_rolls_back_before_ack_on_commit_failure() {
 #[tokio::test]
 async fn deliver_all_first_batch_is_bounded_and_history_cannot_flood_runs() {
     let server = Server::start().await;
+    let rt = runtime(&server.dir.join("basal.db"));
+    approve(&rt, "flow");
     for n in 0..200 {
         server.publish(n, SUBJECT).await;
     }
-    let rt = runtime(&server.dir.join("basal.db"));
-    approve(&rt, "flow");
     let consumer = bind(&server.bus, STREAM).await.unwrap();
     let start = Instant::now();
     let first = pull(&consumer).await.unwrap();
@@ -293,5 +303,93 @@ async fn slow_commit_sends_progress_before_ack_wait_expires() {
     assert!(
         redelivery.is_empty(),
         "progress ack must prevent redelivery during a slow commit"
+    );
+}
+
+fn published_ms(message: &async_nats::jetstream::Message) -> i64 {
+    i64::try_from(message.info().unwrap().published.unix_timestamp_nanos() / 1_000_000).unwrap()
+}
+
+#[tokio::test]
+async fn notices_before_first_approval_are_acked_and_reported() {
+    let server = Server::start().await;
+    let rt = runtime(&server.dir.join("basal.db"));
+    // A publisher cannot turn old history into a new event by labelling it
+    // with a later time. Only JetStream's stored publish time is authoritative.
+    server
+        .publish_with_headers(
+            0,
+            SUBJECT,
+            std::collections::BTreeMap::from([("published_at_ms".into(), i64::MAX.to_string())]),
+        )
+        .await;
+    let mut consumer = bind(&server.bus, STREAM).await.unwrap();
+    let messages = pull(&consumer).await.unwrap();
+    let old_time = published_ms(&messages[0]);
+    rt.config().clock.set(old_time + 1);
+    approve(&rt, "flow");
+    let report = commit_batch(rt.clone(), &messages, true).await.unwrap();
+    assert_eq!(report.skipped_before_install, 1);
+    assert_eq!(report.matched, 0);
+    assert_eq!(run_count(&rt), 0);
+    let receipts: i64 = rt
+        .store()
+        .read(|c| Ok(c.query_row("SELECT COUNT(*) FROM event_receipts", [], |r| r.get(0))?))
+        .unwrap();
+    assert_eq!(receipts, 0);
+    assert_eq!(rt.flow_health().unwrap()[0].skipped_before_install, 1);
+    assert_eq!(consumer.info().await.unwrap().num_ack_pending, 0);
+    assert_eq!(consumer.info().await.unwrap().num_pending, 0);
+}
+
+#[tokio::test]
+async fn notices_published_after_first_approval_are_admitted() {
+    let server = Server::start().await;
+    let rt = runtime(&server.dir.join("basal.db"));
+    let approval = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    rt.config().clock.set(approval);
+    approve(&rt, "flow");
+    server.publish(0, SUBJECT).await;
+    let mut consumer = bind(&server.bus, STREAM).await.unwrap();
+    let messages = pull(&consumer).await.unwrap();
+    assert!(published_ms(&messages[0]) >= approval);
+    let report = commit_batch(rt.clone(), &messages, true).await.unwrap();
+    assert_eq!(report.admitted, 1);
+    assert_eq!(report.skipped_before_install, 0);
+    assert_eq!(run_count(&rt), 1);
+    assert_eq!(consumer.info().await.unwrap().num_ack_pending, 0);
+}
+
+#[tokio::test]
+async fn newer_version_keeps_first_approval_cutoff() {
+    let server = Server::start().await;
+    let rt = runtime(&server.dir.join("basal.db"));
+    approve(&rt, "flow");
+    server.publish(0, SUBJECT).await;
+    let consumer = bind(&server.bus, STREAM).await.unwrap();
+    let messages = pull(&consumer).await.unwrap();
+    let between = published_ms(&messages[0]);
+    assert!(between > rt.config().clock.now_ms());
+    rt.config().clock.set(between + 1);
+    let installed = rt.install(&InstallRequest {
+        script: "return 2;".into(),
+        manifest: json!({"id":"flow","version":2,"purpose":"Consume events after an upgrade","trigger":{"events":[{"module":"plexus","name":"pull_request_review","version":1}]}}).to_string(),
+        author: "local:unverified".into(), loop_override: false,
+    }).unwrap();
+    rt.approve("flow", 2, &installed.code_hash, "test-v2")
+        .unwrap();
+    let report = commit_batch(rt.clone(), &messages, true).await.unwrap();
+    assert_eq!(report.admitted, 1);
+    assert_eq!(report.skipped_before_install, 0);
+    let script: String = rt
+        .store()
+        .read(|c| Ok(c.query_row("SELECT script FROM runs", [], |r| r.get(0))?))
+        .unwrap();
+    assert_eq!(
+        script, "return 2;",
+        "eligible notices run the currently approved code"
     );
 }

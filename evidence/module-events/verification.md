@@ -1,41 +1,50 @@
 # Module-event reader verification
 
-## Delivery boundary and upstream prerequisites
+## Scope
 
-- The given ck-bus contract provisions `m_basal` on `CK_<ACCOUNT>_EVENT`, with deliver-all, explicit acknowledgment, a 30-second ack wait and at most 1,000 pending deliveries (`subconscious/crates/ck-bus/src/bootstrap/module_durables.rs`, as supplied in the brief). Basal only binds that consumer; it never provisions or changes it.
-- Catalog event propagation is not released in the pinned daemon protocol. Per the parent decision, exactly one adapter remains: `basal_host::subc_catalog::catalog_event_declarations`. It deliberately returns `None`; `declared_event` already accepts `subc_protocol::manifest::EventDeclaration` and is tested. Production event-manifest installation remains fail-closed until that adapter can read the authoritative released catalog field. No wire field or compatibility shim was invented.
-- The parent confirmed Plexus's separate Pure query tool `events_get`, with exactly `{event_key, event_name}`. `basal_host::catalog::EVENT_BODY_OP` is the one tool-name constant. Flows never call the Mutating `events` tool to fetch a body. The body is exact JSON text; its SHA-256 digest is bare lowercase hex.
-- Pins match the supplied prefrontal references: async-nats 0.50 and the three cortexkit-bus crates at commons `e4fb106f581c4d208a81e924a6329cfb20de616d`. Credential and nonce-sign request shapes follow the supplied `.cortexkit/refs/prefrontal/mod.rs:135-295`, using basal's existing reserved transport. The copied commons snapshot is newer than the pin; the fetched pin was checked for ContentDigest's actual spelling. Its `message.rs:30-36` and codec emit bare hex, contrary to the reported prefixed Display format. Only notice-side `sha256:` is optionally normalized, as explicitly approved; reply digests remain strictly bare hex.
-- Migration **22** is reserved for these tables: the parent assigned 21 to codemode model tools after the task began. The task's local main ref still points to the supplied base; no unlanded sibling migration was imported.
+The reader binds the existing JetStream pull consumer `m_basal` on the account's event stream. It does not provision or change streams or named consumers. Event admission commits each batch's per-flow fan-out before acknowledging messages, with in-progress acknowledgments while a commit is waiting.
 
-## First retained batch and limits
+The eligibility cutoff is the flow's first approval time. It is stored durably and retained across later version approvals, including package-instance version changes. Only the broker's `Message::info().published` timestamp is compared with that cutoff; publisher headers cannot change eligibility. Older matching deliveries produce no run or receipt and increment the flow's `skipped_before_install` counter. Eligible backlog is admitted oldest-first under the normal rate limit.
 
-A real nats-server v2.15.0 fixture published 200 retained notices before binding. The first pull began at stream sequence 1, returned 32 notices, admitted 32 runs, and committed/acked in **21 ms** on Linux. Processing all 200 under one default rate window admitted 60, queued 120 and refused 20 with durable flow-health overflow counts. The backlog bound is two minutes at the default 60-runs/minute limit. Backlog draining is oldest-first and uses the existing saturation/auto-disable policy. Receipt history lasts eight days; inbox keys and permanent tombstones still prevent duplicate effects after history expires.
+Before script startup, the read-only `events_get` tool supplies exact body text on the flow's scoped route. An independently computed SHA-256 hash and the reply digest must both match the notice digest. Verified bytes are journaled and replayed without another live read. Reply digests are bare lowercase hex; only notice digests accept a `sha256:` prefix.
 
-This is a fixture measurement, not a claim about the fleet's retained stream. No live reserved basal credential or daemon account was available for measuring its first production pull. Module health now exposes first-batch age/size/elapsed time and reader reconnect/backoff. If the production stream proves to be a historical flood, an approval-time history cutoff with explicit operator catch-up opt-in is a follow-up policy proposal; no cutoff was silently introduced.
+The daemon catalog's event-field adapter remains fail-closed until the catalog carries authoritative `EventDeclaration` values. The declaration conversion is tested independently. Header filtering and explicit historical catch-up opt-in are not implemented.
 
-Header filters are also a follow-up: the current manifest only has module/name/version and refuses unknown filter fields.
+## Real-server measurements
 
-## Gates
+Tests start an actual **nats-server v2.15.0** with JetStream in an isolated temporary directory. Missing nats-server is a test failure, not a skip. Tests use shorter acknowledgment waits to exercise redelivery without waiting the production consumer's 30 seconds.
 
-Final restored source, including migration 22:
+On **Linux x86_64 with four vCPUs**, using Cargo/rustc **1.99.0**, an already-approved flow had 200 eligible notices retained before its consumer was bound. The first pull began at stream sequence 1, returned 32 notices, and committed/acknowledged 32 admissions in **11 ms**. Processing all 200 in one logical default rate window admitted 60 runs, queued 120 notices and refused 20, with durable overflow counts. This shows bounded work for eligible history; it is not a throughput benchmark or a measurement of production stream age.
 
-- Cargo 1.99.0, rustc 1.99.0: `cargo fmt --all --check` passed.
-- `cargo clippy --workspace --all-targets --locked -- -D warnings` passed for all seven workspace crates on Linux.
-- The same clippy command with `--features basal-module/rig-kill-hook` passed.
-- `cargo test --workspace --locked`, Linux 8 vCPUs: **1,012 passed**, zero ignored, 113 harnesses.
-- The same workspace test on macOS: **924 passed**, one existing ignored test, 113 harnesses. Both platforms ran all five real JetStream tests and the real-worker event preamble/capture test.
-- `ckdev-mutate check`, runner 0.9.8: all **877** catalogue rows' anchors and exact test names verified. Existing anchors for changed lockfile dependency lists, event lookup, overflow output and retention wake-up were refreshed without changing their guarding assertions.
-- Python 3.14.4 on Linux: development naming checked 123 files with zero violations; dependency-boundary check passed; mutation coverage checked 877 rows (390 Linux, 487 macOS); `python3.14 -m unittest script.tests` passed 50 tests.
-- actionlint 1.7.12 checked `.github/workflows/ci.yml` successfully. CI installs pinned nats-server v2.15.0 archives with official SHA256SUMS-derived hashes on Linux x86_64/arm64, macOS x86_64/arm64 and Windows x86_64/arm64. Missing nats-server is a loud test failure, never a skip.
-- Sidekick reviewed all code/comment/prose changes (27 files, excluding lockfile data); genuinely unclear comments were rewritten. Scoped diagnostics reported no errors/warnings; non-diagnostic inspect categories were unavailable, so cargo gates are authoritative.
+The 120-notice per-flow backlog represents two minutes at the default 60-runs/minute rate. Receipt history lasts eight days; inbox keys and permanent tombstones remain deduplication authorities after receipt history expires.
 
-Dependency installation used `cargo fetch` in this worktree. Remote outbound-network fetch was refused; local fetch updated Cargo.lock, then all Linux gates used the locked resolution. No path dependency was added outside the workspace.
+The real-server suite also checks:
 
-## Non-vacuity evidence
+- commit followed by simulated crash before acknowledgment, with redelivery after reopening the store and no second run;
+- unmatched notices acknowledged without a receipt;
+- fan-out rollback leaving messages unacknowledged when the second flow's insertion fails;
+- progress acknowledgments preventing redelivery during a blocked commit;
+- notices published before first approval acknowledged without a run, even with a forged future-time header;
+- notices published after first approval admitted;
+- a newer approval preserving eligibility of notices published between the two approvals.
 
-`runner-linux.json` records **18 CAUGHT** controls from `ckdev-mutate run`, with each exact red name, failure text and green identities. Shared `green_name_groups` plus each row's exclusions preserve all names without repeating the whole library list. Seventeen rows ran their complete target with `only=true`; the no-match ack row selected only its expected test because removing all acknowledgments also breaks the other ack tests. No broad cross-target audit is claimed.
+Core tests cover equality at the approval boundary, per-flow cutoffs, package-instance upgrades, migration backfill from superseded install approval times, backlog filtering, independent body hashing, refusal mapping, retry/deadline handling and replay. A real-worker test checks verified JSON delivery and synthetic capture without live calls.
 
-`manual-mutation-evidence.json` records corresponding native macOS staged-index cycles: empty working diff; apply the marked mutation; non-empty diff; execute the exact named test; restore with `git checkout -- <path>` and `touch`; empty diff again. Every final control reddened with no collateral test failure in its selected run.
+## Gate results
 
-The initial retention control survived: the original new test derived its clock boundary from the production retention constant and therefore checked a proxy. `manual-mutation-evidence-initial.json` preserves that survivor. The test was corrected to use independent eight-day times, after which the same control failed on both platforms. Other tests already provided reddened controls reaching the same basal-core target. No existing test assertion was rewritten to accept new behavior.
+With migration 21 followed by migration 22, Cargo/rustc 1.99.0:
+
+- `cargo fmt --all --check` passed.
+- Workspace clippy with `-D warnings` passed with and without `basal-module/rig-kill-hook`.
+- `cargo test --workspace --locked` passed on Linux with eight vCPUs: 1,036 tests, zero ignored, 113 harnesses.
+- The same workspace test passed on macOS: 948 tests, one existing ignored test, 113 harnesses.
+- `ckdev-mutate check` verified all 898 catalogue rows with runner 0.9.8.
+- Python 3.14.4 checks passed: development naming (123 files, zero violations), path-dependency boundary, mutation platform coverage (411 Linux and 487 macOS rows), and 50 script unit tests.
+
+## Reproduction and mutation evidence
+
+Run `cargo test -p basal-core --lib events::tests --locked` and `cargo test -p basal-module --test module_events --test event_preamble --locked`. The CI workflow installs nats-server v2.15.0 using pinned official archive hashes on Linux x86_64/arm64, macOS x86_64/arm64 and Windows x86_64/arm64.
+
+`runner-linux.json` contains **21 CAUGHT** mutation controls, exact red names and per-test failure output, including cutoff removal, approval-time replacement and forged-header timestamp controls. One replay-control run also hit an unrelated codemode model-budget test timeout; the complete affected control was rerun successfully, and the initial attempt remains recorded in `prior_attempts`. Shared `green_name_groups` and per-row exclusions retain every green test identity without repeating whole library lists. Controls with `only=true` require exactly the named failure within their target; the no-match acknowledgment control selects its expected test explicitly. No broad cross-target mutation audit is claimed.
+
+The retention test uses independent eight-day clock boundaries rather than deriving its expected time from the production retention constant.

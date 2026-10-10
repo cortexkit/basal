@@ -510,8 +510,8 @@ fn approve_using_catalog(
     }
     crate::grant_loss::clear(tx, flow_id, now_ms)?;
     tx.execute(
-        "UPDATE flows SET approved_version = ?2, owner = ?3 WHERE flow_id = ?1",
-        params![flow_id, version_i64(version), author],
+        "UPDATE flows SET approved_version = ?2, owner = ?3, first_approved_at = COALESCE(first_approved_at, ?4) WHERE flow_id = ?1",
+        params![flow_id, version_i64(version), author, now_ms],
     )?;
     let approval = schedule_approved(tx, flow_id, version, now_ms, schedule)?;
     // When core revokes the approved version (see `revoke`), it disables the

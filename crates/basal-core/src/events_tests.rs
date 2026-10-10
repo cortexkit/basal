@@ -141,6 +141,7 @@ impl Drop for Fixture {
 fn notice(n: u64) -> Notice {
     use sha2::{Digest, Sha256};
     Notice {
+        published_at_ms: 1_000,
         subject: "ck.account.event.plexus.github_pr_changed.v1".into(),
         event_key: format!("{n:064x}"),
         digest: format!("{:x}", Sha256::digest(BODY.as_bytes())),
@@ -512,4 +513,133 @@ fn body_returning_after_deadline_is_not_delivered_to_script() {
             })
             .unwrap();
     assert_eq!(bodies, 0);
+}
+
+#[test]
+fn first_approval_cutoff_is_per_flow_and_includes_equal_publish_time() {
+    let f = Fixture::new(60);
+    f.approve("old");
+    f.rt.config.clock.set(2_000);
+    f.approve("new");
+    let mut between = notice(1);
+    between.published_at_ms = 1_500;
+    let report = f.rt.admit_events(&[between]).unwrap();
+    assert_eq!(
+        (
+            report.admitted,
+            report.matched,
+            report.skipped_before_install
+        ),
+        (1, 1, 1)
+    );
+    let mut equal = notice(2);
+    equal.published_at_ms = 2_000;
+    assert_eq!(f.rt.admit_events(&[equal]).unwrap().admitted, 2);
+    let health = f.rt.flow_health().unwrap();
+    assert_eq!(
+        health
+            .iter()
+            .find(|h| h.flow_id == "new")
+            .unwrap()
+            .skipped_before_install,
+        1
+    );
+    assert_eq!(
+        health
+            .iter()
+            .find(|h| h.flow_id == "old")
+            .unwrap()
+            .skipped_before_install,
+        0
+    );
+}
+
+#[test]
+fn package_instance_first_approval_survives_version_changes() {
+    let f = Fixture::new(60);
+    f.catalog.add_agent("owner");
+    let first = f.request("pkg");
+    f.rt.register_package(&first.script, &first.manifest)
+        .unwrap();
+    let instance = f.rt.ensure_instance("pkg", 1, "owner", 1).unwrap()["flow_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    f.rt.config.clock.set(3_000);
+    let mut manifest: serde_json::Value = serde_json::from_str(&first.manifest).unwrap();
+    manifest["version"] = json!(2);
+    f.rt.register_package("return 2;", &manifest.to_string())
+        .unwrap();
+    f.rt.ensure_instance("pkg", 2, "owner", 2).unwrap();
+    let first_approved: i64 =
+        f.rt.store()
+            .read(|c| {
+                Ok(c.query_row(
+                    "SELECT first_approved_at FROM flows WHERE flow_id=?1",
+                    [&instance],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+    assert_eq!(first_approved, 1_000);
+    let mut between = notice(0);
+    between.published_at_ms = 2_000;
+    assert_eq!(f.rt.admit_events(&[between]).unwrap().admitted, 1);
+}
+
+#[test]
+fn migration_22_backfills_first_approval_without_using_latest_version_time() {
+    let c = rusqlite::Connection::open_in_memory().unwrap();
+    c.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+    for m in crate::schema::MIGRATIONS.iter().filter(|m| m.version < 22) {
+        c.execute_batch(m.statements).unwrap();
+    }
+    c.execute_batch(r#"
+        INSERT INTO flows(flow_id,created_at,approved_version) VALUES ('normal',500,2),('pending',500,NULL);
+        INSERT INTO installs(flow_id,version,code_hash,manifest,script,author,state,installed_at,approved_at,approval_ref)
+        VALUES ('normal',1,zeroblob(32),'{}','return 1;','operator','superseded',500,1000,'v1'),
+               ('normal',2,zeroblob(32),'{}','return 2;','operator','approved',1500,2000,'v2');
+        INSERT INTO flows(flow_id,created_at,approved_version,package) VALUES ('instance',1200,1,'pkg');
+    "#).unwrap();
+    c.execute_batch(
+        crate::schema::MIGRATIONS
+            .iter()
+            .find(|m| m.version == 22)
+            .unwrap()
+            .statements,
+    )
+    .unwrap();
+    let timestamp = |flow| {
+        c.query_row(
+            "SELECT first_approved_at FROM flows WHERE flow_id=?1",
+            [flow],
+            |r| r.get::<_, Option<i64>>(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(timestamp("normal"), Some(1000));
+    assert_eq!(timestamp("instance"), Some(1200));
+    assert_eq!(timestamp("pending"), None);
+}
+
+#[test]
+fn queued_history_before_approval_is_refused_without_a_run() {
+    let f = Fixture::new(60);
+    f.approve("flow");
+    let mut old = notice(0);
+    old.published_at_ms = 999;
+    f.rt.store()
+        .write(|tx| receipt(tx, "flow", &old, "backlog", 1000))
+        .unwrap();
+    assert_eq!(f.rt.drain_event_backlog().unwrap(), 0);
+    let health = f.rt.flow_health().unwrap();
+    assert_eq!(
+        (health[0].event_backlog, health[0].skipped_before_install),
+        (0, 1)
+    );
+    let runs: i64 =
+        f.rt.store()
+            .read(|c| Ok(c.query_row("SELECT COUNT(*) FROM runs", [], |r| r.get(0))?))
+            .unwrap();
+    assert_eq!(runs, 0);
 }

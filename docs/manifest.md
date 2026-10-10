@@ -57,8 +57,17 @@ Every agent named by `sinks[].agent`, `status[]`, `claims[].agent` and `facts.ta
   The newest due time is on time when it is at most the grace period (60 s by default) old; every older due time in the window is missed and follows `missed`. `once` fires one catch-up identified by the last missed due time; `each` keeps the newest `each_cap` missed due times and fires them oldest first. An on-time due time always fires, after any catch-up. A fire's trigger id is `schedule:<due time, RFC 3339 UTC>` (`schedule:2026-03-29T01:00:00Z`), and admission deduplicates on flow and trigger id, so one due time starts at most one run. The script sees `trigger` as `{ "kind": "schedule", "due": "..." }`; a catch-up fire adds `"catch_up": { "policy", "missed_count", "missed_window": { "first", "last" } }`, counting every missed due time, including those `each_cap` dropped. A scheduled fire, like every trigger, runs the flow's version approved and enabled when it is admitted.
 - Both, or neither, is refused.
 
-Module notices fan out to the flows approved and enabled at admission. A
-`(flow_id, subject, event_key)` is admitted once, including after redelivery
+Module notices fan out to the flows approved and enabled at admission, but only
+when JetStream's stored publish time is at or after the flow's **first approval**.
+Publisher headers never establish that time. A newer version's approval does
+not move the cutoff: eligible events published between approvals run the code
+approved at admission. The same rule applies to package instances and to
+backlog draining. Older matching deliveries are acknowledged without a run or
+receipt and increment the flow's cumulative `skipped_before_install` health
+counter; an acknowledgment lost after commit can count a delivery again.
+There is no catch-up opt-in yet.
+
+A `(flow_id, subject, event_key)` is admitted once, including after redelivery
 or restart. Basal commits the fan-out before acknowledging the notice; an
 unmatched notice is acknowledged without a receipt. Receipt history is kept
 eight days (seven days plus maintenance slack), then pruned by age. Existing
@@ -68,7 +77,8 @@ effects after receipt history expires.
 The reader binds ck-bus's existing `m_basal` durable and never creates or
 changes it. Its deliver-all policy starts at the oldest retained notice.
 Pulls hold at most 32 notices and use progress acknowledgments during a slow
-commit. The normal per-flow rate limit bounds initial catch-up admissions;
+commit. History older than first approval cannot flood a newly installed flow.
+For eligible history, the normal per-flow rate limit bounds initial admissions;
 excess work waits oldest-first in a durable backlog of at most 120 notices
 per flow, equivalent to two default 60-run rate windows. Overflow is refused,
 counted in `flow.health` (`event_backlog`, `event_overflow`, `overflowed`), and

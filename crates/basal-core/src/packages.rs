@@ -253,7 +253,7 @@ impl Runtime {
                 .flatten();
             let new = previous.is_none();
             let was_removed = removed(tx, &id)?;
-            tx.execute("INSERT INTO flows (flow_id,owner,approved_version,created_at,package) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(flow_id) DO UPDATE SET approved_version=excluded.approved_version,removed=0", params![id,agent,version,self.config().clock.now_ms(),package])?;
+            tx.execute("INSERT INTO flows (flow_id,owner,approved_version,created_at,package,first_approved_at) VALUES (?1,?2,?3,?4,?5,?4) ON CONFLICT(flow_id) DO UPDATE SET approved_version=excluded.approved_version,first_approved_at=COALESCE(flows.first_approved_at,excluded.first_approved_at),removed=0", params![id,agent,version,self.config().clock.now_ms(),package])?;
             // A same-version generation changes only ordering and removal.
             // In particular, a disabled schedule must not be reset by a resend.
             if previous != Some(version) {

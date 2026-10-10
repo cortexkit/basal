@@ -95,6 +95,7 @@ fn worker_preamble_supplies_verified_json_and_synthetic_capture_calls_nothing_li
         .approve("flow", 1, &installed.code_hash, "test")
         .unwrap();
     let notice = basal_core::events::Notice {
+        published_at_ms: common::T0,
         subject: "ck.account.event.plexus.github_pr_changed.v1".into(),
         event_key: "0".repeat(64),
         digest: format!("{:x}", sha2::Sha256::digest(b"{\"verified\":true}")),

@@ -15025,3 +15025,51 @@ timeout_s = 600
 file = "crates/basal-core/src/driver.rs"
 old = "crate::events::Preamble::Ready(trigger) => trigger,"
 new = "crate::events::Preamble::Ready(_trigger) => self.run.trigger.clone(), // NON-VACUITY BREAK"
+
+[[control]]
+id = "event-before-first-approval-cutoff-removed"
+guards = "retained notices older than the flow's first approval are acked without a run"
+test_file = "crates/basal-module/tests/module_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test module_events"
+expect_red = ["notices_before_first_approval_are_acked_and_reported"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/events.rs"
+old = "if first_approved.is_some_and(|first| notice.published_at_ms >= first) {"
+new = "if true { // NON-VACUITY BREAK"
+
+[[control]]
+id = "event-upgrade-moves-first-approval-cutoff"
+guards = "upgrades retain the first approval time so intervening events are not lost"
+test_file = "crates/basal-module/tests/module_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test module_events"
+expect_red = ["newer_version_keeps_first_approval_cutoff"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/install.rs"
+old = "first_approved_at = COALESCE(first_approved_at, ?4)"
+new = "first_approved_at = ?4 /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "event-publish-time-trusts-header"
+guards = "event admission uses JetStream publish metadata rather than a forged publisher header"
+test_file = "crates/basal-module/tests/module_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test module_events"
+expect_red = ["notices_before_first_approval_are_acked_and_reported"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/events.rs"
+old = "        published_at_ms,"
+new = '        published_at_ms: get("published_at_ms").ok().and_then(|v| v.parse().ok()).unwrap_or(published_at_ms), // NON-VACUITY BREAK'

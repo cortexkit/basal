@@ -802,6 +802,7 @@ impl Module {
                 "agent_retirement": f.agent_retirement,
                 "needs_reconcile": !f.needs_reconcile.is_empty(),
                 "event_backlog": f.event_backlog,
+                "skipped_before_install": f.skipped_before_install,
                 "event_overflow": f.event_overflow,
                 "overflowed": f.event_overflow > 0,
                 "auto_disabled": f.auto_disabled,

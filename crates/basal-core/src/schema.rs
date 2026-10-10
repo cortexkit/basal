@@ -337,6 +337,11 @@ CREATE TABLE codemode_broca_calls (
 "#;
 
 const MODULE_EVENTS: &str = r#"
+ALTER TABLE flows ADD COLUMN first_approved_at INTEGER;
+-- Install versions retain their approval times after being superseded.
+UPDATE flows SET first_approved_at = (SELECT MIN(approved_at) FROM installs i WHERE i.flow_id=flows.flow_id);
+-- Package instance creation selects its first approved version atomically.
+UPDATE flows SET first_approved_at = created_at WHERE package IS NOT NULL AND approved_version IS NOT NULL AND first_approved_at IS NULL;
 CREATE TABLE event_receipts (
     flow_id TEXT NOT NULL REFERENCES flows(flow_id),
     subject TEXT NOT NULL,
@@ -351,7 +356,8 @@ CREATE INDEX event_receipts_backlog ON event_receipts(flow_id,received_at) WHERE
 CREATE TABLE event_flow_health (
     flow_id TEXT PRIMARY KEY REFERENCES flows(flow_id),
     overflow INTEGER NOT NULL DEFAULT 0,
-    last_overflow_at INTEGER NOT NULL
+    last_overflow_at INTEGER,
+    skipped_before_install INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE event_body_journal (
     run_id TEXT PRIMARY KEY REFERENCES runs(run_id) ON DELETE CASCADE,

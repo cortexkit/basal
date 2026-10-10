@@ -30,6 +30,7 @@ const CONTENT_DIGEST: &str = "Ck-Content-Digest";
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Health {
+    pub skipped_before_install: u64,
     pub connected: bool,
     pub error: Option<String>,
     pub retry_in_ms: u64,
@@ -267,11 +268,21 @@ pub fn decode(message: &jetstream::Message) -> Result<Notice, String> {
             labels.insert(name.to_owned(), value.as_str().to_owned());
         }
     }
+    let published_at_ms = i64::try_from(
+        message
+            .info()
+            .map_err(|e| e.to_string())?
+            .published
+            .unix_timestamp_nanos()
+            .div_euclid(1_000_000),
+    )
+    .map_err(|e| e.to_string())?;
     let notice = Notice {
         subject: message.subject.to_string(),
         event_key: get(MESSAGE_ID)?,
         digest,
         headers: labels,
+        published_at_ms,
     };
     notice.identity().map_err(|e| e.to_string())?;
     Ok(notice)
@@ -368,7 +379,13 @@ async fn reader_loop(
                     h.first_batch_notices = Some(messages.len()); h.first_batch_elapsed_ms = Some(elapsed); h.first_batch_oldest_age_ms = oldest;
                     tracing::info!(target: "events", notices=messages.len(), elapsed_ms=elapsed, oldest_age_ms=oldest, admitted=report.admitted, queued=report.queued, overflow=report.overflow, "first retained event batch committed");
                 }
-                h.batches += 1; h.notices += messages.len() as u64; h.admitted += report.admitted as u64; h.queued += report.queued as u64; h.overflow += report.overflow as u64; h.malformed += malformed as u64;
+                h.batches += 1;
+                h.notices += messages.len() as u64;
+                h.admitted += report.admitted as u64;
+                h.queued += report.queued as u64;
+                h.overflow += report.overflow as u64;
+                h.malformed += malformed as u64;
+                h.skipped_before_install += report.skipped_before_install as u64;
             }
             Ok::<_, String>(())
         }.await;
