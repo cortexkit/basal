@@ -278,7 +278,7 @@ fn calls_outside_the_manifest_are_refused_in_the_parent_and_journaled() {
         [
             ("fs.read", "allowed"),
             ("fs.read", "denied"),
-            ("fs.read", "denied"),
+            ("fs.read", escape_code),
             ("git.log", "denied"),
             ("net.fetch", "denied"),
             ("net.fetch", "denied"),
