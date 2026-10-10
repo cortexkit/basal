@@ -406,6 +406,13 @@ jobs:
         continue-on-error: true
         timeout-minutes: 40
         run: cargo test --workspace --locked --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-no-fail-fast.log"
+      # The workspace test can't build until every crate compiles on Windows,
+      # so basal-host's own tests run separately to report its built-ins now.
+      - name: Test basal-host on its own
+        id: test-host
+        continue-on-error: true
+        timeout-minutes: 30
+        run: cargo test -p basal-host --lib --locked --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-host.log"
       - name: Summarize the baseline
         if: always()
         run: |
