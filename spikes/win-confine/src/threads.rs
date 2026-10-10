@@ -1,4 +1,5 @@
 //! Native thread enumeration and impersonation attestation for the confined worker.
+#![allow(unsafe_op_in_unsafe_fn)]
 use crate::native::*;
 use serde_json::{Value, json};
 use std::ffi::c_void;

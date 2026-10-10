@@ -134,12 +134,14 @@ struct ExceptionPointers {
 }
 
 unsafe extern "system" fn vectored_exception_handler(info: *mut ExceptionPointers) -> i32 {
-    if !info.is_null() && !(*info).record.is_null() {
-        let rec = &*(*info).record;
-        eprintln!(
-            "EXCEPTION: code=0x{:08x} address=0x{:016x}",
-            rec.code, rec.address as usize
-        );
+    unsafe {
+        if !info.is_null() && !(*info).record.is_null() {
+            let rec = &*(*info).record;
+            eprintln!(
+                "EXCEPTION: code=0x{:08x} address=0x{:016x}",
+                rec.code, rec.address as usize
+            );
+        }
     }
     0 // EXCEPTION_CONTINUE_SEARCH
 }

@@ -1,4 +1,5 @@
 //! Native operations and capability analysis for SchedulerSharedData handles on Windows 11.
+#![allow(unsafe_op_in_unsafe_fn)]
 use crate::native::*;
 use serde_json::{Value, json};
 use std::ffi::c_void;
