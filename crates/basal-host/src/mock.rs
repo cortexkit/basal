@@ -141,6 +141,12 @@ struct Controls {
     installs: HashMap<(String, u32), Option<InstallStatus>>,
     /// Every install status question asked, in order.
     install_queries: Vec<(String, u32)>,
+    scope_descriptions: Vec<(
+        subc_protocol::Principal,
+        String,
+        Result<crate::ScopeDescription, crate::ScopeDescribeError>,
+    )>,
+    scope_queries: Vec<(subc_protocol::Principal, String)>,
 }
 
 struct Shared {
@@ -188,6 +194,27 @@ fn op_names(kind: &CallKind) -> (String, String) {
 impl MockHost {
     pub fn new() -> Self {
         Self::build(State::default(), None)
+    }
+
+    /// Supplies a daemon describe answer without opening a daemon connection.
+    /// Unconfigured selectors remain unavailable rather than granting a scope.
+    pub fn set_scope_description(
+        &self,
+        owner: subc_protocol::Principal,
+        scope_ref: &str,
+        answer: Result<crate::ScopeDescription, crate::ScopeDescribeError>,
+    ) {
+        let mut controls = lock(&self.shared.controls);
+        controls
+            .scope_descriptions
+            .retain(|(o, r, _)| o != &owner || r != scope_ref);
+        controls
+            .scope_descriptions
+            .push((owner, scope_ref.into(), answer));
+    }
+
+    pub fn scope_queries(&self) -> Vec<(subc_protocol::Principal, String)> {
+        lock(&self.shared.controls).scope_queries.clone()
     }
 
     /// A mock whose remote state lives in `path`, loaded if it exists and
@@ -576,6 +603,21 @@ impl MockHost {
 }
 
 impl Host for MockHost {
+    fn scope_describe(
+        &self,
+        owner: &subc_protocol::Principal,
+        scope_ref: &str,
+    ) -> Result<crate::ScopeDescription, crate::ScopeDescribeError> {
+        let mut controls = lock(&self.shared.controls);
+        let key = (owner.clone(), scope_ref.to_owned());
+        controls.scope_queries.push(key.clone());
+        controls
+            .scope_descriptions
+            .iter()
+            .find(|(o, r, _)| o == owner && r == scope_ref)
+            .map(|(_, _, answer)| answer.clone())
+            .unwrap_or_else(|| Err(crate::ScopeDescribeError::Unavailable))
+    }
     fn install_status(&self, flow_id: &str, version: u32) -> Result<InstallStatus, TransportError> {
         let mut controls = lock(&self.shared.controls);
         controls.install_queries.push((flow_id.to_owned(), version));
