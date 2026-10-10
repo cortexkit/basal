@@ -153,11 +153,7 @@ mod tests {
             kind: ScopeKind::Head,
             parent: None,
             parent_state: None,
-            attributes: ScopeAttributes {
-                agent_id: agent.map(str::to_owned),
-                delegates: false,
-                flow_id: None,
-            },
+            attributes: ScopeAttributes::new().with_agent_id(agent.map(str::to_owned)),
             owner_authorized: authorized,
         }
     }

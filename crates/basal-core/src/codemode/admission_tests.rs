@@ -23,7 +23,7 @@ fn description(agent: &str) -> basal_host::ScopeDescription {
         "owner_configured": true,
         "scope": {"owner": {"kind": "reserved", "module_id": "prefrontal-core"},
             "ref": "scope:run", "scope_epoch": 19, "kind": "head",
-            "attributes": {"agent_id": agent}, "owner_authorized": true}
+            "attributes": {"agent_id": agent, "run_id": "run"}, "owner_authorized": true}
     }))
     .unwrap()
 }
@@ -39,8 +39,14 @@ fn set_description(host: &MockHost, answer: basal_host::ScopeDescription) {
 }
 
 fn host(agent: &str) -> MockHost {
+    host_for_run(agent, "run")
+}
+
+fn host_for_run(agent: &str, run_id: &str) -> MockHost {
     let host = MockHost::new();
-    set_description(&host, description(agent));
+    let mut answer = description(agent);
+    answer.scope.as_mut().unwrap().attributes.run_id = Some(run_id.into());
+    set_description(&host, answer);
     host
 }
 
@@ -174,7 +180,7 @@ fn known_id_precedes_every_check_and_returns_the_original_payload() {
 fn concurrent_first_admits_grant_one_start_token() {
     let t = Arc::new(temp_store());
     seed(&t.store, "agent", 1);
-    let mock = Arc::new(host("agent"));
+    let mock = Arc::new(host_for_run("agent", "same"));
     let rendezvous = Arc::new((Mutex::new(0), Condvar::new()));
     let h = Arc::new(DescribeHost({
         let mock = mock.clone();
@@ -308,7 +314,7 @@ fn known_id_needs_no_write_lock_or_describe() {
 #[test]
 fn pruned_id_is_unknown_and_never_admitted_again() {
     let t = temp_store();
-    let h = host("agent");
+    let h = host_for_run("agent", "pruned");
     let mut req = request("pruned", "agent");
     req["deadline_ms"] = json!(NOW);
     stored(accept(&t.store, &h, &Clock::manual(NOW), &req));
@@ -453,6 +459,43 @@ fn attested_agent_mismatch_precedes_request_limits_and_catalog() {
         &request("run", "claimed-agent"),
         "scope_mismatch",
     );
+}
+
+#[test]
+fn attested_run_match_grants_one_start_token() {
+    let t = temp_store();
+    let h = host_for_run("agent", "attested-run");
+    let req = request("attested-run", "agent");
+    let (run, start) = stored(accept(&t.store, &h, &Clock::manual(NOW), &req));
+    assert_eq!(run.run_id, "attested-run");
+    assert_eq!(run.agent_id, "agent");
+    assert!(start.is_some());
+    assert_eq!(row_count(&t.store), 1);
+    assert_eq!(h.scope_queries().len(), 1);
+    assert!(matches!(
+        accept(&t.store, &h, &Clock::manual(NOW), &req),
+        Admission::Existing(_)
+    ));
+    assert_eq!(h.scope_queries().len(), 1);
+}
+
+#[test]
+fn attested_run_mismatch_or_absence_precedes_request_limits_and_catalog() {
+    let t = temp_store();
+    let h = host("agent");
+    for run_id in [Some("different-run".to_owned()), None] {
+        let mut answer = description("agent");
+        answer.scope.as_mut().unwrap().attributes.run_id = run_id;
+        set_description(&h, answer);
+        let mut req = request("run", "agent");
+        refused(&t.store, &h, &req, "scope_mismatch");
+        req["program"] = json!(false);
+        req["limits"] = json!({"unknown": 0});
+        req["catalog"] = json!(false);
+        refused(&t.store, &h, &req, "scope_mismatch");
+    }
+    assert_eq!(h.scope_queries().len(), 4);
+    assert_eq!(row_count(&t.store), 0);
 }
 
 #[test]
@@ -698,13 +741,13 @@ fn same_document_schema_compiles_once_and_scope_targets_come_from_modules() {
 fn agent_cap_is_two_attested_nonterminal_runs_in_the_transaction() {
     for at_cap in [2, 3] {
         let t = temp_store();
-        let h = host("actual");
+        let h = host_for_run("actual", "new");
         seed(&t.store, "actual", at_cap);
         refused(&t.store, &h, &request("new", "actual"), "busy");
         refused(&t.store, &h, &request("new", "other"), "scope_mismatch");
     }
     let t = temp_store();
-    let h = host("actual");
+    let h = host_for_run("actual", "new");
     seed(&t.store, "actual", 1);
     let (_, start) = stored(accept(
         &t.store,
@@ -725,14 +768,14 @@ fn agent_cap_is_two_attested_nonterminal_runs_in_the_transaction() {
 fn basal_cap_is_sixteen_nonterminal_runs_in_the_transaction() {
     for at_cap in [16, 17] {
         let t = temp_store();
-        let h = host("new-agent");
+        let h = host_for_run("new-agent", "new");
         for i in 0..at_cap {
             seed(&t.store, &format!("agent:{i}"), 1);
         }
         refused(&t.store, &h, &request("new", "new-agent"), "busy");
     }
     let t = temp_store();
-    let h = host("new-agent");
+    let h = host_for_run("new-agent", "new");
     for i in 0..15 {
         seed(&t.store, &format!("agent:{i}"), 1);
     }
@@ -754,19 +797,15 @@ fn basal_cap_is_sixteen_nonterminal_runs_in_the_transaction() {
 fn concurrent_distinct_admits_cannot_overfill_the_agent_cap() {
     let t = Arc::new(temp_store());
     seed(&t.store, "agent", 1);
-    let h = Arc::new(host("agent"));
     let barrier = Arc::new(Barrier::new(2));
     let threads: Vec<_> = (0..2)
         .map(|i| {
-            let (t, h, barrier) = (t.clone(), h.clone(), barrier.clone());
+            let (t, barrier) = (t.clone(), barrier.clone());
             std::thread::spawn(move || {
+                let id = format!("new:{i}");
+                let h = host_for_run("agent", &id);
                 barrier.wait();
-                accept(
-                    &t.store,
-                    &h,
-                    &Clock::manual(NOW),
-                    &request(&format!("new:{i}"), "agent"),
-                )
+                accept(&t.store, &h, &Clock::manual(NOW), &request(&id, "agent"))
             })
         })
         .collect();
@@ -789,9 +828,10 @@ fn concurrent_distinct_admits_cannot_overfill_the_agent_cap() {
 #[test]
 fn deadline_at_or_before_admission_inserts_terminal_without_a_start_token() {
     let t = temp_store();
-    let h = host("agent");
     for deadline in [NOW - 1, NOW] {
-        let mut req = request(&format!("expired:{deadline}"), "agent");
+        let id = format!("expired:{deadline}");
+        let h = host_for_run("agent", &id);
+        let mut req = request(&id, "agent");
         req["deadline_ms"] = json!(deadline);
         let (run, start) = stored(accept(&t.store, &h, &Clock::manual(NOW), &req));
         assert!(
@@ -824,6 +864,7 @@ fn wall_deadline_uses_the_injected_clock_and_saturating_addition() {
     req["limits"] = json!({"wall_ms": 1});
     let (_, start) = stored(accept(&t.store, &h, &Clock::manual(NOW), &req));
     assert_eq!(start.unwrap().wall_deadline_ms, NOW + 1);
+    let h = host_for_run("agent", "default");
     let (_, start) = stored(accept(
         &t.store,
         &h,

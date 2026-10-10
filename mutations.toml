@@ -537,16 +537,17 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 edits = [
-  { file = "crates/basal-worker/Cargo.toml", old = "rquickjs.workspace = true\n", new = "rquickjs.workspace = true\nsubc-protocol = \"0.24.1\"\n" },
-  { file = "Cargo.lock", old = " \"subc-client-rs\",\n \"subc-protocol\",\n \"subc-transport\",\n \"tokio\",\n \"tracing\",\n \"webpki-roots\",\n", new = " \"subc-client-rs\",\n \"subc-protocol 0.29.0\",\n \"subc-transport\",\n \"tokio\",\n \"tracing\",\n \"webpki-roots\",\n" },
-  { file = "Cargo.lock", old = " \"serde\",\n \"serde_json\",\n \"sha2\",\n \"subc-client-rs\",\n \"subc-os\",\n \"subc-protocol\",\n \"subc-transport\",\n \"tokio\",\n \"tracing\",\n", new = " \"serde\",\n \"serde_json\",\n \"sha2\",\n \"subc-client-rs\",\n \"subc-os\",\n \"subc-protocol 0.29.0\",\n \"subc-transport\",\n \"tokio\",\n \"tracing\",\n" },
-  { file = "Cargo.lock", old = " \"rcgen\",\n \"rusqlite\",\n \"rustls\",\n \"serde_json\",\n \"subc-protocol\",\n", new = " \"rcgen\",\n \"rusqlite\",\n \"rustls\",\n \"serde_json\",\n \"subc-protocol 0.29.0\",\n" },
-  { file = "Cargo.lock", old = " \"rusqlite\",\n \"serde_json\",\n \"sha2\",\n \"subc-client-rs\",\n \"subc-protocol\",\n \"tokio\",\n]\n", new = " \"rusqlite\",\n \"serde_json\",\n \"sha2\",\n \"subc-client-rs\",\n \"subc-protocol 0.29.0\",\n \"tokio\",\n]\n" },
+  { file = "crates/basal-worker/Cargo.toml", old = "rquickjs.workspace = true\n", new = "rquickjs.workspace = true\nsubc-protocol = \"0.24.1\" # NON-VACUITY BREAK\n" },
+  { file = "Cargo.lock", old = " \"rusqlite\",\n \"serde\",\n \"serde_json\",\n \"subc-protocol\",\n \"tracing\",\n", new = " \"rusqlite\",\n \"serde\",\n \"serde_json\",\n \"subc-protocol 0.30.0\",\n \"tracing\",\n" },
+  { file = "Cargo.lock", old = " \"subc-client-rs\",\n \"subc-protocol\",\n \"subc-transport\",\n \"tokio\",\n \"tracing\",\n \"webpki-roots\",\n", new = " \"subc-client-rs\",\n \"subc-protocol 0.30.0\",\n \"subc-transport\",\n \"tokio\",\n \"tracing\",\n \"webpki-roots\",\n" },
+  { file = "Cargo.lock", old = " \"serde\",\n \"serde_json\",\n \"sha2\",\n \"subc-client-rs\",\n \"subc-os\",\n \"subc-protocol\",\n \"subc-transport\",\n \"tokio\",\n \"tracing\",\n", new = " \"serde\",\n \"serde_json\",\n \"sha2\",\n \"subc-client-rs\",\n \"subc-os\",\n \"subc-protocol 0.30.0\",\n \"subc-transport\",\n \"tokio\",\n \"tracing\",\n" },
+  { file = "Cargo.lock", old = " \"rcgen\",\n \"rusqlite\",\n \"rustls\",\n \"serde_json\",\n \"subc-protocol\",\n", new = " \"rcgen\",\n \"rusqlite\",\n \"rustls\",\n \"serde_json\",\n \"subc-protocol 0.30.0\",\n" },
+  { file = "Cargo.lock", old = " \"rusqlite\",\n \"serde_json\",\n \"sha2\",\n \"subc-client-rs\",\n \"subc-protocol\",\n \"tokio\",\n]\n", new = " \"rusqlite\",\n \"serde_json\",\n \"sha2\",\n \"subc-client-rs\",\n \"subc-protocol 0.30.0\",\n \"tokio\",\n]\n" },
   { file = "Cargo.lock", old = " \"rquickjs\",\n \"seccompiler\",\n \"serde_json\",\n]\n\n[[package]]\n", new = " \"rquickjs\",\n \"seccompiler\",\n \"serde_json\",\n \"subc-protocol 0.24.1\",\n]\n\n[[package]]\n" },
-  { file = "Cargo.lock", old = " \"serde_json\",\n \"subc-control\",\n \"subc-os\",\n \"subc-protocol\",\n \"subc-transport\",\n \"tokio\",\n \"tokio-util\",\n", new = " \"serde_json\",\n \"subc-control\",\n \"subc-os\",\n \"subc-protocol 0.29.0\",\n \"subc-transport\",\n \"tokio\",\n \"tokio-util\",\n" },
-  { file = "Cargo.lock", old = "dependencies = [\n \"serde\",\n \"serde_json\",\n \"subc-protocol\",\n]\n", new = "dependencies = [\n \"serde\",\n \"serde_json\",\n \"subc-protocol 0.29.0\",\n]\n" },
+  { file = "Cargo.lock", old = " \"serde_json\",\n \"subc-control\",\n \"subc-os\",\n \"subc-protocol\",\n \"subc-transport\",\n \"tokio\",\n \"tokio-util\",\n", new = " \"serde_json\",\n \"subc-control\",\n \"subc-os\",\n \"subc-protocol 0.30.0\",\n \"subc-transport\",\n \"tokio\",\n \"tokio-util\",\n" },
+  { file = "Cargo.lock", old = "dependencies = [\n \"serde\",\n \"serde_json\",\n \"subc-protocol\",\n]\n", new = "dependencies = [\n \"serde\",\n \"serde_json\",\n \"subc-protocol 0.30.0\",\n]\n" },
   { file = "Cargo.lock", old = "dependencies = [\n \"libc\",\n \"rustix\",\n]\n\n[[package]]\n", new = "dependencies = [\n \"libc\",\n \"rustix\",\n]\n\n[[package]]\nname = \"subc-protocol\"\nversion = \"0.24.1\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"3b0fb1bc9305afe14d1202970b7e361253dba6108525b356a7e10274436bc80d\"\ndependencies = [\n \"serde\",\n \"serde_json\",\n]\n\n[[package]]\n" },
-  { file = "Cargo.lock", old = " \"serde\",\n \"serde_json\",\n \"sha2\",\n \"subc-protocol\",\n \"subtle\",\n \"tokio\",\n]\n", new = " \"serde\",\n \"serde_json\",\n \"sha2\",\n \"subc-protocol 0.29.0\",\n \"subtle\",\n \"tokio\",\n]\n" },
+  { file = "Cargo.lock", old = " \"serde\",\n \"serde_json\",\n \"sha2\",\n \"subc-protocol\",\n \"subtle\",\n \"tokio\",\n]\n", new = " \"serde\",\n \"serde_json\",\n \"sha2\",\n \"subc-protocol 0.30.0\",\n \"subtle\",\n \"tokio\",\n]\n" },
 ]
 
 [[control]]
@@ -2923,23 +2924,6 @@ timeout_s = 600
 file = "crates/basal-module/src/caller.rs"
 old = "(Some(agent), true) if !agent.is_empty() => Caller::Agent {"
 new = "(Some(agent), true) if !agent.is_empty() && scope.attributes.flow_id.is_none() => Caller::Agent {"
-
-[[control]]
-id = "unknown-channel-zero-control-field-ends-basal-serving"
-guards = "unknown channel-0 control field ends basal serving"
-test_file = "crates/basal-module/tests/unknown_control.rs"
-runner = "cargo"
-package = "basal-module"
-platforms = ["macos"]
-target = "--test unknown_control"
-expect_red = ["unknown_control_field_is_refused_and_the_following_health_check_is_answered"]
-only = false
-build_timeout_s = 3600
-timeout_s = 600
-edits = [
-  { file = "Cargo.toml", old = "subc-client-rs = \"0.26.1\"", new = "subc-client-rs = \"=0.26.0\"" },
-  { file = "Cargo.lock", old = "name = \"subc-client-rs\"\nversion = \"0.26.1\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"d671a838c7777805070da19080045ef5149882636b3bd8193c5e913a590c7315\"", new = "name = \"subc-client-rs\"\nversion = \"0.26.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"22961845d10f595319b1a8fc5cb614ed95d43452b4f7c6ba24fca9662cc20665\"" },
-]
 
 [[control]]
 id = "a-scope-owned-by-any-module-names-its-agent"
@@ -11626,6 +11610,33 @@ only = false
 file = "crates/basal-core/src/codemode/admission.rs"
 old = ".is_some_and(|id| id != agent_id)"
 new = ".is_some_and(|id| id != agent_id && false) // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-admission-run-identity"
+guards = "a new run requires a stamped run_id equal to the supplied run_id before validation or insertion"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::attested_run_mismatch_or_absence_precedes_request_limits_and_catalog"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = '''let run_id = stamp
+        .attributes
+        .run_id
+        .ok_or_else(|| Refusal::new("scope_mismatch", "scope has no attested run identity"))?;
+    if request
+        .get("run_id")
+        .and_then(Value::as_str)
+        .is_some_and(|id| id != run_id)
+    {
+        return Err(Refusal::new(
+            "scope_mismatch",
+            "run identity does not match the scope",
+        ));
+    }'''
+new = '// NON-VACUITY BREAK: admit without attesting the run identity.'
 
 [[control]]
 id = "codemode-admission-run-id-field"

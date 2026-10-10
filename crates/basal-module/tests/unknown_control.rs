@@ -62,11 +62,7 @@ fn route_bind_with_future_scope_field() -> Vec<u8> {
         kind: ScopeKind::Head,
         parent: None,
         parent_state: None,
-        attributes: ScopeAttributes {
-            agent_id: Some("SYNAPSE".into()),
-            delegates: false,
-            flow_id: None,
-        },
+        attributes: ScopeAttributes::new().with_agent_id(Some("SYNAPSE".into())),
         owner_authorized: true,
     };
     let request = ModuleControlRequest::RouteBind {
