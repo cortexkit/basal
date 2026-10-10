@@ -1,7 +1,8 @@
 use super::*;
 use basal_host::mock::MockHost;
 use serde_json::json;
-use std::sync::{Arc, Barrier};
+use std::sync::{Arc, Barrier, Condvar, Mutex};
+use std::time::Duration;
 
 use super::super::store::tests::temp_store;
 
@@ -41,6 +42,55 @@ fn host(agent: &str) -> MockHost {
     let host = MockHost::new();
     set_description(&host, description(agent));
     host
+}
+
+struct DescribeHost<F>(F);
+
+impl<F> Host for DescribeHost<F>
+where
+    F: Fn(
+            &Principal,
+            &str,
+        )
+            -> std::result::Result<basal_host::ScopeDescription, basal_host::ScopeDescribeError>
+        + Send
+        + Sync,
+{
+    fn scope_describe(
+        &self,
+        owner: &Principal,
+        scope_ref: &str,
+    ) -> std::result::Result<basal_host::ScopeDescription, basal_host::ScopeDescribeError> {
+        (self.0)(owner, scope_ref)
+    }
+    fn classify(&self, _: &basal_proto::CallKind) -> basal_host::CallClass {
+        panic!("admission must not classify a flow call")
+    }
+    fn dispatch(
+        &self,
+        _: &basal_host::CallRequest,
+    ) -> std::result::Result<basal_host::Dispatched, basal_host::TransportError> {
+        panic!("admission must not dispatch a flow call")
+    }
+    fn attach(&self, _: Arc<dyn basal_host::CompletionSink>) {}
+    fn now_ms(&self) -> f64 {
+        panic!("admission must use its injected clock")
+    }
+    fn random(&self) -> f64 {
+        panic!("admission must not request host randomness")
+    }
+}
+
+fn database_path(store: &Store) -> String {
+    store
+        .read(|c| {
+            Ok(c.query_row(
+                "SELECT file FROM pragma_database_list WHERE name = 'main'",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap()
 }
 
 fn accept(store: &Store, host: &MockHost, clock: &Clock, request: &Value) -> Admission {
@@ -123,14 +173,41 @@ fn known_id_precedes_every_check_and_returns_the_original_payload() {
 #[test]
 fn concurrent_first_admits_grant_one_start_token() {
     let t = Arc::new(temp_store());
-    let h = Arc::new(host("agent"));
-    let barrier = Arc::new(Barrier::new(2));
+    seed(&t.store, "agent", 1);
+    let mock = Arc::new(host("agent"));
+    let rendezvous = Arc::new((Mutex::new(0), Condvar::new()));
+    let h = Arc::new(DescribeHost({
+        let mock = mock.clone();
+        move |owner: &Principal, scope_ref: &str| {
+            // Both callers must finish their initial unknown-id read before
+            // either can insert. A bounded wait also catches a misplaced lock
+            // without leaving the test suite stuck at a barrier forever.
+            let (arrivals, wake) = &*rendezvous;
+            let mut arrived = arrivals.lock().unwrap();
+            *arrived += 1;
+            wake.notify_all();
+            let (arrived, _) = wake
+                .wait_timeout_while(arrived, Duration::from_secs(5), |n| *n < 2)
+                .unwrap();
+            assert_eq!(
+                *arrived, 2,
+                "both admissions must reach describe without a write lock"
+            );
+            mock.scope_describe(owner, scope_ref)
+        }
+    }));
     let mut threads = Vec::new();
     for _ in 0..2 {
-        let (t, h, barrier) = (t.clone(), h.clone(), barrier.clone());
+        let (t, h) = (t.clone(), h.clone());
         threads.push(std::thread::spawn(move || {
-            barrier.wait();
-            accept(&t.store, &h, &Clock::manual(NOW), &request("same", "agent"))
+            admit(
+                &t.store,
+                &*h,
+                &Clock::manual(NOW),
+                Platform::Unix,
+                &request("same", "agent"),
+            )
+            .unwrap()
         }));
     }
     let mut starts = 0;
@@ -143,8 +220,89 @@ fn concurrent_first_admits_grant_one_start_token() {
         }
     }
     assert_eq!((starts, existing), (1, 1));
+    assert_eq!(mock.scope_queries().len(), 2);
+    assert_eq!(row_count(&t.store), 2);
+}
+
+#[test]
+fn describe_can_write_while_admission_is_attesting() {
+    let t = temp_store();
+    let path = database_path(&t.store);
+    let h = DescribeHost(move |_: &Principal, _: &str| {
+        // A separate connection probes SQLite's actual write lock, with no
+        // busy wait. Calling Store::write here could instead deadlock on the
+        // store's connection mutex and hide the regression behind a timeout.
+        let mut connection = rusqlite::Connection::open(&path).unwrap();
+        connection.busy_timeout(Duration::ZERO).unwrap();
+        let tx = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .expect("describe must be able to acquire the SQLite write lock");
+        tx.execute(
+            "INSERT INTO meta (key, value) VALUES ('describe_probe', 'written')",
+            [],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        Ok(description("agent"))
+    });
+    let (_, start) = stored(
+        admit(
+            &t.store,
+            &h,
+            &Clock::manual(NOW),
+            Platform::Unix,
+            &request("run", "agent"),
+        )
+        .unwrap(),
+    );
+    assert!(start.is_some());
+    let written: String = t
+        .store
+        .read(|c| {
+            Ok(c.query_row(
+                "SELECT value FROM meta WHERE key = 'describe_probe'",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(written, "written");
+}
+
+#[test]
+fn known_id_needs_no_write_lock_or_describe() {
+    let t = temp_store();
+    let h = host("agent");
+    let (original, _) = stored(accept(
+        &t.store,
+        &h,
+        &Clock::manual(NOW),
+        &request("run", "agent"),
+    ));
+    let path = database_path(&t.store);
+    t.store
+        .read(|c| {
+            c.busy_timeout(Duration::ZERO)?;
+            Ok(())
+        })
+        .unwrap();
+    let mut connection = rusqlite::Connection::open(path).unwrap();
+    let writer = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .unwrap();
+    let Admission::Existing(run) = admit(
+        &t.store,
+        &h,
+        &Clock::manual(NOW),
+        Platform::Windows,
+        &json!({"run_id":"run"}),
+    )
+    .unwrap() else {
+        panic!("known id must return through a read-only lookup");
+    };
+    assert_eq!(run, original);
     assert_eq!(h.scope_queries().len(), 1);
-    assert_eq!(row_count(&t.store), 1);
+    writer.rollback().unwrap();
 }
 
 #[test]

@@ -10940,8 +10940,8 @@ target = "--lib"
 expect_red = ["codemode::admission::tests::known_id_precedes_every_check_and_returns_the_original_payload"]
 only = false
 file = "crates/basal-core/src/codemode/admission.rs"
-old = "Lookup::Found(run) => return Ok(Admission::Existing(run)),"
-new = "Lookup::Found(_) => {}, // NON-VACUITY BREAK"
+old = "Lookup::Found(run) => Some(Admission::Existing(run)),"
+new = "Lookup::Found(_) => None, // NON-VACUITY BREAK"
 
 [[control]]
 id = "codemode-admission-pruned-id"
@@ -10954,13 +10954,11 @@ target = "--lib"
 expect_red = ["codemode::admission::tests::pruned_id_is_unknown_and_never_admitted_again"]
 only = false
 file = "crates/basal-core/src/codemode/admission.rs"
-old = '''Lookup::Pruned => {
-                    return Ok(Admission::Refused(Refusal::new(
-                        "unknown_run",
-                        "the run was pruned",
-                    )));
-                }'''
-new = "Lookup::Pruned => {}, // NON-VACUITY BREAK"
+old = '''Lookup::Pruned => Some(Admission::Refused(Refusal::new(
+            "unknown_run",
+            "the run was pruned",
+        ))),'''
+new = "Lookup::Pruned => None, // NON-VACUITY BREAK"
 
 [[control]]
 id = "codemode-admission-platform"
@@ -11579,3 +11577,47 @@ only = false
 file = "crates/basal-core/src/codemode/admission.rs"
 old = "let n = value.as_i64().filter(|n| *n >= 1).ok_or_else(invalid)?;"
 new = "let n = value.as_f64().map(|n| n as i64).filter(|n| *n >= 1).ok_or_else(invalid)?; // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-admission-describe-without-write-lock"
+guards = "scope attestation must not hold SQLite's write lock across a daemon call"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::describe_can_write_while_admission_is_attesting"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = "let agent_id = attest(host, &scope, request)?;"
+new = "let agent_id = store.write(|_| Ok(attest(host, &scope, request))).unwrap()?; // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-admission-known-id-read-only"
+guards = "a known id requires no write lock, scope attestation or new start token"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::known_id_needs_no_write_lock_or_describe"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = "store.read(|conn| known(conn, run_id))?"
+new = "store.write(|conn| known(conn, run_id))? /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "codemode-admission-recheck-id-under-write-lock"
+guards = "the transactional id recheck gives a concurrent duplicate the winner's stored run before busy"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::concurrent_first_admits_grant_one_start_token"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = '''if let Some(known) = known(tx, fields.run_id)? {
+            return Ok(known);
+        }'''
+new = '''let _ = known(tx, fields.run_id)?; // NON-VACUITY BREAK'''

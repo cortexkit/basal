@@ -10,6 +10,7 @@ use basal_host::flow_scope::{FlowScope, RegisteredScope};
 use basal_host::{Host, ScopeStatus};
 use basal_proto::{MAX_NAME_BYTES, MAX_SCRIPT_BYTES};
 use jsonschema::Validator;
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use subc_protocol::Principal;
@@ -112,8 +113,10 @@ type Checked<T> = std::result::Result<T, Refusal>;
 
 /// Accepts raw operation arguments so earlier checks precede decoding later
 /// fields, including on a repeat whose new arguments are entirely invalid.
-/// Known-id lookup, concurrency counts and insertion share one immediate
-/// transaction. Only its winner returns a start token, and only after commit.
+/// Known ids return through a read-only lookup. Scope attestation and schema
+/// compilation run without a write lock so they cannot stall flow writes.
+/// An immediate transaction rechecks the id, counts concurrency and inserts;
+/// only its winner returns a start token, and only after commit.
 pub fn admit(
     store: &Store,
     host: &dyn Host,
@@ -121,37 +124,41 @@ pub fn admit(
     platform: Platform,
     request: &Value,
 ) -> Result<Admission> {
+    if let Some(run_id) = request.get("run_id").and_then(Value::as_str)
+        && let Some(known) = store.read(|conn| known(conn, run_id))?
+    {
+        return Ok(known);
+    }
+    if platform == Platform::Windows {
+        return Ok(Admission::Refused(Refusal::new(
+            "unsupported_platform",
+            "codemode is not supported on Windows",
+        )));
+    }
+    let checked = (|| {
+        let scope = scope_shape(request)?;
+        let agent_id = attest(host, &scope, request)?;
+        let fields = request_fields(request)?;
+        let limits = limits(request.get("limits"))?;
+        let tools = catalog(fields.catalog)?;
+        Ok((scope, agent_id, fields, limits, tools))
+    })();
+    let (scope, agent_id, fields, limits, tools) = match checked {
+        Ok(checked) => checked,
+        Err(refusal) => return Ok(Admission::Refused(refusal)),
+    };
+    let catalog_text = fields.catalog.to_string();
+    let digest = catalog_digest(fields.catalog).map_err(|e| CoreError::Invalid(e.to_string()))?;
+    let limits_text =
+        serde_json::to_string(&limits).map_err(|e| CoreError::Invalid(e.to_string()))?;
+    let scope_text =
+        serde_json::to_string(&scope).map_err(|e| CoreError::Invalid(e.to_string()))?;
     store.write(|tx| {
-        if let Some(run_id) = request.get("run_id").and_then(Value::as_str) {
-            match store::lookup(tx, run_id)? {
-                Lookup::Found(run) => return Ok(Admission::Existing(run)),
-                Lookup::Pruned => {
-                    return Ok(Admission::Refused(Refusal::new(
-                        "unknown_run",
-                        "the run was pruned",
-                    )));
-                }
-                Lookup::Unknown => {}
-            }
+        // Another caller may have admitted or pruned this id while the daemon
+        // was describing its scope. That caller's stored payload takes priority.
+        if let Some(known) = known(tx, fields.run_id)? {
+            return Ok(known);
         }
-        if platform == Platform::Windows {
-            return Ok(Admission::Refused(Refusal::new(
-                "unsupported_platform",
-                "codemode is not supported on Windows",
-            )));
-        }
-        let checked = (|| {
-            let scope = scope_shape(request)?;
-            let agent_id = attest(host, &scope, request)?;
-            let fields = request_fields(request)?;
-            let limits = limits(request.get("limits"))?;
-            let tools = catalog(fields.catalog)?;
-            Ok((scope, agent_id, fields, limits, tools))
-        })();
-        let (scope, agent_id, fields, limits, tools) = match checked {
-            Ok(checked) => checked,
-            Err(refusal) => return Ok(Admission::Refused(refusal)),
-        };
         let (agent_runs, basal_runs) = store::running_counts(tx, &agent_id)?;
         if agent_runs >= MAX_AGENT_RUNS || basal_runs >= MAX_BASAL_RUNS {
             return Ok(Admission::Refused(Refusal::new(
@@ -173,13 +180,6 @@ pub fn admit(
             output: String::new(),
             warnings: "[]".into(),
         });
-        let catalog_text = fields.catalog.to_string();
-        let digest =
-            catalog_digest(fields.catalog).map_err(|e| CoreError::Invalid(e.to_string()))?;
-        let limits_text =
-            serde_json::to_string(&limits).map_err(|e| CoreError::Invalid(e.to_string()))?;
-        let scope_text =
-            serde_json::to_string(&scope).map_err(|e| CoreError::Invalid(e.to_string()))?;
         let new = NewRun {
             run_id: fields.run_id,
             agent_id: &agent_id,
@@ -212,6 +212,17 @@ pub fn admit(
             })
         });
         Ok(Admission::Admitted { run, start })
+    })
+}
+
+fn known(conn: &Connection, run_id: &str) -> Result<Option<Admission>> {
+    Ok(match store::lookup(conn, run_id)? {
+        Lookup::Found(run) => Some(Admission::Existing(run)),
+        Lookup::Pruned => Some(Admission::Refused(Refusal::new(
+            "unknown_run",
+            "the run was pruned",
+        ))),
+        Lookup::Unknown => None,
     })
 }
 
