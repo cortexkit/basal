@@ -1069,6 +1069,15 @@ impl Runtime {
         // A run waiting to ask core again is not offered, so a pass loop
         // cannot ask about it on every pass while core is unreachable.
         runs.retain(|(run_id, _)| self.gate_wait(run_id).is_none());
+        let now = self.config.clock.now_ms();
+        let waiting: std::collections::BTreeSet<String> = self.store().read(|c| {
+            Ok(c.prepare(
+                "SELECT run_id FROM event_body_journal WHERE body IS NULL AND retry_at>?1",
+            )?
+            .query_map([now], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?)
+        })?;
+        runs.retain(|(run_id, _)| !waiting.contains(run_id));
         Ok(runs)
     }
 

@@ -1,0 +1,582 @@
+{
+  "runner": "ckdev-mutate 0.9.8",
+  "platform": "linux",
+  "cargo": "1.99.0",
+  "green_name_groups": {
+    "basal-module --test module_events": [
+      "deliver_all_first_batch_is_bounded_and_history_cannot_flood_runs",
+      "journal_then_ack_crash_redelivers_without_second_run_across_restart",
+      "no_match_is_acked_without_any_store_row",
+      "per_flow_fanout_rolls_back_before_ack_on_commit_failure",
+      "slow_commit_sends_progress_before_ack_wait_expires"
+    ],
+    "basal-core --lib": [
+      "clock::tests::a_system_clock_keeps_no_watchers",
+      "clock::tests::manual_moves_call_live_watchers_and_forget_dropped_ones",
+      "codemode::admission::tests::agent_cap_is_two_attested_nonterminal_runs_in_the_transaction",
+      "codemode::admission::tests::attested_agent_mismatch_precedes_request_limits_and_catalog",
+      "codemode::admission::tests::attested_run_match_grants_one_start_token",
+      "codemode::admission::tests::attested_run_mismatch_or_absence_precedes_request_limits_and_catalog",
+      "codemode::admission::tests::basal_cap_is_sixteen_nonterminal_runs_in_the_transaction",
+      "codemode::admission::tests::catalog_array_and_exact_entry_keys_are_required",
+      "codemode::admission::tests::concurrent_distinct_admits_cannot_overfill_the_agent_cap",
+      "codemode::admission::tests::concurrent_first_admits_grant_one_start_token",
+      "codemode::admission::tests::deadline_at_or_before_admission_inserts_terminal_without_a_start_token",
+      "codemode::admission::tests::describe_can_write_while_admission_is_attesting",
+      "codemode::admission::tests::description_utf8_byte_limit_is_inclusive_and_preserves_the_text",
+      "codemode::admission::tests::descriptions_refuse_each_line_break_character",
+      "codemode::admission::tests::duplicate_tool_names_are_refused",
+      "codemode::admission::tests::injected_windows_is_refused_before_scope_or_request_checks",
+      "codemode::admission::tests::invalid_catalog_precedes_busy",
+      "codemode::admission::tests::known_id_needs_no_write_lock_or_describe",
+      "codemode::admission::tests::known_id_precedes_every_check_and_returns_the_original_payload",
+      "codemode::admission::tests::limits_refuse_unknown_keys_and_non_positive_non_integer_values",
+      "codemode::admission::tests::module_and_op_are_nonempty_strings_with_a_128_byte_cap",
+      "codemode::admission::tests::non_live_status_and_epoch_mismatch_precede_request_validation",
+      "codemode::admission::tests::non_reserved_owner_and_blank_ref_are_refused_before_describe",
+      "codemode::admission::tests::pruned_id_is_unknown_and_never_admitted_again",
+      "codemode::admission::tests::required_request_fields_are_checked_after_attestation_before_limits",
+      "codemode::admission::tests::reserved_tool_names_are_refused_and_named_in_the_message",
+      "codemode::admission::tests::same_document_schema_compiles_once_and_scope_targets_come_from_modules",
+      "codemode::admission::tests::schema_failures_and_external_refs_refuse_before_insertion",
+      "codemode::admission::tests::scope_shape_precedes_attestation_and_needs_no_flow_targets",
+      "codemode::admission::tests::script_byte_limit_is_inclusive",
+      "codemode::admission::tests::tool_and_output_limits_accept_the_cap_and_refuse_cap_plus_one",
+      "codemode::admission::tests::tool_names_are_ascii_identifiers_of_at_most_128_bytes",
+      "codemode::admission::tests::unavailable_describe_has_no_authority",
+      "codemode::admission::tests::wall_deadline_uses_the_injected_clock_and_saturating_addition",
+      "codemode::canonical::tests::json_number_spellings_collapse_to_one_form",
+      "codemode::canonical::tests::json_text_parses_to_the_nearest_double",
+      "codemode::canonical::tests::member_names_sort_by_utf16_code_units",
+      "codemode::canonical::tests::nested_values_have_no_whitespace",
+      "codemode::canonical::tests::numbers_match_the_rfc_8785_appendix_b_table",
+      "codemode::canonical::tests::strings_use_the_shortest_escapes_and_lowercase_hex",
+      "codemode::canonical::tests::the_rfc_8785_example_canonicalizes_exactly",
+      "codemode::catalog::tests::a_catalog_without_names_cannot_be_digested",
+      "codemode::catalog::tests::a_number_and_its_string_spelling_differ",
+      "codemode::catalog::tests::a_schema_that_does_not_compile_is_invalid",
+      "codemode::catalog::tests::an_empty_catalog_has_a_digest",
+      "codemode::catalog::tests::formats_are_annotations_not_assertions",
+      "codemode::catalog::tests::non_ascii_text_and_control_characters_are_canonical",
+      "codemode::catalog::tests::references_outside_the_document_are_refused_even_when_they_would_compile",
+      "codemode::catalog::tests::reordered_entries_keys_and_number_spellings_share_one_digest",
+      "codemode::catalog::tests::same_document_references_compile",
+      "codemode::catalog::tests::schemas_are_draft_2020_12",
+      "codemode::catalog::tests::the_compiler_alone_honours_a_declared_draft",
+      "codemode::catalog::tests::the_compiler_alone_resolves_in_document_absolute_references",
+      "codemode::catalog::tests::the_compiler_never_retrieves_an_external_schema",
+      "codemode::catalog::tests::the_digest_is_blake3_of_canonical_json_with_entries_sorted_by_name",
+      "codemode::retention::tests::a_run_is_pruned_24_hours_and_1_ms_after_it_ends",
+      "codemode::retention::tests::a_running_run_is_never_pruned",
+      "codemode::retention::tests::flow_paths_never_see_codemode_rows",
+      "codemode::retention::tests::the_schema_deletes_a_run_only_behind_its_tombstone",
+      "codemode::retention::tests::the_schema_refuses_to_reuse_a_pruned_run_id",
+      "codemode::retention::tests::the_sweep_prunes_oldest_first_in_bounded_batches",
+      "codemode::retention::tests::tombstones_are_permanent",
+      "codemode::store::tests::a_known_run_id_keeps_its_first_admission",
+      "codemode::store::tests::a_queued_call_is_sent_only_while_it_is_still_queued",
+      "codemode::store::tests::a_recorded_outcome_never_changes",
+      "codemode::store::tests::a_refusal_before_send_has_no_intent_and_no_duration",
+      "codemode::store::tests::a_run_admitted_at_its_deadline_is_stored_already_ended",
+      "codemode::store::tests::a_terminal_write_never_overwrites_another",
+      "codemode::store::tests::an_admitted_run_reads_back_as_admitted",
+      "codemode::store::tests::call_keys_are_the_codemode_idempotency_keys",
+      "codemode::store::tests::committing_a_terminal_status_settles_pending_calls_in_the_same_transaction",
+      "codemode::store::tests::running_runs_are_counted_per_agent_and_in_total",
+      "codemode::store::tests::termination_cancels_queued_calls_and_marks_sent_calls_unknown",
+      "codemode::store::tests::the_migration_adds_codemode_tables_apart_from_the_flow_tables",
+      "codemode::store::tests::the_schema_bounds_the_description",
+      "codemode::store::tests::the_schema_refuses_a_call_for_a_run_that_is_not_running",
+      "codemode::store::tests::the_schema_refuses_to_change_a_recorded_outcome",
+      "codemode::store::tests::the_schema_refuses_to_change_a_terminal_run",
+      "codemode::store::tests::the_schema_refuses_to_end_a_run_with_a_pending_call",
+      "codemode::supervisor::tests::a_manual_clock_jump_past_the_deadline_ends_a_sleeping_run",
+      "codemode::supervisor::tests::a_run_waiting_on_a_held_tool_sleeps_until_the_answer_wakes_it",
+      "codemode::supervisor::tests::activation_failure_table_and_engine_budgets_are_exhaustive",
+      "codemode::supervisor::tests::admission_limits_drive_the_supervisor_deadline",
+      "codemode::supervisor::tests::an_output_overflow_drops_even_later_lines_that_would_fit",
+      "codemode::supervisor::tests::calls_after_a_completion_frame_are_not_recorded_and_unowned_exit_is_worker_lost",
+      "codemode::supervisor::tests::cancel_closes_core_scope_before_worker_kill",
+      "codemode::supervisor::tests::cancel_settles_sent_and_queued_calls_never_sends_queue_or_records_late_answer",
+      "codemode::supervisor::tests::closed_scope_without_another_dispatch_still_completes",
+      "codemode::supervisor::tests::configured_tool_budget_is_enforced_before_the_unknown_tool_check",
+      "codemode::supervisor::tests::daemon_scope_end_interrupts_without_waiting_for_another_dispatch",
+      "codemode::supervisor::tests::each_scope_loss_records_the_refusal_preserves_earlier_ok_and_interrupts",
+      "codemode::supervisor::tests::eight_in_flight_queue_fifo_and_completion_drains_unawaited_calls",
+      "codemode::supervisor::tests::entry_time_migration_preserves_old_calls_and_reinstalls_guards",
+      "codemode::supervisor::tests::every_non_scope_wire_error_is_recorded_then_rejected_without_ending_run",
+      "codemode::supervisor::tests::input_and_answer_at_one_mib_pass_but_larger_answer_rejects",
+      "codemode::supervisor::tests::intent_to_entry_delay_is_not_provider_time_and_unentered_intents_have_no_duration",
+      "codemode::supervisor::tests::live_supervisors_cannot_be_recovered_and_return_unknown_ids_as_absent",
+      "codemode::supervisor::tests::manual_clock_fires_omitted_wall_at_deadline_and_wall_one_at_admission_plus_one",
+      "codemode::supervisor::tests::output_cap_is_inclusive_truncates_whole_lines_once_and_survives_wall_kill",
+      "codemode::supervisor::tests::panicking_driver_terminates_and_start_rejects_duplicate_or_terminal_runs",
+      "codemode::supervisor::tests::per_call_checks_are_ordered_and_never_write_intent_before_readiness",
+      "codemode::supervisor::tests::person_time_requires_blocked_worker_and_every_flight_held",
+      "codemode::supervisor::tests::person_wait_hook_exhausts_one_accumulated_run_budget",
+      "codemode::supervisor::tests::queue_byte_cap_is_inclusive_and_overflow_has_no_row_or_intent",
+      "codemode::supervisor::tests::queued_readiness_refusal_has_no_intent_and_wall_expiring_during_readiness_never_sends",
+      "codemode::supervisor::tests::raw_ops_and_all_primitives_are_profile_violations_without_rows_or_sends",
+      "codemode::supervisor::tests::raw_scope_expired_refusal_and_provider_denial_have_distinct_outcomes",
+      "codemode::supervisor::tests::restart::construction_recovers_every_running_row_before_returning",
+      "codemode::supervisor::tests::restart::construction_refuses_to_serve_when_recovery_cannot_settle",
+      "codemode::supervisor::tests::restart::crash_after_admission_before_spawn_is_interrupted_at_construction",
+      "codemode::supervisor::tests::restart::crash_after_answer_before_record_is_unknown_without_resend",
+      "codemode::supervisor::tests::restart::crash_after_intent_is_unknown_and_never_sent_on_restart",
+      "codemode::supervisor::tests::restart::crash_after_query_send_is_unknown_and_provider_sees_one_attempt",
+      "codemode::supervisor::tests::restart::crash_after_queue_commit_cancels_only_the_unsent_call",
+      "codemode::supervisor::tests::restart::crash_child",
+      "codemode::supervisor::tests::restart::recorded_ok_survives_process_restart_in_result",
+      "codemode::supervisor::tests::restart_closes_leftover_core_scope_without_starting_worker",
+      "codemode::supervisor::tests::return_boundary_non_json_and_stalled_have_exact_terminal_codes",
+      "codemode::supervisor::tests::shutdown_joins_a_driver_after_its_active_slot_is_released",
+      "codemode::supervisor::tests::shutdown_joins_the_worker_reader_of_a_cancelled_run",
+      "codemode::supervisor::tests::shutdown_refuses_to_start_a_new_driver",
+      "codemode::supervisor::tests::spawn_failure_and_restart_use_ordered_termination_without_resending",
+      "codemode::supervisor::tests::supervisor_registers_routes_records_before_delivery_and_releases",
+      "codemode::supervisor::tests::tool_provider_migration_preserves_calls_and_schedules_legacy_scope_close",
+      "codemode::supervisor::tests::two_hundred_refusals_count_and_the_next_invocation_has_no_row",
+      "events::tests::backlog_is_bounded_overflow_is_reported_and_oldest_runs_first",
+      "events::tests::body_bytes_are_hashed_independently",
+      "events::tests::body_is_journaled_before_script_and_replay_never_calls_live",
+      "events::tests::body_returning_after_deadline_is_not_delivered_to_script",
+      "events::tests::digest_spelling_is_exact_and_only_notice_prefix_is_normalized",
+      "events::tests::each_events_get_refusal_preserves_its_failure_kind",
+      "events::tests::event_body_resolver_must_be_granted",
+      "events::tests::event_body_resolver_must_be_query",
+      "events::tests::fanout_commits_atomically_and_only_matches_enabled_approved_flows",
+      "events::tests::malformed_notices_are_refused_before_admission",
+      "events::tests::notice_digest_must_match_body",
+      "events::tests::receipts_keep_eight_days_and_prune_by_index_with_tombstone_dedup",
+      "events::tests::reply_digest_must_match_notice",
+      "events::tests::same_key_on_different_subjects_is_not_a_duplicate",
+      "events::tests::synthetic_event_dry_run_never_resolves_live",
+      "events::tests::unavailable_body_is_deferred_with_backoff_until_deadline",
+      "gate::removal_tests::new_gate_backoffs_reap_terminal_and_pruned_runs",
+      "gate::removal_tests::next_wake_includes_the_install_gate_retry",
+      "gate::removal_tests::removed_cancellation_rechecks_mark_in_its_write_transaction",
+      "gate::removal_tests::removed_instance_gate_reports_removal_not_revocation",
+      "ids::tests::code_hash_matches_the_shared_vectors",
+      "ids::tests::code_hash_separates_script_from_manifest",
+      "ids::tests::keys_differ_by_every_input_and_are_stable",
+      "maintenance::tests::completed_runs_do_not_keep_deferred_or_deadline_timers_live",
+      "maintenance::tests::next_schedule_uses_the_due_index",
+      "maintenance::tests::next_wake_combines_schedule_deadline_deferred_pool_and_retention",
+      "maintenance::tests::timer_plans_use_the_ordered_wake_indexes",
+      "manifest::tests::digest_actions_order_from_silent_to_wake",
+      "manifest::tests::durations_parse_only_whole_positive_numbers_with_one_unit",
+      "manifest::tests::multibyte_durations_are_refused_without_panicking",
+      "runtime::grant_loss_tests::core_revocation_stops_grant_polling_without_provider_calls",
+      "runtime::grant_loss_tests::grant_absence_disables_and_keeps_one_durable_subject",
+      "runtime::grant_loss_tests::grant_card_answer_to_a_superseded_body_cannot_stop_current_polling",
+      "runtime::grant_loss_tests::grant_card_check_now_schedules_an_immediate_scoped_read",
+      "runtime::grant_loss_tests::grant_card_expiry_keeps_polling_and_explicit_keep_stops_it",
+      "runtime::grant_loss_tests::grant_loss_after_unknown_disables_without_relabelling_the_earlier_call",
+      "runtime::grant_loss_tests::grant_polling_uses_injected_backoff_and_requires_registered_scope",
+      "runtime::grant_loss_tests::immediate_check_and_multiple_grants_do_not_clear_other_causes",
+      "runtime::grant_loss_tests::keeping_disabled_stops_polling_until_explicit_owner_enable",
+      "runtime::grant_loss_tests::older_raise_ack_cannot_replace_the_current_grant_card_identity",
+      "runtime::grant_loss_tests::removed_flow_stops_restoration_without_provider_reads",
+      "runtime::grant_loss_tests::restored_card_withdrawal_is_durable_even_after_a_late_raise_ack",
+      "runtime::grant_loss_tests::restored_grant_reenables_only_its_own_disable",
+      "runtime::grant_loss_tests::retirement_after_unknown_preserves_reconcile_then_not_applied_fails_once",
+      "runtime::grant_loss_tests::retirement_clears_only_when_reinstall_no_longer_involves_the_agent",
+      "runtime::grant_loss_tests::retirement_is_durable_health_without_a_card_and_enable_is_typed_refusal",
+      "runtime::grant_loss_tests::stale_positive_diagnostic_cannot_clear_a_repeat_loss",
+      "runtime::grant_loss_tests::structured_grants_have_stable_keys_and_oversized_grants_are_not_echoed",
+      "runtime::regressions::a_mailbox_winner_prevents_a_false_reconcile_transition",
+      "runtime::regressions::a_non_storage_driver_error_exits_the_claim_and_frees_the_slot",
+      "runtime::regressions::claim_expiry_acknowledges_the_deferred_snapshot_after_commit",
+      "runtime::regressions::completed_thread_handles_are_reaped_during_normal_spawning",
+      "runtime::regressions::enabling_an_enabled_flow_preserves_its_saturation_streak",
+      "runtime::regressions::journal_size_counts_bytes_once_across_arrival_delivery_duplicates_and_rollback",
+      "runtime::regressions::malformed_optional_refusal_detail_does_not_halt_deadline_enforcement",
+      "runtime::regressions::missing_rows_are_not_storage_failures",
+      "runtime::regressions::provider_deferral_uses_its_own_backoff_not_transport_or_install_gate_settings",
+      "runtime::regressions::pruning_is_a_bounded_batch",
+      "runtime::regressions::pruning_keeps_a_terminal_run_with_an_unsettled_journal_call",
+      "runtime::regressions::pruning_keeps_unacknowledged_broca_snapshots_and_open_cards",
+      "runtime::regressions::pruning_preserves_a_terminal_run_until_its_refusal_acknowledgement_is_delivered",
+      "runtime::regressions::refused_resend_keeps_the_last_ambiguous_send_reason",
+      "runtime::regressions::retention_prunes_old_history_but_keeps_live_obligations_and_card_episodes",
+      "runtime::regressions::retention_runs_from_the_production_deadline_pass",
+      "runtime::regressions::retirement_fails_through_the_terminal_transition_and_blocks_approval_reenable",
+      "runtime::regressions::runtime_clock_dates_run_end_activation_and_quarantine_consistently",
+      "runtime::regressions::scope_refusal_after_an_ambiguous_send_stays_unknown",
+      "runtime::regressions::terminal_transitions_settle_every_deferred_call",
+      "runtime::regressions::wait_for_reports_unsatisfied_predicates_as_timeouts",
+      "runtime_authorization_regressions::corrupt_oldest_fire_does_not_block_healthy_fires",
+      "runtime_authorization_regressions::corrupt_schedule_does_not_block_healthy_schedules",
+      "runtime_authorization_regressions::decision_prompts_identify_the_calendar_day",
+      "runtime_authorization_regressions::facts_include_must_be_an_array",
+      "runtime_authorization_regressions::health_does_not_hide_a_store_error",
+      "runtime_authorization_regressions::huge_usage_settles_and_keeps_window_totals_integral",
+      "runtime_authorization_regressions::instance_collision_cannot_change_a_regular_flow",
+      "schema::consent_tests::decision_path_migration_preserves_all_legacy_intents_and_withdrawals",
+      "schema::flow_deferral_tests::current_store_refuses_a_deferred_call_with_a_refusal_outside_the_closed_set",
+      "schema::flow_deferral_tests::deferred_state_requires_closed_typed_refusal_and_retry_metadata",
+      "schema::flow_deferral_tests::grant_decision_migration_preserves_existing_cards_and_named_indexes",
+      "schema::flow_deferral_tests::grant_loss_migration_preserves_journal_children_and_backfills_retirement",
+      "schema::flow_deferral_tests::migration_preserves_all_existing_dispatch_states_and_foreign_key_children",
+      "schema::health_tests::additive_health_indexes_preserve_populated_tables_in_every_state",
+      "schema::package_tests::additive_package_migration_preserves_rows_in_every_schema_nine_table",
+      "schema::retention_tests::additive_retention_indexes_preserve_populated_tables_in_every_state",
+      "schema::retention_tests::audit_retention_plan",
+      "schema::retention_tests::call_audit_refund_window_plan",
+      "schema::retention_tests::call_audit_retention_plan",
+      "schema::retention_tests::decision_cards_retention_plan",
+      "schema::retention_tests::indexable_ordering_preserves_candidate_and_history_batches",
+      "schema::retention_tests::outbox_refusal_run_plan",
+      "schema::retention_tests::outbox_retention_plan",
+      "schema::retention_tests::quarantine_obligation_plan",
+      "schema::retention_tests::quarantine_retention_plan",
+      "schema::retention_tests::rate_windows_retention_plan",
+      "schema::retention_tests::refusal_expression_preserves_run_id_text_affinity",
+      "schema::retention_tests::runs_retention_plan",
+      "schema::retention_tests::schedule_dropped_retention_plan",
+      "schema::retention_tests::token_ledger_retention_plan",
+      "schema::retention_tests::token_ledger_retention_window_plan",
+      "schema::retention_tests::token_windows_retention_plan"
+    ],
+    "basal-host --lib": [
+      "broca::subc::tests::failed_polls_back_off_exponentially_to_a_cap",
+      "broca::subc::tests::only_a_finished_run_wakes_the_host_and_closes_the_stream",
+      "broca::subc::tests::stream_and_reconnect_wakeups_are_coalesced_without_a_clock",
+      "builtins::fs::linux::tests::file_root_parent_descriptor_cannot_authorize_a_sibling_name",
+      "builtins::fs::linux::tests::file_root_parent_identity_is_checked_even_when_the_file_inode_is_unchanged",
+      "builtins::fs::tests::replacement_mode_never_carries_setuid_or_setgid",
+      "builtins::git::tests::git_waiter_timeout_kills_the_process_group_and_reaps_the_child",
+      "builtins::git::tests::overflowing_or_malformed_log_timestamps_are_refused_not_dropped",
+      "builtins::git::tests::show_distinguishes_missing_blob_from_broken_repository",
+      "builtins::git::tests::tag_output_is_bounded_while_reading_not_after_completion",
+      "builtins::net::tests::dns_receives_the_fetch_deadline",
+      "builtins::net::tests::nonstandard_https_port_is_refused_before_dns",
+      "builtins::net::tests::redirect_headers_require_the_same_https_origin",
+      "builtins::net::tests::relative_redirects_keep_embedded_urls_and_the_current_query_path",
+      "builtins::net::tests::response_header_count_is_bounded_by_bytes_not_128_slots",
+      "builtins::tests::encoded_result_limit_never_fulfills_null",
+      "cingulate_consent::tests::a_legacy_only_adapter_cannot_move_an_owned_consent_card",
+      "cingulate_consent::tests::a_lost_request_reply_still_wakes_the_owned_answer_inventory",
+      "core_consent::polling_tests::failed_ack_is_retried_after_the_last_card_closes",
+      "core_consent::polling_tests::grant_lost_request_has_closed_body_and_choice_ids",
+      "core_consent::polling_tests::idle_consent_makes_zero_rpcs",
+      "core_consent::polling_tests::open_cards_back_off_to_five_seconds_and_a_raise_resets_fast_polling",
+      "core_consent::polling_tests::startup_reconciles_closed_unacked_cards_then_stays_idle",
+      "flow_refusal::tests::consent_and_retirement_ignore_detail_and_message",
+      "flow_refusal::tests::grant_absence_is_typed_and_preserves_oversized_references",
+      "flow_refusal::tests::malformed_busy_cannot_prove_unsent",
+      "flow_refusal::tests::resource_busy_uses_shared_type_and_validates",
+      "flow_scope::tests::a_scope_closed_route_is_not_reopened_under_the_same_selector",
+      "flow_scope::tests::an_open_reply_cannot_install_after_scope_or_connection_changes",
+      "flow_scope::tests::epoch_change_drops_the_old_handle_and_reuses_the_new_one",
+      "flow_scope::tests::install_scope_fields_are_absent_or_a_complete_registered_selector",
+      "flow_scope::tests::scope_bookkeeping_forgets_removed_flows_but_preserves_shared_authority",
+      "mock::tests::a_fault_after_the_effect_reports_unavailable_but_keeps_the_effect",
+      "mock::tests::calls_meeting_at_a_rendezvous_are_counted_together",
+      "mock::tests::keyed_mutations_apply_once_and_unkeyed_ones_every_time",
+      "mock::tests::persistent_state_survives_a_reload",
+      "run_scope::tests::exact_run_scope_wire_shapes",
+      "subc_catalog::event_tests::catalog_event_lookup_requires_the_declared_name_and_version",
+      "transport::tests::completion_failed_is_an_unreadable_reply",
+      "transport::tests::connection_failed_is_a_lost_connection",
+      "transport::tests::consumer_closed_is_a_lost_connection",
+      "transport::tests::deadline_is_a_reply_timeout",
+      "transport::tests::every_call_error_variant_maps_to_never_sent_or_one_unknown_reason",
+      "transport::tests::grant_polling_never_uses_an_unscoped_route",
+      "transport::tests::grant_reply_must_name_the_requested_reference_and_known_verdict",
+      "transport::tests::malformed_management_errors_are_unreadable_not_connection_loss",
+      "transport::tests::malformed_typed_busy_is_unreadable_not_provably_unsent",
+      "transport::tests::model_refusal_has_provider_and_action_after_envelope_decoding",
+      "transport::tests::no_cause_is_a_lost_connection",
+      "transport::tests::opening_a_route_does_not_hold_the_control_table_lock",
+      "transport::tests::real_subc_transport_opens_scoped_ops_and_models_and_reuses_routes",
+      "transport::tests::route_ended_is_a_lost_connection",
+      "transport::tests::run_tool_routes_copy_bind_identity_and_outlive_transport_fallback_wait",
+      "transport::tests::scoped_model_calls_keep_per_call_sessions_across_runs_and_recovery",
+      "transport::tests::stale_handle_does_not_leave_a_scope_tombstone",
+      "transport::tests::stale_handle_mapping_keeps_the_client_handle_detail",
+      "transport::tests::stale_model_request_can_reopen_without_a_scope_epoch_change",
+      "transport::tests::stale_model_subscription_evicts_its_dead_handle",
+      "transport::tests::writer_closed_is_a_lost_connection"
+    ],
+    "basal-module --test event_preamble": [
+      "worker_preamble_supplies_verified_json_and_synthetic_capture_calls_nothing_live"
+    ]
+  },
+  "rows": [
+    {
+      "id": "event-ack-precedes-commit",
+      "outcome": "CAUGHT",
+      "red": [
+        "per_flow_fanout_rolls_back_before_ack_on_commit_failure"
+      ],
+      "failures": {
+        "per_flow_fanout_rolls_back_before_ack_on_commit_failure": "\nthread 'per_flow_fanout_rolls_back_before_ack_on_commit_failure' (15953) panicked at crates/basal-module/tests/module_events.rs:202:5:\nassertion `left == right` failed: failed commit must not ack\n  left: 0\n right: 1\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\n"
+      },
+      "target": "basal-module --test module_events",
+      "green_count": 4,
+      "green_exclusions": [
+        "per_flow_fanout_rolls_back_before_ack_on_commit_failure"
+      ]
+    },
+    {
+      "id": "event-backlog-bound-removed",
+      "outcome": "CAUGHT",
+      "red": [
+        "events::tests::backlog_is_bounded_overflow_is_reported_and_oldest_runs_first"
+      ],
+      "failures": {
+        "events::tests::backlog_is_bounded_overflow_is_reported_and_oldest_runs_first": "\nthread 'events::tests::backlog_is_bounded_overflow_is_reported_and_oldest_runs_first' (2761) panicked at crates/basal-core/src/events_tests.rs:188:5:\nassertion `left == right` failed\n  left: (1, 122, 0)\n right: (1, 120, 2)\n\n\n"
+      },
+      "target": "basal-core --lib",
+      "green_count": 225,
+      "green_exclusions": [
+        "events::tests::backlog_is_bounded_overflow_is_reported_and_oldest_runs_first"
+      ]
+    },
+    {
+      "id": "event-body-hash-check-removed",
+      "outcome": "CAUGHT",
+      "red": [
+        "events::tests::body_bytes_are_hashed_independently"
+      ],
+      "failures": {
+        "events::tests::body_bytes_are_hashed_independently": "\nthread 'events::tests::body_bytes_are_hashed_independently' (3601) panicked at crates/basal-core/src/events_tests.rs:285:5:\nassertion `left == right` failed\n  left: Ok([123, 34, 99, 104, 97, 110, 103, 101, 100, 34, 58, 102, 97, 108, 115, 101, 125])\n right: Err(\"event_body_mismatch\")\n\n\n"
+      },
+      "target": "basal-core --lib",
+      "green_count": 225,
+      "green_exclusions": [
+        "events::tests::body_bytes_are_hashed_independently"
+      ]
+    },
+    {
+      "id": "event-catalog-name-check-removed",
+      "outcome": "CAUGHT",
+      "red": [
+        "subc_catalog::event_tests::catalog_event_lookup_requires_the_declared_name_and_version"
+      ],
+      "failures": {
+        "subc_catalog::event_tests::catalog_event_lookup_requires_the_declared_name_and_version": "\nthread 'subc_catalog::event_tests::catalog_event_lookup_requires_the_declared_name_and_version' (13311) panicked at crates/basal-host/src/subc_catalog.rs:259:9:\nassertion failed: declared_event(&events, \"github_issue_changed\", 1).is_none()\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\n"
+      },
+      "target": "basal-host --lib",
+      "green_count": 58,
+      "green_exclusions": [
+        "subc_catalog::event_tests::catalog_event_lookup_requires_the_declared_name_and_version"
+      ]
+    },
+    {
+      "id": "event-deferred-run-starts-early",
+      "outcome": "CAUGHT",
+      "red": [
+        "events::tests::unavailable_body_is_deferred_with_backoff_until_deadline"
+      ],
+      "failures": {
+        "events::tests::unavailable_body_is_deferred_with_backoff_until_deadline": "\nthread 'events::tests::unavailable_body_is_deferred_with_backoff_until_deadline' (12844) panicked at crates/basal-core/src/events_tests.rs:404:5:\nassertion failed: f.rt.startable().unwrap().is_empty()\n\n\n"
+      },
+      "target": "basal-core --lib",
+      "green_count": 225,
+      "green_exclusions": [
+        "events::tests::unavailable_body_is_deferred_with_backoff_until_deadline"
+      ]
+    },
+    {
+      "id": "event-key-omits-subject",
+      "outcome": "CAUGHT",
+      "red": [
+        "events::tests::same_key_on_different_subjects_is_not_a_duplicate"
+      ],
+      "failures": {
+        "events::tests::same_key_on_different_subjects_is_not_a_duplicate": "\nthread 'events::tests::same_key_on_different_subjects_is_not_a_duplicate' (4452) panicked at crates/basal-core/src/events_tests.rs:468:5:\nassertion `left == right` failed\n  left: 1\n right: 2\n\n\n"
+      },
+      "target": "basal-core --lib",
+      "green_count": 225,
+      "green_exclusions": [
+        "events::tests::same_key_on_different_subjects_is_not_a_duplicate"
+      ]
+    },
+    {
+      "id": "event-late-body-admitted",
+      "outcome": "CAUGHT",
+      "red": [
+        "events::tests::body_returning_after_deadline_is_not_delivered_to_script"
+      ],
+      "failures": {
+        "events::tests::body_returning_after_deadline_is_not_delivered_to_script": "\nthread 'events::tests::body_returning_after_deadline_is_not_delivered_to_script' (5281) panicked at crates/basal-core/src/events_tests.rs:501:5:\nassertion failed: matches!(f.rt.event_preamble(&run,&Manifest::parse(&run.manifest).unwrap()).unwrap(),\n    Preamble::Failed {kind,..} if kind == \"deadline\")\n\n\n"
+      },
+      "target": "basal-core --lib",
+      "green_count": 225,
+      "green_exclusions": [
+        "events::tests::body_returning_after_deadline_is_not_delivered_to_script"
+      ]
+    },
+    {
+      "id": "event-no-match-ack-removed",
+      "outcome": "CAUGHT",
+      "red": [
+        "no_match_is_acked_without_any_store_row"
+      ],
+      "failures": {
+        "no_match_is_acked_without_any_store_row": "\nthread 'no_match_is_acked_without_any_store_row' (16594) panicked at crates/basal-module/tests/module_events.rs:187:5:\nassertion `left == right` failed\n  left: 1\n right: 0\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\n"
+      },
+      "target": "basal-module --test module_events",
+      "green_count": 0,
+      "green_exclusions": [
+        "deliver_all_first_batch_is_bounded_and_history_cannot_flood_runs",
+        "journal_then_ack_crash_redelivers_without_second_run_across_restart",
+        "no_match_is_acked_without_any_store_row",
+        "per_flow_fanout_rolls_back_before_ack_on_commit_failure",
+        "slow_commit_sends_progress_before_ack_wait_expires"
+      ]
+    },
+    {
+      "id": "event-notice-digest-check-removed",
+      "outcome": "CAUGHT",
+      "red": [
+        "events::tests::notice_digest_must_match_body"
+      ],
+      "failures": {
+        "events::tests::notice_digest_must_match_body": "\nthread 'events::tests::notice_digest_must_match_body' (6127) panicked at crates/basal-core/src/events_tests.rs:303:5:\nassertion `left == right` failed\n  left: Ok([123, 34, 99, 104, 97, 110, 103, 101, 100, 34, 58, 32, 116, 114, 117, 101, 125])\n right: Err(\"event_body_mismatch\")\n\n\n"
+      },
+      "target": "basal-core --lib",
+      "green_count": 225,
+      "green_exclusions": [
+        "events::tests::notice_digest_must_match_body"
+      ]
+    },
+    {
+      "id": "event-receipt-dedup-removed",
+      "outcome": "CAUGHT",
+      "red": [
+        "events::tests::backlog_is_bounded_overflow_is_reported_and_oldest_runs_first"
+      ],
+      "failures": {
+        "events::tests::backlog_is_bounded_overflow_is_reported_and_oldest_runs_first": "\nthread 'events::tests::backlog_is_bounded_overflow_is_reported_and_oldest_runs_first' (6956) panicked at crates/basal-core/src/events_tests.rs:192:44:\ncalled `Result::unwrap()` on an `Err` value: Store(\"UNIQUE constraint failed: event_receipts.flow_id, event_receipts.subject, event_receipts.event_key\")\n\n\n"
+      },
+      "target": "basal-core --lib",
+      "green_count": 225,
+      "green_exclusions": [
+        "events::tests::backlog_is_bounded_overflow_is_reported_and_oldest_runs_first"
+      ]
+    },
+    {
+      "id": "event-receipt-retention-removed",
+      "outcome": "CAUGHT",
+      "red": [
+        "events::tests::receipts_keep_eight_days_and_prune_by_index_with_tombstone_dedup"
+      ],
+      "failures": {
+        "events::tests::receipts_keep_eight_days_and_prune_by_index_with_tombstone_dedup": "\nthread 'events::tests::receipts_keep_eight_days_and_prune_by_index_with_tombstone_dedup' (7806) panicked at crates/basal-core/src/events_tests.rs:230:5:\nassertion `left == right` failed\n  left: 1\n right: 0\n\n\n"
+      },
+      "target": "basal-core --lib",
+      "green_count": 225,
+      "green_exclusions": [
+        "events::tests::receipts_keep_eight_days_and_prune_by_index_with_tombstone_dedup"
+      ]
+    },
+    {
+      "id": "event-refusal-code-lost",
+      "outcome": "CAUGHT",
+      "red": [
+        "events::tests::each_events_get_refusal_preserves_its_failure_kind"
+      ],
+      "failures": {
+        "events::tests::each_events_get_refusal_preserves_its_failure_kind": "\nthread 'events::tests::each_events_get_refusal_preserves_its_failure_kind' (8639) panicked at crates/basal-core/src/events_tests.rs:385:9:\nassertion `left == right` failed\n  left: \"events_get_refused\"\n right: \"event_not_visible\"\n\n\n"
+      },
+      "target": "basal-core --lib",
+      "green_count": 225,
+      "green_exclusions": [
+        "events::tests::each_events_get_refusal_preserves_its_failure_kind"
+      ]
+    },
+    {
+      "id": "event-replay-fetches-live",
+      "outcome": "CAUGHT",
+      "red": [
+        "events::tests::body_is_journaled_before_script_and_replay_never_calls_live"
+      ],
+      "failures": {
+        "events::tests::body_is_journaled_before_script_and_replay_never_calls_live": "\nthread 'events::tests::body_is_journaled_before_script_and_replay_never_calls_live' (9475) panicked at crates/basal-core/src/events_tests.rs:31:38:\nremoval index (is 0) should be < len (is 0)\n\n\n"
+      },
+      "target": "basal-core --lib",
+      "green_count": 225,
+      "green_exclusions": [
+        "events::tests::body_is_journaled_before_script_and_replay_never_calls_live"
+      ]
+    },
+    {
+      "id": "event-reply-digest-check-removed",
+      "outcome": "CAUGHT",
+      "red": [
+        "events::tests::reply_digest_must_match_notice"
+      ],
+      "failures": {
+        "events::tests::reply_digest_must_match_notice": "\nthread 'events::tests::reply_digest_must_match_notice' (10324) panicked at crates/basal-core/src/events_tests.rs:294:5:\nassertion `left == right` failed\n  left: Ok([123, 34, 99, 104, 97, 110, 103, 101, 100, 34, 58, 32, 116, 114, 117, 101, 125])\n right: Err(\"event_body_mismatch\")\n\n\n"
+      },
+      "target": "basal-core --lib",
+      "green_count": 225,
+      "green_exclusions": [
+        "events::tests::reply_digest_must_match_notice"
+      ]
+    },
+    {
+      "id": "event-resolver-grant-check-removed",
+      "outcome": "CAUGHT",
+      "red": [
+        "events::tests::event_body_resolver_must_be_granted"
+      ],
+      "failures": {
+        "events::tests::event_body_resolver_must_be_granted": "\nthread 'events::tests::event_body_resolver_must_be_granted' (11157) panicked at crates/basal-core/src/events_tests.rs:275:5:\nassertion failed: matches!(f.rt.install(&request),\n    Err(crate::InstallError::EventBodyOpNotGranted { .. }))\n\n\n"
+      },
+      "target": "basal-core --lib",
+      "green_count": 225,
+      "green_exclusions": [
+        "events::tests::event_body_resolver_must_be_granted"
+      ]
+    },
+    {
+      "id": "event-resolver-query-check-removed",
+      "outcome": "CAUGHT",
+      "red": [
+        "events::tests::event_body_resolver_must_be_query"
+      ],
+      "failures": {
+        "events::tests::event_body_resolver_must_be_query": "\nthread 'events::tests::event_body_resolver_must_be_query' (11997) panicked at crates/basal-core/src/events_tests.rs:262:5:\nassertion failed: matches!(f.rt.install(&f.request(\"flow\")),\n    Err(crate::InstallError::ResolveOpNotQuery { .. }))\n\n\n"
+      },
+      "target": "basal-core --lib",
+      "green_count": 225,
+      "green_exclusions": [
+        "events::tests::event_body_resolver_must_be_query"
+      ]
+    },
+    {
+      "id": "event-slow-commit-progress-removed",
+      "outcome": "CAUGHT",
+      "red": [
+        "slow_commit_sends_progress_before_ack_wait_expires"
+      ],
+      "failures": {
+        "slow_commit_sends_progress_before_ack_wait_expires": "\nthread 'slow_commit_sends_progress_before_ack_wait_expires' (17272) panicked at crates/basal-module/tests/module_events.rs:293:5:\nprogress ack must prevent redelivery during a slow commit\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\n"
+      },
+      "target": "basal-module --test module_events",
+      "green_count": 4,
+      "green_exclusions": [
+        "slow_commit_sends_progress_before_ack_wait_expires"
+      ]
+    },
+    {
+      "id": "event-verified-trigger-not-forwarded",
+      "outcome": "CAUGHT",
+      "red": [
+        "worker_preamble_supplies_verified_json_and_synthetic_capture_calls_nothing_live"
+      ],
+      "failures": {
+        "worker_preamble_supplies_verified_json_and_synthetic_capture_calls_nothing_live": "\nthread 'worker_preamble_supplies_verified_json_and_synthetic_capture_calls_nothing_live' (14794) panicked at crates/basal-module/tests/event_preamble.rs:107:5:\nassertion `left == right` failed\n  left: Failed\n right: Succeeded\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\n"
+      },
+      "target": "basal-module --test event_preamble",
+      "green_count": 0,
+      "green_exclusions": [
+        "worker_preamble_supplies_verified_json_and_synthetic_capture_calls_nothing_live"
+      ]
+    }
+  ]
+}

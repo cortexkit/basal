@@ -57,6 +57,26 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt --component clippy
           rustup default stable
+      - name: Install pinned nats-server v2.15.0
+        shell: bash
+        run: |
+          case "$RUNNER_OS:$RUNNER_ARCH" in
+            Linux:X64) platform=linux-amd64; sha=5d2c51caca950333aba84911df7d377f826f3a59ec36061c6539105084f65c92 ;;
+            Linux:ARM64) platform=linux-arm64; sha=cdc208f5a3f42963a52b6ab06ef65626bb870315dc936e26ba571780c6351112 ;;
+            macOS:X64) platform=darwin-amd64; sha=5bd8b59ca5bf93fab3da2c5843cf564cd6e2e291e22ae3b861746e7ebe259b95 ;;
+            macOS:ARM64) platform=darwin-arm64; sha=e1c4e22d70bd44abfa0bcb3c16f7cf0c66f648c2e728c58924e8a1ce88913cc8 ;;
+            *) echo "No pinned NATS archive for $RUNNER_OS:$RUNNER_ARCH" >&2; exit 1 ;;
+          esac
+          archive="nats-server-v2.15.0-$platform.tar.gz"
+          curl --fail --location --retry 3 "https://github.com/nats-io/nats-server/releases/download/v2.15.0/$archive" -o "$RUNNER_TEMP/$archive"
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            echo "$sha  $RUNNER_TEMP/$archive" | sha256sum --check -
+          else
+            echo "$sha  $RUNNER_TEMP/$archive" | shasum -a 256 --check -
+          fi
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/nats-server-v2.15.0-$platform" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/nats-server-v2.15.0-$platform/nats-server" --version
       - name: Record installed Rust version
         id: rust
         run: echo "version=$(rustc --version | cut -d ' ' -f 2)" >> "$GITHUB_OUTPUT"
@@ -366,6 +386,22 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install pinned nats-server v2.15.0
+        shell: pwsh
+        run: |
+          switch ($env:RUNNER_ARCH) {
+            'X64' { $platform = 'windows-amd64'; $sha = '2d0861dc2ca3567d17f7d19611d7b346cc2ccbd7086a0a77cc957a2c71663200' }
+            'ARM64' { $platform = 'windows-arm64'; $sha = 'd468fa3f0ac953bed2219e37a2b5977d87cb8d705d5bbdc70b9f960e12fb7c38' }
+            default { throw "No pinned NATS archive for $env:RUNNER_ARCH" }
+          }
+          $archive = "nats-server-v2.15.0-$platform.zip"
+          $path = Join-Path $env:RUNNER_TEMP $archive
+          Invoke-WebRequest "https://github.com/nats-io/nats-server/releases/download/v2.15.0/$archive" -OutFile $path
+          if ((Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant() -ne $sha) { throw 'NATS archive SHA256 mismatch' }
+          Expand-Archive $path -DestinationPath $env:RUNNER_TEMP
+          $bin = Join-Path $env:RUNNER_TEMP "nats-server-v2.15.0-$platform"
+          $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & (Join-Path $bin 'nats-server.exe') --version
       - name: Install stable Rust
         run: |
           rustup toolchain install stable --profile minimal

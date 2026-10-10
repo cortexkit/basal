@@ -62,6 +62,10 @@ pub enum InstallError {
         module: String,
         op: String,
     },
+    EventBodyOpNotGranted {
+        module: String,
+        op: String,
+    },
     UnknownOp {
         module: String,
         op: String,
@@ -225,6 +229,12 @@ pub(crate) fn validate_inner(
                 let kind = catalog.op(&e.module, resolve_op).and_then(|d| d.kind);
                 if kind != Some(OpKind::Query) {
                     return Err(InstallError::ResolveOpNotQuery {
+                        module: e.module.clone(),
+                        op: resolve_op.clone(),
+                    });
+                }
+                if !manifest.lists_op(&e.module, resolve_op) {
+                    return Err(InstallError::EventBodyOpNotGranted {
                         module: e.module.clone(),
                         op: resolve_op.clone(),
                     });

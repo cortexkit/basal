@@ -118,6 +118,7 @@ fn serve() -> ExitCode {
     let built_models = models.clone();
     let initialized_models = models.clone();
     let ready_models = models.clone();
+    let event_transport = transport.clone();
     // Only the rig's kill switch reads this: the store path, once known.
     let store_path_cell = Arc::new(std::sync::OnceLock::<std::path::PathBuf>::new());
     let configured_store = store_path_cell.clone();
@@ -205,6 +206,7 @@ fn serve() -> ExitCode {
         }
         Ok(())
     }))
+    .with_event_reader(event_transport)
     .with_ready_hosts(Box::new(move || {
         if let Some(models) = ready_models
             .lock()

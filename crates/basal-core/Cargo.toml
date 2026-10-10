@@ -21,6 +21,7 @@ jiff.workspace = true
 jsonschema.workspace = true
 rusqlite.workspace = true
 serde.workspace = true
+sha2.workspace = true
 # Canonical JSON hashes the double a JSON number denotes, so a number must
 # parse to exactly the nearest double: without `float_roundtrip`, serde_json
 # may land one unit away, and a catalog digest would differ from the one

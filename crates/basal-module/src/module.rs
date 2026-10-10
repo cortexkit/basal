@@ -65,6 +65,7 @@ pub struct Module {
     pub catalog: Arc<dyn Catalog>,
     pub metrics: Arc<Metrics>,
     pub fatal: Fatal,
+    pub(crate) event_reader: Mutex<Option<crate::events::Reader>>,
     decisions: Arc<DecisionApplier>,
     /// How long drop waits for shutdown to release the module's threads.
     /// Tests shorten it to exercise a stalled shutdown quickly.
@@ -223,6 +224,7 @@ impl Module {
             catalog: hosts.catalog,
             metrics,
             fatal,
+            event_reader: Mutex::new(None),
             decisions,
             shutdown_grace: SHUTDOWN_GRACE,
         })
@@ -397,6 +399,11 @@ impl DecisionSink for DecisionApplier {
 
 impl Drop for Module {
     fn drop(&mut self) {
+        let event_reader = self
+            .event_reader
+            .get_mut()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
         let engine = self.engine.clone();
         let pool = self.pool.clone();
         let codemode_pool = self.codemode_pool.clone();
@@ -408,6 +415,7 @@ impl Drop for Module {
         // A stalled host must fail shutdown loudly, not leave drop hung forever.
         let (done, receiver) = std::sync::mpsc::channel();
         let shutdown = std::thread::spawn(move || {
+            drop(event_reader);
             engine.stop();
             if let Err(error) = codemode.stop() {
                 // Cancellation still kills workers and joins their drivers

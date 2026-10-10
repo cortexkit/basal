@@ -42,6 +42,7 @@ pub mod codemode;
 pub mod decisions;
 pub mod driver;
 pub mod error;
+pub mod events;
 mod flow_scope;
 pub mod gate;
 pub mod grant_loss;

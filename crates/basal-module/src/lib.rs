@@ -24,6 +24,7 @@ pub mod card;
 pub mod codemode;
 pub mod dryrun;
 pub mod engine;
+pub mod events;
 pub mod fatal;
 pub mod harness;
 pub mod manifest;

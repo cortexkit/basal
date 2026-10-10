@@ -311,6 +311,10 @@ ALTER TABLE installs ADD COLUMN revoked_reason TEXT;
         version: 21,
         statements: CODEMODE_MODELS,
     },
+    Migration {
+        version: 22,
+        statements: MODULE_EVENTS,
+    },
 ];
 
 const CODEMODE_MODELS: &str = r#"
@@ -329,6 +333,32 @@ CREATE TABLE codemode_broca_calls (
     position INTEGER NOT NULL,
     snapshot TEXT NOT NULL,
     FOREIGN KEY (run_id, position) REFERENCES codemode_calls(run_id, position) ON DELETE CASCADE
+);
+"#;
+
+const MODULE_EVENTS: &str = r#"
+CREATE TABLE event_receipts (
+    flow_id TEXT NOT NULL REFERENCES flows(flow_id),
+    subject TEXT NOT NULL,
+    event_key TEXT NOT NULL,
+    notice TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('admitted','backlog','refused')),
+    received_at INTEGER NOT NULL,
+    UNIQUE(flow_id,subject,event_key)
+);
+CREATE INDEX event_receipts_retention ON event_receipts(received_at) WHERE state<>'backlog';
+CREATE INDEX event_receipts_backlog ON event_receipts(flow_id,received_at) WHERE state='backlog';
+CREATE TABLE event_flow_health (
+    flow_id TEXT PRIMARY KEY REFERENCES flows(flow_id),
+    overflow INTEGER NOT NULL DEFAULT 0,
+    last_overflow_at INTEGER NOT NULL
+);
+CREATE TABLE event_body_journal (
+    run_id TEXT PRIMARY KEY REFERENCES runs(run_id) ON DELETE CASCADE,
+    body BLOB,
+    digest TEXT,
+    attempt INTEGER NOT NULL DEFAULT 0,
+    retry_at INTEGER
 );
 "#;
 

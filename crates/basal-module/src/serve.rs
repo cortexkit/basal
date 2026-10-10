@@ -119,6 +119,7 @@ pub struct BasalHandler {
     hosts: Arc<MakeHosts>,
     initialize: Arc<InitializeHosts>,
     ready: Arc<ReadyHosts>,
+    event_transport: Arc<Option<Arc<dyn basal_host::transport::Transport>>>,
     initialized: Arc<std::sync::atomic::AtomicBool>,
     tool_foreground: Duration,
 }
@@ -136,6 +137,7 @@ impl BasalHandler {
             hosts: Arc::new(hosts),
             initialize: Arc::new(Box::new(|_| Ok(()))),
             ready: Arc::new(Box::new(|| {})),
+            event_transport: Arc::new(None),
             initialized: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             tool_foreground: Duration::from_secs(25),
         }
@@ -146,6 +148,16 @@ impl BasalHandler {
     }
     pub fn with_ready_hosts(mut self, ready: ReadyHosts) -> Self {
         self.ready = Arc::new(ready);
+        self
+    }
+
+    /// Start consuming events after recovery, so new admissions cannot race
+    /// with requeuing runs that the previous module process left running.
+    pub fn with_event_reader(
+        mut self,
+        transport: Arc<dyn basal_host::transport::Transport>,
+    ) -> Self {
+        self.event_transport = Arc::new(Some(transport));
         self
     }
 
@@ -301,6 +313,7 @@ fn start(
     initialize: Arc<InitializeHosts>,
     ready: Arc<ReadyHosts>,
     phase: Arc<Mutex<Phase>>,
+    event_transport: Arc<Option<Arc<dyn basal_host::transport::Transport>>>,
 ) {
     std::thread::spawn(move || {
         let deadline = std::time::Instant::now() + OPEN_RETRY;
@@ -324,6 +337,12 @@ fn start(
         match started {
             Ok(module) => {
                 ready();
+                if let Some(transport) = event_transport.as_ref() {
+                    *lock(&module.event_reader) = Some(crate::events::Reader::start(
+                        module.rt.clone(),
+                        transport.clone(),
+                    ));
+                }
                 let module = Arc::new(module);
                 module.fatal.exit_when_raised();
                 module.engine.spawn_loop();
@@ -439,6 +458,7 @@ impl ModuleHandler for BasalHandler {
                 self.initialize.clone(),
                 self.ready.clone(),
                 self.phase.clone(),
+                self.event_transport.clone(),
             ),
             Err(e) => {
                 tracing::error!(target: "store", "{e}");
@@ -472,14 +492,24 @@ impl ModuleHandler for BasalHandler {
                 },
                 None => {
                     let pool = module.pool.stats();
+                    let events = lock(&module.event_reader)
+                        .as_ref()
+                        .map(crate::events::Reader::health);
+                    let event_error = events.as_ref().and_then(|h| {
+                        h.error
+                            .clone()
+                            .or_else(|| (!h.connected).then(|| "event reader connecting".into()))
+                    });
+                    let mut metrics = module.metrics.to_json();
+                    metrics["events"] = serde_json::to_value(events).unwrap_or(Value::Null);
                     HealthReport {
-                        status: if pool.spawn_error.is_some() {
+                        status: if pool.spawn_error.is_some() || event_error.is_some() {
                             HealthStatus::Degraded
                         } else {
                             HealthStatus::Ok
                         },
-                        detail: pool.spawn_error,
-                        metrics: Some(module.metrics.to_json()),
+                        detail: pool.spawn_error.or(event_error),
+                        metrics: Some(metrics),
                     }
                 }
             },
