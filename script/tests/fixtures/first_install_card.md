@@ -6,7 +6,7 @@
 - ck-basal-worker: @STAGE@/ck-basal-worker, sha256 worker-digest; basal-worker.current revision @SHA@
 - build: release, clean tree, CK_BUILD_GIT_SHA=@SHA@ CK_BUILD_GIT_DIRTY=false, commit on origin/main (fixture).
 - CI for that commit: completed success, https://example.test/push
-- daemon floor: 0.20.53, the oldest daemon a subc-protocol 0.29 module is known to run against.
+- daemon floor: 0.20.53, the oldest daemon a subc-protocol 0.30 module is known to run against.
 
 **Signing** (both): ad hoc, hardened runtime, explicit identifier, no entitlements, no get-task-allow, 0 debug-map entries
 - ck-basal: Identifier=ck-basal flags=0x10000(runtime)

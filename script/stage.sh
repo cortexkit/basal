@@ -503,7 +503,7 @@ cat > "$CARD" <<EOF
 - ck-basal-worker: $STAGE_DIR/ck-basal-worker, sha256 $(sum_of ck-basal-worker); basal-worker.current revision $SHA
 - build: release, clean tree, CK_BUILD_GIT_SHA=$SHA CK_BUILD_GIT_DIRTY=$DIRTY, commit $PUSHED.
 - CI for that commit: $(ci_of)
-- daemon floor: 0.20.53, the oldest daemon a subc-protocol 0.29 module is known to run against.
+- daemon floor: 0.20.53, the oldest daemon a subc-protocol 0.30 module is known to run against.
 
 **Signing** (both): ad hoc, hardened runtime, explicit identifier, no entitlements, no get-task-allow, 0 debug-map entries
 - ck-basal: Identifier=ck-basal flags=$(codesign_flags "$STAGE_DIR/ck-basal")
@@ -545,7 +545,7 @@ cat > "$CARD" <<EOF
 - ck-basal-worker: $STAGE_DIR/ck-basal-worker, sha256 $(sum_of ck-basal-worker); basal-worker.current revision $SHA
 - build: release, clean tree, CK_BUILD_GIT_SHA=$SHA CK_BUILD_GIT_DIRTY=$DIRTY, commit $PUSHED.
 - CI for that commit (push event): $(ci_of)
-- daemon floor: 0.20.53, the oldest daemon a subc-protocol 0.29 module is known to run against.
+- daemon floor: 0.20.53, the oldest daemon a subc-protocol 0.30 module is known to run against.
 
 **Signing** (both): ad hoc, hardened runtime, explicit identifier, no entitlements, no get-task-allow, 0 debug-map entries
 - ck-basal: Identifier=ck-basal flags=$(codesign_flags "$STAGE_DIR/ck-basal")
