@@ -213,6 +213,13 @@ fn accepts_welcome(welcome: &Welcome, landlock: LandlockPolicy) -> bool {
                     }
                 }
         }
+        Confinement::Windows {
+            lpac,
+            untrusted,
+            no_thread_token,
+            mitigations,
+            handle_table,
+        } => cfg!(windows) && lpac && untrusted && no_thread_token && mitigations && handle_table,
         Confinement::None => false,
     }
 }

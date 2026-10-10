@@ -199,6 +199,14 @@ impl<'a> Decoder<'a> {
         Ok(self.take(field, 1)?[0])
     }
 
+    pub(crate) fn bool(&mut self, field: &'static str) -> Result<bool, DecodeError> {
+        match self.u8(field)? {
+            0 => Ok(false),
+            1 => Ok(true),
+            tag => Err(DecodeError::UnknownTag { field, tag }),
+        }
+    }
+
     pub(crate) fn u32(&mut self, field: &'static str) -> Result<u32, DecodeError> {
         let bytes = self.take(field, 4)?;
         let mut array = [0u8; 4];

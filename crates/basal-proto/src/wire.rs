@@ -656,6 +656,20 @@ pub(crate) fn encode_worker(enc: &mut Encoder, m: &WorkerMessage) {
                         enc.u32(report.applied_abi);
                     });
                 }
+                Confinement::Windows {
+                    lpac,
+                    untrusted,
+                    no_thread_token,
+                    mitigations,
+                    handle_table,
+                } => {
+                    enc.u8(3);
+                    enc.u8(u8::from(lpac));
+                    enc.u8(u8::from(untrusted));
+                    enc.u8(u8::from(no_thread_token));
+                    enc.u8(u8::from(mitigations));
+                    enc.u8(u8::from(handle_table));
+                }
             }
         }
         WorkerMessage::HostCall(c) => {
@@ -702,22 +716,20 @@ pub(crate) fn decode_worker(dec: &mut Decoder<'_>) -> Result<WorkerMessage, Deco
                 0 => Confinement::None,
                 1 => Confinement::Seatbelt,
                 2 => Confinement::Linux {
-                    seccomp: match dec.u8("seccomp")? {
-                        0 => false,
-                        1 => true,
-                        tag => {
-                            return Err(DecodeError::UnknownTag {
-                                field: "seccomp",
-                                tag,
-                            });
-                        }
-                    },
+                    seccomp: dec.bool("seccomp")?,
                     landlock: dec.option("landlock", |dec| {
                         Ok(LandlockReport {
                             runtime_abi: dec.u32("runtime ABI")?,
                             applied_abi: dec.u32("applied ABI")?,
                         })
                     })?,
+                },
+                3 => Confinement::Windows {
+                    lpac: dec.bool("lpac")?,
+                    untrusted: dec.bool("untrusted")?,
+                    no_thread_token: dec.bool("no_thread_token")?,
+                    mitigations: dec.bool("mitigations")?,
+                    handle_table: dec.bool("handle_table")?,
                 },
                 tag => {
                     return Err(DecodeError::UnknownTag {

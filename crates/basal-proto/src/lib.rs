@@ -82,7 +82,7 @@ mod tests {
 
     #[test]
     fn codemode_wire_codes_preserve_shell_and_round_trip_tool_json() {
-        assert_eq!(PROTOCOL_VERSION, 4);
+        assert_eq!(PROTOCOL_VERSION, 5);
         // Checked at run time, not in a const block, so lowering the ceiling
         // fails this test instead of the build, and the mutation control for
         // the ceiling sees a red test.
@@ -290,8 +290,8 @@ mod tests {
     }
 
     fn confinement_payload(suffix: &[u8]) -> Vec<u8> {
-        // A version-4 Welcome with an empty engine name and two zero hashes.
-        let mut payload = vec![101, 0, 0, 0, 4, 0, 0, 0, 0];
+        // A version-5 Welcome with an empty engine name and two zero hashes.
+        let mut payload = vec![101, 0, 0, 0, 5, 0, 0, 0, 0];
         payload.extend_from_slice(&[0; 64]);
         payload.extend_from_slice(suffix);
         payload
@@ -344,6 +344,36 @@ mod tests {
                 },
                 &[2, 1, 1, 0, 0, 0, 11, 0, 0, 0, 9],
             ),
+            (
+                Confinement::Windows {
+                    lpac: false,
+                    untrusted: false,
+                    no_thread_token: false,
+                    mitigations: false,
+                    handle_table: false,
+                },
+                &[3, 0, 0, 0, 0, 0],
+            ),
+            (
+                Confinement::Windows {
+                    lpac: true,
+                    untrusted: true,
+                    no_thread_token: true,
+                    mitigations: true,
+                    handle_table: true,
+                },
+                &[3, 1, 1, 1, 1, 1],
+            ),
+            (
+                Confinement::Windows {
+                    lpac: true,
+                    untrusted: false,
+                    no_thread_token: true,
+                    mitigations: false,
+                    handle_table: true,
+                },
+                &[3, 1, 0, 1, 0, 1],
+            ),
         ];
         for &(confinement, suffix) in cases {
             let message = confinement_welcome(confinement);
@@ -381,6 +411,76 @@ mod tests {
                 Err(DecodeError::Truncated { field: actual, .. }) if actual == field
             ));
         }
+    }
+
+    #[test]
+    fn windows_confinement_round_trips() {
+        for lpac in [false, true] {
+            for untrusted in [false, true] {
+                for no_thread_token in [false, true] {
+                    for mitigations in [false, true] {
+                        for handle_table in [false, true] {
+                            let message = confinement_welcome(Confinement::Windows {
+                                lpac,
+                                untrusted,
+                                no_thread_token,
+                                mitigations,
+                                handle_table,
+                            });
+                            let frame = encode_worker_frame(&message).expect("encodes");
+                            let back = read_worker_message(&mut frame.as_slice()).expect("decodes");
+                            assert_eq!(back, message);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn truncated_and_malformed_windows_confinement_is_refused() {
+        for (suffix, field) in [
+            (&[3][..], "lpac"),
+            (&[3, 1][..], "untrusted"),
+            (&[3, 1, 1][..], "no_thread_token"),
+            (&[3, 1, 1, 1][..], "mitigations"),
+            (&[3, 1, 1, 1, 1][..], "handle_table"),
+        ] {
+            assert!(matches!(
+                decode_worker_payload(&confinement_payload(suffix)),
+                Err(DecodeError::Truncated { field: actual, .. }) if actual == field
+            ));
+        }
+
+        for (suffix, field, tag) in [
+            (&[3, 99, 0, 0, 0, 0][..], "lpac", 99),
+            (&[3, 1, 2, 0, 0, 0][..], "untrusted", 2),
+            (&[3, 1, 1, 42, 0, 0][..], "no_thread_token", 42),
+            (&[3, 1, 1, 1, 7, 0][..], "mitigations", 7),
+            (&[3, 1, 1, 1, 1, 255][..], "handle_table", 255),
+        ] {
+            assert_eq!(
+                decode_worker_payload(&confinement_payload(suffix)),
+                Err(DecodeError::UnknownTag { field, tag })
+            );
+        }
+
+        let trailing = [3, 1, 1, 1, 1, 1, 0];
+        assert_eq!(
+            decode_worker_payload(&confinement_payload(&trailing)),
+            Err(DecodeError::TrailingBytes { count: 1 })
+        );
+    }
+
+    #[test]
+    fn limits_constants_match_spec_expressions() {
+        assert_eq!(CODEMODE_JOB_COMMIT_BYTES, CODEMODE_ADDRESS_SPACE_BYTES);
+        assert_eq!(
+            FLOW_JOB_COMMIT_BYTES,
+            MAX_MEMORY_BYTES + (CODEMODE_ADDRESS_SPACE_BYTES - CODEMODE_HEAP_BYTES)
+        );
+        assert_eq!(CODEMODE_HEAP_BYTES, 64 * 1024 * 1024);
+        assert_eq!(MAX_MEMORY_BYTES, 4 * 1024 * 1024 * 1024);
     }
 
     #[test]

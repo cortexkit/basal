@@ -20,9 +20,9 @@ use basal_host::Catalog;
 use basal_host::flow_refusal::RefusalReason;
 use basal_host::transport::{Transport, WireError};
 use basal_proto::{
-    ActivationRequest, ActivationResult, BudgetKind, Budgets, CallKind, Failure, HostCall,
-    JsonText, MAX_VALUE_BYTES, Outcome as Delivery, ParentMessage, PreludeHash, Profile,
-    Settlement, WorkerMessage,
+    ActivationRequest, ActivationResult, BudgetKind, Budgets, CODEMODE_HEAP_BYTES, CallKind,
+    Failure, HostCall, JsonText, MAX_VALUE_BYTES, Outcome as Delivery, ParentMessage, PreludeHash,
+    Profile, Settlement, WorkerMessage,
 };
 use serde_json::{Value, json};
 
@@ -417,7 +417,7 @@ impl Driver {
             self_input: JsonText::null(),
             budgets: Budgets {
                 js_time_micros: 10_000_000,
-                memory_bytes: 64 * 1024 * 1024,
+                memory_bytes: CODEMODE_HEAP_BYTES,
                 stack_bytes: 1024 * 1024,
                 max_value_bytes: MAX_VALUE_BYTES as u32,
             },

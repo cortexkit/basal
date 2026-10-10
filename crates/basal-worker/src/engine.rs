@@ -21,8 +21,8 @@ use std::time::Duration;
 
 use basal_proto::{
     ActivationRequest, ActivationResult, ArgsDigest, BudgetKind, CallKind, CallSignature, Failure,
-    HostCall, JsonText, MAX_DETAIL_BYTES, MAX_NAME_BYTES, MAX_VALUE_BYTES, Nondeterminism,
-    PreludeHash, Primitive, Profile, RecordedCall, Settlement,
+    HostCall, JsonText, MAX_DETAIL_BYTES, MAX_MEMORY_BYTES, MAX_NAME_BYTES, MAX_VALUE_BYTES,
+    Nondeterminism, PreludeHash, Primitive, Profile, RecordedCall, Settlement,
 };
 use rquickjs::context::{EvalOptions, intrinsic};
 use rquickjs::{Array, Context, Ctx, Exception, Function, Object, Persistent, Runtime, Value, qjs};
@@ -75,7 +75,6 @@ type Intrinsics = (
 );
 
 const MIN_MEMORY_BYTES: u64 = 64 * 1024;
-const MAX_MEMORY_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MIN_STACK_BYTES: u64 = 16 * 1024;
 // The worker runs activations on its main thread, whose stack is 8 MiB on
 // macOS. QuickJS's limit must stay well inside the real stack, or deep
