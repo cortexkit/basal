@@ -145,19 +145,45 @@ pub fn validate_raw_spelling(path: &str) -> Result<(), Denial> {
     Ok(())
 }
 
-/// Whether `name` is a Windows reserved DOS device name.
+/// Whether `name` is a Windows reserved DOS device name, compared ASCII-case-insensitively.
 pub fn is_reserved_device_name(name: &str) -> bool {
     let upper = name.to_ascii_uppercase();
-    match upper.as_str() {
-        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$" => true,
-        "COM1" | "COM2" | "COM3" | "COM4" | "COM5" | "COM6" | "COM7" | "COM8" | "COM9" | "COM0" => {
-            true
-        }
-        "LPT1" | "LPT2" | "LPT3" | "LPT4" | "LPT5" | "LPT6" | "LPT7" | "LPT8" | "LPT9" | "LPT0" => {
-            true
-        }
-        _ => false,
-    }
+    matches!(
+        upper.as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "CONIN$"
+            | "CONOUT$"
+            | "COM0"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT0"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+            // Windows also reserves COM and LPT followed by a superscript one, two or three.
+            | "COM\u{b9}"
+            | "COM\u{b2}"
+            | "COM\u{b3}"
+            | "LPT\u{b9}"
+            | "LPT\u{b2}"
+            | "LPT\u{b3}"
+    )
 }
 
 /// Compares a target's volume-GUID path with a root's volume-GUID path
@@ -1844,6 +1870,9 @@ mod tests {
         assert!(validate_raw_spelling(r"C:\lpt8.log").is_err());
         assert!(validate_raw_spelling(r"C:\conin$").is_err());
         assert!(validate_raw_spelling(r"C:\conout$").is_err());
+        assert!(validate_raw_spelling("C:\\COM\u{b9}").is_err());
+        assert!(validate_raw_spelling("C:\\lpt\u{b3}.txt").is_err());
+        assert!(validate_raw_spelling("C:\\COM\u{b4}").is_ok());
 
         // Not reserved
         assert!(validate_raw_spelling(r"C:\context.txt").is_ok());
