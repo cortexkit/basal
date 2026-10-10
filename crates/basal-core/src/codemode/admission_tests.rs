@@ -598,13 +598,13 @@ fn tool_and_output_limits_accept_the_cap_and_refuse_cap_plus_one() {
         refused(&t.store, &h, &req, "invalid_limits");
     }
     let mut req = request("run", "agent");
-    req["limits"] = json!({"tool_calls": 200, "output_bytes": 65536, "wall_ms": i64::MAX});
+    req["limits"] = json!({"tool_calls": 200, "output_bytes": 65536, "wall_ms": 1_800_000});
     let (run, start) = stored(accept(&t.store, &h, &Clock::manual(NOW), &req));
     let start = start.unwrap();
     assert_eq!(
         start.limits,
         Limits {
-            wall_ms: Some(i64::MAX),
+            wall_ms: Some(1_800_000),
             ..Limits::default()
         }
     );

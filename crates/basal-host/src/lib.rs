@@ -39,6 +39,7 @@ pub mod flow_refusal;
 pub mod flow_scope;
 pub mod mock;
 pub mod routing;
+pub mod run_scope;
 pub mod scope_describe;
 pub mod selector;
 pub mod subc_catalog;

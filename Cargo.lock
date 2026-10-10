@@ -101,8 +101,13 @@ dependencies = [
  "basal-host",
  "basal-proto",
  "basal-testkit",
+ "blake3",
  "cortexkit-log",
+ "cortexkit-role-harness",
+ "cortexkit-role-tool-provider",
+ "cortexkit-role-tool-provider-conformance",
  "cortexkit-store-types",
+ "getrandom 0.3.4",
  "jiff",
  "libc",
  "rusqlite",
@@ -308,6 +313,42 @@ version = "0.1.0"
 source = "git+https://github.com/cortexkit/commons?rev=c46f324133c5df6411703714e4c147f7cc8554a0#c46f324133c5df6411703714e4c147f7cc8554a0"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "cortexkit-role-harness"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54901f6290132d5f70ffbf6bd3e06d31c128cb70566a73fb201866b8394bb8aa"
+dependencies = [
+ "async-trait",
+]
+
+[[package]]
+name = "cortexkit-role-tool-provider"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bcfc2eca335b15c7ca03961405f4bdfa04bbe2afe7fa4f9dca4174dedab29511"
+dependencies = [
+ "serde",
+ "serde_jcs",
+ "serde_json",
+ "sha2",
+ "subc-protocol",
+]
+
+[[package]]
+name = "cortexkit-role-tool-provider-conformance"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e577ef3d52099a0828392a37fd5290443cb8d29022cee786a7080596e963dda2"
+dependencies = [
+ "async-trait",
+ "cortexkit-role-harness",
+ "cortexkit-role-tool-provider",
+ "futures-util",
+ "serde_json",
+ "subc-protocol",
 ]
 
 [[package]]
@@ -1464,6 +1505,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
+name = "ryu-js"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6518fc26bced4d53678a22d6e423e9d8716377def84545fe328236e3af070e7f"
+
+[[package]]
 name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1506,6 +1553,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.6",
+]
+
+[[package]]
+name = "serde_jcs"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3a60f3fda61525e439ef6d67422118f11e986566997d9021c56867ad814a0aa"
+dependencies = [
+ "ryu-js",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -13,6 +13,46 @@ use subc_protocol::{Flags, Frame, FrameType, Priority};
 use subc_transport::connection_file::{ConnectionInfo, Endpoint, SCHEMA_VERSION, write_atomic};
 use subc_transport::{authenticate_server, read_frame, write_frame};
 
+use basal_host::run_scope::{Open, Opened, Scope};
+use basal_host::transport::{Transport, WireError};
+
+struct CoreScopes(Arc<Mutex<Vec<Open>>>);
+impl Transport for CoreScopes {
+    fn catalog(&self) -> Result<Value, WireError> {
+        Ok(json!({"modules":[]}))
+    }
+    fn management(&self, module: &str, op: &str, params: Value) -> Result<Value, WireError> {
+        assert_eq!(module, "prefrontal-core");
+        match op {
+            "codemode.run_scope.open" => {
+                let request: Open = serde_json::from_value(params).unwrap();
+                let session: u64 = request
+                    .agent_id
+                    .rsplit('-')
+                    .next()
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                self.0.lock().unwrap().push(request.clone());
+                Ok(serde_json::to_value(Opened {
+                    scope: Scope {
+                        reference: "scope:wire".into(),
+                        epoch: 19 + session,
+                    },
+                    expires_at_ms: request.expires_at_ms,
+                    catalog: vec![],
+                })
+                .unwrap())
+            }
+            "codemode.run_scope.close" => Ok(json!({"closed":true,"already_closed":false})),
+            _ => panic!("unexpected op {op}"),
+        }
+    }
+    fn tool(&self, _: &str, _: &str, _: Value, _: &str) -> Result<Value, WireError> {
+        panic!("unscoped tool")
+    }
+}
+
 fn frame(kind: FrameType, channel: u16, epoch: u32, corr: u64, body: Value) -> Frame {
     Frame::build(
         kind,
@@ -39,6 +79,8 @@ fn codemode_handler_attests_via_real_sdk_and_replaces_the_describe_connection() 
     let host_connection = connection.clone();
     let descriptions = Arc::new(Mutex::new(Vec::<Value>::new()));
     let (built, builds) = std::sync::mpsc::channel();
+    let opens = Arc::new(Mutex::new(Vec::<Open>::new()));
+    let host_opens = opens.clone();
     let handler = BasalHandler::new(
         Box::new(|store_path| {
             let mut pool = common::pool_config(&common::Options::default());
@@ -59,7 +101,7 @@ fn codemode_handler_attests_via_real_sdk_and_replaces_the_describe_connection() 
         }),
         Box::new(move || {
             built.send(()).unwrap();
-            let transport = Arc::new(basal_module::unconfigured::UnconfiguredTransport);
+            let transport = Arc::new(CoreScopes(host_opens.clone()));
             let catalog = Arc::new(SubcCatalog::new(transport.clone()));
             let ops = host_connection.module_ops(transport.clone(), catalog);
             let mock = Arc::new(basal_host::mock::MockHost::new());
@@ -84,6 +126,7 @@ fn codemode_handler_attests_via_real_sdk_and_replaces_the_describe_connection() 
             write_atomic(&file, &info).unwrap();
             let records = descriptions.clone();
             let path = store_path.clone();
+            let run_opens = opens.clone();
             let daemon = tokio::spawn(async move {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 authenticate_server(&mut stream, &info.key, &info.daemon_id, "codemode-sdk-test", Duration::from_secs(5)).await.unwrap();
@@ -109,22 +152,23 @@ fn codemode_handler_attests_via_real_sdk_and_replaces_the_describe_connection() 
                 }
                 let bind = ModuleControlRequest::RouteBind {
                     route_channel: 7, epoch: 1,
-                    target: subc_protocol::RouteTarget::ManagementSurface { module_id: "basal".into() },
+                    target: subc_protocol::RouteTarget::ToolProvider { module_id: "basal".into() },
                     identity: subc_protocol::BindIdentity::new("/work", "test", "session"),
                     principal: Some(subc_protocol::Principal::Reserved { module_id: "prefrontal-core".into() }),
-                    consumer_capabilities: None, role_versions: None, admission_facts: None, scope: None,
+                    consumer_capabilities: None, role_versions: None, admission_facts: None, scope: Some(serde_json::from_value(json!({
+                        "owner":{"kind":"reserved","module_id":"prefrontal-core"},"ref":"agent-scope","scope_epoch":7,"kind":"head",
+                        "attributes":{"agent_id":format!("sdk-agent-{session}")},"owner_authorized":true
+                    })).unwrap()),
                 };
                 write_frame(&mut stream, &frame(FrameType::Request, 0, 0, 41, serde_json::to_value(bind).unwrap())).await.unwrap();
                 assert_eq!(read_frame(&mut stream).await.unwrap().unwrap().header.ty, FrameType::Response);
-                let id = format!("sdk-run-{session}");
                 let agent = format!("sdk-agent-{session}");
                 write_frame(&mut stream, &frame(FrameType::Request, 7, 1, 99, json!({
-                    "method":"codemode.run", "params": {"run_id":id, "agent_id":agent, "program":"return 1;", "catalog":[],
-                        "scope":{"owner":{"kind":"reserved", "module_id":"prefrontal-core"}, "ref":"scope:wire", "epoch":19 + session as u64},
-                        "deadline_ms":common::T0}
+                    "name":"codemode", "arguments": {"code":"return 1;"}, "call_key":format!("sdk-call-{session}")
                 }))).await.unwrap();
                 let describe = read_frame(&mut stream).await.unwrap().unwrap();
                 assert_eq!(describe.header.channel, 0);
+                let id = run_opens.lock().unwrap().last().unwrap().run_id.clone();
                 let body: Value = serde_json::from_slice(&describe.body).unwrap();
                 assert_eq!(body, json!({"op":"scope.describe", "owner":{"kind":"reserved", "module_id":"prefrontal-core"}, "ref":"scope:wire"}));
                 records.lock().unwrap().push(body);
@@ -136,7 +180,7 @@ fn codemode_handler_attests_via_real_sdk_and_replaces_the_describe_connection() 
                 }))).await.unwrap();
                 let response = read_frame(&mut stream).await.unwrap().unwrap();
                 assert_eq!(response.header.ty, FrameType::Response, "{}", String::from_utf8_lossy(&response.body));
-                assert_eq!(serde_json::from_slice::<Value>(&response.body).unwrap()["result"]["status"], "budget_exhausted:wall");
+                assert_eq!(serde_json::from_slice::<Value>(&response.body).unwrap()["status"], "completed");
                 write_frame(&mut stream, &Frame::build(FrameType::Goodbye, Flags::new(false, Priority::Passive, false), 0, 0, 0, Vec::new()).unwrap()).await.unwrap();
             });
             let (handle, serving) = subc_client_rs::serve_with_handle(&file, basal_module::manifest::manifest(), handler.clone()).await.unwrap();
@@ -159,7 +203,7 @@ fn codemode_handler_attests_via_real_sdk_and_replaces_the_describe_connection() 
     let store =
         basal_core::Store::open(&store_path, basal_core::Durability { fullfsync: false }).unwrap();
     for session in 1..=2 {
-        let id = format!("sdk-run-{session}");
+        let id = opens.lock().unwrap()[session - 1].run_id.clone();
         store
             .read(|conn| {
                 let basal_core::codemode::store::Lookup::Found(run) =

@@ -53,6 +53,7 @@ impl WireError {
 
 /// Returns decoded provider payloads, not the management response envelope.
 pub trait Transport: Send + Sync {
+    fn watch_run_scope(&self, _run: &str, _ended: Arc<RunScopeEnded>) {}
     /// Unlike the compatibility flow-call defaults, this read may never fall
     /// back to an unscoped management call.
     fn grant_would_ask(
@@ -100,6 +101,20 @@ pub trait Transport: Send + Sync {
     ) -> Result<Value, WireError> {
         self.tool(module, name, arguments, call_key)
     }
+    fn tool_for_run(
+        &self,
+        run: &str,
+        module: &str,
+        name: &str,
+        arguments: Value,
+        call_key: &str,
+        options: &RunToolOptions,
+    ) -> Result<Value, WireError> {
+        let _ = (run, module, name, arguments, call_key, options);
+        Err(WireError::NeverSent(
+            "run-scoped tool dispatch unavailable".into(),
+        ))
+    }
     fn catalog(&self) -> Result<Value, WireError>;
     fn management(&self, module: &str, op: &str, params: Value) -> Result<Value, WireError>;
     fn tool(
@@ -111,9 +126,20 @@ pub trait Transport: Send + Sync {
     ) -> Result<Value, WireError>;
 }
 
+pub type RunScopeEnded = dyn Fn(&str) + Send + Sync;
+
+/// Configuration copied from the invoking bind, never an authority source.
+pub struct RunToolOptions {
+    pub identity: BindIdentity,
+    pub reply_timeout: Duration,
+}
+
 /// Maps the client's typed send disposition without guessing from prose.
 pub fn map_error(error: CallError) -> WireError {
     if let Some(body) = error.route_open_refusal() {
+        if body.code == "scope_expired" {
+            return refusal(body.clone());
+        }
         return match crate::flow_refusal::FlowRefusal::decode(body) {
             Ok(Some(decoded)) => WireError::Typed(decoded),
             Ok(None) if !body.code.starts_with("scope_") => WireError::NeverSent(format!(
@@ -146,6 +172,19 @@ pub fn map_error(error: CallError) -> WireError {
 }
 
 pub fn refusal(body: subc_protocol::ErrorBody) -> WireError {
+    if body.code == "scope_expired" {
+        return match body.detail {
+            Some(detail) => WireError::RefusedDetails {
+                code: body.code,
+                message: body.message,
+                detail,
+            },
+            None => WireError::Refused {
+                code: body.code,
+                message: body.message,
+            },
+        };
+    }
     match crate::flow_refusal::FlowRefusal::decode(&body) {
         Ok(Some(decoded)) => WireError::Typed(decoded),
         Ok(None) => match body.detail {
@@ -196,6 +235,7 @@ pub struct SubcTransport {
     identity: BindIdentity,
     timeout: Duration,
     routes: Arc<Mutex<crate::flow_scope::ScopedRoutes<subc_client_rs::RouteHandle>>>,
+    run_watchers: Arc<Mutex<std::collections::HashMap<String, Arc<RunScopeEnded>>>>,
     open_gates: Mutex<
         std::collections::HashMap<
             crate::flow_scope::RouteKey,
@@ -359,6 +399,9 @@ impl SubcTransport {
             subc_client_rs::RouteHandle,
         >::default()));
         let route_events = routes.clone();
+        let run_watchers: Arc<Mutex<std::collections::HashMap<String, Arc<RunScopeEnded>>>> =
+            Arc::default();
+        let scope_events = run_watchers.clone();
         let restored_routes = routes.clone();
         consumer.on_connection_state(move |state| {
             if matches!(state, ConnectionState::Restored { .. }) {
@@ -376,7 +419,22 @@ impl SubcTransport {
                 }
                 let mut routes = route_events.lock().unwrap_or_else(|p| p.into_inner());
                 routes.control_push(&push, |handle| handle.channel);
+                let ended = scope_events
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .iter()
+                    .filter(|(run, _)| routes.ended(run))
+                    .map(|(_, ended)| ended.clone())
+                    .collect::<Vec<_>>();
                 drop(routes);
+                let reason = push
+                    .body
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("scope_ended");
+                for ended in ended {
+                    ended(reason);
+                }
                 if let Some(on_close) = &on_close {
                     on_close();
                 }
@@ -391,6 +449,7 @@ impl SubcTransport {
             identity: BindIdentity::new("/", "basal", "basal:flows"),
             timeout,
             routes,
+            run_watchers,
             open_gates: Mutex::new(std::collections::HashMap::new()),
         }))
     }
@@ -589,6 +648,12 @@ impl Transport for SubcTransport {
         agent_owned: bool,
         scope: Option<crate::flow_scope::RegisteredScope>,
     ) {
+        if scope.is_none() {
+            self.run_watchers
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(flow);
+        }
         let dropped = self
             .routes
             .lock()
@@ -599,6 +664,12 @@ impl Transport for SubcTransport {
                 .handle
                 .block_on(self.consumer.close_handle(&handle, Default::default()));
         }
+    }
+    fn watch_run_scope(&self, run: &str, ended: Arc<RunScopeEnded>) {
+        self.run_watchers
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(run.into(), ended);
     }
     fn management_for_flow(
         &self,
@@ -638,6 +709,46 @@ impl Transport for SubcTransport {
             module,
             name,
         )
+    }
+    fn tool_for_run(
+        &self,
+        run: &str,
+        module: &str,
+        name: &str,
+        arguments: Value,
+        call_key: &str,
+        options: &RunToolOptions,
+    ) -> Result<Value, WireError> {
+        let target = RouteTarget::ToolProvider {
+            module_id: module.into(),
+        };
+        let handle = self
+            .open_scoped_handle(
+                run,
+                &target,
+                Some(&options.identity),
+                options.identity.clone(),
+            )
+            .map_err(|error| contextual(error, module, name))?;
+        let body = serde_json::to_vec(&tool_body(name, arguments, call_key)?)
+            .map_err(|e| WireError::NeverSent(e.to_string()))?;
+        let result = self.handle.block_on(self.consumer.request(
+            &handle,
+            body,
+            CallOptions {
+                timeout: options.reply_timeout,
+                ..Default::default()
+            },
+        ));
+        if let Err(CallError::StaleRouteHandle(_)) = &result {
+            self.routes
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .closed(handle, false);
+        }
+        result
+            .map_err(map_error)
+            .and_then(|bytes| decode_response(&bytes, false))
     }
     fn catalog(&self) -> Result<Value, WireError> {
         let catalog = self
@@ -1042,6 +1153,9 @@ mod tests {
                     json!({"result":{"state":"completed"}})
                 } else if body["method"]=="route.set_decision_outcome" {
                     json!({"result":{"ok":true}})
+                } else if body["name"] == "echo" || body["name"] == "slow_echo" {
+                    if body["name"] == "slow_echo" { tokio::time::sleep(Duration::from_secs(11)).await; }
+                    body["arguments"].clone()
                 } else {
                     json!({"result":body["params"]})
                 };
@@ -1063,7 +1177,7 @@ mod tests {
                         0,
                         0,
                         serde_json::to_vec(
-                            &json!({"op":"route.closed","channels":[11],"reason":"scope_ended"}),
+                            &json!({"op":"route.closed","channels":[11],"reason":"scope_expired"}),
                         )
                         .unwrap(),
                     )
@@ -1149,6 +1263,65 @@ mod tests {
     }
 
     #[test]
+    fn run_tool_routes_copy_bind_identity_and_outlive_transport_fallback_wait() {
+        with_scoped_transport(|transport, opens, calls, _| {
+            let selector = crate::flow_scope::FlowScope {
+                owner: subc_protocol::Principal::Reserved {
+                    module_id: "prefrontal-core".into(),
+                },
+                scope_ref: "run-scope".into(),
+                epoch: 19,
+            };
+            transport.configure_flow(
+                "codemode:run",
+                false,
+                Some(crate::flow_scope::RegisteredScope {
+                    selector: selector.clone(),
+                    targets: ["mock".into()].into_iter().collect(),
+                }),
+            );
+            let mut identity =
+                BindIdentity::new("/agent/project", "agent:other", "invoking-session");
+            identity.project_id = Some("pj-registered".into());
+            let options = RunToolOptions {
+                identity: identity.clone(),
+                reply_timeout: Duration::from_secs(15),
+            };
+            assert_eq!(
+                transport
+                    .tool_for_run(
+                        "codemode:run",
+                        "mock",
+                        "slow_echo",
+                        json!({"n":7}),
+                        "run:call:1",
+                        &options
+                    )
+                    .unwrap(),
+                json!({"n":7})
+            );
+            assert_eq!(
+                opens.lock().unwrap()[0]["identity"],
+                serde_json::to_value(identity).unwrap()
+            );
+            assert_eq!(
+                opens.lock().unwrap()[0]["scope"],
+                serde_json::to_value(selector.selector()).unwrap()
+            );
+            assert_eq!(
+                calls
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|(_, body)| body["name"] == "slow_echo")
+                    .count(),
+                1
+            );
+            transport.configure_flow("codemode:run", false, None);
+        });
+    }
+
+    #[test]
     fn real_subc_transport_opens_scoped_ops_and_models_and_reuses_routes() {
         use crate::flow_scope::{FlowScope, RegisteredScope};
         with_scoped_transport(|transport, opens, calls, close_seen| {
@@ -1164,6 +1337,13 @@ mod tests {
                 targets: ["mock".into(), "broca".into()].into_iter().collect(),
             };
             transport.configure_flow("flow-a", true, Some(registered));
+            let (scope_ended, scope_events) = std::sync::mpsc::channel();
+            transport.watch_run_scope(
+                "flow-a",
+                Arc::new(move |code| {
+                    scope_ended.send(code.to_owned()).unwrap();
+                }),
+            );
             for _ in 0..2 {
                 assert_eq!(
                     transport
@@ -1242,6 +1422,10 @@ mod tests {
                 .management_for_flow("flow-a", "mock", "end_scope", json!({}))
                 .unwrap();
             close_seen.recv_timeout(Duration::from_secs(10)).unwrap();
+            assert_eq!(
+                scope_events.recv_timeout(Duration::from_secs(10)).unwrap(),
+                "scope_expired"
+            );
             transport.configure_flow(
                 "flow-a",
                 true,
@@ -1271,6 +1455,14 @@ mod tests {
             transport
                 .management_for_flow("flow-a", "mock", "echo", json!({}))
                 .unwrap();
+            transport.configure_flow("flow-a", true, None);
+            assert!(
+                !transport
+                    .run_watchers
+                    .lock()
+                    .unwrap()
+                    .contains_key("flow-a")
+            );
             assert_eq!(
                 opens.lock().unwrap()[4]["scope"],
                 serde_json::to_value(next.selector()).unwrap()

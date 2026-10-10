@@ -38,4 +38,5 @@ pub mod process;
 pub mod rig_kill;
 pub mod scope_connection;
 pub mod serve;
+pub mod tool;
 pub mod unconfigured;

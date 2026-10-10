@@ -17,21 +17,6 @@ pub const MODULE_ID: &str = "basal";
 /// Every op basal serves, with whether it changes anything and what it does.
 pub const OPERATIONS: &[(&str, ManagementOperationKind, &str)] = &[
     (
-        "codemode.run",
-        ManagementOperationKind::Mutate,
-        "Admit a scoped JavaScript run and return its state; core only.",
-    ),
-    (
-        "codemode.result",
-        ManagementOperationKind::Query,
-        "Read a codemode run's current or terminal state; core only.",
-    ),
-    (
-        "codemode.cancel",
-        ManagementOperationKind::Mutate,
-        "Cancel a codemode run and return its stored state; core only.",
-    ),
-    (
         "package.register",
         ManagementOperationKind::Mutate,
         "Register immutable package bytes; operator or core only.",
@@ -96,29 +81,43 @@ pub const OPERATIONS: &[(&str, ManagementOperationKind, &str)] = &[
 pub fn manifest() -> ModuleManifest {
     ModuleManifest::builder(MODULE_ID, env!("CARGO_PKG_VERSION"))
         .protocol_ver(PROTOCOL_VERSION)
-        .provides(vec![ProviderRole::ManagementSurface {
-            operations: OPERATIONS
-                .iter()
-                .map(|(name, kind, description)| ManagementOperation {
-                    name: (*name).to_owned(),
-                    kind: kind.clone(),
-                    description: Some((*description).to_owned()),
-                })
-                .collect(),
-            config_schema: json!({"type": "object"}),
-            observability: Vec::new(),
-            // Answers depend on who calls (an agent sees and changes only
-            // its own flows), but that comes from the daemon's stamp on the
-            // route, not from the bind identity's project or session.
-            identity_scope: Vec::new(),
-            // Ops run on blocking threads beside the engine, behind the
-            // store's own serialisation, so concurrent delivery is safe.
-            concurrency: Concurrency::ModuleManaged,
-        }])
-        // No capability names yet: nothing in the fleet requires a flow
-        // engine, and a provides claim belongs with a reviewed registry
-        // entry, not ahead of it.
-        .capabilities(None)
+        .provides(vec![
+            ProviderRole::ToolProvider {
+                tools: vec![subc_protocol::manifest::Tool {
+                    name: "codemode".into(),
+                    description: Some(crate::tool::DESCRIPTION.into()),
+                    execution_mode: subc_protocol::manifest::ExecutionMode::Unfenceable,
+                    schema: crate::tool::schema(),
+                }],
+                identity_scope: vec![],
+                concurrency: Concurrency::ModuleManaged,
+                emits_push: false,
+                sub_supervises: false,
+            },
+            ProviderRole::ManagementSurface {
+                operations: OPERATIONS
+                    .iter()
+                    .map(|(name, kind, description)| ManagementOperation {
+                        name: (*name).to_owned(),
+                        kind: kind.clone(),
+                        description: Some((*description).to_owned()),
+                    })
+                    .collect(),
+                config_schema: json!({"type": "object"}),
+                observability: Vec::new(),
+                // The daemon-attested agent_id limits an agent to its own flows.
+                // A bind identity's project and session cannot change that authority.
+                identity_scope: Vec::new(),
+                // Blocking request threads and the engine share the store's serial
+                // SQLite writes and conditional transitions, preventing races.
+                concurrency: Concurrency::ModuleManaged,
+            },
+        ])
+        .capabilities(Some(subc_protocol::manifest::CapabilityDeclarations {
+            provides: vec![cortexkit_role_tool_provider::PROVIDES.into()],
+            requires: vec![],
+            must_never_reach: vec![],
+        }))
         // basal declares no self-signals: its effects are its flows', and
         // those are reported through flow.health.
         .self_signals(None)

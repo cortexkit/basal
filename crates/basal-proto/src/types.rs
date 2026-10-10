@@ -636,6 +636,10 @@ pub enum WorkerMessage {
     Console {
         line: String,
     },
+    /// A worker-observed unhandled rejection; never a host call or console log.
+    Warning {
+        message: String,
+    },
     Welcome(Welcome),
     HostCall(HostCall),
     /// The script can make no progress until one of these calls settles. The

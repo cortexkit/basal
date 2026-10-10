@@ -303,6 +303,10 @@ ALTER TABLE installs ADD COLUMN revoked_reason TEXT;
         version: 19,
         statements: DECISION_PATHS,
     },
+    Migration {
+        version: 20,
+        statements: CODEMODE_TOOL_PROVIDER,
+    },
 ];
 
 const DECISION_PATHS: &str = r#"
@@ -387,6 +391,40 @@ BEGIN SELECT RAISE(ABORT, 'a codemode run ends only once none of its calls is pe
     };
 }
 
+macro_rules! codemode_description {
+    () => { r#"    description    TEXT CHECK (description IS NULL OR (length(CAST(description AS BLOB)) <= 1024
+                       AND instr(description, char(10)) = 0 AND instr(description, char(13)) = 0
+                       AND instr(description, char(8232)) = 0 AND instr(description, char(8233)) = 0)),
+"# };
+}
+macro_rules! codemode_run_final_trigger {
+    () => {
+        r#"CREATE TRIGGER codemode_runs_terminal_is_final BEFORE UPDATE ON codemode_runs
+WHEN OLD.status <> 'running'
+BEGIN SELECT RAISE(ABORT, 'a terminal codemode run never changes'); END;
+
+"#
+    };
+}
+macro_rules! codemode_run_id_triggers {
+    () => { r#"CREATE TRIGGER codemode_runs_not_tombstoned BEFORE INSERT ON codemode_runs
+WHEN EXISTS (SELECT 1 FROM codemode_tombstones WHERE run_id = NEW.run_id)
+BEGIN SELECT RAISE(ABORT, 'a pruned codemode run id is never used again'); END;
+
+CREATE TRIGGER codemode_runs_delete_behind_tombstone BEFORE DELETE ON codemode_runs
+WHEN OLD.status = 'running'
+    OR NOT EXISTS (SELECT 1 FROM codemode_tombstones WHERE run_id = OLD.run_id)
+BEGIN SELECT RAISE(ABORT, 'a codemode run is deleted only once it has ended and been tombstoned'); END;
+
+"# };
+}
+macro_rules! codemode_entered_duration {
+    () => {
+        r#"    CHECK ((duration_ms IS NOT NULL) = (entered_at IS NOT NULL AND outcome <> 'pending'))
+"#
+    };
+}
+
 const CODEMODE: &str = concat!(
     r#"
 -- One row per admitted run. `catalog` is the catalog as admitted and
@@ -401,10 +439,9 @@ CREATE TABLE codemode_runs (
     program        TEXT NOT NULL,
     catalog        TEXT NOT NULL CHECK (json_valid(catalog) AND json_type(catalog) = 'array'),
     catalog_digest TEXT NOT NULL CHECK (length(catalog_digest) = 64 AND catalog_digest NOT GLOB '*[^0-9a-f]*'),
-    description    TEXT CHECK (description IS NULL OR (length(CAST(description AS BLOB)) <= 1024
-                       AND instr(description, char(10)) = 0 AND instr(description, char(13)) = 0
-                       AND instr(description, char(8232)) = 0 AND instr(description, char(8233)) = 0)),
-    limits         TEXT NOT NULL CHECK (json_valid(limits) AND json_type(limits) = 'object'),
+"#,
+    codemode_description!(),
+    r#"    limits         TEXT NOT NULL CHECK (json_valid(limits) AND json_type(limits) = 'object'),
     scope          TEXT NOT NULL CHECK (json_valid(scope) AND json_type(scope) = 'object'),
     deadline_ms    INTEGER NOT NULL,
     status         TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed',
@@ -461,22 +498,10 @@ CREATE TABLE codemode_tombstones (
 
 "#,
     codemode_call_triggers!(),
-    r#"CREATE TRIGGER codemode_runs_terminal_is_final BEFORE UPDATE ON codemode_runs
-WHEN OLD.status <> 'running'
-BEGIN SELECT RAISE(ABORT, 'a terminal codemode run never changes'); END;
-
-"#,
+    codemode_run_final_trigger!(),
     codemode_end_trigger!(),
-    r#"CREATE TRIGGER codemode_runs_not_tombstoned BEFORE INSERT ON codemode_runs
-WHEN EXISTS (SELECT 1 FROM codemode_tombstones WHERE run_id = NEW.run_id)
-BEGIN SELECT RAISE(ABORT, 'a pruned codemode run id is never used again'); END;
-
-CREATE TRIGGER codemode_runs_delete_behind_tombstone BEFORE DELETE ON codemode_runs
-WHEN OLD.status = 'running'
-    OR NOT EXISTS (SELECT 1 FROM codemode_tombstones WHERE run_id = OLD.run_id)
-BEGIN SELECT RAISE(ABORT, 'a codemode run is deleted only once it has ended and been tombstoned'); END;
-
-CREATE TRIGGER codemode_tombstones_no_update BEFORE UPDATE ON codemode_tombstones
+    codemode_run_id_triggers!(),
+    r#"CREATE TRIGGER codemode_tombstones_no_update BEFORE UPDATE ON codemode_tombstones
 BEGIN SELECT RAISE(ABORT, 'codemode tombstones are permanent'); END;
 
 CREATE TRIGGER codemode_tombstones_no_delete BEFORE DELETE ON codemode_tombstones
@@ -509,8 +534,9 @@ CREATE TABLE codemode_calls_new (
     CHECK ((code IS NULL) = (outcome IN ('pending', 'ok', 'cancelled'))),
     CHECK (outcome NOT IN ('ok', 'error', 'consent_unavailable', 'outcome_unknown') OR intent_at IS NOT NULL),
     CHECK (outcome <> 'cancelled' OR intent_at IS NULL),
-    CHECK ((duration_ms IS NOT NULL) = (entered_at IS NOT NULL AND outcome <> 'pending'))
-);
+"#,
+    codemode_entered_duration!(),
+    r#");
 INSERT INTO codemode_calls_new
     (run_id, position, tool, idempotency_key, input_bytes, intent_at, entered_at, outcome, code, duration_ms)
 SELECT run_id, position, tool, idempotency_key, input_bytes, intent_at, intent_at, outcome, code, duration_ms
@@ -1047,3 +1073,98 @@ mod consent_tests;
 #[cfg(test)]
 #[path = "schema_retention_tests.rs"]
 mod retention_tests;
+
+// SQLite cannot alter the status CHECK to admit person_wait. Rebuild
+// codemode_runs and its referencing codemode_calls table, preserving outcomes,
+// intents and timestamps. Shared SQL fragments retain the previous migrations'
+// exact bytes and keep their safety guards effective after the rebuild.
+const CODEMODE_TOOL_PROVIDER: &str = concat!(
+    r#"
+CREATE TABLE codemode_saved_runs AS SELECT * FROM codemode_runs;
+CREATE TABLE codemode_saved_calls AS SELECT * FROM codemode_calls;
+DROP TRIGGER codemode_runs_end_with_no_pending_call;
+DROP TRIGGER codemode_runs_delete_behind_tombstone;
+DROP TABLE codemode_calls;
+DROP TABLE codemode_runs;
+CREATE TABLE codemode_runs (
+    run_id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, program TEXT NOT NULL,
+    catalog TEXT NOT NULL CHECK (json_valid(catalog) AND json_type(catalog) = 'array'),
+    catalog_digest TEXT NOT NULL CHECK (length(catalog_digest) = 64 AND catalog_digest NOT GLOB '*[^0-9a-f]*'),
+"#,
+    codemode_description!(),
+    r#"    limits TEXT NOT NULL CHECK (json_valid(limits) AND json_type(limits) = 'object'),
+    scope TEXT NOT NULL CHECK (json_valid(scope) AND json_type(scope) = 'object'),
+    deadline_ms INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('running','completed','failed','budget_exhausted:js_cpu',
+        'budget_exhausted:memory','budget_exhausted:stack','budget_exhausted:wall',
+        'budget_exhausted:person_wait','budget_exhausted:tool_calls','cancelled','interrupted')),
+    value TEXT CHECK (value IS NULL OR (status = 'completed' AND json_valid(value))),
+    error_code TEXT, error_message TEXT CHECK (error_message IS NULL OR length(error_message) > 0),
+    output TEXT NOT NULL DEFAULT '',
+    warnings TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(warnings) AND json_type(warnings) = 'array'),
+    admitted_at INTEGER NOT NULL, ended_at INTEGER,
+    duration_ms INTEGER CHECK (duration_ms IS NULL OR duration_ms >= 0),
+    program_digest TEXT CHECK (program_digest IS NULL OR (length(program_digest)=64 AND program_digest NOT GLOB '*[^0-9a-f]*')),
+    bind_identity TEXT CHECK (bind_identity IS NULL OR (json_valid(bind_identity) AND json_type(bind_identity)='object')),
+    keyless INTEGER NOT NULL DEFAULT 0 CHECK (keyless IN (0,1)),
+    person_wait_ms INTEGER NOT NULL DEFAULT 0 CHECK (person_wait_ms >= 0),
+    tool_call_count INTEGER NOT NULL DEFAULT 0 CHECK (tool_call_count >= 0),
+    CHECK ((status = 'running') = (ended_at IS NULL)),
+    CHECK ((status = 'running') = (duration_ms IS NULL)),
+    CHECK ((error_code IS NULL) = (error_message IS NULL)),
+    CHECK ((error_code IS NOT NULL) = (status = 'failed' OR status = 'interrupted' OR status LIKE 'budget_exhausted:%')),
+    CHECK (status NOT LIKE 'budget_exhausted:%' OR error_code = status)
+);
+INSERT INTO codemode_runs (run_id,agent_id,program,catalog,catalog_digest,description,limits,scope,
+    deadline_ms,status,value,error_code,error_message,output,warnings,admitted_at,ended_at,duration_ms)
+SELECT * FROM codemode_saved_runs;
+UPDATE codemode_runs SET tool_call_count=(SELECT COUNT(*) FROM codemode_saved_calls WHERE run_id=codemode_runs.run_id);
+DROP TABLE codemode_saved_runs;
+CREATE INDEX codemode_runs_active ON codemode_runs(agent_id) WHERE status = 'running';
+CREATE INDEX codemode_runs_ended ON codemode_runs(ended_at) WHERE ended_at IS NOT NULL;
+CREATE TABLE codemode_calls (
+    run_id TEXT NOT NULL REFERENCES codemode_runs(run_id), position INTEGER NOT NULL CHECK (position >= 0),
+    tool TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, input_bytes INTEGER NOT NULL CHECK (input_bytes >= 0),
+    intent_at INTEGER, outcome TEXT NOT NULL CHECK (outcome IN ('pending','ok','error','refused','denied',
+        'consent_unavailable','tool_unavailable','outcome_unknown','cancelled')),
+    code TEXT, duration_ms INTEGER CHECK (duration_ms IS NULL OR duration_ms >= 0),
+    entered_at INTEGER CHECK (entered_at IS NULL OR intent_at IS NOT NULL),
+    waited_on_person INTEGER NOT NULL DEFAULT 0 CHECK (waited_on_person IN (0,1)),
+    PRIMARY KEY (run_id,position),
+    CHECK ((code IS NULL) = (outcome IN ('pending','ok','cancelled'))),
+    CHECK (outcome NOT IN ('ok','error','consent_unavailable','outcome_unknown') OR intent_at IS NOT NULL),
+    CHECK (outcome <> 'cancelled' OR intent_at IS NULL),
+"#,
+    codemode_entered_duration!(),
+    r#");
+INSERT INTO codemode_calls (run_id,position,tool,idempotency_key,input_bytes,intent_at,outcome,code,duration_ms,entered_at)
+SELECT run_id,position,tool,idempotency_key,input_bytes,intent_at,outcome,code,duration_ms,entered_at FROM codemode_saved_calls;
+DROP TABLE codemode_saved_calls;
+CREATE TABLE codemode_scopes (
+    run_id TEXT PRIMARY KEY, request TEXT NOT NULL, opened TEXT, refused INTEGER NOT NULL DEFAULT 0,
+    closed INTEGER NOT NULL DEFAULT 0, refusal TEXT
+);
+-- Legacy running rows already carry an opened epoch. Preserve it for startup
+-- close without inventing an invoking scope or opening fresh authority.
+INSERT INTO codemode_scopes(run_id,request,opened)
+SELECT run_id,'{}',json_object('scope',json_remove(scope,'$.owner'),
+    'expires_at_ms',deadline_ms,'catalog',json('[]')) FROM codemode_runs
+WHERE status='running' AND json_extract(scope,'$.owner.kind')='reserved'
+    AND json_extract(scope,'$.owner.module_id')='prefrontal-core'
+    AND json_type(scope,'$.ref')='text' AND json_type(scope,'$.epoch')='integer';
+CREATE TABLE codemode_tool_calls (
+    carrier TEXT NOT NULL, call_key TEXT NOT NULL, run_id TEXT NOT NULL,
+    scope TEXT NOT NULL, custodian TEXT NOT NULL, withdrawal TEXT, published INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(carrier,call_key)
+);
+CREATE TABLE codemode_late_results (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT, custodian TEXT NOT NULL, entry TEXT NOT NULL,
+    event_id TEXT NOT NULL UNIQUE, settled_at INTEGER NOT NULL, expired INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE codemode_late_acks (custodian TEXT PRIMARY KEY, through_seq INTEGER NOT NULL);
+"#,
+    codemode_call_triggers!(),
+    codemode_run_final_trigger!(),
+    codemode_run_id_triggers!(),
+    codemode_end_trigger!()
+);

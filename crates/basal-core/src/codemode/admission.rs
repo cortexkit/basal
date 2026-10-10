@@ -56,7 +56,7 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            wall_ms: None,
+            wall_ms: Some(basal_host::run_scope::WALL_MS),
             tool_calls: 200,
             output_bytes: 65_536,
         }
@@ -249,6 +249,16 @@ fn attest(host: &dyn Host, scope: &FlowScope, request: &Value) -> Checked<String
     let stamp = description
         .scope
         .ok_or_else(|| Refusal::new("no_scope", "scope description has no live stamp"))?;
+    if stamp.owner != scope.owner
+        || stamp.scope_ref != scope.scope_ref
+        || stamp.scope_epoch != scope.epoch
+        || !stamp.owner_authorized
+    {
+        return Err(Refusal::new(
+            "scope_mismatch",
+            "the daemon stamp does not attest the requested scope",
+        ));
+    }
     let agent_id = stamp
         .attributes
         .agent_id
@@ -341,7 +351,7 @@ fn limits(value: Option<&Value>) -> Checked<Limits> {
     for (key, value) in fields {
         let n = value.as_i64().filter(|n| *n >= 1).ok_or_else(invalid)?;
         match key.as_str() {
-            "wall_ms" => limits.wall_ms = Some(n),
+            "wall_ms" if n <= basal_host::run_scope::WALL_MS => limits.wall_ms = Some(n),
             "tool_calls" if n <= 200 => limits.tool_calls = n as u64,
             "output_bytes" if n <= 65_536 => limits.output_bytes = n as u64,
             _ => return Err(invalid()),
@@ -425,3 +435,215 @@ fn valid_name(name: &str) -> bool {
 #[cfg(test)]
 #[path = "admission_tests.rs"]
 mod tests;
+
+/// All authority-bearing fields are copied by the module from its bound route.
+/// Program arguments have no identity, scope, expiry or catalog fields.
+pub struct ToolInvocation<'a> {
+    pub run_id: &'a str,
+    pub agent_id: &'a str,
+    pub invoking_scope: basal_host::run_scope::Scope,
+    pub carrier: &'a str,
+    pub call_key: Option<&'a str>,
+    pub record_scope: &'a str,
+    pub custodian: &'a str,
+    pub bind_identity: &'a subc_protocol::BindIdentity,
+}
+
+pub fn admit_tool(
+    store: &Store,
+    host: &dyn Host,
+    transport: &dyn basal_host::transport::Transport,
+    clock: &Clock,
+    platform: Platform,
+    invocation: &ToolInvocation<'_>,
+    arguments: &Value,
+) -> Result<Admission> {
+    use basal_host::run_scope;
+    use serde_json::json;
+    if let Some(known) = store.read(|conn| known(conn, invocation.run_id))? {
+        return Ok(known);
+    }
+    if platform == Platform::Windows {
+        return Ok(Admission::Refused(Refusal::new(
+            "unsupported_platform",
+            "codemode is not supported on Windows",
+        )));
+    }
+    let Some(fields_in) = arguments.as_object() else {
+        return Ok(Admission::Refused(Refusal::new(
+            "invalid_request",
+            "codemode arguments must be an object",
+        )));
+    };
+    if fields_in
+        .keys()
+        .any(|key| !matches!(key.as_str(), "code" | "description" | "limits"))
+    {
+        return Ok(Admission::Refused(Refusal::new(
+            "invalid_request",
+            "unknown codemode argument",
+        )));
+    }
+    let started = clock.now_ms();
+    let expires_at_ms = started.saturating_add(run_scope::SCOPE_LIFETIME_MS);
+    let mut request = json!({"run_id":invocation.run_id,"agent_id":invocation.agent_id,
+        "program":arguments["code"],"catalog":[],"deadline_ms":expires_at_ms});
+    if let Some(description) = arguments.get("description") {
+        request["description"] = description.clone();
+    }
+    let fields = match request_fields(&request) {
+        Ok(fields) => fields,
+        Err(refusal) => return Ok(Admission::Refused(refusal)),
+    };
+    let limits = match limits(arguments.get("limits")) {
+        Ok(limits) => limits,
+        Err(refusal) => return Ok(Admission::Refused(refusal)),
+    };
+    let open = run_scope::Open {
+        agent_id: invocation.agent_id.into(),
+        invoking_scope: invocation.invoking_scope.clone(),
+        run_id: invocation.run_id.into(),
+        expires_at_ms,
+    };
+    let limits_text = serde_json::to_string(&limits).unwrap();
+    let empty_digest = catalog_digest(&json!([])).unwrap();
+    let won = store.write(|tx| {
+        if let Some(known) = known(tx, invocation.run_id)? { return Ok(Err(known)); }
+        let (agent,total) = store::running_counts(tx,invocation.agent_id)?;
+        if agent >= MAX_AGENT_RUNS || total >= MAX_BASAL_RUNS {
+            return Ok(Err(Admission::Refused(Refusal::new("busy","codemode concurrency limit reached"))));
+        }
+        store::insert_run(tx,&NewRun {
+            run_id:invocation.run_id,agent_id:invocation.agent_id,program:fields.program,
+            catalog:"[]",catalog_digest:&empty_digest,description:fields.description,
+            limits:&limits_text,scope:"{}",deadline_ms:expires_at_ms,admitted_at:started,
+        },None)?;
+        tx.execute("UPDATE codemode_runs SET keyless=?2,program_digest=?3,bind_identity=?4 WHERE run_id=?1",rusqlite::params![invocation.run_id,invocation.call_key.is_none(),blake3::hash(fields.program.as_bytes()).to_hex().to_string(),serde_json::to_string(invocation.bind_identity).unwrap()])?;
+        tx.execute("INSERT INTO codemode_scopes(run_id,request) VALUES (?1,?2)",rusqlite::params![invocation.run_id,serde_json::to_string(&open).unwrap()])?;
+        if let Some(key) = invocation.call_key {
+            tx.execute("INSERT INTO codemode_tool_calls(carrier,call_key,run_id,scope,custodian) VALUES (?1,?2,?3,?4,?5)",
+                rusqlite::params![invocation.carrier,key,invocation.run_id,invocation.record_scope,invocation.custodian])?;
+        }
+        Ok(Ok(()))
+    })?;
+    if let Err(known) = won {
+        return Ok(known);
+    }
+    let prepared = (|| -> std::result::Result<Start, Value> {
+        let opened = match run_scope::open(transport, &open) {
+            Ok(opened) => opened,
+            Err(error) => {
+                if matches!(
+                    error,
+                    basal_host::transport::WireError::Refused { .. }
+                        | basal_host::transport::WireError::RefusedDetails { .. }
+                ) {
+                    store
+                        .write(|tx| {
+                            tx.execute(
+                                "UPDATE codemode_scopes SET refused=1 WHERE run_id=?1",
+                                [invocation.run_id],
+                            )?;
+                            Ok(())
+                        })
+                        .map_err(
+                            |e| json!({"code":"storage_unavailable","message":e.to_string()}),
+                        )?;
+                }
+                return Err(super::scope::error_value(error));
+            }
+        };
+        store
+            .write(|tx| {
+                tx.execute(
+                    "UPDATE codemode_scopes SET opened=?2 WHERE run_id=?1",
+                    rusqlite::params![invocation.run_id, serde_json::to_string(&opened).unwrap()],
+                )?;
+                Ok(())
+            })
+            .map_err(|e| json!({"code":"storage_unavailable","message":e.to_string()}))?;
+        let selector = FlowScope {
+            owner: Principal::Reserved {
+                module_id: basal_host::subc_catalog::CORE.into(),
+            },
+            scope_ref: opened.scope.reference,
+            epoch: opened.scope.epoch,
+        };
+        if opened.expires_at_ms != expires_at_ms {
+            return Err(
+                json!({"code":"scope_mismatch","message":"core changed the immutable run expiry"}),
+            );
+        }
+        attest(host, &selector, &request)
+            .map_err(|e| json!({"code":e.code,"message":e.message}))?;
+        let daemon = transport.catalog().map_err(super::scope::error_value)?;
+        let resolved =
+            run_scope::catalog(&daemon, &opened.catalog).map_err(super::scope::error_value)?;
+        let tools = catalog(&resolved).map_err(|e| json!({"code":e.code,"message":e.message}))?;
+        let digest = catalog_digest(&resolved).unwrap();
+        store.write(|tx| {
+            tx.execute("UPDATE codemode_runs SET catalog=?2,catalog_digest=?3,scope=?4 WHERE run_id=?1 AND status='running'",
+                rusqlite::params![invocation.run_id,resolved.to_string(),digest,serde_json::to_string(&selector).unwrap()])?;
+            Ok(())
+        }).map_err(|e| json!({"code":"storage_unavailable","message":e.to_string()}))?;
+        Ok(Start {
+            scope: RegisteredScope {
+                selector,
+                targets: tools.values().map(|t| t.module.clone()).collect(),
+            },
+            tools,
+            limits,
+            wall_deadline_ms: started.saturating_add(limits.wall_ms.unwrap_or(run_scope::WALL_MS)),
+        })
+    })();
+    let start = match prepared {
+        Ok(start) => Some(Box::new(start)),
+        Err(error) => {
+            let mut warnings = Vec::new();
+            if let Err(e) = super::scope::close(store, transport, invocation.run_id) {
+                warnings.push(json!({"code":"scope_close_failed","message":e.to_string()}));
+            }
+            if let Some(detail) = error.get("detail") {
+                warnings.push(json!({"code":"core_refusal_detail","detail":detail}));
+            }
+            store.write(|tx| {
+                tx.execute(
+                    "UPDATE codemode_scopes SET refusal=?2 WHERE run_id=?1 AND EXISTS (SELECT 1 FROM codemode_runs WHERE run_id=?1 AND status='running')",
+                    rusqlite::params![invocation.run_id, error.to_string()],
+                )?;
+                store::commit_terminal(
+                    tx,
+                    invocation.run_id,
+                    &Terminal {
+                        status: Status::Failed,
+                        value: None,
+                        error: Some(RunError {
+                            code: error["code"]
+                                .as_str()
+                                .unwrap_or("codemode_unavailable")
+                                .into(),
+                            message: error["message"]
+                                .as_str()
+                                .unwrap_or("run scope could not open")
+                                .into(),
+                        }),
+                        output: String::new(),
+                        warnings: serde_json::to_string(&warnings).unwrap(),
+                    },
+                    clock.now_ms(),
+                )?;
+                Ok(())
+            })?;
+            None
+        }
+    };
+    let Lookup::Found(run) = store.read(|conn| store::lookup(conn, invocation.run_id))? else {
+        return Err(CoreError::Corrupt("admitted tool run disappeared".into()));
+    };
+    let start = if run.status == Status::Running {
+        start
+    } else {
+        None
+    };
+    Ok(Admission::Admitted { run, start })
+}
