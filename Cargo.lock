@@ -168,6 +168,7 @@ dependencies = [
 name = "basal-worker"
 version = "0.1.0"
 dependencies = [
+ "basal-launch",
  "basal-proto",
  "basal-testkit",
  "landlock",
@@ -175,6 +176,7 @@ dependencies = [
  "rquickjs",
  "seccompiler",
  "serde_json",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

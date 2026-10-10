@@ -2,6 +2,9 @@
 //! the JS time budget. Every activation must end with a typed result and the
 //! worker must survive all of them.
 
+// Windows: gated until basal-testkit builds there.
+#![cfg(not(windows))]
+
 mod common;
 
 use std::time::Duration;

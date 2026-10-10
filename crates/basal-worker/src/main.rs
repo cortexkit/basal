@@ -1,9 +1,16 @@
 //! Entry point for `ck-basal-worker`.
 //!
-//! Started by basal with an explicit Landlock policy on Linux, the worker confines itself and then
-//! serves frames on stdin and stdout. Logs go to stderr. The other modes are
-//! `--confinement-probe`, which reports what the sandbox denies, and
-//! `--version`, which prints the version and the build revision.
+//! Started by basal with an explicit Landlock policy on Linux, and through
+//! basal-launch with `--package-sid=<SID>` on Windows, the worker confines
+//! itself and then serves frames on stdin and stdout. Logs go to stderr. The
+//! other modes are `--confinement-probe`, which reports what the sandbox
+//! denies, and `--version`, which prints the version and the build revision.
+//!
+//! On Windows the image is a GUI-subsystem one, so that no console host is
+//! started for it: under the confined token, console initialisation fails in
+//! the loader (`STATUS_DLL_INIT_FAILED`) before the worker's first
+//! instruction. The worker talks only through its three inherited pipes.
+#![cfg_attr(windows, windows_subsystem = "windows")]
 
 use std::io::{self, BufWriter};
 use std::process::ExitCode;
@@ -30,6 +37,10 @@ fn main() -> ExitCode {
         }
         #[cfg(target_os = "linux")]
         Some("--landlock=required" | "--landlock=optional") if args.len() == 1 => {}
+        // The Windows engine arguments are checked in full below.
+        #[cfg(windows)]
+        Some(_) => {}
+        #[cfg(not(windows))]
         Some(other) => {
             eprintln!("ck-basal-worker: unknown argument {other}");
             return ExitCode::from(64);
@@ -49,7 +60,30 @@ fn main() -> ExitCode {
         ),
         Err(confinement::linux::ArgumentError::Usage) => return ExitCode::from(64),
     };
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(windows)]
+    let result = {
+        use confinement::windows::{self, ArgumentError, PackageSid, Refusal, reason};
+        match windows::engine_arguments(&args) {
+            Ok(arguments) => match PackageSid::parse(&arguments.package_sid) {
+                Ok(package) => windows::enter(&package, &arguments),
+                Err(error) => {
+                    eprintln!("ck-basal-worker: unparsable --package-sid: {error}");
+                    return ExitCode::from(64);
+                }
+            },
+            Err(ArgumentError::Missing) => {
+                Err(confinement::ConfinementError::Windows(Refusal::new(
+                    reason::PACKAGE_SID_ARGUMENT_MISSING,
+                    "no --package-sid=<SID> argument",
+                )))
+            }
+            Err(ArgumentError::Usage(detail)) => {
+                eprintln!("ck-basal-worker: {detail}");
+                return ExitCode::from(64);
+            }
+        }
+    };
+    #[cfg(not(any(target_os = "linux", windows)))]
     let result = confinement::enter();
     let entered = match result {
         Ok(entered) => entered,

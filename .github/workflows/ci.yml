@@ -396,6 +396,22 @@ jobs:
         continue-on-error: true
         timeout-minutes: 20
         run: cargo test -p basal-launch --features deviations --locked -- --show-output 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-launch.log"
+      # The worker's tests on their own: its Windows startup checks, its image
+      # and a real activation, each worker started through the launcher. The
+      # plain build is the production worker, which must refuse the
+      # launcher's request to skip a check. The deviations build is a test
+      # worker that honours that request, for the three checks the parent
+      # cannot break from outside.
+      - name: Test the worker on its own
+        id: test-worker
+        continue-on-error: true
+        timeout-minutes: 30
+        run: cargo test -p basal-worker --locked --no-fail-fast -- --show-output 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-worker.log"
+      - name: Test the worker with its test variants
+        id: test-worker-deviations
+        continue-on-error: true
+        timeout-minutes: 30
+        run: cargo test -p basal-worker --features deviations --locked --no-fail-fast -- --show-output 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-worker-deviations.log"
       - name: Check every workspace target
         id: check
         continue-on-error: true

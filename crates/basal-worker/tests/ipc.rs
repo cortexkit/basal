@@ -1,6 +1,9 @@
 //! The channel: malformed, oversized and out-of-order frames are refused
 //! with typed errors, and none of them crashes the worker.
 
+// Windows: gated until basal-testkit builds there.
+#![cfg(not(windows))]
+
 mod common;
 
 use std::time::Duration;
