@@ -1,4 +1,5 @@
 //! Codemode's confined wire contract, without the flow parent's journal or hosts.
+
 mod common;
 
 use std::time::Duration;

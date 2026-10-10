@@ -2,6 +2,7 @@
 //! the engine freezes its global object, both directly and through the worker.
 //! Frozen globals reject new names before a call can run; scoped functions can
 //! recurse. Direct versus worker entry separates those engine costs from OS confinement.
+
 use basal_proto::{ActivationRequest, ActivationResult, Budgets, JsonText, Profile};
 use basal_worker::{engine, link::Channel};
 use std::cell::RefCell;

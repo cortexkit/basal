@@ -99,6 +99,7 @@ pub struct TestServer {
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
     #[cfg(test)]
+    #[cfg(unix)]
     blocking_accept: bool,
 }
 
@@ -121,7 +122,7 @@ impl TestServer {
             .expect("server certificate");
         let config = Arc::new(config);
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-        #[cfg(test)]
+        #[cfg(all(test, unix))]
         let blocking_accept = {
             use std::os::fd::AsRawFd;
             // SAFETY: listener owns this live socket; F_GETFL only reads flags.
@@ -166,6 +167,7 @@ impl TestServer {
             stop,
             thread: Some(thread),
             #[cfg(test)]
+            #[cfg(unix)]
             blocking_accept,
         }
     }
@@ -299,6 +301,7 @@ mod tests {
         let server = TestServer::start(|_| BTreeMap::new());
         let connections = server.connections.clone();
         let seen = server.seen.clone();
+        #[cfg(unix)]
         assert!(
             server.blocking_accept,
             "the accept loop must block instead of polling"

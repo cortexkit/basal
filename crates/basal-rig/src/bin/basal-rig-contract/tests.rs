@@ -129,15 +129,19 @@ fn seeded_fixture_requires_a_terminal_disabled_module_and_no_pid() {
 
 #[test]
 fn seeded_fixture_rejects_foreign_paths_and_symlinked_stores() {
-    let output = std::process::Command::new("mktemp")
-        .arg("-d")
-        .arg(std::env::temp_dir().join("basal-rig-fixture.XXXXXXXX"))
-        .output()
-        .unwrap();
-    assert!(output.status.success());
-    let root = PathBuf::from(String::from_utf8(output.stdout).unwrap().trim())
-        .canonicalize()
-        .unwrap();
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let root = loop {
+        let root = std::env::temp_dir().join(format!(
+            "basal-rig-fixture-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        match std::fs::create_dir(&root) {
+            Ok(()) => break root.canonicalize().unwrap(),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => panic!("create isolated fixture: {error}"),
+        }
+    };
     let rig = root.join("ckdev-flows");
     let home = rig.join("home");
     let store = rig.join("data/cortexkit/basal/store.db");
@@ -151,9 +155,12 @@ fn seeded_fixture_rejects_foreign_paths_and_symlinked_stores() {
     let foreign = root.join("production.db");
     std::fs::write(&foreign, []).unwrap();
     assert!(seeded::fixture_path_for(&home, &foreign, "basal").is_err());
-    std::fs::remove_file(&store).unwrap();
-    std::os::unix::fs::symlink(&foreign, &store).unwrap();
-    assert!(seeded::fixture_path_for(&home, &store, "basal").is_err());
+    #[cfg(unix)]
+    {
+        std::fs::remove_file(&store).unwrap();
+        std::os::unix::fs::symlink(&foreign, &store).unwrap();
+        assert!(seeded::fixture_path_for(&home, &store, "basal").is_err());
+    }
     assert!(seeded::fixture_path_for(&home, &store, "other").is_err());
     std::fs::remove_dir_all(&root).unwrap();
 }
@@ -191,10 +198,38 @@ fn authorship_fingerprint_allows_only_the_one_author_cell() {
 
 #[test]
 fn fixture_module_control_uses_only_the_absolute_isolated_cli() {
+    let root = std::env::temp_dir().join("rig").join("ckdev-flows");
+    let home = root.join("home");
     assert_eq!(
-        seeded::module_cli_path(std::path::Path::new("/rig/ckdev-flows/home")).unwrap(),
-        PathBuf::from("/rig/ckdev-flows/bin/ckdev-ck")
+        seeded::module_cli_path(&home).unwrap(),
+        root.join("bin").join(if cfg!(windows) {
+            "ckdev-ck.exe"
+        } else {
+            "ckdev-ck"
+        })
     );
-    assert!(seeded::module_cli_path(std::path::Path::new("/rig/home")).is_err());
+    assert!(seeded::module_cli_path(&std::env::temp_dir().join("rig").join("home")).is_err());
     assert!(seeded::module_cli_path(std::path::Path::new("ckdev-flows/home")).is_err());
+}
+
+#[cfg(windows)]
+#[test]
+fn store_handle_probe_refuses_an_open_database_or_sidecar() {
+    let directory =
+        std::env::temp_dir().join(format!("basal-rig-handle-probe-{}", std::process::id()));
+    std::fs::create_dir(&directory).unwrap();
+    let store = directory.join("store.db");
+    std::fs::write(&store, []).unwrap();
+    for suffix in ["", "-wal", "-shm"] {
+        let path = PathBuf::from(format!("{}{suffix}", store.display()));
+        std::fs::write(&path, []).unwrap();
+        let held = std::fs::File::open(&path).unwrap();
+        assert!(
+            seeded::no_store_handles(&store).is_err(),
+            "open {suffix:?} was not refused"
+        );
+        drop(held);
+        assert!(seeded::no_store_handles(&store).is_ok());
+    }
+    std::fs::remove_dir_all(directory).unwrap();
 }

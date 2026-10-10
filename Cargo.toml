@@ -7,6 +7,7 @@ members = [
     "crates/basal-core",
     "crates/basal-testkit",
     "crates/basal-module",
+    "crates/basal-launch",
     "crates/basal-rig",
 ]
 
@@ -20,6 +21,7 @@ rust-version = "1.88"
 # Dependencies do not require sibling checkouts.
 basal-core = { path = "crates/basal-core" }
 basal-host = { path = "crates/basal-host" }
+basal-launch = { path = "crates/basal-launch" }
 basal-proto = { path = "crates/basal-proto" }
 basal-testkit = { path = "crates/basal-testkit" }
 blake3 = "1.8"

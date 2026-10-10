@@ -19,9 +19,37 @@ rquickjs.workspace = true
 landlock = "=0.4.7"
 seccompiler = "=0.5.0"
 
+# The worker's own startup checks on Windows: its tokens, mitigation
+# policies, handle table and thread CPU time. Every function used here is
+# exported by kernel32, advapi32 or ntdll, so the image imports no DLL that
+# would pull User32, GDI or COM into the confined process.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Console",
+    "Win32_System_Threading",
+] }
+
+[features]
+default = []
+# Test-only: lets the worker act on `--confinement-deviation=<name>`, which
+# basal-launch passes for the three startup checks the parent cannot break
+# from outside (a thread token left in place, a failed or skipped integrity
+# lowering). A worker built without this feature refuses that argument as
+# unknown, so a production worker has no way to skip a check.
+deviations = []
+
 [dev-dependencies]
-basal-testkit.workspace = true
 serde_json.workspace = true
+basal-testkit.workspace = true
+
+# On Windows every test spawn of the worker goes through the launcher, under
+# the real confinement. Its test variants break one confinement property at a
+# time, for the worker's refusal tests.
+[target.'cfg(windows)'.dev-dependencies]
+basal-launch = { workspace = true, features = ["deviations"] }
 
 [[bin]]
 name = "ck-basal-worker"

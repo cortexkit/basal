@@ -1,4 +1,5 @@
 //! Adversarial scripts at the sandbox's function and exception boundaries.
+
 mod common;
 
 use basal_proto::{ActivationResult, Failure};

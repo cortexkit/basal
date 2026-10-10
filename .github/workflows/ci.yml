@@ -386,6 +386,42 @@ jobs:
             ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-windows-baseline-
       - name: Prepare the log directory
         run: mkdir -p "$RUNNER_TEMP/windows-baseline"
+      # The Windows launcher's own tests start real confined children, so
+      # they can only run here. The deviations feature adds the test-only
+      # launch variants, one per confinement check. They run first and print
+      # what the parent read back, so the log shows it even when the
+      # workspace steps below fail.
+      - name: Test the Windows launcher with its test variants
+        id: test-launch
+        continue-on-error: true
+        timeout-minutes: 20
+        run: cargo test -p basal-launch --features deviations --locked -- --show-output 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-launch.log"
+      # The worker's tests on their own: its Windows startup checks, its image
+      # and a real activation, each worker started through the launcher. The
+      # plain build is the production worker, which must refuse the
+      # launcher's request to skip a check. The deviations build is a test
+      # worker that honours that request, for the three checks the parent
+      # cannot break from outside.
+      - name: Test the worker on its own
+        id: test-worker
+        continue-on-error: true
+        timeout-minutes: 30
+        run: cargo test -p basal-worker --locked --no-fail-fast -- --show-output 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-worker.log"
+      - name: Test the worker with its test variants
+        id: test-worker-deviations
+        continue-on-error: true
+        timeout-minutes: 30
+        run: cargo test -p basal-worker --features deviations --locked --no-fail-fast -- --show-output 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-worker-deviations.log"
+      - name: Test the shared test kit on its own
+        id: test-testkit
+        continue-on-error: true
+        timeout-minutes: 30
+        run: cargo test -p basal-testkit --locked --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-testkit.log"
+      - name: Test the integration rig on its own
+        id: test-rig
+        continue-on-error: true
+        timeout-minutes: 30
+        run: cargo test -p basal-rig --locked --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-rig.log"
       - name: Check every workspace target
         id: check
         continue-on-error: true
@@ -406,6 +442,13 @@ jobs:
         continue-on-error: true
         timeout-minutes: 40
         run: cargo test --workspace --locked --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-no-fail-fast.log"
+      # The workspace test can't build until every crate compiles on Windows,
+      # so basal-host's own tests run separately to report its built-ins now.
+      - name: Test basal-host on its own
+        id: test-host
+        continue-on-error: true
+        timeout-minutes: 30
+        run: cargo test -p basal-host --lib --locked --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-host.log"
       - name: Summarize the baseline
         if: always()
         run: |
@@ -414,6 +457,9 @@ jobs:
             echo
             echo "- cargo check --workspace --all-targets --locked: ${{ steps.check.outcome }}"
             echo "- cargo test --workspace --locked: ${{ steps.test.outcome }}"
+            echo "- cargo test -p basal-launch --features deviations --locked: ${{ steps.test-launch.outcome }}"
+            echo "- cargo test -p basal-testkit --locked --no-fail-fast: ${{ steps.test-testkit.outcome }}"
+            echo "- cargo test -p basal-rig --locked --no-fail-fast: ${{ steps.test-rig.outcome }}"
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()

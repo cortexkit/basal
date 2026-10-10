@@ -9,13 +9,21 @@ pub(super) fn module_cli_path(home: &std::path::Path) -> Result<PathBuf, String>
     {
         return Err("module control requires the isolated ckdev-flows home".into());
     }
-    Ok(root.join("bin/ckdev-ck"))
+    #[cfg(unix)]
+    {
+        Ok(root.join("bin/ckdev-ck"))
+    }
+    #[cfg(windows)]
+    {
+        Ok(root.join("bin").join("ckdev-ck.exe"))
+    }
 }
 
 pub(super) fn ck(args: &[&str]) -> Result<Value, String> {
     let connection =
         std::env::var_os("SUBC_CONNECTION_FILE").ok_or("no isolated connection file")?;
     let home = PathBuf::from(std::env::var_os("HOME").ok_or("missing isolated HOME")?);
+    #[cfg(unix)]
     let output = std::process::Command::new(module_cli_path(&home)?)
         .arg("--subc")
         .arg(connection)
@@ -23,6 +31,8 @@ pub(super) fn ck(args: &[&str]) -> Result<Value, String> {
         .args(args)
         .output()
         .map_err(|e| e.to_string())?;
+    #[cfg(windows)]
+    let output = super::windows::ck_output(module_cli_path(&home)?, connection, args)?;
     if !output.status.success() {
         return Err(format!(
             "ckdev-ck {args:?}: {} {}",
@@ -195,6 +205,7 @@ pub(super) async fn stale(
     case
 }
 
+#[cfg(unix)]
 pub(super) fn no_store_handles(path: &std::path::Path) -> Result<(), String> {
     let mut command = std::process::Command::new("lsof");
     command.arg("-F").arg("p").arg(path);
@@ -210,5 +221,35 @@ pub(super) fn no_store_handles(path: &std::path::Path) -> Result<(), String> {
             "cannot prove the isolated SQLite store and sidecars have no open handles: {output:?}"
         ));
     }
+    Ok(())
+}
+
+#[cfg(windows)]
+pub(super) fn no_store_handles(path: &std::path::Path) -> Result<(), String> {
+    use std::os::windows::fs::OpenOptionsExt;
+    let mut files = vec![path.to_path_buf()];
+    for suffix in ["-wal", "-shm"] {
+        let sidecar = PathBuf::from(format!("{}{suffix}", path.display()));
+        if sidecar.exists() {
+            files.push(sidecar);
+        }
+    }
+    // No-sharing opens refuse while any other reader or writer owns the file.
+    // Hold all three together so the observation covers the store and sidecars.
+    let _handles = files
+        .iter()
+        .map(|file| {
+            std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(0)
+                .open(file)
+                .map_err(|e| {
+                    format!(
+                        "cannot prove {} has no open store handles: {e}",
+                        file.display()
+                    )
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(())
 }
