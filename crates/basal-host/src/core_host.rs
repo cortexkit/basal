@@ -240,14 +240,44 @@ pub(crate) fn sample() -> f64 {
     // Live draws use OS entropy, not shared predictable process state. The
     // runtime journals each draw and replay serves that saved value instead.
     // There is deliberately no fallback when the OS cannot supply entropy.
-    let rc = unsafe { libc::getentropy((&mut x as *mut u64).cast(), std::mem::size_of::<u64>()) };
+    fill_entropy(&mut x);
+    (x >> 11) as f64 / ((1u64 << 53) as f64)
+}
+
+#[cfg(unix)]
+fn fill_entropy(x: &mut u64) {
+    let rc = unsafe { libc::getentropy((x as *mut u64).cast(), std::mem::size_of::<u64>()) };
     assert_eq!(
         rc,
         0,
         "OS entropy unavailable: {}",
         std::io::Error::last_os_error()
     );
-    (x >> 11) as f64 / ((1u64 << 53) as f64)
+}
+
+#[cfg(windows)]
+fn fill_entropy(x: &mut u64) {
+    // The system-preferred RNG needs no algorithm handle; flag value 2 is
+    // BCRYPT_USE_SYSTEM_PREFERRED_RNG.
+    #[link(name = "bcrypt")]
+    unsafe extern "system" {
+        fn BCryptGenRandom(
+            algorithm: *mut core::ffi::c_void,
+            buffer: *mut u8,
+            len: u32,
+            flags: u32,
+        ) -> i32;
+    }
+    const BCRYPT_USE_SYSTEM_PREFERRED_RNG: u32 = 2;
+    let status = unsafe {
+        BCryptGenRandom(
+            std::ptr::null_mut(),
+            (x as *mut u64).cast(),
+            std::mem::size_of::<u64>() as u32,
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+        )
+    };
+    assert_eq!(status, 0, "OS entropy unavailable: NTSTATUS {status:#010x}");
 }
 
 /// A published status lasts half an hour unless core supersedes its revision.
