@@ -6,7 +6,7 @@
 //! dropping its answer receiver also discards answers that arrive after a kill.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -39,6 +39,49 @@ enum Command {
     Cancel(mpsc::SyncSender<Result<()>>),
 }
 
+#[derive(Default)]
+struct Drivers {
+    stopped: bool,
+    threads: Vec<thread::JoinHandle<()>>,
+}
+
+#[derive(Default)]
+struct DispatchStarts {
+    pending: Mutex<usize>,
+    changed: Condvar,
+}
+
+struct DispatchStore {
+    store: Option<Arc<Store>>,
+    starts: Arc<DispatchStarts>,
+}
+
+impl DispatchStore {
+    fn new(store: Arc<Store>, starts: Arc<DispatchStarts>) -> Self {
+        *starts.pending.lock().unwrap() += 1;
+        Self {
+            store: Some(store),
+            starts,
+        }
+    }
+}
+
+impl std::ops::Deref for DispatchStore {
+    type Target = Store;
+    fn deref(&self) -> &Store {
+        self.store.as_deref().unwrap()
+    }
+}
+
+impl Drop for DispatchStore {
+    fn drop(&mut self) {
+        // Publish completion only after releasing the writer lease reference.
+        self.store.take();
+        *self.starts.pending.lock().unwrap() -= 1;
+        self.starts.changed.notify_all();
+    }
+}
+
 struct Shared {
     store: Arc<Store>,
     transport: Arc<dyn Transport>,
@@ -48,10 +91,14 @@ struct Shared {
     prelude_hash: PreludeHash,
     denylist: ShellDenylist,
     active: Mutex<BTreeMap<String, mpsc::Sender<Command>>>,
+    drivers: Mutex<Drivers>,
+    dispatch_starts: Arc<DispatchStarts>,
     #[cfg(test)]
     before_entry: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
     before_record: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
+    before_exit: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 /// Owns codemode supervisors only. Supply a fresh-worker source, never a flow
@@ -80,10 +127,14 @@ impl Supervisor {
             prelude_hash,
             denylist,
             active: Mutex::new(BTreeMap::new()),
+            drivers: Mutex::new(Drivers::default()),
+            dispatch_starts: Arc::new(DispatchStarts::default()),
             #[cfg(test)]
             before_entry: Mutex::new(None),
             #[cfg(test)]
             before_record: Mutex::new(None),
+            #[cfg(test)]
+            before_exit: Mutex::new(None),
         }));
         supervisor.recover()?;
         Ok(supervisor)
@@ -92,6 +143,10 @@ impl Supervisor {
     /// Consumes the admission winner's token. No worker is acquired on the
     /// caller's thread; even worker startup is performed off the event loop.
     pub fn start(&self, run: RunRecord, start: Start) -> Result<()> {
+        let mut drivers = self.0.drivers.lock().unwrap();
+        if drivers.stopped {
+            return Err(CoreError::Invalid("codemode supervisor is stopped".into()));
+        }
         let (tx, rx) = mpsc::channel();
         let mut active = self.0.active.lock().unwrap();
         if active.contains_key(&run.run_id) || run.status != Status::Running {
@@ -100,7 +155,7 @@ impl Supervisor {
         let id = run.run_id.clone();
         active.insert(id.clone(), tx);
         let shared = self.0.clone();
-        if let Err(error) = thread::Builder::new()
+        match thread::Builder::new()
             .name(format!("codemode:{id}"))
             .spawn(move || {
                 let mut driver = Driver::new(shared.clone(), run, start, rx);
@@ -116,13 +171,58 @@ impl Supervisor {
                     }
                 }
                 shared.active.lock().unwrap().remove(&driver.run.run_id);
-            })
-        {
-            active.remove(&id);
-            terminate(&self.0, &id, None, failed("worker_lost", error.to_string()))?;
-            return Ok(());
+                #[cfg(test)]
+                if let Some(hook) = shared.before_exit.lock().unwrap().as_ref() {
+                    hook();
+                }
+            }) {
+            Ok(handle) => drivers.threads.push(handle),
+            Err(error) => {
+                active.remove(&id);
+                terminate(&self.0, &id, None, failed("worker_lost", error.to_string()))?;
+            }
         }
         Ok(())
+    }
+
+    /// Stop admitting drivers, cancel every live run and release all driver
+    /// store references before returning. Provider calls already in flight may
+    /// finish later, but they retain no store and their answer receiver is gone.
+    pub fn shutdown(&self) -> Result<()> {
+        let mut drivers = self.0.drivers.lock().unwrap();
+        drivers.stopped = true;
+        let ids = self
+            .0
+            .active
+            .lock()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut error = None;
+        for id in ids {
+            if let Err(failure) = self.cancel(&id) {
+                error.get_or_insert(failure);
+            }
+        }
+        for handle in drivers.threads.drain(..) {
+            if handle.join().is_err() {
+                error.get_or_insert_with(|| CoreError::Invalid("codemode driver panicked".into()));
+            }
+        }
+        // A dispatch scheduled just before cancellation may still be recording
+        // its intent. Wait for that store reference, never for the provider.
+        let starts = &self.0.dispatch_starts;
+        drop(
+            starts
+                .changed
+                .wait_while(starts.pending.lock().unwrap(), |n| *n != 0)
+                .unwrap(),
+        );
+        match error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     /// Unknown and pruned ids return `None`. Running durations use the same
@@ -541,7 +641,10 @@ impl Driver {
         if !queued {
             self.insert(&call, CallStart::Queued)?;
         }
-        let store = self.shared.store.clone();
+        let store = DispatchStore::new(
+            self.shared.store.clone(),
+            self.shared.dispatch_starts.clone(),
+        );
         let id = self.run.run_id.clone();
         let clock = self.shared.clock.clone();
         let deadline = self.start.wall_deadline_ms;
@@ -550,7 +653,7 @@ impl Driver {
         let transport = self.shared.transport.clone();
         let answer_tx = self.answer_tx.clone();
         #[cfg(test)]
-        let shared = self.shared.clone();
+        let before_entry = self.shared.before_entry.lock().unwrap().clone();
         self.in_flight += 1;
         if let Err(error) = thread::Builder::new()
             .name(format!("{route}:tool"))
@@ -568,13 +671,18 @@ impl Driver {
                 let result = match prepared {
                     Ok(true) => {
                         #[cfg(test)]
-                        if let Some(hook) = shared.before_entry.lock().unwrap().as_ref() {
+                        if let Some(hook) = before_entry {
                             hook();
                         }
                         let entered = store
                             .write(|tx| store::enter_call(tx, &id, call.position, clock.now_ms()));
                         match entered {
-                            Ok(true) => transport.tool_for_flow(&route, &module, &op, input, &key),
+                            Ok(true) => {
+                                // A blocked provider must not keep the module's
+                                // SQLite writer lease alive after shutdown.
+                                drop(store);
+                                transport.tool_for_flow(&route, &module, &op, input, &key)
+                            }
                             Ok(false) => return,
                             Err(error) => Err(WireError::NeverSent(error.to_string())),
                         }

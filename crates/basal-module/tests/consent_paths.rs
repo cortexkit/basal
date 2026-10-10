@@ -223,6 +223,7 @@ impl Rig {
             basal_module::module::Module::start(
                 self.config.clone(),
                 Hosts {
+                    transport: Arc::new(basal_module::unconfigured::UnconfiguredTransport),
                     host: Arc::new(MockHost::new()),
                     catalog: Arc::new(MockCatalog::standard()),
                     consent: self.consent.clone(),

@@ -173,6 +173,16 @@ impl WorkerProcess {
         timeout: Duration,
         landlock: LandlockPolicy,
     ) -> Result<Self, SpawnError> {
+        Self::start_for_profile(binary, launch, timeout, landlock, false)
+    }
+
+    pub(crate) fn start_for_profile(
+        binary: &Path,
+        launch: &WorkerLaunch,
+        timeout: Duration,
+        landlock: LandlockPolicy,
+        codemode: bool,
+    ) -> Result<Self, SpawnError> {
         #[cfg(target_os = "macos")]
         let (mut command, confirmation) = match launch {
             WorkerLaunch::Disclaimed { trampoline } => {
@@ -213,6 +223,7 @@ impl WorkerProcess {
         command.arg(format!("--landlock={}", landlock.as_str()));
         #[cfg(not(target_os = "linux"))]
         let _ = landlock;
+        codemode_address_space(&mut command, codemode);
         let deadline = Instant::now() + timeout;
         let mut child = command
             .spawn()
@@ -388,6 +399,49 @@ impl WorkerProcess {
         let mut child = self.child.lock().unwrap_or_else(|p| p.into_inner());
         let _ = child.kill();
         let _ = child.wait();
+    }
+}
+
+fn codemode_address_space(command: &mut Command, codemode: bool) {
+    #[cfg(target_os = "linux")]
+    if codemode {
+        use std::os::unix::process::CommandExt;
+        // Set the child's address-space cap before exec: the Linux sandbox
+        // later denies changing process limits. Flow workers keep the parent's limits.
+        unsafe {
+            command.pre_exec(|| {
+                let limit = libc::rlimit {
+                    rlim_cur: basal_proto::CODEMODE_ADDRESS_SPACE_BYTES as libc::rlim_t,
+                    rlim_max: basal_proto::CODEMODE_ADDRESS_SPACE_BYTES as libc::rlim_t,
+                };
+                if libc::setrlimit(libc::RLIMIT_AS, &limit) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (command, codemode);
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod codemode_limits {
+    use super::*;
+
+    #[test]
+    fn macos_codemode_leaves_address_space_limit_inherited() {
+        fn limit(codemode: bool) -> Vec<u8> {
+            let mut command = Command::new("/bin/sh");
+            command.args(["-c", "ulimit -v"]);
+            codemode_address_space(&mut command, codemode);
+            let output = command.output().unwrap();
+            assert!(output.status.success());
+            output.stdout
+        }
+        // macOS workers inherit the same limit as ordinary launches. The
+        // Linux-only cap must not leak into the privacy-identity trampoline.
+        assert_eq!(limit(true), limit(false));
     }
 }
 

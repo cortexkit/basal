@@ -128,6 +128,7 @@ impl Rig {
     fn start(&mut self, hooks: Arc<dyn Hooks>) {
         let catalog = Arc::new(SubcCatalog::new(self.fake.clone()));
         let hosts = Hosts {
+            transport: Arc::new(basal_module::unconfigured::UnconfiguredTransport),
             host: Arc::new(RoutingHost::new(
                 Arc::new(ModuleOpsHost::new(self.fake.clone(), catalog.clone())),
                 Arc::new(CoreHost::new(self.fake.clone())),

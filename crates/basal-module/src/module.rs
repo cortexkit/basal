@@ -40,6 +40,9 @@ pub struct ModuleConfig {
 #[derive(Clone)]
 pub struct Hosts {
     pub host: Arc<dyn Host>,
+    /// Sends tools under a run's registered daemon scope. Unlike flow host
+    /// dispatch, codemode makes one attempt and never retries a lost reply.
+    pub transport: Arc<dyn basal_host::transport::Transport>,
     pub catalog: Arc<dyn Catalog>,
     pub consent: Arc<dyn Consent>,
     pub hooks: Arc<dyn Hooks>,
@@ -52,6 +55,8 @@ pub struct Hosts {
 pub struct Module {
     pub rt: Runtime,
     pub pool: Pool,
+    pub codemode_pool: Pool,
+    pub(crate) codemode: crate::codemode::Codemode,
     pub engine: Engine,
     pub dry: DryRunner,
     pub consent: Arc<dyn Consent>,
@@ -94,7 +99,19 @@ impl Module {
         let clock = runtime_config.clock.clone();
         let metrics = Arc::new(Metrics::default());
         let fatal = Fatal::new();
-        let pool = Pool::new(config.pool.clone(), spawner, clock, metrics.clone());
+        let pool = Pool::new(config.pool.clone(), spawner, clock.clone(), metrics.clone());
+        let codemode_config = PoolConfig {
+            warm_spares: 0,
+            max_workers: 16,
+            max_activations: 1,
+            ..config.pool.clone()
+        };
+        let codemode_pool = Pool::new(
+            codemode_config.clone(),
+            Arc::new(crate::pool::ProcessSpawner::codemode(&codemode_config)),
+            clock,
+            Arc::new(Metrics::default()),
+        );
         // No runtime or completion sink exists yet. Recovering orphan claims
         // needs only the writer lease, and cannot call an unbound adapter.
         let recovered = store
@@ -121,6 +138,13 @@ impl Module {
             )
         })?;
         initialize(store.clone())?;
+        let codemode = crate::codemode::Codemode::new(
+            store.clone(),
+            &hosts,
+            codemode_pool.clone(),
+            &runtime_config,
+        )
+        .map_err(|error| format!("recovering codemode runs: {error}"))?;
         let rt = Runtime::new(
             store,
             hosts.host.clone(),
@@ -155,6 +179,8 @@ impl Module {
         Ok(Self {
             rt,
             pool,
+            codemode_pool,
+            codemode,
             engine,
             dry,
             consent: hosts.consent,
@@ -336,6 +362,8 @@ impl Drop for Module {
     fn drop(&mut self) {
         let engine = self.engine.clone();
         let pool = self.pool.clone();
+        let codemode_pool = self.codemode_pool.clone();
+        let codemode = self.codemode.clone();
         let rt = self.rt.clone();
         let decisions = self.decisions.clone();
         // Waiting for empty run/flow slots is insufficient: an unwinding
@@ -344,6 +372,13 @@ impl Drop for Module {
         let (done, receiver) = std::sync::mpsc::channel();
         let shutdown = std::thread::spawn(move || {
             engine.stop();
+            if let Err(error) = codemode.stop() {
+                // Cancellation still kills workers and joins their drivers
+                // when a simulated process death or storage failure prevents
+                // its terminal commit. Startup marks unfinished runs interrupted.
+                tracing::error!(%error, "codemode shutdown could not commit");
+            }
+            codemode_pool.stop();
             pool.stop();
             engine.join_threads();
             rt.quiesce();

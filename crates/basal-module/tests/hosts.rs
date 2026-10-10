@@ -206,6 +206,7 @@ fn manifest() -> Value {
 fn hosts(f: Arc<Fake>, consent: Arc<CoreConsent>) -> Hosts {
     let cat = Arc::new(SubcCatalog::new(f.clone()));
     Hosts {
+        transport: Arc::new(basal_module::unconfigured::UnconfiguredTransport),
         host: Arc::new(RoutingHost::new(
             Arc::new(ModuleOpsHost::new(f.clone(), cat.clone())),
             Arc::new(CoreHost::new(f)),
@@ -995,6 +996,7 @@ fn operator_keyed_tools_retry_but_unfenceable_tools_do_not() {
         "keyed-tool",
         common::Options {
             hosts: Some(Hosts {
+                transport: Arc::new(basal_module::unconfigured::UnconfiguredTransport),
                 host: Arc::new(RoutingHost::new(
                     ops,
                     Arc::new(CoreHost::new(fake.clone())),
@@ -1195,6 +1197,7 @@ fn model_fixture(
     let consent = Arc::new(CoreConsent::new(wire.clone()));
     let catalog = Arc::new(SubcCatalog::new(wire.clone()));
     let dependencies = Hosts {
+        transport: Arc::new(basal_module::unconfigured::UnconfiguredTransport),
         host: Arc::new(RoutingHost::new(
             Arc::new(ModuleOpsHost::new(wire.clone(), catalog.clone())),
             Arc::new(CoreHost::new(wire)),
@@ -1613,6 +1616,7 @@ fn selections_freeze_at_intent_commit_and_only_uncommitted_calls_reselect() {
             ));
             let cat = Arc::new(SubcCatalog::new(wire.clone()));
             let dependencies = Hosts {
+                transport: Arc::new(basal_module::unconfigured::UnconfiguredTransport),
                 host: Arc::new(RoutingHost::new(
                     Arc::new(ModuleOpsHost::new(wire.clone(), cat.clone())),
                     Arc::new(CoreHost::new(wire.clone())),

@@ -7,13 +7,13 @@ use crate::transport::{Transport, WireError};
 use crate::{CallClass, CallRequest, CompletionSink, Dispatched, Host, OpKind, TransportError};
 use basal_proto::{CallKind, Primitive};
 use std::collections::BTreeSet;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 pub struct ModuleOpsHost {
     transport: Arc<dyn Transport>,
     catalog: Arc<SubcCatalog>,
     keyed: BTreeSet<(String, String)>,
-    scope_describer: Option<crate::scope_describe::ModuleScopeDescriber>,
+    scope_describer: RwLock<Option<Arc<crate::scope_describe::ModuleScopeDescriber>>>,
 }
 impl ModuleOpsHost {
     pub fn new(transport: Arc<dyn Transport>, catalog: Arc<SubcCatalog>) -> Self {
@@ -21,21 +21,32 @@ impl ModuleOpsHost {
             transport,
             catalog,
             keyed: BTreeSet::new(),
-            scope_describer: None,
+            scope_describer: RwLock::new(None),
         }
     }
     /// Attach the registered module connection that may read daemon scopes.
     /// The module's serve future must keep running on `runtime`; admission
     /// invokes this blocking host from a separate thread.
     pub fn with_scope_describer(
-        mut self,
+        self,
         handle: subc_client_rs::ModuleHandle,
         runtime: tokio::runtime::Handle,
     ) -> Self {
-        self.scope_describer = Some(crate::scope_describe::ModuleScopeDescriber::new(
-            handle, runtime,
-        ));
+        self.set_scope_describer(handle, runtime);
         self
+    }
+
+    /// Replace the control connection before serving a reconnected module.
+    /// A describe already in flight keeps its original connection and fails
+    /// closed if that connection was lost; new admits use the replacement.
+    pub fn set_scope_describer(
+        &self,
+        handle: subc_client_rs::ModuleHandle,
+        runtime: tokio::runtime::Handle,
+    ) {
+        *self.scope_describer.write().unwrap() = Some(Arc::new(
+            crate::scope_describe::ModuleScopeDescriber::new(handle, runtime),
+        ));
     }
     /// Only operator-approved tool contracts may make a mutation repeatable.
     /// Management calls have no typed call-key field in this protocol.
@@ -133,8 +144,8 @@ impl Host for ModuleOpsHost {
         owner: &subc_protocol::Principal,
         scope_ref: &str,
     ) -> Result<crate::ScopeDescription, crate::ScopeDescribeError> {
-        self.scope_describer
-            .as_ref()
+        let describer = self.scope_describer.read().unwrap().clone();
+        describer
             .ok_or(crate::ScopeDescribeError::Unavailable)?
             .describe(owner, scope_ref)
     }

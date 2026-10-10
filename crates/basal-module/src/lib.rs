@@ -21,6 +21,7 @@
 
 pub mod caller;
 pub mod card;
+pub mod codemode;
 pub mod dryrun;
 pub mod engine;
 pub mod fatal;
@@ -35,5 +36,6 @@ pub mod process;
 // switch in deployed binaries, which still require the explicit feature.
 #[cfg(any(test, feature = "rig-kill-hook"))]
 pub mod rig_kill;
+pub mod scope_connection;
 pub mod serve;
 pub mod unconfigured;

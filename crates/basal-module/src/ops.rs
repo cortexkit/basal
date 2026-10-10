@@ -186,6 +186,9 @@ impl Module {
             "flow.drain" => self.op_drain(caller, params),
             "flow.disable" => self.op_disable(caller, params),
             "flow.enable" => self.op_enable(caller, params),
+            "codemode.run" | "codemode.result" | "codemode.cancel" => {
+                self.op_codemode(caller, method, params)
+            }
             other => Err(OpError::new(
                 "unknown_method",
                 format!("basal serves no op {other:?}; see its management manifest"),
@@ -195,6 +198,18 @@ impl Module {
             tracing::info!(target: "ops", caller = %caller.label(), method, "refused: {e}");
         }
         result
+    }
+
+    fn op_codemode(&self, caller: &Caller, method: &str, params: Value) -> OpResult {
+        if *caller != Caller::Core {
+            return Err(OpError::not_permitted(method, caller));
+        }
+        self.codemode
+            .handle(method, params)
+            .map_err(|error| match error {
+                crate::codemode::Error::Core(error) => self.core_error(error),
+                crate::codemode::Error::Refused { code, message } => OpError::new(code, message),
+            })
     }
 
     /// The flow's owner, or before any approval the authors of its

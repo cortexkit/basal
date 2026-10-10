@@ -23,6 +23,42 @@ use basal_proto::CallKind;
 pub const NO_HOST: &str =
     "no host adapter is configured in this build of ck-basal; the call was never sent";
 
+/// Offline modules have no scoped provider connection and must never send.
+pub struct UnconfiguredTransport;
+
+impl basal_host::transport::Transport for UnconfiguredTransport {
+    fn catalog(&self) -> Result<serde_json::Value, basal_host::transport::WireError> {
+        Err(basal_host::transport::WireError::NeverSent(NO_HOST.into()))
+    }
+    fn management(
+        &self,
+        _: &str,
+        _: &str,
+        _: serde_json::Value,
+    ) -> Result<serde_json::Value, basal_host::transport::WireError> {
+        self.catalog()
+    }
+    fn tool(
+        &self,
+        _: &str,
+        _: &str,
+        _: serde_json::Value,
+        _: &str,
+    ) -> Result<serde_json::Value, basal_host::transport::WireError> {
+        self.catalog()
+    }
+    fn tool_for_flow(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: serde_json::Value,
+        _: &str,
+    ) -> Result<serde_json::Value, basal_host::transport::WireError> {
+        self.catalog()
+    }
+}
+
 /// A host that sends nothing.
 #[derive(Default)]
 pub struct UnconfiguredHost {

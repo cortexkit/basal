@@ -404,6 +404,7 @@ pub fn main() -> std::process::ExitCode {
     let module = match Module::start_with_store(
         config,
         Hosts {
+            transport: Arc::new(crate::unconfigured::UnconfiguredTransport),
             host,
             catalog: Arc::new(MockCatalog::standard()),
             consent: Arc::new(consent.clone()),

@@ -17,6 +17,21 @@ pub const MODULE_ID: &str = "basal";
 /// Every op basal serves, with whether it changes anything and what it does.
 pub const OPERATIONS: &[(&str, ManagementOperationKind, &str)] = &[
     (
+        "codemode.run",
+        ManagementOperationKind::Mutate,
+        "Admit a scoped JavaScript run and return its state; core only.",
+    ),
+    (
+        "codemode.result",
+        ManagementOperationKind::Query,
+        "Read a codemode run's current or terminal state; core only.",
+    ),
+    (
+        "codemode.cancel",
+        ManagementOperationKind::Mutate,
+        "Cancel a codemode run and return its stored state; core only.",
+    ),
+    (
         "package.register",
         ManagementOperationKind::Mutate,
         "Register immutable package bytes; operator or core only.",
