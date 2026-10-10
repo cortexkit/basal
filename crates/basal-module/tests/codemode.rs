@@ -19,6 +19,7 @@ struct Provider {
     state: Mutex<(usize, bool)>,
     changed: Condvar,
     routes: Mutex<Vec<String>>,
+    returned: std::sync::atomic::AtomicUsize,
 }
 
 impl Provider {
@@ -66,6 +67,9 @@ impl Transport for Provider {
         state.0 += 1;
         self.changed.notify_all();
         state = self.changed.wait_while(state, |s| !s.1).unwrap();
+        self.returned
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.changed.notify_all();
         drop(state);
         Ok(input)
     }
@@ -400,11 +404,17 @@ fn codemode_spawn_failure_is_failed_worker_lost() {
     assert!(rig.f.module.codemode_pool.handouts().is_empty());
 }
 
-#[test]
-fn codemode_shutdown_after_store_cut_revokes_a_held_worker() {
+fn shutdown_module(
+    tag: &str,
+) -> (
+    basal_module::module::Module,
+    std::path::PathBuf,
+    MockHost,
+    Arc<Provider>,
+) {
     use basal_module::module::{Module, ModuleConfig};
     use basal_module::pool::ProcessSpawner;
-    let dir = common::scratch("codemode-shutdown-cut");
+    let dir = common::scratch(tag);
     let host = MockHost::new();
     let provider = Arc::new(Provider::default());
     let pool = common::pool_config(&common::Options::default());
@@ -430,6 +440,12 @@ fn codemode_shutdown_after_store_cut_revokes_a_held_worker() {
         Arc::new(ProcessSpawner::new(&pool)),
     )
     .unwrap();
+    (module, dir, host, provider)
+}
+
+#[test]
+fn codemode_shutdown_after_store_cut_revokes_a_held_worker() {
+    let (module, dir, host, provider) = shutdown_module("codemode-shutdown-cut");
     admit(
         &module,
         &provider,
@@ -439,7 +455,17 @@ fn codemode_shutdown_after_store_cut_revokes_a_held_worker() {
     let workers = module.codemode_pool.clone();
     assert_eq!(workers.stats().busy, 1);
     module.rt.store().cut();
-    drop(module);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let dropping = std::thread::spawn(move || {
+        drop(module);
+        let _ = tx.send(());
+    });
+    let returned = rx.recv_timeout(Duration::from_secs(2));
+    if returned.is_err() {
+        provider.release();
+    }
+    dropping.join().unwrap();
+    returned.expect("shutdown after a storage cut must not wait for the provider");
     let deadline = Instant::now() + Duration::from_secs(2);
     while workers.stats().busy != 0 && Instant::now() < deadline {
         std::thread::park_timeout(Duration::from_millis(10));
@@ -450,6 +476,62 @@ fn codemode_shutdown_after_store_cut_revokes_a_held_worker() {
         busy, 0,
         "shutdown must revoke the worker without waiting for the provider"
     );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn module_drop_releases_codemode_store_before_a_held_provider_returns() {
+    let (module, dir, host, provider) = shutdown_module("codemode-shutdown-held");
+    admit(
+        &module,
+        &provider,
+        request(&host, "held", "return await tools.echo({});", catalog()),
+    );
+    provider.wait_entered(1);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let dropping = std::thread::spawn(move || {
+        drop(module);
+        let _ = tx.send(());
+    });
+    let returned = rx.recv_timeout(Duration::from_secs(2));
+    if returned.is_err() {
+        provider.release();
+    }
+    dropping.join().expect("module shutdown panicked");
+    returned.expect("module drop must not wait for the held provider");
+    // Opening before releasing the provider proves neither a driver nor a
+    // detached tool thread retains the previous process's writer lease.
+    let store = basal_core::Store::open(
+        dir.join("basal.db"),
+        basal_core::Durability { fullfsync: false },
+    );
+    provider.release();
+    let store = store.expect("module drop returned while a thread still held the store");
+    let state = provider.state.lock().unwrap();
+    let (state, timeout) = provider
+        .changed
+        .wait_timeout_while(state, Duration::from_secs(2), |_| {
+            provider.returned.load(std::sync::atomic::Ordering::SeqCst) == 0
+        })
+        .unwrap();
+    assert!(
+        !timeout.timed_out(),
+        "provider did not return after release"
+    );
+    drop(state);
+    store
+        .read(|conn| {
+            let basal_core::codemode::store::Lookup::Found(run) =
+                basal_core::codemode::store::lookup(conn, "held")?
+            else {
+                panic!("missing run")
+            };
+            assert_eq!(run.status, basal_core::codemode::store::Status::Cancelled);
+            assert!(run.value.is_none());
+            Ok(())
+        })
+        .unwrap();
+    drop(store);
     std::fs::remove_dir_all(dir).unwrap();
 }
 

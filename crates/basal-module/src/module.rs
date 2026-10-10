@@ -312,11 +312,10 @@ impl Drop for Module {
         let shutdown = std::thread::spawn(move || {
             engine.stop();
             if let Err(error) = codemode.stop() {
-                // A simulated process death or storage failure prevents the
-                // cancel commit. Kill remaining workers; the next startup
-                // marks unfinished runs interrupted.
+                // Cancellation still kills workers and joins their drivers
+                // when a simulated process death or storage failure prevents
+                // its terminal commit. Startup marks unfinished runs interrupted.
                 tracing::error!(%error, "codemode shutdown could not commit");
-                codemode_pool.kill_busy();
             }
             codemode_pool.stop();
             pool.stop();

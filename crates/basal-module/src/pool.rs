@@ -670,14 +670,6 @@ impl Pool {
         self.shared.changed();
     }
 
-    /// Kills workers that could not have their run cancellation committed.
-    /// Recovery at the next startup records any unfinished run as interrupted.
-    pub(crate) fn kill_busy(&self) {
-        for busy in self.lock().busy.values() {
-            busy.killer.kill();
-        }
-    }
-
     /// Takes a lease back. A worker that was killed, died, served a dry run
     /// or reached its activation count is ended and replaced; any other goes
     /// back to its flow's idle list.

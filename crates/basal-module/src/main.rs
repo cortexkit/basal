@@ -112,6 +112,8 @@ fn serve() -> ExitCode {
         selector: Arc<dyn basal_host::selector::ModelSelector>,
     }
     let models = Arc::new(Mutex::new(None::<Models>));
+    let scope_connection = basal_module::scope_connection::ScopeConnection::default();
+    let host_scope_connection = scope_connection.clone();
     let configured_models = models.clone();
     let built_models = models.clone();
     let initialized_models = models.clone();
@@ -146,9 +148,7 @@ fn serve() -> ExitCode {
         }),
         Box::new(move || {
             use basal_host::{
-                core_consent::CoreConsent,
-                core_host::CoreHost,
-                routing::{ModuleOpsHost, RoutingHost},
+                core_consent::CoreConsent, core_host::CoreHost, routing::RoutingHost,
                 subc_catalog::SubcCatalog,
             };
             let transport = transport.clone();
@@ -185,7 +185,7 @@ fn serve() -> ExitCode {
             Hosts {
                 transport: transport.clone(),
                 host: Arc::new(RoutingHost::new(
-                    Arc::new(ModuleOpsHost::new(transport.clone(), catalog.clone())),
+                    host_scope_connection.module_ops(transport.clone(), catalog.clone()),
                     Arc::new(CoreHost::new(transport.clone())),
                     model_host,
                 )),
@@ -214,7 +214,7 @@ fn serve() -> ExitCode {
             models.wake.start(&models.host);
         }
     }));
-    match run(handler) {
+    match run(handler, scope_connection) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             tracing::error!("module exited: {e}");
@@ -239,7 +239,15 @@ fn runtime_hooks(
 }
 
 #[tokio::main]
-async fn run(handler: BasalHandler) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    subc_client_rs::serve(manifest(), handler).await?;
+async fn run(
+    handler: BasalHandler,
+    scope_connection: basal_module::scope_connection::ScopeConnection,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // The SDK wrapper preserves launch argument, module-id and nonce handling
+    // while returning the handle from serve_with_handle. Its future must stay
+    // on this runtime while blocking admission threads await describe replies.
+    let (handle, serving) = subc_client_rs::serve_from_env_with_handle(manifest(), handler).await?;
+    scope_connection.attach(handle, tokio::runtime::Handle::current());
+    serving.await?;
     Ok(())
 }

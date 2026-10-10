@@ -409,6 +409,64 @@ impl Fixture {
 
 #[path = "restart_tests.rs"]
 mod restart;
+
+#[test]
+fn shutdown_joins_a_driver_after_its_active_slot_is_released() {
+    let f = Fixture::new();
+    let (entered, at_exit) = mpsc::channel();
+    let release = Arc::new(std::sync::Barrier::new(2));
+    let exiting = release.clone();
+    *f.supervisor.0.before_exit.lock().unwrap() = Some(Arc::new(move || {
+        entered.send(()).unwrap();
+        exiting.wait();
+    }));
+    f.standard();
+    f.finish("1");
+    at_exit.recv_timeout(TIMEOUT).unwrap();
+    assert!(f.supervisor.0.active.lock().unwrap().is_empty());
+    let supervisor = f.supervisor.clone();
+    let (done, finished) = mpsc::channel();
+    let shutdown = thread::spawn(move || {
+        supervisor.shutdown().unwrap();
+        done.send(()).unwrap();
+    });
+    let prematurely_returned = finished.recv_timeout(Duration::from_secs(2)).is_ok();
+    release.wait();
+    shutdown.join().unwrap();
+    assert!(
+        !prematurely_returned,
+        "shutdown returned while the driver still held its store"
+    );
+}
+
+#[test]
+fn shutdown_refuses_to_start_a_new_driver() {
+    let f = Fixture::new();
+    f.supervisor.shutdown().unwrap();
+    f.host
+        .store
+        .write(|tx| store::insert_run(tx, &new_run("after-shutdown"), None))
+        .unwrap();
+    let Lookup::Found(run) = f
+        .host
+        .store
+        .read(|conn| store::lookup(conn, "after-shutdown"))
+        .unwrap()
+    else {
+        panic!("missing run")
+    };
+    let error = f.supervisor.start(*run, Start {
+        scope: RegisteredScope {
+            selector: serde_json::from_value(json!({"owner":{"kind":"reserved","module_id":"core"}, "ref":"scope-r", "epoch":7})).unwrap(),
+            targets: Default::default(),
+        },
+        tools: Default::default(), limits: Limits::default(), wall_deadline_ms: 10000,
+    }).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        CoreError::Invalid("codemode supervisor is stopped".into()).to_string()
+    );
+}
 impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = self.supervisor.cancel("r");

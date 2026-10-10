@@ -125,9 +125,6 @@ impl Codemode {
     }
 
     pub(crate) fn stop(&self) -> Result<(), CoreError> {
-        for id in self.store.read(basal_core::codemode::store::running_runs)? {
-            self.supervisor.cancel(&id)?;
-        }
-        Ok(())
+        self.supervisor.shutdown()
     }
 }

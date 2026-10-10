@@ -94,13 +94,15 @@ impl Routes {
     }
 }
 
+#[derive(Clone)]
 pub struct BasalHandler {
     phase: Arc<Mutex<Phase>>,
-    routes: Routes,
+    routes: Arc<Routes>,
     configure: Arc<Configure>,
     hosts: Arc<MakeHosts>,
     initialize: Arc<InitializeHosts>,
     ready: Arc<ReadyHosts>,
+    initialized: Arc<std::sync::atomic::AtomicBool>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -111,11 +113,12 @@ impl BasalHandler {
     pub fn new(configure: Configure, hosts: MakeHosts) -> Self {
         Self {
             phase: Arc::new(Mutex::new(Phase::Starting)),
-            routes: Routes::default(),
+            routes: Arc::new(Routes::default()),
             configure: Arc::new(configure),
             hosts: Arc::new(hosts),
             initialize: Arc::new(Box::new(|_| Ok(()))),
             ready: Arc::new(Box::new(|| {})),
+            initialized: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
     pub fn with_store_initializer(mut self, initialize: InitializeHosts) -> Self {
@@ -303,6 +306,14 @@ impl ModuleHandler for BasalHandler {
     }
 
     async fn on_hello_ack(&self, ack: &ModuleHelloAckBody) {
+        // A replacement SDK connection changes the describer, not the module's
+        // store, workers or runtime. Reopening would contend with our own lease.
+        if self
+            .initialized
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            return;
+        }
         match store_path(ack) {
             Ok(path) => start(
                 path,
