@@ -1165,7 +1165,7 @@ fn admission_limits_drive_the_supervisor_deadline() {
         let description = serde_json::from_value(json!({"status":"live","scope_epoch":7,
             "daemon_incarnation":"daemon:test","owner_synced":true,"owner_configured":true,
             "scope":{"owner":{"kind":"reserved","module_id":"core"},"ref":"scope-r","scope_epoch":7,"kind":"head",
-                "attributes":{"agent_id":"agent"},"owner_authorized":true}})).unwrap();
+                "attributes":{"agent_id":"agent","run_id":"r"},"owner_authorized":true}})).unwrap();
         host.set_scope_description(owner, "scope-r", Ok(description));
         let request = json!({"run_id":"r","agent_id":"agent","program":"return 1;",
             "catalog":[{"name":"read","module":"notes","op":"read","input_schema":{}}],
