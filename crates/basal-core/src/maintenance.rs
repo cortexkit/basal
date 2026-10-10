@@ -1,6 +1,7 @@
 //! When the engine should next wake, read without doing any of the work: the
-//! earliest schedule, run deadline, deferred-call retry, retention pass,
-//! install-gate retry or pool timer, and whether any consent card is open.
+//! earliest schedule, run deadline, deferred-call retry, retention pass
+//! (codemode runs' 24-hour pruning included), install-gate retry or pool
+//! timer, and whether any consent card is open.
 
 use crate::{Result, Runtime};
 
@@ -17,7 +18,11 @@ impl Runtime {
             let schedule: Option<i64> = c.query_row(NEXT_SCHEDULE, [], |r| r.get(0))?;
             let deadline: Option<i64> = c.query_row(NEXT_DEADLINE, [], |r| r.get(0))?;
             let retry: Option<i64> = c.query_row(NEXT_DEFERRED, [], |r| r.get(0))?;
-            Ok([schedule, deadline, retry].into_iter().flatten().min())
+            let codemode = crate::codemode::retention::next_sweep_at(c)?;
+            Ok([schedule, deadline, retry, codemode]
+                .into_iter()
+                .flatten()
+                .min())
         })?;
         let retention = *self
             .shared
