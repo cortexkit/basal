@@ -23,7 +23,7 @@ for image, directory in [("windows-latest", pathlib.Path(latest_dir)), ("windows
     groups = collections.defaultdict(list)
     for handle in report["handles"]:
         groups[(handle["type"], handle["access"])].append(handle)
-    lines += ["", f"## {image}", "", f"Runner image: `{report.get('runner_image')}`; version: `{report.get('runner_version')}`.", f"Production image SHA-256: `{hashes[0].lower()}`.", f"Accepted ceiling profile: `{report['profile']}`. Total: **{report['total']}**.", "", "| Type | Granted access | Count | Creator chains |", "|---|---|---:|---|"]
+    lines += ["", f"## {image}", "", f"Runner image: `{report.get('runner_image')}`; version: `{report.get('runner_version')}`.", f"[Unedited raw report](windows-handle-provenance-{image}.json).", f"Production image SHA-256: `{hashes[0].lower()}`.", f"Accepted ceiling profile: `{report['profile']}`. Total: **{report['total']}**.", "", "| Type | Granted access | Count | Creator chains |", "|---|---|---:|---|"]
     details = []
     for index, ((kind, access), handles) in enumerate(sorted(groups.items()), 1):
         chains = collections.Counter()

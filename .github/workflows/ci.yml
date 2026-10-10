@@ -413,33 +413,11 @@ jobs:
         continue-on-error: true
         timeout-minutes: 30
         run: cargo test -p basal-worker --locked --no-fail-fast -- --show-output 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-worker.log"
-      - name: Measure production worker provenance and imports
-        continue-on-error: true
-        timeout-minutes: 20
-        shell: pwsh
-        run: |
-          cargo build -p basal-worker --release --locked
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          $output = "$env:RUNNER_TEMP/windows-baseline"
-          Get-FileHash target/release/ck-basal-worker.exe | Format-List | Out-File "$output/production-image-hash.txt"
-          $kits = "${env:ProgramFiles(x86)}\Windows Kits\10"
-          $candidates = @(Get-ChildItem $kits -Filter dbghelp.dll -Recurse -ErrorAction SilentlyContinue | Where-Object { Test-Path (Join-Path $_.DirectoryName 'symsrv.dll') })
-          $toolkit = $candidates | Where-Object { $_.FullName -match '\\Debuggers\\x64\\dbghelp.dll$' } | Select-Object -First 1
-          if (-not $toolkit) { $toolkit = $candidates | Where-Object { $_.FullName -notmatch '\\x86\\|\\arm64\\' } | Select-Object -First 1 }
-          if ($toolkit) {
-            $env:BASAL_DBGHELP = $toolkit.FullName
-            $env:BASAL_SYMSRV = Join-Path $toolkit.DirectoryName 'symsrv.dll'
-          }
-          $candidates | Select-Object FullName, @{n='Version';e={$_.VersionInfo.FileVersion}} | ConvertTo-Json | Out-File "$output/symbol-toolkit.json"
-          cargo run -p basal-worker --example windows_provenance --release --locked -- target/release/ck-basal-worker.exe "$output/windows-handle-provenance.json" 2>&1 | Tee-Object "$output/production-provenance.log"
-          $measurementExit = $LASTEXITCODE
-          $env:CKDEV_WINDOWS_IMAGE = (Resolve-Path target/release/ck-basal-worker.exe).Path
-          $env:CKDEV_WINDOWS_EVIDENCE = $output
-          cargo test -p basal-worker --locked --test windows_image -- --show-output 2>&1 | Tee-Object "$output/production-imports.log"
-          $importsExit = $LASTEXITCODE
-          if ($measurementExit) { exit $measurementExit }
-          exit $importsExit
-      - name: Witness the planted-handle startup mutant
+      # The creators and counts of production startup handles are measured
+      # once per Windows runner image. Every worker startup still compares its
+      # live handle table with the fixed per-image count limits; the image test
+      # rejects DLL imports absent from the worker's windows-imports.txt file.
+      - name: Witness the startup-handle and import-inventory mutants
         continue-on-error: true
         timeout-minutes: 10
         run: python crates/basal-worker/tests/windows_mutation_witness.py "$RUNNER_TEMP/windows-baseline"
