@@ -11,6 +11,8 @@ use windows_sys::Win32::Security::*;
 use windows_sys::Win32::System::Diagnostics::ToolHelp::*;
 use windows_sys::Win32::System::Threading::*;
 
+const SE_GROUP_ENABLED: u32 = 0x00000004;
+
 #[link(name = "ntdll")]
 unsafe extern "system" {
     fn NtQuerySystemInformation(
@@ -143,7 +145,7 @@ pub unsafe fn query_token_attributes(token: HANDLE) -> Value {
         let mut privs = Vec::new();
         for entry in std::slice::from_raw_parts(p.Privileges.as_ptr(), p.PrivilegeCount as usize) {
             privs.push(json!({
-                "luid": entry.Luid,
+                "luid": format!("0x{:08x}:0x{:08x}", entry.Luid.HighPart, entry.Luid.LowPart),
                 "attributes": hex(entry.Attributes),
                 "enabled": (entry.Attributes & SE_PRIVILEGE_ENABLED) != 0,
             }));

@@ -5,9 +5,10 @@ use std::ffi::c_void;
 use std::mem::{size_of, zeroed};
 use std::ptr::{null, null_mut};
 use windows_sys::Win32::Foundation::*;
-use windows_sys::Win32::Security::*;
 use windows_sys::Win32::Storage::FileSystem::*;
 use windows_sys::Win32::System::Threading::*;
+
+const PAGE_READONLY: u32 = 0x02;
 
 #[link(name = "ntdll")]
 unsafe extern "system" {

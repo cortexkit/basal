@@ -411,7 +411,7 @@ pub fn inspect(process: HANDLE, main_thread: HANDLE, pid: u32, inventory: &Value
     let system = system_handles();
     let alpc = match system {
         Err(error) => json!({"error":error}),
-        Ok(entries) => {
+        Ok(ref entries) => {
             let correlations: Vec<_> = entries.iter().filter(|entry| entry.pid == pid as usize && handles.iter().any(|handle| handle["handle"].as_u64() == Some(entry.handle as u64))).map(|entry| {
                 let foreign: Vec<_> = entries.iter().filter(|other| entry.object != 0 && other.object == entry.object && other.pid != entry.pid).map(|other| json!({"pid":other.pid,"handle":other.handle,"access":hex(other.access)})).collect();
                 json!({"handle":entry.handle,"object":format!("0x{:016x}",entry.object),"foreign_handles":foreign})
@@ -587,7 +587,7 @@ pub fn inspect(process: HANDLE, main_thread: HANDLE, pid: u32, inventory: &Value
                 .map(|other| json!({"pid": other.pid, "handle": other.handle, "access": hex(other.access)}))
                 .collect();
 
-            let ldr_analysis = if let Some(syms) = symbols.as_ref().ok() {
+            let ldr_analysis = if let Some(_syms) = symbols.as_ref().ok() {
                 let frame_addr = trace_report["entries"].as_array().and_then(|entries| {
                     entries
                         .iter()
