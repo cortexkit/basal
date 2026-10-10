@@ -819,6 +819,44 @@ struct VerifiedRoot {
     ancestors: Vec<OwnedHandle>,
 }
 
+/// A directory and every ancestor held against rename or replacement while a
+/// reader such as git opens the directory by path. Omitting delete sharing
+/// prevents another process from moving any of those directories.
+#[cfg(windows)]
+pub(crate) struct PinnedDirectory(VerifiedRoot);
+
+#[cfg(windows)]
+impl PinnedDirectory {
+    pub(crate) fn path(&self) -> &Path {
+        Path::new(&self.0.manifest)
+    }
+
+    pub(crate) fn same_identity(&self, other: &Self) -> bool {
+        guid_path_inside_component_wise(&self.0.guid_path, &other.0.guid_path, false)
+    }
+}
+
+#[cfg(windows)]
+impl std::ops::Deref for PinnedDirectory {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        self.path()
+    }
+}
+
+/// Uses the filesystem builtin's walk, which refuses reparse points, retaining
+/// every directory handle until the returned guard is dropped. The volume-GUID identity is
+/// obtained from the opened directory, never from canonicalized input text.
+#[cfg(windows)]
+pub(crate) fn pin_directory(path: &str) -> Result<PinnedDirectory, Denial> {
+    let root = walk_from_volume_root(path, SHARE_NO_DELETE)?;
+    if !root.is_directory {
+        return Err(Denial::denied("the pinned path is not a directory"));
+    }
+    Ok(PinnedDirectory(root))
+}
+
 /// The denial for a failed open of `comp` while walking to `manifest_root`.
 #[cfg(windows)]
 fn root_walk_denial(e: OpenError, comp: &str, manifest_root: &str) -> Denial {
