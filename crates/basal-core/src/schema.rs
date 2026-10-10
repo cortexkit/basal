@@ -295,6 +295,10 @@ ALTER TABLE installs ADD COLUMN revoked_reason TEXT;
         version: 17,
         statements: GRANT_DECISIONS,
     },
+    Migration {
+        version: 18,
+        statements: CODEMODE_ENTRY_TIME,
+    },
 ];
 
 // One row for each `fs.write` temporary file that may exist on disk. The row
@@ -330,7 +334,33 @@ CREATE TABLE fs_temps (
 /// pending, calls are added only while their run is running, and a run's row
 /// is deleted only behind its permanent tombstone, whose id is never used
 /// again.
-const CODEMODE: &str = r#"
+macro_rules! codemode_call_triggers {
+    () => {
+        r#"CREATE TRIGGER codemode_calls_outcome_is_final BEFORE UPDATE ON codemode_calls
+WHEN OLD.outcome <> 'pending'
+BEGIN SELECT RAISE(ABORT, 'a recorded codemode call outcome never changes'); END;
+
+CREATE TRIGGER codemode_calls_only_while_running BEFORE INSERT ON codemode_calls
+WHEN NOT EXISTS (SELECT 1 FROM codemode_runs WHERE run_id = NEW.run_id AND status = 'running')
+BEGIN SELECT RAISE(ABORT, 'codemode calls are recorded only while their run is running'); END;
+
+"#
+    };
+}
+
+macro_rules! codemode_end_trigger {
+    () => {
+        r#"CREATE TRIGGER codemode_runs_end_with_no_pending_call BEFORE UPDATE OF status ON codemode_runs
+WHEN NEW.status <> 'running'
+    AND EXISTS (SELECT 1 FROM codemode_calls WHERE run_id = NEW.run_id AND outcome = 'pending')
+BEGIN SELECT RAISE(ABORT, 'a codemode run ends only once none of its calls is pending'); END;
+
+"#
+    };
+}
+
+const CODEMODE: &str = concat!(
+    r#"
 -- One row per admitted run. `catalog` is the catalog as admitted and
 -- `catalog_digest` its digest; `limits` and `scope` are the admitted
 -- request's, as JSON. `ended_at` and the frozen `duration_ms` are set
@@ -401,24 +431,15 @@ CREATE TABLE codemode_tombstones (
     pruned_at INTEGER NOT NULL
 );
 
-CREATE TRIGGER codemode_calls_outcome_is_final BEFORE UPDATE ON codemode_calls
-WHEN OLD.outcome <> 'pending'
-BEGIN SELECT RAISE(ABORT, 'a recorded codemode call outcome never changes'); END;
-
-CREATE TRIGGER codemode_calls_only_while_running BEFORE INSERT ON codemode_calls
-WHEN NOT EXISTS (SELECT 1 FROM codemode_runs WHERE run_id = NEW.run_id AND status = 'running')
-BEGIN SELECT RAISE(ABORT, 'codemode calls are recorded only while their run is running'); END;
-
-CREATE TRIGGER codemode_runs_terminal_is_final BEFORE UPDATE ON codemode_runs
+"#,
+    codemode_call_triggers!(),
+    r#"CREATE TRIGGER codemode_runs_terminal_is_final BEFORE UPDATE ON codemode_runs
 WHEN OLD.status <> 'running'
 BEGIN SELECT RAISE(ABORT, 'a terminal codemode run never changes'); END;
 
-CREATE TRIGGER codemode_runs_end_with_no_pending_call BEFORE UPDATE OF status ON codemode_runs
-WHEN NEW.status <> 'running'
-    AND EXISTS (SELECT 1 FROM codemode_calls WHERE run_id = NEW.run_id AND outcome = 'pending')
-BEGIN SELECT RAISE(ABORT, 'a codemode run ends only once none of its calls is pending'); END;
-
-CREATE TRIGGER codemode_runs_not_tombstoned BEFORE INSERT ON codemode_runs
+"#,
+    codemode_end_trigger!(),
+    r#"CREATE TRIGGER codemode_runs_not_tombstoned BEFORE INSERT ON codemode_runs
 WHEN EXISTS (SELECT 1 FROM codemode_tombstones WHERE run_id = NEW.run_id)
 BEGIN SELECT RAISE(ABORT, 'a pruned codemode run id is never used again'); END;
 
@@ -432,7 +453,46 @@ BEGIN SELECT RAISE(ABORT, 'codemode tombstones are permanent'); END;
 
 CREATE TRIGGER codemode_tombstones_no_delete BEFORE DELETE ON codemode_tombstones
 BEGIN SELECT RAISE(ABORT, 'codemode tombstones are permanent'); END;
-"#;
+"#
+);
+
+// Intent must survive a crash before the provider is entered, but that gap
+// must not count as provider time. Preserve the old table's outcomes and
+// timestamps while relaxing its CHECK to allow an unentered intent to end
+// with no duration. Old writers used intent_at as their entry timestamp.
+const CODEMODE_ENTRY_TIME: &str = concat!(
+    r#"
+DROP TRIGGER codemode_calls_outcome_is_final;
+DROP TRIGGER codemode_calls_only_while_running;
+DROP TRIGGER codemode_runs_end_with_no_pending_call;
+CREATE TABLE codemode_calls_new (
+    run_id          TEXT NOT NULL REFERENCES codemode_runs (run_id),
+    position        INTEGER NOT NULL CHECK (position >= 0),
+    tool            TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    input_bytes     INTEGER NOT NULL CHECK (input_bytes >= 0),
+    intent_at       INTEGER,
+    entered_at      INTEGER CHECK (entered_at IS NULL OR intent_at IS NOT NULL),
+    outcome         TEXT NOT NULL CHECK (outcome IN ('pending', 'ok', 'error', 'refused',
+                        'consent_unavailable', 'tool_unavailable', 'outcome_unknown', 'cancelled')),
+    code            TEXT,
+    duration_ms     INTEGER CHECK (duration_ms IS NULL OR duration_ms >= 0),
+    PRIMARY KEY (run_id, position),
+    CHECK ((code IS NULL) = (outcome IN ('pending', 'ok', 'cancelled'))),
+    CHECK (outcome NOT IN ('ok', 'error', 'consent_unavailable', 'outcome_unknown') OR intent_at IS NOT NULL),
+    CHECK (outcome <> 'cancelled' OR intent_at IS NULL),
+    CHECK ((duration_ms IS NOT NULL) = (entered_at IS NOT NULL AND outcome <> 'pending'))
+);
+INSERT INTO codemode_calls_new
+    (run_id, position, tool, idempotency_key, input_bytes, intent_at, entered_at, outcome, code, duration_ms)
+SELECT run_id, position, tool, idempotency_key, input_bytes, intent_at, intent_at, outcome, code, duration_ms
+    FROM codemode_calls;
+DROP TABLE codemode_calls;
+ALTER TABLE codemode_calls_new RENAME TO codemode_calls;
+"#,
+    codemode_call_triggers!(),
+    codemode_end_trigger!()
+);
 
 // SQLite CHECK constraints must be rebuilt to add a decision kind. Preserve
 // every old card and its sequence, including already settled decisions.

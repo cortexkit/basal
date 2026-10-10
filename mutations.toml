@@ -2,6 +2,7 @@
 
 
 
+
 # Safety proofs replayed by the pinned ckdev-mutate runner.
 # Names are full libtest paths; the named guard must fail.
 # Other tests in the target may also fail: the original proofs ran
@@ -12513,3 +12514,781 @@ expect_red = ["tests::fixture_module_control_uses_only_the_absolute_isolated_cli
 only = true
 timeout_s = 600
 build_timeout_s = 3600
+
+# Tool authorization, call budgets, outcome mapping and ordered termination
+# do not depend on OS confinement. Their tests run in the Linux and macOS
+# workspace suites; these rows replay each mutation once, on Linux.
+[[control]]
+id = "s5-codemode-parent-profile"
+guards = "raw module ops and every primitive stop before any row or send"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::raw_ops_and_all_primitives_are_profile_violations_without_rows_or_sends"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = """return self.end(failed(
+                "profile_violation",
+                "codemode accepts only tool calls",
+            ));"""
+new = 'return Ok(()); // NON-VACUITY BREAK'
+
+[[control]]
+id = "s5-codemode-tool-budget-inclusive"
+guards = "200 invocations including refusals are allowed and 201 gets no row"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::two_hundred_refusals_count_and_the_next_invocation_has_no_row"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "if self.invocations > self.start.limits.tool_calls {"
+new = "if self.invocations >= self.start.limits.tool_calls { // NON-VACUITY BREAK"
+
+[[control]]
+id = "s5-codemode-configured-tool-budget"
+guards = "a smaller admitted invocation cap takes priority over unknown-tool refusal"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::configured_tool_budget_is_enforced_before_the_unknown_tool_check"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "if self.invocations > self.start.limits.tool_calls {"
+new = "if self.invocations > 200 { // NON-VACUITY BREAK"
+
+[[control]]
+id = "s5-codemode-unknown-tool"
+guards = "names outside the admitted catalog reject with unknown_tool before catalog access"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::per_call_checks_are_ordered_and_never_write_intent_before_readiness"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = 'return self.refuse(call, Outcome::Refused, "unknown_tool", true);'
+new = 'return self.refuse(call, Outcome::Refused, "not_in_catalog", true); // NON-VACUITY BREAK'
+
+[[control]]
+id = "s5-codemode-input-schema"
+guards = "invalid input is rejected before reading the daemon catalog"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::per_call_checks_are_ordered_and_never_write_intent_before_readiness"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "if !tool.input_schema.is_valid(&input) {"
+new = "if false && !tool.input_schema.is_valid(&input) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "s5-codemode-catalog-unavailable"
+guards = "a catalog error is tool_unavailable before shell or presence checks"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::per_call_checks_are_ordered_and_never_write_intent_before_readiness"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "if self.shared.transport.catalog().is_err() {"
+new = "if false && self.shared.transport.catalog().is_err() { // NON-VACUITY BREAK"
+
+[[control]]
+id = "s5-codemode-shell-denylist"
+guards = "the shell denylist is checked directly before daemon-catalog presence"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::per_call_checks_are_ordered_and_never_write_intent_before_readiness"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "if self.shared.denylist.contains(&tool.module, &tool.op)"
+new = "if false && self.shared.denylist.contains(&tool.module, &tool.op) // NON-VACUITY BREAK"
+
+[[control]]
+id = "s5-codemode-shell-marker"
+guards = "a daemon-catalog shell-capable operation cannot be sent"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::per_call_checks_are_ordered_and_never_write_intent_before_readiness"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "|| declaration.as_ref().is_some_and(|op| op.shell_capable)"
+new = "|| declaration.as_ref().is_some_and(|_op| false) // NON-VACUITY BREAK"
+
+[[control]]
+id = "s5-codemode-not-in-catalog"
+guards = "an operation absent from the daemon catalog is refused without intent"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::per_call_checks_are_ordered_and_never_write_intent_before_readiness"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "if declaration.is_none() {"
+new = "if false && declaration.is_none() { // NON-VACUITY BREAK"
+
+[[control]]
+id = "s5-codemode-queue-at-eight"
+guards = "eight in-flight calls or an existing queue force new calls into the queue"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::eight_in_flight_queue_fifo_and_completion_drains_unawaited_calls"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "if self.in_flight >= IN_FLIGHT || !self.queue.is_empty() {"
+new = "if false { // NON-VACUITY BREAK"
+
+[[control]]
+id = "s5-codemode-queue-byte-cap"
+guards = "exactly 4 MiB of queued arguments fits but an additional byte does not"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::queue_byte_cap_is_inclusive_and_overflow_has_no_row_or_intent"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "if self.queued_bytes.saturating_add(call.args.as_str().len()) > QUEUED_BYTES {"
+new = "if self.queued_bytes.saturating_add(call.args.as_str().len()) >= QUEUED_BYTES { // NON-VACUITY BREAK"
+
+[[control]]
+id = "s5-codemode-queue-overflow-no-row"
+guards = "queue_full rejects just that invocation and writes no call row"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::queue_byte_cap_is_inclusive_and_overflow_has_no_row_or_intent"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = 'return self.refuse(call, Outcome::Refused, "queue_full", false);'
+new = 'return self.refuse(call, Outcome::Refused, "queue_full", true); // NON-VACUITY BREAK'
+
+[[control]]
+id = "s5-codemode-fifo"
+guards = "queued calls dispatch in worker order when slots become free"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::eight_in_flight_queue_fifo_and_completion_drains_unawaited_calls"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "let call = self.queue.pop_front().unwrap();"
+new = "let call = self.queue.pop_back().unwrap(); // NON-VACUITY BREAK"
+
+[[control]]
+id = "s5-codemode-provider-readiness"
+guards = "provider readiness refuses before an intent or send exists"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::per_call_checks_are_ordered_and_never_write_intent_before_readiness"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = ".provider_ready(&self.key(), &tool.module, &tool.op)"
+new = ".provider_ready(&self.key(), &tool.module, &tool.op).or(Ok::<(), basal_host::flow_refusal::FlowRefusal>(())) // NON-VACUITY BREAK"
+
+[[control]]
+id = "s5-codemode-queued-readiness"
+guards = "a readiness refusal settles a queued call without creating an intent"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::queued_readiness_refusal_has_no_intent_and_wall_expiring_during_readiness_never_sends"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "if queued {"
+new = "if false && queued { // NON-VACUITY BREAK"
+
+[[control]]
+id = "s5-codemode-scope-route-key"
+guards = "every provider attempt uses the registered codemode run key"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::supervisor_registers_routes_records_before_delivery_and_releases"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "let route = self.key();"
+new = "let route = self.run.run_id.clone(); // NON-VACUITY BREAK"
+
+[[control]]
+id = "s5-codemode-parent-prelude"
+guards = "the activation uses the parent's codemode profile fingerprint"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::supervisor_registers_routes_records_before_delivery_and_releases"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "prelude_hash: self.shared.prelude_hash,"
+new = 'prelude_hash: PreludeHash::of("NON-VACUITY BREAK"),'
+
+[[control]]
+id = "s5-codemode-record-before-delivery"
+guards = "the answer is durable before the program can observe it"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::supervisor_registers_routes_records_before_delivery_and_releases"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "if self.shared.store.write(|tx| {"
+new = "if true || self.shared.store.write(|tx| { // NON-VACUITY BREAK"
+
+[[control]]
+id = "s5-codemode-rejection-fields"
+guards = "every non-ok promise rejection carries tool, outcome and code"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::every_non_scope_wire_error_is_recorded_then_rejected_without_ending_run"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = '"code":mapped.code, "tool":name, "outcome":mapped.outcome.as_str(),'
+new = '"code":mapped.code, "tool":name, "outcome":"NON-VACUITY BREAK",'
+
+[[control]]
+id = "s5-codemode-scope-refusal"
+guards = "each scope-loss answer is recorded refused rather than unavailable"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::each_scope_loss_records_the_refusal_preserves_earlier_ok_and_interrupts"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "(Outcome::Refused, refusal.reason.as_str(), true)"
+new = "(Outcome::ToolUnavailable, refusal.reason.as_str(), true) // NON-VACUITY BREAK"
+
+[[control]]
+id = "s5-codemode-scope-interruption"
+guards = "scope loss interrupts after recording its refusal and never delivers it to the worker"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::each_scope_loss_records_the_refusal_preserves_earlier_ok_and_interrupts"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "if mapped.scope_loss {"
+new = "if false && mapped.scope_loss { // NON-VACUITY BREAK"
+
+[[control]]
+id = "s5-codemode-consent-outcome"
+guards = "ConsentUnavailable has its own non-terminal outcome"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::every_non_scope_wire_error_is_recorded_then_rejected_without_ending_run"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = 'ConsentUnavailable => (Outcome::ConsentUnavailable, "consent_unavailable", false),'
+new = 'ConsentUnavailable => (Outcome::Error, "consent_unavailable", false), // NON-VACUITY BREAK'
+
+[[control]]
+id = "s5-codemode-other-typed-outcomes"
+guards = "non-scope non-consent typed refusals are tool_unavailable"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::every_non_scope_wire_error_is_recorded_then_rejected_without_ending_run"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = '| FlowScopeRequired => (Outcome::ToolUnavailable, "tool_unavailable", false),'
+new = '| FlowScopeRequired => (Outcome::Error, "tool_unavailable", false), // NON-VACUITY BREAK'
+
+[[control]]
+id = "s5-codemode-never-sent"
+guards = "NeverSent is unavailable, not an unknown outcome or provider refusal"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::every_non_scope_wire_error_is_recorded_then_rejected_without_ending_run"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = 'Mapped::rejected(Outcome::ToolUnavailable, "tool_unavailable", &message)'
+new = 'Mapped::rejected(Outcome::Error, "tool_unavailable", &message) // NON-VACUITY BREAK'
+
+[[control]]
+id = "s5-codemode-unknown-outcome"
+guards = "Unknown is outcome_unknown with connection_lost"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::every_non_scope_wire_error_is_recorded_then_rejected_without_ending_run"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = 'Mapped::rejected(Outcome::OutcomeUnknown, "connection_lost", &message)'
+new = 'Mapped::rejected(Outcome::Error, "connection_lost", &message) // NON-VACUITY BREAK'
+
+[[control]]
+id = "s5-codemode-timeout-outcome"
+guards = "TimedOut is outcome_unknown with reply_timeout"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::every_non_scope_wire_error_is_recorded_then_rejected_without_ending_run"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = 'Mapped::rejected(Outcome::OutcomeUnknown, "reply_timeout", &message)'
+new = 'Mapped::rejected(Outcome::Error, "reply_timeout", &message) // NON-VACUITY BREAK'
+
+[[control]]
+id = "s5-codemode-unreadable-outcome"
+guards = "Unreadable is outcome_unknown with reply_unreadable"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::every_non_scope_wire_error_is_recorded_then_rejected_without_ending_run"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = 'Mapped::rejected(Outcome::OutcomeUnknown, "reply_unreadable", &message)'
+new = 'Mapped::rejected(Outcome::Error, "reply_unreadable", &message) // NON-VACUITY BREAK'
+
+[[control]]
+id = "s5-codemode-provider-refused"
+guards = "both provider refusal variants are errors with the provider's code"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::every_non_scope_wire_error_is_recorded_then_rejected_without_ending_run"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = ") => Mapped::rejected(Outcome::Error, &code, &message),"
+new = ") => Mapped::rejected(Outcome::Refused, &code, &message), // NON-VACUITY BREAK"
+
+[[control]]
+id = "s5-codemode-answer-cap"
+guards = "a provider value beyond 1 MiB rejects just that call with value_too_large"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::input_and_answer_at_one_mib_pass_but_larger_answer_rejects"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = '"value_too_large",'
+new = '"NON-VACUITY BREAK",'
+
+[[control]]
+id = "s5-codemode-return-cap"
+guards = "a 16384-byte JSON return completes and 16385 bytes fails with its size"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::return_boundary_non_json_and_stalled_have_exact_terminal_codes"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "if value.as_str().len() > RESULT_BYTES {"
+new = "if value.as_str().len() >= RESULT_BYTES { // NON-VACUITY BREAK"
+
+[[control]]
+id = "s5-codemode-json-return"
+guards = "a worker return that is not JSON cannot complete"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::return_boundary_non_json_and_stalled_have_exact_terminal_codes"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "} else if serde_json::from_str::<Value>(value.as_str()).is_err() {"
+new = "} else if false && serde_json::from_str::<Value>(value.as_str()).is_err() { // NON-VACUITY BREAK"
+
+[[control]]
+id = "s5-codemode-stalled"
+guards = "an unsettled promise terminates with stalled"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::return_boundary_non_json_and_stalled_have_exact_terminal_codes"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = 'ActivationResult::Stalled => failed("stalled", "program awaits an unsettled promise"),'
+new = 'ActivationResult::Stalled => failed("engine_error", "NON-VACUITY BREAK"),'
+
+[[control]]
+id = "s5-codemode-completion-drains"
+guards = "completion waits for all unawaited and queued attempts to be recorded"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::eight_in_flight_queue_fifo_and_completion_drains_unawaited_calls"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "if self.in_flight == 0\n                && self.queue.is_empty()"
+new = "if true // NON-VACUITY BREAK"
+
+[[control]]
+id = "s5-codemode-no-calls-after-finish"
+guards = "new worker calls after its completion frame create no rows"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::calls_after_a_completion_frame_are_not_recorded_and_unowned_exit_is_worker_lost"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "WorkerMessage::HostCall(call) if self.completion.is_none() => self.call(call),"
+new = "WorkerMessage::HostCall(call) => self.call(call), // NON-VACUITY BREAK"
+
+[[control]]
+id = "s5-codemode-output-cap"
+guards = "output exactly at the admitted byte cap is kept whole"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::output_cap_is_inclusive_truncates_whole_lines_once_and_survives_wall_kill"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "<= self.start.limits.output_bytes as usize"
+new = "< self.start.limits.output_bytes as usize // NON-VACUITY BREAK"
+
+[[control]]
+id = "s5-codemode-output-sticky"
+guards = "every line after the first overflowing line is dropped even if it would fit"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::an_output_overflow_drops_even_later_lines_that_would_fit"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "if !self.output_truncated\n            &&"
+new = "if true // NON-VACUITY BREAK\n            &&"
+
+[[control]]
+id = "s5-codemode-output-warning"
+guards = "output truncation produces one warning"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::an_output_overflow_drops_even_later_lines_that_would_fit"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "} else if !self.output_truncated {"
+new = "} else if false { // NON-VACUITY BREAK"
+
+[[control]]
+id = "s5-codemode-output-survives-kill"
+guards = "termination preserves the output already kept while running"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::output_cap_is_inclusive_truncates_whole_lines_once_and_survives_wall_kill"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "terminal.output = self.run.output.clone();"
+new = "terminal.output = String::new(); // NON-VACUITY BREAK"
+
+[[control]]
+id = "s5-codemode-wall-deadline"
+guards = "the manual clock reaching the deadline terminates on a bounded supervisor wake"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::manual_clock_fires_omitted_wall_at_deadline_and_wall_one_at_admission_plus_one"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "self.shared.clock.now_ms() >= self.start.wall_deadline_ms"
+new = "self.shared.clock.now_ms() > self.start.wall_deadline_ms /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "s5-codemode-wall-after-readiness"
+guards = "wall expiry during readiness stops before any row or send"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::queued_readiness_refusal_has_no_intent_and_wall_expiring_during_readiness_never_sends"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "let op = tool.op.clone();\n        if self.wall()? {"
+new = "let op = tool.op.clone();\n        if false { // NON-VACUITY BREAK"
+
+[[control]]
+id = "s5-codemode-lane-deadline"
+guards = "a dispatch thread checks the injected deadline before committing intent"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::supervisor_registers_routes_records_before_delivery_and_releases"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "if now >= deadline {"
+new = "if now <= deadline { // NON-VACUITY BREAK"
+
+[[control]]
+id = "s5-codemode-kill-before-release"
+guards = "the worker is killed before call settlement and scope release"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::supervisor_registers_routes_records_before_delivery_and_releases"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "worker.kill();"
+new = "let _ = worker; // NON-VACUITY BREAK"
+
+[[control]]
+id = "s5-codemode-settle-before-release"
+guards = "queued and unanswered calls are settled before authority is released"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::cancel_settles_sent_and_queued_calls_never_sends_queue_or_records_late_answer"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = ".write(|tx| store::settle_pending_calls(tx, id, at))?;"
+new = ".write(|_tx| Ok((0usize, 0usize)))?; // NON-VACUITY BREAK"
+
+[[control]]
+id = "s5-codemode-release-scope"
+guards = "every terminal run releases its exact registered scope key"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::supervisor_registers_routes_records_before_delivery_and_releases"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = '''shared
+        .transport
+        .configure_flow(&format!("codemode:{id}"), false, None);'''
+new = 'let _ = id; // NON-VACUITY BREAK'
+
+[[control]]
+id = "s5-codemode-cancel-status"
+guards = "a parent-owned cancellation is cancelled, never worker_lost"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::cancel_settles_sent_and_queued_calls_never_sends_queue_or_records_late_answer"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "self.end(terminal(Status::Cancelled, None, None))"
+new = 'self.end(failed("worker_lost", "NON-VACUITY BREAK"))'
+
+[[control]]
+id = "s5-codemode-stop-driver"
+guards = "termination stops accepting later frames and the driver exits"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::raw_ops_and_all_primitives_are_profile_violations_without_rows_or_sends"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "self.stopping = true;"
+new = "self.stopping = false; // NON-VACUITY BREAK"
+
+[[control]]
+id = "s5-codemode-live-recovery"
+guards = "restart recovery cannot run over a currently supervised worker"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::live_supervisors_cannot_be_recovered_and_return_unknown_ids_as_absent"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "if !self.0.active.lock().unwrap().is_empty() {"
+new = "if false && !self.0.active.lock().unwrap().is_empty() { // NON-VACUITY BREAK"
+
+[[control]]
+id = "s5-codemode-start-once"
+guards = "a start token cannot start a second supervisor or a terminal run"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::panicking_driver_terminates_and_start_rejects_duplicate_or_terminal_runs"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "if active.contains_key(&run.run_id) || run.status != Status::Running {"
+new = "if false { // NON-VACUITY BREAK"
+
+[[control]]
+id = "s5-codemode-entered-duration"
+guards = "the intent-to-provider gap is excluded from call duration"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::intent_to_entry_delay_is_not_provider_time_and_unentered_intents_have_no_duration"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "store::enter_call(tx, &id, call.position, clock.now_ms())"
+new = "store::enter_call(tx, &id, call.position, now) /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "s5-codemode-prepare-once"
+guards = "a queued row gets one durable intent only while pending and without an existing intent"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::intent_to_entry_delay_is_not_provider_time_and_unentered_intents_have_no_duration"]
+only = true
+file = "crates/basal-core/src/codemode/store.rs"
+old = "AND intent_at IS NULL \\\n         AND EXISTS"
+new = "AND 1 /* NON-VACUITY BREAK */ \\\n         AND EXISTS"
+
+[[control]]
+id = "s5-codemode-entry-once"
+guards = "a pending intent starts provider time exactly once and not after termination"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::intent_to_entry_delay_is_not_provider_time_and_unentered_intents_have_no_duration"]
+only = true
+file = "crates/basal-core/src/codemode/store.rs"
+old = "AND intent_at IS NOT NULL AND entered_at IS NULL \\"
+new = "AND intent_at IS NOT NULL /* NON-VACUITY BREAK */ \\"
+
+[[control]]
+id = "s5-codemode-schema-unentered-duration"
+guards = "termination of an unentered durable intent omits duration_ms"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::intent_to_entry_delay_is_not_provider_time_and_unentered_intents_have_no_duration"]
+only = false
+file = "crates/basal-core/src/schema.rs"
+old = "CHECK ((duration_ms IS NOT NULL) = (entered_at IS NOT NULL AND outcome <> 'pending'))"
+new = "CHECK ((duration_ms IS NOT NULL) = (intent_at IS NOT NULL AND outcome <> 'pending')) -- NON-VACUITY BREAK"
+
+[[control]]
+id = "s5-codemode-migration-preserves-entry"
+guards = "the entry-time migration preserves every old outcome and duration"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::entry_time_migration_preserves_old_calls_and_reinstalls_guards"]
+only = true
+file = "crates/basal-core/src/schema.rs"
+old = "input_bytes, intent_at, intent_at, outcome, code, duration_ms"
+new = "input_bytes, intent_at, NULL, outcome, code, duration_ms -- NON-VACUITY BREAK"
+
+[[control]]
+id = "s5-codemode-failure-terminal-table"
+guards = "worker argument overflow remains arguments_too_large with its size"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::activation_failure_table_and_engine_budgets_are_exhaustive"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = 'Failure::ArgumentsTooLarge { .. } => "arguments_too_large",'
+new = 'Failure::ArgumentsTooLarge { .. } => "engine_error", // NON-VACUITY BREAK'
+
+[[control]]
+id = "s5-codemode-engine-budget-table"
+guards = "worker CPU, memory and stack limits retain their exact terminal budget names"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::activation_failure_table_and_engine_budgets_are_exhaustive"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "BudgetKind::JsTime => Budget::JsCpu,"
+new = "BudgetKind::JsTime => Budget::Wall, // NON-VACUITY BREAK"
