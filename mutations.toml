@@ -8221,13 +8221,7 @@ let mut x = 0u64;
     // Live draws use OS entropy, not shared predictable process state. The
     // runtime journals each draw and replay serves that saved value instead.
     // There is deliberately no fallback when the OS cannot supply entropy.
-    let rc = unsafe { libc::getentropy((&mut x as *mut u64).cast(), std::mem::size_of::<u64>()) };
-    assert_eq!(
-        rc,
-        0,
-        "OS entropy unavailable: {}",
-        std::io::Error::last_os_error()
-    );"""
+    fill_entropy(&mut x);"""
 new = """
 // NON-VACUITY BREAK
     use std::sync::atomic::{AtomicU64, Ordering};
