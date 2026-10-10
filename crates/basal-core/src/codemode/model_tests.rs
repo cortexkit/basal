@@ -250,15 +250,16 @@ fn model_catalog_is_basal_owned_and_inputs_are_closed() {
 }
 
 #[test]
-fn model_routing_charges_invoking_agent_and_run_task() {
+fn model_routing_uses_codemode_caller_class_and_run_task() {
     let f = ModelFixture::new();
-    f.model(0);
+    f.model_input(0, json!({"prompt":"hello","max_output":1,"iq":50,"eq":50}));
     let calls = f.routing.calls.lock().unwrap();
     assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0]["targetAgent"], "agent");
-    assert_eq!(calls[0]["taskId"], "codemode:r");
-    assert_eq!(calls[0]["substrate"], "broca");
-    assert_eq!(calls[0]["sendID"], store::call_key("r", 0));
+    assert_eq!(
+        calls[0],
+        json!({"targetAgent":"codemode","requirements":{"iq":50,"eq":50},
+        "excludeRouteKeys":[],"sendID":store::call_key("r",0),"taskId":"codemode:r","substrate":"broca"})
+    );
     assert_eq!(
         f.routing.outcomes.lock().unwrap().as_slice(),
         [json!({"decisionID":"decision","outcome":"completed"})]
@@ -549,4 +550,91 @@ fn overcap_provider_usage_still_yields_typed_budget_refusal() {
     assert!(
         matches!(error, WireError::RefusedDetails {code,detail,..} if code=="budget_exhausted" && detail["reason"]=="model_tokens")
     );
+}
+
+#[test]
+fn both_model_tools_default_to_iq_50_and_eq_0() {
+    let f = ModelFixture::new();
+    f.invoke(0, "model", json!({"prompt":"hello","max_output":1}));
+    f.invoke(1, "classify", json!({"text":"hello","labels":["done"]}));
+    let calls = f.routing.calls.lock().unwrap();
+    assert_eq!(calls.len(), 2);
+    for call in calls.iter() {
+        assert_eq!(call["requirements"], json!({"iq":50,"eq":0}));
+    }
+    let catalog = models::catalog();
+    for tool in catalog.as_array().unwrap() {
+        let properties = &tool["input_schema"]["properties"];
+        for (name, default) in [("iq", 50), ("eq", 0)] {
+            assert_eq!(properties[name]["default"], default);
+            let description = properties[name]["description"].as_str().unwrap();
+            assert!(description.contains("0–100"));
+            assert!(description.contains(&format!("Defaults to {default}.")));
+        }
+    }
+}
+
+#[test]
+fn both_model_tools_forward_explicit_iq_and_eq() {
+    let f = ModelFixture::new();
+    for (position, name, input, expected) in [
+        (
+            0,
+            "model",
+            json!({"prompt":"hello","max_output":1,"iq":0,"eq":100}),
+            json!({"iq":0,"eq":100}),
+        ),
+        (
+            1,
+            "classify",
+            json!({"text":"hello","labels":["done"],"iq":100,"eq":0}),
+            json!({"iq":100,"eq":0}),
+        ),
+        (
+            2,
+            "model",
+            json!({"prompt":"hello","max_output":1,"iq":87.0,"eq":42.0}),
+            json!({"iq":87,"eq":42}),
+        ),
+        (
+            3,
+            "classify",
+            json!({"text":"hello","labels":["done"],"iq":37,"eq":82}),
+            json!({"iq":37,"eq":82}),
+        ),
+    ] {
+        assert_eq!(
+            f.invoke(position, name, input).settlement,
+            Settlement::Fulfilled
+        );
+        let calls = f.routing.calls.lock().unwrap();
+        assert_eq!(calls[position as usize]["requirements"], expected);
+    }
+}
+
+#[test]
+fn both_model_tools_refuse_invalid_demands_before_routing() {
+    let f = ModelFixture::new();
+    let mut position = 0;
+    for name in ["model", "classify"] {
+        for field in ["iq", "eq"] {
+            for bad in [json!(-1), json!(101), json!(0.5), json!("50"), Value::Null] {
+                let mut input = if name == "model" {
+                    json!({"prompt":"hello","max_output":1})
+                } else {
+                    json!({"text":"hello","labels":["done"]})
+                };
+                input[field] = bad;
+                let delivery = f.invoke(position, name, input);
+                assert_eq!(delivery.settlement, Settlement::Rejected);
+                assert_eq!(
+                    parse(delivery.value.as_str()).unwrap()["code"],
+                    "invalid_input"
+                );
+                position += 1;
+            }
+        }
+    }
+    assert!(f.routing.calls.lock().unwrap().is_empty());
+    assert!(f.wire.fake.sends().is_empty());
 }

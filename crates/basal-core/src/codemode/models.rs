@@ -17,14 +17,18 @@ pub const TOKENS: u64 = 200_000;
 pub const DEFAULT_MAX_OUTPUT: u32 = 4_096;
 
 pub fn catalog() -> Value {
+    let iq = json!({"type":"integer","minimum":0,"maximum":100,"default":50,"description":"Required iq score for model selection (0–100). Defaults to 50."});
+    let eq = json!({"type":"integer","minimum":0,"maximum":100,"default":0,"description":"Required eq score for model selection (0–100). Defaults to 0."});
     json!([
         {"name":"model","module":"basal","op":"model","input_schema":{
             "type":"object","properties":{"prompt":{"type":"string"},"system":{"type":"string"},
-                "max_output":{"type":"integer","minimum":1,"maximum":200_000}},
+                "max_output":{"type":"integer","minimum":1,"maximum":200_000},
+                "iq":iq,"eq":eq},
             "required":["prompt"],"additionalProperties":false}},
         {"name":"classify","module":"basal","op":"classify","input_schema":{
             "type":"object","properties":{"text":{"type":"string"},
-                "labels":{"type":"array","minItems":1,"items":{"type":"string"}}},
+                "labels":{"type":"array","minItems":1,"items":{"type":"string"}},
+                "iq":iq,"eq":eq},
             "required":["text","labels"],"additionalProperties":false}}
     ])
 }
@@ -135,9 +139,9 @@ pub fn prepare(
         }).map_err(storage)?;
         reserved?;
         let selection = selector.select(&SelectionRequest {
-            target_agent: Some(run.agent_id.clone()),
-            iq: 0,
-            eq: 0,
+            caller_class: "codemode".into(),
+            iq: input["iq"].as_f64().map(|n| n as u32).unwrap_or(50),
+            eq: input["eq"].as_f64().map(|n| n as u32).unwrap_or(0),
             flow_id: flow_id.clone(),
             run_id: run.run_id.clone(),
             send_id: send_id.clone(),

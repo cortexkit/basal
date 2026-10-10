@@ -5256,8 +5256,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/selector.rs"
-old = "request.target_agent.as_deref().unwrap_or(\"flow\")"
-new = "request.target_agent.as_deref().unwrap_or(\"operator\")"
+old = "\"targetAgent\":request.caller_class"
+new = "\"targetAgent\":\"operator\""
 
 [[control]]
 id = "selector-demands-swapped"
@@ -14447,17 +14447,17 @@ new = "timeout: self.timeout, /* NON-VACUITY BREAK */"
 # change a saved routing decision, bypass scope opt-in, or exceed run budgets.
 
 [[control]]
-id = "codemode-model-routing-agent"
-guards = "routing fields charge the invoking agent"
+id = "codemode-model-routing-caller-class"
+guards = "routing fields use the shared codemode caller class"
 test_file = "crates/basal-core/src/codemode/model_tests.rs"
 runner = "cargo"
 package = "basal-core"
 target = "--lib"
 file = "crates/basal-core/src/codemode/models.rs"
-old = "target_agent: Some(run.agent_id.clone()),"
-new = "target_agent: Some(\"flow\".into()), /* NON-VACUITY BREAK */"
+old = "caller_class: \"codemode\".into(),"
+new = "caller_class: \"flow\".into(), /* NON-VACUITY BREAK */"
 platforms = ["linux"]
-expect_red = ["codemode::supervisor::tests::models::model_routing_charges_invoking_agent_and_run_task"]
+expect_red = ["codemode::supervisor::tests::models::model_routing_uses_codemode_caller_class_and_run_task"]
 only = false
 build_timeout_s = 3600
 timeout_s = 600
@@ -14473,7 +14473,7 @@ file = "crates/basal-host/src/selector.rs"
 old = "format!(\"codemode:{}\", request.run_id)"
 new = "format!(\"flow:{}\", request.run_id) /* NON-VACUITY BREAK */"
 platforms = ["linux"]
-expect_red = ["codemode::supervisor::tests::models::model_routing_charges_invoking_agent_and_run_task"]
+expect_red = ["codemode::supervisor::tests::models::model_routing_uses_codemode_caller_class_and_run_task"]
 only = false
 build_timeout_s = 3600
 timeout_s = 600
@@ -14637,3 +14637,99 @@ timeout_s = 600
 file = "crates/basal-core/src/codemode/models.rs"
 old = "SUM(MIN(COALESCE(charged,reserved),?2))"
 new = "SUM(COALESCE(charged,reserved) + 0*?2) /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "codemode-model-iq-default"
+guards = "omitted iq demands default to 50"
+test_file = "crates/basal-core/src/codemode/model_tests.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+file = "crates/basal-core/src/codemode/models.rs"
+old = "iq: input[\"iq\"].as_f64().map(|n| n as u32).unwrap_or(50),"
+new = "iq: input[\"iq\"].as_f64().map(|n| n as u32).unwrap_or(0), /* NON-VACUITY BREAK */"
+platforms = ["linux"]
+expect_red = ["codemode::supervisor::tests::models::both_model_tools_default_to_iq_50_and_eq_0"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "codemode-model-eq-default"
+guards = "omitted eq demands default to zero"
+test_file = "crates/basal-core/src/codemode/model_tests.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+file = "crates/basal-core/src/codemode/models.rs"
+old = "eq: input[\"eq\"].as_f64().map(|n| n as u32).unwrap_or(0),"
+new = "eq: input[\"eq\"].as_f64().map(|n| n as u32).unwrap_or(25), /* NON-VACUITY BREAK */"
+platforms = ["linux"]
+expect_red = ["codemode::supervisor::tests::models::both_model_tools_default_to_iq_50_and_eq_0"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "codemode-model-iq-forwarded"
+guards = "explicit iq demands reach routing unchanged"
+test_file = "crates/basal-core/src/codemode/model_tests.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+file = "crates/basal-core/src/codemode/models.rs"
+old = "iq: input[\"iq\"].as_f64().map(|n| n as u32).unwrap_or(50),"
+new = "iq: input[\"iq\"].as_f64().map(|n| (100.0 - n) as u32).unwrap_or(50), /* NON-VACUITY BREAK */"
+platforms = ["linux"]
+expect_red = ["codemode::supervisor::tests::models::both_model_tools_forward_explicit_iq_and_eq"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "codemode-model-eq-forwarded"
+guards = "explicit eq demands reach routing unchanged"
+test_file = "crates/basal-core/src/codemode/model_tests.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+file = "crates/basal-core/src/codemode/models.rs"
+old = "eq: input[\"eq\"].as_f64().map(|n| n as u32).unwrap_or(0),"
+new = "eq: input[\"eq\"].as_f64().map(|n| (100.0 - n) as u32).unwrap_or(0), /* NON-VACUITY BREAK */"
+platforms = ["linux"]
+expect_red = ["codemode::supervisor::tests::models::both_model_tools_forward_explicit_iq_and_eq"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "codemode-model-iq-range"
+guards = "iq demands stay within zero through one hundred"
+test_file = "crates/basal-core/src/codemode/model_tests.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+file = "crates/basal-core/src/codemode/models.rs"
+old = "let iq = json!({\"type\":\"integer\",\"minimum\":0,\"maximum\":100,\"default\":50,\"description\":\"Required iq score for model selection (0–100). Defaults to 50.\"});"
+new = "let iq = json!({\"type\":\"integer\",\"minimum\":-1,\"maximum\":200,\"default\":50,\"description\":\"Required iq score for model selection (0–100). Defaults to 50.\"}); /* NON-VACUITY BREAK */"
+platforms = ["linux"]
+expect_red = ["codemode::supervisor::tests::models::both_model_tools_refuse_invalid_demands_before_routing"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "codemode-model-eq-range"
+guards = "eq demands stay within zero through one hundred"
+test_file = "crates/basal-core/src/codemode/model_tests.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+file = "crates/basal-core/src/codemode/models.rs"
+old = "let eq = json!({\"type\":\"integer\",\"minimum\":0,\"maximum\":100,\"default\":0,\"description\":\"Required eq score for model selection (0–100). Defaults to 0.\"});"
+new = "let eq = json!({\"type\":\"integer\",\"minimum\":-1,\"maximum\":200,\"default\":0,\"description\":\"Required eq score for model selection (0–100). Defaults to 0.\"}); /* NON-VACUITY BREAK */"
+platforms = ["linux"]
+expect_red = ["codemode::supervisor::tests::models::both_model_tools_refuse_invalid_demands_before_routing"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
