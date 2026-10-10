@@ -631,3 +631,275 @@ fn codemode_stack_exceeding_budget_is_exact_even_when_caught_end_to_end() {
         "budget_exhausted:stack",
     );
 }
+
+const OPS_DOC: &str = include_str!("../../../docs/ops.md");
+
+/// The doc text from `## <heading>` up to the next second-level heading.
+fn doc_section(heading: &str) -> Option<&'static str> {
+    let start = OPS_DOC.find(&format!("\n## {heading}\n"))? + 1;
+    let rest = &OPS_DOC[start..];
+    Some(&rest[..rest[3..].find("\n## ").map_or(rest.len(), |end| end + 3)])
+}
+
+#[test]
+fn ops_doc_documents_codemode_ops_as_core_only_against_operations() {
+    use basal_module::manifest::OPERATIONS;
+    // Every op-named section of the doc names a served operation.
+    for line in OPS_DOC.lines() {
+        if let Some(heading) = line.strip_prefix("## ")
+            && !heading.contains(' ')
+            && heading.contains('.')
+        {
+            assert!(
+                OPERATIONS.iter().any(|(name, _, _)| *name == heading),
+                "docs/ops.md documents {heading}, which OPERATIONS does not serve"
+            );
+        }
+    }
+    // The agent-relayed list names only served operations, and no codemode op.
+    let relayed = OPS_DOC
+        .split("Core's scoped relay exposes these five operations: ")
+        .nth(1)
+        .and_then(|rest| rest.split(". ").next())
+        .expect("the relayed operations are listed");
+    let relayed: Vec<&str> = relayed.split('`').skip(1).step_by(2).collect();
+    assert_eq!(relayed.len(), 5, "{relayed:?}");
+    for name in &relayed {
+        assert!(
+            OPERATIONS.iter().any(|(served, _, _)| served == name),
+            "{name}"
+        );
+        assert!(!name.starts_with("codemode."), "{name} must not be relayed");
+    }
+    // Each codemode op has its own section saying it is core-only and never
+    // agent-relayed, with the kind OPERATIONS declares.
+    let codemode: Vec<_> = OPERATIONS
+        .iter()
+        .filter(|(name, _, _)| name.starts_with("codemode."))
+        .collect();
+    assert_eq!(codemode.len(), 3);
+    let overview = doc_section("Codemode operations").expect("codemode overview");
+    for (name, kind, description) in codemode {
+        assert!(description.contains("core only"), "{name}: {description}");
+        let section = doc_section(name).unwrap_or_else(|| panic!("{name} is undocumented"));
+        assert!(
+            section.contains("\nCore-only, not agent-relayed."),
+            "{name}: {section}"
+        );
+        let kind = format!("Kind: {}.", format!("{kind:?}").to_lowercase());
+        assert!(section.contains(&kind), "{name} must document {kind}");
+        assert!(section.contains("[codemode result](#codemode-result)"));
+        assert!(overview.contains(&format!("`{name}`")), "{name}");
+    }
+    assert!(overview.contains("are core-only and not agent-relayed"));
+    for code in ["operator_attestation_required", "not_permitted"] {
+        assert!(overview.contains(&format!("`{code}`")), "{code}");
+    }
+    let run = doc_section("codemode.run").unwrap();
+    assert!(run.contains(r#""description?":"string""#));
+}
+
+/// Checks `value` against a documented shape. A key ending in `?` is
+/// optional and, when present, must still match its type, so a documented
+/// optional key is never null unless its type allows it.
+fn conforms(value: &Value, shape: &Value) -> Result<(), String> {
+    match shape {
+        Value::Object(fields) => {
+            let object = value
+                .as_object()
+                .ok_or(format!("{value} is not an object"))?;
+            for key in object.keys() {
+                if !fields.contains_key(key) && !fields.contains_key(&format!("{key}?")) {
+                    return Err(format!("undocumented key {key}"));
+                }
+            }
+            for (key, ty) in fields {
+                match (key.strip_suffix('?'), object.get(key.trim_end_matches('?'))) {
+                    (_, Some(field)) => conforms(field, ty).map_err(|e| format!("{key}: {e}"))?,
+                    (Some(_), None) => {}
+                    (None, None) => return Err(format!("missing key {key}")),
+                }
+            }
+            Ok(())
+        }
+        Value::Array(items) => value
+            .as_array()
+            .ok_or(format!("{value} is not an array"))?
+            .iter()
+            .try_for_each(|item| conforms(item, &items[0])),
+        Value::String(ty) => ty
+            .split('|')
+            .any(|t| match t {
+                "any" => true,
+                "integer" => value.as_i64().is_some(),
+                "string" => value.is_string(),
+                "object" => value.is_object(),
+                literal => value.as_str() == Some(literal),
+            })
+            .then_some(())
+            .ok_or(format!("{value} must match {ty}")),
+        _ => Err("invalid documented shape".into()),
+    }
+}
+
+fn documented_result_shape() -> Value {
+    let block = OPS_DOC
+        .split(
+            "Result (machine-checked by `codemode_results_decode_against_documented_shape`):\n```json\n",
+        )
+        .nth(1)
+        .expect("documented codemode result");
+    serde_json::from_str(block.split("\n```").next().unwrap()).unwrap()
+}
+
+fn alternatives(ty: &Value) -> std::collections::BTreeSet<String> {
+    ty.as_str().unwrap().split('|').map(str::to_owned).collect()
+}
+
+/// Every status and outcome basal can report. The matches have no wildcard,
+/// so a new variant does not compile until it is listed here.
+fn every_status_and_outcome() -> (
+    std::collections::BTreeSet<String>,
+    std::collections::BTreeSet<String>,
+) {
+    use basal_core::codemode::store::{Budget, Outcome, Status};
+    let statuses = [
+        Status::Running,
+        Status::Completed,
+        Status::Failed,
+        Status::BudgetExhausted(Budget::JsCpu),
+        Status::BudgetExhausted(Budget::Memory),
+        Status::BudgetExhausted(Budget::Stack),
+        Status::BudgetExhausted(Budget::Wall),
+        Status::BudgetExhausted(Budget::ToolCalls),
+        Status::Cancelled,
+        Status::Interrupted,
+    ];
+    for status in statuses {
+        match status {
+            Status::Running
+            | Status::Completed
+            | Status::Failed
+            | Status::BudgetExhausted(
+                Budget::JsCpu | Budget::Memory | Budget::Stack | Budget::Wall | Budget::ToolCalls,
+            )
+            | Status::Cancelled
+            | Status::Interrupted => {}
+        }
+    }
+    let outcomes = [
+        Outcome::Pending,
+        Outcome::Ok,
+        Outcome::Error,
+        Outcome::Refused,
+        Outcome::ConsentUnavailable,
+        Outcome::ToolUnavailable,
+        Outcome::OutcomeUnknown,
+        Outcome::Cancelled,
+    ];
+    for outcome in outcomes {
+        match outcome {
+            Outcome::Pending
+            | Outcome::Ok
+            | Outcome::Error
+            | Outcome::Refused
+            | Outcome::ConsentUnavailable
+            | Outcome::ToolUnavailable
+            | Outcome::OutcomeUnknown
+            | Outcome::Cancelled => {}
+        }
+    }
+    (
+        statuses.iter().map(|s| s.as_str().to_owned()).collect(),
+        outcomes.iter().map(|o| o.as_str().to_owned()).collect(),
+    )
+}
+
+#[test]
+fn codemode_results_decode_against_documented_shape() {
+    let shape = documented_result_shape();
+    let (statuses, outcomes) = every_status_and_outcome();
+    assert_eq!(alternatives(&shape["status"]), statuses);
+    assert_eq!(alternatives(&shape["calls"][0]["outcome"]), outcomes);
+    // The call outcomes table has a row for every outcome and no other.
+    let table = doc_section("Codemode result")
+        .unwrap()
+        .split("### Call outcomes")
+        .nth(1)
+        .expect("call outcomes table");
+    let rows: std::collections::BTreeSet<String> = table
+        .lines()
+        .filter_map(|line| line.strip_prefix("| `"))
+        .map(|rest| rest[..rest.find('`').unwrap()].to_owned())
+        .collect();
+    assert_eq!(rows, outcomes);
+
+    let rig = rig("codemode-doc-shape", false);
+    // A refused call that the program catches, truncated output and a
+    // description: every optional key but `error`.
+    let mut described = request(
+        &rig.host,
+        "described",
+        "console.log('kept'); console.log('dropped line'); \
+         try { await tools.echo(5); } catch (e) { return [e.code, e.tool, e.outcome]; }",
+        catalog(),
+    );
+    described["description"] = json!("Checks the documented shape");
+    described["limits"] = json!({"output_bytes": 8});
+    admit(&rig.f.module, &rig.provider, described);
+    let described = ended(&rig, "described");
+    assert_eq!(described["status"], "completed", "{described}");
+    assert_eq!(
+        described["value"],
+        json!(["invalid_input", "echo", "refused"])
+    );
+    assert_eq!(described["description"], "Checks the documented shape");
+    assert_eq!(described["output"], "kept\n");
+    assert_eq!(described["warnings"][0]["code"], "output_truncated");
+    assert_eq!(
+        described["calls"],
+        json!([{"tool": "echo", "outcome": "refused", "code": "invalid_input"}])
+    );
+
+    run(&rig, "failed", "throw new Error('boom');", json!([]));
+    let failed = ended(&rig, "failed");
+    assert_eq!(failed["error"]["code"], "script", "{failed}");
+
+    run(&rig, "held", "return await tools.echo({});", catalog());
+    rig.provider.wait_entered(1);
+    let running = result(&rig, "held");
+    assert_eq!(running["status"], "running");
+    let cancelled = rig
+        .f
+        .module
+        .handle(&Caller::Core, "codemode.cancel", json!({"run_id": "held"}))
+        .unwrap();
+    assert_eq!(cancelled["calls"][0]["code"], "no_outcome", "{cancelled}");
+
+    run(&rig, "ok", "return await tools.echo({n: 1});", catalog());
+    rig.provider.release();
+    let ok = ended(&rig, "ok");
+    assert_eq!(ok["calls"][0]["outcome"], "ok", "{ok}");
+
+    for value in [&described, &failed, &running, &cancelled, &ok] {
+        conforms(value, &shape).unwrap_or_else(|e| panic!("{e}: {value}"));
+        // Absent optional keys are omitted, never null.
+        for key in ["value", "error", "description"] {
+            assert_ne!(value.get(key), Some(&Value::Null), "{key}: {value}");
+        }
+    }
+    for value in [&failed, &running, &cancelled, &ok] {
+        assert!(value.get("description").is_none(), "{value}");
+    }
+    // The check rejects a null optional key, an undocumented key and a
+    // missing required key, so the passes above are not vacuous.
+    let mut null_description = described.clone();
+    null_description["description"] = Value::Null;
+    assert!(conforms(&null_description, &shape).is_err());
+    let mut extra = described.clone();
+    extra["extra"] = json!(1);
+    assert!(conforms(&extra, &shape).is_err());
+    let mut missing = described.clone();
+    missing.as_object_mut().unwrap().remove("output");
+    assert!(conforms(&missing, &shape).is_err());
+}

@@ -14068,3 +14068,73 @@ only = true
 file = "crates/basal-module/src/serve.rs"
 old = '.swap(true, std::sync::atomic::Ordering::SeqCst)'
 new = '.swap(false, std::sync::atomic::Ordering::SeqCst) /* NON-VACUITY BREAK */'
+
+# The codemode section of docs/ops.md is checked against the served code: the
+# published catalog digest vectors against an independent oracle and basal's
+# digest, the op sections against OPERATIONS, and the documented result shape
+# against real run results. Portable digest rows and the worker-using module
+# rows run on Linux.
+[[control]]
+id = "s8-codemode-digest-entries-unsorted"
+hub = "Catalog entries are sorted by name before hashing, asserted by the published entries-reordered vector and the digest unit tests"
+hub_targets = ["basal_core"]
+guards = "the catalog digest depends on the order entries were sent in, so it no longer matches the published vectors"
+test_file = "crates/basal-core/tests/codemode_digest_vectors.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--test codemode_digest_vectors"
+expect_red = ["the_production_digest_matches_every_published_vector"]
+# The digest unit tests in basal-core's library also fail on this mutant,
+# because they assert the same sorting; the row is therefore marked hub rather
+# than claiming this target as the only catch.
+only = false
+file = "crates/basal-core/src/codemode/catalog.rs"
+old = 'named.sort_by(|a, b| a.0.encode_utf16().cmp(b.0.encode_utf16()));'
+new = '// NON-VACUITY BREAK: entries keep their sent order'
+
+[[control]]
+id = "s8-codemode-published-digest-drifts"
+guards = "docs/ops.md publishes a catalog digest that neither the independent oracle nor basal computes"
+test_file = "crates/basal-core/tests/codemode_digest_vectors.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--test codemode_digest_vectors"
+expect_red = ["published_digest_vectors_are_reproduced_by_the_oracle", "the_production_digest_matches_every_published_vector"]
+only = true
+file = "docs/ops.md"
+old = 'Digest: `c57fc8b429409c4fbd9ba5d30f9c13561a7a6a3a4c2011d85791d2a67a2a8cda`'
+new = 'Digest: `c57fc8b429409c4fbd9ba5d30f9c13561a7a6a3a4c2011d85791d2a67a2a8cdb` NON-VACUITY BREAK'
+
+[[control]]
+id = "s8-codemode-op-kind-differs-from-docs"
+guards = "OPERATIONS declares a codemode op with a kind other than the one docs/ops.md documents"
+test_file = "crates/basal-module/tests/codemode.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test codemode"
+expect_red = ["ops_doc_documents_codemode_ops_as_core_only_against_operations", "codemode_manifest_declares_core_only_operation_kinds"]
+only = true
+file = "crates/basal-module/src/manifest.rs"
+old = '''
+        "codemode.result",
+        ManagementOperationKind::Query,'''
+new = '''
+        "codemode.result",
+        ManagementOperationKind::Mutate, // NON-VACUITY BREAK'''
+
+[[control]]
+id = "s8-codemode-result-absent-description-is-null"
+guards = "a codemode result reports an absent description as null instead of omitting the key, against the documented shape"
+test_file = "crates/basal-module/tests/codemode.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test codemode"
+expect_red = ["codemode_results_decode_against_documented_shape", "codemode_run_returns_while_provider_is_held_and_other_ops_are_served", "codemode_cancel_unknown_terminal_and_running_and_hide_flow_ids"]
+only = true
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = 'if let Some(description) = run.description { value["description"] = description.into(); }'
+new = 'value["description"] = run.description.into(); // NON-VACUITY BREAK: null when absent'
