@@ -449,6 +449,11 @@ jobs:
         continue-on-error: true
         timeout-minutes: 30
         run: cargo test -p basal-host --lib --locked --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-host.log"
+      - name: Test the host integration regressions on their own
+        id: test-host-regressions
+        continue-on-error: true
+        timeout-minutes: 20
+        run: cargo test -p basal-host --test builtin_host_regressions --locked --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-host-regressions.log"
       - name: Summarize the baseline
         if: always()
         run: |
