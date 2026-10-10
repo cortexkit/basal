@@ -261,7 +261,9 @@ pub(crate) fn create(image: &Path, parent_token: HANDLE, package: &PackageSid) -
         let temp = std::env::temp_dir().join(&name);
         std::fs::create_dir(&temp)
             .map_err(|error| format!("create {}: {error}", temp.display()))?;
-        context.temp = temp;
+        // The system TEMP path often holds 8.3 short names (`RUNNER~1`);
+        // give the worker the long form.
+        context.temp = long_path(&temp);
         let temp_text = context.temp.to_string_lossy().into_owned();
         let temp_sd = Descriptor::parse(&format!(
             "D:P(A;OICI;GA;;;SY)(A;OICI;GA;;;BA)(A;OICI;GA;;;{user})(A;OICI;GRGX;;;S-1-0-0)(A;OICI;GRGX;;;{package})S:(ML;OICI;NW;;;LW)"
@@ -278,5 +280,18 @@ pub(crate) fn create(image: &Path, parent_token: HANDLE, package: &PackageSid) -
         )?;
         context.environment = environment_block(&system_root()?, &temp_text);
         Ok(context)
+    }
+}
+
+/// The long form of an existing path, without the `\\?\` prefix that
+/// canonicalization adds, or the path unchanged if it has no such form.
+fn long_path(path: &Path) -> PathBuf {
+    let Ok(canonical) = std::fs::canonicalize(path) else {
+        return path.to_owned();
+    };
+    let text = canonical.to_string_lossy();
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => PathBuf::from(rest),
+        _ => path.to_owned(),
     }
 }

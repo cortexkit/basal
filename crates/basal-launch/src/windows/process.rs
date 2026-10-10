@@ -95,15 +95,19 @@ impl ConfinedProcess {
     /// with [`KILL_EXIT_CODE`]. Killing a worker that has already ended
     /// succeeds.
     pub fn kill(&self) -> io::Result<()> {
-        unsafe {
-            TerminateJobObject(self.job.as_raw_handle(), KILL_EXIT_CODE);
-            if TerminateProcess(self.process.as_raw_handle(), KILL_EXIT_CODE) != 0 {
-                return Ok(());
-            }
+        let job_killed =
+            unsafe { TerminateJobObject(self.job.as_raw_handle(), KILL_EXIT_CODE) } != 0;
+        if unsafe { TerminateProcess(self.process.as_raw_handle(), KILL_EXIT_CODE) } != 0 {
+            return Ok(());
         }
         let error = io::Error::last_os_error();
-        // Terminating a process that has already ended fails with access
-        // denied; that worker is as killed as it will get.
+        // Terminating a process that is already ending fails with access
+        // denied. That happens right after the job kill above, which ends the
+        // worker (a member of the job) whether or not it has finished
+        // exiting yet, and for a worker that had already exited.
+        if job_killed && self.in_owned_job().unwrap_or(false) {
+            return Ok(());
+        }
         match self.try_wait()? {
             Some(_) => Ok(()),
             None => Err(error),
