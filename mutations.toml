@@ -14443,8 +14443,9 @@ file = "crates/basal-host/src/transport.rs"
 old = "timeout: options.reply_timeout,"
 new = "timeout: self.timeout, /* NON-VACUITY BREAK */"
 
-# These controls check that model calls cannot share conversation history,
-# change a saved routing decision, bypass scope opt-in, or exceed run budgets.
+# codemode model tools: the controls from here to the next section check that
+# model calls cannot share conversation history, change a saved routing
+# decision, bypass the provider's scope opt-in, or exceed run budgets.
 
 [[control]]
 id = "codemode-model-routing-caller-class"

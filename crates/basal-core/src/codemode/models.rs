@@ -1,6 +1,8 @@
-//! Basal-owned model tools share flow completion and classification handling.
-//! Each run reserves its calls and tokens before routing, then freezes the
-//! routing decision in SQLite before Broca can receive the request.
+//! The `model` and `classify` tools that basal adds to every codemode run.
+//! They send requests through the same Broca path as a flow's `llm` and
+//! `classify` calls. Each call reserves its share of the run's call and token
+//! budget before routing, then saves the routing decision in SQLite before
+//! Broca can receive the request, so a resend reuses the same model.
 
 use basal_host::selector::{ModelSelector, SelectionRequest};
 use basal_host::transport::{Transport, WireError};
@@ -83,7 +85,10 @@ fn budget(reason: &str) -> WireError {
     }
 }
 
-/// Repeated dispatches read the saved envelope rather than consulting routing.
+/// Builds the Broca request for one model call. The first dispatch asks
+/// prefrontal-routing for a model and saves the whole request, including that
+/// choice, in `codemode_models`; a resend reads the saved request instead of
+/// asking routing again, so it can never switch models.
 pub fn prepare(
     store: &Store,
     selector: &dyn ModelSelector,

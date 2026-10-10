@@ -653,7 +653,9 @@ impl BrocaHost {
             if codemode && sink.is_none() {
                 continue;
             }
-            // Initial codemode sends belong to the supervisor, never recovery polling.
+            // A codemode call that Broca hasn't accepted yet is still being sent
+            // by the run's supervisor. Polling only follows calls Broca has
+            // accepted, so it must not send this one a second time.
             if codemode && call.handle.is_none() {
                 continue;
             }
