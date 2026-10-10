@@ -178,8 +178,11 @@ pub struct Terminal {
 pub enum CallStart<'a> {
     /// Waiting for an in-flight slot; no intent, not sent.
     Queued,
-    /// The intent to send, committed at `at` just before the single send.
+    /// Combined intent and provider entry at `at`, for callers whose send
+    /// boundary is immediate. Supervisors use `Prepared` for the separate steps.
     Intent { at: i64 },
+    /// Durable intent before provider entry; duration has not started yet.
+    Prepared { at: i64 },
     /// Settled by the parent without being sent (a refusal before send).
     Settled {
         outcome: Outcome,
@@ -217,6 +220,8 @@ pub struct CallRecord {
     pub idempotency_key: String,
     pub input_bytes: u64,
     pub intent_at: Option<i64>,
+    /// Runtime-clock provider entry, separate from the durable intent.
+    pub entered_at: Option<i64>,
     pub outcome: Outcome,
     pub code: Option<String>,
     pub duration_ms: Option<i64>,
@@ -341,7 +346,7 @@ pub fn lookup(conn: &Connection, run_id: &str) -> Result<Lookup> {
 /// The run's calls in position order.
 pub fn calls(conn: &Connection, run_id: &str) -> Result<Vec<CallRecord>> {
     let mut stmt = conn.prepare(
-        "SELECT position, tool, idempotency_key, input_bytes, intent_at, outcome, code, duration_ms \
+        "SELECT position, tool, idempotency_key, input_bytes, intent_at, outcome, code, duration_ms, entered_at \
          FROM codemode_calls WHERE run_id = ?1 ORDER BY position",
     )?;
     let rows = stmt
@@ -355,12 +360,23 @@ pub fn calls(conn: &Connection, run_id: &str) -> Result<Vec<CallRecord>> {
                 r.get::<_, String>(5)?,
                 r.get::<_, Option<String>>(6)?,
                 r.get::<_, Option<i64>>(7)?,
+                r.get::<_, Option<i64>>(8)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     rows.into_iter()
         .map(
-            |(position, tool, key, input_bytes, intent_at, outcome, code, duration_ms)| {
+            |(
+                position,
+                tool,
+                key,
+                input_bytes,
+                intent_at,
+                outcome,
+                code,
+                duration_ms,
+                entered_at,
+            )| {
                 Ok(CallRecord {
                     position: u64::try_from(position)
                         .map_err(|_| CoreError::Corrupt(format!("call position {position}")))?,
@@ -369,6 +385,7 @@ pub fn calls(conn: &Connection, run_id: &str) -> Result<Vec<CallRecord>> {
                     input_bytes: u64::try_from(input_bytes)
                         .map_err(|_| CoreError::Corrupt(format!("input size {input_bytes}")))?,
                     intent_at,
+                    entered_at,
                     outcome: Outcome::parse(&outcome)
                         .ok_or_else(|| CoreError::Corrupt(format!("call outcome {outcome:?}")))?,
                     code,
@@ -413,22 +430,23 @@ pub fn insert_call(
     input_bytes: u64,
     start: CallStart,
 ) -> Result<bool> {
-    let (intent_at, outcome, code) = match start {
-        CallStart::Queued => (None, Outcome::Pending, None),
-        CallStart::Intent { at } => (Some(at), Outcome::Pending, None),
+    let (intent_at, entered_at, outcome, code) = match start {
+        CallStart::Queued => (None, None, Outcome::Pending, None),
+        CallStart::Intent { at } => (Some(at), Some(at), Outcome::Pending, None),
+        CallStart::Prepared { at } => (Some(at), None, Outcome::Pending, None),
         CallStart::Settled { outcome, code } => {
             if outcome == Outcome::Pending {
                 return Err(CoreError::Invalid(
                     "a settled call needs an outcome other than pending".into(),
                 ));
             }
-            (None, outcome, code)
+            (None, None, outcome, code)
         }
     };
     let inserted = tx.execute(
         "INSERT INTO codemode_calls (run_id, position, tool, idempotency_key, input_bytes, \
-         intent_at, outcome, code) \
-         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8 \
+         intent_at, entered_at, outcome, code) \
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9 \
          WHERE EXISTS (SELECT 1 FROM codemode_runs WHERE run_id = ?1 AND status = 'running')",
         params![
             run_id,
@@ -437,6 +455,7 @@ pub fn insert_call(
             call_key(run_id, position),
             sql_i64(input_bytes)?,
             intent_at,
+            entered_at,
             outcome.as_str(),
             code,
         ],
@@ -450,8 +469,34 @@ pub fn insert_call(
 /// already committed, is never sent again.
 pub fn begin_queued(tx: &Transaction, run_id: &str, position: u64, at: i64) -> Result<bool> {
     let changed = tx.execute(
-        "UPDATE codemode_calls SET intent_at = ?3 \
+        "UPDATE codemode_calls SET intent_at = ?3, entered_at = ?3 \
          WHERE run_id = ?1 AND position = ?2 AND outcome = 'pending' AND intent_at IS NULL",
+        params![run_id, sql_i64(position)?, at],
+    )?;
+    Ok(changed == 1)
+}
+
+/// Records the durable intent without starting provider time. Unlike the
+/// combined `begin_queued` transition, a supervisor may crash between this
+/// transaction and entering the provider.
+pub fn prepare_queued(tx: &Transaction, run_id: &str, position: u64, at: i64) -> Result<bool> {
+    let changed = tx.execute(
+        "UPDATE codemode_calls SET intent_at = ?3 \
+         WHERE run_id = ?1 AND position = ?2 AND outcome = 'pending' AND intent_at IS NULL \
+         AND EXISTS (SELECT 1 FROM codemode_runs WHERE run_id = ?1 AND status = 'running')",
+        params![run_id, sql_i64(position)?, at],
+    )?;
+    Ok(changed == 1)
+}
+
+/// Starts provider time exactly once, only for a still-pending intent. A kill
+/// that has already settled the call prevents a scheduled attempt from starting.
+pub fn enter_call(tx: &Transaction, run_id: &str, position: u64, at: i64) -> Result<bool> {
+    let changed = tx.execute(
+        "UPDATE codemode_calls SET entered_at = ?3 \
+         WHERE run_id = ?1 AND position = ?2 AND outcome = 'pending' \
+         AND intent_at IS NOT NULL AND entered_at IS NULL \
+         AND EXISTS (SELECT 1 FROM codemode_runs WHERE run_id = ?1 AND status = 'running')",
         params![run_id, sql_i64(position)?, at],
     )?;
     Ok(changed == 1)
@@ -460,8 +505,8 @@ pub fn begin_queued(tx: &Transaction, run_id: &str, position: u64, at: i64) -> R
 /// Records a call's outcome at `at`, only if the call is still pending.
 /// Returns `false`, changing nothing, when an outcome was already recorded,
 /// including the one termination records for a call it settled: a late
-/// answer never replaces it. A sent call's duration runs from its intent to
-/// `at`; a call never sent has none.
+/// answer never replaces it. Duration runs from provider entry to the recorded
+/// outcome at `at`; a call never entered has none.
 pub fn record_outcome(
     tx: &Transaction,
     run_id: &str,
@@ -477,7 +522,7 @@ pub fn record_outcome(
     }
     let changed = tx.execute(
         "UPDATE codemode_calls SET outcome = ?3, code = ?4, \
-         duration_ms = CASE WHEN intent_at IS NULL THEN NULL ELSE max(?5 - intent_at, 0) END \
+         duration_ms = CASE WHEN entered_at IS NULL THEN NULL ELSE max(?5 - entered_at, 0) END \
          WHERE run_id = ?1 AND position = ?2 AND outcome = 'pending'",
         params![run_id, sql_i64(position)?, outcome.as_str(), code, at],
     )?;
@@ -505,7 +550,7 @@ pub fn settle_pending_calls(tx: &Transaction, run_id: &str, at: i64) -> Result<(
     )?;
     let unknown = tx.execute(
         "UPDATE codemode_calls SET outcome = 'outcome_unknown', code = ?2, \
-         duration_ms = max(?3 - intent_at, 0) \
+          duration_ms = CASE WHEN entered_at IS NULL THEN NULL ELSE max(?3 - entered_at, 0) END \
          WHERE run_id = ?1 AND outcome = 'pending' AND intent_at IS NOT NULL",
         params![run_id, NO_OUTCOME, at],
     )?;

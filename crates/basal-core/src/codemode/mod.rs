@@ -12,6 +12,8 @@
 //! - [`catalog`]: the catalog digest and tool input schema compilation.
 //! - [`admission`]: ordered checks and a transaction that grants at most one
 //!   caller permission to start a run.
+//! - [`supervisor`]: blocking worker supervision, one-attempt tool dispatch and
+//!   ordered termination, independent of the flow driver.
 //!
 //! Codemode rows never enter the flow machinery: no journal row, lease,
 //! retry, suspension, replay, reconcile, flow retention or flow op reads or
@@ -22,3 +24,4 @@ pub mod canonical;
 pub mod catalog;
 pub mod retention;
 pub mod store;
+pub mod supervisor;
