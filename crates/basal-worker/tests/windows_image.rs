@@ -149,7 +149,10 @@ fn is_c_runtime(name: &str) -> bool {
 
 #[test]
 fn the_worker_is_a_gui_image_without_gui_com_or_c_runtime_imports() {
-    let path = windows_common::dev_binary(env!("CARGO_BIN_EXE_ck-basal-worker"));
+    let path = match std::env::var("CKDEV_WINDOWS_IMAGE") {
+        Ok(source) => windows_common::dev_binary(&source),
+        Err(_) => windows_common::dev_binary(env!("CARGO_BIN_EXE_ck-basal-worker")),
+    };
     let image = parse(&std::fs::read(path).expect("read the worker image"));
     println!("subsystem: {}", image.subsystem);
     println!("imports: {:?}", image.imports);
@@ -170,24 +173,37 @@ fn the_worker_is_a_gui_image_without_gui_com_or_c_runtime_imports() {
         assert!(!is_c_runtime(name), "imports the C runtime DLL {name}");
     }
 
-    // Once the import list read from a production build of the worker is
-    // committed at this path, every import must be on it, so a new DLL
-    // dependency is a reviewed change. API-set names (`api-ms-win-*`) are names, not paths.
+    if let Ok(directory) = std::env::var("CKDEV_WINDOWS_EVIDENCE") {
+        let mut measured = all.clone();
+        measured.sort();
+        measured.dedup();
+        std::fs::write(
+            Path::new(&directory).join("windows-imports.txt"),
+            format!("{}\n", measured.join("\n")),
+        )
+        .expect("record measured image imports");
+    }
+    assert!(
+        !all.iter().any(|name| name == "ws2_32.dll"),
+        "Winsock belongs only to dynamically resolved probe mode"
+    );
+    // Every import must be on the committed production inventory, so adding a
+    // DLL dependency requires an explicit update. API-set names are names, not
+    // filesystem paths; normal and delay imports use the same fixed allowlist.
     let listed = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/windows-imports.txt");
-    if let Ok(text) = std::fs::read_to_string(&listed) {
-        let allowed: Vec<String> = text
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty() && !line.starts_with('#'))
-            .map(str::to_ascii_lowercase)
-            .collect();
-        for name in &all {
-            assert!(
-                allowed.contains(name),
-                "{name} is not in {}",
-                listed.display()
-            );
-        }
+    let text = std::fs::read_to_string(&listed).expect("committed production import inventory");
+    let allowed: Vec<String> = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(str::to_ascii_lowercase)
+        .collect();
+    for name in &all {
+        assert!(
+            allowed.contains(name),
+            "{name} is not in {}",
+            listed.display()
+        );
     }
 }
 

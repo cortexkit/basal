@@ -77,6 +77,10 @@ pub const MITIGATION_POLICY: u64 = MITIGATION_STRICT_HANDLE_CHECKS
 const TEST_CAPABILITY: &str = "S-1-15-3-1";
 
 /// What to start, and how.
+#[cfg_attr(
+    not(feature = "deviations"),
+    doc = "```compile_fail\nuse basal_launch::LaunchOptions;\nlet mut options = LaunchOptions::new(\"C:\\\\ckdev-worker.exe\", 512 << 20);\noptions.before_resume = None;\n```"
+)]
 #[derive(Debug, Clone)]
 pub struct LaunchOptions {
     /// The absolute path of the image.
@@ -89,6 +93,10 @@ pub struct LaunchOptions {
     pub job_commit_bytes: u64,
     /// The recipe. Production builds have only the full confinement.
     pub deviation: Deviation,
+    /// A test-only observer called while the child is still suspended. It can
+    /// enable handle tracing before loader initialization creates any objects.
+    #[cfg(feature = "deviations")]
+    pub before_resume: Option<fn(HANDLE, u32) -> Result<()>>,
 }
 
 impl LaunchOptions {
@@ -99,6 +107,8 @@ impl LaunchOptions {
             args: Vec::new(),
             job_commit_bytes,
             deviation: Deviation::Full,
+            #[cfg(feature = "deviations")]
+            before_resume: None,
         }
     }
 
@@ -294,6 +304,10 @@ fn spawn_confined(
         suspended.kill();
         return Err(refusal);
     }
+    #[cfg(feature = "deviations")]
+    if let Some(observer) = options.before_resume {
+        observer(suspended.process.as_raw_handle(), info.dwProcessId)?;
+    }
     suspended.resume()?;
     drop(source);
     Ok(Spawned {
@@ -380,7 +394,9 @@ fn spawn_control(
     let opt_out = PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT;
     let jobs: [HANDLE; 1] = [job.as_raw_handle()];
     let mut attributes = AttributeList::new(4)?;
-    attributes.add(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherited)?;
+    if options.deviation.restricts_inherited_handles() {
+        attributes.add(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherited)?;
+    }
     if appcontainer {
         attributes.add(PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, &security)?;
         attributes.add(
@@ -409,6 +425,10 @@ fn spawn_control(
         "CreateProcessW(control)",
     )?;
     let suspended = Suspended::adopt(&info)?;
+    #[cfg(feature = "deviations")]
+    if let Some(observer) = options.before_resume {
+        observer(suspended.process.as_raw_handle(), info.dwProcessId)?;
+    }
     suspended.resume()?;
     Ok(Spawned {
         process: suspended.process,
