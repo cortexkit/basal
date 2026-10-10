@@ -11,7 +11,11 @@ this prototype yet.** The GUI worker initially retains **27 / 28 ambient
 handles**, rather than three stdio pipes. A combined pre-input ALPC/KsecDD close
 now leaves **26 handles on both images** and completes every probe. Closing all
 four removable synchronization/completion types in that same process further leaves
-**14 / 13 handles**, also with complete probes and exit 0. Creator and remaining-authority evidence is in
+14 / 13 handles with complete probes, **but that recipe is not viable**: it crashes
+(`0xc0000008`) as soon as the thread pool waits on anything, so the surviving
+recipe is the 26-handle combined close. See
+[the final gap measurements](#final-gap-measurements-thread-tokens-scheduler-handle-and-the-surviving-recipe),
+which supersede the earlier 14 / 13 residual. Creator evidence is in
 [the provenance campaign](#handle-provenance-and-combined-closes). This is not a
 three-stdio-only boundary.
 
@@ -1284,3 +1288,109 @@ from that contradictory table is used below.
     capture errors; the exact internal console failure and Chrome desktop ACL
     remain unknown. No unmeasured grant, protocol denial or privileged-broker
     requirement should become a production assumption.
+
+## Final gap measurements: thread tokens, scheduler handle and the surviving recipe
+
+Three native runs on `windows-latest` (Windows 11) and `windows-2022` measured the
+two questions the provenance campaign left open, plus the removable recipe under
+real thread-pool work: [38043552017](https://github.com/cortexkit/basal/actions/runs/38043552017),
+[38044191799](https://github.com/cortexkit/basal/actions/runs/38044191799) and
+[38048658581](https://github.com/cortexkit/basal/actions/runs/38048658581), the last
+from `6738c09d0117a665dfcb547319a305956d0bafd1`. All three concluded **failure**,
+for two reasons that are both deliberate gates, not measurement errors: the
+long-standing console gate (the console-subsystem image still fails, which is why
+the GUI-subsystem image is the recommendation) and the new coverage gate, which
+correctly fails because the removable recipe crashes under pool activity. The
+per-recipe summaries of the final run are in [measurements/gaps/](measurements/gaps/).
+
+### The removable recipe is not viable
+
+The 14 / 13-handle recipe closes the ALPC port, KsecDD and every completion,
+timer, wait-packet and semaphore handle. Once the worker makes the thread pool do
+real work, it exits `0xc0000008` (`STATUS_INVALID_HANDLE`) on both images, raised
+from the thread-pool wait path:
+
+- Windows 11: `TpSetWaitEx -> KiRaiseUserExceptionDispatcher -> RtlRaiseException`
+- Server 2022: `TpSetWaitEx -> TppSetupNextWait -> KiRaiseUserExceptionDispatcher -> RtlRaiseException`
+
+The pool's wait completion packets are needed as soon as anything waits, so they
+cannot be closed before input. The earlier 14 / 13 residual held only for a
+worker that never used the pool. It is withdrawn.
+
+### The surviving recipe: combined close, 26 handles
+
+The combined recipe closes only the CSR ALPC port and, on Server 2022, the KsecDD
+device. With forced pool activity (a work item, a wait, a timer and a legacy
+`QueueUserWorkItem`) it completes every probe and exits `0x00000000` on both
+images: 2,146 probes on Windows 11 and 1,870 on Server 2022. The only operation
+that succeeds is `CreateThread` inside the worker. The primary token is the
+NULL-capability LPAC at integrity `S-1-16-0` (Untrusted), lowered from Low before
+input with the adjustment handle closed.
+
+### Thread tokens: every thread is measured, none holds a token
+
+The broker enumerated the worker's threads with both `SystemProcessInformation`
+and Toolhelp at barriers the worker requested, and checked each thread with
+`NtOpenThreadTokenEx` (open-as-self true and false).
+
+| Image | Before pool activity | After pool activity | Callback threads in the snapshot | Token on any thread |
+|---|---|---|---|---|
+| Windows 11 | 3 threads (main + 2 `ntdll!TppWorkerThread`) | 7 threads | wait, work, legacy work, timer: all four | none, every check `STATUS_NO_TOKEN` (`0xc000007c`) |
+| Server 2022 | 3 threads (main + 2 `ntdll!TppWorkerThread`) | 7 threads | wait, work, legacy work, timer: all four | none, every check `STATUS_NO_TOKEN` (`0xc000007c`) |
+
+Completeness is checked, not assumed: both enumerations agree on the thread
+count, and the TID of every thread that actually ran a callback is in the
+snapshot taken while those callbacks were held alive. Each callback also checked
+its own thread token from inside the callback, with the same result. The earlier
+attempt that reported a single thread had missed the pool threads; this
+enumeration does not. **No thread in the worker holds any impersonation token, so
+none is stronger than the Untrusted LPAC primary.**
+
+### SchedulerSharedData (Windows 11 only)
+
+The handle (access `0x1`) is created by the loader through
+`NtSetInformationProcess`, class 112. The object is unnamed, and a system-wide
+handle snapshot (50,666 handles) finds **no other process holding it**. Its
+object type has no security (`security_required` false, generic mapping
+`all = 0x000f0001`).
+
+| Operation from inside the worker | Result |
+|---|---|
+| Wait on it | refused, Win32 error 5 |
+| Read its security | `0xc0000022` access denied |
+| Use as a file, device, section, ALPC port or root directory | `0xc0000024` type mismatch, or Win32 error 6 |
+| Duplicate with `GENERIC_ALL` | **succeeds**, granted `0x000f0001` (the type's full rights) |
+| With that duplicate: read security | succeeds, an empty descriptor |
+| With that duplicate: write its DACL or owner | `0xc00000d7` no security on object, `0xc0000079` invalid descriptor |
+| With that duplicate: make temporary | succeeds (it is already unnamed, so this changes nothing) |
+| Class 112 set | creates a further handle of the same kind, access `0x1` |
+| Class 112 query | `0xc0000003` |
+
+So the worker can raise its own handle to the type's full rights, but only on a
+private, unnamed object no other process holds, whose type grants no file,
+network, peer or persistent capability. The rights it gains are the scheduler's
+own slot operations inside this process. Closing the handle before input crashes
+the worker (`0xc0000005`) when the pool runs, so it stays.
+
+### Final residual: 26 handles before input
+
+| Handles | Windows 11 | Server 2022 | Granted access | Creator | What it reaches |
+|---|---:|---:|---|---|---|
+| Stdio pipes | 3 | 3 | `0x120189` read, `0x120196` write | parent `CreatePipe` | the parent only, by design |
+| `\KnownDlls` directory | 1 | 1 | `0x3` query and traverse | loader | read-only names of system DLLs |
+| Event | 7 | 7 | `0x1f0003` | loader, ETW/WNF, CNG, RPC init | private event state only |
+| IoCompletion | 2 | 2 | `0x1f0003` | thread pool | private pool queue |
+| TpWorkerFactory | 2 | 2 | `0xf00ff` | thread pool | this process's own pool workers |
+| IRTimer | 4 | 4 | `0x100002` | thread pool | private timers |
+| WaitCompletionPacket | 6 | 5 | `0x1` | thread pool | private wait packets |
+| Semaphore | none | 2 | `0x100003` | CNG cache init | private counters |
+| SchedulerSharedData | 1 | none | `0x1` | loader | private scheduler slots, see above |
+| **Total** | **26** | **26** | | | |
+
+Every handle beyond the three pipes is unnamed or read-only and private to the
+worker in the measured snapshots. None is a file, socket, process, token, section
+or port, and the measured probes found no file, network, other-process or
+persistent reach. The one change of rights the worker can make for itself is the
+SchedulerSharedData duplicate above. What remains unmeasured: every native API
+was not exhausted against every handle type, and the CSR port's message
+acceptance was never tested, because that port is closed before input.
