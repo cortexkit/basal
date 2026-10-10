@@ -178,3 +178,59 @@ remaining assertions in mixed tests still run on Windows.
 - `crates/basal-host/tests/builtin_host_regressions.rs::git_reaps_descendants_that_keep_its_output_pipe_open` — `/bin/sh`/`sleep` fixture and POSIX process-group cleanup; native Windows job/descendant tests run in basal-host and basal-testkit.
 - `crates/basal-testkit/src/https.rs::tests::idle_https_accept_blocks_and_shutdown_wakes_it_without_a_request` (`fcntl` flag readback only) — POSIX socket flags; shutdown wakeup and absence of HTTPS requests remain tested on Windows.
 - `crates/basal-testkit/src/process.rs::tests::subprocess_deadline_reaps_descendants_holding_output_pipes` — `/bin/sh`/`sleep` process-group fixture; `crates/basal-testkit/tests/windows_process.rs::subprocess_deadline_reaps_descendants_holding_output_pipes` tests the Windows job equivalent by the same test name.
+
+### Native Windows verification
+
+The `windows-latest` job in [run 38087885232](https://github.com/cortexkit/basal/actions/runs/38087885232/job/114318177902)
+verified the combined commit `79819d11a0a94040841c8fde9f7ea5e4d1bf7686`.
+Its `windows-baseline-logs` artifact is `11684012670`. The runner used
+`rustc 1.99.0 (b940084d7 2026-09-28)` and
+`cargo 1.99.0 (5f94df478 2026-08-27)`. The counts below are summed from the
+individual test-result lines, not from the job's continue-on-error conclusion.
+
+- `cargo test -p basal-testkit --locked --no-fail-fast`: **212 passed, 0 failed**.
+- `cargo test -p basal-rig --locked --no-fail-fast`: **37 passed, 0 failed**.
+- `cargo test -p basal-worker --locked --no-fail-fast -- --show-output`: **125 passed, 0 failed**.
+- `cargo test -p basal-host --test builtin_host_regressions --locked --no-fail-fast`: **6 passed, 0 failed**.
+- `cargo check --workspace --all-targets --locked`: completed without errors.
+- `cargo test --workspace --locked`: **1013 passed, 0 failed**.
+
+The restored worker targets in `test-basal-worker.log` have these exact result
+lines. `inherited_descriptors.rs::worker_closes_extra_inherited_descriptors_at_startup`
+remains Unix-only because it checks POSIX descriptor numbers and close-on-exec flags:
+
+| Target | Quoted result |
+|---|---|
+| `budgets.rs` | `test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.99s` |
+| `clock.rs` | `test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s` |
+| `codemode.rs` | `test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s` |
+| `fuzz.rs` | `test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.01s` |
+| `ipc.rs` | `test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s` |
+| `lockdown.rs` | `test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s` |
+| `profile.rs` | `test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s` |
+| `replay.rs` | `test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s` |
+| `sandbox_integrity.rs` | `test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s` |
+
+The Windows worker launch, memory-sampling, process-reaping and job-cleanup tests
+in `test-basal-testkit.log` also passed:
+
+```text
+test discovered_worker_launches_with_full_confinement_without_an_extra_acl_grant ... ok
+test worker_memory_sampling_and_reaping_observe_native_process_state ... ok
+test subprocess_exit_reaps_descendants_holding_output_pipes ... ok
+test subprocess_deadline_reaps_descendants_holding_output_pipes ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.03s
+```
+
+`test-basal-rig.log` includes:
+
+```text
+test windows::tests::process_snapshot_finds_the_current_image_and_refuses_an_absent_image ... ok
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+```
+
+`test-basal-host-regressions.log` ends with:
+
+```text
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.29s
+```
