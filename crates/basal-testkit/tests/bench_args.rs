@@ -1,4 +1,4 @@
-use std::process::Command;
+use basal_testkit::command::Command;
 
 #[test]
 fn worker_benchmark_refuses_invalid_arguments_before_spawning() {

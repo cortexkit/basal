@@ -1,9 +1,12 @@
 //! A real `ck-basal-worker` child process, driven over its stdio frames.
 
+use crate::command::Command;
 use std::fmt;
 use std::io::{self, Read, Write};
 use std::path::Path;
-use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
+use std::process::ExitStatus;
+#[cfg(unix)]
+use std::process::{Child, ChildStdin, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -44,6 +47,15 @@ impl std::error::Error for ParentError {}
 
 type Incoming = Result<WorkerMessage, ParentError>;
 
+#[cfg(windows)]
+pub(crate) mod windows;
+#[cfg(windows)]
+use windows::Child;
+#[cfg(windows)]
+pub use windows::terminate_process;
+#[cfg(windows)]
+type ChildStdin = std::fs::File;
+
 /// A spawned worker. Killed on drop.
 pub struct WorkerProcess {
     child: Child,
@@ -62,19 +74,24 @@ impl WorkerProcess {
     }
 
     pub fn spawn_with_args(binary: &Path, args: &[&str]) -> io::Result<Self> {
-        let binary = crate::dev_binary(binary);
-        let mut command = Command::new(binary);
-        command.args(args);
-        #[cfg(target_os = "linux")]
-        if !args.iter().any(|arg| arg.starts_with("--landlock=")) {
-            command.arg("--landlock=required");
-        }
-        let mut child = command
-            .env_clear()
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
+        let binary = crate::binaries::dev_worker_binary(binary);
+        #[cfg(windows)]
+        let mut child = windows::spawn_worker(&binary, args)?;
+        #[cfg(unix)]
+        let mut child = {
+            let mut command = Command::new(binary);
+            command.args(args);
+            #[cfg(target_os = "linux")]
+            if !args.iter().any(|arg| arg.starts_with("--landlock=")) {
+                command.arg("--landlock=required");
+            }
+            command
+                .env_clear()
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()?
+        };
         let stdin = child.stdin.take();
         let mut stdout = child
             .stdout
@@ -251,7 +268,11 @@ pub fn rss_kib(pid: u32) -> Option<u64> {
         }
         Some(unsafe { info.assume_init() }.pti_resident_size / 1024)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        windows::rss_kib(pid)
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
     {
         let out = Command::new("ps")
             .args(["-o", "rss=", "-p", &pid.to_string()])
@@ -270,25 +291,31 @@ impl Drop for WorkerProcess {
 /// Probe the operating system without waiting for an exit. A successful
 /// process-exit wait can hide a missing reap in the cleanup path.
 pub fn assert_reaped(pid: u32) {
-    let mut status = 0;
-    // SAFETY: waitpid writes only to this status and the caller's child pid.
-    let result = unsafe {
-        libc::waitpid(
-            pid.try_into().expect("child pid"),
-            &mut status,
-            libc::WNOHANG,
-        )
-    };
-    assert_eq!(result, -1, "worker {pid} was not reaped");
-    assert_eq!(
-        std::io::Error::last_os_error().raw_os_error(),
-        Some(libc::ECHILD)
-    );
+    #[cfg(windows)]
+    windows::assert_reaped(pid);
+    #[cfg(unix)]
+    {
+        let mut status = 0;
+        // SAFETY: waitpid writes only to this status and the caller's child pid.
+        let result = unsafe {
+            libc::waitpid(
+                pid.try_into().expect("child pid"),
+                &mut status,
+                libc::WNOHANG,
+            )
+        };
+        assert_eq!(result, -1, "worker {pid} was not reaped");
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ECHILD)
+        );
+    }
 }
 
 /// Capture a subprocess with a deadline, draining both pipes concurrently.
 /// Timeout kills the process group, so inherited pipes cannot keep a reader
 /// alive after the parent has been reaped.
+#[cfg(unix)]
 pub fn output_until(command: &mut Command, timeout: Duration) -> io::Result<std::process::Output> {
     use std::os::unix::process::CommandExt;
     // SAFETY: setpgid is async-signal-safe and touches no Rust-owned memory.
@@ -351,9 +378,15 @@ pub fn output_until(command: &mut Command, timeout: Duration) -> io::Result<std:
     })
 }
 
+#[cfg(windows)]
+pub fn output_until(command: &mut Command, timeout: Duration) -> io::Result<std::process::Output> {
+    command.output_until(timeout)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     #[test]
     fn subprocess_deadline_reaps_descendants_holding_output_pipes() {
         let error = output_until(

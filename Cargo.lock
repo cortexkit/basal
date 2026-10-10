@@ -141,6 +141,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "basal-host",
+ "basal-launch",
  "basal-proto",
  "blake3",
  "rusqlite",
@@ -149,6 +150,7 @@ dependencies = [
  "subc-client-rs",
  "subc-protocol",
  "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -157,6 +159,7 @@ version = "0.1.0"
 dependencies = [
  "basal-core",
  "basal-host",
+ "basal-launch",
  "basal-proto",
  "blake3",
  "jiff",
@@ -166,6 +169,7 @@ dependencies = [
  "rustls",
  "serde_json",
  "subc-protocol",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

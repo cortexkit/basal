@@ -1,9 +1,6 @@
 //! Clock reads and random samples are host calls: journaled on the first
 //! run, replayed from the journal afterwards.
 
-// Windows: gated until basal-testkit builds there.
-#![cfg(not(windows))]
-
 mod common;
 
 use std::time::Duration;

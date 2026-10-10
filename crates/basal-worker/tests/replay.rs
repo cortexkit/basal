@@ -1,8 +1,5 @@
 //! Replay of the recorded prefix inside the worker.
 
-// Windows: gated until basal-testkit builds there.
-#![cfg(not(windows))]
-
 mod common;
 
 use basal_proto::{

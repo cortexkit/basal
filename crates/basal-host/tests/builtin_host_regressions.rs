@@ -2,6 +2,7 @@ use basal_host::builtins::{BuiltinHost, Grant, codes, envelope, fs, git, net};
 use basal_host::{CallClass, CallRequest, Dispatched, Host};
 use basal_proto::{CallKind, JsonText, Primitive, Settlement};
 use serde_json::json;
+#[cfg(unix)]
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -31,7 +32,7 @@ impl Drop for Tree {
 #[test]
 fn escaped_800kb_file_is_a_typed_refusal_not_successful_null() {
     let tree = Tree::new();
-    let path = tree.0.join("root/escaped");
+    let path = tree.0.join("root").join("escaped");
     std::fs::write(&path, vec![0; 800 * 1024]).unwrap();
     let request = CallRequest {
         flow_id: "f".into(),
@@ -63,6 +64,7 @@ fn escaped_800kb_file_is_a_typed_refusal_not_successful_null() {
 }
 
 #[test]
+#[cfg(unix)]
 fn escaped_listing_exceeds_encoded_cap_as_a_typed_refusal() {
     let tree = Tree::new();
     let dir = tree.0.join("root");
@@ -106,13 +108,16 @@ fn outside_missing_and_symlink_targets_have_identical_refusals() {
     let tree = Tree::new();
     let existing = tree.0.join("secret");
     std::fs::write(&existing, "secret").unwrap();
+    #[cfg(unix)]
     let link = tree.0.join("root/link");
+    #[cfg(unix)]
     symlink(&existing, &link).unwrap();
-    let missing = tree.0.join("absent/child");
+    let missing = tree.0.join("absent").join("child");
     for purpose in [fs::Purpose::Read, fs::Purpose::Write] {
         let a = fs::resolve(existing.to_str().unwrap(), &tree.roots(), purpose).unwrap_err();
         let b = fs::resolve(missing.to_str().unwrap(), &tree.roots(), purpose).unwrap_err();
         assert_eq!(a, b);
+        #[cfg(unix)]
         if purpose == fs::Purpose::Read {
             assert_eq!(
                 a,
@@ -129,9 +134,10 @@ fn outside_missing_and_symlink_targets_have_identical_refusals() {
 }
 
 #[test]
+#[cfg(unix)]
 fn atomic_write_drops_special_permission_bits() {
     let tree = Tree::new();
-    let path = tree.0.join("root/file");
+    let path = tree.0.join("root").join("file");
     std::fs::write(&path, "old").unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o6755)).unwrap();
     fs::write(path.to_str().unwrap(), &tree.roots(), "").unwrap();
@@ -179,6 +185,7 @@ fn method_override_and_compression_headers_are_denied() {
 }
 
 #[test]
+#[cfg(unix)]
 fn git_reaps_descendants_that_keep_its_output_pipe_open() {
     use std::process::{Command, Stdio};
     use std::time::Duration;
@@ -219,13 +226,21 @@ fn git_reaps_descendants_that_keep_its_output_pipe_open() {
 fn tag_patterns_use_git_globs_including_hierarchical_names() {
     let tree = Tree::new();
     let repo = tree.0.join("root");
+    let global_config = tree.0.join("empty.gitconfig");
+    std::fs::write(&global_config, []).unwrap();
     let git_command = |args: &[&str]| {
         let result = std::process::Command::new("git")
+            .env_clear()
+            .envs(std::env::vars_os().filter(|(key, _)| {
+                ["PATH", "HOME", "SystemRoot", "USERPROFILE"]
+                    .iter()
+                    .any(|kept| key.to_string_lossy().eq_ignore_ascii_case(kept))
+            }))
             .arg("-C")
             .arg(&repo)
             .args(args)
             .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_GLOBAL", &global_config)
             .env("GIT_AUTHOR_NAME", "Fixture")
             .env("GIT_AUTHOR_EMAIL", "fixture@example.invalid")
             .env("GIT_COMMITTER_NAME", "Fixture")

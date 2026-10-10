@@ -43,10 +43,6 @@ deviations = []
 
 [dev-dependencies]
 serde_json.workspace = true
-
-# basal-testkit does not build on Windows yet. The test files that use it are
-# compiled only on other systems until it does.
-[target.'cfg(not(windows))'.dev-dependencies]
 basal-testkit.workspace = true
 
 # On Windows every test spawn of the worker goes through the launcher, under

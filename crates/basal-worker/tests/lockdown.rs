@@ -2,9 +2,6 @@
 //! operator-approved script that basal runs unattended; the lockdown keeps
 //! it to the globals listed below and the host calls basal journals.
 
-// Windows: gated until basal-testkit builds there.
-#![cfg(not(windows))]
-
 mod common;
 
 use basal_proto::{CallKind, JsonText, Primitive};

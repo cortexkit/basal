@@ -1,8 +1,5 @@
 //! Per-activation limits: JS time, memory, stack, and stalled promises.
 
-// Windows: gated until basal-testkit builds there.
-#![cfg(not(windows))]
-
 mod common;
 
 use std::time::Duration;

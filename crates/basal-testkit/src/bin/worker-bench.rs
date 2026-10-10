@@ -16,8 +16,8 @@
 //! Every sample is kept in the output; summaries are the median and the
 //! nearest-rank 95th percentile.
 
+use basal_testkit::command::Command;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
