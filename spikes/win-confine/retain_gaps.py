@@ -9,6 +9,11 @@ def violations(measurement: dict[str, Any]) -> list[str]:
     issues = []
     if measurement.get("exit_code") != "0x00000000":
         issues.append("complete-close worker did not exit successfully")
+    primary = measurement.get('primary_token') or {}
+    if primary.get('integrity') != 'S-1-16-0' or primary.get('lpac') is not True:
+        issues.append('actual primary is not attested Untrusted LPAC')
+    if not (measurement.get('self_lowering') or {}).get('adjustment_handle_closed_before_input'):
+        issues.append('primary adjustment handle closure not attested')
     threads = measurement.get("threads") or {}
     for phase in ("pre_pool_activity", "post_pool_activity", "post_release"):
         snapshot = threads.get(phase, {})
@@ -28,6 +33,8 @@ def violations(measurement: dict[str, Any]) -> list[str]:
     activity = threads.get("forced_pool_activity", {})
     callbacks = activity.get("callback_inspections", [])
     tids = {t.get("tid") for t in threads.get("post_pool_activity", {}).get("threads", [])}
+    if activity.get('callbacks_held_during_snapshot') is not True:
+        issues.append('callback liveness at snapshot not proved')
     if activity.get("ready_status") != 0 or {c.get("kind") for c in callbacks} != {"work", "wait", "timer"}:
         issues.append("work/wait/timer callbacks did not all run")
     if not callbacks or any(c.get("tid") not in tids for c in callbacks):
@@ -61,7 +68,7 @@ def render(measurement: dict[str, Any]) -> str:
                   "| TID | Start address | PDB symbol | NtOpenThreadTokenEx self=true | self=false | Token details |", "|---:|---|---|---|---|---|"]
         by_tid = {t['tid']: t for t in symbols.get(symbol_key, [])}
         for t in snapshot.get("threads", []):
-            s = by_tid.get(t['tid'], {}).get('win32_symbol') or {}
+            s = by_tid.get(t['tid'], t).get('win32_symbol') or {}
             symbol = f"{s.get('module', '')}!{s.get('symbol', '?')}+{s.get('displacement', '?')} (type {s.get('symbol_type')})"
             token = t.get('nt_open_as_self', {}).get('token') or t.get('nt_open_as_client', {}).get('token')
             lines.append(f"| {t['tid']} | `{t.get('win32_start_address')}` | `{symbol}` | `{t.get('nt_open_as_self', {}).get('status')}` | `{t.get('nt_open_as_client', {}).get('status')}` | {json.dumps(token) if token else 'absent only if STATUS_NO_TOKEN'} |")
@@ -88,31 +95,43 @@ def render(measurement: dict[str, Any]) -> str:
 def retain(source, destination, run_id, source_sha, image):
     report = json.loads(pathlib.Path(source).read_text(encoding='utf-8-sig'))
     variants = {d['result'].get('sequence'): d['result'] for r in report['runs'] for d in r.get('diagnostics', [])}
-    v = variants.get('full-gui-close-removable', {})
-    child = v.get('child', {})
-    parent = v.get('parent_handle_inspection', {})
     trace = variants.get('full-gui-connect-trace', {}).get('debug', {}).get('trace') or {}
     close = variants.get('full-gui-close-scheduler', {})
-    faults = [e for e in (close.get('debug', {}).get('trace') or {}).get('events', []) if e.get('event', {}).get('fault_context')]
-    compact = dict(run_id=str(run_id), source_sha=source_sha, image=image,
-                   sequence='full-gui-close-removable', pid=v.get('pid'), exit_code=v.get('exit_code'),
-                   completed_probe_count=len(child.get('probes', [])), successes=[p for p in child.get('probes', []) if p.get('success')],
-                   primary_token=child.get('primary_token'), self_lowering=child.get('self_lowering'),
-                   threads=child.get('threads'), thread_symbols=parent.get('threads'),
-                   scheduler_shared_data=child.get('scheduler_shared_data'), scheduler_correlation=parent.get('scheduler_shared_data'),
-                   post_close_handles=child.get('handle_table'), after_measurement_handles=child.get('after_measurement_handles'),
-                   loader_scheduler_calls=[e for e in trace.get('connections', []) if e.get('api') == 'NtSetInformationProcess'],
-                   scheduler_close=dict(pid=close.get('pid'), exit_code=close.get('exit_code'), stderr=close.get('stderr'), faults=faults),
-                   console_attempts=[dict(sequence=a.get('sequence'), exit_code=a.get('exit_code'), error=a.get('error'), stderr=a.get('stderr')) for r in report['runs'] if r['mode'] == 'full' for a in r.get('attempts', [])],
-                   profile_cleanup=report.get('profile_cleanup'))
+    removable_close = variants.get('full-gui-close-removable-fault-trace', {})
+    def crash_summary(variant):
+        faults = [e for e in (variant.get('debug', {}).get('trace') or {}).get('events', []) if e.get('event', {}).get('fault_context')]
+        return dict(pid=variant.get('pid'), exit_code=variant.get('exit_code'), stderr=variant.get('stderr'), faults=faults,
+                    measurement_faults=variant.get('measurement_faults'))
     destination = pathlib.Path(destination)
     destination.mkdir(parents=True, exist_ok=True)
-    base = destination / f'{run_id}-{image}'
-    base.with_suffix('.json').write_text(json.dumps(compact, indent=2) + '\n', encoding='utf-8')
-    base.with_suffix('.md').write_text(render(compact), encoding='utf-8')
-    problems = violations(compact)
-    print(f'Windows gap coverage: {3} snapshots, work/wait/timer, scheduler duplicate grants; {len(problems)} violations: {problems}')
-    return bool(problems)
+    failed = False
+    for sequence in ('full-gui-close-removable', 'full-gui-close-combined', 'full-gui-inspect'):
+        v = variants.get(sequence, {})
+        child = v.get('child', {})
+        start = v.get('measurement_start') or {}
+        parent = v.get('parent_handle_inspection') or {}
+        checkpoints = {c['stage']: c['observation'] for c in v.get('thread_checkpoints', [])}
+        partial_threads = dict(pre_pool_activity=checkpoints.get('before_activity', {}), post_pool_activity=checkpoints.get('callbacks_held', {}), post_release=checkpoints.get('after_release', {}))
+        compact = dict(run_id=str(run_id), source_sha=source_sha, image=image,
+                       sequence=sequence, pid=v.get('pid'), exit_code=v.get('exit_code'), stderr=v.get('stderr'),
+                       completed_probe_count=len(child.get('probes', [])), successes=[p for p in child.get('probes', []) if p.get('success')],
+                       primary_token=child.get('primary_token') or start.get('primary_token'), self_lowering=child.get('self_lowering') or start.get('self_lowering'),
+                       threads=child.get('threads') or partial_threads, thread_symbols=parent.get('threads'),
+                       scheduler_shared_data=child.get('scheduler_shared_data'), scheduler_correlation=parent.get('scheduler_shared_data'),
+                       post_close_handles=child.get('handle_table') or start.get('handle_table'), after_measurement_handles=child.get('after_measurement_handles'),
+                       ambient_close=child.get('ambient_close') or start.get('ambient_close'),
+                       loader_scheduler_calls=[e for e in trace.get('connections', []) if e.get('api') == 'NtSetInformationProcess'],
+                       scheduler_close=crash_summary(close), removable_close=crash_summary(removable_close),
+                       measurement_faults=v.get('measurement_faults'),
+                       console_attempts=[dict(sequence=a.get('sequence'), exit_code=a.get('exit_code'), error=a.get('error'), stderr=a.get('stderr')) for r in report['runs'] if r['mode'] == 'full' for a in r.get('attempts', [])],
+                       profile_cleanup=report.get('profile_cleanup'))
+        base = destination / f'{run_id}-{image}-{sequence}'
+        base.with_suffix('.json').write_text(json.dumps(compact, indent=2) + '\n', encoding='utf-8')
+        base.with_suffix('.md').write_text(render(compact), encoding='utf-8')
+        problems = violations(compact)
+        print(f'Windows gap coverage {sequence}: 3 snapshots, work/wait/timer, scheduler duplicate grants; {len(problems)} violations: {problems}')
+        failed |= bool(problems)
+    return failed
 
 
 if __name__ == '__main__':

@@ -762,7 +762,8 @@ fn launch_variant(
             || sequence == "lpac-context-detached-control";
         let inspect_ambient = sequence == "full-gui-inspect"
             || sequence == "full-gui-parameter-1"
-            || sequence == "full-gui-close-removable";
+            || sequence == "full-gui-close-removable"
+            || sequence == "full-gui-close-combined";
         let close_ambient = sequence.starts_with("full-gui-close-")
             || inspect_ambient
             || sequence.starts_with("full-gui-serial-")
@@ -774,7 +775,9 @@ fn launch_variant(
             | "full-gui-parameter-1"
             | "full-gui-connect-trace" => " --close-ambient --close-types none",
             "full-gui-close-combined" => " --close-ambient --close-types combined",
-            "full-gui-close-removable" => " --close-ambient --close-types removable",
+            "full-gui-close-removable" | "full-gui-close-removable-fault-trace" => {
+                " --close-ambient --close-types removable"
+            }
             "full-gui-close-event" => " --close-ambient --close-types event",
             "full-gui-close-completion" => " --close-ambient --close-types completion",
             "full-gui-close-factory" => " --close-ambient --close-types factory",
@@ -800,7 +803,8 @@ fn launch_variant(
         let bare = sequence == "bare-token-control";
         let debug = sequence == "loader-trace"
             || sequence == "full-gui-connect-trace"
-            || sequence == "full-gui-close-scheduler";
+            || sequence == "full-gui-close-scheduler"
+            || sequence == "full-gui-close-removable-fault-trace";
         let mut tokens = if full {
             Some(restricted_tokens(
                 parent_token,
@@ -917,6 +921,10 @@ fn launch_variant(
             if close_ambient { close_argument } else { "" },
             if inspect_ambient {
                 " --measure-gaps"
+            } else if sequence == "full-gui-close-scheduler"
+                || sequence == "full-gui-close-removable-fault-trace"
+            {
+                " --force-pool-only"
             } else {
                 ""
             }
@@ -1104,9 +1112,15 @@ fn launch_variant(
         let err_reader = thread::spawn(move || read_pipe(err_value as HANDLE));
         // The child flushes its inventory and blocks on stdin. Inspect that
         // live process before supplying any probe input; no ALPC message is sent.
+        let mut measurement_start = Value::Null;
+        let mut thread_checkpoints = Vec::new();
+        let mut measurement_faults = Vec::new();
         let parent_handles = if inspect_ambient {
             loop {
                 match inventory_receiver.recv_timeout(std::time::Duration::from_secs(60)) {
+                    Ok(inventory) if inventory["mode"] == "measurement_start" => {
+                        measurement_start = inventory;
+                    }
                     Ok(inventory) if inventory["mode"] == "thread_checkpoint" => {
                         let mut observation = crate::threads::inspect_all_threads(pi.dwProcessId)
                             .unwrap_or_else(|error| json!({"error":error}));
@@ -1116,6 +1130,9 @@ fn launch_variant(
                                 &observation,
                             );
                         }
+                        crate::handles::symbolize_thread_snapshot(process.0, &mut observation);
+                        thread_checkpoints
+                            .push(json!({"stage":inventory["stage"],"observation":observation}));
                         let mut reply =
                             serde_json::to_vec(&observation).map_err(|e| e.to_string())?;
                         reply.push(b'\n');
@@ -1130,6 +1147,20 @@ fn launch_variant(
                             ),
                             "WriteFile(thread observation)",
                         )?;
+                    }
+                    Ok(mut inventory) if inventory["mode"] == "fault_checkpoint" => {
+                        let stack: Vec<_> = inventory["captured_stack"]
+                            .as_array()
+                            .unwrap_or(&Vec::new())
+                            .iter()
+                            .filter_map(Value::as_u64)
+                            .collect();
+                        inventory["symbols"] = crate::handles::symbolize_fault(
+                            process.0,
+                            inventory["rip"].as_u64().unwrap_or(0),
+                            &stack,
+                        );
+                        measurement_faults.push(inventory);
                     }
                     Ok(inventory) => {
                         break crate::handles::inspect(
@@ -1190,7 +1221,7 @@ fn launch_variant(
             || json!({"parse_error":format!("{reports:?}"),"stdout":String::from_utf8_lossy(&stdout)}),
         );
         Ok(
-            json!({"sequence":sequence,"pid":pi.dwProcessId,"creation_flags":hex(flags),"requested_context":context.as_ref().map(|c|&c.report),"handle_trace_enablement":handle_trace_enablement,"loader_setting":loader_setting.as_ref().map(|setting| &setting.report),"loader_threads":loader_threads,"parent_handle_inspection":parent_handles,"debug":{"requested":debug,"loader_snaps_enablement":loader_snaps_enablement,"setup":debug_setup,"attached_before_resume":attached,"creation_error":debug_creation_error,"trace":debug_events},"exit_code":hex(exit),"timeout":wait!=WAIT_OBJECT_0,"input_write":{"success":write_ok,"error":if write_ok{0}else{write_error},"bytes":written},"stderr":String::from_utf8_lossy(&stderr),"job":job.as_ref().map(|j|&j.1),"constructed_tokens":tokens.as_ref().map(|t|&t.report),"parent_before_resume":{"handles":handles_before_resume,"startup_context":birth_startup,"primary":birth_primary,"assigned_loader":assigned_loader,"initial_handle_closed":initial_closed_before_resume},"stdio_handles":{"stdin":handles[0] as usize,"stdout":handles[1] as usize,"stderr":handles[2] as usize},"child":child}),
+            json!({"sequence":sequence,"pid":pi.dwProcessId,"creation_flags":hex(flags),"requested_context":context.as_ref().map(|c|&c.report),"handle_trace_enablement":handle_trace_enablement,"loader_setting":loader_setting.as_ref().map(|setting| &setting.report),"loader_threads":loader_threads,"measurement_start":measurement_start,"measurement_faults":measurement_faults,"thread_checkpoints":thread_checkpoints,"parent_handle_inspection":parent_handles,"debug":{"requested":debug,"loader_snaps_enablement":loader_snaps_enablement,"setup":debug_setup,"attached_before_resume":attached,"creation_error":debug_creation_error,"trace":debug_events},"exit_code":hex(exit),"timeout":wait!=WAIT_OBJECT_0,"input_write":{"success":write_ok,"error":if write_ok{0}else{write_error},"bytes":written},"stderr":String::from_utf8_lossy(&stderr),"job":job.as_ref().map(|j|&j.1),"constructed_tokens":tokens.as_ref().map(|t|&t.report),"parent_before_resume":{"handles":handles_before_resume,"startup_context":birth_startup,"primary":birth_primary,"assigned_loader":assigned_loader,"initial_handle_closed":initial_closed_before_resume},"stdio_handles":{"stdin":handles[0] as usize,"stdout":handles[1] as usize,"stderr":handles[2] as usize},"child":child}),
         )
     }
 }
@@ -1751,6 +1782,7 @@ pub fn run() -> Result<()> {
                         "full-gui-parameter-1",
                         "full-gui-close-combined",
                         "full-gui-close-removable",
+                        "full-gui-close-removable-fault-trace",
                         "full-gui-serial-0",
                         "full-gui-serial-1",
                         "full-gui-close-event",

@@ -709,3 +709,24 @@ pub fn symbolize_fault(process: HANDLE, rip: u64, stack: &[u64]) -> Value {
         Err(error) => json!({"error":error}),
     }
 }
+
+/// Symbolize a checkpoint while its threads and loaded modules are still live.
+pub fn symbolize_thread_snapshot(process: HANDLE, snapshot: &mut Value) {
+    if let Ok(symbols) = Symbols::new(process) {
+        if let Some(threads) = snapshot["threads"].as_array_mut() {
+            for thread in threads {
+                for (address_key, symbol_key) in [
+                    ("win32_start_address", "win32_symbol"),
+                    ("nt_start_address", "nt_symbol"),
+                ] {
+                    if let Some(address) = thread[address_key]
+                        .as_str()
+                        .and_then(|s| usize::from_str_radix(s.trim_start_matches("0x"), 16).ok())
+                    {
+                        thread[symbol_key] = symbols.address(address);
+                    }
+                }
+            }
+        }
+    }
+}

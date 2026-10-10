@@ -1165,6 +1165,36 @@ and its validator remain red as expected; no test or gate was changed to accept
 an absent console child. Exactly four workflow runs were used in this campaign,
 including the preparatory formatting refusal.
 
+## Complete-thread and scheduler operation campaign
+
+### Rejected run: not a pass
+
+Run [38040719825](https://github.com/cortexkit/basal/actions/runs/38040719825),
+from the previous instrumentation, **failed on both windows-latest and
+windows-2022**. REST job logs (114180250872 / 114180250714) show failures in
+`Measure pre-input ambient handles from the parent` and `Print residual and
+comparison`. The executable returned 1 because the unchanged full-policy
+acceptance path still selected console candidates: the original exits
+`0xc00000a5` and both Low-loader candidates exit `0xc0000142`, without completed
+child measurements. `validate.py` reported `INCOMPLETE: full: child did not
+produce a completed measurement`. The formatting/check/build, 11 native tests,
+22 Python tests and intentional live-token mutation/restoration witness passed;
+the witness's single expected failure was not the cause of the job failure.
+
+The GUI complete-close diagnostic did exit 0, but **its thread claims are
+withdrawn**. It reported empty Toolhelp and NT discoveries and then inserted the
+current TID, suppressing enumeration errors. On latest, its eight callbacks ran
+on TID 6572 while both advertised tables contained only main TID 6188; the
+callback was absent from the table. Parent observation after the callbacks had
+finished did not establish coverage of their earlier lifetime. A pool object
+can outlive its worker threads; neither its existence nor a later main-only
+snapshot attests threads that have already exited.
+
+The old scheduler summary likewise hard-coded denial and harmlessness. Its
+`NtDuplicateObject(GENERIC_ALL)` status `0x00000000` is **success**, not
+`STATUS_ACCESS_DENIED`; it did not query the duplicate's grant. No conclusion
+from that contradictory table is used below.
+
 ## Recommended Windows design changes
 
 1. **Use a GUI-subsystem worker with the original NULL-only LPAC primary as the

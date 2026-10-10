@@ -307,6 +307,7 @@ pub unsafe fn inspect_all_threads(pid: u32) -> Result<Value> {
 
 struct PoolContext {
     entered: AtomicUsize,
+    departed: AtomicUsize,
     ready: HANDLE,
     release: HANDLE,
     records: Mutex<Vec<Value>>,
@@ -324,7 +325,8 @@ unsafe fn record_callback(param: *mut c_void, kind: &str) {
         SetEvent(ctx.ready);
     }
     // Keep the callbacks alive until both enumerators and token queries have run.
-    WaitForSingleObject(ctx.release, 30_000);
+    WaitForSingleObject(ctx.release, INFINITE);
+    ctx.departed.fetch_add(1, Ordering::SeqCst);
 }
 unsafe extern "system" fn work_callback(_: PTP_CALLBACK_INSTANCE, ctx: *mut c_void, _: PTP_WORK) {
     record_callback(ctx, "work");
@@ -358,7 +360,7 @@ fn observer_checkpoint(stage: &str) -> Result<Value> {
 
 /// Exercise work, a signaled wait and a relative timer on the default pool.
 /// The context remains alive until all callbacks have drained, even on timeout.
-pub unsafe fn force_pool_activity() -> Result<Value> {
+pub unsafe fn force_pool_activity(use_observer: bool) -> Result<Value> {
     let ready = Handle(CreateEventW(null(), 1, 0, null()));
     let release = Handle(CreateEventW(null(), 1, 0, null()));
     let trigger = Handle(CreateEventW(null(), 1, 1, null()));
@@ -367,6 +369,7 @@ pub unsafe fn force_pool_activity() -> Result<Value> {
     }
     let ctx = PoolContext {
         entered: AtomicUsize::new(0),
+        departed: AtomicUsize::new(0),
         ready: ready.0,
         release: release.0,
         records: Mutex::new(Vec::new()),
@@ -397,9 +400,14 @@ pub unsafe fn force_pool_activity() -> Result<Value> {
     };
     SetThreadpoolTimer(timer, &due, 0, 0);
     let ready_status = WaitForSingleObject(ready.0, 10_000);
-    let observer = observer_checkpoint("callbacks_held");
+    let observer = if use_observer {
+        observer_checkpoint("callbacks_held")
+    } else {
+        Ok(Value::Null)
+    };
     let local = inspect_all_threads(GetCurrentProcessId());
     let records = ctx.records.lock().unwrap().clone();
+    let held = ctx.entered.load(Ordering::SeqCst) == 3 && ctx.departed.load(Ordering::SeqCst) == 0;
     SetEvent(release.0);
     SetThreadpoolWait(wait, null_mut(), null());
     SetThreadpoolTimer(timer, null(), 0, 0);
@@ -410,7 +418,7 @@ pub unsafe fn force_pool_activity() -> Result<Value> {
     CloseThreadpoolWait(wait);
     CloseThreadpoolTimer(timer);
     Ok(
-        json!({"ready_status":ready_status,"callback_inspections":records,
+        json!({"ready_status":ready_status,"callbacks_held_during_snapshot":held,"callback_inspections":records,
         "observer":observer?,"local":local?}),
     )
 }
@@ -419,7 +427,7 @@ pub unsafe fn force_pool_activity() -> Result<Value> {
 pub unsafe fn measure_thread_impersonation(pid: u32) -> Result<Value> {
     let local_pre = inspect_all_threads(pid)?;
     let pre = observer_checkpoint("before_activity")?;
-    let activity = force_pool_activity()?;
+    let activity = force_pool_activity(true)?;
     let post = activity["observer"].clone();
     let callbacks = activity["callback_inspections"].as_array().unwrap();
     let tids: std::collections::BTreeSet<_> = post["threads"]
@@ -432,6 +440,7 @@ pub unsafe fn measure_thread_impersonation(pid: u32) -> Result<Value> {
         .iter()
         .all(|c| c["tid"].as_u64().is_some_and(|tid| tids.contains(&tid)));
     let complete = activity["ready_status"] == 0
+        && activity["callbacks_held_during_snapshot"] == true
         && callbacks.len() == 3
         && included
         && pre["all_threads_have_no_impersonation_token"] == true

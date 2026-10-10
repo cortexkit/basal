@@ -77,15 +77,22 @@ fn port_name(process: HANDLE, address: usize) -> Value {
             .unwrap_or_else(|error| json!({"error":error}))
     }
 }
-fn scheduler_payload(process: HANDLE, pointer: usize) -> Value {
+fn scheduler_payload(process: HANDLE, pointer: usize, length: usize) -> Value {
+    if length != 8 && length != 24 {
+        return json!({"buffer_bytes":length,"not_read":"unexpected ABI size"});
+    }
     unsafe {
-        read(process, pointer, 24)
+        read(process, pointer, length)
             .map(|bytes| {
-                json!({
-                    "action":u32::from_le_bytes(bytes[..4].try_into().unwrap()),
-                    "handle":u64::from_le_bytes(bytes[8..16].try_into().unwrap()),
-                    "slot":u64::from_le_bytes(bytes[16..24].try_into().unwrap())
-                })
+                if length == 8 {
+                    json!({"buffer_bytes":8,"handle":u64::from_le_bytes(bytes.try_into().unwrap())})
+                } else {
+                    json!({"buffer_bytes":24,
+                        "action":u32::from_le_bytes(bytes[..4].try_into().unwrap()),
+                        "handle":u64::from_le_bytes(bytes[8..16].try_into().unwrap()),
+                        "slot":u64::from_le_bytes(bytes[16..24].try_into().unwrap())
+                    })
+                }
             })
             .unwrap_or_else(|error| json!({"error":error}))
     }
@@ -93,6 +100,7 @@ fn scheduler_payload(process: HANDLE, pointer: usize) -> Value {
 
 struct Pending {
     output: usize,
+    length: usize,
     name: Value,
     api: &'static str,
 }
@@ -160,7 +168,7 @@ impl Connections {
             let detail = if fired & 8 != 0 {
                 let pending = self.pending.remove(&tid)?;
                 let handle = if pending.api == "NtSetInformationProcess" {
-                    scheduler_payload(process, pending.output)
+                    scheduler_payload(process, pending.output, pending.length)
                 } else {
                     read(process, pending.output, 8)
                         .map(|bytes| json!(u64::from_le_bytes(bytes.try_into().unwrap())))
@@ -185,7 +193,7 @@ impl Connections {
                 }
                 let output = context.get(if scheduler { 184 } else { 128 }) as usize;
                 let name = if scheduler {
-                    scheduler_payload(process, output)
+                    scheduler_payload(process, output, context.get(192) as usize)
                 } else {
                     port_name(process, context.get(136) as usize)
                 };
@@ -199,6 +207,11 @@ impl Connections {
                     tid,
                     Pending {
                         output,
+                        length: if scheduler {
+                            context.get(192) as usize
+                        } else {
+                            8
+                        },
                         name: name.clone(),
                         api,
                     },

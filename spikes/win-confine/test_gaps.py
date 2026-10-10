@@ -10,7 +10,8 @@ def complete() -> dict[str, Any]:
         return dict(enumeration_complete=True, process_reported_thread_count=len(tids), discovered_toolhelp_tids=tids, threads=[row(tid) for tid in tids])
     callbacks = [dict(row(tid), kind=kind) for tid, kind in zip([2, 3, 4], ['work', 'wait', 'timer'])]
     return dict(run_id='test', source_sha='test', image='test', pid=1, sequence='test', exit_code='0x00000000',
-                threads=dict(pre_pool_activity=snapshot([1]), post_pool_activity=snapshot([1, 2, 3, 4]), post_release=snapshot([1]), forced_pool_activity=dict(ready_status=0, callback_inspections=callbacks)),
+                threads=dict(pre_pool_activity=snapshot([1]), post_pool_activity=snapshot([1, 2, 3, 4]), post_release=snapshot([1]), forced_pool_activity=dict(ready_status=0, callbacks_held_during_snapshot=True, callback_inspections=callbacks)),
+                primary_token=dict(integrity='S-1-16-0',lpac=True),self_lowering=dict(adjustment_handle_closed_before_input=True),
                 scheduler_shared_data=dict(present=True, probe=dict(operations=dict(duplicate_object=dict(generic_all=dict(status='0x00000000', granted_access='0x000f0001'))))),
                 scheduler_correlation=dict(object_resolved=True))
 
@@ -43,6 +44,11 @@ class GapEvidenceTests(unittest.TestCase):
         measurement = complete()
         measurement['threads']['forced_pool_activity']['callback_inspections'].pop()
         self.assertIn('work/wait/timer callbacks did not all run', violations(measurement))
+
+    def test_returned_callbacks_do_not_prove_live_thread_coverage(self):
+        measurement = complete()
+        measurement['threads']['forced_pool_activity']['callbacks_held_during_snapshot'] = False
+        self.assertIn('callback liveness at snapshot not proved', violations(measurement))
 
     def test_successful_duplicate_requires_measured_grant(self):
         measurement = complete()

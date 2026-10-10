@@ -15,12 +15,16 @@ int main(void) {
     CHECK(offsetof(CONTEXT, Dr0) == 72);
     CHECK(offsetof(CONTEXT, Dr1) == 80);
     CHECK(offsetof(CONTEXT, Dr2) == 88);
+    CHECK(offsetof(CONTEXT, Dr3) == 96);
     CHECK(offsetof(CONTEXT, Dr6) == 104);
     CHECK(offsetof(CONTEXT, Dr7) == 112);
     CHECK(offsetof(CONTEXT, Rax) == 120);
     CHECK(offsetof(CONTEXT, Rcx) == 128);
     CHECK(offsetof(CONTEXT, Rdx) == 136);
     CHECK(offsetof(CONTEXT, Rsp) == 152);
+    CHECK(offsetof(CONTEXT, R8) == 184);
+    CHECK(offsetof(CONTEXT, R9) == 192);
+    CHECK(offsetof(CONTEXT, Rip) == 248);
     CHECK((CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_DEBUG_REGISTERS) == 0x00100013);
     printf("Windows SDK x64 CONTEXT: %u checks passed\n", checks);
     return 0;

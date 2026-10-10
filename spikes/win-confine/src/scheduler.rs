@@ -13,6 +13,14 @@ const PAGE_READONLY: u32 = 0x02;
 
 #[link(name = "ntdll")]
 unsafe extern "system" {
+    fn NtQueryInformationThread(
+        thread: HANDLE,
+        class: u32,
+        buffer: *mut c_void,
+        length: u32,
+        returned: *mut u32,
+    ) -> i32;
+    fn NtSetInformationThread(thread: HANDLE, class: u32, buffer: *mut c_void, length: u32) -> i32;
     fn NtQueryObject(
         handle: HANDLE,
         class: u32,
@@ -474,8 +482,21 @@ pub unsafe fn probe_scheduler_shared_data_handle(h: HANDLE, granted: u32) -> Val
 
     });
 
-    // phnt describes Action, Handle and a direct Slot value (not a pointer-to-pointer).
-    // Its query/set annotations differ across versions, so measure both APIs.
+    // Process class 112 takes only an eight-byte output handle. The hardware
+    // syscall observer in connections.rs records the loader passing length 8 and
+    // receiving the created handle in that buffer, unlike thread class 57 below.
+    let mut process_query_handle = h;
+    let query_status = NtQueryInformationProcess(
+        GetCurrentProcess(),
+        112,
+        (&mut process_query_handle as *mut HANDLE).cast(),
+        size_of::<HANDLE>() as u32,
+        &mut ret_len,
+    );
+    operations["process_scheduler_shared_data_query_112"] = json!({"buffer_bytes":size_of::<HANDLE>(),"status":hex(query_status as u32),"output_handle":process_query_handle as usize});
+
+    // Assign/free/query actions belong to THREAD class 57, not process class 112.
+    // Slot is recorded as returned; no pointed-to bytes are read or overwritten.
     let mut slot_operations = Vec::new();
     for query_api in [true, false] {
         let mut assigned_slot = null_mut();
@@ -494,21 +515,26 @@ pub unsafe fn probe_scheduler_shared_data_handle(h: HANDLE, granted: u32) -> Val
                 continue;
             }
             let status = if query_api {
-                NtQueryInformationProcess(
-                    GetCurrentProcess(),
-                    112,
+                NtQueryInformationThread(
+                    GetCurrentThread(),
+                    57,
                     (&mut info as *mut SchedulerSlotInfo).cast(),
                     size_of::<SchedulerSlotInfo>() as u32,
                     &mut ret_len,
                 )
             } else {
-                NtSetInformationProcess(
-                    GetCurrentProcess(),
-                    112,
+                NtSetInformationThread(
+                    GetCurrentThread(),
+                    57,
                     (&mut info as *mut SchedulerSlotInfo).cast(),
                     size_of::<SchedulerSlotInfo>() as u32,
                 )
             };
+            eprintln!(
+                "scheduler-slot: query_api={query_api} action={action} status={} slot=0x{:x}",
+                hex(status as u32),
+                info.slot as usize
+            );
             if action == 0 && status == 0 {
                 assigned_slot = info.slot;
             }
@@ -516,31 +542,27 @@ pub unsafe fn probe_scheduler_shared_data_handle(h: HANDLE, granted: u32) -> Val
                 "status":hex(status as u32),"output_handle":info.handle as usize,"output_slot":format!("0x{:016x}",info.slot as usize)}));
         }
     }
-    operations["process_scheduler_shared_data_class_112"] = json!({"class":112,"structure_bytes":size_of::<SchedulerSlotInfo>(),"trials":slot_operations});
-    // 12. Related scheduling process information queries
-    let mut sched_classes = json!({});
-    for &(class_id, class_name) in &[
-        (0u32, "ProcessBasicInformation"),
-        (61, "ProcessDefaultCpuSetsInformation"),
-        (62, "ProcessAllowedCpuSetsInformation"),
-        (76, "ProcessThreadGovernor"),
-    ] {
-        let mut q_buf = [0usize; 8];
-        let mut q_ret = 0u32;
-        let q_st = NtQueryInformationProcess(
-            GetCurrentProcess(),
-            class_id,
-            q_buf.as_mut_ptr().cast(),
-            (q_buf.len() * 8) as u32,
-            &mut q_ret,
-        );
-        sched_classes[class_name] = json!({
-            "class": class_id,
-            "status": hex(q_st as u32),
-            "returned_bytes": q_ret,
-        });
-    }
-    operations["related_process_classes"] = sched_classes;
+    operations["thread_scheduler_shared_data_slot_class_57"] = json!({"class":57,"structure_bytes":size_of::<SchedulerSlotInfo>(),"trials":slot_operations});
+
+    let mut allocated = null_mut();
+    let set_status = NtSetInformationProcess(
+        GetCurrentProcess(),
+        112,
+        (&mut allocated as *mut HANDLE).cast(),
+        size_of::<HANDLE>() as u32,
+    );
+    eprintln!(
+        "scheduler-allocation: set class112 bytes8 status={} handle={}",
+        hex(set_status as u32),
+        allocated as usize
+    );
+    let details = duplicate_details(allocated, set_status);
+    let closed = if set_status == 0 && !allocated.is_null() && allocated != h {
+        CloseHandle(allocated) != 0
+    } else {
+        false
+    };
+    operations["process_scheduler_shared_data_set_112"] = json!({"buffer_bytes":size_of::<HANDLE>(),"status":hex(set_status as u32),"output_handle":allocated as usize,"output_object":details,"new_handle_closed":closed});
 
     json!({
         "handle": h as usize,

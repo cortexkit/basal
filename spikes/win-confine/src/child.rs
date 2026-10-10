@@ -141,9 +141,33 @@ unsafe extern "system" fn vectored_exception_handler(info: *mut ExceptionPointer
                 "EXCEPTION: code=0x{:08x} address=0x{:016x}",
                 rec.code, rec.address as usize
             );
+            if (rec.code == 0xc0000008 || rec.code == 0xc0000005)
+                && std::env::args().any(|a| a == "--measure-gaps")
+            {
+                let mut frames = [null_mut(); 32];
+                let count = RtlCaptureStackBackTrace(0, 32, frames.as_mut_ptr(), null_mut());
+                println!(
+                    "{}",
+                    json!({"mode":"fault_checkpoint","code":hex(rec.code),"rip":rec.address as usize,"tid":GetCurrentThreadId(),"captured_stack":frames[..count as usize].iter().map(|f|*f as usize).collect::<Vec<_>>()})
+                );
+                let _ = std::io::stdout().flush();
+                // Keep the faulting process alive briefly so the broker can resolve
+                // addresses against its actual modules before exception termination.
+                WaitForSingleObject(GetCurrentProcess(), 3000);
+            }
         }
     }
     0 // EXCEPTION_CONTINUE_SEARCH
+}
+
+#[link(name = "ntdll")]
+unsafe extern "system" {
+    fn RtlCaptureStackBackTrace(
+        skip: u32,
+        count: u32,
+        frames: *mut *mut std::ffi::c_void,
+        hash: *mut u32,
+    ) -> u16;
 }
 
 #[link(name = "kernel32")]
@@ -289,6 +313,18 @@ pub fn run() -> Result<()> {
             .unwrap_or_else(|e| json!({"error":e}));
         let policies = mitigations();
         eprintln!("probe-stage: attestation complete");
+        if std::env::args().any(|a| a == "--measure-gaps") {
+            println!(
+                "{}",
+                json!({"mode":"measurement_start","ambient_close":ambient,"handle_table":input_handles,"loaded_modules":modules,"self_lowering":self_lowering,"primary_token":attestation})
+            );
+            let _ = std::io::stdout().flush();
+        }
+        if std::env::args().any(|a| a == "--force-pool-only") {
+            eprintln!("probe-stage: force work/wait/timer after closes (debugger observes faults)");
+            let activity = crate::threads::force_pool_activity(false)?;
+            eprintln!("probe-stage: forced pool activity returned {}", activity);
+        }
         let thread_attestation = if std::env::args().any(|a| a == "--measure-gaps") {
             crate::threads::measure_thread_impersonation(GetCurrentProcessId())
                 .unwrap_or_else(|e| json!({"error": e}))
