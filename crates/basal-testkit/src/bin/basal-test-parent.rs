@@ -1,5 +1,5 @@
 //! A test parent process: basal-core's store and driver, real workers, and
-//! the mock host, in one process the kill harness can `kill -9`.
+//! the mock host, in one process the kill harness can terminate abruptly.
 //!
 //! ```text
 //! basal-test-parent --dir <scratch dir> --worker <ck-basal-worker>
@@ -13,7 +13,7 @@
 //! `<dir>/mock.json`, synced before every reply, so effects survive the
 //! kill like a remote system's would.
 //!
-//! With `--kill-at`, the process sends itself SIGKILL the moment it passes
+//! With `--kill-at`, the process terminates without cleanup the moment it passes
 //! that boundary. Otherwise it prints one JSON line: the run's summary and
 //! every boundary it passed.
 
@@ -69,6 +69,14 @@ fn run(args: Args) -> Result<serde_json::Value, String> {
     let probe = Arc::new(match args.kill_at {
         Some(point) => Probe::act_at(point, |_, boundary| {
             eprintln!("basal-test-parent: killed at {boundary:?}");
+            #[cfg(windows)]
+            unsafe {
+                // SAFETY: the pseudo-handle names this process; termination
+                // deliberately bypasses destructors to simulate a crash.
+                use windows_sys::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
+                TerminateProcess(GetCurrentProcess(), basal_launch::KILL_EXIT_CODE);
+            }
+            #[cfg(unix)]
             // SAFETY: kill(2) on our own pid has no memory-safety
             // preconditions.
             unsafe {
@@ -123,6 +131,21 @@ fn run(args: Args) -> Result<serde_json::Value, String> {
 }
 
 fn main() -> ExitCode {
+    if let Some(calls) = std::env::var_os("BASAL_DISCOVERY_CALLS") {
+        // A native sentinel for the discovery test: if runtime discovery ever
+        // invokes its CARGO override, record the invocation before refusing it.
+        use std::io::Write;
+        writeln!(
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(calls)
+                .expect("sentinel log"),
+            "build"
+        )
+        .expect("record invocation");
+        return ExitCode::FAILURE;
+    }
     let args = match parse() {
         Ok(a) => a,
         Err(e) => {

@@ -2,24 +2,34 @@
 //! the answers, the approved-repository check, argument checks, and that a
 //! repository's own configuration cannot make a built-in run a program.
 
-use basal_host::builtins::git::{self, Op, hardened_command, run_command};
+use basal_host::builtins::git::{self, Op};
+#[cfg(unix)]
+use basal_host::builtins::git::{hardened_command, run_command};
 use basal_host::builtins::{Denial, codes};
 use basal_proto::Primitive;
 use basal_testkit::git::git_command;
 use basal_testkit::harness::scratch;
 use serde_json::{Value, json};
+#[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 
 fn child_exit(status: &std::process::ExitStatus) -> String {
-    match status.code() {
-        Some(code) => format!("exit code {code}"),
-        None => format!(
-            "terminated by signal {}",
-            status
-                .signal()
-                .map_or_else(|| "unknown".to_owned(), |signal| signal.to_string())
-        ),
+    #[cfg(windows)]
+    {
+        status.to_string()
+    }
+    #[cfg(unix)]
+    {
+        match status.code() {
+            Some(code) => format!("exit code {code}"),
+            None => format!(
+                "terminated by signal {}",
+                status
+                    .signal()
+                    .map_or_else(|| "unknown".to_owned(), |signal| signal.to_string())
+            ),
+        }
     }
 }
 
@@ -160,6 +170,7 @@ fn git_reads_only_approved_repositories() {
     };
     let refused = git::run(&other.path(), &approved.repos(), &op).expect_err("refused");
     assert_eq!(refused.code, codes::DENIED);
+    assert!(git::run(&approved.path(), &approved.repos(), &op).is_ok());
     // A directory inside an approved repository is not itself approved.
     std::fs::create_dir_all(approved.dir.join("sub")).expect("sub");
     let sub = approved.dir.join("sub").display().to_string();
@@ -169,10 +180,16 @@ fn git_reads_only_approved_repositories() {
             .code,
         codes::DENIED
     );
-    // The same repository reached through `..` resolves to the approved
-    // path and is allowed.
-    let around = approved.dir.join("sub/..").display().to_string();
+    // Unix canonicalizes relative components; Windows refuses them before
+    // opening a root, just as the Windows filesystem built-in does.
+    let around = approved.dir.join("sub").join("..").display().to_string();
+    #[cfg(unix)]
     assert!(git::run(&around, &approved.repos(), &op).is_ok());
+    #[cfg(windows)]
+    assert_eq!(
+        git::run(&around, &approved.repos(), &op).unwrap_err().code,
+        codes::DENIED
+    );
 }
 
 #[test]
@@ -201,6 +218,7 @@ fn arguments_that_git_could_read_as_options_are_refused() {
 }
 
 /// A script `name` in `dir` that appends its name to `marker` when run.
+#[cfg(unix)]
 fn plant(dir: &Path, name: &str, marker: &Path) -> PathBuf {
     let path = dir.join(name);
     std::fs::write(
@@ -220,6 +238,7 @@ fn plant(dir: &Path, name: &str, marker: &Path) -> PathBuf {
 /// while plain git in the same repository does run the fsmonitor program,
 /// which shows the plant works.
 #[test]
+#[cfg(unix)]
 fn a_repository_config_cannot_make_a_built_in_run_a_program() {
     let repo = Repo::new("git-fsmonitor");
     let marker = repo.base.join("marker");

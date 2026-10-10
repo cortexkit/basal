@@ -3,9 +3,6 @@
 //! engine unit test `raw_bridge_cannot_issue_sh_in_flow_profile` also checks the
 //! Rust refusal when a call bypasses the script's API.
 
-// Windows: gated until basal-testkit builds there.
-#![cfg(not(windows))]
-
 mod common;
 
 use basal_proto::{CallKind, Primitive, Profile};
