@@ -390,6 +390,12 @@ jobs:
             ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-windows-baseline-${{ matrix.os }}-
       - name: Prepare the log directory
         run: mkdir -p "$RUNNER_TEMP/windows-baseline"
+      - name: Verify the pinned mutation runner on Windows
+        if: matrix.os == 'windows-2022'
+        run: |
+          cargo install --locked --git https://github.com/cortexkit/commons --rev "$CK_MUTATE_REV" cortexkit-mutate 2>&1 | tee "$RUNNER_TEMP/windows-baseline/install-mutate.log"
+          ckdev-mutate --version 2>&1 | tee "$RUNNER_TEMP/windows-baseline/mutate-version.log"
+          ckdev-mutate check 2>&1 | tee "$RUNNER_TEMP/windows-baseline/mutate-check.log"
       # The Windows launcher's own tests start real confined children, so
       # they can only run here. The deviations feature adds the test-only
       # launch variants, one per confinement check. They run first and print
