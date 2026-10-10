@@ -3,9 +3,15 @@
 //!
 //! Blocking dispatch lanes belong to the supervisor, not to an async executor.
 //! Only the supervisor records answers and delivers them to the worker, so
-//! dropping its answer receiver also discards answers that arrive after a kill.
+//! dropping its event receiver also discards answers that arrive after a kill.
+//!
+//! Each run's driver sleeps on one event channel until something happens:
+//! a worker frame (forwarded by the run's reader thread), a provider answer,
+//! a cancel, or a move of a manual clock. Its only timeout is the run's wall
+//! deadline, so a run waiting on a slow tool costs no CPU.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
@@ -25,18 +31,27 @@ use super::store::{
     self, Budget, CallStart, Lookup, Outcome, RunError, RunRecord, Status, Terminal,
 };
 use crate::authorize::ShellDenylist;
-use crate::channel::{ChannelError, WorkerChannel, WorkerSource};
-use crate::clock::Clock;
+use crate::channel::{ChannelError, WorkerChannel, WorkerReceiver, WorkerSource};
+use crate::clock::{Clock, Watcher};
 use crate::error::{CoreError, Result};
 use crate::store::Store;
 
 const IN_FLIGHT: usize = 8;
 const QUEUED_BYTES: usize = 4 * 1024 * 1024;
 const RESULT_BYTES: usize = 16_384;
-const WAKE: Duration = Duration::from_millis(10);
 
-enum Command {
+/// Everything that can wake a run's driver, in the order it happened.
+enum Event {
+    /// A frame from the worker, or the error that ended its channel.
+    Worker(std::result::Result<WorkerMessage, ChannelError>),
+    /// The worker's receiver panicked on the reader thread.
+    ReaderPanicked,
+    /// A provider answer from a dispatch thread.
+    Answer(Answer),
     Cancel(mpsc::SyncSender<Result<()>>),
+    /// A manual clock moved, so the wall deadline may have passed without
+    /// any real time elapsing.
+    ClockMoved,
 }
 
 #[derive(Default)]
@@ -90,7 +105,7 @@ struct Shared {
     clock: Clock,
     prelude_hash: PreludeHash,
     denylist: ShellDenylist,
-    active: Mutex<BTreeMap<String, mpsc::Sender<Command>>>,
+    active: Mutex<BTreeMap<String, mpsc::Sender<Event>>>,
     drivers: Mutex<Drivers>,
     dispatch_starts: Arc<DispatchStarts>,
     #[cfg(test)]
@@ -99,6 +114,11 @@ struct Shared {
     before_record: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
     before_exit: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
+    before_reader_exit: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    /// How many times a driver has returned from its wait for an event.
+    #[cfg(test)]
+    wakes: std::sync::atomic::AtomicUsize,
 }
 
 /// Owns codemode supervisors only. Supply a fresh-worker source, never a flow
@@ -135,6 +155,10 @@ impl Supervisor {
             before_record: Mutex::new(None),
             #[cfg(test)]
             before_exit: Mutex::new(None),
+            #[cfg(test)]
+            before_reader_exit: Mutex::new(None),
+            #[cfg(test)]
+            wakes: std::sync::atomic::AtomicUsize::new(0),
         }));
         supervisor.recover()?;
         Ok(supervisor)
@@ -147,18 +171,18 @@ impl Supervisor {
         if drivers.stopped {
             return Err(CoreError::Invalid("codemode supervisor is stopped".into()));
         }
-        let (tx, rx) = mpsc::channel();
+        let (events, rx) = mpsc::channel();
         let mut active = self.0.active.lock().unwrap();
         if active.contains_key(&run.run_id) || run.status != Status::Running {
             return Err(CoreError::Invalid("run cannot be started twice".into()));
         }
         let id = run.run_id.clone();
-        active.insert(id.clone(), tx);
+        active.insert(id.clone(), events.clone());
         let shared = self.0.clone();
         match thread::Builder::new()
             .name(format!("codemode:{id}"))
             .spawn(move || {
-                let mut driver = Driver::new(shared.clone(), run, start, rx);
+                let mut driver = Driver::new(shared.clone(), run, start, events, rx);
                 let result =
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| driver.drive()))
                         .unwrap_or_else(|_| Err(CoreError::Invalid("supervisor panicked".into())));
@@ -171,6 +195,7 @@ impl Supervisor {
                     }
                 }
                 shared.active.lock().unwrap().remove(&driver.run.run_id);
+                driver.stop_reader();
                 #[cfg(test)]
                 if let Some(hook) = shared.before_exit.lock().unwrap().as_ref() {
                     hook();
@@ -254,7 +279,7 @@ impl Supervisor {
         let sender = self.0.active.lock().unwrap().get(id).cloned();
         if let Some(sender) = sender {
             let (tx, rx) = mpsc::sync_channel(1);
-            if sender.send(Command::Cancel(tx)).is_ok() {
+            if sender.send(Event::Cancel(tx)).is_ok() {
                 match rx.recv() {
                     Ok(result) => result?,
                     Err(_) => {
@@ -306,9 +331,18 @@ struct Driver {
     run: RunRecord,
     start: Start,
     worker: Option<Box<dyn WorkerChannel>>,
-    commands: mpsc::Receiver<Command>,
-    answers: mpsc::Receiver<Answer>,
-    answer_tx: mpsc::Sender<Answer>,
+    events: mpsc::Receiver<Event>,
+    event_tx: mpsc::Sender<Event>,
+    /// Lets the reader thread read the worker's next frame. One frame at a
+    /// time keeps a worker that floods its channel from queueing frames in
+    /// memory faster than the driver handles them.
+    credit: Option<mpsc::Sender<()>>,
+    reader: Option<thread::JoinHandle<()>>,
+    /// Kept alive for as long as the driver runs; the clock holds it weakly.
+    clock_watch: Option<Watcher>,
+    /// Set while a clock move is waiting in the event channel, so repeated
+    /// moves queue one event rather than one each.
+    clock_moved: Arc<AtomicBool>,
     queue: VecDeque<HostCall>,
     queued_bytes: usize,
     in_flight: usize,
@@ -325,17 +359,20 @@ impl Driver {
         shared: Arc<Shared>,
         run: RunRecord,
         start: Start,
-        commands: mpsc::Receiver<Command>,
+        event_tx: mpsc::Sender<Event>,
+        events: mpsc::Receiver<Event>,
     ) -> Self {
-        let (answer_tx, answers) = mpsc::channel();
         Self {
             shared,
             run,
             start,
             worker: None,
-            commands,
-            answers,
-            answer_tx,
+            events,
+            event_tx,
+            credit: None,
+            reader: None,
+            clock_watch: None,
+            clock_moved: Arc::new(AtomicBool::new(false)),
             queue: VecDeque::new(),
             queued_bytes: 0,
             in_flight: 0,
@@ -353,6 +390,7 @@ impl Driver {
     }
 
     fn drive(&mut self) -> Result<()> {
+        self.watch_clock();
         if self.wall()? {
             return Ok(());
         }
@@ -394,44 +432,9 @@ impl Driver {
             self.end(failed("worker_lost", error.to_string()))?;
             return Ok(());
         }
+        self.spawn_reader()?;
         while !self.stopping {
             if self.wall()? {
-                break;
-            }
-            while let Ok(answer) = self.answers.try_recv() {
-                #[cfg(test)]
-                if let Some(hook) = self.shared.before_record.lock().unwrap().as_ref() {
-                    hook();
-                }
-                if self.wall()? {
-                    break;
-                }
-                self.in_flight -= 1;
-                let mapped = map_answer(answer.result);
-                if self.shared.store.write(|tx| {
-                    store::record_outcome(
-                        tx,
-                        &self.run.run_id,
-                        answer.call.position,
-                        mapped.outcome,
-                        mapped.code.as_deref(),
-                        self.shared.clock.now_ms(),
-                    )
-                })? {
-                    if mapped.scope_loss {
-                        self.end(interrupted(
-                            mapped.code.as_deref().unwrap(),
-                            &mapped.message,
-                        ))?;
-                        break;
-                    }
-                    if self.wall()? {
-                        break;
-                    }
-                    self.deliver(&answer.call, mapped)?;
-                }
-            }
-            if self.stopping {
                 break;
             }
             self.drain()?;
@@ -445,35 +448,148 @@ impl Driver {
                 self.end(terminal)?;
                 break;
             }
-            match self.worker.as_mut().unwrap().recv(WAKE) {
-                Ok(message) => {
+            match self.next_event() {
+                // The loop's first step checks the wall deadline.
+                None => {}
+                Some(Event::ClockMoved) => self.clock_moved.store(false, Ordering::SeqCst),
+                Some(Event::Cancel(ack)) => self.cancel(ack)?,
+                Some(Event::Answer(answer)) => self.answer(answer)?,
+                Some(Event::Worker(Ok(message))) => {
                     if self.wall()? {
                         break;
                     }
                     self.message(message)?;
+                    if let Some(credit) = &self.credit {
+                        let _ = credit.send(());
+                    }
                 }
-                Err(ChannelError::Timeout) => {}
-                Err(error) => {
+                Some(Event::Worker(Err(error))) => {
                     if !self.parent_owned_kill {
                         self.end(failed("worker_lost", error.to_string()))?;
                     }
+                }
+                Some(Event::ReaderPanicked) => {
+                    return Err(CoreError::Invalid("worker receiver panicked".into()));
                 }
             }
         }
         Ok(())
     }
 
-    fn wall(&mut self) -> Result<bool> {
-        if !self.stopping
-            && let Ok(Command::Cancel(ack)) = self.commands.try_recv()
-        {
-            let result = self.end(terminal(Status::Cancelled, None, None));
-            let failed = result.is_err();
-            let _ = ack.send(result);
-            if failed {
-                return Err(CoreError::Invalid("cancel could not commit".into()));
+    /// Sleeps until an event arrives or the wall deadline, measured on the
+    /// injected clock, comes due. `None` means the deadline came due.
+    fn next_event(&mut self) -> Option<Event> {
+        let remaining = self
+            .start
+            .wall_deadline_ms
+            .saturating_sub(self.shared.clock.now_ms())
+            .max(0);
+        let wait = Duration::from_millis(remaining as u64);
+        let event = self.events.recv_timeout(wait).ok();
+        #[cfg(test)]
+        self.shared.wakes.fetch_add(1, Ordering::SeqCst);
+        event
+    }
+
+    /// A manual clock does not move with real time, so a driver sleeping
+    /// until its deadline must also wake when the clock is moved.
+    fn watch_clock(&mut self) {
+        let events = self.event_tx.clone();
+        let pending = self.clock_moved.clone();
+        let watcher: Watcher = Arc::new(move || {
+            if !pending.swap(true, Ordering::SeqCst) {
+                let _ = events.send(Event::ClockMoved);
             }
+        });
+        self.shared.clock.watch(&watcher);
+        self.clock_watch = Some(watcher);
+    }
+
+    /// Moves the worker's receive side to a thread of its own, which
+    /// forwards each frame into the driver's event channel. The driver keeps
+    /// the channel's send side, so deliveries and the kill never wait on a
+    /// blocked receive.
+    fn spawn_reader(&mut self) -> Result<()> {
+        let receiver = self.worker.as_mut().unwrap().receiver();
+        let events = self.event_tx.clone();
+        let (credit, credits) = mpsc::channel();
+        #[cfg(test)]
+        let before_exit = self.shared.before_reader_exit.lock().unwrap().clone();
+        match thread::Builder::new()
+            .name(format!("{}:reader", self.key()))
+            .spawn(move || {
+                read_worker(receiver, events, credits);
+                #[cfg(test)]
+                if let Some(hook) = before_exit {
+                    hook();
+                }
+            }) {
+            Ok(handle) => {
+                self.reader = Some(handle);
+                self.credit = Some(credit);
+                Ok(())
+            }
+            Err(error) => self.end(failed("worker_lost", error.to_string())),
         }
+    }
+
+    /// Waits for the reader thread once the run has ended. The reader is
+    /// blocked either on the worker, which every ending kills, or on its next
+    /// credit, whose sender is dropped here.
+    fn stop_reader(&mut self) {
+        self.credit = None;
+        if let Some(reader) = self.reader.take()
+            && reader.join().is_err()
+        {
+            tracing::error!("codemode worker reader panicked");
+        }
+    }
+
+    fn answer(&mut self, answer: Answer) -> Result<()> {
+        #[cfg(test)]
+        if let Some(hook) = self.shared.before_record.lock().unwrap().as_ref() {
+            hook();
+        }
+        if self.wall()? {
+            return Ok(());
+        }
+        self.in_flight -= 1;
+        let mapped = map_answer(answer.result);
+        if self.shared.store.write(|tx| {
+            store::record_outcome(
+                tx,
+                &self.run.run_id,
+                answer.call.position,
+                mapped.outcome,
+                mapped.code.as_deref(),
+                self.shared.clock.now_ms(),
+            )
+        })? {
+            if mapped.scope_loss {
+                return self.end(interrupted(
+                    mapped.code.as_deref().unwrap(),
+                    &mapped.message,
+                ));
+            }
+            if self.wall()? {
+                return Ok(());
+            }
+            self.deliver(&answer.call, mapped)?;
+        }
+        Ok(())
+    }
+
+    fn cancel(&mut self, ack: mpsc::SyncSender<Result<()>>) -> Result<()> {
+        let result = self.end(terminal(Status::Cancelled, None, None));
+        let failed = result.is_err();
+        let _ = ack.send(result);
+        if failed {
+            return Err(CoreError::Invalid("cancel could not commit".into()));
+        }
+        Ok(())
+    }
+
+    fn wall(&mut self) -> Result<bool> {
         if !self.stopping && self.shared.clock.now_ms() >= self.start.wall_deadline_ms {
             self.end(exhausted(Budget::Wall))?;
         }
@@ -651,7 +767,7 @@ impl Driver {
         let key = store::call_key(&self.run.run_id, call.position);
         let route = self.key();
         let transport = self.shared.transport.clone();
-        let answer_tx = self.answer_tx.clone();
+        let events = self.event_tx.clone();
         #[cfg(test)]
         let before_entry = self.shared.before_entry.lock().unwrap().clone();
         self.in_flight += 1;
@@ -690,7 +806,7 @@ impl Driver {
                     Ok(false) => return,
                     Err(error) => Err(WireError::NeverSent(error.to_string())),
                 };
-                let _ = answer_tx.send(Answer { call, result });
+                let _ = events.send(Event::Answer(Answer { call, result }));
             })
         {
             return self.end(failed("worker_lost", error.to_string()));
@@ -781,6 +897,34 @@ fn terminate(
         .store
         .write(|tx| store::commit_terminal(tx, id, &terminal, at))?;
     Ok(())
+}
+
+/// The body of a run's reader thread. It forwards one frame, then waits for
+/// the driver's credit before reading the next. It stops at the first channel
+/// error, which every kill produces, or once the driver is gone.
+fn read_worker(
+    mut receiver: Box<dyn WorkerReceiver>,
+    events: mpsc::Sender<Event>,
+    credits: mpsc::Receiver<()>,
+) {
+    loop {
+        let frame = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| receiver.recv()));
+        match frame {
+            Ok(Ok(message)) => {
+                if events.send(Event::Worker(Ok(message))).is_err() || credits.recv().is_err() {
+                    return;
+                }
+            }
+            Ok(Err(error)) => {
+                let _ = events.send(Event::Worker(Err(error)));
+                return;
+            }
+            Err(_) => {
+                let _ = events.send(Event::ReaderPanicked);
+                return;
+            }
+        }
+    }
 }
 
 struct Mapped {

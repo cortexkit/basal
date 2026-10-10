@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use basal_core::channel::ChannelError;
+use basal_core::channel::{ChannelError, WorkerReceiver};
 use basal_proto::{
     FrameError, PROTOCOL_VERSION, ParentMessage, Welcome, WorkerMessage, encode_parent_frame,
     read_worker_message,
@@ -148,7 +148,9 @@ fn recv_handshake(
 pub struct WorkerProcess {
     child: Arc<Mutex<Child>>,
     stdin: Option<ChildStdin>,
-    incoming: Receiver<Incoming>,
+    /// Shared so that a receiver split off for another thread reads the same
+    /// frames (see [`WorkerProcess::receiver`]).
+    incoming: Arc<Mutex<Receiver<Incoming>>>,
     welcome: Welcome,
 }
 
@@ -340,7 +342,7 @@ impl WorkerProcess {
         Ok(Self {
             child: Arc::new(Mutex::new(child)),
             stdin,
-            incoming,
+            incoming: Arc::new(Mutex::new(incoming)),
             welcome,
         })
     }
@@ -371,11 +373,19 @@ impl WorkerProcess {
     }
 
     pub fn recv(&mut self, timeout: Duration) -> Result<WorkerMessage, ChannelError> {
-        match self.incoming.recv_timeout(timeout) {
+        let incoming = self.incoming.lock().unwrap_or_else(|p| p.into_inner());
+        match incoming.recv_timeout(timeout) {
             Ok(message) => message,
             Err(RecvTimeoutError::Timeout) => Err(ChannelError::Timeout),
             Err(RecvTimeoutError::Disconnected) => Err(ChannelError::Closed),
         }
+    }
+
+    /// A receive side another thread can block on while this process keeps
+    /// sending. A kill closes the worker's stdout, and the frame reader then
+    /// reports `Closed`, which ends that thread's wait.
+    pub fn receiver(&self) -> Box<dyn WorkerReceiver> {
+        Box::new(SharedIncoming(self.incoming.clone()))
     }
 
     /// Whether the process has exited (crashed, or was killed from outside).
@@ -399,6 +409,24 @@ impl WorkerProcess {
         let mut child = self.child.lock().unwrap_or_else(|p| p.into_inner());
         let _ = child.kill();
         let _ = child.wait();
+    }
+}
+
+struct SharedIncoming(Arc<Mutex<Receiver<Incoming>>>);
+
+impl WorkerReceiver for SharedIncoming {
+    fn recv(&mut self) -> Result<WorkerMessage, ChannelError> {
+        let incoming = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        incoming.recv().unwrap_or(Err(ChannelError::Closed))
+    }
+}
+
+/// The receiver of a lease whose process is already gone.
+pub(crate) struct Ended;
+
+impl WorkerReceiver for Ended {
+    fn recv(&mut self) -> Result<WorkerMessage, ChannelError> {
+        Err(ChannelError::Closed)
     }
 }
 

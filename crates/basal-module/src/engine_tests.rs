@@ -424,6 +424,9 @@ impl basal_core::WorkerChannel for GateOnly {
     ) -> Result<basal_proto::WorkerMessage, basal_core::ChannelError> {
         panic!("worker entered")
     }
+    fn receiver(&mut self) -> Box<dyn basal_core::channel::WorkerReceiver> {
+        panic!("worker entered")
+    }
     fn kill(&mut self) {}
 }
 

@@ -130,11 +130,85 @@ impl Transport for FakeTransport {
     }
 }
 
+/// What the fake worker's queue carries: a frame, or a nudge that makes a
+/// blocked receive look at the fake's flags again.
+enum Inbox {
+    Frame(WorkerMessage),
+    Wake,
+}
+
+/// The test's end of the fake worker's outgoing frames.
+struct Frames(mpsc::Sender<Inbox>);
+impl Frames {
+    fn send(&self, message: WorkerMessage) -> std::result::Result<(), mpsc::SendError<Inbox>> {
+        self.0.send(Inbox::Frame(message))
+    }
+}
+
+/// A fake worker condition a test switches on. Setting it wakes a receive
+/// blocked on the fake's queue, as a real worker's exit would.
+struct Flag {
+    set: AtomicBool,
+    wake: mpsc::Sender<Inbox>,
+}
+impl Flag {
+    fn new(wake: &mpsc::Sender<Inbox>) -> Arc<Self> {
+        Arc::new(Self {
+            set: AtomicBool::new(false),
+            wake: wake.clone(),
+        })
+    }
+    fn store(&self, value: bool, order: Ordering) {
+        self.set.store(value, order);
+        let _ = self.wake.send(Inbox::Wake);
+    }
+    fn get(&self) -> bool {
+        self.set.load(Ordering::SeqCst)
+    }
+}
+
+/// The fake worker's incoming side, shared by its channel and any receiver
+/// split off from it.
+#[derive(Clone)]
+struct FakeQueue {
+    panic_recv: Arc<Flag>,
+    exit: Arc<Flag>,
+    killed: Arc<AtomicBool>,
+    messages: Arc<Mutex<mpsc::Receiver<Inbox>>>,
+}
+impl FakeQueue {
+    /// `None` blocks until a frame or the end of the channel, as a real
+    /// worker's receiver does.
+    fn next(&self, timeout: Option<Duration>) -> std::result::Result<WorkerMessage, ChannelError> {
+        let messages = self.messages.lock().unwrap_or_else(|p| p.into_inner());
+        loop {
+            assert!(!self.panic_recv.get(), "test channel panic");
+            if self.exit.get() || self.killed.load(Ordering::SeqCst) {
+                return Err(ChannelError::Closed);
+            }
+            let next = match timeout {
+                Some(timeout) => messages.recv_timeout(timeout).map_err(|error| match error {
+                    mpsc::RecvTimeoutError::Timeout => ChannelError::Timeout,
+                    mpsc::RecvTimeoutError::Disconnected => ChannelError::Closed,
+                }),
+                None => messages.recv().map_err(|_| ChannelError::Closed),
+            };
+            if let Inbox::Frame(message) = next? {
+                return Ok(message);
+            }
+        }
+    }
+}
+impl WorkerReceiver for FakeQueue {
+    fn recv(&mut self) -> std::result::Result<WorkerMessage, ChannelError> {
+        self.next(None)
+    }
+}
+
 struct FakeWorker {
-    panic_recv: Arc<AtomicBool>,
-    exit: Arc<AtomicBool>,
+    queue: FakeQueue,
+    wake: mpsc::Sender<Inbox>,
     welcome: Welcome,
-    messages: mpsc::Receiver<WorkerMessage>,
     parent: mpsc::Sender<ParentMessage>,
     events: Arc<Mutex<Vec<String>>>,
 }
@@ -148,22 +222,16 @@ impl WorkerChannel for FakeWorker {
             .map_err(|_| ChannelError::Closed)
     }
     fn recv(&mut self, timeout: Duration) -> std::result::Result<WorkerMessage, ChannelError> {
-        assert!(
-            !self.panic_recv.load(Ordering::SeqCst),
-            "test channel panic"
-        );
-        if self.exit.load(Ordering::SeqCst) {
-            return Err(ChannelError::Closed);
-        }
-        self.messages
-            .recv_timeout(timeout)
-            .map_err(|error| match error {
-                mpsc::RecvTimeoutError::Timeout => ChannelError::Timeout,
-                mpsc::RecvTimeoutError::Disconnected => ChannelError::Closed,
-            })
+        self.queue.next(Some(timeout))
+    }
+    fn receiver(&mut self) -> Box<dyn WorkerReceiver> {
+        Box::new(self.queue.clone())
     }
     fn kill(&mut self) {
         self.events.lock().unwrap().push("kill".into());
+        // A killed worker's channel ends, which releases a blocked receive.
+        self.queue.killed.store(true, Ordering::SeqCst);
+        let _ = self.wake.send(Inbox::Wake);
     }
 }
 struct FakeSource(Mutex<Option<FakeWorker>>);
@@ -179,10 +247,10 @@ impl WorkerSource for FakeSource {
 }
 
 struct Fixture {
-    worker_panic: Arc<AtomicBool>,
-    worker_exit: Arc<AtomicBool>,
+    worker_panic: Arc<Flag>,
+    worker_exit: Arc<Flag>,
     supervisor: Supervisor,
-    worker: mpsc::Sender<WorkerMessage>,
+    worker: Frames,
     parent: mpsc::Receiver<ParentMessage>,
     attempts: mpsc::Receiver<Attempt>,
     host: Arc<FakeTransport>,
@@ -211,11 +279,16 @@ impl Fixture {
         let (parent_tx, parent) = mpsc::channel();
         let (attempt_tx, attempts) = mpsc::channel();
         let hash = PreludeHash::of("parent's codemode prelude");
-        let worker_panic = Arc::new(AtomicBool::new(false));
-        let worker_exit = Arc::new(AtomicBool::new(false));
+        let worker_panic = Flag::new(&worker);
+        let worker_exit = Flag::new(&worker);
         let source = Arc::new(FakeSource(Mutex::new(Some(FakeWorker {
-            panic_recv: worker_panic.clone(),
-            exit: worker_exit.clone(),
+            queue: FakeQueue {
+                panic_recv: worker_panic.clone(),
+                exit: worker_exit.clone(),
+                killed: Arc::new(AtomicBool::new(false)),
+                messages: Arc::new(Mutex::new(messages)),
+            },
+            wake: worker.clone(),
             welcome: Welcome {
                 protocol_version: PROTOCOL_VERSION,
                 engine: "fake".into(),
@@ -223,7 +296,6 @@ impl Fixture {
                 codemode_prelude_hash: hash,
                 confinement: Confinement::None,
             },
-            messages,
             parent: parent_tx,
             events: events.clone(),
         }))));
@@ -262,7 +334,7 @@ impl Fixture {
             worker_panic,
             worker_exit,
             supervisor,
-            worker,
+            worker: Frames(worker),
             parent,
             attempts,
             host,
@@ -1413,4 +1485,110 @@ fn panicking_driver_terminates_and_start_rejects_duplicate_or_terminal_runs() {
         panic!()
     };
     assert!(f.supervisor.start(*run, make_start()).is_err());
+}
+
+/// A wall deadline so far ahead in real time that a run reaching it inside a
+/// test can only have been ended by a move of the manual clock.
+const FAR_DEADLINE: i64 = 1_000_000_000;
+
+impl Fixture {
+    /// Starts a run with `FAR_DEADLINE`, issues one call and returns the held
+    /// provider attempt.
+    fn held_far_from_its_deadline(&self) -> Attempt {
+        self.start(
+            &[("read", "notes", "read", json!({}))],
+            Limits::default(),
+            FAR_DEADLINE,
+        );
+        self.parent.recv_timeout(TIMEOUT).unwrap();
+        self.issue(0, "read", json!(null));
+        self.attempt()
+    }
+
+    fn wakes(&self) -> usize {
+        self.supervisor.0.wakes.load(Ordering::SeqCst)
+    }
+}
+
+#[test]
+fn a_run_waiting_on_a_held_tool_sleeps_until_the_answer_wakes_it() {
+    let f = Fixture::new();
+    let held = f.held_far_from_its_deadline();
+    // The worker's frames reach the driver one at a time, so once this line
+    // is stored the driver has finished with the call and counted the wake
+    // that brought the line. Nothing else is due before the answer.
+    f.worker
+        .send(WorkerMessage::Console {
+            line: "idle\n".into(),
+        })
+        .unwrap();
+    let until = Instant::now() + TIMEOUT;
+    while f.supervisor.result("r").unwrap().unwrap()["output"] != "idle\n" {
+        assert!(Instant::now() < until, "the console line was not stored");
+        thread::yield_now();
+    }
+    let idle = f.wakes();
+    // Give a driver that polls on a timer time to wake. The assertion is on
+    // the wake count, not on how long anything took.
+    thread::sleep(Duration::from_millis(250));
+    assert_eq!(
+        f.wakes(),
+        idle,
+        "the driver woke while the provider was held"
+    );
+    held.reply.send(Ok(json!(1))).unwrap();
+    assert_eq!(f.delivery().settlement, Settlement::Fulfilled);
+    assert_eq!(
+        f.clock.now_ms(),
+        100,
+        "the answer was delivered without moving the clock"
+    );
+    assert_eq!(f.wakes(), idle + 1, "one answer is one wake");
+    assert_eq!(f.calls()[0].outcome, Outcome::Ok);
+}
+
+#[test]
+fn a_manual_clock_jump_past_the_deadline_ends_a_sleeping_run() {
+    let f = Fixture::new();
+    let held = f.held_far_from_its_deadline();
+    f.clock.set(FAR_DEADLINE);
+    let result = f.terminal();
+    assert_eq!(result["status"], "budget_exhausted:wall");
+    assert_eq!(result["duration_ms"], FAR_DEADLINE - 100);
+    assert_eq!(f.calls()[0].code.as_deref(), Some("no_outcome"));
+    drop(held);
+    f.assert_order();
+}
+
+#[test]
+fn shutdown_joins_the_worker_reader_of_a_cancelled_run() {
+    let f = Fixture::new();
+    let (entered, at_exit) = mpsc::channel();
+    let release = Arc::new(std::sync::Barrier::new(2));
+    let exiting = release.clone();
+    *f.supervisor.0.before_reader_exit.lock().unwrap() = Some(Arc::new(move || {
+        entered.send(()).unwrap();
+        exiting.wait();
+    }));
+    let held = f.held_far_from_its_deadline();
+    let supervisor = f.supervisor.clone();
+    let (done, finished) = mpsc::channel();
+    let shutdown = thread::spawn(move || {
+        supervisor.shutdown().unwrap();
+        done.send(()).unwrap();
+    });
+    // The cancel killed the worker, which ended the reader's wait.
+    at_exit.recv_timeout(TIMEOUT).unwrap();
+    let prematurely_returned = finished.recv_timeout(Duration::from_millis(500)).is_ok();
+    release.wait();
+    shutdown.join().unwrap();
+    assert!(
+        !prematurely_returned,
+        "shutdown returned while the run's worker reader was still running"
+    );
+    assert_eq!(
+        f.supervisor.result("r").unwrap().unwrap()["status"],
+        "cancelled"
+    );
+    drop(held);
 }

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use basal_core::channel::{ChannelError, WorkerChannel};
+use basal_core::channel::{ChannelError, WorkerChannel, WorkerReceiver};
 use basal_core::manifest::OpRef;
 use basal_core::{ActivationEnd, Config, RunState, ShellDenylist};
 use basal_host::{OpDecl, OpKind};
@@ -207,6 +207,10 @@ impl WorkerChannel for Compromised {
             return Ok(self.message.clone());
         }
         Err(ChannelError::Closed)
+    }
+
+    fn receiver(&mut self) -> Box<dyn WorkerReceiver> {
+        panic!("the flow driver reads this worker through recv")
     }
 
     fn kill(&mut self) {

@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use basal_core::channel::{ChannelError, WorkerChannel, WorkerSource};
+use basal_core::channel::{ChannelError, WorkerChannel, WorkerReceiver, WorkerSource};
 use basal_proto::{MessageKind, ParentMessage, Welcome, WorkerMessage};
 
 use crate::process::{ParentError, WorkerProcess};
@@ -47,6 +47,17 @@ fn channel_error(e: ParentError) -> ChannelError {
     }
 }
 
+type NextFrame = Box<dyn FnMut() -> Result<WorkerMessage, ParentError> + Send>;
+
+/// A [`ProcessChannel`]'s receive side, for reading on another thread.
+struct ProcessReceiver(NextFrame);
+
+impl WorkerReceiver for ProcessReceiver {
+    fn recv(&mut self) -> Result<WorkerMessage, ChannelError> {
+        (self.0)().map_err(channel_error)
+    }
+}
+
 impl WorkerChannel for ProcessChannel {
     fn welcome(&self) -> &Welcome {
         &self.welcome
@@ -67,6 +78,10 @@ impl WorkerChannel for ProcessChannel {
 
     fn recv(&mut self, timeout: Duration) -> Result<WorkerMessage, ChannelError> {
         self.process.recv(timeout).map_err(channel_error)
+    }
+
+    fn receiver(&mut self) -> Box<dyn WorkerReceiver> {
+        Box::new(ProcessReceiver(Box::new(self.process.receiver())))
     }
 
     fn kill(&mut self) {

@@ -34,7 +34,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use basal_core::channel::{ChannelError, WorkerChannel};
+use basal_core::channel::{ChannelError, WorkerChannel, WorkerReceiver};
 use basal_core::manifest::{DigestAction, Manifest};
 use basal_core::schedule::{self, fire_trigger_id};
 use basal_core::{
@@ -641,6 +641,12 @@ impl WorkerChannel for Recording<'_> {
             self.events.push(Event::Issued(call.position));
         }
         Ok(message)
+    }
+
+    /// Frames read through a split-off receiver bypass the recording. The
+    /// flow driver that runs dry-run activations reads only through `recv`.
+    fn receiver(&mut self) -> Box<dyn WorkerReceiver> {
+        self.inner.receiver()
     }
 
     fn kill(&mut self) {
