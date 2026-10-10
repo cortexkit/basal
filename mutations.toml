@@ -10926,3 +10926,19 @@ file = "crates/basal-host/src/flow_scope.rs"
 old = "if let Some((_, key)) = self.flows.remove(flow) {"
 new = '''if flow.starts_with("codemode:") && scope.is_none() && !self.flows.contains_key(flow) { panic!("NON-VACUITY BREAK"); }
         if let Some((_, key)) = self.flows.remove(flow) {'''
+
+[[control]]
+id = "module-drop-detaches-activation-tail"
+guards = "Module drop joins an activation after its reservation is released"
+test_file = "crates/basal-module/src/engine_tests.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["engine::lifecycle_tests::module_drop_joins_activation_after_slot_release"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/module.rs"
+old = "            engine.join_threads();"
+new = "            // NON-VACUITY BREAK: detach engine threads during shutdown."
