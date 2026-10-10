@@ -320,14 +320,13 @@ impl Engine {
     /// Raises every decision card whose latest revision the consent plane
     /// has not accepted. The card's row was committed before this, so a
     /// crash or an unreachable consent plane only delays it: the next pass
-    /// raises it again under the same deduplication key, which core shows
-    /// as one card. Returns the keys accepted now; a store error is
-    /// returned, a consent error is logged and retried next pass.
+    /// raises it again under the same deduplication key on the recorded path.
+    /// A store error is returned; a consent error is logged and retried next pass.
     fn raise_decisions(&self) -> Result<(), CoreError> {
         let inner = &self.inner;
-        for id in inner.rt.decision_withdrawals()? {
-            match inner.consent.withdraw_decision(&id) {
-                Ok(()) => inner.rt.decision_withdrawn(&id)?,
+        for (path, id) in inner.rt.decision_withdrawals_on()? {
+            match inner.consent.withdraw_decision_on(&path, &id) {
+                Ok(()) => inner.rt.decision_withdrawn_on(&path, &id)?,
                 Err(e) => {
                     tracing::warn!(target:"consent", elicitation_id=%id, "withdrawing a decision card: {e}")
                 }
@@ -335,7 +334,17 @@ impl Engine {
         }
         for record in inner.rt.decisions_due()? {
             let card = record.to_card()?;
-            match inner.consent.raise_decision(&card) {
+            let path = match &record.consent_path {
+                Some(path) => path.clone(),
+                None => match inner.consent.decision_path() {
+                    Ok(path) => inner.rt.select_decision_path(record.seq, &path)?,
+                    Err(e) => {
+                        tracing::warn!(target: "consent", key = %record.dedup_key, "selecting a decision provider: {e}");
+                        continue;
+                    }
+                },
+            };
+            match inner.consent.raise_decision_on(&path, &card) {
                 Ok(elicitation_id) => {
                     inner
                         .rt

@@ -31,6 +31,7 @@
 pub mod broca;
 pub mod builtins;
 pub mod catalog;
+pub mod cingulate_consent;
 pub mod consent;
 pub mod core_consent;
 pub mod core_host;
@@ -46,7 +47,8 @@ pub mod transport;
 pub use catalog::{Catalog, EventBody, EventDecl, EventOrigin, MockCatalog, OpDecl, OpKind};
 pub use consent::{
     CardDecision, Consent, ConsentError, DecisionAnswer, DecisionCard, DecisionContext,
-    DecisionEvent, DecisionKind, DecisionOption, DecisionSink, InstallCard, MockConsent,
+    DecisionEvent, DecisionKind, DecisionOption, DecisionPath, DecisionSink, InstallCard,
+    MockConsent,
 };
 pub use scope_describe::{ScopeDescribeError, ScopeDescription};
 pub use subc_protocol::scope::{ScopeStamp, ScopeStatus};

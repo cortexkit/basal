@@ -98,6 +98,47 @@ Reply (machine-checked by `list_contract`):
 ```
 `disabled` and `last_run` may each be null, but their keys must be present. All times are Unix epoch milliseconds. `pending_version` is the newest version with an open card, or null; `approved_version` is null until approval. `state` uses the same approval-first computation as `flow.health`. `last_run` is the most recent finished run, not an in-flight run. `needs_reconcile` is true if any run awaits reconciliation. The disable's actor kind, reason and time are the recorded disable, or null after enabling. `by` is `operator`, `owner` (the owning agent), `auto` (the runtime's loop protection) or `core`. A `core` disable may mean core revoked the version, holds no install of that version, or approved a different code hash for it; it may also mean `grant_lost` or `agent_retired`. Losing core's approval also clears the approved version, so the flow lists as `unapproved`; approval of a newer version clears that stop, but does not override an operator or owner stop.
 
+## Operator decision cards
+
+Basal raises `flow_decision` cards for reconciliation, re-enabling an
+auto-disabled flow, and lost grants. For each new card it reads the daemon
+catalog: a provider advertising `consent/v1` receives `consent.request` on
+basal's attested `reserved:basal` route; with no such provider, core receives
+the legacy `elicitation.request`. Install cards still go through core.
+
+The chosen path and provider are committed before sending, including requests
+whose replies may be lost. A card never changes paths. Updates use its original
+endpoint and `dedup_key`; withdrawals use that endpoint and the current card id.
+Cingulate refreshes identical content in place, but changed content replaces the
+pending card with a new id. Basal records that replacement id and rejects answers
+to older bodies or known superseded ids. If a replacement reply is lost, only an
+outstanding cingulate grant-loss revision with an exact current context can learn
+its new id from an answer; legacy cards retain their existing id checks.
+
+Both answer feeds remain active while they have open cards. Basal applies each
+answer durably and idempotently before acknowledging it on its own path. The
+cingulate feed uses `consent.answers` continuations and a durable cursor, then
+`consent.ack` through the fully processed page, including empty final pages that
+cover withdrawals. A failed apply keeps the page unacknowledged; a failed ack
+is retried even after the last card closes or basal restarts. Retention
+tombstones close only their matching owned card and never apply a choice.
+
+No switch-window timing is required: removing the capability sends new cards
+back to legacy while cingulate-raised cards keep using their recorded provider
+whenever it is reachable. A listed but unreachable consent provider delays its
+cards rather than duplicating them on core. Catalog read failures also delay
+selection rather than guessing a path.
+
+The decision body remains core's validated v2 body on either endpoint;
+cingulate checks the envelope but stores that body opaquely. Flow decisions
+cannot use `consent.report_execution` under the requester contract, so basal
+acknowledges settlements without reporting execution. The byte-pinned requester
+corpus is copied from cingulate tag `consent-requester-v1`, commit
+`c650e9db6e87dbb28fe20dd5fc2815db5deb41e9`, into
+`crates/basal-module/tests/vectors/consent-requester-v1/`. Its `SHA256SUMS` digest
+is `e4eb488651dbd1e3c3164644a4e4bc0ba3d39f81cb4f3e1f09cc7913564a3248`.
+The copied corpus README describes reproduction in its owning repository.
+
 ## Lost grants and retirement in health and listing
 
 Both `flow.list` and operator/core `flow.health` include `grant_losses` (an array,
@@ -132,8 +173,9 @@ full UTC date and time, so refusals on different days are distinguishable.
 `check_now` schedules an immediate scoped diagnostic; `keep_disabled` stops
 polling for that grant. Expiry or silence applies neither choice and keeps
 background polling. Once the grant returns, basal marks the card stale and
-durably queues `elicitation.withdraw` to retract it from core, retrying while
-core is unavailable. An oversized hash fallback raises no card.
+durably queues withdrawal on the card's raising path (`consent.withdraw` or
+`elicitation.withdraw`), retrying while that provider is unavailable. An
+oversized hash fallback raises no card.
 
 An `agent_retired` refusal fails the run and disables the flow without a
 retirement or permission card. If an earlier mutation may already have been

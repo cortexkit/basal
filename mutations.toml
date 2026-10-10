@@ -3,6 +3,7 @@
 
 
 
+
 # Safety proofs replayed by the pinned ckdev-mutate runner.
 # Names are full libtest paths; the named guard must fail.
 # Other tests in the target may also fail: the original proofs ran
@@ -4140,12 +4141,13 @@ package = "basal-module"
 platforms = ["macos"]
 target = "--test decisions"
 expect_red = ["a_crash_between_receiving_an_answer_and_applying_it_applies_it_exactly_once"]
+select = "expected"
 only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/core_consent.rs"
-old = "if let Err(e) = sink.answer(&answer) {"
-new = "if let Some(e) = sink.answer(&answer).err().filter(|_| false) {"
+old = "if let Err(e) = sink.answer_on(path, &answer) {"
+new = "if let Some(e) = sink.answer_on(path, &answer).err().filter(|_| false) { // NON-VACUITY BREAK"
 
 [[control]]
 id = "decision-cards-it-ran-releases-an-invented-null-result-instead-of-reconciled-as-applied"
@@ -8173,8 +8175,10 @@ build_timeout_s = 3600
 id = "poison-consent-answer-blocks-valid-decisions"
 guards = "Malformed consent answers are retained without blocking independent valid records in the page"
 file = "crates/basal-host/src/core_consent.rs"
-old = "problem.get_or_insert(error);"
-new = "return Err(error); // NON-VACUITY BREAK"
+old = '''tracing::warn!(elicitation_id = ?record.get("elicitation_id"), %error, "consent answer was not applied; retaining page for retry");
+            problem.get_or_insert(error);'''
+new = '''tracing::warn!(elicitation_id = ?record.get("elicitation_id"), %error, "consent answer was not applied; retaining page for retry");
+            return Err(error); // NON-VACUITY BREAK'''
 edits = []
 test_file = "crates/basal-host/tests/host_boundary_regressions.rs"
 runner = "cargo"
@@ -11392,7 +11396,7 @@ timeout_s = 600
 id = "grant-card-engine-retracts-core-card"
 guards = "withdrawal obligations are sent to core before they are acknowledged locally"
 file = "crates/basal-module/src/engine.rs"
-old = "inner.consent.withdraw_decision(&id)"
+old = "inner.consent.withdraw_decision_on(&path, &id)"
 new = "Ok::<(),basal_host::ConsentError>(()) /* NON-VACUITY BREAK */"
 test_file = "crates/basal-module/tests/decisions.rs"
 runner = "cargo"
@@ -13336,3 +13340,450 @@ only = false
 file = "crates/basal-core/src/codemode/supervisor.rs"
 old = "interrupted(\"basal_restarted\", \"basal restarted before the run ended\")"
 new = "interrupted(\"worker_lost\", \"basal restarted before the run ended\") /* NON-VACUITY BREAK */"
+
+# Routing probes drive engine passes and feed reads instead of polling timers;
+# they need no script execution. Portable schema and adapter probes use Linux.
+[[control]]
+id = "consent-requester-vectors"
+hub = "Both requester corpora pin the same validated v2 decision envelope"
+hub_targets = ["decisions"]
+guards = "all three consent requester requests remain byte-pinned"
+test_file = "crates/basal-module/tests/consent_paths.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test consent_paths"
+expect_red = ["requester_vectors_are_pinned_and_all_three_requests_match_bytes"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = '''"on_expiry":"deny",
+        "material_damage":false,"late_execution":"notify_only",'''
+new = '''"on_expiry":"deny",
+        "material_damage":false,"late_execution":"execute", /* NON-VACUITY BREAK */'''
+
+[[control]]
+id = "consent-catalog-choice"
+guards = "advertised consent capability selects its provider"
+test_file = "crates/basal-module/tests/consent_paths.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test consent_paths"
+expect_red = ["new_cards_choose_only_an_advertised_consent_capability"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/cingulate_consent.rs"
+old = 'return Ok(DecisionPath::Consent(provider.to_owned()));'
+new = 'let _ = provider; return Ok(DecisionPath::Legacy); // NON-VACUITY BREAK'
+
+[[control]]
+id = "consent-drain-both-paths"
+guards = "both legacy and consent answers are applied during overlap"
+test_file = "crates/basal-module/tests/consent_paths.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test consent_paths"
+expect_red = ["answers_on_both_paths_apply_once_and_ack_their_own_owner"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = 'DecisionPath::Legacy => poll_page(state),'
+new = 'DecisionPath::Legacy => Ok(()), // NON-VACUITY BREAK'
+
+[[control]]
+id = "consent-ack-own-path"
+guards = "consent settlements are acknowledged only on their owning provider"
+test_file = "crates/basal-module/tests/consent_paths.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test consent_paths"
+expect_red = ["answers_on_both_paths_apply_once_and_ack_their_own_owner"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = '.management(provider, "consent.ack", json!({"cursor":cursor}))'
+new = '.management(CORE, "consent.ack", json!({"cursor":cursor})) /* NON-VACUITY BREAK */'
+
+[[control]]
+id = "consent-id-path-isolation"
+guards = "independent consent stores may issue colliding elicitation ids"
+test_file = "crates/basal-module/tests/consent_paths.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test consent_paths"
+expect_red = ["answers_on_both_paths_apply_once_and_ack_their_own_owner"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/decisions.rs"
+old = "WHERE elicitation_id = ?1 AND COALESCE(consent_path,'legacy') = ?2 ORDER BY seq DESC"
+new = "WHERE elicitation_id = ?1 AND ?2 IS NOT NULL ORDER BY seq DESC /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "consent-update-original-path"
+guards = "updates do not move an existing card when the catalog changes"
+test_file = "crates/basal-module/tests/consent_paths.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test consent_paths"
+expect_red = ["updates_and_withdrawals_use_the_raising_path_and_replacement_id"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/engine.rs"
+old = 'Some(path) => path.clone(),'
+new = 'Some(_path) => inner.consent.decision_path().unwrap(), // NON-VACUITY BREAK'
+
+[[control]]
+id = "consent-withdraw-original-path"
+guards = "withdrawals retain their raising provider across restart"
+test_file = "crates/basal-module/tests/consent_paths.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test consent_paths"
+expect_red = ["updates_and_withdrawals_use_the_raising_path_and_replacement_id"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/engine.rs"
+old = 'inner.consent.withdraw_decision_on(&path, &id)'
+new = 'inner.consent.withdraw_decision_on(&basal_host::DecisionPath::Legacy, &id) /* NON-VACUITY BREAK */'
+
+[[control]]
+id = "consent-read-unlisted-provider"
+guards = "rollback retains reads for cards on an unlisted consent provider"
+test_file = "crates/basal-module/tests/consent_paths.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test consent_paths"
+expect_red = ["provider_disappearance_falls_back_but_keeps_reading_old_answers"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = 'let result = match &path {'
+new = '''if matches!(&path, DecisionPath::Consent(_)) && state.transport.catalog().map_err(error)?["modules"].as_array().is_some_and(|m| m.is_empty()) { continue; } // NON-VACUITY BREAK
+        let result = match &path {'''
+
+[[control]]
+id = "consent-persist-before-send"
+guards = "a lost reply cannot move a card after restart"
+test_file = "crates/basal-module/tests/consent_paths.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test consent_paths"
+expect_red = ["lost_request_reply_cannot_move_a_card_after_restart"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/engine.rs"
+old = 'Ok(path) => inner.rt.select_decision_path(record.seq, &path)?,'
+new = 'Ok(path) => path, // NON-VACUITY BREAK'
+
+[[control]]
+id = "consent-follow-page-cursor"
+guards = "partial consent pages follow continuations before the final high water"
+test_file = "crates/basal-module/tests/consent_paths.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test consent_paths"
+expect_red = ["paged_cursor_is_durable_and_empty_withdrawal_pages_are_acked"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = 'if continuation.is_none() {'
+new = 'if { let _ = continuation; true } { // NON-VACUITY BREAK'
+
+[[control]]
+id = "consent-retain-poison-page"
+guards = "a malformed settlement prevents cursor persistence and cumulative ack"
+test_file = "crates/basal-module/tests/consent_paths.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test consent_paths"
+expect_red = ["poison_page_is_not_acked_and_other_path_still_progresses"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = '''if let Some(error) = problem {
+            return Err(error);
+        }
+        sink.save_answer_cursor(path, cursor).map_err(sink_error)?;'''
+new = '''let _ = problem; // NON-VACUITY BREAK
+        sink.save_answer_cursor(path, cursor).map_err(sink_error)?;'''
+
+[[control]]
+id = "consent-retention-tombstone"
+guards = "a retention tombstone closes only the matching owned card without action"
+test_file = "crates/basal-module/tests/consent_paths.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test consent_paths"
+expect_red = ["retention_tombstone_closes_only_its_owned_card_without_action"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = '''return sink
+                .expire_on(path, field(record, "elicitation_id")?)
+                .map_err(sink_error);'''
+new = 'return Ok(()); // NON-VACUITY BREAK'
+
+[[control]]
+id = "consent-v2-body-validation"
+hub = "Both consent endpoints use the same strict requester-owned v2 body validator"
+hub_targets = ["decisions"]
+guards = "an opaque consent body still obeys core v2 validity"
+test_file = "crates/basal-module/tests/consent_paths.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test consent_paths"
+expect_red = ["consent_endpoint_cannot_weaken_v2_body_validation"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = 'if let Some(problem) = body_problem(card) {'
+new = 'if let Some(problem) = None::<&str> { // NON-VACUITY BREAK'
+
+[[control]]
+id = "consent-recover-lost-replacement"
+guards = "the current cingulate grant replacement survives a lost acceptance reply"
+test_file = "crates/basal-module/tests/consent_paths.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test consent_paths"
+expect_red = ["lost_replacement_reply_recovers_only_the_current_cingulate_grant_answer"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/decisions.rs"
+old = 'let replacement = matches!('
+new = 'let replacement = false && matches!( // NON-VACUITY BREAK'
+
+[[control]]
+id = "consent-reject-superseded-id"
+guards = "known superseded ids cannot claim an outstanding replacement revision"
+test_file = "crates/basal-module/tests/consent_paths.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test consent_paths"
+expect_red = ["old_context_and_recorded_superseded_ids_cannot_answer_an_outstanding_revision"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/decisions.rs"
+old = '&& !known_superseded;'
+new = '&& { let _ = known_superseded; true }; // NON-VACUITY BREAK'
+
+[[control]]
+id = "consent-reject-old-grant-context"
+hub = "Grant-loss answers must match the latest refusal context on either endpoint"
+hub_targets = ["decisions"]
+guards = "an older grant context cannot answer a newer revision"
+test_file = "crates/basal-module/tests/consent_paths.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test consent_paths"
+expect_red = ["old_context_and_recorded_superseded_ids_cannot_answer_an_outstanding_revision"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/decisions.rs"
+old = '&& answer.grant_context.as_ref() != Some(&card.context()?)'
+new = '&& false /* NON-VACUITY BREAK */'
+
+[[control]]
+id = "consent-no-legacy-replacement-recovery"
+guards = "legacy cards retain their strict differing-id refusal"
+test_file = "crates/basal-module/tests/consent_paths.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test consent_paths"
+expect_red = ["legacy_path_never_recovers_a_differing_id_even_with_current_grant_context"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/decisions.rs"
+old = '''matches!(
+            card.consent_path,
+            Some(basal_host::DecisionPath::Consent(_))
+        )'''
+new = 'true /* NON-VACUITY BREAK */'
+
+[[control]]
+id = "consent-retry-final-ack-after-restart"
+guards = "a failed final consent ack survives the last card closing and restart"
+test_file = "crates/basal-module/tests/consent_paths.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test consent_paths"
+expect_red = ["failed_final_ack_is_retried_from_the_durable_cursor_after_restart"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = 'if self.state.catalog_decisions {'
+new = 'if false { // NON-VACUITY BREAK'
+
+[[control]]
+id = "consent-migrate-legacy-ownership"
+guards = "migration preserves all pre-cutover card and withdrawal ownership"
+test_file = "crates/basal-core/src/schema_consent_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["schema::consent_tests::decision_path_migration_preserves_all_legacy_intents_and_withdrawals"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/schema.rs"
+old = "UPDATE decision_cards SET consent_path = 'legacy';"
+new = "UPDATE decision_cards SET consent_path = 'consent:cingulate'; -- NON-VACUITY BREAK"
+
+[[control]]
+id = "consent-apply-once"
+hub = "Settled decision answers are idempotent on replay on either endpoint"
+hub_targets = ["decisions"]
+guards = "duplicate and redelivered settlements do not apply another decision"
+test_file = "crates/basal-module/tests/consent_paths.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test consent_paths"
+expect_red = ["answers_on_both_paths_apply_once_and_ack_their_own_owner"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/decisions.rs"
+old = 'if card.state != CardState::Open {'
+new = 'if false { // NON-VACUITY BREAK'
+
+[[control]]
+id = "consent-ack-empty-final-page"
+guards = "empty final pages advance and acknowledge the global settlement cursor"
+test_file = "crates/basal-module/tests/consent_paths.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test consent_paths"
+expect_red = ["paged_cursor_is_durable_and_empty_withdrawal_pages_are_acked"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = 'sink.save_answer_cursor(path, cursor).map_err(sink_error)?;'
+new = 'if records.is_empty() { return Ok(()); } /* NON-VACUITY BREAK */ sink.save_answer_cursor(path, cursor).map_err(sink_error)?;'
+
+[[control]]
+id = "consent-require-outstanding-revision"
+guards = "a differing replacement id is recoverable only while a newer revision is outstanding"
+test_file = "crates/basal-module/tests/consent_paths.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test consent_paths"
+expect_red = ["old_context_and_recorded_superseded_ids_cannot_answer_an_outstanding_revision"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/decisions.rs"
+old = '&& card.raised_revision.is_some_and(|r| r < card.revision)'
+new = '&& true /* NON-VACUITY BREAK */'
+
+[[control]]
+id = "consent-wake-after-lost-reply"
+guards = "a lost decision request reply cannot leave durable open cards unpolled"
+test_file = "crates/basal-host/src/cingulate_consent_tests.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["cingulate_consent::tests::a_lost_request_reply_still_wakes_the_owned_answer_inventory"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/cingulate_consent.rs"
+old = 'self.core.raised();'
+new = 'let _ = &self.core; // NON-VACUITY BREAK'
+
+[[control]]
+id = "consent-legacy-adapter-no-reraise"
+guards = "a legacy-only adapter cannot re-raise a card owned by a consent provider"
+test_file = "crates/basal-host/src/cingulate_consent_tests.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["cingulate_consent::tests::a_legacy_only_adapter_cannot_move_an_owned_consent_card"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/consent.rs"
+old = '''return Err(ConsentError::Unavailable(
+                "this adapter cannot raise on the recorded consent path".into(),
+            ));'''
+new = 'return self.raise_decision(card); // NON-VACUITY BREAK'
+
+[[control]]
+id = "consent-legacy-adapter-no-withdraw"
+guards = "a legacy-only adapter cannot withdraw a card owned by a consent provider"
+test_file = "crates/basal-host/src/cingulate_consent_tests.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["cingulate_consent::tests::a_legacy_only_adapter_cannot_move_an_owned_consent_card"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/consent.rs"
+old = '''return Err(ConsentError::Unavailable(
+                "this adapter cannot withdraw on the recorded consent path".into(),
+            ));'''
+new = 'return self.withdraw_decision(elicitation_id); // NON-VACUITY BREAK'

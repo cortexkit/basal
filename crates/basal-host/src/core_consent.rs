@@ -3,9 +3,10 @@ use crate::subc_catalog::CORE;
 use crate::transport::{Transport, WireError};
 use crate::{
     CardDecision, Consent, ConsentError, DecisionAnswer, DecisionCard, DecisionContext,
-    DecisionEvent, DecisionKind, DecisionSink, InstallCard,
+    DecisionEvent, DecisionKind, DecisionPath, DecisionSink, InstallCard,
 };
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
@@ -16,7 +17,7 @@ pub const SCOPE_UNKNOWN: &str = "flow_install_scope_unknown";
 /// Core's refusal of a scope author whose scope is no longer live.
 pub const SCOPE_ENDED: &str = "flow_install_scope_ended";
 
-fn error(e: WireError) -> ConsentError {
+pub(crate) fn error(e: WireError) -> ConsentError {
     match e {
         WireError::Refused { code, message } | WireError::RefusedDetails { code, message, .. }
             if code == SCOPE_UNKNOWN || code == SCOPE_ENDED =>
@@ -398,6 +399,9 @@ struct State {
     retry_page: AtomicBool,
     wake: Mutex<(u64, bool)>,
     cond: Condvar,
+    catalog_decisions: bool,
+    retries: Mutex<BTreeSet<DecisionPath>>,
+    poll_lock: Mutex<()>,
 }
 
 const POLL_MIN: Duration = Duration::from_millis(250);
@@ -432,9 +436,24 @@ impl CoreConsent {
                 retry_page: AtomicBool::new(false),
                 wake: Mutex::new((0, false)),
                 cond: Condvar::new(),
+                catalog_decisions: false,
+                retries: Mutex::new(BTreeSet::new()),
+                poll_lock: Mutex::new(()),
             }),
             polling: false,
         }
+    }
+    pub(crate) fn for_catalog(transport: Arc<dyn Transport>) -> Self {
+        let mut consent = Self::new(transport);
+        Arc::get_mut(&mut consent.state).unwrap().catalog_decisions = true;
+        consent
+    }
+    pub(crate) fn raised(&self) {
+        self.state.raised();
+    }
+    #[cfg(test)]
+    pub(crate) fn raised_epoch(&self) -> u64 {
+        self.state.wake.lock().unwrap().0
     }
     pub fn with_polling(mut self) -> Self {
         self.polling = true;
@@ -453,6 +472,23 @@ fn poll_allowed(state: &State) -> Result<bool, ConsentError> {
         .unwrap_or_else(|p| p.into_inner())
         .clone()
         .ok_or_else(|| ConsentError::Unavailable("decision sink is not attached".into()))?;
+    if state.catalog_decisions {
+        if state.retry_page.load(Ordering::Acquire)
+            || !state
+                .retries
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .is_empty()
+        {
+            return Ok(true);
+        }
+        for path in sink.decision_paths().map_err(sink_error)? {
+            if sink.has_open_cards_on(&path).map_err(sink_error)? {
+                return Ok(true);
+            }
+        }
+        return Ok(false);
+    }
     Ok(state.retry_page.load(Ordering::Acquire)
         || sink
             .has_open_cards()
@@ -460,6 +496,10 @@ fn poll_allowed(state: &State) -> Result<bool, ConsentError> {
 }
 
 fn poll(state: &State) -> Result<(), ConsentError> {
+    let _guard = state.poll_lock.lock().unwrap_or_else(|p| p.into_inner());
+    if state.catalog_decisions {
+        return poll_catalog(state);
+    }
     if !poll_allowed(state)? {
         return Ok(());
     }
@@ -498,7 +538,7 @@ fn poll_page(state: &State) -> Result<(), ConsentError> {
     // by card identity. Discarding a malformed record could lose consent.
     let mut problem = None;
     for record in records {
-        if let Err(error) = apply_record(state, sink.as_ref(), record) {
+        if let Err(error) = apply_record(state, sink.as_ref(), &DecisionPath::Legacy, record) {
             tracing::warn!(elicitation_id = ?record.get("elicitation_id"), %error, "consent answer was not applied; retaining page for retry");
             problem.get_or_insert(error);
         }
@@ -524,8 +564,19 @@ fn poll_page(state: &State) -> Result<(), ConsentError> {
 fn apply_record(
     state: &State,
     sink: &dyn DecisionSink,
+    path: &DecisionPath,
     record: &Value,
 ) -> Result<(), ConsentError> {
+    if matches!(path, DecisionPath::Consent(_)) && record.get("flow_decision").is_none() {
+        if record["state"] == "expired" && record["settled_at"].is_i64() {
+            return sink
+                .expire_on(path, field(record, "elicitation_id")?)
+                .map_err(sink_error);
+        }
+        return Err(ConsentError::Unavailable(
+            "consent answer has no decision body".into(),
+        ));
+    }
     // Old expired answers omit the install payload. Fetch the owned full
     // record before deciding so the decision keeps its flow identity.
     let full;
@@ -547,7 +598,9 @@ fn apply_record(
         // A decision card's answer. The page stays unacknowledged until
         // the sink has applied it, like an install decision.
         let answer = decision_answer(record)?;
-        if let Err(e) = sink.answer(&answer) {
+        // Consent requester v1 forbids consent.report_execution for
+        // flow_decision cards: these settle policy questions, not execution work.
+        if let Err(e) = sink.answer_on(path, &answer) {
             return Err(ConsentError::Unavailable(format!(
                 "applying the answer to {}: {e}",
                 answer.elicitation_id
@@ -585,6 +638,136 @@ fn apply_record(
         decided_by: "core:elicitation".into(),
     })
     .map_err(|e| ConsentError::Unavailable(e.to_string()))
+}
+
+fn sink_error(error: crate::SinkError) -> ConsentError {
+    ConsentError::Unavailable(error.to_string())
+}
+
+fn poll_catalog(state: &State) -> Result<(), ConsentError> {
+    let sink = state
+        .sink
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone()
+        .ok_or_else(|| ConsentError::Unavailable("decision sink is not attached".into()))?;
+    let startup = state.retry_page.load(Ordering::Acquire);
+    let mut paths: BTreeSet<_> = sink
+        .decision_paths()
+        .map_err(sink_error)?
+        .into_iter()
+        .collect();
+    paths.extend(
+        state
+            .retries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .cloned(),
+    );
+    let mut problem = None;
+    for path in paths {
+        let retry = state
+            .retries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains(&path);
+        if !startup && !retry && !sink.has_open_cards_on(&path).map_err(sink_error)? {
+            continue;
+        }
+        state
+            .retries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(path.clone());
+        let result = match &path {
+            DecisionPath::Legacy => poll_page(state),
+            DecisionPath::Consent(provider) => {
+                poll_consent_pages(state, sink.as_ref(), &path, provider)
+            }
+        };
+        match result {
+            Ok(()) => {
+                state
+                    .retries
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .remove(&path);
+            }
+            Err(error) => {
+                problem.get_or_insert(error);
+            }
+        }
+    }
+    state.retry_page.store(false, Ordering::Release);
+    problem.map_or(Ok(()), Err)
+}
+
+fn ack_consent(state: &State, provider: &str, cursor: i64) -> Result<(), ConsentError> {
+    let reply = state
+        .transport
+        .management(provider, "consent.ack", json!({"cursor":cursor}))
+        .map_err(error)?;
+    if reply["ok"] != true {
+        return Err(ConsentError::Unavailable(
+            "consent provider did not acknowledge the page".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn poll_consent_pages(
+    state: &State,
+    sink: &dyn DecisionSink,
+    path: &DecisionPath,
+    provider: &str,
+) -> Result<(), ConsentError> {
+    let mut since = sink.answer_cursor(path).map_err(sink_error)?;
+    // The durable cursor covers only fully applied pages. Retrying its ack is
+    // safe after a crash or a lost reply, including after the last card closed.
+    if since > 0 {
+        ack_consent(state, provider, since)?;
+    }
+    loop {
+        let reply = state
+            .transport
+            .management(provider, "consent.answers", json!({"since":since}))
+            .map_err(error)?;
+        let records = reply["records"]
+            .as_array()
+            .ok_or_else(|| ConsentError::Unavailable("answer page has no records".into()))?;
+        let cursor = reply["cursor"]
+            .as_i64()
+            .filter(|c| *c >= since)
+            .ok_or_else(|| ConsentError::Unavailable("answer cursor is invalid".into()))?;
+        let continuation = reply
+            .get("continuation")
+            .map(|c| {
+                c.as_i64()
+                    .filter(|c| *c == cursor && *c > since && !records.is_empty())
+                    .ok_or_else(|| {
+                        ConsentError::Unavailable("answer continuation is invalid".into())
+                    })
+            })
+            .transpose()?;
+        let mut problem = None;
+        for record in records {
+            if let Err(error) = apply_record(state, sink, path, record) {
+                problem.get_or_insert(error);
+            }
+        }
+        if let Some(error) = problem {
+            return Err(error);
+        }
+        sink.save_answer_cursor(path, cursor).map_err(sink_error)?;
+        // An empty final page can cover withdrawals and other owners' rows.
+        // Only the provider's returned cursor is acknowledged, never a guess.
+        ack_consent(state, provider, cursor)?;
+        since = cursor;
+        if continuation.is_none() {
+            return Ok(());
+        }
+    }
 }
 impl Consent for CoreConsent {
     fn withdraw_decision(&self, elicitation_id: &str) -> Result<(), ConsentError> {
@@ -635,6 +818,10 @@ impl Consent for CoreConsent {
     }
     fn attach(&self, sink: Arc<dyn DecisionSink>) {
         *self.state.sink.lock().unwrap_or_else(|p| p.into_inner()) = Some(sink);
+        if self.state.catalog_decisions {
+            self.state.retry_page.store(true, Ordering::Release);
+            self.state.raised();
+        }
         if self.polling && !self.state.poll_started.swap(true, Ordering::AcqRel) {
             // Reconcile once at startup even if the last answer already
             // closed its card before a crash between apply and ack.
