@@ -69,6 +69,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "subc-protocol",
  "tracing",
 ]
 
