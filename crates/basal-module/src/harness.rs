@@ -247,6 +247,7 @@ fn bind_request(handle: RouteHandle, who: &Value) -> RouteBindRequest {
         }),
         Value::Object(o) if o.contains_key("agent") => {
             let agent = o.get("agent").and_then(Value::as_str).map(str::to_owned);
+            let attributes = ScopeAttributes::new().with_agent_id(agent);
             request
                 .with_principal(Principal::Direct)
                 .with_scope(ScopeStamp {
@@ -258,11 +259,7 @@ fn bind_request(handle: RouteHandle, who: &Value) -> RouteBindRequest {
                     kind: ScopeKind::Head,
                     parent: None,
                     parent_state: None,
-                    attributes: ScopeAttributes {
-                        agent_id: agent,
-                        delegates: false,
-                        flow_id: None,
-                    },
+                    attributes,
                     owner_authorized: true,
                 })
         }

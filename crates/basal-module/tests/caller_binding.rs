@@ -65,11 +65,7 @@ fn scope(owner: &str, agent: &str, owner_authorized: bool, scope_ref: String) ->
         kind: ScopeKind::Head,
         parent: None,
         parent_state: None,
-        attributes: ScopeAttributes {
-            agent_id: Some(agent.to_owned()),
-            delegates: false,
-            flow_id: None,
-        },
+        attributes: ScopeAttributes::new().with_agent_id(Some(agent.to_owned())),
         owner_authorized,
     }
 }

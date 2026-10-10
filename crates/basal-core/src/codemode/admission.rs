@@ -253,9 +253,10 @@ fn attest(host: &dyn Host, scope: &FlowScope, request: &Value) -> Checked<String
         .attributes
         .agent_id
         .ok_or_else(|| Refusal::new("scope_mismatch", "scope has no attested agent identity"))?;
-    // Missing or non-string agent ids are invalid_request in request_fields.
-    // Compare only string identities here so a shape error is not mislabeled
-    // as an identity mismatch. A mismatched string refuses before other fields.
+    // Missing or non-string agent_id and run_id request fields are rejected as
+    // invalid_request by request_fields. Compare only string identities here
+    // so invalid field types are not mislabeled as scope_mismatch. Mismatched
+    // strings refuse before request-field, limit and catalog validation.
     if request
         .get("agent_id")
         .and_then(Value::as_str)
@@ -264,6 +265,20 @@ fn attest(host: &dyn Host, scope: &FlowScope, request: &Value) -> Checked<String
         return Err(Refusal::new(
             "scope_mismatch",
             "agent identity does not match the scope",
+        ));
+    }
+    let run_id = stamp
+        .attributes
+        .run_id
+        .ok_or_else(|| Refusal::new("scope_mismatch", "scope has no attested run identity"))?;
+    if request
+        .get("run_id")
+        .and_then(Value::as_str)
+        .is_some_and(|id| id != run_id)
+    {
+        return Err(Refusal::new(
+            "scope_mismatch",
+            "run identity does not match the scope",
         ));
     }
     Ok(agent_id)

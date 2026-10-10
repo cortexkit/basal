@@ -301,11 +301,7 @@ fn agent_on_scope(agent: &str, scope_ref: &str) -> Caller {
         kind: ScopeKind::Head,
         parent: None,
         parent_state: None,
-        attributes: ScopeAttributes {
-            agent_id: Some(agent.into()),
-            delegates: false,
-            flow_id: None,
-        },
+        attributes: ScopeAttributes::new().with_agent_id(Some(agent.into())),
         owner_authorized: true,
     };
     basal_module::caller::from_route(Some(&Principal::Direct), Some(&stamp))
