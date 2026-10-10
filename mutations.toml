@@ -13983,6 +13983,48 @@ old = 'if handle.join().is_err() {'
 new = 'if { drop(handle); false } { // NON-VACUITY BREAK'
 
 [[control]]
+id = "codemode-driver-sleeps-until-an-event"
+guards = "a run waiting on a held tool call sleeps until an event instead of waking on a short timer"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::a_run_waiting_on_a_held_tool_sleeps_until_the_answer_wakes_it"]
+only = true
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = 'let wait = Duration::from_millis(remaining as u64);'
+new = 'let wait = Duration::from_millis(remaining as u64).min(Duration::from_millis(10)); // NON-VACUITY BREAK'
+
+[[control]]
+id = "codemode-manual-clock-wakes-driver"
+guards = "moving a manual clock past a sleeping run's deadline ends the run without real time passing"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::a_manual_clock_jump_past_the_deadline_ends_a_sleeping_run"]
+only = true
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = 'self.shared.clock.watch(&watcher);'
+new = 'let _ = &watcher; // NON-VACUITY BREAK'
+
+[[control]]
+id = "codemode-shutdown-joins-worker-reader"
+guards = "shutdown waits for each run's worker reader thread to exit"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::shutdown_joins_the_worker_reader_of_a_cancelled_run"]
+only = true
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = '&& reader.join().is_err()'
+new = '&& !matches!(Some(reader), Some(_)) // NON-VACUITY BREAK'
+
+[[control]]
 id = "s7-codemode-dispatch-releases-store"
 guards = "a provider in flight does not pin the store or delay module shutdown"
 test_file = "crates/basal-module/tests/codemode.rs"

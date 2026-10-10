@@ -35,7 +35,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use basal_core::Clock;
-use basal_core::channel::{ChannelError, WorkerChannel};
+use basal_core::channel::{ChannelError, WorkerChannel, WorkerReceiver};
 use basal_proto::{Confinement, LANDLOCK_ABI, ParentMessage, Welcome, WorkerMessage};
 
 use crate::metrics::Metrics;
@@ -907,6 +907,13 @@ impl WorkerChannel for Lease {
         match self.process.as_mut() {
             Some(p) => p.recv(timeout),
             None => Err(ChannelError::Closed),
+        }
+    }
+
+    fn receiver(&mut self) -> Box<dyn WorkerReceiver> {
+        match self.process.as_ref() {
+            Some(p) => p.receiver(),
+            None => Box::new(crate::process::Ended),
         }
     }
 

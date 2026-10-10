@@ -460,6 +460,9 @@ impl crate::WorkerChannel for IdleWorker {
     ) -> std::result::Result<basal_proto::WorkerMessage, crate::ChannelError> {
         panic!("no activation")
     }
+    fn receiver(&mut self) -> Box<dyn crate::channel::WorkerReceiver> {
+        panic!("no activation")
+    }
     fn kill(&mut self) {
         self.killed = true;
     }

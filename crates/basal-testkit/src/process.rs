@@ -48,7 +48,9 @@ type Incoming = Result<WorkerMessage, ParentError>;
 pub struct WorkerProcess {
     child: Child,
     stdin: Option<ChildStdin>,
-    incoming: Receiver<Incoming>,
+    /// Shared so that a receiver split off for another thread reads the same
+    /// frames (see [`WorkerProcess::receiver`]).
+    incoming: Arc<Mutex<Receiver<Incoming>>>,
     stderr: Arc<Mutex<Vec<u8>>>,
 }
 
@@ -123,7 +125,7 @@ impl WorkerProcess {
         Ok(Self {
             child,
             stdin,
-            incoming,
+            incoming: Arc::new(Mutex::new(incoming)),
             stderr,
         })
     }
@@ -174,10 +176,22 @@ impl WorkerProcess {
     }
 
     pub fn recv(&self, timeout: Duration) -> Result<WorkerMessage, ParentError> {
-        match self.incoming.recv_timeout(timeout) {
+        let incoming = self.incoming.lock().unwrap_or_else(|p| p.into_inner());
+        match incoming.recv_timeout(timeout) {
             Ok(message) => message,
             Err(RecvTimeoutError::Timeout) => Err(ParentError::Timeout),
             Err(RecvTimeoutError::Disconnected) => Err(ParentError::Closed),
+        }
+    }
+
+    /// Blocks until the next frame or the end of the worker's stdout. Unlike
+    /// [`WorkerProcess::recv`] it can run on another thread while this one
+    /// keeps sending; a kill closes stdout and so ends the wait.
+    pub fn receiver(&self) -> impl FnMut() -> Result<WorkerMessage, ParentError> + Send + 'static {
+        let incoming = self.incoming.clone();
+        move || {
+            let incoming = incoming.lock().unwrap_or_else(|p| p.into_inner());
+            incoming.recv().unwrap_or(Err(ParentError::Closed))
         }
     }
 
