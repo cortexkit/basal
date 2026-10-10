@@ -222,6 +222,55 @@ cmd_config
             self.assertIn(f'"BASAL_RIG_UNSCOPED_FILE": "{path}"', result.stdout)
             self.assertIn(f"--unscoped-file {path}", result.stdout)
 
+    def test_live_contract_receives_the_registered_isolated_project_root(self):
+        with tempfile.TemporaryDirectory() as home:
+            result = self.run_shell('''
+guard_all_paths
+date() { printf '%s\n' 20260101T000000Z; }
+daemon_pid() { printf '%s\n' 123; }
+check_daemon_identity() { :; }
+ensure_project() { printf '%s\n' pj_fixture; }
+write_manifest() { mkdir -p "$RESULTS/$1"; }
+basal_mode() { printf '%s\n' rig-build; }
+mkdir -p "$RIG"
+CONTRACT="$RIG/ckdev-contract"
+printf '#!/bin/sh\nexit 0\n' > "$CONTRACT"
+chmod 755 "$CONTRACT"
+rig_env() { printf '%s\n' "$@" > "$RIG/captured-argv"; }
+cmd_test
+''', home)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            rig = Path(home) / ".local/share/cortexkit/ckdev-flows"
+            args = (rig / "captured-argv").read_text().splitlines()
+            self.assertEqual(args[args.index("--project-root") + 1],
+                             str(rig / "home/projects/basal-rig-20260101t000000z"))
+
+    def test_core_revision_comes_from_the_manifest_and_must_match(self):
+        with tempfile.TemporaryDirectory() as home:
+            manifest = Path(home) / "manifest.json"
+            manifest.write_text(json.dumps({"manifest": {"provenance": {"build_git_sha": "expected"}}}))
+            good = self.run_shell('/bin/cat "$HOME/manifest.json" | core_revision expected', home)
+            self.assertEqual(good.returncode, 0, good.stderr)
+            self.assertEqual(good.stdout.strip(), "expected")
+            bad = self.run_shell('/bin/cat "$HOME/manifest.json" | core_revision other', home)
+            self.assertNotEqual(bad.returncode, 0)
+            self.assertIn("does not match", bad.stderr)
+
+    def test_real_cingulate_is_pinned_placed_and_configured_in_the_isolated_rig(self):
+        with tempfile.TemporaryDirectory() as home:
+            result = self.run_shell('''
+guard_all_paths
+DRY=1
+binaries
+modules
+cmd_config
+''', home)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("cingulate\tcingulate\tck-cingulate\tckdev-cingulate", result.stdout)
+            self.assertIn("cingulate\tckdev-cingulate", result.stdout)
+            self.assertIn(f'"program": "{home}/.local/share/cortexkit/ckdev-flows/bin/ckdev-cingulate"', result.stdout)
+            self.assertIn("cingulate_rev=bd609a5fbdba12395f3bfe7a97a6bbdbee8b0fbc", HELPERS)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

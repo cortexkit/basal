@@ -12,7 +12,7 @@ rust-version.workspace = true
 [[bin]]
 name = "ck-callosum-stub"
 path = "src/bin/ck-callosum-stub.rs"
-test = false
+test = true
 
 # Run by `script/flows-rig.sh test` against a started rig. `cargo test` builds
 # it but never runs it.
@@ -23,9 +23,14 @@ test = true
 
 [dependencies]
 async-trait.workspace = true
+blake3.workspace = true
 rusqlite.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 subc-client-rs.workspace = true
 subc-protocol.workspace = true
 tokio = { workspace = true, features = ["sync", "time"] }
+
+[dev-dependencies]
+basal-host.workspace = true
+basal-proto.workspace = true

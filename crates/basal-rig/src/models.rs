@@ -47,8 +47,8 @@ pub fn selected_luna(selection: &Value) -> bool {
 }
 
 pub fn frozen_send(snapshot: &Value) -> Option<Value> {
-    let bytes: Vec<u8> = serde_json::from_value(snapshot["params"].clone()).ok()?;
-    serde_json::from_slice(&bytes).ok()
+    let text = snapshot["params"].as_str()?;
+    serde_json::from_str(text).ok()
 }
 
 pub fn no_tools(send: &Value) -> bool {
@@ -231,10 +231,57 @@ mod tests {
 
     #[test]
     fn frozen_send_decodes_real_bytes_not_the_envelope() {
-        let send = json!({"tools":[],"tool_choice":{"type":"none"}});
-        let snapshot =
-            json!({"params":serde_json::to_vec(&send).unwrap(), "envelope":"not a send"});
+        use basal_host::broca::{Route, StoredCall, wire::ModelParams};
+        use basal_host::selector::ModelSelection;
+        use basal_proto::JsonText;
+
+        let send = json!({"tools":[],"tool_choice":{"type":"none"},"prompt":"fixture"});
+        let params = JsonText::new(send.to_string()).unwrap();
+        // StoredCall serializes the frozen send's UTF-8 bytes as a JSON string.
+        // Use that serializer instead of guessing the persisted snapshot shape.
+        let call = StoredCall {
+            deferred: false,
+            route: Route {
+                flow_id: Some("flow".into()),
+                project_root: "/rig".into(),
+                harness: "basal".into(),
+                session: "basal:fixture".into(),
+            },
+            basal_run_id: "run".into(),
+            position: 0,
+            send_id: "send".into(),
+            params: params.as_str().as_bytes().to_vec(),
+            envelope: "not a send".into(),
+            labels: None,
+            handle: None,
+            broca_run_id: None,
+            state: None,
+            outcome: None,
+            unknown: None,
+            acknowledged: false,
+            report_attempted: false,
+            selection: ModelSelection {
+                provider_id: "openai".into(),
+                model_id: "gpt-6-luna".into(),
+                variant: None,
+                decision_id: "decision".into(),
+                runner: ModelParams {
+                    provider: "openai".into(),
+                    model: "gpt-6-luna".into(),
+                    variant: None,
+                },
+            },
+        };
+        let snapshot = serde_json::to_value(call).unwrap();
+        assert_eq!(snapshot["params"].as_str(), Some(params.as_str()));
         assert_eq!(frozen_send(&snapshot), Some(send));
-        assert_eq!(frozen_send(&json!({"params":[255]})), None);
+        for invalid in [
+            json!({"params":"not json"}),
+            json!({"params":[255]}),
+            json!({"envelope":{"tools":[],"tool_choice":{"type":"none"}}}),
+            Value::Null,
+        ] {
+            assert_eq!(frozen_send(&invalid), None);
+        }
     }
 }

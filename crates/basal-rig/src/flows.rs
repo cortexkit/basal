@@ -118,6 +118,16 @@ pub fn quiet(id: &str, agent: &str, purpose: &str) -> Flow {
     }
 }
 
+/// A persona package exercises both the activation identity and literal `$self` grants.
+pub fn package(id: &str) -> Flow {
+    Flow {
+        id: id.into(),
+        version: 1,
+        manifest: manifest(id, "Write to this instance's own agent.", "$self", false),
+        script: "const digest = await sink.digest('$self', {title:'basal rig package', body:'self sink', data:{}, links:[]}, 'piggyback');\nconst status = await sink.status(self.agent_id, 'basal rig package');\nreturn {identity:self, digest, status};".into(),
+    }
+}
+
 /// The crash flow: one digest item, the run's only remote call, so it is
 /// journaled at position 0 (the journal counts positions from 0).
 pub fn crash(id: &str, agent: &str) -> Flow {

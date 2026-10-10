@@ -4,7 +4,7 @@
 # The rig is a private subc daemon with its own port, its own XDG homes under
 # ~/.local/share/cortexkit/ckdev-flows/ and its own ckdev-* binaries, every
 # one built here from a named revision. It runs the credentials vault,
-# Fusiform, Broca, entorhinal, prefrontal-core, prefrontal-routing, ck-basal and a
+# Fusiform, Broca, entorhinal, cingulate, prefrontal-core, prefrontal-routing, ck-basal and a
 # rig-only callosum stub that answers consent cards as the operator. It never
 # reads, writes or starts anything belonging to the production daemon or to
 # another rig.
@@ -13,7 +13,7 @@
 #   script/flows-rig.sh build --prefrontal-rev <rev> [--subc-rev <rev>]
 #                             [--broca-rev <rev>] [--credentials-rev <rev>]
 #                             [--commons-rev <rev>] [--entorhinal-rev <rev>]
-#                             [--fusiform-rev <rev>]
+#                             [--fusiform-rev <rev>] [--cingulate-rev <rev>]
 #                             [--sibling-lock <repo>]... [--dry-run]
 #   script/flows-rig.sh place    [--from-stage <dir>] [--dry-run]
 #   script/flows-rig.sh config   [--dry-run]
@@ -29,8 +29,8 @@
 #
 # Subcommands:
 #   build     clone each repository at the named revision and build it.
-#             --prefrontal-rev is required; the others default to their
-#             checkout's HEAD. basal is always built from this checkout's
+#             --prefrontal-rev is required; cingulate defaults to the pinned
+#             consent/v1 build below, and other repositories default to HEAD. basal is always built from this checkout's
 #             HEAD, without uncommitted changes. The source checkouts are
 #             only read. A build that changes a tracked file fails, except
 #             that --sibling-lock <repo> lets that repository's Cargo.lock
@@ -132,8 +132,12 @@
 # prefrontal 73c66ff1f or later, plus a basal build that opens scoped Broca
 # routes. The scope checks require Broca's flow_scope_required enforcement;
 # every refusal is checked, never assumed. Any scope_owner_mismatch must not
-# be bypassed. Other repos use HEAD:
-#   script/flows-rig.sh build --prefrontal-rev 73c66ff1f --sibling-lock claustrum
+# be bypassed.
+# Core's package cards use cingulate's consent/v1 API; basal's ordinary install
+# cards still use core's legacy elicitation owner API at this revision.
+# Cingulate's default pins the consent API being tested before deployment;
+# after deployment, pass the placed revision explicitly to test the same bytes.
+#   script/flows-rig.sh build --prefrontal-rev 058842e562de42be3af8aac44392151d3141c8fe --cingulate-rev bd609a5fbdba12395f3bfe7a97a6bbdbee8b0fbc --sibling-lock claustrum
 set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
@@ -409,6 +413,7 @@ broca	$WORKSPACE/broca
 claustrum	$WORKSPACE/claustrum
 entorhinal	$WORKSPACE/entorhinal
 fusiform	$WORKSPACE/fusiform
+cingulate	$WORKSPACE/cingulate
 prefrontal	$WORKSPACE/prefrontal
 basal	$ROOT
 EOF
@@ -429,6 +434,7 @@ auth	claustrum	ck-auth	ckdev-auth
 entorhinal	entorhinal	ck-entorhinal	ckdev-entorhinal
 fusiform	fusiform	ck-fusiform	ckdev-fusiform
 models	fusiform	ck-models	ckdev-models
+cingulate	cingulate	ck-cingulate	ckdev-cingulate
 prefrontal-core	prefrontal	ck-prefrontal-core	ckdev-prefrontal-core
 prefrontal-routing	prefrontal	ck-prefrontal-routing	ckdev-prefrontal-routing
 basal	basal	ck-basal	ckdev-basal
@@ -444,6 +450,7 @@ claustrum	ckdev-claustrum
 broca	ckdev-broca
 fusiform	ckdev-fusiform
 entorhinal	ckdev-entorhinal
+cingulate	ckdev-cingulate
 prefrontal-core	ckdev-prefrontal-core
 prefrontal-routing	ckdev-prefrontal-routing
 basal	ckdev-basal
@@ -475,6 +482,7 @@ cmd_build() {
   commons_rev=HEAD
   entorhinal_rev=HEAD
   fusiform_rev=HEAD
+  cingulate_rev=bd609a5fbdba12395f3bfe7a97a6bbdbee8b0fbc
   sibling_lock=""
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -486,6 +494,7 @@ cmd_build() {
       --commons-rev) [ $# -ge 2 ] || usage; commons_rev=$2; shift 2 ;;
       --entorhinal-rev) [ $# -ge 2 ] || usage; entorhinal_rev=$2; shift 2 ;;
       --fusiform-rev) [ $# -ge 2 ] || usage; fusiform_rev=$2; shift 2 ;;
+      --cingulate-rev) [ $# -ge 2 ] || usage; cingulate_rev=$2; shift 2 ;;
       *) usage ;;
     esac
   done
@@ -510,6 +519,7 @@ cmd_build() {
       claustrum) rev=$credentials_rev ;;
       entorhinal) rev=$entorhinal_rev ;;
       fusiform) rev=$fusiform_rev ;;
+      cingulate) rev=$cingulate_rev ;;
       prefrontal) rev=$prefrontal_rev ;;
       basal) rev=HEAD ;;
     esac
@@ -530,6 +540,7 @@ EOF_REPOS
   cargo_build entorhinal "" -p entorhinal-module --bin ck-entorhinal
   cargo_build fusiform "" -p fusiform-module --bin ck-fusiform
   cargo_build fusiform "" -p fusiform-cli --bin ck-models
+  cargo_build cingulate "" -p ck-cingulate --bin ck-cingulate
   prefrontal_sha=$(printf '%s' "$stack" | awk -F'\t' '$1=="prefrontal"{print $4}')
   # prefrontal's build scripts embed the revision they were told; the clone
   # is at that exact commit with no local changes, so it is not dirty.
@@ -837,6 +848,14 @@ cmd_config() (
       "args": [],
       "env": {},
       "enabled": true
+    },
+    // Core discovers this real consent/v1 provider for flow and package cards.
+    "cingulate": {
+      "program": "$BIN/ckdev-cingulate",
+      "args": [],
+      "env": {},
+      "enabled": true,
+      "reserved": true
     },
     // Core runs its projects registry consumer against the rig's entorhinal,
     // as in production.
@@ -1322,7 +1341,10 @@ EOF_BINARIES
   fi
   source_tsv="rig-build"
   [ ! -f "$BASAL_SOURCE" ] || source_tsv=$(cat "$BASAL_SOURCE")
-  json=$(REPOS="$repos_tsv" BINS="$bins_tsv" python3 - "$stamp" "$RIG" "$PORT" \
+  expected_core=$(printf '%s' "$repos_tsv" | awk -F'\t' '$1=="prefrontal"{print $4}')
+  core_sha=$(rig_env "$BIN/ckdev-prefrontal-core" --print-manifest | core_revision "$expected_core") \
+    || die "the placed core does not report the built revision"
+  json=$(REPOS="$repos_tsv" BINS="$bins_tsv" CORE_SHA="$core_sha" python3 - "$stamp" "$RIG" "$PORT" \
       "$CONTRACT" "$contract_sum" "$source_tsv" "$ROUTING_CONFIG" <<'PY'
 import hashlib, json, os, sys
 stamp, rig, port = sys.argv[1], sys.argv[2], int(sys.argv[3])
@@ -1340,6 +1362,7 @@ print(json.dumps({
     "root": rig,
     "port": port,
     "written_at": stamp,
+    "core_build_git_sha": os.environ["CORE_SHA"],
     "routing": {
         "config_path": sys.argv[7],
         "sha256": hashlib.sha256(routing_bytes).hexdigest(),
@@ -1397,6 +1420,7 @@ cmd_test() (
     say "+ rig_env $CONTRACT --core-store $CORE_STORE --basal-store $BASAL_STORE"
     say "    --machine-id $MACHINE_ID --kill-file $KILL_FILE --project-id <the project>"
     say "    --unscoped-file $UNSCOPED_FILE"
+    say "    --project-root $PROJECTS/basal-rig-$(printf '%s' "$stamp" | tr '[:upper:]' '[:lower:]')"
     say "    --results $dir/contract.json"
     say "    --broca-index $BROCA_INDEX"
     if [ "$models" = 1 ]; then
@@ -1421,6 +1445,7 @@ cmd_test() (
     check_daemon_identity "$pid"
   fi
   project_id=$(ensure_project "$stamp")
+  project_root="$PROJECTS/basal-rig-$(printf '%s' "$stamp" | tr '[:upper:]' '[:lower:]')"
   write_manifest "$stamp"
   guard_path "$dir/contract.log"
   guard_path "$dir/contract.json"
@@ -1445,6 +1470,7 @@ cmd_test() (
   set +e
   rig_env "$CONTRACT" --core-store "$CORE_STORE" --basal-store "$BASAL_STORE" \
     --machine-id "$MACHINE_ID" --kill-file "$KILL_FILE" --unscoped-file "$UNSCOPED_FILE" --project-id "$project_id" \
+    --project-root "$project_root" \
     --results "$dir/contract.json" --broca-index "$BROCA_INDEX" "$@" > "$dir/contract.log" 2>&1
   status=$?
   set -e
@@ -1506,6 +1532,16 @@ if sys.argv[1] == "registered":
     print(r["projectId"] if r.get("projectName") and not r.get("gone") else "")
 else:
     print(r.get("workspaceId") or "")' "$1"
+}
+
+# Core's version flag is silent; its manifest carries the build's revision.
+core_revision() {
+  python3 -c 'import json, sys
+actual = json.load(sys.stdin)["manifest"]["provenance"]["build_git_sha"]
+expected = sys.argv[1]
+if actual != expected:
+    sys.exit("core manifest revision does not match the rig build")
+print(actual)' "$1"
 }
 
 # ---------------------------------------------------------------- main

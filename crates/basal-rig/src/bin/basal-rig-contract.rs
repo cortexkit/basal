@@ -9,6 +9,7 @@
 //! basal-rig-contract --core-store <file> --basal-store <file>
 //!     --machine-id <file> --kill-file <file> --unscoped-file <file> --results <file>
 //!     --project-id <pj-…> --broca-index <file> [--no-kill-hook] [--models]
+//!     --project-root <rig project directory>
 //! ```
 //!
 //! `--no-kill-hook` is for a rig running a staged production ck-basal
@@ -43,6 +44,13 @@ use basal_rig::stores::{
 use serde_json::{Map, Value, json};
 use subc_protocol::BindIdentity;
 
+#[path = "basal-rig-contract/ownership.rs"]
+mod ownership;
+#[path = "basal-rig-contract/package_cases.rs"]
+mod package_cases;
+#[path = "basal-rig-contract/seeded.rs"]
+mod seeded;
+
 const CORE: &str = "prefrontal-core";
 const BASAL: &str = "basal";
 /// How long a flow approved now may take to finish its first run: up to a
@@ -74,6 +82,7 @@ struct Args {
     unscoped_file: PathBuf,
     results: PathBuf,
     project_id: String,
+    project_root: PathBuf,
     /// ck-basal has no kill switch, so the crash case is not run.
     no_kill_hook: bool,
     models: bool,
@@ -113,6 +122,7 @@ fn parse_args() -> Result<Args, String> {
         unscoped_file: take("--unscoped-file")?,
         results: take("--results")?,
         project_id: take("--project-id")?.to_string_lossy().into_owned(),
+        project_root: take("--project-root")?,
         no_kill_hook,
         models,
     };
@@ -138,6 +148,8 @@ struct Case {
     evidence: Map<String, Value>,
     /// Why the case was not run, for a case the rig cannot exercise.
     not_run: Option<String>,
+    /// Why an operation cannot complete, such as a provider rejecting the package card schema.
+    blocked: Option<String>,
 }
 
 impl Case {
@@ -148,6 +160,7 @@ impl Case {
             checks: Vec::new(),
             evidence: Map::new(),
             not_run: None,
+            blocked: None,
         }
     }
 
@@ -158,6 +171,7 @@ impl Case {
             checks: Vec::new(),
             evidence: Map::new(),
             not_run: Some(reason.into()),
+            blocked: None,
         }
     }
 
@@ -180,6 +194,9 @@ impl Case {
     }
 
     fn to_json(&self) -> Value {
+        if let Some(reason) = &self.blocked {
+            return json!({"case":self.name,"passed":Value::Null,"blocked":reason,"checks":self.checks,"evidence":self.evidence});
+        }
         match &self.not_run {
             // `passed` is null, not false and not true: nothing was checked.
             Some(reason) => json!({
@@ -282,7 +299,8 @@ impl Rig {
         (listed, entry)
     }
 
-    /// Core's pending card for one flow version, as the operator sees it.
+    /// Ordinary flow install cards live in core's elicitation API; package cards
+    /// instead live in the consent/v1 provider. Query the ordinary card's store.
     async fn card(&self, flow: &Flow) -> Option<Value> {
         poll(Duration::from_secs(20), || async {
             let listed = self
@@ -644,6 +662,17 @@ async fn install_and_answer(
     agent: Option<&Agent>,
     choice: &str,
 ) -> Option<Value> {
+    install_with_pause(rig, case, flow, agent, choice, false).await
+}
+
+async fn install_with_pause(
+    rig: &Rig,
+    case: &mut Case,
+    flow: &Flow,
+    agent: Option<&Agent>,
+    choice: &str,
+    pause_before_approval: bool,
+) -> Option<Value> {
     let installed = match agent {
         Some(agent) => {
             let relayed = rig.relay(agent, "install", install_params(flow)).await;
@@ -677,6 +706,12 @@ async fn install_and_answer(
         return None;
     };
     case.record("card", card.clone());
+    let requester = rig.core.legacy_requester(&flow.id);
+    case.check(
+        "core attested the ckdev-basal requester as reserved:basal, not its filename",
+        requester == Ok(Some("reserved:basal".into())),
+        json!(requester),
+    );
     check_rendered(case, &card, flow);
     let pending = rig.health(&flow.id).await;
     case.check(
@@ -694,10 +729,23 @@ async fn install_and_answer(
         );
         return None;
     };
+    // A global flow can normally write to its foreign recipient immediately after
+    // approval. Pause it first so it cannot write before core's authorship row is
+    // seeded. Approval changes version/owner but does not lift flow.disable.
+    if pause_before_approval {
+        let paused = rig.disable(&flow.id).await;
+        if !case.check(
+            "pause the pending flow before approval and its first schedule boundary",
+            paused.is_ok(),
+            evidence(&paused),
+        ) {
+            return None;
+        }
+    }
     let answered = rig.answer(&card, &choice_id).await;
     case.record("answer_reply", evidence(&answered));
     case.check(
-        &format!("the operator's '{choice}' is accepted by core"),
+        &format!("the operator's '{choice}' is accepted by core's legacy card API"),
         answered.as_ref().is_ok_and(|r| r["ok"] == true),
         evidence(&answered),
     );
@@ -2019,6 +2067,9 @@ async fn suite(
         json!(if args.models { 4112 } else { 0 }),
     );
     let model_result = models(&rig, args, &agent, &tag, cases).await;
+    cases.push(ownership::cross_agent(&rig, &agent, &tag, &machine_id).await);
+    cases.push(package_cases::registration(&rig, &tag).await);
+    cases.extend(package_cases::lifecycle(&rig, &agent, args, &tag).await);
 
     let mut cleanup = Case::new("cleanup");
     let mut cleanup_ids = vec![
@@ -2027,12 +2078,24 @@ async fn suite(
         crash_flow.id.clone(),
         relayed_flow.id.clone(),
         declined_flow.id.clone(),
+        format!("rig-owner-{tag}"),
+        basal_rig::packages::instance_id(&format!("rig-package-{tag}"), &agent.id),
     ];
     for kind in ["first", "classify", "cap", "crash", "unscoped"] {
         cleanup_ids.push(format!("rig-model-{kind}-{tag}"));
     }
     for flow_id in cleanup_ids {
-        if rig.basal.flow_enabled(&flow_id) == Ok(Some(true)) {
+        let instance = rig.basal.instance(&flow_id);
+        cleanup.check(
+            &format!("read {flow_id} removal state"),
+            instance.is_ok(),
+            json!(&instance),
+        );
+        let removed = instance
+            .ok()
+            .flatten()
+            .is_some_and(|i| i["removed"] == true);
+        if rig.basal.flow_enabled(&flow_id) == Ok(Some(true)) && !removed {
             let disabled = rig.disable(&flow_id).await;
             cleanup.check(
                 &format!("disable {flow_id}"),
@@ -2042,8 +2105,10 @@ async fn suite(
         }
         let enabled = rig.basal.flow_enabled(&flow_id);
         cleanup.check(
-            &format!("{flow_id} is left disabled or was never installed"),
-            enabled.as_ref().is_ok_and(|enabled| *enabled != Some(true)),
+            &format!("{flow_id} is left disabled, removed or was never installed"),
+            enabled
+                .as_ref()
+                .is_ok_and(|enabled| *enabled != Some(true) || removed),
             json!(enabled),
         );
     }
@@ -2093,10 +2158,11 @@ fn main() -> std::process::ExitCode {
         println!("ABORTED: {e}");
     }
     let not_run: Vec<&Case> = cases.iter().filter(|c| c.not_run.is_some()).collect();
+    let blocked: Vec<&Case> = cases.iter().filter(|c| c.blocked.is_some()).collect();
     let passed = outcome.is_ok()
         && cases
             .iter()
-            .filter(|c| c.not_run.is_none())
+            .filter(|c| c.not_run.is_none() && c.blocked.is_none())
             .all(Case::passed);
     let checks: usize = cases.iter().map(|c| c.checks.len()).sum();
     let failed: usize = cases
@@ -2109,6 +2175,8 @@ fn main() -> std::process::ExitCode {
         "started_at_ms": started,
         "finished_at_ms": now_ms(),
         "passed": passed,
+        "complete": blocked.is_empty() && not_run.is_empty(),
+        "blocked": blocked.iter().map(|c| json!({"case":c.name,"reason":c.blocked})).collect::<Vec<_>>(),
         "aborted": outcome.err(),
         "checks": checks,
         "failed_checks": failed,
@@ -2145,8 +2213,9 @@ fn main() -> std::process::ExitCode {
         ),
     };
     println!(
-        "{} checks, {failed} failed{skipped}; results in {}",
+        "{} checks, {failed} failed{skipped}, {} BLOCKED item(s); results in {}",
         checks,
+        blocked.len(),
         args.results.display()
     );
     if passed {

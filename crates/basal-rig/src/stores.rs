@@ -37,6 +37,43 @@ pub struct Receipt {
 }
 
 impl CoreStore {
+    /// Core records the daemon-attested requester on each card. This proves the
+    /// ckdev-basal process was admitted as reserved:basal, not as a local caller.
+    pub fn legacy_requester(&self, flow_id: &str) -> Result<Option<String>, String> {
+        let c = open(&self.path)?;
+        c.query_row("SELECT requester_principal FROM elicitation_records WHERE json_extract(record_json,'$.request.flow_install.flow_id')=?1 ORDER BY rowid DESC LIMIT 1", [flow_id], |r| r.get(0))
+            .optional().map_err(|e| e.to_string())
+    }
+
+    /// Core persists the rendered package request before sending it to consent.
+    pub fn package_intent(&self, package: &str) -> Result<Option<Value>, String> {
+        let c = open(&self.path)?;
+        let row = c.query_row("SELECT version,attempt,provider,request_json,state,elicitation_id FROM package_consent_intent WHERE package=?1 ORDER BY attempt DESC LIMIT 1",[package], |r| Ok((
+            r.get::<_, i64>(0)?,r.get::<_, i64>(1)?,r.get::<_, String>(2)?,r.get::<_, String>(3)?,r.get::<_, String>(4)?,r.get::<_, Option<String>>(5)?
+        ))).optional().map_err(|e| e.to_string())?;
+        row.map(|(version,attempt,provider,request,state,id)| {
+            let request: Value = serde_json::from_str(&request).map_err(|e| e.to_string())?;
+            Ok(json!({"version":version,"attempt":attempt,"provider":provider,"request":request,"state":state,"elicitation_id":id}))
+        }).transpose()
+    }
+
+    /// Digest writes are checked independently of receipts, including refused calls.
+    pub fn digest_rows(&self, agent_id: &str, flow_id: &str) -> Result<Value, String> {
+        let c = open(&self.path)?;
+        let mut s = c.prepare("SELECT fire_id, agent_id, origin_flow_id, origin_flow_version FROM wake_fire WHERE agent_id=?1 AND origin_flow_id=?2 ORDER BY rowid")
+            .map_err(|e| e.to_string())?;
+        s.query_map(params![agent_id, flow_id], |r| {
+            Ok(json!({
+                "fire_id": r.get::<_, String>(0)?, "agent_id": r.get::<_, String>(1)?,
+                "flow_id": r.get::<_, String>(2)?, "version": r.get::<_, i64>(3)?
+            }))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map(Value::Array)
+        .map_err(|e| e.to_string())
+    }
+
     /// The scope selector (owner, ref, epoch) core recorded for a flow version
     /// once the daemon accepted its scope registration, or None before that.
     /// A null reachability column means the registration hasn't been accepted.
@@ -131,10 +168,24 @@ pub struct Call {
 }
 
 impl BasalStore {
+    /// Join generations on the flow's stored package and owner: the counter is
+    /// per package/agent, not version. Keep removal separate from enabled state
+    /// so removing an instance cannot be mistaken for disabling it.
+    pub fn instance(&self, flow_id: &str) -> Result<Option<Value>, String> {
+        let c = open(&self.path)?;
+        c.query_row("SELECT f.owner,f.package,f.state,f.approved_version,f.removed,f.disabled_by,f.disabled_reason,f.disabled_at,g.generation,g.operation,g.reply
+            FROM flows f JOIN instance_generations g ON g.package=f.package AND g.agent_id=f.owner WHERE f.flow_id=?1",[flow_id],|r|Ok(json!({
+            "flow_id":flow_id,"agent_id":r.get::<_,String>(0)?,"package":r.get::<_,String>(1)?,"state":r.get::<_,String>(2)?,
+            "version":r.get::<_,i64>(3)?,"removed":r.get::<_,bool>(4)?,"disabled_by":r.get::<_,Option<String>>(5)?,
+            "disabled_reason":r.get::<_,Option<String>>(6)?,"disabled_at":r.get::<_,Option<i64>>(7)?,"generation":r.get::<_,i64>(8)?,
+            "operation":r.get::<_,String>(9)?,"reply":r.get::<_,String>(10)?
+        }))).optional().map_err(|e|e.to_string())
+    }
+
     pub fn flow_enabled(&self, flow_id: &str) -> Result<Option<bool>, String> {
         let c = open(&self.path)?;
         c.query_row(
-            "SELECT enabled FROM flows WHERE flow_id = ?1",
+            "SELECT state = 'enabled' FROM flows WHERE flow_id = ?1",
             [flow_id],
             |r| r.get(0),
         )

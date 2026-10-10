@@ -302,3 +302,102 @@ fn wal_no_record_reader_rejects_record_bytes_and_partial_writes_at_the_pinned_ad
     assert!(store.wal_has_no_records(&Value::Null).is_err());
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn digest_evidence_reads_the_recipient_and_flow_from_core_rows() {
+    let scratch = Scratch::new();
+    let c = Connection::open(&scratch.0).unwrap();
+    c.execute_batch("CREATE TABLE wake_fire(fire_id TEXT, agent_id TEXT, origin_flow_id TEXT, origin_flow_version INTEGER);
+        INSERT INTO wake_fire VALUES ('foreign-hit','foreign','probe',1), ('owner-hit','owner','probe',1), ('other-flow','foreign','different',2);").unwrap();
+    let store = CoreStore {
+        path: scratch.0.clone(),
+    };
+    assert_eq!(
+        store.digest_rows("foreign", "probe").unwrap(),
+        json!([{"fire_id":"foreign-hit","agent_id":"foreign","flow_id":"probe","version":1}])
+    );
+    assert_eq!(store.digest_rows("absent", "probe").unwrap(), json!([]));
+    c.execute_batch("DROP TABLE wake_fire;").unwrap();
+    assert!(store.digest_rows("foreign", "probe").is_err());
+}
+
+#[test]
+fn package_intent_evidence_keeps_the_provider_rejection_and_rendered_body() {
+    let scratch = Scratch::new();
+    let c = Connection::open(&scratch.0).unwrap();
+    c.execute_batch("CREATE TABLE package_consent_intent(package TEXT,version INTEGER,attempt INTEGER,provider TEXT,request_json TEXT,state TEXT,elicitation_id TEXT);
+        INSERT INTO package_consent_intent VALUES ('package',1,2,'cingulate','{\"kind\":\"package\",\"package\":{\"manifest_json\":\"exact bytes\"}}','rejected',NULL);
+        INSERT INTO package_consent_intent VALUES ('other',1,3,'other-provider','{}','prepared',NULL);").unwrap();
+    let store = CoreStore {
+        path: scratch.0.clone(),
+    };
+    let intent = store.package_intent("package").unwrap().unwrap();
+    assert_eq!(intent["provider"], "cingulate");
+    assert_eq!(intent["state"], "rejected");
+    assert_eq!(intent["attempt"], 2);
+    assert_eq!(intent["request"]["package"]["manifest_json"], "exact bytes");
+    assert_eq!(store.package_intent("absent").unwrap(), None);
+    c.execute_batch("UPDATE package_consent_intent SET request_json='not json';")
+        .unwrap();
+    assert!(store.package_intent("package").is_err());
+}
+
+#[test]
+fn flow_enable_evidence_reads_basals_state_column() {
+    let scratch = Scratch::new();
+    let c = Connection::open(&scratch.0).unwrap();
+    c.execute_batch("CREATE TABLE flows(flow_id TEXT,state TEXT); INSERT INTO flows VALUES ('enabled-flow','enabled'),('disabled-flow','disabled');").unwrap();
+    let store = BasalStore {
+        path: scratch.0.clone(),
+    };
+    assert_eq!(store.flow_enabled("enabled-flow").unwrap(), Some(true));
+    assert_eq!(store.flow_enabled("disabled-flow").unwrap(), Some(false));
+    assert_eq!(store.flow_enabled("absent").unwrap(), None);
+}
+
+#[test]
+fn legacy_card_requester_reads_the_attested_principal_for_this_flow() {
+    let scratch = Scratch::new();
+    let c = Connection::open(&scratch.0).unwrap();
+    c.execute_batch("CREATE TABLE elicitation_records(requester_principal TEXT,record_json TEXT);
+        INSERT INTO elicitation_records VALUES ('reserved:basal','{\"request\":{\"flow_install\":{\"flow_id\":\"flow\"}}}');
+        INSERT INTO elicitation_records VALUES ('reserved:ckdev-basal','{\"request\":{\"flow_install\":{\"flow_id\":\"other\"}}}');").unwrap();
+    let store = CoreStore {
+        path: scratch.0.clone(),
+    };
+    assert_eq!(
+        store.legacy_requester("flow").unwrap(),
+        Some("reserved:basal".into())
+    );
+    assert_eq!(
+        store.legacy_requester("other").unwrap(),
+        Some("reserved:ckdev-basal".into())
+    );
+    assert_eq!(store.legacy_requester("absent").unwrap(), None);
+}
+
+#[test]
+fn instance_evidence_keeps_removal_separate_from_enablement_and_generation() {
+    let scratch = Scratch::new();
+    let c = Connection::open(&scratch.0).unwrap();
+    c.execute_batch("CREATE TABLE flows(flow_id TEXT,owner TEXT,package TEXT,state TEXT,approved_version INTEGER,removed INTEGER,disabled_by TEXT,disabled_reason TEXT,disabled_at INTEGER);
+        CREATE TABLE instance_generations(package TEXT,agent_id TEXT,generation INTEGER,operation TEXT,reply TEXT);
+        INSERT INTO flows VALUES ('instance','owner','package','enabled',1,1,NULL,NULL,NULL);
+        INSERT INTO instance_generations VALUES ('package','owner',1007,'remove','{}');").unwrap();
+    let store = BasalStore {
+        path: scratch.0.clone(),
+    };
+    let row = store.instance("instance").unwrap().unwrap();
+    assert_eq!(row["removed"], true);
+    assert_eq!(row["generation"], 1007);
+    assert_eq!(row["operation"], "remove");
+    assert_eq!(row["agent_id"], "owner");
+    assert_eq!(row["state"], "enabled");
+    c.execute_batch("UPDATE flows SET state='disabled',disabled_by='operator',removed=0;")
+        .unwrap();
+    let row = store.instance("instance").unwrap().unwrap();
+    assert_eq!(row["removed"], false);
+    assert_eq!(row["disabled_by"], "operator");
+    assert_eq!(row["state"], "disabled");
+    assert_eq!(store.instance("absent").unwrap(), None);
+}

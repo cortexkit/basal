@@ -1,11 +1,12 @@
 //! `ck-callosum-stub`: a stand-in for the operator's callosum, for basal's
 //! isolated ckdev-flows rig only (`script/flows-rig.sh`).
 //!
-//! It exists only to answer consent cards on the rig. prefrontal-core lets a
-//! caller answer a card only when the daemon attests the caller as
-//! `reserved:callosum`, and basal treats the same principal as the operator,
-//! so the rig runs this module under the reserved id `callosum`, attested by
-//! its launch nonce. `script/flows-rig.sh` signs it as `ckdev-callosum` and
+//! Approval cards ask the operator to grant a flow's or package's capabilities.
+//! The isolated daemon has no user's phone, so this module answers those cards
+//! on the rig only. Core and cingulate require the daemon's reserved:callosum
+//! stamp on the answering route; a caller cannot grant itself that stamp in JSON.
+//! Basal also treats that principal as the operator. The rig runs the stub as
+//! module callosum, authenticated by the supervisor's launch nonce. `script/flows-rig.sh` signs it as `ckdev-callosum` and
 //! names it only in the rig's own daemon config; no production config ever
 //! carries it, and it must never be deployed: anything that can reach it acts
 //! as the operator.
@@ -13,9 +14,11 @@
 //! The rig's contract suite calls these management ops on it, and the stub
 //! makes each call on its own route, so the target sees the operator:
 //!
-//! - `elicitation.list_pending` → core `elicitation.list_pending_for_user` `{}`
-//! - `elicitation.get` `{elicitationId}` → core `elicitation.get`
-//! - `elicitation.answer` `{elicitationId, choiceId}` → core `elicitation.answer`
+//! - `consent.list_pending` → cingulate `consent.list_pending` `{}`
+//! - `consent.get` `{elicitationId}` → cingulate `consent.get`
+//! - `consent.answer` `{elicitationId, choiceId}` → cingulate `consent.answer`
+//! - `elicitation.list_pending`, `elicitation.get`, `elicitation.answer`
+//!   → core's legacy card API, still used by basal's install owner
 //! - `flow.revoke` `{flow_id, version?}` → core `flow.revoke`
 //! - `basal.call` `{method, params}` → that basal op
 //!
@@ -40,6 +43,7 @@ use tokio::sync::OnceCell;
 const MODULE_ID: &str = "callosum";
 const CORE: &str = "prefrontal-core";
 const BASAL: &str = "basal";
+const CINGULATE: &str = "cingulate";
 const TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The stub's management operations: public name, operation kind, and
@@ -48,17 +52,32 @@ const OPERATIONS: &[(&str, ManagementOperationKind, &str)] = &[
     (
         "elicitation.list_pending",
         ManagementOperationKind::Query,
-        "List core's pending consent cards, as the operator sees them.",
+        "List basal's legacy install cards in core.",
     ),
     (
         "elicitation.get",
         ManagementOperationKind::Query,
-        "Read one consent card from core, as the operator sees it.",
+        "Read one legacy core card.",
     ),
     (
         "elicitation.answer",
         ManagementOperationKind::Mutate,
-        "Answer one consent card in core as the operator.",
+        "Answer one legacy core card as the operator.",
+    ),
+    (
+        "consent.list_pending",
+        ManagementOperationKind::Query,
+        "List cingulate's pending consent cards, as the operator sees them.",
+    ),
+    (
+        "consent.get",
+        ManagementOperationKind::Query,
+        "Read one consent card from cingulate, as the operator sees it.",
+    ),
+    (
+        "consent.answer",
+        ManagementOperationKind::Mutate,
+        "Answer one consent card in cingulate as the operator.",
     ),
     (
         "flow.revoke",
@@ -125,6 +144,17 @@ fn error(code: &str, message: impl Into<String>) -> HandlerOutcome {
     }
 }
 
+/// Cingulate permits card answers only on reserved:callosum routes with a
+/// fed-phone: harness. Use that phone-class bind there, preserving core's bind.
+fn operator_bind(module: &str) -> BindIdentity {
+    let harness = if module == CINGULATE {
+        "fed-phone:ckdev-flows"
+    } else {
+        MODULE_ID
+    };
+    BindIdentity::new("/", harness, "callosum:rig-stub")
+}
+
 impl Stub {
     async fn relay(&self, module: &str, method: &str, params: Value) -> HandlerOutcome {
         let consumer = match self
@@ -149,7 +179,7 @@ impl Stub {
                 RouteTarget::ManagementSurface {
                     module_id: module.to_owned(),
                 },
-                BindIdentity::new("/", MODULE_ID, "callosum:rig-stub"),
+                operator_bind(module),
                 serde_json::to_vec(&body).expect("a JSON value always serialises"),
                 CallOptions {
                     timeout: TIMEOUT,
@@ -186,11 +216,14 @@ impl ModuleHandler for Stub {
                 self.relay(CORE, "elicitation.list_pending_for_user", json!({}))
                     .await
             }
-            // Core's operator-facing card ops take camelCase `elicitationId`
-            // and `choiceId`; the suite sends them so and they pass unchanged.
-            "elicitation.get" | "elicitation.answer" | "flow.revoke" => {
-                self.relay(CORE, method, params).await
+            "elicitation.get" | "elicitation.answer" => self.relay(CORE, method, params).await,
+            "consent.list_pending" => {
+                self.relay(CINGULATE, "consent.list_pending", json!({}))
+                    .await
             }
+            // The operator surface uses camelCase card and choice IDs.
+            "consent.get" | "consent.answer" => self.relay(CINGULATE, method, params).await,
+            "flow.revoke" => self.relay(CORE, method, params).await,
             "basal.call" => match params["method"].as_str() {
                 Some(op) => {
                     let op_params = params.get("params").cloned().unwrap_or(Value::Null);
@@ -225,5 +258,18 @@ fn main() -> std::process::ExitCode {
             eprintln!("ck-callosum-stub: {e}");
             std::process::ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn cingulate_operator_bind_uses_phone_harness_without_changing_core_bind() {
+        let phone = serde_json::to_value(operator_bind(CINGULATE)).unwrap();
+        let legacy = serde_json::to_value(operator_bind(CORE)).unwrap();
+        assert_eq!(phone["harness"], "fed-phone:ckdev-flows");
+        assert_eq!(legacy["harness"], "callosum");
+        assert_eq!(phone["session"], legacy["session"]);
     }
 }

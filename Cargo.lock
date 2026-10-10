@@ -129,6 +129,9 @@ name = "basal-rig"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "basal-host",
+ "basal-proto",
+ "blake3",
  "rusqlite",
  "serde_json",
  "sha2",

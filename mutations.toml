@@ -1,6 +1,7 @@
 
 
 
+
 # Safety proofs replayed by the pinned ckdev-mutate runner.
 # Names are full libtest paths; the named guard must fail.
 # Other tests in the target may also fail: the original proofs ran
@@ -12176,3 +12177,328 @@ old = '''if let Some(known) = known(tx, fields.run_id)? {
             return Ok(known);
         }'''
 new = '''let _ = known(tx, fields.run_id)?; // NON-VACUITY BREAK'''
+
+[[control]]
+id = "rig-instance-id-domain-is-wrong"
+guards = "The rig independently derives instance IDs from all public vectors"
+file = "crates/basal-rig/src/packages.rs"
+old = 'hash.update(b"basal-instance-id-v1\0");'
+new = 'hash.update(b"NON-VACUITY BREAK\0");'
+edits = []
+test_file = "crates/basal-rig/src/packages.rs"
+runner = "cargo"
+package = "basal-rig"
+platforms = ["macos"]
+target = "--lib"
+expect_red = ["packages::tests::instance_identity_matches_all_documented_vectors"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "rig-runtime-owner-evidence-accepts-another-refusal"
+guards = "Runtime ownership evidence requires both exact core refusal codes"
+file = "crates/basal-rig/src/bin/basal-rig-contract/ownership.rs"
+old = 'result[*sink]["refused"]["data"]["code"] == "sink_target_not_owner"'
+new = 'result[*sink]["refused"]["data"]["code"] != "sink_target_not_owner" /* NON-VACUITY BREAK */'
+edits = []
+test_file = "crates/basal-rig/src/bin/basal-rig-contract/tests.rs"
+runner = "cargo"
+package = "basal-rig"
+platforms = ["macos"]
+target = "--bin basal-rig-contract"
+expect_red = ["tests::runtime_owner_evidence_requires_both_exact_core_refusals"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "rig-digest-reader-looks-at-the-wrong-flow"
+guards = "Foreign-recipient absence is read from real matching core digest rows"
+file = "crates/basal-rig/src/stores.rs"
+old = "WHERE agent_id=?1 AND origin_flow_id=?2 ORDER BY rowid"
+new = "WHERE agent_id=?1 AND origin_flow_id!=?2 ORDER BY rowid /* NON-VACUITY BREAK */"
+edits = []
+test_file = "crates/basal-rig/tests/stores.rs"
+runner = "cargo"
+package = "basal-rig"
+platforms = ["macos"]
+target = "--test stores"
+expect_red = ["digest_evidence_reads_the_recipient_and_flow_from_core_rows"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "rig-contract-project-root-is-not-the-registered-project"
+guards = "The live contract receives the same isolated root registered in entorhinal"
+file = "script/flows-rig.sh"
+old = '--project-root "$project_root" \'
+new = '--project-root "${RIG_HOME:?NON-VACUITY BREAK}" \'
+edits = []
+test_file = "script/tests/flows_rig.py"
+runner = "command"
+platforms = ["linux"]
+command = ["python3", "-m", "unittest", "{test}"]
+test_count_pattern = "Ran {count} test"
+expect_red = ["script.tests.flows_rig.RigChecks.test_live_contract_receives_the_registered_isolated_project_root"]
+only = false
+timeout_s = 120
+build_timeout_s = 1800
+
+[[control]]
+id = "rig-core-manifest-revision-mismatch-is-accepted"
+guards = "The placed core's manifest revision must equal the named rig build"
+file = "script/flows-rig.sh"
+old = "if actual != expected:"
+new = "if False: # NON-VACUITY BREAK"
+edits = []
+test_file = "script/tests/flows_rig.py"
+runner = "command"
+platforms = ["linux"]
+command = ["python3", "-m", "unittest", "{test}"]
+test_count_pattern = "Ran {count} test"
+expect_red = ["script.tests.flows_rig.RigChecks.test_core_revision_comes_from_the_manifest_and_must_match"]
+only = false
+timeout_s = 120
+build_timeout_s = 1800
+
+[[control]]
+id = "rig-cingulate-config-starts-the-wrong-binary"
+guards = "Package consent uses the real ckdev-cingulate executable in the isolated rig"
+file = "script/flows-rig.sh"
+old = '"program": "$BIN/ckdev-cingulate",'
+new = '"program": "$BIN/ckdev-basal", // NON-VACUITY BREAK'
+edits = []
+test_file = "script/tests/flows_rig.py"
+runner = "command"
+platforms = ["linux"]
+command = ["python3", "-m", "unittest", "{test}"]
+test_count_pattern = "Ran {count} test"
+expect_red = ["script.tests.flows_rig.RigChecks.test_real_cingulate_is_pinned_placed_and_configured_in_the_isolated_rig"]
+only = false
+timeout_s = 120
+build_timeout_s = 1800
+
+[[control]]
+id = "rig-blocked-package-is-reported-as-a-pass"
+guards = "Blocked package approval is a named incomplete item, never a passing case"
+file = "crates/basal-rig/src/bin/basal-rig-contract.rs"
+old = '"passed":Value::Null,"blocked":reason'
+new = '"passed":true,"blocked":reason /* NON-VACUITY BREAK */'
+edits = []
+test_file = "crates/basal-rig/src/bin/basal-rig-contract/tests.rs"
+runner = "cargo"
+package = "basal-rig"
+platforms = ["macos"]
+target = "--bin basal-rig-contract"
+expect_red = ["tests::blocked_package_is_never_reported_as_a_pass_or_a_skip"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "rig-package-intent-reader-looks-at-another-package"
+guards = "Blocked consent evidence comes from core's actual package intent and provider"
+file = "crates/basal-rig/src/stores.rs"
+old = "WHERE package=?1 ORDER BY attempt DESC LIMIT 1"
+new = "WHERE package!=?1 ORDER BY attempt DESC LIMIT 1 /* NON-VACUITY BREAK */"
+edits = []
+test_file = "crates/basal-rig/tests/stores.rs"
+runner = "cargo"
+package = "basal-rig"
+platforms = ["macos"]
+target = "--test stores"
+expect_red = ["package_intent_evidence_keeps_the_provider_rejection_and_rendered_body"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "rig-enable-reader-inverts-basal-state"
+guards = "Rig cleanup reads enabled and disabled from basal's real state column"
+file = "crates/basal-rig/src/stores.rs"
+old = "SELECT state = 'enabled' FROM flows WHERE flow_id = ?1"
+new = "SELECT state = 'disabled' FROM flows WHERE flow_id = ?1 /* NON-VACUITY BREAK */"
+edits = []
+test_file = "crates/basal-rig/tests/stores.rs"
+runner = "cargo"
+package = "basal-rig"
+platforms = ["macos"]
+target = "--test stores"
+expect_red = ["flow_enable_evidence_reads_basals_state_column"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "rig-legacy-requester-reader-uses-another-flow"
+guards = "The ckdev executable retains reserved basal identity in this flow's core card"
+file = "crates/basal-rig/src/stores.rs"
+old = "json_extract(record_json,'$.request.flow_install.flow_id')=?1 ORDER BY rowid DESC LIMIT 1"
+new = "json_extract(record_json,'$.request.flow_install.flow_id')!=?1 ORDER BY rowid DESC LIMIT 1 /* NON-VACUITY BREAK */"
+edits = []
+test_file = "crates/basal-rig/tests/stores.rs"
+runner = "cargo"
+package = "basal-rig"
+platforms = ["macos"]
+target = "--test stores"
+expect_red = ["legacy_card_requester_reads_the_attested_principal_for_this_flow"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "rig-instance-enable-evidence-accepts-switch-changes"
+guards = "Removal and revocation evidence reject altered or missing enable switches"
+file = "crates/basal-rig/src/packages.rs"
+old = '.all(|field| before.get(*field).is_some() && before.get(*field) == after.get(*field))'
+new = '.all(|_field| true /* NON-VACUITY BREAK */)'
+edits = []
+test_file = "crates/basal-rig/src/packages.rs"
+runner = "cargo"
+package = "basal-rig"
+platforms = ["macos"]
+target = "--lib"
+expect_red = ["packages::enable_tests::enable_state_evidence_rejects_changed_or_missing_switches"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "rig-instance-reader-hides-removal"
+guards = "Basal instance evidence reads removal separately from enablement"
+file = "crates/basal-rig/src/stores.rs"
+old = '"removed":r.get::<_,bool>(4)?'
+new = '"removed":false /* NON-VACUITY BREAK */'
+edits = []
+test_file = "crates/basal-rig/tests/stores.rs"
+runner = "cargo"
+package = "basal-rig"
+platforms = ["macos"]
+target = "--test stores"
+expect_red = ["instance_evidence_keeps_removal_separate_from_enablement_and_generation"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "rig-seeded-fixture-accepts-an-open-process"
+guards = "Generation fixture writes require a terminal stopped module with no PID"
+file = "crates/basal-rig/src/bin/basal-rig-contract/seeded.rs"
+old = "&& pid.is_none()"
+new = "&& (pid.is_none() || pid.is_some()) /* NON-VACUITY BREAK */"
+edits = []
+test_file = "crates/basal-rig/src/bin/basal-rig-contract/tests.rs"
+runner = "cargo"
+package = "basal-rig"
+platforms = ["macos"]
+target = "--bin basal-rig-contract"
+expect_red = ["tests::seeded_fixture_requires_a_terminal_disabled_module_and_no_pid"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "rig-seeded-fixture-follows-a-store-symlink"
+guards = "Seeded fixture writes cannot follow a store symlink outside the isolated rig"
+file = "crates/basal-rig/src/bin/basal-rig-contract/seeded.rs"
+old = "path != expected || expected.canonicalize().map_err(|e| e.to_string())? != expected"
+new = "path != expected /* NON-VACUITY BREAK */"
+edits = []
+test_file = "crates/basal-rig/src/bin/basal-rig-contract/tests.rs"
+runner = "cargo"
+package = "basal-rig"
+platforms = ["macos"]
+target = "--bin basal-rig-contract"
+expect_red = ["tests::seeded_fixture_rejects_foreign_paths_and_symlinked_stores"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "rig-authorship-fixture-fingerprint-ignores-other-values"
+guards = "The stopped-core fixture preserves every value except its one authorship cell"
+file = "crates/basal-rig/src/bin/basal-rig-contract/ownership.rs"
+old = "Ok(hash.finalize().to_hex().to_string())"
+new = 'Ok("NON-VACUITY BREAK".into())'
+edits = []
+test_file = "crates/basal-rig/src/bin/basal-rig-contract/tests.rs"
+runner = "cargo"
+package = "basal-rig"
+platforms = ["macos"]
+target = "--bin basal-rig-contract"
+expect_red = ["tests::authorship_fingerprint_allows_only_the_one_author_cell"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "rig-cingulate-operator-bind-lacks-phone-harness"
+guards = "Consent operator calls bind as the attested phone surface, not plain callosum"
+file = "crates/basal-rig/src/bin/ck-callosum-stub.rs"
+old = '''if module == CINGULATE {
+        "fed-phone:ckdev-flows"'''
+new = '''if module == CINGULATE {
+        "callosum" /* NON-VACUITY BREAK */'''
+edits = []
+test_file = "crates/basal-rig/src/bin/ck-callosum-stub.rs"
+runner = "cargo"
+package = "basal-rig"
+platforms = ["macos"]
+target = "--bin ck-callosum-stub"
+expect_red = ["tests::cingulate_operator_bind_uses_phone_harness_without_changing_core_bind"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "rig-frozen-send-reader-uses-the-envelope"
+guards = "Rig model evidence decodes the host-serialized frozen params, not the digest envelope"
+file = "crates/basal-rig/src/models.rs"
+old = 'let text = snapshot["params"].as_str()?;'
+new = 'let text = snapshot["envelope"].as_str()?; // NON-VACUITY BREAK'
+edits = []
+test_file = "crates/basal-rig/src/models.rs"
+runner = "cargo"
+package = "basal-rig"
+platforms = ["macos"]
+target = "--lib"
+expect_red = ["models::tests::frozen_send_decodes_real_bytes_not_the_envelope"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "rig-instance-reader-hides-the-disabled-state"
+guards = "Instance enable evidence reads its own stored state rather than a proxy reader"
+file = "crates/basal-rig/src/stores.rs"
+old = '"state":r.get::<_,String>(2)?'
+new = '"state":"enabled" /* NON-VACUITY BREAK */'
+edits = []
+test_file = "crates/basal-rig/tests/stores.rs"
+runner = "cargo"
+package = "basal-rig"
+platforms = ["macos"]
+target = "--test stores"
+expect_red = ["instance_evidence_keeps_removal_separate_from_enablement_and_generation"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "rig-fixture-module-control-searches-path"
+guards = "Fixture stop/start uses the absolute isolated ckdev CLI rather than fleet PATH discovery"
+file = "crates/basal-rig/src/bin/basal-rig-contract/seeded.rs"
+old = 'Ok(root.join("bin/ckdev-ck"))'
+new = 'Ok(PathBuf::from("ckdev-ck")) // NON-VACUITY BREAK'
+edits = []
+test_file = "crates/basal-rig/src/bin/basal-rig-contract/tests.rs"
+runner = "cargo"
+package = "basal-rig"
+platforms = ["macos"]
+target = "--bin basal-rig-contract"
+expect_red = ["tests::fixture_module_control_uses_only_the_absolute_isolated_cli"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
