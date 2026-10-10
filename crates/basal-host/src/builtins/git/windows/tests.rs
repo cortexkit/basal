@@ -1,12 +1,15 @@
 use super::*;
 use std::sync::Arc;
 use windows_sys::Win32::{
-    Foundation::STILL_ACTIVE,
+    Foundation::{
+        CompareObjectHandles, DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_INVALID_HANDLE,
+        STILL_ACTIVE,
+    },
     System::{
         JobObjects::QueryInformationJobObject,
         Threading::{
-            CREATE_BREAKAWAY_FROM_JOB, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-            PROCESS_SYNCHRONIZE,
+            CREATE_BREAKAWAY_FROM_JOB, GetCurrentProcess, OpenProcess,
+            PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
         },
     },
 };
@@ -532,39 +535,105 @@ fn windows_failed_termination_is_retryable_and_scope_unwind_is_bounded() {
 
 #[test]
 fn windows_only_stdio_handles_are_inherited() {
+    // Compile before publishing any inheritable test handle to other processes.
+    let image = wide(child_image()).unwrap();
     let inherit = SECURITY_ATTRIBUTES {
         nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
         lpSecurityDescriptor: std::ptr::null_mut(),
         bInheritHandle: 1,
     };
-    let (read, write) = pipe(&inherit).unwrap();
-    let tree = Tree::new();
-    let mut command = child("hold");
-    command.arg(tree.p("pid"));
-    let input = command.into();
-    let (mut guard, _, _) = spawn_job_command(&input, |_| Ok(())).unwrap();
-    await_file(&tree.p("pid"));
-    drop(write);
-    let mut available = 0;
-    assert_eq!(
+    let (_read, write) = pipe(&inherit).unwrap();
+    // Positive control: CreateProcess(TRUE) without a handle list inherits this
+    // exact pipe writer. The child remains suspended and is killed by the guard.
+    let mut startup: windows_sys::Win32::System::Threading::STARTUPINFOW =
+        unsafe { std::mem::zeroed() };
+    startup.cb = std::mem::size_of_val(&startup) as u32;
+    let mut process: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
+    let mut argv = Vec::new();
+    append_windows_arg(&mut argv, child_image().as_os_str()).unwrap();
+    argv.push(0);
+    assert_ne!(
         unsafe {
-            PeekNamedPipe(
-                read.0,
-                std::ptr::null_mut(),
-                0,
-                std::ptr::null_mut(),
-                &mut available,
-                std::ptr::null_mut(),
+            CreateProcessW(
+                image.as_ptr(),
+                argv.as_mut_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                1,
+                CREATE_SUSPENDED | CREATE_NO_WINDOW,
+                std::ptr::null(),
+                std::ptr::null(),
+                &startup,
+                &mut process,
             )
         },
         0
     );
-    assert_eq!(
-        std::io::Error::last_os_error().raw_os_error(),
-        Some(ERROR_BROKEN_PIPE as i32),
-        "unrelated inheritable writer leaked to child"
+    let control = SuspendedControl(OwnedHandle(process.hProcess));
+    let _primary_thread = OwnedHandle(process.hThread);
+    assert!(
+        process_has_handle(control.0.0, write.0),
+        "positive control did not inherit the writer"
+    );
+    drop(control);
+    let tree = Tree::new();
+    let mut command = child("hold");
+    command.arg(tree.p("pid"));
+    let input = command.into();
+    let (mut guard, _, _) = spawn_job_command(&input, |guard| {
+        assert!(
+            !process_has_handle(guard.process.0, write.0),
+            "contained child inherited an unrelated writer before resume"
+        );
+        Ok(())
+    })
+    .unwrap();
+    await_file(&tree.p("pid"));
+    // Pipe EOF is not process-specific: another concurrent, unrestricted spawn
+    // can inherit the writer. Duplicate from the tested child's handle table
+    // instead; object comparison also distinguishes reuse of the numeric slot.
+    assert!(
+        !process_has_handle(guard.process.0, write.0),
+        "contained child owns an unrelated writer after resume"
     );
     guard.stop_tree();
+}
+
+struct SuspendedControl(OwnedHandle);
+impl Drop for SuspendedControl {
+    fn drop(&mut self) {
+        unsafe {
+            TerminateProcess(self.0.0, 1);
+            WaitForSingleObject(self.0.0, 5000);
+        }
+    }
+}
+
+fn process_has_handle(process: HANDLE, original: HANDLE) -> bool {
+    let mut duplicate = std::ptr::null_mut();
+    // Inherited handles have the same numeric value in both processes. Keep
+    // the parent's original live and compare objects, not just handle numbers.
+    if unsafe {
+        DuplicateHandle(
+            process,
+            original,
+            GetCurrentProcess(),
+            &mut duplicate,
+            0,
+            0,
+            DUPLICATE_SAME_ACCESS,
+        )
+    } == 0
+    {
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(ERROR_INVALID_HANDLE as i32),
+            "could not inspect the child's handle table"
+        );
+        return false;
+    }
+    let duplicate = OwnedHandle(duplicate);
+    unsafe { CompareObjectHandles(original, duplicate.0) != 0 }
 }
 
 fn repository(tree: &Tree) -> PathBuf {
@@ -676,6 +745,26 @@ fn windows_repository_walk_refuses_junctions_and_pins_all_ancestors() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn windows_repository_refusals_do_not_reveal_unapproved_existence() {
+    let tree = Tree::new();
+    let approved = tree.p("approved");
+    std::fs::create_dir(&approved).unwrap();
+    let roots = [approved.to_str().unwrap().to_owned()];
+    let outside = tree.p("outside");
+    let missing = tree.p("missing");
+    std::fs::create_dir(&outside).unwrap();
+    for path in [&outside, &missing] {
+        assert_eq!(
+            super::super::repo(path.to_str().unwrap(), &roots)
+                .err()
+                .unwrap()
+                .code,
+            codes::DENIED
+        );
+    }
 }
 
 fn marker_script(tree: &Tree, name: &str) -> (PathBuf, PathBuf) {
@@ -808,10 +897,26 @@ fn windows_contaminated_global_config_positive_control_and_isolation() {
         "contaminated global alias positive control did not run"
     );
     std::fs::remove_file(&marker).unwrap();
-    // Supply the poison as inherited host environment to the spawn recipe without
-    // altering this test process's environment (other tests run concurrently).
+    let profile = tree.p("profile");
+    std::fs::create_dir(&profile).unwrap();
+    std::fs::copy(&config, profile.join(".gitconfig")).unwrap();
+    let mut default_global = plain_git(&repo);
+    default_global
+        .env_remove("GIT_CONFIG_GLOBAL")
+        .env("HOME", &profile)
+        .env("USERPROFILE", &profile)
+        .arg("basal-poison");
+    succeeded(run_command(default_global).unwrap());
+    assert!(
+        marker.exists(),
+        "default user-global config positive control did not run"
+    );
+    std::fs::remove_file(&marker).unwrap();
     let mut command = hardened_command(&repo).unwrap();
-    command.arg("basal-poison");
+    command
+        .env("HOME", &profile)
+        .env("USERPROFILE", &profile)
+        .arg("basal-poison");
     let block = environment(&command.command, true).unwrap();
     assert!(!String::from_utf16_lossy(&block).contains(config.to_str().unwrap()));
     let result = run_command(command).unwrap();

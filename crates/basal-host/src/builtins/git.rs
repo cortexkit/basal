@@ -249,7 +249,8 @@ pub(crate) fn repo(
     let path = path
         .to_str()
         .ok_or_else(|| Denial::invalid("repository is not Unicode"))?;
-    let pinned = pin_directory(path)?;
+    let refused = || Denial::denied("repository is outside the manifest's repositories or missing");
+    let pinned = pin_directory(path).map_err(|_| refused())?;
     for approved in repos.iter().filter_map(|r| expand_home(r)) {
         if let Some(approved) = approved.to_str()
             && let Ok(root) = pin_directory(approved)
@@ -258,9 +259,7 @@ pub(crate) fn repo(
             return Ok(pinned);
         }
     }
-    Err(Denial::denied(
-        "repository is outside the manifest's repositories or missing",
-    ))
+    Err(refused())
 }
 
 /// The only way the built-ins run git: a `git -C <repo>` command that can
