@@ -50,6 +50,8 @@ struct Shared {
     active: Mutex<BTreeMap<String, mpsc::Sender<Command>>>,
     #[cfg(test)]
     before_entry: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
+    before_record: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 /// Owns codemode supervisors only. Supply a fresh-worker source, never a flow
@@ -58,6 +60,8 @@ struct Shared {
 pub struct Supervisor(Arc<Shared>);
 
 impl Supervisor {
+    /// Recover durable runs before exposing any operation. A recovery failure
+    /// prevents startup rather than leaving old runs eligible for dispatch.
     pub fn new(
         store: Arc<Store>,
         transport: Arc<dyn Transport>,
@@ -66,8 +70,8 @@ impl Supervisor {
         clock: Clock,
         prelude_hash: PreludeHash,
         denylist: ShellDenylist,
-    ) -> Self {
-        Self(Arc::new(Shared {
+    ) -> Result<Self> {
+        let supervisor = Self(Arc::new(Shared {
             store,
             transport,
             catalog,
@@ -78,7 +82,11 @@ impl Supervisor {
             active: Mutex::new(BTreeMap::new()),
             #[cfg(test)]
             before_entry: Mutex::new(None),
-        }))
+            #[cfg(test)]
+            before_record: Mutex::new(None),
+        }));
+        supervisor.recover()?;
+        Ok(supervisor)
     }
 
     /// Consumes the admission winner's token. No worker is acquired on the
@@ -163,9 +171,9 @@ impl Supervisor {
         self.result(id)
     }
 
-    /// Invoke before serving after restart, not alongside live supervisors.
-    /// There is deliberately no call recovery or re-send here, even for queries.
-    pub fn recover(&self) -> Result<()> {
+    // Construction is the only production caller: there can be no live driver
+    // yet. There is deliberately no call recovery or re-send, even for queries.
+    fn recover(&self) -> Result<()> {
         if !self.0.active.lock().unwrap().is_empty() {
             return Err(CoreError::Invalid("cannot recover live supervisors".into()));
         }
@@ -291,6 +299,10 @@ impl Driver {
                 break;
             }
             while let Ok(answer) = self.answers.try_recv() {
+                #[cfg(test)]
+                if let Some(hook) = self.shared.before_record.lock().unwrap().as_ref() {
+                    hook();
+                }
                 if self.wall()? {
                     break;
                 }
