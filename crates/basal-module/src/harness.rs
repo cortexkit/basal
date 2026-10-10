@@ -161,16 +161,7 @@ impl Hooks for HarnessHooks {
         }
         if self.kill_self_at.as_deref() == Some(point.as_str()) {
             eprintln!("ck-basal-harness: killing itself at {point}");
-            // SAFETY: kill(2) on our own pid has no memory-safety
-            // preconditions.
-            unsafe {
-                libc::kill(libc::getpid(), libc::SIGKILL);
-            }
-            // kill(2) can return before the signal takes the process down;
-            // this thread must not go on to the next commit meanwhile.
-            loop {
-                std::thread::park();
-            }
+            crate::fatal::kill_self();
         }
         if self.cut_store_at.as_deref() == Some(point.as_str()) {
             eprintln!("ck-basal-harness: cutting the store at {point}");

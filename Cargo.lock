@@ -77,6 +77,7 @@ dependencies = [
 name = "basal-host"
 version = "0.1.0"
 dependencies = [
+ "basal-launch",
  "basal-proto",
  "cortexkit-resource-busy",
  "httparse",
@@ -107,6 +108,7 @@ dependencies = [
  "async-trait",
  "basal-core",
  "basal-host",
+ "basal-launch",
  "basal-proto",
  "basal-testkit",
  "cortexkit-log",
@@ -123,6 +125,7 @@ dependencies = [
  "subc-transport",
  "tokio",
  "tracing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -292,11 +295,12 @@ checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
 name = "cortexkit-lease"
-version = "0.1.0"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f9a8fc97760adc623eddc8e092b6361b91f4449dd6c93443fde9e221fa727161"
+checksum = "d02256247fecd266c7d853cf63d85270367abce9925e52c9ee01ac4994ed2293"
 dependencies = [
  "fs2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -322,9 +326,9 @@ dependencies = [
 
 [[package]]
 name = "cortexkit-store"
-version = "0.2.1"
+version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a6cc64ebbed57cb7f006b2b5fec9983c634d69334e4c966072b39b9433a907c"
+checksum = "df7beeeeaf1f244870ff160eff79a6f6b2eb8f2d234da9a1f6aa2c60a8a93c93"
 dependencies = [
  "cortexkit-lease",
  "cortexkit-store-types",

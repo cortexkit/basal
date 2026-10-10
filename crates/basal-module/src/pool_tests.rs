@@ -78,3 +78,35 @@ fn spawn_failure_notifies_the_engine_and_arms_the_pool_retry() {
         "an unused expired retry cannot spin the loop"
     );
 }
+
+/// On Windows a fatal invalid-handle or access-violation status is a
+/// confinement fault and is published as `fatal_status_deaths`; the
+/// worker's own startup refusal (exit 70) and a kill are other crashes.
+#[cfg(windows)]
+#[test]
+fn a_fatal_status_exit_counts_as_a_confinement_fault_and_exit_70_does_not() {
+    use std::os::windows::process::ExitStatusExt;
+    let pool = pool();
+    let deaths = |pool: &Pool| pool.worker_confinement()["fatal_status_deaths"].clone();
+    assert_eq!(deaths(&pool), 0);
+    let mut state = pool.lock();
+    state.live = 4;
+    pool.shared
+        .crashed(&mut state, Ok(ExitStatus::from_raw(0xc000_0008)));
+    drop(state);
+    assert_eq!(deaths(&pool), 1);
+    let mut state = pool.lock();
+    for code in [70, basal_launch::KILL_EXIT_CODE, 0] {
+        pool.shared
+            .crashed(&mut state, Ok(ExitStatus::from_raw(code)));
+    }
+    pool.shared
+        .crashed(&mut state, Ok(ExitStatus::from_raw(0xc000_0005)));
+    drop(state);
+    assert_eq!(deaths(&pool), 2);
+    assert!(pool.worker_confinement().get("sigsys_deaths").is_none());
+    assert_eq!(
+        pool.shared.metrics.workers_crashed.load(Ordering::Relaxed),
+        5
+    );
+}

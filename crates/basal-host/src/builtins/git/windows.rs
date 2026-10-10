@@ -630,6 +630,12 @@ fn spawn_with_argv0(
     {
         return Err(native_error("git job limits"));
     }
+    // Every Windows spawn in basal makes its child's handles inheritable only
+    // under this process-wide lock, and closes its copies before releasing
+    // it, so no concurrent spawn can copy them. Taken before the first
+    // inheritable handle exists; on an early return those handles, declared
+    // later, are closed before the lock is released.
+    let spawn_lock = basal_launch::spawn_lock();
     let inherit = SECURITY_ATTRIBUTES {
         nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
         lpSecurityDescriptor: std::ptr::null_mut(),
@@ -685,6 +691,14 @@ fn spawn_with_argv0(
     {
         return Err(native_error("start git"));
     }
+    #[cfg(test)]
+    spawn_lock_tests::created();
+    // The child now holds its own copies of its three standard handles, so
+    // the parent closes its copies before releasing the spawn lock. That
+    // also lets the pipes report end of file once git exits.
+    drop(attributes);
+    drop((stdin, stdout_writer, stderr_writer));
+    drop(spawn_lock);
     let primary_thread = OwnedHandle(process.hThread);
     let guard = ProcessJob {
         process: OwnedHandle(process.hProcess),
@@ -937,3 +951,292 @@ pub fn run_tags_command(command: impl Into<CommandInput>) -> Result<Ran, Denial>
 
 #[cfg(test)]
 mod tests;
+
+/// Tests that this runner creates its child under the process-wide spawn
+/// lock, and that children started at once through the launcher,
+/// `spawn_plain` and this runner never inherit each other's handles.
+#[cfg(test)]
+mod spawn_lock_tests {
+    use super::*;
+    use std::cell::Cell;
+    use std::os::windows::io::AsRawHandle;
+    use std::sync::Barrier;
+    use windows_sys::Win32::{
+        Foundation::{
+            CompareObjectHandles, DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_INVALID_HANDLE,
+        },
+        System::Threading::GetCurrentProcess,
+    };
+
+    thread_local! {
+        /// Whether the spawn lock was held when this thread's last git child
+        /// was created.
+        static HELD_AT_CREATION: Cell<Option<bool>> = const { Cell::new(None) };
+    }
+
+    /// Called by the runner right after `CreateProcessW`, while the parent
+    /// still holds its copies of the child's handles.
+    pub(super) fn created() {
+        HELD_AT_CREATION.with(|held| held.set(Some(basal_launch::spawn_lock_held())));
+    }
+
+    /// The git child is created under the spawn lock, and the lock is free
+    /// again by the time it can run.
+    #[test]
+    fn windows_git_children_are_created_under_the_spawn_lock() {
+        HELD_AT_CREATION.with(|held| held.set(None));
+        let (mut guard, _, _) = spawn_job_command(&Command::new(child_image()).into(), |_| {
+            assert!(
+                !basal_launch::spawn_lock_held(),
+                "the lock is released before the child is resumed"
+            );
+            Ok(())
+        })
+        .unwrap();
+        guard.stop_tree();
+        assert_eq!(HELD_AT_CREATION.with(Cell::get), Some(true));
+    }
+
+    /// Prints its standard handle values on one line, then waits until it
+    /// is killed. Built like `ck-basal-worker` (GUI subsystem, C runtime
+    /// linked statically), so the launcher can also start it under the
+    /// worker's full confinement, where no console host and no C runtime DLL
+    /// can be loaded.
+    const CHILD_SOURCE: &str = r#"
+#![windows_subsystem = "windows"]
+use std::io::Write;
+use std::os::windows::io::AsRawHandle;
+fn main() {
+    let line = format!(
+        "stdin={} stdout={} stderr={}\n",
+        std::io::stdin().as_raw_handle() as usize,
+        std::io::stdout().as_raw_handle() as usize,
+        std::io::stderr().as_raw_handle() as usize,
+    );
+    let mut out = std::io::stdout();
+    let _ = out.write_all(line.as_bytes());
+    let _ = out.flush();
+    loop {
+        std::thread::park();
+    }
+}
+"#;
+
+    /// The child image, built once in a directory next to this test binary.
+    /// The directory is granted read and execute for the worker's
+    /// AppContainer package SID, without which a confined child cannot
+    /// start from it.
+    fn child_image() -> &'static Path {
+        static IMAGE: OnceLock<PathBuf> = OnceLock::new();
+        IMAGE.get_or_init(|| {
+            let directory = std::env::current_exe()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("basal-spawn-lock-child");
+            std::fs::create_dir_all(&directory).unwrap();
+            let source = directory.join("child.rs");
+            std::fs::write(&source, CHILD_SOURCE).unwrap();
+            let image = directory.join("spawn-lock-child.exe");
+            let output = Command::new("rustc")
+                .args([
+                    "--edition=2021",
+                    "-Dwarnings",
+                    "-C",
+                    "target-feature=+crt-static",
+                ])
+                .arg(&source)
+                .arg("-o")
+                .arg(&image)
+                .output()
+                .expect("native rustc is required");
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let package = basal_launch::create_or_open_profile().expect("worker profile");
+            basal_launch::grant_test_binary_directory(&image, &package)
+                .expect("grant the package read and execute");
+            image
+        })
+    }
+
+    enum Child {
+        Launched(basal_launch::ConfinedProcess),
+        Plain(basal_launch::OwnedProcess),
+        Git(ProcessJob, OwnedHandle),
+    }
+
+    impl Child {
+        fn process(&self) -> HANDLE {
+            match self {
+                Self::Launched(child) => child.as_raw_handle(),
+                Self::Plain(child) => child.as_raw_handle(),
+                Self::Git(guard, _) => guard.process.0,
+            }
+        }
+
+        fn kind(&self) -> &'static str {
+            match self {
+                Self::Launched(_) => "launched",
+                Self::Plain(_) => "plain",
+                Self::Git(..) => "git",
+            }
+        }
+
+        /// The values of the child's standard handles, as it reports them.
+        fn stdio(&mut self) -> [usize; 3] {
+            let stdout = match self {
+                Self::Launched(child) => child.stdout.as_ref().unwrap().as_raw_handle(),
+                Self::Plain(child) => child.stdout.as_ref().unwrap().as_raw_handle(),
+                Self::Git(_, stdout) => stdout.0,
+            };
+            let mut line = Vec::new();
+            loop {
+                let mut byte = 0u8;
+                let mut read = 0;
+                let ok = unsafe { ReadFile(stdout, &mut byte, 1, &mut read, std::ptr::null_mut()) };
+                assert!(
+                    ok != 0 && read == 1,
+                    "the {} child ended before reporting: {}",
+                    self.kind(),
+                    std::io::Error::last_os_error()
+                );
+                if byte == b'\n' {
+                    break;
+                }
+                line.push(byte);
+            }
+            let line = String::from_utf8(line).unwrap();
+            let values: Vec<usize> = line
+                .split(' ')
+                .map(|field| field.split_once('=').unwrap().1.parse().unwrap())
+                .collect();
+            values
+                .try_into()
+                .unwrap_or_else(|_| panic!("bad report {line}"))
+        }
+    }
+
+    /// The object `process` holds at `value`, duplicated into this process.
+    fn object_at(process: HANDLE, value: usize) -> Option<OwnedHandle> {
+        let mut duplicate = std::ptr::null_mut();
+        if unsafe {
+            DuplicateHandle(
+                process,
+                value as HANDLE,
+                GetCurrentProcess(),
+                &mut duplicate,
+                0,
+                0,
+                DUPLICATE_SAME_ACCESS,
+            )
+        } == 0
+        {
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(ERROR_INVALID_HANDLE as i32),
+                "could not inspect a child's handle table"
+            );
+            return None;
+        }
+        Some(OwnedHandle(duplicate))
+    }
+
+    /// Whether `process` holds `object` at `value`. A handle a child
+    /// inherited keeps its value there, so another child's pipe end would
+    /// sit at the value it has in its owner; comparing objects, not values,
+    /// tells it apart from an unrelated handle that has the same value.
+    fn holds(process: HANDLE, value: usize, object: &OwnedHandle) -> bool {
+        object_at(process, value)
+            .is_some_and(|found| unsafe { CompareObjectHandles(found.0, object.0) } != 0)
+    }
+
+    /// Many confined launches, plain spawns and git children started at
+    /// once: none of them holds another child's standard handle. A child
+    /// that held one could read or write that child's pipe, and would keep
+    /// it open after its owner exits.
+    #[test]
+    fn windows_concurrent_spawns_inherit_no_other_childs_handles() {
+        const EACH: usize = 4;
+        let image = child_image();
+        let start = Barrier::new(3 * EACH);
+        let mut children: Vec<Child> = thread::scope(|scope| {
+            let mut threads = Vec::new();
+            for index in 0..3 * EACH {
+                let start = &start;
+                threads.push(scope.spawn(move || {
+                    start.wait();
+                    match index % 3 {
+                        0 => Child::Launched(
+                            basal_launch::launch(&basal_launch::LaunchOptions::new(
+                                image,
+                                512 * 1024 * 1024,
+                            ))
+                            .expect("launch the child confined"),
+                        ),
+                        1 => {
+                            let mut command = basal_launch::PlainCommand::new(image);
+                            command.stdin = basal_launch::PlainStdio::Piped;
+                            command.stdout = basal_launch::PlainStdio::Piped;
+                            command.stderr = basal_launch::PlainStdio::Piped;
+                            Child::Plain(basal_launch::spawn_plain(&command).expect("spawn plain"))
+                        }
+                        _ => {
+                            let (guard, stdout, _stderr) =
+                                spawn_job_command(&Command::new(image).into(), |_| Ok(()))
+                                    .expect("spawn through the git runner");
+                            Child::Git(guard, stdout)
+                        }
+                    }
+                }));
+            }
+            threads.into_iter().map(|t| t.join().unwrap()).collect()
+        });
+        let reports: Vec<[usize; 3]> = children.iter_mut().map(Child::stdio).collect();
+        // Each child's own standard handles, as objects.
+        let objects: Vec<Vec<OwnedHandle>> = children
+            .iter()
+            .zip(&reports)
+            .map(|(child, values)| {
+                values
+                    .iter()
+                    .map(|&value| {
+                        object_at(child.process(), value)
+                            .unwrap_or_else(|| panic!("the {} child's stdio", child.kind()))
+                    })
+                    .collect()
+            })
+            .collect();
+        let mut checked = 0;
+        for (owner, (values, owned)) in reports.iter().zip(&objects).enumerate() {
+            for (value, object) in values.iter().zip(owned) {
+                // Positive control: `holds` does report a child's own handle.
+                assert!(holds(children[owner].process(), *value, object));
+                for (other, child) in children.iter().enumerate() {
+                    if other == owner {
+                        continue;
+                    }
+                    assert!(
+                        !holds(child.process(), *value, object),
+                        "the {} child {other} holds handle {value} of the {} child {owner}",
+                        child.kind(),
+                        children[owner].kind()
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert_eq!(checked, 3 * EACH * 3 * (3 * EACH - 1));
+        println!(
+            "checked {checked} handle placements across {} children",
+            children.len()
+        );
+        for child in &mut children {
+            if let Child::Git(guard, _) = child {
+                guard.stop_tree();
+            }
+        }
+    }
+}

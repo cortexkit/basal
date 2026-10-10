@@ -112,13 +112,36 @@ impl PoolConfig {
 
 // The file name, not the signing identifier, distinguishes development copies
 // from the placed fleet. Deriving both names keeps their lookup layouts alike.
+// A trailing `.exe` (any case) is kept at the end, so `ck-basal.exe` finds
+// `ck-basal-worker.exe`.
 fn sibling_worker(exe: &Path) -> std::io::Result<PathBuf> {
-    let mut name = exe
+    let file_name = exe
         .file_name()
-        .ok_or_else(|| std::io::Error::other("the executable has no file name"))?
-        .to_os_string();
+        .ok_or_else(|| std::io::Error::other("the executable has no file name"))?;
+    let (stem, exe_suffix) = split_exe_suffix(file_name);
+    let mut name = stem.to_os_string();
     name.push("-worker");
+    if exe_suffix {
+        name.push(".exe");
+    }
     Ok(exe.with_file_name(name))
+}
+
+/// Splits a trailing `.exe`, compared case-insensitively, off a file name.
+fn split_exe_suffix(name: &std::ffi::OsStr) -> (&std::ffi::OsStr, bool) {
+    let bytes = name.as_encoded_bytes();
+    let Some(split) = bytes.len().checked_sub(4) else {
+        return (name, false);
+    };
+    if !bytes[split..].eq_ignore_ascii_case(b".exe") {
+        return (name, false);
+    }
+    // SAFETY: the split falls immediately before an ASCII `.`, which the
+    // standard library documents as a valid boundary of the encoding.
+    (
+        unsafe { std::ffi::OsStr::from_encoded_bytes_unchecked(&bytes[..split]) },
+        true,
+    )
 }
 
 #[cfg(test)]
@@ -134,6 +157,23 @@ mod names {
         assert_eq!(
             sibling_worker(Path::new("/scratch/ckdev-basal")).unwrap(),
             Path::new("/scratch/ckdev-basal-worker")
+        );
+        assert_eq!(
+            sibling_worker(Path::new("/placed/ck-basal.exe")).unwrap(),
+            Path::new("/placed/ck-basal-worker.exe")
+        );
+        assert_eq!(
+            sibling_worker(Path::new("/scratch/ckdev-basal.EXE")).unwrap(),
+            Path::new("/scratch/ckdev-basal-worker.exe")
+        );
+        // Only a whole trailing `.exe` is an extension to keep at the end.
+        assert_eq!(
+            sibling_worker(Path::new("/placed/ck-basal.exe.old")).unwrap(),
+            Path::new("/placed/ck-basal.exe.old-worker")
+        );
+        assert_eq!(
+            sibling_worker(Path::new("/placed/exe")).unwrap(),
+            Path::new("/placed/exe-worker")
         );
     }
 }
@@ -647,17 +687,25 @@ impl Pool {
         }
     }
 
-    /// The operator's confinement policy and deaths attributed to SIGSYS.
+    /// The operator's confinement policy and deaths attributed to a
+    /// confinement fault, published under the name of this OS's fault:
+    /// `sigsys_deaths` on Unix, `fatal_status_deaths` on Windows.
     pub fn worker_confinement(&self) -> serde_json::Value {
-        serde_json::json!({
+        let mut confinement = serde_json::json!({
             "os": std::env::consts::OS,
             "landlock": if cfg!(target_os = "linux") {
                 Some(self.shared.config.landlock.as_str())
             } else {
                 None
             },
-            "sigsys_deaths": self.shared.metrics.sigsys_deaths.load(Ordering::Relaxed),
-        })
+        });
+        confinement[CONFINEMENT_FAULT_DEATHS] = self
+            .shared
+            .metrics
+            .sigsys_deaths
+            .load(Ordering::Relaxed)
+            .into();
+        confinement
     }
 
     /// Stops handing out workers and kills every idle one.
@@ -689,9 +737,9 @@ impl Pool {
         state.busy.remove(&lease.id);
         let activations = lease.activations.saturating_add(1);
         let status = process.exit_status();
-        // A channel failure can make drive request a kill after SIGSYS has
-        // already ended the worker. Retain that death as a confinement crash.
-        let crash_status = status.filter(|status| !lease.killed || is_sigsys(status));
+        // A channel failure can make drive request a kill after a confinement
+        // fault has already ended the worker. Retain that death as a confinement crash.
+        let crash_status = status.filter(|status| !lease.killed || is_confinement_fault(status));
         let crashed = crash_status.is_some();
         let keep = match (&lease.binding, lease.killed || crashed) {
             (_, true) => None,
@@ -770,7 +818,7 @@ impl Shared {
     /// Accounts for a worker found dead that nobody killed.
     fn crashed(&self, state: &mut State, status: std::io::Result<ExitStatus>) {
         Metrics::bump(&self.metrics.workers_crashed);
-        if is_sigsys(&status) {
+        if is_confinement_fault(&status) {
             Metrics::bump(&self.metrics.sigsys_deaths);
         }
         self.lost(state, true);
@@ -862,12 +910,26 @@ impl Shared {
     }
 }
 
-fn is_sigsys(status: &std::io::Result<ExitStatus>) -> bool {
+/// The health key the confinement-fault count is published under.
+pub const CONFINEMENT_FAULT_DEATHS: &str = if cfg!(windows) {
+    "fatal_status_deaths"
+} else {
+    "sigsys_deaths"
+};
+
+/// Whether a worker died of its confinement: SIGSYS on Unix (seccomp or the
+/// macOS sandbox), a fatal access-violation or invalid-handle status on
+/// Windows. A worker's own startup refusal (exit 70) and a kill are not.
+fn is_confinement_fault(status: &std::io::Result<ExitStatus>) -> bool {
     #[cfg(unix)]
     {
         matches!(status, Ok(status) if status.signal() == Some(libc::SIGSYS))
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        matches!(status, Ok(status) if status.code().is_some_and(|code| crate::windows::is_fault_exit(code as u32)))
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = status;
         false

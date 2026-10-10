@@ -193,15 +193,7 @@ impl Hooks for RigKillHook {
         let flow = &armed.flow_id;
         tracing::warn!("rig kill hook: killing ck-basal in run {run_id} of {flow} at {point}");
         eprintln!("ck-basal: rig kill hook: killing itself in run {run_id} of {flow} at {point}");
-        // SAFETY: kill(2) on our own pid has no memory-safety preconditions.
-        unsafe {
-            libc::kill(libc::getpid(), libc::SIGKILL);
-        }
-        // kill(2) can return before the signal takes the process down; this
-        // thread must not go on to commit the answer meanwhile.
-        loop {
-            std::thread::park();
-        }
+        crate::fatal::kill_self();
     }
 }
 

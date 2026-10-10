@@ -180,6 +180,22 @@ fn catalog() -> Value {
     json!([{"name": "echo", "module": "mock", "op": "echo", "input_schema": {"type": "object"}}])
 }
 
+/// basal-core's codemode admission refuses Windows (`unsupported_platform`),
+/// so the module refuses a run before any worker is spawned.
+#[cfg(windows)]
+#[test]
+fn codemode_run_is_refused_on_windows() {
+    let rig = rig("codemode-windows", false);
+    let reply = rig.f.module.handle(
+        &Caller::Core,
+        "codemode.run",
+        request(&rig.host, "windows", "return 1;", json!([])),
+    );
+    let text = format!("{reply:?}");
+    assert!(text.contains("unsupported_platform"), "{text}");
+    assert!(rig.f.module.codemode_pool.handouts().is_empty());
+}
+
 #[test]
 fn codemode_manifest_declares_core_only_operation_kinds() {
     for (name, kind) in [
@@ -221,6 +237,10 @@ fn codemode_ops_refuse_every_non_core_caller_before_decoding() {
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "codemode is refused on Windows (unsupported_platform)"
+)]
 fn codemode_run_returns_while_provider_is_held_and_other_ops_are_served() {
     let rig = rig("codemode-async", false);
     let admitted = std::thread::scope(|scope| {
@@ -276,6 +296,10 @@ fn codemode_run_returns_while_provider_is_held_and_other_ops_are_served() {
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "codemode is refused on Windows (unsupported_platform)"
+)]
 fn codemode_cancel_unknown_terminal_and_running_and_hide_flow_ids() {
     let rig = rig("codemode-cancel", false);
     for op in ["codemode.result", "codemode.cancel"] {
@@ -348,6 +372,10 @@ fn codemode_cancel_unknown_terminal_and_running_and_hide_flow_ids() {
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "codemode is refused on Windows (unsupported_platform)"
+)]
 fn codemode_workers_are_separate_from_flow_pool_and_never_shared() {
     let rig = rig("codemode-pools", false);
     let before = rig.f.module.pool.stats();
@@ -394,6 +422,10 @@ fn codemode_pool_retires_even_an_unused_lease() {
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "codemode is refused on Windows (unsupported_platform)"
+)]
 fn codemode_spawn_failure_is_failed_worker_lost() {
     let rig = rig("codemode-spawn-failure", true);
     run(&rig, "spawn", "return 1;", json!([]));
@@ -444,6 +476,10 @@ fn shutdown_module(
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "codemode is refused on Windows (unsupported_platform)"
+)]
 fn codemode_shutdown_after_store_cut_revokes_a_held_worker() {
     let (module, dir, host, provider) = shutdown_module("codemode-shutdown-cut");
     admit(
@@ -480,6 +516,10 @@ fn codemode_shutdown_after_store_cut_revokes_a_held_worker() {
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "codemode is refused on Windows (unsupported_platform)"
+)]
 fn module_drop_releases_codemode_store_before_a_held_provider_returns() {
     let (module, dir, host, provider) = shutdown_module("codemode-shutdown-held");
     admit(
@@ -588,6 +628,10 @@ fn exhausted(program: &str, status: &str) {
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "codemode is refused on Windows (unsupported_platform)"
+)]
 fn codemode_js_cpu_within_budget_completes_end_to_end() {
     completed(
         "let s = 0; for (let i=0; i<100000; i++) s += i; return s;",
@@ -596,11 +640,19 @@ fn codemode_js_cpu_within_budget_completes_end_to_end() {
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "codemode is refused on Windows (unsupported_platform)"
+)]
 fn codemode_js_cpu_exceeding_budget_is_exact_end_to_end() {
     exhausted("while (true) {}", "budget_exhausted:js_cpu");
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "codemode is refused on Windows (unsupported_platform)"
+)]
 fn codemode_memory_within_budget_completes_end_to_end() {
     completed(
         "return new ArrayBuffer(1024 * 1024).byteLength;",
@@ -609,6 +661,10 @@ fn codemode_memory_within_budget_completes_end_to_end() {
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "codemode is refused on Windows (unsupported_platform)"
+)]
 fn codemode_memory_exceeding_budget_is_exact_even_when_caught_end_to_end() {
     exhausted(
         "try { new ArrayBuffer(80 * 1024 * 1024); } catch (_) {} return 4;",
@@ -617,6 +673,10 @@ fn codemode_memory_exceeding_budget_is_exact_even_when_caught_end_to_end() {
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "codemode is refused on Windows (unsupported_platform)"
+)]
 fn codemode_stack_within_budget_completes_end_to_end() {
     completed(
         "function f(n) { return n ? f(n-1) + 1 : 0; } return f(10);",
@@ -625,6 +685,10 @@ fn codemode_stack_within_budget_completes_end_to_end() {
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "codemode is refused on Windows (unsupported_platform)"
+)]
 fn codemode_stack_exceeding_budget_is_exact_even_when_caught_end_to_end() {
     exhausted(
         "function f() { return f(); } try { f(); } catch (_) {} return 4;",
@@ -816,6 +880,10 @@ fn every_status_and_outcome() -> (
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "codemode is refused on Windows (unsupported_platform)"
+)]
 fn codemode_results_decode_against_documented_shape() {
     let shape = documented_result_shape();
     let (statuses, outcomes) = every_status_and_outcome();

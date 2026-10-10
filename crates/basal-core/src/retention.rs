@@ -21,8 +21,7 @@
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use std::collections::HashMap;
-use std::ffi::OsString;
-use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -356,7 +355,7 @@ impl TempLedger for FsTempLedger {
         let hold = FsTempHold {
             shared: self.shared.clone(),
             key: lease.call_key.clone(),
-            dir: lease.dir.as_os_str().as_bytes().to_vec(),
+            dir: os_bytes(lease.dir.as_os_str()),
             cleared: false,
         };
         let roots = serde_json::to_string(&lease.roots).map_err(|e| e.to_string())?;
@@ -369,7 +368,7 @@ impl TempLedger for FsTempLedger {
                     params![
                         lease.call_key,
                         hold.dir,
-                        lease.target.as_bytes(),
+                        os_bytes(&lease.target),
                         lease.temp.to_string_lossy(),
                         roots
                     ],
@@ -462,17 +461,26 @@ impl Runtime {
                 // it ends without doing so.
                 continue;
             }
-            let removal = match serde_json::from_str::<Vec<String>>(&roots) {
-                Ok(roots) => host_fs::remove_temp(&TempLease {
+            let removal = match (
+                serde_json::from_str::<Vec<String>>(&roots),
+                os_from_bytes(dir.clone()),
+                os_from_bytes(target),
+            ) {
+                (Ok(roots), Some(record_dir), Some(target)) => host_fs::remove_temp(&TempLease {
                     call_key: call_key.clone(),
-                    dir: PathBuf::from(OsString::from_vec(dir.clone())),
-                    target: OsString::from_vec(target),
+                    dir: PathBuf::from(record_dir),
+                    target,
                     temp: OsString::from(temp),
                     roots,
                 }),
                 // No roots to check a path against: nothing may be removed.
-                Err(_) => Ok(host_fs::TempRemoval::Refused(
+                (Err(_), _, _) => Ok(host_fs::TempRemoval::Refused(
                     basal_host::builtins::Denial::invalid("unreadable roots"),
+                )),
+                // Bytes `os_bytes` cannot have produced, so the record names no
+                // file a write created: nothing may be removed.
+                _ => Ok(host_fs::TempRemoval::Refused(
+                    basal_host::builtins::Denial::invalid("unreadable path"),
                 )),
             };
             match removal {
@@ -550,5 +558,76 @@ impl Runtime {
             )?;
             Ok(())
         })
+    }
+}
+
+/// A path or file name as stored in an `fs_temps` record. On Unix these are
+/// the raw bytes, which every record already written holds. On Windows,
+/// where a name is a sequence of UTF-16 units that need not be valid
+/// Unicode, they are those units in little-endian order, so any name
+/// round-trips exactly.
+#[cfg(unix)]
+fn os_bytes(value: &OsStr) -> Vec<u8> {
+    use std::os::unix::ffi::OsStrExt;
+    value.as_bytes().to_vec()
+}
+
+#[cfg(windows)]
+fn os_bytes(value: &OsStr) -> Vec<u8> {
+    use std::os::windows::ffi::OsStrExt;
+    value.encode_wide().flat_map(u16::to_le_bytes).collect()
+}
+
+/// The inverse of [`os_bytes`]. `None` for bytes it cannot have produced (an
+/// odd length on Windows), which name nothing basal may remove.
+#[cfg(unix)]
+fn os_from_bytes(bytes: Vec<u8>) -> Option<OsString> {
+    use std::os::unix::ffi::OsStringExt;
+    Some(OsString::from_vec(bytes))
+}
+
+#[cfg(windows)]
+fn os_from_bytes(bytes: Vec<u8>) -> Option<OsString> {
+    use std::os::windows::ffi::OsStringExt;
+    if bytes.len() % 2 != 0 {
+        return None;
+    }
+    let units: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
+        .collect();
+    Some(OsString::from_wide(&units))
+}
+
+#[cfg(test)]
+mod os_bytes_tests {
+    use super::*;
+
+    #[test]
+    fn stored_names_round_trip_exactly() {
+        for name in ["", "plain", "résumé 日本語", ".basal-1-2.tmp"] {
+            let value = OsString::from(name);
+            assert_eq!(os_from_bytes(os_bytes(&value)), Some(value));
+        }
+    }
+
+    /// Records written before this encoding existed hold the raw bytes, so
+    /// on Unix the stored form must still be exactly those bytes.
+    #[cfg(unix)]
+    #[test]
+    fn unix_names_are_stored_as_their_raw_bytes() {
+        use std::os::unix::ffi::OsStringExt;
+        let raw = vec![b'a', 0xff, b'/', b'b'];
+        assert_eq!(os_bytes(&OsString::from_vec(raw.clone())), raw);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_names_keep_unpaired_surrogates_and_refuse_odd_lengths() {
+        use std::os::windows::ffi::OsStringExt;
+        let value = OsString::from_wide(&[0xd800, u16::from(b'a')]);
+        assert_eq!(os_bytes(&value), [0x00, 0xd8, b'a', 0x00]);
+        assert_eq!(os_from_bytes(os_bytes(&value)), Some(value));
+        assert_eq!(os_from_bytes(vec![b'a']), None);
     }
 }

@@ -38,10 +38,20 @@ rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 subc-client-rs.workspace = true
-subc-os.workspace = true
 subc-protocol.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+
+# Only the macOS worker launch uses it: the module re-executes itself so
+# the worker is its own "responsible process" and holds none of the
+# module's macOS privacy grants (see src/process.rs).
+[target.'cfg(target_os = "macos")'.dependencies]
+subc-os.workspace = true
+
+# Windows workers are started and owned by the launcher.
+[target.'cfg(windows)'.dependencies]
+basal-launch.workspace = true
+windows-sys = { version = "0.61", features = ["Win32_System_Threading"] }
 
 [build-dependencies]
 sha2.workspace = true
@@ -50,3 +60,15 @@ sha2.workspace = true
 basal-testkit.workspace = true
 sha2.workspace = true
 subc-transport.workspace = true
+
+# tests/store_dacl.rs reads the store directory's and database's security
+# descriptors back to check they are owner-only.
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_SystemServices",
+    "Win32_System_Threading",
+] }

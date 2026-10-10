@@ -8,6 +8,7 @@ use super::job::{self, JobLimits};
 use super::native::{Result, SidBuf, check, last, owned, wide};
 use super::process::{ConfinedProcess, KILL_EXIT_CODE};
 use super::profile::{PackageSid, create_or_open_profile};
+use super::spawn_lock::{make_inheritable, spawn_lock};
 use super::token::{self, BirthExpectation};
 use std::ffi::{OsStr, OsString, c_void};
 use std::fs::File;
@@ -16,9 +17,7 @@ use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, IntoRawHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
-use windows_sys::Win32::Foundation::{
-    CloseHandle, HANDLE, HANDLE_FLAG_INHERIT, SetHandleInformation,
-};
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
 use windows_sys::Win32::Security::{
     SECURITY_CAPABILITIES, SID_AND_ATTRIBUTES, TOKEN_ALL_ACCESS, TOKEN_QUERY,
 };
@@ -146,23 +145,25 @@ pub fn launch(options: &LaunchOptions) -> std::result::Result<ConfinedProcess, L
     let parent_token = token::own_token()?;
     let context = context::create(&options.program, parent_token.as_raw_handle(), &package)?;
 
+    // The child's ends are made inheritable only under the spawn lock, which
+    // is released below once they are closed. It is taken before the pipes
+    // exist so that on an early return the ends, dropped in reverse order of
+    // declaration, are closed before the lock is released.
+    let spawn_lock = spawn_lock();
     let (child_stdin, parent_stdin) = pipe()?;
     let (parent_stdout, child_stdout) = pipe()?;
     let (parent_stderr, child_stderr) = pipe()?;
     // Only the child's three ends are inheritable, and only they are named
     // in the inherited-handle list.
-    for end in [&child_stdin, &child_stdout, &child_stderr] {
-        check(
-            unsafe {
-                SetHandleInformation(
-                    end.as_raw_handle(),
-                    HANDLE_FLAG_INHERIT,
-                    HANDLE_FLAG_INHERIT,
-                )
-            },
-            "SetHandleInformation(child pipe end)",
-        )?;
-    }
+    make_inheritable(
+        &spawn_lock,
+        &[
+            child_stdin.as_raw_handle(),
+            child_stdout.as_raw_handle(),
+            child_stderr.as_raw_handle(),
+        ],
+    )
+    .map_err(|error| format!("SetHandleInformation(child pipe end): {error}"))?;
     let inherited: [HANDLE; 3] = [
         child_stdin.as_raw_handle(),
         child_stdout.as_raw_handle(),
@@ -195,6 +196,7 @@ pub fn launch(options: &LaunchOptions) -> std::result::Result<ConfinedProcess, L
     // The child has inherited its own copies of its three pipe ends; the
     // parent's copies would keep the pipes open after the child exits.
     drop((child_stdin, child_stdout, child_stderr));
+    drop(spawn_lock);
     Ok(ConfinedProcess::new(
         spawned.process,
         spawned.pid,
@@ -542,7 +544,7 @@ pub(crate) fn push_argument(command: &mut Vec<u16>, arg: &OsStr) {
 }
 
 /// An anonymous pipe as (read end, write end). Neither end is inheritable.
-fn pipe() -> Result<(OwnedHandle, OwnedHandle)> {
+pub(crate) fn pipe() -> Result<(OwnedHandle, OwnedHandle)> {
     let mut read = null_mut();
     let mut write = null_mut();
     check(
@@ -698,12 +700,12 @@ impl Drop for TokenSource {
 
 /// A process/thread attribute list. The values added must outlive every
 /// use of the list, since the list stores pointers to them.
-struct AttributeList {
+pub(crate) struct AttributeList {
     buffer: Vec<usize>,
 }
 
 impl AttributeList {
-    fn new(capacity: u32) -> Result<Self> {
+    pub(crate) fn new(capacity: u32) -> Result<Self> {
         let mut bytes = 0;
         unsafe { InitializeProcThreadAttributeList(null_mut(), capacity, 0, &mut bytes) };
         if bytes == 0 {
@@ -719,11 +721,11 @@ impl AttributeList {
         Ok(list)
     }
 
-    fn as_ptr(&mut self) -> LPPROC_THREAD_ATTRIBUTE_LIST {
+    pub(crate) fn as_ptr(&mut self) -> LPPROC_THREAD_ATTRIBUTE_LIST {
         self.buffer.as_mut_ptr().cast()
     }
 
-    fn add<T: ?Sized>(&mut self, attribute: u32, value: &T) -> Result<()> {
+    pub(crate) fn add<T: ?Sized>(&mut self, attribute: u32, value: &T) -> Result<()> {
         check(
             unsafe {
                 UpdateProcThreadAttribute(
