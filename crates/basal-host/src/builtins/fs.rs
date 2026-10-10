@@ -27,18 +27,29 @@
 #[cfg(test)]
 mod tests;
 
-use std::ffi::{CString, OsStr, OsString};
+#[cfg(unix)]
+use std::ffi::CString;
+use std::ffi::{OsStr, OsString};
+#[cfg(unix)]
 use std::fs::File;
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(unix, not(target_os = "linux")))]
 use std::fs::OpenOptions;
+#[cfg(unix)]
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+#[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(unix, not(target_os = "linux")))]
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(unix)]
+use std::path::Component;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicU64;
+#[cfg(unix)]
+use std::sync::atomic::Ordering;
 
+#[cfg(unix)]
 use serde_json::{Value, json};
 
 use super::{Denial, codes, expand_home};
@@ -47,6 +58,13 @@ use super::{Denial, codes, expand_home};
 pub use linux::{
     KernelCapability, ResolvedPath, Target, open_checked, open_checked_with_capability, resolve,
     stat,
+};
+
+pub mod windows;
+#[cfg(windows)]
+pub use windows::{
+    Target, list, open_checked, read, remove_legacy_temps, remove_temp, resolve, stat, write,
+    write_call,
 };
 
 /// `fs.read`'s default cap.
@@ -70,7 +88,7 @@ pub enum Purpose {
 
 /// Where a path resolved to.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(unix, not(target_os = "linux")))]
 pub enum Target {
     /// It exists; this is its real path.
     Existing(PathBuf),
@@ -81,7 +99,7 @@ pub enum Target {
 
 /// The roots, each resolved to its real path. A root that does not exist
 /// now grants nothing.
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(unix, not(target_os = "linux")))]
 fn real_roots(roots: &[String]) -> Vec<PathBuf> {
     roots
         .iter()
@@ -121,13 +139,13 @@ fn absolute(path: &str) -> Result<PathBuf, Denial> {
 }
 
 /// Resolves `path` and requires it to lie under one of `roots`.
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(unix, not(target_os = "linux")))]
 pub fn resolve(path: &str, roots: &[String], purpose: Purpose) -> Result<Target, Denial> {
     let roots = real_roots(roots);
     resolve_real(path, &roots, purpose)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(unix, not(target_os = "linux")))]
 fn resolve_real(path: &str, roots: &[PathBuf], purpose: Purpose) -> Result<Target, Denial> {
     let path = absolute(path)?;
     if purpose == Purpose::Read {
@@ -166,7 +184,7 @@ fn resolve_real(path: &str, roots: &[PathBuf], purpose: Purpose) -> Result<Targe
 }
 
 /// Where the kernel says an open descriptor's file is.
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(unix, not(target_os = "linux")))]
 fn fd_path(fd: RawFd) -> std::io::Result<PathBuf> {
     #[cfg(target_os = "macos")]
     {
@@ -190,7 +208,7 @@ fn fd_path(fd: RawFd) -> std::io::Result<PathBuf> {
 
 /// Requires the file behind `fd` (or, with `name`, the entry `name` in the
 /// directory behind `fd`) to lie under one of `roots`.
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(unix, not(target_os = "linux")))]
 fn verify(fd: RawFd, name: Option<&OsStr>, roots: &[PathBuf]) -> Result<(), Denial> {
     let mut real = fd_path(fd).map_err(|e| Denial::new(codes::IO, e.to_string()))?;
     if let Some(name) = name {
@@ -210,12 +228,12 @@ fn verify(fd: RawFd, name: Option<&OsStr>, roots: &[PathBuf]) -> Result<(), Deni
 /// it was resolved against. A symlink swapped into the last component
 /// since resolution fails the open; one swapped in higher up is caught by
 /// the check after it.
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(unix, not(target_os = "linux")))]
 pub fn open_checked(resolved: &Path, roots: &[String], directory: bool) -> Result<File, Denial> {
     open_checked_real(resolved, &real_roots(roots), directory)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(unix, not(target_os = "linux")))]
 fn open_checked_real(resolved: &Path, roots: &[PathBuf], directory: bool) -> Result<File, Denial> {
     let mut flags = libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK;
     if directory {
@@ -240,6 +258,7 @@ fn open_checked_real(resolved: &Path, roots: &[PathBuf], directory: bool) -> Res
 }
 
 /// `fs.read`: the file's text, refused over `max_bytes` or when not UTF-8.
+#[cfg(unix)]
 pub fn read(path: &str, roots: &[String], max_bytes: u64) -> Result<Value, Denial> {
     #[cfg(not(target_os = "linux"))]
     let roots = real_roots(roots);
@@ -294,6 +313,7 @@ pub fn read(path: &str, roots: &[String], max_bytes: u64) -> Result<Value, Denia
     Ok(json!({ "text": text }))
 }
 
+#[cfg(unix)]
 fn kind_of(mode: libc::mode_t) -> &'static str {
     match mode & libc::S_IFMT {
         libc::S_IFREG => "file",
@@ -303,12 +323,14 @@ fn kind_of(mode: libc::mode_t) -> &'static str {
     }
 }
 
+#[cfg(unix)]
 fn c_name(name: &OsStr) -> Result<CString, Denial> {
     CString::new(name.as_bytes()).map_err(|_| Denial::invalid("a name with a NUL byte"))
 }
 
 /// `lstat` of `name` in the directory behind `dir`; `None` when it does
 /// not exist.
+#[cfg(unix)]
 fn stat_at(dir: RawFd, name: &OsStr) -> Result<Option<libc::stat>, Denial> {
     let c = c_name(name)?;
     let mut st = std::mem::MaybeUninit::<libc::stat>::uninit();
@@ -328,7 +350,7 @@ fn stat_at(dir: RawFd, name: &OsStr) -> Result<Option<libc::stat>, Denial> {
 }
 
 /// Opens the parent of an entry and checks the entry's real path.
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(unix, not(target_os = "linux")))]
 fn open_parent(parent: &Path, name: &OsStr, roots: &[PathBuf]) -> Result<File, Denial> {
     let file = OpenOptions::new()
         .read(true)
@@ -343,7 +365,7 @@ fn open_parent(parent: &Path, name: &OsStr, roots: &[PathBuf]) -> Result<File, D
 /// answers `{exists: false}` when its parent lies under a root.
 /// Existing symlinks are followed by resolution; only a dangling symlink is
 /// reported as `kind: "symlink"` by the descriptor-relative metadata lookup.
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(unix, not(target_os = "linux")))]
 pub fn stat(path: &str, roots: &[String]) -> Result<Value, Denial> {
     let roots = real_roots(roots);
     let (parent, name) = match resolve_real(path, &roots, Purpose::Read)? {
@@ -370,6 +392,7 @@ pub fn stat(path: &str, roots: &[String]) -> Result<Value, Denial> {
 
 /// `fs.list`: the directory's entries, sorted by name, refused over
 /// [`MAX_LIST_ENTRIES`] or when a name is not UTF-8.
+#[cfg(unix)]
 pub fn list(path: &str, roots: &[String]) -> Result<Value, Denial> {
     #[cfg(not(target_os = "linux"))]
     let roots = real_roots(roots);
@@ -431,6 +454,7 @@ pub fn list(path: &str, roots: &[String]) -> Result<Value, Denial> {
 
 /// The entries of the directory behind `fd` (not `.` or `..`) with their
 /// `d_type`, reading at most one more than [`MAX_LIST_ENTRIES`].
+#[cfg(unix)]
 fn read_dir_fd(fd: RawFd) -> std::io::Result<Vec<(OsString, u8)>> {
     let mut out = Vec::new();
     scan_dir(fd, |name, d_type| {
@@ -442,6 +466,7 @@ fn read_dir_fd(fd: RawFd) -> std::io::Result<Vec<(OsString, u8)>> {
 
 /// Hands each entry of the directory behind `fd` (not `.` or `..`) with its
 /// `d_type` to `visit`, until `visit` answers false.
+#[cfg(unix)]
 fn scan_dir(fd: RawFd, mut visit: impl FnMut(OsString, u8) -> bool) -> std::io::Result<()> {
     // fdopendir takes ownership of the descriptor it is given, so it gets
     // a duplicate and the caller keeps its own.
@@ -580,6 +605,7 @@ pub fn is_legacy_temp_name(name: &OsStr) -> bool {
 }
 
 /// What [`unlink_regular`] found under a name.
+#[cfg(unix)]
 enum Unlinked {
     Removed,
     Absent,
@@ -590,6 +616,7 @@ enum Unlinked {
 /// Removes `name` from the directory behind `dir` only if it is a regular
 /// file. The name is examined without following a symlink, and unlinkat
 /// removes the entry itself, so a symlink's target is never touched.
+#[cfg(unix)]
 fn unlink_regular(dir: RawFd, name: &OsStr) -> Result<Unlinked, Denial> {
     match stat_at(dir, name)? {
         None => return Ok(Unlinked::Absent),
@@ -611,6 +638,7 @@ fn unlink_regular(dir: RawFd, name: &OsStr) -> Result<Unlinked, Denial> {
     }
 }
 
+#[cfg(unix)]
 fn replacement_mode(mode: libc::mode_t) -> libc::mode_t {
     mode & 0o777
 }
@@ -627,6 +655,7 @@ pub(super) fn check_write_size(bytes: usize) -> Result<(), Denial> {
 }
 
 /// `fs.write` outside a journaled call, under a key of its own.
+#[cfg(unix)]
 pub fn write(path: &str, roots: &[String], text: &str) -> Result<Value, Denial> {
     let key = format!(
         "local-{}-{}",
@@ -639,6 +668,7 @@ pub fn write(path: &str, roots: &[String], text: &str) -> Result<Value, Denial> 
 /// Resolves `path` for a write and opens its parent directory, checked
 /// against `roots`: the directory's real path, the name in it, and the
 /// open directory.
+#[cfg(unix)]
 fn open_write_parent(path: &str, roots: &[String]) -> Result<(PathBuf, OsString, File), Denial> {
     #[cfg(not(target_os = "linux"))]
     let real = real_roots(roots);
@@ -658,6 +688,7 @@ fn open_write_parent(path: &str, roots: &[String]) -> Result<(PathBuf, OsString,
 
 /// Creates the temporary file `name` (`c` is the same name) in the
 /// directory behind `dir`, never following a symlink.
+#[cfg(unix)]
 fn create_temp(dir: RawFd, name: &OsStr, c: &CString, mode: libc::mode_t) -> std::io::Result<File> {
     let mut replaced = false;
     loop {
@@ -701,6 +732,7 @@ fn create_temp(dir: RawFd, name: &OsStr, c: &CString, mode: libc::mode_t) -> std
 /// `ledger`, the file is recorded there before it is created and the record
 /// is cleared only once the file is gone and that is durable, so however
 /// the call ends, crash included, a file it left behind is on record.
+#[cfg(unix)]
 pub fn write_call(
     path: &str,
     roots: &[String],
@@ -819,6 +851,7 @@ pub enum TempRemoval {
 /// following a symlink, and nothing else is ever removed. Removing a file
 /// that is already gone is not an error, so this may run any number of
 /// times. `Err` is a failure that may pass: keep the record and try again.
+#[cfg(unix)]
 pub fn remove_temp(lease: &TempLease) -> Result<TempRemoval, Denial> {
     if !is_temp_name(&lease.temp) && !is_legacy_temp_name(&lease.temp) {
         return Ok(TempRemoval::Refused(Denial::invalid(
@@ -861,6 +894,7 @@ pub fn remove_temp(lease: &TempLease) -> Result<TempRemoval, Denial> {
 /// is opened and checked against `roots` as a write to `path` would be;
 /// symlinks are never followed and nothing else is removed. Returns how
 /// many files were removed.
+#[cfg(unix)]
 pub fn remove_legacy_temps(path: &str, roots: &[String]) -> Result<usize, Denial> {
     let (parent, _, dir) = open_write_parent(path, roots)?;
     let mut names = Vec::new();
