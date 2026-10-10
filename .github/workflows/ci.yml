@@ -358,7 +358,11 @@ jobs:
   # first failure. Every log is uploaded as the windows-baseline-logs artifact.
   windows-baseline:
     if: github.event_name != 'schedule'
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, windows-2022]
+    runs-on: ${{ matrix.os }}
     continue-on-error: true
     timeout-minutes: 120
     defaults:
@@ -381,9 +385,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-windows-baseline-${{ github.sha }}
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-windows-baseline-${{ matrix.os }}-${{ github.sha }}
           restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-windows-baseline-
+            ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-windows-baseline-${{ matrix.os }}-
       - name: Prepare the log directory
         run: mkdir -p "$RUNNER_TEMP/windows-baseline"
       # The Windows launcher's own tests start real confined children, so
@@ -395,7 +399,9 @@ jobs:
         id: test-launch
         continue-on-error: true
         timeout-minutes: 20
-        run: cargo test -p basal-launch --features deviations --locked -- --show-output 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-launch.log"
+        run: |
+          cargo test -p basal-launch --locked -- --show-output 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-launch-production.log"
+          cargo test -p basal-launch --features deviations --locked -- --show-output 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-launch.log"
       # The worker's tests on their own: its Windows startup checks, its image
       # and a real activation, each worker started through the launcher. The
       # plain build is the production worker, which must refuse the
@@ -407,6 +413,14 @@ jobs:
         continue-on-error: true
         timeout-minutes: 30
         run: cargo test -p basal-worker --locked --no-fail-fast -- --show-output 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-worker.log"
+      # The creators and counts of production startup handles are measured
+      # once per Windows runner image. Every worker startup still compares its
+      # live handle table with the fixed per-image count limits; the image test
+      # rejects DLL imports absent from the worker's windows-imports.txt file.
+      - name: Witness the startup-handle and import-inventory mutants
+        continue-on-error: true
+        timeout-minutes: 10
+        run: python crates/basal-worker/tests/windows_mutation_witness.py "$RUNNER_TEMP/windows-baseline"
       - name: Test the worker with its test variants
         id: test-worker-deviations
         continue-on-error: true
@@ -486,6 +500,6 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
-          name: windows-baseline-logs
+          name: windows-baseline-logs${{ matrix.os == 'windows-2022' && '-windows-2022' || '' }}
           path: ${{ runner.temp }}/windows-baseline
           if-no-files-found: error
