@@ -25,6 +25,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(feature = "deviations")]
     fn deviation_tokens_match_specification() {
         assert_eq!(Deviation::Full.as_str(), "full");
         assert_eq!(Deviation::LpacOnly.as_str(), "lpac-only");
@@ -84,6 +85,18 @@ mod tests {
             Deviation::InitialTokenOpen.parent_reason(),
             Some("initial-token-open")
         );
+    }
+
+    #[test]
+    #[cfg(not(feature = "deviations"))]
+    fn deviations_absent_in_production() {
+        let d = Deviation::Full;
+        match d {
+            Deviation::Full => (),
+        }
+        assert_eq!(d.as_str(), "full");
+        assert_eq!(d.worker_reason(), None);
+        assert_eq!(d.parent_reason(), None);
     }
 
     #[test]

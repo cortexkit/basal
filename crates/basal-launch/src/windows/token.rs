@@ -79,6 +79,7 @@ pub fn construct_tokens(
     deviation: Deviation,
 ) -> Result<SpawnTokens, LaunchError> {
     unsafe {
+        let _ = deviation;
         let mut parent_token = null_mut();
         if OpenProcessToken(
             GetCurrentProcess(),
@@ -94,10 +95,11 @@ pub fn construct_tokens(
         let mut disabled = Vec::new();
         for (i, g) in groups(&data).iter().enumerate() {
             if g.Attributes & SE_GROUP_INTEGRITY == 0 {
-                // If GroupNotDenyOnly deviation is set, leave one group enabled
+                #[cfg(feature = "deviations")]
                 if deviation == Deviation::GroupNotDenyOnly && i == 0 {
                     continue;
                 }
+                let _ = i;
                 disabled.push(SID_AND_ATTRIBUTES {
                     Sid: g.Sid,
                     Attributes: 0,
@@ -122,11 +124,12 @@ pub fn construct_tokens(
             Attributes: 0,
         }];
 
-        let restrict: &[SID_AND_ATTRIBUTES] = if deviation == Deviation::RestrictingSidMismatch {
-            &[]
-        } else {
-            &null_restrict
-        };
+        #[allow(unused_mut)]
+        let mut restrict: &[SID_AND_ATTRIBUTES] = &null_restrict;
+        #[cfg(feature = "deviations")]
+        if deviation == Deviation::RestrictingSidMismatch {
+            restrict = &[];
+        }
 
         let mut lockdown = null_mut();
         if CreateRestrictedToken(
@@ -146,7 +149,14 @@ pub fn construct_tokens(
         let lockdown = Handle(lockdown);
 
         // Strip any surviving privileges (such as SeChangeNotifyPrivilege) unless PrivilegesPresent
-        if deviation != Deviation::PrivilegesPresent {
+        #[allow(unused_mut)]
+        let mut strip_privileges = true;
+        #[cfg(feature = "deviations")]
+        if deviation == Deviation::PrivilegesPresent {
+            strip_privileges = false;
+        }
+
+        if strip_privileges {
             let p = token_buffer(lockdown.0, TokenPrivileges)?;
             let p = &*p.as_ptr().cast::<TOKEN_PRIVILEGES>();
             for entry in
@@ -164,7 +174,14 @@ pub fn construct_tokens(
         }
 
         // Set integrity level
+        #[allow(unused_mut)]
+        let mut medium_integrity = false;
+        #[cfg(feature = "deviations")]
         if deviation == Deviation::IntegrityNotUntrusted {
+            medium_integrity = true;
+        }
+
+        if medium_integrity {
             set_integrity(lockdown.0, WinMediumLabelSid)?;
         } else {
             set_integrity(lockdown.0, WinLowLabelSid)?;
@@ -229,11 +246,12 @@ pub fn construct_tokens(
         let mut lowbox = null_mut();
         let dummy_cap: SID_AND_ATTRIBUTES = zeroed();
         let caps_ptr = &dummy_cap as *const SID_AND_ATTRIBUTES;
-        let cap_count = if deviation == Deviation::CapabilitiesPresent {
-            1
-        } else {
-            0
-        };
+        #[allow(unused_mut)]
+        let mut cap_count = 0;
+        #[cfg(feature = "deviations")]
+        if deviation == Deviation::CapabilitiesPresent {
+            cap_count = 1;
+        }
 
         let status = NtCreateLowBoxToken(
             &mut lowbox,
@@ -255,11 +273,12 @@ pub fn construct_tokens(
 
         let loader_dacl = token_dacl(lowbox.0)?;
         let mut impersonation = null_mut();
-        let imp_level = if deviation == Deviation::InitialTokenOpen {
-            SecurityIdentification // Level 1 instead of Level 2
-        } else {
-            SecurityImpersonation // Level 2
-        };
+        #[allow(unused_mut)]
+        let mut imp_level = SecurityImpersonation; // Level 2
+        #[cfg(feature = "deviations")]
+        if deviation == Deviation::InitialTokenOpen {
+            imp_level = SecurityIdentification; // Level 1 instead of Level 2
+        }
 
         if DuplicateTokenEx(
             lowbox.0,
@@ -465,6 +484,7 @@ pub fn check_initial_token_and_close(
     deviation: Deviation,
 ) -> Result<(), LaunchError> {
     unsafe {
+        let _ = deviation;
         // Read back thread token from suspended main thread
         let mut thread_token = null_mut();
         if OpenThreadToken(main_thread, TOKEN_QUERY, 1, &mut thread_token) == 0 {
@@ -516,6 +536,7 @@ pub fn check_initial_token_and_close(
         }
 
         // Check handle close before resume
+        #[cfg(feature = "deviations")]
         if deviation == Deviation::InitialTokenOpen {
             // Intentionally leak or leave the initial handle open to trigger refusal
             return Err(LaunchError::InitialTokenOpen(

@@ -10,7 +10,7 @@ use crate::windows::token::{check_birth_token, check_initial_token_and_close, co
 use std::mem::{size_of, zeroed};
 use std::os::windows::io::FromRawHandle;
 use std::path::PathBuf;
-use std::ptr::{null, null_mut};
+use std::ptr::null;
 use windows_sys::Win32::{
     Foundation::*, Security::*, System::JobObjects::TerminateJobObject, System::Threading::*,
 };
@@ -34,6 +34,9 @@ pub const MITIGATION_POLICY_FLAGS: u64 = (1 << 24) | // StrictHandleChecks
     (1 << 60); // PreferSystem32Images
 
 /// Options configuring process launch under Windows confinement.
+///
+/// In production builds (without the `deviations` feature), only the full confinement
+/// recipe can be launched.
 #[derive(Debug, Clone)]
 pub struct LaunchOptions {
     /// Path to the worker binary to execute.
@@ -44,7 +47,8 @@ pub struct LaunchOptions {
     pub package_sid: Option<String>,
     /// Commit limit in bytes for the job object.
     pub commit_limit: u64,
-    /// Confinement deviation mode (defaults to [`Deviation::Full`]).
+    /// Confinement deviation mode (available only with the `deviations` feature).
+    #[cfg(feature = "deviations")]
     pub deviation: Deviation,
     /// Optional environment overrides (defaults to retaining only `SystemRoot`).
     pub environment: Option<Vec<(String, String)>>,
@@ -58,6 +62,7 @@ impl LaunchOptions {
             args: Vec::new(),
             package_sid: None,
             commit_limit,
+            #[cfg(feature = "deviations")]
             deviation: Deviation::Full,
             environment: None,
         }
@@ -81,7 +86,8 @@ impl LaunchOptions {
         self
     }
 
-    /// Sets the confinement deviation mode.
+    /// Sets the confinement deviation mode. Available only with the `deviations` feature.
+    #[cfg(feature = "deviations")]
     pub fn with_deviation(&mut self, deviation: Deviation) -> &mut Self {
         self.deviation = deviation;
         self
@@ -97,8 +103,20 @@ impl LaunchOptions {
 /// Launches a child worker process under Windows confinement according to [`LaunchOptions`].
 pub fn launch(options: &LaunchOptions) -> Result<OwnedProcess, LaunchError> {
     unsafe {
+        #[cfg(feature = "deviations")]
+        let deviation = options.deviation;
+        #[cfg(not(feature = "deviations"))]
+        let deviation = Deviation::Full;
+
         // Resolve package profile and SID
-        let package_sid = if options.deviation == Deviation::Plain {
+        #[allow(unused_mut)]
+        let mut need_package_sid = true;
+        #[cfg(feature = "deviations")]
+        if deviation == Deviation::Plain {
+            need_package_sid = false;
+        }
+
+        let package_sid = if !need_package_sid {
             None
         } else if let Some(sid_str) = &options.package_sid {
             Some(AppContainerSid::from_string_sid(sid_str)?)
@@ -145,7 +163,8 @@ pub fn launch(options: &LaunchOptions) -> Result<OwnedProcess, LaunchError> {
         };
 
         // Handle plain control launch
-        if options.deviation == Deviation::Plain {
+        #[cfg(feature = "deviations")]
+        if deviation == Deviation::Plain {
             let mut si: STARTUPINFOW = zeroed();
             si.cb = size_of::<STARTUPINFOW>() as u32;
             si.dwFlags = STARTF_USESTDHANDLES;
@@ -193,14 +212,15 @@ pub fn launch(options: &LaunchOptions) -> Result<OwnedProcess, LaunchError> {
                 Some(stdin_file),
                 Some(stdout_file),
                 Some(stderr_file),
-                null_mut(),
+                std::ptr::null_mut(),
             ));
         }
 
         let package_sid = package_sid.unwrap();
 
         // Handle LPAC-only control launch
-        if options.deviation == Deviation::LpacOnly {
+        #[cfg(feature = "deviations")]
+        if deviation == Deviation::LpacOnly {
             let mut attrs = AttributeList::new(3)?;
             let handles = [child_stdin.0, child_stdout.0, child_stderr.0];
             attrs.add(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &handles)?;
@@ -269,24 +289,24 @@ pub fn launch(options: &LaunchOptions) -> Result<OwnedProcess, LaunchError> {
                 Some(stdin_file),
                 Some(stdout_file),
                 Some(stderr_file),
-                null_mut(),
+                std::ptr::null_mut(),
             ));
         }
 
         // Full confinement or deviation launch
-        let job = create_confined_job(options.commit_limit, options.deviation)?;
-        let mut tokens = construct_tokens(&package_sid, options.deviation)?;
+        let job = create_confined_job(options.commit_limit, deviation)?;
+        let mut tokens = construct_tokens(&package_sid, deviation)?;
 
         let mut attrs = AttributeList::new(6)?;
 
         // Handle list attribute
-        let planted_handle = if options.deviation == Deviation::HandleNotAllowed {
-            // Plant an extra inheritable handle (e.g. parent end of pipe) into the list
+        #[allow(unused_mut)]
+        let mut planted_handle: Option<Handle> = None;
+        #[cfg(feature = "deviations")]
+        if deviation == Deviation::HandleNotAllowed {
             let (extra_r, _extra_w) = create_pipe(true)?;
-            Some(extra_r)
-        } else {
-            None
-        };
+            planted_handle = Some(extra_r);
+        }
 
         if let Some(extra) = &planted_handle {
             let handles = [child_stdin.0, child_stdout.0, child_stderr.0, extra.0];
@@ -298,11 +318,13 @@ pub fn launch(options: &LaunchOptions) -> Result<OwnedProcess, LaunchError> {
 
         // Security capabilities attribute
         let mut dummy_cap: SID_AND_ATTRIBUTES = zeroed();
-        let cap_count = if options.deviation == Deviation::CapabilitiesPresent {
-            1
-        } else {
-            0
-        };
+        #[allow(unused_mut)]
+        let mut cap_count = 0;
+        #[cfg(feature = "deviations")]
+        if deviation == Deviation::CapabilitiesPresent {
+            cap_count = 1;
+        }
+
         let security = SECURITY_CAPABILITIES {
             AppContainerSid: package_sid.as_psid(),
             Capabilities: &mut dummy_cap as *mut _,
@@ -312,7 +334,14 @@ pub fn launch(options: &LaunchOptions) -> Result<OwnedProcess, LaunchError> {
         attrs.add(PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, &security)?;
 
         // All application packages opt-out policy
-        if options.deviation != Deviation::NotLpac {
+        #[allow(unused_mut)]
+        let mut add_opt_out = true;
+        #[cfg(feature = "deviations")]
+        if deviation == Deviation::NotLpac {
+            add_opt_out = false;
+        }
+
+        if add_opt_out {
             attrs.add(
                 PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY,
                 &PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT,
@@ -320,14 +349,23 @@ pub fn launch(options: &LaunchOptions) -> Result<OwnedProcess, LaunchError> {
         }
 
         // Job list attribute
-        if options.deviation != Deviation::NotInOwnedJob {
+        #[allow(unused_mut)]
+        let mut add_job = true;
+        #[cfg(feature = "deviations")]
+        if deviation == Deviation::NotInOwnedJob {
+            add_job = false;
+        }
+
+        if add_job {
             let job_handles = [job.0];
             attrs.add(PROC_THREAD_ATTRIBUTE_JOB_LIST, &job_handles)?;
         }
 
         // Mitigation policy
+        #[allow(unused_mut)]
         let mut mitigations = MITIGATION_POLICY_FLAGS;
-        if options.deviation == Deviation::MitigationMismatch {
+        #[cfg(feature = "deviations")]
+        if deviation == Deviation::MitigationMismatch {
             // Omit ProhibitDynamicCode (bit 36)
             mitigations &= !(1 << 36);
         }
@@ -404,12 +442,9 @@ pub fn launch(options: &LaunchOptions) -> Result<OwnedProcess, LaunchError> {
         }
 
         // Pre-resume check 3: Initial thread token and close
-        if let Err(e) = check_initial_token_and_close(
-            main_thread.0,
-            &mut tokens,
-            &package_sid,
-            options.deviation,
-        ) {
+        if let Err(e) =
+            check_initial_token_and_close(main_thread.0, &mut tokens, &package_sid, deviation)
+        {
             TerminateProcess(process.0, WORKER_KILL_CODE);
             TerminateJobObject(job.0, WORKER_KILL_CODE);
             return Err(e);

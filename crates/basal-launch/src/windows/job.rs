@@ -30,13 +30,17 @@ pub fn create_confined_job(commit_limit: u64, deviation: Deviation) -> Result<Ha
         SetHandleInformation(job.0, HANDLE_FLAG_INHERIT, 0);
 
         let flags = JOB_LIMIT_FLAGS;
+        #[allow(unused_mut)]
         let mut active_limit = 1;
         let process_memory = commit_limit as usize;
 
+        #[cfg(feature = "deviations")]
         if deviation == Deviation::JobLimitsMismatch {
             // Intentionally mismatch limits to trigger job-limits-mismatch refusal
             active_limit = 2;
         }
+
+        let _ = deviation;
 
         let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = zeroed();
         limits.BasicLimitInformation.LimitFlags = flags;

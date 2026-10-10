@@ -31,6 +31,15 @@ pub struct OwnedProcess {
 unsafe impl Send for OwnedProcess {}
 unsafe impl Sync for OwnedProcess {}
 
+impl std::fmt::Debug for OwnedProcess {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OwnedProcess")
+            .field("pid", &self.pid)
+            .field("killed", &self.killed)
+            .finish()
+    }
+}
+
 impl OwnedProcess {
     /// Creates a new `OwnedProcess` wrapper from raw handles and optional stdio streams.
     pub fn new(

@@ -406,6 +406,11 @@ jobs:
         continue-on-error: true
         timeout-minutes: 40
         run: cargo test --workspace --locked --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-no-fail-fast.log"
+      - name: Test basal-launch with deviations
+        id: test-basal-launch
+        continue-on-error: true
+        timeout-minutes: 20
+        run: cargo test -p basal-launch --features deviations 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-launch.log"
       - name: Summarize the baseline
         if: always()
         run: |
@@ -414,6 +419,7 @@ jobs:
             echo
             echo "- cargo check --workspace --all-targets --locked: ${{ steps.check.outcome }}"
             echo "- cargo test --workspace --locked: ${{ steps.test.outcome }}"
+            echo "- cargo test -p basal-launch --features deviations: ${{ steps.test-basal-launch.outcome }}"
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
