@@ -140,8 +140,10 @@ enum Inbox {
 /// The test's end of the fake worker's outgoing frames.
 struct Frames(mpsc::Sender<Inbox>);
 impl Frames {
-    fn send(&self, message: WorkerMessage) -> std::result::Result<(), mpsc::SendError<Inbox>> {
-        self.0.send(Inbox::Frame(message))
+    fn send(&self, message: WorkerMessage) -> std::result::Result<(), ChannelError> {
+        self.0
+            .send(Inbox::Frame(message))
+            .map_err(|_| ChannelError::Closed)
     }
 }
 
