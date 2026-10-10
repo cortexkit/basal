@@ -15,6 +15,7 @@
 #[cfg(test)]
 mod tests;
 
+#[cfg(windows)]
 pub mod windows;
 
 #[cfg(not(windows))]
@@ -23,7 +24,9 @@ use std::io::Read;
 use std::os::fd::AsRawFd;
 #[cfg(not(windows))]
 use std::os::unix::process::CommandExt;
-use std::path::{Component, Path, PathBuf};
+#[cfg(not(windows))]
+use std::path::PathBuf;
+use std::path::{Component, Path};
 #[cfg(not(windows))]
 use std::process::Command;
 #[cfg(not(windows))]
@@ -222,6 +225,7 @@ pub fn parse(primitive: Primitive, args: &Value) -> Result<Op, Denial> {
 /// The repository's real path, which must be one of the approved
 /// repositories (each resolved the same way). A subdirectory of an approved
 /// repository is not itself approved.
+#[cfg(not(windows))]
 pub fn repo(repo: &str, repos: &[String]) -> Result<PathBuf, Denial> {
     let path = expand_home(repo)
         .ok_or_else(|| Denial::invalid(format!("{repo:?} is not an absolute path")))?;
@@ -233,6 +237,30 @@ pub fn repo(repo: &str, repos: &[String]) -> Result<PathBuf, Denial> {
         .filter_map(|r| std::fs::canonicalize(r).ok())
         .any(|r| r == real);
     if approved { Ok(real) } else { Err(refused()) }
+}
+
+#[cfg(windows)]
+pub(crate) fn repo(
+    repo: &str,
+    repos: &[String],
+) -> Result<super::fs::windows::PinnedDirectory, Denial> {
+    use super::fs::windows::pin_directory;
+    let path = expand_home(repo).ok_or_else(|| Denial::invalid("repository must be absolute"))?;
+    let path = path
+        .to_str()
+        .ok_or_else(|| Denial::invalid("repository is not Unicode"))?;
+    let pinned = pin_directory(path)?;
+    for approved in repos.iter().filter_map(|r| expand_home(r)) {
+        if let Some(approved) = approved.to_str()
+            && let Ok(root) = pin_directory(approved)
+            && pinned.same_identity(&root)
+        {
+            return Ok(pinned);
+        }
+    }
+    Err(Denial::denied(
+        "repository is outside the manifest's repositories or missing",
+    ))
 }
 
 /// The only way the built-ins run git: a `git -C <repo>` command that can
@@ -545,7 +573,10 @@ fn drain_pipe<R: Read + AsRawFd>(
 }
 
 fn git(repo: &Path, args: &[&str]) -> Result<Ran, Denial> {
+    #[cfg(not(windows))]
     let mut command = hardened_command(repo);
+    #[cfg(windows)]
+    let mut command = hardened_command(repo)?;
     command.args(args);
     run_command(command)
 }
@@ -687,7 +718,10 @@ pub fn run(repo_arg: &str, repos: &[String], op: &Op) -> Result<Value, Denial> {
             if let Some(p) = pattern {
                 list.push(p);
             }
+            #[cfg(not(windows))]
             let mut command = hardened_command(&dir);
+            #[cfg(windows)]
+            let mut command = hardened_command(&dir)?;
             command.args(&list);
             let ran = run_tags_command(command)?;
             if !ran.success {
