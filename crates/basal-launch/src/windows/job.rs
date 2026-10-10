@@ -42,7 +42,7 @@ pub struct JobLimits {
     pub process_memory_limit: usize,
     /// The commit limit of the whole job, in bytes; unset is 0.
     pub job_memory_limit: usize,
-    /// The UI restriction class.
+    /// The UI restriction flags (see [`JOB_UI_RESTRICTIONS`]).
     pub ui_restrictions: u32,
 }
 

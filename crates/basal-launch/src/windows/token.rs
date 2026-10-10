@@ -566,8 +566,9 @@ unsafe extern "system" {
 
 /// Whether the token carries `WIN://NOALLAPPPKG` as the single unsigned
 /// value 1, the mark of a Less Privileged AppContainer. The dedicated
-/// information class for this answers "invalid class" on the Windows
-/// versions tested, so the claim is read instead.
+/// information class, `TokenIsLessPrivilegedAppContainer`, fails with
+/// "invalid information class" on Windows Server 2022 and Windows 11, so the
+/// claim is read instead.
 fn less_privileged_claim(token: HANDLE) -> Result<bool> {
     unsafe {
         let mut bytes = 0;

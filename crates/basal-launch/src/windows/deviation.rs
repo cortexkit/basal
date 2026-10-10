@@ -39,12 +39,14 @@ pub enum Deviation {
     /// keep one (see [`Deviation::child_argument`]).
     #[cfg(feature = "deviations")]
     ThreadTokenPresent,
-    /// Worker check `integrity-lower-failed`, requested from the worker as
-    /// for `ThreadTokenPresent`.
+    /// Worker check `integrity-lower-failed`. The parent cannot make lowering
+    /// fail in a correctly built worker, so it asks the worker to simulate the
+    /// failure (see [`Deviation::child_argument`]).
     #[cfg(feature = "deviations")]
     IntegrityLowerFailed,
-    /// Worker check `not-lpac`: the `ALL_APPLICATION_PACKAGES` opt-out is
-    /// left out, so the worker is an ordinary AppContainer.
+    /// Worker check `not-lpac`: the opt-out from the `ALL_APPLICATION_PACKAGES`
+    /// group is left out, so objects that grant every AppContainer package
+    /// grant this worker too, as for an ordinary AppContainer.
     #[cfg(feature = "deviations")]
     NotLpac,
     /// Worker check `capabilities-present`: one capability is granted.
@@ -61,8 +63,9 @@ pub enum Deviation {
     /// filtering are not removed.
     #[cfg(feature = "deviations")]
     PrivilegesPresent,
-    /// Worker check `integrity-not-untrusted`, requested from the worker as
-    /// for `ThreadTokenPresent`.
+    /// Worker check `integrity-not-untrusted`. The worker lowers its own
+    /// integrity, so the parent asks it to skip that step (see
+    /// [`Deviation::child_argument`]).
     #[cfg(feature = "deviations")]
     IntegrityNotUntrusted,
     /// Worker check `mitigation-mismatch`: the dynamic-code prohibition is
@@ -399,10 +402,11 @@ mod tests {
                 .filter(|(a, b)| a != b)
                 .count();
             let expected = match deviation {
-                // The birth-check variant builds what `privileges-present`
-                // builds but keeps the full expectation, so only the build
-                // knob differs; `privileges-present` changes the build and
-                // the expectation together.
+                // `BirthTokenMismatch` builds the same token as
+                // `PrivilegesPresent` but leaves the parent expecting no
+                // privileges, so only `keeps_privileges` differs from the full
+                // recipe. `PrivilegesPresent` changes both `keeps_privileges`
+                // and `expects_privileges`.
                 Deviation::PrivilegesPresent => 2,
                 _ => 1,
             };

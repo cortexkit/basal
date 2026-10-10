@@ -182,7 +182,8 @@ pub fn launch(options: &LaunchOptions) -> std::result::Result<ConfinedProcess, L
         )?,
     };
 
-    // The child holds its own copies now.
+    // The child has inherited its own copies of its three pipe ends; the
+    // parent's copies would keep the pipes open after the child exits.
     drop((child_stdin, child_stdout, child_stderr));
     Ok(ConfinedProcess::new(
         spawned.process,
