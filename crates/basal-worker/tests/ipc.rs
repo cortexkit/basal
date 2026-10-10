@@ -1,9 +1,6 @@
 //! The channel: malformed, oversized and out-of-order frames are refused
 //! with typed errors, and none of them crashes the worker.
 
-// Windows: gated until basal-testkit builds there.
-#![cfg(not(windows))]
-
 mod common;
 
 use std::time::Duration;
@@ -88,6 +85,17 @@ fn handshake_reports_version_engine_and_confinement() {
     assert_eq!(welcome.protocol_version, PROTOCOL_VERSION);
     #[cfg(target_os = "macos")]
     assert_eq!(welcome.confinement, Confinement::Seatbelt);
+    #[cfg(windows)]
+    assert_eq!(
+        welcome.confinement,
+        Confinement::Windows {
+            lpac: true,
+            untrusted: true,
+            no_thread_token: true,
+            mitigations: true,
+            handle_table: true,
+        }
+    );
     #[cfg(target_os = "linux")]
     assert!(matches!(
         welcome.confinement,
