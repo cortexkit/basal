@@ -200,6 +200,17 @@ fn windows_private_isolation_is_fresh_exclusive_and_pinned() {
     assert!(std::fs::write(&config, "[alias]\npwn = !whoami\n").is_err());
     assert!(std::fs::rename(&config, first.directory.join("swapped.config")).is_err());
     assert!(std::fs::rename(&first.directory, first.directory.with_extension("swap")).is_err());
+    let hooks = first.directory.join("hooks");
+    let config_path = config.clone();
+    let hooks_path = hooks.clone();
+    thread::spawn(move || {
+        for _ in 0..20 {
+            assert!(std::fs::write(&config_path, "[alias]\npwn = !whoami\n").is_err());
+            assert!(std::fs::rename(&hooks_path, hooks_path.with_extension("swap")).is_err());
+        }
+    })
+    .join()
+    .unwrap();
     let old_predictable =
         std::env::temp_dir().join(format!("basal-git-isolation-{}", std::process::id()));
     // The obsolete name is untrusted; no production helper consults it.
@@ -225,6 +236,89 @@ fn windows_private_isolation_is_fresh_exclusive_and_pinned() {
         succeeded(run_command(child("stdin")).unwrap()).stdout,
         b"inert\n"
     );
+}
+
+fn private_dacl(path: &Path) -> String {
+    use windows_sys::Win32::Security::{
+        Authorization::{
+            ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW,
+            SE_FILE_OBJECT,
+        },
+        DACL_SECURITY_INFORMATION,
+    };
+    let mut descriptor = std::ptr::null_mut();
+    assert_eq!(
+        unsafe {
+            GetNamedSecurityInfoW(
+                wide(path).unwrap().as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut descriptor,
+            )
+        },
+        0
+    );
+    let descriptor = SecurityDescriptor(descriptor);
+    let mut sddl = std::ptr::null_mut();
+    let mut length = 0;
+    assert_ne!(
+        unsafe {
+            ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                descriptor.0,
+                1,
+                DACL_SECURITY_INFORMATION,
+                &mut sddl,
+                &mut length,
+            )
+        },
+        0
+    );
+    let text = unsafe {
+        String::from_utf16(std::slice::from_raw_parts(sddl, length as usize - 1)).unwrap()
+    };
+    unsafe {
+        LocalFree(sddl.cast());
+    }
+    text
+}
+
+#[test]
+fn windows_isolation_trims_host_temp_separator_and_has_private_dacl() {
+    let tree = Tree::new();
+    let mut base = tree.0.as_os_str().to_owned();
+    base.push("\\");
+    let isolation = Isolation::in_base(Path::new(&base)).unwrap();
+    assert_eq!(isolation.directory.parent(), Some(tree.0.as_path()));
+    for path in [
+        &isolation.directory,
+        &isolation.directory.join("hooks"),
+        &isolation.directory.join("global.config"),
+    ] {
+        let sddl = private_dacl(path);
+        // Both explicit and inherited ACLs must grant only SYSTEM and the owner.
+        assert!(sddl.starts_with("D:P"), "DACL is not protected: {sddl}");
+        let trustees: Vec<&str> = sddl
+            .split(";;;")
+            .skip(1)
+            .map(|ace| ace.split(')').next().unwrap())
+            .collect();
+        assert_eq!(trustees.len(), 2, "unexpected ACL entries: {sddl}");
+        assert!(
+            trustees.contains(&"SY") && trustees.contains(&"OW"),
+            "not private: {sddl}"
+        );
+    }
+    let link = tree.p("temp-junction");
+    junction(&link, &tree.0);
+    assert!(
+        Isolation::in_base(&link).is_err(),
+        "temp junction was accepted"
+    );
+    std::fs::remove_dir(link).unwrap();
 }
 
 #[test]
