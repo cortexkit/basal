@@ -63,7 +63,8 @@ impl Codemode {
                 "../../basal-worker/src/codemode_prelude.js"
             )),
             config.shell_denylist.clone(),
-        )?;
+        )?
+        .with_models(hosts.host.clone(), config.selector.clone());
         let late_lock = Arc::new(Mutex::new(()));
         let weak_store = Arc::downgrade(&store);
         let serial = late_lock.clone();

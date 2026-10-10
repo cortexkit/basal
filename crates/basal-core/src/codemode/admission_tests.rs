@@ -380,7 +380,9 @@ fn scope_shape_precedes_attestation_and_needs_no_flow_targets() {
     ));
     assert_eq!(run.status, Status::Running);
     let start = start.unwrap();
-    assert!(start.scope.targets.is_empty());
+    assert_eq!(start.scope.targets, ["broca".into()].into_iter().collect());
+    assert!(start.tools.contains_key("model"));
+    assert!(start.tools.contains_key("classify"));
     assert_eq!(start.scope.selector.scope_ref, "scope:run");
     assert_eq!(start.scope.selector.epoch, 19);
 }
@@ -655,7 +657,7 @@ fn tool_names_are_ascii_identifiers_of_at_most_128_bytes() {
     let mut req = request("run", "agent");
     req["catalog"] = json!([entry(&"x".repeat(128)), entry("_A0")]);
     let (_, start) = stored(accept(&t.store, &h, &Clock::manual(NOW), &req));
-    assert_eq!(start.unwrap().tools.len(), 2);
+    assert_eq!(start.unwrap().tools.len(), 4);
 }
 
 #[test]
@@ -731,7 +733,7 @@ fn same_document_schema_compiles_once_and_scope_targets_come_from_modules() {
     assert!(!start.tools["read"].input_schema.is_valid(&json!("42")));
     assert_eq!(
         start.scope.targets.into_iter().collect::<Vec<_>>(),
-        vec!["calendar", "notes"]
+        vec!["broca", "calendar", "notes"]
     );
     assert_eq!(run.agent_id, "agent");
     assert_eq!(run.catalog_digest.len(), 64);

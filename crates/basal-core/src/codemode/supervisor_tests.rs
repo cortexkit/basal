@@ -33,6 +33,7 @@ struct FakeTransport {
     events: Arc<Mutex<Vec<String>>>,
     registrations: Mutex<Vec<(String, bool, Option<RegisteredScope>)>>,
     catalog_error: AtomicBool,
+    broca_opted_in: AtomicBool,
     readiness: Mutex<Option<FlowRefusal>>,
     readiness_clock: Mutex<Option<(Clock, i64)>>,
     store: Arc<Store>,
@@ -61,7 +62,9 @@ impl Transport for FakeTransport {
         if self.catalog_error.load(Ordering::SeqCst) {
             Err(WireError::NeverSent("offline".into()))
         } else {
-            Ok(json!({"modules":[]}))
+            Ok(
+                json!({"modules":[{"module_id":"broca","capabilities":{"provides":if self.broca_opted_in.load(Ordering::SeqCst) {vec!["agent-run-scopes/v1"]} else {vec![]}}}]}),
+            )
         }
     }
     fn configure_flow(&self, key: &str, agent_owned: bool, scope: Option<RegisteredScope>) {
@@ -331,6 +334,7 @@ impl Fixture {
             events,
             registrations: Mutex::new(Vec::new()),
             catalog_error: AtomicBool::new(false),
+            broca_opted_in: AtomicBool::new(true),
             readiness: Mutex::new(None),
             readiness_clock: Mutex::new(None),
             store: store.clone(),
@@ -509,6 +513,9 @@ impl Fixture {
 
 #[path = "restart_tests.rs"]
 mod restart;
+
+#[path = "model_tests.rs"]
+mod models;
 
 #[test]
 fn shutdown_joins_a_driver_after_its_active_slot_is_released() {

@@ -46,12 +46,16 @@ impl BrocaStore {
     }
 }
 impl StateStore for BrocaStore {
+    fn codemode_active(&self, run_id: &str) -> Result<bool, BrocaError> {
+        self.store()?.read(|c| Ok(c.query_row("SELECT EXISTS(SELECT 1 FROM codemode_runs WHERE run_id=?1 AND status='running')", [run_id], |r| r.get(0))?))
+            .map_err(|e| BrocaError::Store(e.to_string()))
+    }
     fn get(&self, send_id: &str) -> Result<Option<StoredCall>, BrocaError> {
         let snapshot: Option<String> = self
             .store()?
             .read(|c| {
                 Ok(c.query_row(
-                    "SELECT snapshot FROM broca_calls WHERE send_id = ?1",
+                    "SELECT snapshot FROM broca_calls WHERE send_id = ?1 UNION ALL SELECT snapshot FROM codemode_broca_calls WHERE send_id = ?1",
                     [send_id],
                     |row| row.get(0),
                 )
@@ -78,7 +82,10 @@ impl StateStore for BrocaStore {
             .read(|c| {
                 let mut statement = c.prepare(PENDING_IDS_SQL)?;
                 let rows = statement.query_map([], |row| row.get(0))?;
-                Ok(rows.collect::<Result<Vec<_>, _>>()?)
+                let mut ids = rows.collect::<Result<Vec<_>, _>>()?;
+                let mut statement = c.prepare("SELECT send_id FROM codemode_broca_calls WHERE json_extract(snapshot, '$.acknowledged') = 0 AND COALESCE(json_extract(snapshot, '$.deferred'), 0) = 0 ORDER BY send_id")?;
+                ids.extend(statement.query_map([], |row| row.get(0))?.collect::<Result<Vec<String>, _>>()?);
+                Ok(ids)
             })
             .map_err(|e| BrocaError::Store(e.to_string()))
     }
@@ -103,7 +110,7 @@ impl StateStore for BrocaStore {
     fn load(&self) -> Result<Vec<StoredCall>, BrocaError> {
         self.store()?
             .read(|c| {
-                let mut stmt = c.prepare("SELECT snapshot FROM broca_calls ORDER BY send_id")?;
+                let mut stmt = c.prepare("SELECT snapshot FROM (SELECT send_id,snapshot FROM broca_calls UNION ALL SELECT send_id,snapshot FROM codemode_broca_calls) ORDER BY send_id")?;
                 let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
                 rows.map(|row| {
                     serde_json::from_str(&row?)
@@ -119,8 +126,13 @@ impl StateStore for BrocaStore {
             .map_err(|_| BrocaError::Store("Broca call position".into()))?;
         self.store()?
             .write(|tx| {
+                let sql = if call.route.flow_id.as_deref() == Some(&format!("codemode:{}", call.basal_run_id)) {
+                    "INSERT INTO codemode_broca_calls (send_id, run_id, position, snapshot) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(send_id) DO UPDATE SET snapshot = excluded.snapshot"
+                } else {
+                    "INSERT INTO broca_calls (send_id, run_id, position, snapshot) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(send_id) DO UPDATE SET snapshot = excluded.snapshot"
+                };
                 tx.execute(
-                    "INSERT INTO broca_calls (send_id, run_id, position, snapshot) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(send_id) DO UPDATE SET snapshot = excluded.snapshot",
+                    sql,
                     rusqlite::params![call.send_id, call.basal_run_id, position, snapshot],
                 )?;
                 Ok(())

@@ -307,7 +307,30 @@ ALTER TABLE installs ADD COLUMN revoked_reason TEXT;
         version: 20,
         statements: CODEMODE_TOOL_PROVIDER,
     },
+    Migration {
+        version: 21,
+        statements: CODEMODE_MODELS,
+    },
 ];
+
+const CODEMODE_MODELS: &str = r#"
+CREATE TABLE codemode_models (
+    run_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    reserved INTEGER NOT NULL,
+    charged INTEGER,
+    envelope TEXT,
+    PRIMARY KEY (run_id, position),
+    FOREIGN KEY (run_id, position) REFERENCES codemode_calls(run_id, position) ON DELETE CASCADE
+);
+CREATE TABLE codemode_broca_calls (
+    send_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    snapshot TEXT NOT NULL,
+    FOREIGN KEY (run_id, position) REFERENCES codemode_calls(run_id, position) ON DELETE CASCADE
+);
+"#;
 
 const DECISION_PATHS: &str = r#"
 ALTER TABLE decision_cards ADD COLUMN consent_path TEXT;

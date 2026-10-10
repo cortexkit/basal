@@ -16,6 +16,7 @@ fn request(p: Primitive, position: u64, args: Value) -> CallRequest {
     let key = format!("key:{position}");
     let selection = FakeSelector::default()
         .select(&SelectionRequest {
+            target_agent: None,
             iq: 40,
             eq: 20,
             flow_id: "f".into(),

@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectionRequest {
+    pub target_agent: Option<String>,
     pub iq: u32,
     pub eq: u32,
     pub flow_id: String,
@@ -115,7 +116,12 @@ impl RoutingSelector {
     }
 }
 pub fn select_params(request: &SelectionRequest) -> Value {
-    json!({"targetAgent":"flow","requirements":{"iq":request.iq,"eq":request.eq},"excludeRouteKeys":[],"sendID":request.send_id,"taskId":format!("flow:{}:{}",request.flow_id,request.run_id),"substrate":"broca"})
+    let task = if request.target_agent.is_some() {
+        format!("codemode:{}", request.run_id)
+    } else {
+        format!("flow:{}:{}", request.flow_id, request.run_id)
+    };
+    json!({"targetAgent":request.target_agent.as_deref().unwrap_or("flow"),"requirements":{"iq":request.iq,"eq":request.eq},"excludeRouteKeys":[],"sendID":request.send_id,"taskId":task,"substrate":"broca"})
 }
 pub fn decode_selection(reply: Value) -> Result<ModelSelection, SelectionError> {
     let raw = reply.get("runner").ok_or_else(|| SelectionError::Refused {

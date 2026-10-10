@@ -140,15 +140,17 @@ pub fn admit(
         let agent_id = attest(host, &scope, request)?;
         let fields = request_fields(request)?;
         let limits = limits(request.get("limits"))?;
-        let tools = catalog(fields.catalog)?;
-        Ok((scope, agent_id, fields, limits, tools))
+        let resolved = super::models::add_catalog(fields.catalog)
+            .map_err(|e| Refusal::new("invalid_catalog", e))?;
+        let tools = catalog(&resolved)?;
+        Ok((scope, agent_id, fields, limits, tools, resolved))
     })();
-    let (scope, agent_id, fields, limits, tools) = match checked {
+    let (scope, agent_id, fields, limits, tools, resolved) = match checked {
         Ok(checked) => checked,
         Err(refusal) => return Ok(Admission::Refused(refusal)),
     };
-    let catalog_text = fields.catalog.to_string();
-    let digest = catalog_digest(fields.catalog).map_err(|e| CoreError::Invalid(e.to_string()))?;
+    let catalog_text = resolved.to_string();
+    let digest = catalog_digest(&resolved).map_err(|e| CoreError::Invalid(e.to_string()))?;
     let limits_text =
         serde_json::to_string(&limits).map_err(|e| CoreError::Invalid(e.to_string()))?;
     let scope_text =
@@ -204,7 +206,16 @@ pub fn admit(
             Box::new(Start {
                 scope: RegisteredScope {
                     selector: scope,
-                    targets: tools.values().map(|tool| tool.module.clone()).collect(),
+                    targets: tools
+                        .values()
+                        .map(|tool| {
+                            if super::models::is_local(&tool.module, &tool.op) {
+                                "broca".into()
+                            } else {
+                                tool.module.clone()
+                            }
+                        })
+                        .collect(),
                 },
                 tools,
                 limits,
@@ -582,6 +593,8 @@ pub fn admit_tool(
         let daemon = transport.catalog().map_err(super::scope::error_value)?;
         let resolved =
             run_scope::catalog(&daemon, &opened.catalog).map_err(super::scope::error_value)?;
+        let resolved = super::models::add_catalog(&resolved)
+            .map_err(|e| json!({"code":"invalid_catalog","message":e}))?;
         let tools = catalog(&resolved).map_err(|e| json!({"code":e.code,"message":e.message}))?;
         let digest = catalog_digest(&resolved).unwrap();
         store.write(|tx| {
@@ -592,7 +605,16 @@ pub fn admit_tool(
         Ok(Start {
             scope: RegisteredScope {
                 selector,
-                targets: tools.values().map(|t| t.module.clone()).collect(),
+                targets: tools
+                    .values()
+                    .map(|t| {
+                        if super::models::is_local(&t.module, &t.op) {
+                            "broca".into()
+                        } else {
+                            t.module.clone()
+                        }
+                    })
+                    .collect(),
             },
             tools,
             limits,

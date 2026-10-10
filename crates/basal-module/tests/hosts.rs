@@ -1335,6 +1335,7 @@ fn routing_select_request_bytes_are_exact_without_available_models() {
     let selector = RoutingSelector::new(wire.clone());
     selector
         .select(&SelectionRequest {
+            target_agent: None,
             iq: 70,
             eq: 20,
             flow_id: "flow-a".into(),

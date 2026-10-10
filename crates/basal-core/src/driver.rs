@@ -939,6 +939,7 @@ impl Activation<'_> {
                     },
                 )?;
                 let selection_request = basal_host::selector::SelectionRequest {
+                    target_agent: None,
                     iq: grant.iq,
                     eq: grant.eq,
                     flow_id: self.run.flow_id.clone(),

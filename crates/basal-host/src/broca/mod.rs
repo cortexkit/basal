@@ -37,6 +37,10 @@ pub struct Route {
     pub session: String,
 }
 
+pub fn codemode_session(run_id: &str, position: u64) -> String {
+    format!("basal:codemode-{run_id}:{position}")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BrocaError {
     Flow(crate::flow_refusal::FlowRefusal),
@@ -107,6 +111,9 @@ pub trait Transport: Send + Sync {
 /// SQLite implementation so this crate never opens a second writer to its
 /// database.
 pub trait StateStore: Send + Sync {
+    fn codemode_active(&self, _run_id: &str) -> Result<bool, BrocaError> {
+        Ok(true)
+    }
     fn identity(&self, _run_id: &str) -> Result<Option<FlowIdentity>, BrocaError> {
         Ok(None)
     }
@@ -208,6 +215,7 @@ pub struct BrocaHost {
     /// starts the count again, which keeps it bounded.
     status_lag: Mutex<HashMap<String, u32>>,
     sink: Mutex<Option<Arc<dyn CompletionSink>>>,
+    codemode_sink: Mutex<Option<Arc<dyn CompletionSink>>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -232,6 +240,7 @@ impl BrocaHost {
             gate: Mutex::new(HashMap::new()),
             status_lag: Mutex::new(HashMap::new()),
             sink: Mutex::new(None),
+            codemode_sink: Mutex::new(None),
         }
     }
 
@@ -264,12 +273,22 @@ impl BrocaHost {
         }
         let e: Envelope = serde_json::from_str(request.args.as_str())
             .map_err(|e| BrocaError::Invalid(e.to_string()))?;
-        let session = format!(
-            "basal:flow-{}:{}:{}",
-            request.flow_id, request.run_id, request.position
-        );
+        let codemode = request.flow_id == format!("codemode:{}", request.run_id);
+        let session = if codemode {
+            codemode_session(&request.run_id, request.position)
+        } else {
+            format!(
+                "basal:flow-{}:{}:{}",
+                request.flow_id, request.run_id, request.position
+            )
+        };
+        let work_class = if codemode {
+            request.flow_id.clone()
+        } else {
+            format!("flow:{}", request.flow_id)
+        };
         if e.send_id != request.idempotency_key
-            || e.work_class != format!("flow:{}", request.flow_id)
+            || e.work_class != work_class
             || e.session != session
             || e.op != primitive.name()
             || e.max_output == 0
@@ -618,17 +637,38 @@ impl BrocaHost {
             if call.acknowledged || call.deferred {
                 continue;
             }
-            let identity = if self.scope_checks.load(std::sync::atomic::Ordering::SeqCst) {
-                match self.store.identity(&call.basal_run_id) {
-                    Ok(identity) => identity,
-                    Err(error) => {
-                        first_error.get_or_insert(error);
-                        continue;
-                    }
-                }
+            let codemode =
+                call.route.flow_id.as_deref() == Some(&format!("codemode:{}", call.basal_run_id));
+            if codemode && !self.store.codemode_active(&call.basal_run_id)? {
+                call.acknowledged = true;
+                self.store.save(&call)?;
+                self.transport.release(&call.route);
+                continue;
+            }
+            let sink = if codemode {
+                lock(&self.codemode_sink).clone()
             } else {
-                None
+                sink.clone()
             };
+            if codemode && sink.is_none() {
+                continue;
+            }
+            // Initial codemode sends belong to the supervisor, never recovery polling.
+            if codemode && call.handle.is_none() {
+                continue;
+            }
+            let identity =
+                if !codemode && self.scope_checks.load(std::sync::atomic::Ordering::SeqCst) {
+                    match self.store.identity(&call.basal_run_id) {
+                        Ok(identity) => identity,
+                        Err(error) => {
+                            first_error.get_or_insert(error);
+                            continue;
+                        }
+                    }
+                } else {
+                    None
+                };
             if let Some(identity) = identity {
                 call.route.flow_id = Some(identity.flow_id.clone());
                 if let Err(error) = self.transport.refresh_flow(&identity) {
@@ -754,6 +794,9 @@ impl BrocaHost {
 }
 
 impl Host for BrocaHost {
+    fn attach_codemode(&self, sink: Arc<dyn CompletionSink>) {
+        *lock(&self.codemode_sink) = Some(sink);
+    }
     fn provider_ready(
         &self,
         flow_id: &str,

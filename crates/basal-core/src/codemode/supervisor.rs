@@ -48,6 +48,10 @@ enum Event {
     ReaderPanicked,
     /// A provider answer from a dispatch thread.
     Answer(Answer),
+    ModelAnswer {
+        position: u64,
+        result: std::result::Result<basal_host::HostOutcome, WireError>,
+    },
     Cancel(mpsc::SyncSender<Result<()>>),
     Held {
         position: u64,
@@ -107,6 +111,7 @@ struct Shared {
     store: Arc<Store>,
     transport: Arc<dyn Transport>,
     catalog: Arc<dyn Catalog>,
+    models: Mutex<Option<Models>>,
     workers: Arc<dyn WorkerSource>,
     clock: Clock,
     prelude_hash: PreludeHash,
@@ -137,6 +142,44 @@ pub struct Supervisor(Arc<Shared>);
 
 pub type TerminalHook = dyn Fn(&str, Value) -> Result<()> + Send + Sync;
 
+#[derive(Clone)]
+struct Models {
+    host: Arc<dyn basal_host::Host>,
+    selector: Arc<dyn basal_host::selector::ModelSelector>,
+}
+
+struct ModelSink(std::sync::Weak<Shared>);
+impl basal_host::CompletionSink for ModelSink {
+    fn complete(
+        &self,
+        completion: &basal_host::Completion,
+    ) -> std::result::Result<basal_host::CompletionAck, basal_host::SinkError> {
+        if let Some(shared) = self.0.upgrade()
+            && let Some(sender) = shared.active.lock().unwrap().get(&completion.run_id)
+        {
+            let _ = sender.send(Event::ModelAnswer {
+                position: completion.position,
+                result: Ok(completion.outcome.clone()),
+            });
+        }
+        Ok(basal_host::CompletionAck::Accepted)
+    }
+    fn unknown(
+        &self,
+        unknown: &basal_host::UnknownOutcome,
+    ) -> std::result::Result<basal_host::CompletionAck, basal_host::SinkError> {
+        if let Some(shared) = self.0.upgrade()
+            && let Some(sender) = shared.active.lock().unwrap().get(&unknown.run_id)
+        {
+            let _ = sender.send(Event::ModelAnswer {
+                position: unknown.position,
+                result: Err(WireError::Unknown(unknown.detail.clone())),
+            });
+        }
+        Ok(basal_host::CompletionAck::Accepted)
+    }
+}
+
 impl Supervisor {
     /// Recover durable runs before exposing any operation. A recovery failure
     /// prevents startup rather than leaving old runs eligible for dispatch.
@@ -153,6 +196,7 @@ impl Supervisor {
             store,
             transport,
             catalog,
+            models: Mutex::new(None),
             workers,
             clock,
             prelude_hash,
@@ -176,6 +220,16 @@ impl Supervisor {
         }));
         supervisor.recover()?;
         Ok(supervisor)
+    }
+
+    pub fn with_models(
+        self,
+        host: Arc<dyn basal_host::Host>,
+        selector: Arc<dyn basal_host::selector::ModelSelector>,
+    ) -> Self {
+        host.attach_codemode(Arc::new(ModelSink(Arc::downgrade(&self.0))));
+        *self.0.models.lock().unwrap() = Some(Models { host, selector });
+        self
     }
 
     /// Consumes the admission winner's token. No worker is acquired on the
@@ -438,6 +492,8 @@ fn parse(text: &str) -> Result<Value> {
 struct Answer {
     call: HostCall,
     result: std::result::Result<Value, WireError>,
+    usage: Option<basal_host::TokenUsage>,
+    no_effect: bool,
 }
 
 struct Driver {
@@ -535,6 +591,11 @@ impl Driver {
         self.shared
             .transport
             .configure_flow(&self.key(), false, Some(self.start.scope.clone()));
+        if let Some(models) = self.shared.models.lock().unwrap().as_ref() {
+            models
+                .host
+                .configure_flow(&self.key(), false, Some(self.start.scope.clone()));
+        }
         let scope_events = self.event_tx.clone();
         self.shared.transport.watch_run_scope(
             &self.key(),
@@ -599,6 +660,9 @@ impl Driver {
                 Some(Event::ClockMoved) => self.clock_moved.store(false, Ordering::SeqCst),
                 Some(Event::Cancel(ack)) => self.cancel(ack)?,
                 Some(Event::Answer(answer)) => self.answer(answer)?,
+                Some(Event::ModelAnswer { position, result }) => {
+                    self.model_answer(position, result)?
+                }
                 Some(Event::ScopeEnded(code)) => {
                     if !self.wall()? {
                         self.end(interrupted(&code, "the daemon ended the run scope"))?;
@@ -732,11 +796,21 @@ impl Driver {
         if self.wall()? {
             return Ok(());
         }
+        if !self.flight_positions.contains(&answer.call.position) {
+            return Ok(());
+        }
         self.in_flight -= 1;
         self.flight_positions.remove(&answer.call.position);
         self.held_positions.remove(&answer.call.position);
         let mapped = map_answer(answer.result);
         if self.shared.store.write(|tx| {
+            super::models::settle(
+                tx,
+                &self.run.run_id,
+                answer.call.position,
+                answer.usage,
+                answer.no_effect,
+            )?;
             store::record_outcome(
                 tx,
                 &self.run.run_id,
@@ -758,6 +832,53 @@ impl Driver {
             self.deliver(&answer.call, mapped)?;
         }
         Ok(())
+    }
+
+    fn model_answer(
+        &mut self,
+        position: u64,
+        result: std::result::Result<basal_host::HostOutcome, WireError>,
+    ) -> Result<()> {
+        if !self.flight_positions.contains(&position) {
+            return Ok(());
+        }
+        let name: String = self.shared.store.read(|c| {
+            Ok(c.query_row(
+                "SELECT tool FROM codemode_calls WHERE run_id=?1 AND position=?2",
+                rusqlite::params![self.run.run_id, position],
+                |r| r.get(0),
+            )?)
+        })?;
+        let (usage, no_effect, result) = match result {
+            Ok(outcome) => {
+                let value: Value = serde_json::from_str(outcome.value.as_str())
+                    .map_err(|e| CoreError::Invalid(e.to_string()))?;
+                let result = if outcome.settlement == Settlement::Fulfilled {
+                    Ok(value)
+                } else {
+                    Err(WireError::RefusedDetails {
+                        code: value["code"].as_str().unwrap_or("model_error").into(),
+                        message: value["message"]
+                            .as_str()
+                            .unwrap_or("model call failed")
+                            .into(),
+                        detail: value,
+                    })
+                };
+                (outcome.usage, false, result)
+            }
+            Err(error) => (None, error.unknown_reason().is_none(), Err(error)),
+        };
+        self.answer(Answer {
+            call: HostCall {
+                position,
+                kind: CallKind::Tool { name },
+                args: JsonText::null(),
+            },
+            result,
+            usage,
+            no_effect,
+        })
     }
 
     fn cancel(&mut self, ack: mpsc::SyncSender<Result<()>>) -> Result<()> {
@@ -898,7 +1019,7 @@ impl Driver {
             return self.refuse(call, Outcome::ToolUnavailable, "tool_unavailable", true);
         }
         let declaration = self.shared.catalog.op(&tool.module, &tool.op);
-        if declaration.is_none() {
+        if !super::models::is_local(&tool.module, &tool.op) && declaration.is_none() {
             return self.refuse(call, Outcome::Refused, "not_in_catalog", true);
         }
         if self.in_flight >= IN_FLIGHT || !self.queue.is_empty() {
@@ -952,6 +1073,10 @@ impl Driver {
             unreachable!()
         };
         let tool = &self.start.tools[name];
+        let local_model = super::models::is_local(&tool.module, &tool.op);
+        if local_model {
+            return self.dispatch_model(call, queued);
+        }
         if let Err(error) =
             self.shared
                 .transport
@@ -1058,11 +1183,101 @@ impl Driver {
                     Ok(false) => return,
                     Err(error) => Err(WireError::NeverSent(error.to_string())),
                 };
-                let _ = events.send(Event::Answer(Answer { call, result }));
+                let no_effect = result
+                    .as_ref()
+                    .err()
+                    .is_some_and(|e| e.unknown_reason().is_none());
+                let _ = events.send(Event::Answer(Answer {
+                    call,
+                    result,
+                    usage: None,
+                    no_effect,
+                }));
             })
         {
             return self.end(failed("worker_lost", error.to_string()));
         }
+        Ok(())
+    }
+
+    fn dispatch_model(&mut self, call: HostCall, queued: bool) -> Result<()> {
+        if !queued {
+            self.insert(&call, CallStart::Queued)?;
+        }
+        self.in_flight += 1;
+        self.flight_positions.insert(call.position);
+        let ready = super::models::provider_ready(self.shared.transport.as_ref());
+        let models = self.shared.models.lock().unwrap().clone();
+        let models = match (ready, models) {
+            (Err(error), _) => return self.model_answer(call.position, Err(error)),
+            (_, None) => {
+                return self.model_answer(
+                    call.position,
+                    Err(WireError::NeverSent("model host unavailable".into())),
+                );
+            }
+            (Ok(()), Some(models)) => models,
+        };
+        let store = DispatchStore::new(
+            self.shared.store.clone(),
+            self.shared.dispatch_starts.clone(),
+        );
+        let run = self.run.clone();
+        let events = self.event_tx.clone();
+        let clock = self.shared.clock.clone();
+        thread::Builder::new()
+            .name(format!("{}:model", self.key()))
+            .spawn(move || {
+                let result = (|| {
+                    let request =
+                        super::models::prepare(&store, models.selector.as_ref(), &run, &call)?;
+                    let entered = store
+                        .write(|tx| {
+                            if !store::prepare_queued(
+                                tx,
+                                &run.run_id,
+                                call.position,
+                                clock.now_ms(),
+                            )? {
+                                return Ok(false);
+                            }
+                            store::enter_call(tx, &run.run_id, call.position, clock.now_ms())
+                        })
+                        .map_err(|e| WireError::NeverSent(e.to_string()))?;
+                    drop(store);
+                    if !entered {
+                        return Ok(None);
+                    }
+                    let result = models.host.dispatch(&request).map_err(|e| match e {
+                        basal_host::TransportError::Refused(refusal) => WireError::Typed(refusal),
+                        basal_host::TransportError::Unavailable {
+                            sent: basal_host::Sent::Never,
+                            detail,
+                        } => WireError::NeverSent(detail),
+                        other => WireError::Unknown(other.to_string()),
+                    })?;
+                    match result {
+                        basal_host::Dispatched::Completed(outcome) => {
+                            models.host.dispatch_committed(&request);
+                            Ok(Some(outcome))
+                        }
+                        basal_host::Dispatched::Accepted { .. } => {
+                            models.host.dispatch_committed(&request);
+                            Ok(None)
+                        }
+                    }
+                })();
+                let result = match result {
+                    Ok(Some(outcome)) => Ok(outcome),
+                    Ok(None) => return,
+                    Err(error) => Err(error),
+                };
+                let _ = events.send(Event::ModelAnswer {
+                    position: call.position,
+                    result,
+                });
+            })
+            .map_err(|e| CoreError::Invalid(e.to_string()))?;
         Ok(())
     }
 
@@ -1088,11 +1303,14 @@ impl Driver {
         let (settlement, value) = if mapped.outcome == Outcome::Ok {
             (Settlement::Fulfilled, mapped.value.unwrap())
         } else {
-            let rejection = json!({
+            let mut rejection = json!({
                 "code":mapped.code, "tool":name, "outcome":mapped.outcome.as_str(),
                 "message":mapped.message
-            })
-            .to_string();
+            });
+            if let Some(reason) = mapped.reason {
+                rejection["reason"] = json!(reason);
+            }
+            let rejection = rejection.to_string();
             let value =
                 JsonText::new(rejection).map_err(|error| CoreError::Invalid(error.to_string()))?;
             (Settlement::Rejected, value)
@@ -1212,6 +1430,7 @@ struct Mapped {
     message: String,
     value: Option<JsonText>,
     scope_loss: bool,
+    reason: Option<String>,
 }
 
 impl Mapped {
@@ -1222,6 +1441,7 @@ impl Mapped {
             message: message.into(),
             value: None,
             scope_loss: false,
+            reason: None,
         }
     }
 }
@@ -1235,6 +1455,7 @@ fn map_answer(result: std::result::Result<Value, WireError>) -> Mapped {
                 message: String::new(),
                 value: Some(value),
                 scope_loss: false,
+                reason: None,
             },
             Err(_) => Mapped::rejected(
                 Outcome::Error,
@@ -1287,13 +1508,22 @@ fn map_answer(result: std::result::Result<Value, WireError>) -> Mapped {
             mapped.scope_loss = true;
             mapped
         }
-        Err(
-            WireError::Refused { code, message } | WireError::RefusedDetails { code, message, .. },
-        ) => Mapped::rejected(
+        Err(WireError::RefusedDetails {
+            code,
+            message,
+            detail,
+        }) => {
+            let mut mapped = map_answer(Err(WireError::Refused { code, message }));
+            mapped.reason = detail["reason"].as_str().map(str::to_owned);
+            mapped
+        }
+        Err(WireError::Refused { code, message }) => Mapped::rejected(
             if code == "denied" {
                 Outcome::Denied
             } else if code == "tool_unavailable" {
                 Outcome::ToolUnavailable
+            } else if matches!(code.as_str(), "budget_exhausted" | "route_unavailable") {
+                Outcome::Refused
             } else {
                 Outcome::Error
             },

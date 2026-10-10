@@ -12,6 +12,7 @@ use std::sync::Arc;
 fn request() -> CallRequest {
     let selection = FakeSelector::default()
         .select(&SelectionRequest {
+            target_agent: None,
             iq: 1,
             eq: 1,
             flow_id: "f".into(),

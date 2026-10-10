@@ -5256,8 +5256,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/selector.rs"
-old = "\"targetAgent\":\"flow\""
-new = "\"targetAgent\":\"operator\""
+old = "request.target_agent.as_deref().unwrap_or(\"flow\")"
+new = "request.target_agent.as_deref().unwrap_or(\"operator\")"
 
 [[control]]
 id = "selector-demands-swapped"
@@ -12688,8 +12688,8 @@ target = "--lib"
 expect_red = ["codemode::supervisor::tests::per_call_checks_are_ordered_and_never_write_intent_before_readiness"]
 only = false
 file = "crates/basal-core/src/codemode/supervisor.rs"
-old = "if declaration.is_none() {"
-new = "if false && declaration.is_none() { // NON-VACUITY BREAK"
+old = "if !super::models::is_local(&tool.module, &tool.op) && declaration.is_none() {"
+new = "if false && !super::models::is_local(&tool.module, &tool.op) && declaration.is_none() { // NON-VACUITY BREAK"
 
 [[control]]
 id = "s5-codemode-queue-at-eight"
@@ -12956,10 +12956,14 @@ only = false
 file = "crates/basal-core/src/codemode/supervisor.rs"
 old = '''} else if code == "tool_unavailable" {
                 Outcome::ToolUnavailable
+            } else if matches!(code.as_str(), "budget_exhausted" | "route_unavailable") {
+                Outcome::Refused
             } else {
                 Outcome::Error'''
 new = '''} else if code == "tool_unavailable" {
                 Outcome::ToolUnavailable
+            } else if matches!(code.as_str(), "budget_exhausted" | "route_unavailable") {
+                Outcome::Refused
             } else {
                 Outcome::Refused // NON-VACUITY BREAK'''
 
@@ -14438,3 +14442,198 @@ timeout_s = 600
 file = "crates/basal-host/src/transport.rs"
 old = "timeout: options.reply_timeout,"
 new = "timeout: self.timeout, /* NON-VACUITY BREAK */"
+
+# These controls check that model calls cannot share conversation history,
+# change a saved routing decision, bypass scope opt-in, or exceed run budgets.
+
+[[control]]
+id = "codemode-model-routing-agent"
+guards = "routing fields charge the invoking agent"
+test_file = "crates/basal-core/src/codemode/model_tests.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+file = "crates/basal-core/src/codemode/models.rs"
+old = "target_agent: Some(run.agent_id.clone()),"
+new = "target_agent: Some(\"flow\".into()), /* NON-VACUITY BREAK */"
+platforms = ["linux"]
+expect_red = ["codemode::supervisor::tests::models::model_routing_charges_invoking_agent_and_run_task"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "codemode-model-routing-task"
+guards = "routing history is grouped under the codemode run"
+test_file = "crates/basal-core/src/codemode/model_tests.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+file = "crates/basal-host/src/selector.rs"
+old = "format!(\"codemode:{}\", request.run_id)"
+new = "format!(\"flow:{}\", request.run_id) /* NON-VACUITY BREAK */"
+platforms = ["linux"]
+expect_red = ["codemode::supervisor::tests::models::model_routing_charges_invoking_agent_and_run_task"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "codemode-model-distinct-sessions"
+guards = "each model call has isolated conversation history"
+test_file = "crates/basal-core/src/codemode/model_tests.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+file = "crates/basal-host/src/broca/mod.rs"
+old = "format!(\"basal:codemode-{run_id}:{position}\")"
+new = "format!(\"basal:codemode-{run_id}:{}\", position.saturating_sub(position)) /* NON-VACUITY BREAK */"
+platforms = ["linux"]
+expect_red = ["codemode::supervisor::tests::models::model_calls_use_distinct_run_scoped_sessions"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "codemode-model-reuse-routing"
+guards = "resends reuse the frozen routing decision"
+test_file = "crates/basal-core/src/codemode/model_tests.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+file = "crates/basal-core/src/codemode/models.rs"
+old = "let envelope = if let Some(saved) = saved {"
+new = "let envelope = if let Some(saved) = saved.filter(|_| false) { /* NON-VACUITY BREAK */"
+platforms = ["linux"]
+expect_red = ["codemode::supervisor::tests::models::model_routing_is_journaled_before_send_and_reused_on_resend"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "codemode-model-journal-before-send"
+guards = "routing is durable before provider dispatch"
+test_file = "crates/basal-core/src/codemode/model_tests.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+file = "crates/basal-core/src/codemode/models.rs"
+old = "UPDATE codemode_models SET envelope=?3 WHERE run_id=?1 AND position=?2 AND envelope IS NULL"
+new = "UPDATE codemode_models SET envelope=?3 WHERE run_id=?1 AND position=?2 AND envelope IS NULL AND 0 /* NON-VACUITY BREAK */"
+platforms = ["linux"]
+expect_red = ["codemode::supervisor::tests::models::model_routing_is_journaled_before_send_and_reused_on_resend"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "codemode-model-provider-opt-in"
+guards = "Broca must opt in to agent run scopes"
+test_file = "crates/basal-core/src/codemode/model_tests.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+file = "crates/basal-core/src/codemode/models.rs"
+old = "if !opted_in {"
+new = "if false && !opted_in { /* NON-VACUITY BREAK */"
+platforms = ["linux"]
+expect_red = ["codemode::supervisor::tests::models::broca_without_run_scope_opt_in_is_refused_without_dispatch"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "codemode-model-call-budget"
+guards = "the twenty first model call is catchably refused"
+test_file = "crates/basal-core/src/codemode/model_tests.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+file = "crates/basal-core/src/codemode/models.rs"
+old = "if count >= CALLS {"
+new = "if count >= CALLS.saturating_add(1) { /* NON-VACUITY BREAK */"
+platforms = ["linux"]
+expect_red = ["codemode::supervisor::tests::models::model_call_budget_rejects_call_21_without_ending_run"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "codemode-model-token-budget"
+guards = "outstanding reservations count against the run token cap"
+test_file = "crates/basal-core/src/codemode/model_tests.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+file = "crates/basal-core/src/codemode/models.rs"
+old = "if used.saturating_add(reserve) > TOKENS {"
+new = "if used > TOKENS { /* NON-VACUITY BREAK */"
+platforms = ["linux"]
+expect_red = ["codemode::supervisor::tests::models::model_token_budget_reserves_before_send_and_is_catchable"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "codemode-model-no-tools"
+guards = "model dispatch declares no tools"
+test_file = "crates/basal-core/src/codemode/model_tests.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+file = "crates/basal-host/src/broca/mod.rs"
+old = "tools: vec![],"
+new = "tools: vec![json!({\"name\":\"leaked\"})], /* NON-VACUITY BREAK */"
+platforms = ["linux"]
+expect_red = ["codemode::supervisor::tests::models::model_dispatch_declares_no_tools"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "codemode-model-ended-no-resend"
+guards = "ended run calls are retired rather than resent"
+test_file = "crates/basal-core/src/codemode/model_tests.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+file = "crates/basal-host/src/broca/mod.rs"
+old = "if codemode && !self.store.codemode_active(&call.basal_run_id)? {"
+new = "if false && codemode && !self.store.codemode_active(&call.basal_run_id)? { /* NON-VACUITY BREAK */"
+platforms = ["linux"]
+expect_red = ["codemode::supervisor::tests::models::completed_codemode_runs_are_never_resent_by_broca_polling"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "codemode-model-startup-recovery"
+guards = "startup polling waits until codemode recovery has retired interrupted runs"
+test_file = "crates/basal-core/src/codemode/model_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::models::broca_startup_waits_for_codemode_recovery_before_polling"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/broca/mod.rs"
+old = "if codemode && sink.is_none() {"
+new = "if false && codemode && sink.is_none() { /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "codemode-model-usage-overflow"
+guards = "large provider usage cannot turn token-budget refusal into a storage error"
+test_file = "crates/basal-core/src/codemode/model_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::models::overcap_provider_usage_still_yields_typed_budget_refusal"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/codemode/models.rs"
+old = "SUM(MIN(COALESCE(charged,reserved),?2))"
+new = "SUM(COALESCE(charged,reserved) + 0*?2) /* NON-VACUITY BREAK */"
