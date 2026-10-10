@@ -10,11 +10,14 @@
 //!   leaves a permanent tombstone;
 //! - [`canonical`]: RFC 8785 canonical JSON;
 //! - [`catalog`]: the catalog digest and tool input schema compilation.
+//! - [`admission`]: ordered checks and a transaction that grants at most one
+//!   caller permission to start a run.
 //!
 //! Codemode rows never enter the flow machinery: no journal row, lease,
 //! retry, suspension, replay, reconcile, flow retention or flow op reads or
 //! writes these tables.
 
+pub mod admission;
 pub mod canonical;
 pub mod catalog;
 pub mod retention;

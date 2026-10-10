@@ -10926,3 +10926,656 @@ file = "crates/basal-host/src/flow_scope.rs"
 old = "if let Some((_, key)) = self.flows.remove(flow) {"
 new = '''if flow.starts_with("codemode:") && scope.is_none() && !self.flows.contains_key(flow) { panic!("NON-VACUITY BREAK"); }
         if let Some((_, key)) = self.flows.remove(flow) {'''
+
+# Codemode admission: only a newly committed running row grants permission
+# to register its scope and start a fresh worker.
+[[control]]
+id = "codemode-admission-known-id-first"
+guards = "a known codemode id returns its stored payload before all other checks"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::known_id_precedes_every_check_and_returns_the_original_payload"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = "Lookup::Found(run) => return Ok(Admission::Existing(run)),"
+new = "Lookup::Found(_) => {}, // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-admission-pruned-id"
+guards = "a pruned id is unknown_run and is never admitted again"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::pruned_id_is_unknown_and_never_admitted_again"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = '''Lookup::Pruned => {
+                    return Ok(Admission::Refused(Refusal::new(
+                        "unknown_run",
+                        "the run was pruned",
+                    )));
+                }'''
+new = "Lookup::Pruned => {}, // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-admission-platform"
+guards = "Windows is refused before scope and request checks"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::injected_windows_is_refused_before_scope_or_request_checks"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = "if platform == Platform::Windows {"
+new = "if platform == Platform::Windows && false { // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-admission-reserved-owner"
+guards = "only a reserved principal can own the scope"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::non_reserved_owner_and_blank_ref_are_refused_before_describe"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = "!matches!(scope.owner, Principal::Reserved { .. }) || scope.scope_ref.trim().is_empty()"
+new = "scope.scope_ref.trim().is_empty() /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "codemode-admission-nonblank-ref"
+guards = "a whitespace-only scope reference is refused before describe"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::non_reserved_owner_and_blank_ref_are_refused_before_describe"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = "!matches!(scope.owner, Principal::Reserved { .. }) || scope.scope_ref.trim().is_empty()"
+new = "!matches!(scope.owner, Principal::Reserved { .. }) /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "codemode-admission-live-status"
+guards = "a non-live daemon scope status refuses no_scope before request validation"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::non_live_status_and_epoch_mismatch_precede_request_validation"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = "description.status != ScopeStatus::Live || description.scope_epoch != Some(scope.epoch)"
+new = "description.scope_epoch != Some(scope.epoch) /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "codemode-admission-attested-epoch"
+guards = "a daemon scope epoch mismatch refuses no_scope before request validation"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::non_live_status_and_epoch_mismatch_precede_request_validation"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = "description.status != ScopeStatus::Live || description.scope_epoch != Some(scope.epoch)"
+new = "description.status != ScopeStatus::Live /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "codemode-admission-live-stamp"
+guards = "a live description without a stamp refuses no_scope"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::non_live_status_and_epoch_mismatch_precede_request_validation"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = 'Refusal::new("no_scope", "scope description has no live stamp")'
+new = 'Refusal::new("scope_mismatch", "scope description has no live stamp") /* NON-VACUITY BREAK */'
+
+[[control]]
+id = "codemode-admission-agent-attribute"
+guards = "a stamp without an agent attribute refuses scope_mismatch"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::attested_agent_mismatch_precedes_request_limits_and_catalog"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = 'Refusal::new("scope_mismatch", "scope has no attested agent identity")'
+new = 'Refusal::new("no_scope", "scope has no attested agent identity") /* NON-VACUITY BREAK */'
+
+[[control]]
+id = "codemode-admission-agent-match"
+guards = "the supplied agent id must equal the attested agent id"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::attested_agent_mismatch_precedes_request_limits_and_catalog"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = ".is_some_and(|id| id != agent_id)"
+new = ".is_some_and(|id| id != agent_id && false) // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-admission-run-id-field"
+guards = "a new run requires a string run_id at request validation"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::required_request_fields_are_checked_after_attestation_before_limits"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = '''let run_id = request
+        .get("run_id")
+        .and_then(Value::as_str)
+        .ok_or_else(invalid)?;'''
+new = '''let run_id = request.get("run_id").and_then(Value::as_str).unwrap_or(""); // NON-VACUITY BREAK'''
+
+[[control]]
+id = "codemode-admission-agent-id-field"
+guards = "a new run requires a string agent_id at request validation"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::required_request_fields_are_checked_after_attestation_before_limits"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = '''request
+        .get("agent_id")
+        .and_then(Value::as_str)
+        .ok_or_else(invalid)?;'''
+new = '''let _ = request.get("agent_id"); // NON-VACUITY BREAK'''
+
+[[control]]
+id = "codemode-admission-program-field"
+guards = "a new run requires a string program at request validation"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::required_request_fields_are_checked_after_attestation_before_limits"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = '''let program = request
+        .get("program")
+        .and_then(Value::as_str)
+        .ok_or_else(invalid)?;'''
+new = '''let program = request.get("program").and_then(Value::as_str).unwrap_or(""); // NON-VACUITY BREAK'''
+
+[[control]]
+id = "codemode-admission-catalog-field"
+guards = "a new run requires a catalog before limits validation"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::required_request_fields_are_checked_after_attestation_before_limits"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = 'let catalog = request.get("catalog").ok_or_else(invalid)?;'
+new = 'let catalog = request.get("catalog").unwrap_or(&Value::Null); // NON-VACUITY BREAK'
+
+[[control]]
+id = "codemode-admission-deadline-field"
+guards = "a new run requires an i64 deadline at request validation"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::required_request_fields_are_checked_after_attestation_before_limits"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = '''let deadline_ms = request
+        .get("deadline_ms")
+        .and_then(Value::as_i64)
+        .ok_or_else(invalid)?;'''
+new = '''let deadline_ms = request.get("deadline_ms").and_then(Value::as_i64).unwrap_or(0); // NON-VACUITY BREAK'''
+
+[[control]]
+id = "codemode-admission-description-type"
+guards = "a supplied description must be a string, not null"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::required_request_fields_are_checked_after_attestation_before_limits"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = '''let description = request
+        .get("description")
+        .map(|v| v.as_str().ok_or_else(invalid))
+        .transpose()?;'''
+new = '''let description = request.get("description").and_then(Value::as_str); // NON-VACUITY BREAK'''
+
+[[control]]
+id = "codemode-admission-script-bytes"
+guards = "a program at 1 MiB is accepted but 1 MiB plus one byte is refused"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::script_byte_limit_is_inclusive"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = "program.len() > MAX_SCRIPT_BYTES"
+new = "program.len() > MAX_SCRIPT_BYTES && false /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "codemode-admission-description-bytes"
+guards = "a description is limited to 1024 UTF-8 bytes and kept unchanged"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::description_utf8_byte_limit_is_inclusive_and_preserves_the_text"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = "s.len() > MAX_DESCRIPTION_BYTES"
+new = "s.len() > MAX_DESCRIPTION_BYTES && false /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "codemode-admission-description-lines"
+guards = "a description cannot contain LF, CR, line separator or paragraph separator"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::descriptions_refuse_each_line_break_character"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = '''s.contains(['\n', '\r', '\u{2028}', '\u{2029}'])'''
+new = "false /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "codemode-admission-positive-limits"
+guards = "all specified budgets are at least one"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::limits_refuse_unknown_keys_and_non_positive_non_integer_values"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = ".filter(|n| *n >= 1)"
+new = ".filter(|_| true) /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "codemode-admission-known-limit-keys"
+guards = "unknown budget keys refuse invalid_limits before catalog validation"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::limits_refuse_unknown_keys_and_non_positive_non_integer_values"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = "_ => return Err(invalid()),"
+new = "_ => {}, // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-admission-tool-call-cap"
+guards = "tool_calls may not exceed 200"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::tool_and_output_limits_accept_the_cap_and_refuse_cap_plus_one"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = '"tool_calls" if n <= 200 =>'
+new = '"tool_calls" if true => /* NON-VACUITY BREAK */'
+
+[[control]]
+id = "codemode-admission-output-cap"
+guards = "output_bytes may not exceed 65536"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::tool_and_output_limits_accept_the_cap_and_refuse_cap_plus_one"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = '"output_bytes" if n <= 65_536 =>'
+new = '"output_bytes" if true => /* NON-VACUITY BREAK */'
+
+[[control]]
+id = "codemode-admission-exact-catalog-keys"
+guards = "catalog entries have exactly the four documented keys"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::catalog_array_and_exact_entry_keys_are_required"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = "fields.len() != 4"
+new = "false /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "codemode-admission-name-syntax"
+guards = "tool names use ASCII identifier syntax"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::tool_names_are_ascii_identifiers_of_at_most_128_bytes"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = "if !valid_name(name) {"
+new = "if !valid_name(name) && false { // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-admission-name-bytes"
+guards = "tool names are at most 128 bytes"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::tool_names_are_ascii_identifiers_of_at_most_128_bytes"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = "name.len() <= MAX_NAME_BYTES"
+new = "true /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "codemode-admission-reserved-names"
+guards = "reserved and prototype-affecting tool names cannot be admitted"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::reserved_tool_names_are_refused_and_named_in_the_message"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = '''if matches!(
+            name,
+            "__proto__" | "constructor" | "prototype" | "tools" | "console"
+        ) {'''
+new = "if false { // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-admission-unique-names"
+guards = "duplicate tool names cannot replace one another in the compiled catalog"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::duplicate_tool_names_are_refused"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = "if tools.contains_key(name) {"
+new = "if tools.contains_key(name) && false { // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-admission-module-bound"
+guards = "a catalog module is nonempty and at most 128 bytes"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::module_and_op_are_nonempty_strings_with_a_128_byte_cap"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = '''let module = fields["module"]
+            .as_str()
+            .filter(|s| !s.is_empty() && s.len() <= MAX_NAME_BYTES)'''
+new = '''let module = fields["module"].as_str() /* NON-VACUITY BREAK */'''
+
+[[control]]
+id = "codemode-admission-op-bound"
+guards = "a catalog op is nonempty and at most 128 bytes"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::module_and_op_are_nonempty_strings_with_a_128_byte_cap"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = '''let op = fields["op"]
+            .as_str()
+            .filter(|s| !s.is_empty() && s.len() <= MAX_NAME_BYTES)'''
+new = '''let op = fields["op"].as_str() /* NON-VACUITY BREAK */'''
+
+[[control]]
+id = "codemode-admission-schema-compilation"
+guards = "admission compiles the submitted input schema instead of an unconstrained proxy"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::schema_failures_and_external_refs_refuse_before_insertion"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = 'compile_input_schema(&fields["input_schema"])'
+new = 'compile_input_schema(&Value::Bool(true)) /* NON-VACUITY BREAK */'
+
+[[control]]
+id = "codemode-admission-agent-cap"
+guards = "busy begins at two running rows for the attested agent"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::agent_cap_is_two_attested_nonterminal_runs_in_the_transaction"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = "agent_runs >= MAX_AGENT_RUNS"
+new = "agent_runs > MAX_AGENT_RUNS /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "codemode-admission-basal-cap"
+guards = "busy begins at sixteen running rows in basal"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::basal_cap_is_sixteen_nonterminal_runs_in_the_transaction"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = "basal_runs >= MAX_BASAL_RUNS"
+new = "basal_runs > MAX_BASAL_RUNS /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "codemode-admission-deadline-inclusive"
+guards = "admission exactly at the deadline is already budget_exhausted:wall"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::deadline_at_or_before_admission_inserts_terminal_without_a_start_token"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = "admitted_at >= fields.deadline_ms"
+new = "admitted_at > fields.deadline_ms /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "codemode-admission-wall-clamp"
+guards = "a wall_ms beyond the absolute deadline is admitted but clamped to it"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::tool_and_output_limits_accept_the_cap_and_refuse_cap_plus_one"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = "fields.deadline_ms.min(admitted_at.saturating_add(wall))"
+new = "admitted_at.saturating_add(wall) /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "codemode-admission-wall-clock"
+guards = "relative wall_ms is added to the injected admission clock"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::wall_deadline_uses_the_injected_clock_and_saturating_addition"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = "admitted_at.saturating_add(wall)"
+new = "wall /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "codemode-admission-expired-no-start"
+guards = "already-terminal admissions never grant permission to register a scope or start a worker"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::deadline_at_or_before_admission_inserts_terminal_without_a_start_token"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = "let start = ended.is_none().then(|| {"
+new = "let start = true.then(|| { // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-admission-scope-required"
+guards = "a missing scope refuses no_scope before later malformed request fields"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::scope_shape_precedes_attestation_and_needs_no_flow_targets"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = 'request.get("scope").cloned().unwrap_or(Value::Null)'
+new = '''request.get("scope").cloned().unwrap_or_else(|| serde_json::json!({"owner":{"kind":"reserved","module_id":"prefrontal-core"},"ref":"scope:run","epoch":19})) /* NON-VACUITY BREAK */'''
+
+[[control]]
+id = "codemode-admission-catalog-array"
+guards = "a supplied catalog must be an array, not an absent-tool proxy"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::catalog_array_and_exact_entry_keys_are_required"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = '''let entries = value
+        .as_array()
+        .ok_or_else(|| Refusal::new("invalid_catalog", "catalog must be an array"))?;'''
+new = '''let entries = value.as_array().map(Vec::as_slice).unwrap_or(&[]); // NON-VACUITY BREAK'''
+
+[[control]]
+id = "codemode-admission-limits-object"
+guards = "specified limits must be an object, not defaults hidden behind null"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::limits_refuse_unknown_keys_and_non_positive_non_integer_values"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = "let fields = value.as_object().ok_or_else(invalid)?;"
+new = "let empty = serde_json::Map::new(); let fields = value.as_object().unwrap_or(&empty); // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-admission-catalog-required-keys"
+guards = "four catalog keys cannot substitute an extra key for the required schema"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::catalog_array_and_exact_entry_keys_are_required"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = '''!["name", "input_schema", "module", "op"]
+                .iter()
+                .all(|k| fields.contains_key(*k))'''
+new = "false /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "codemode-admission-module-bytes"
+guards = "a module name of 129 bytes is refused even when nonempty"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::module_and_op_are_nonempty_strings_with_a_128_byte_cap"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = '''let module = fields["module"]
+            .as_str()
+            .filter(|s| !s.is_empty() && s.len() <= MAX_NAME_BYTES)'''
+new = '''let module = fields["module"].as_str().filter(|s| !s.is_empty()) /* NON-VACUITY BREAK */'''
+
+[[control]]
+id = "codemode-admission-op-bytes"
+guards = "an op name of 129 bytes is refused even when nonempty"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::module_and_op_are_nonempty_strings_with_a_128_byte_cap"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = '''let op = fields["op"]
+            .as_str()
+            .filter(|s| !s.is_empty() && s.len() <= MAX_NAME_BYTES)'''
+new = '''let op = fields["op"].as_str().filter(|s| !s.is_empty()) /* NON-VACUITY BREAK */'''
+
+[[control]]
+id = "codemode-admission-integer-limits"
+guards = "budget values must be i64 integers, never rounded fractions"
+test_file = "crates/basal-core/src/codemode/admission_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::tests::limits_refuse_unknown_keys_and_non_positive_non_integer_values"]
+only = false
+file = "crates/basal-core/src/codemode/admission.rs"
+old = "let n = value.as_i64().filter(|n| *n >= 1).ok_or_else(invalid)?;"
+new = "let n = value.as_f64().map(|n| n as i64).filter(|n| *n >= 1).ok_or_else(invalid)?; // NON-VACUITY BREAK"
