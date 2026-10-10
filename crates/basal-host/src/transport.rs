@@ -1357,6 +1357,7 @@ mod tests {
                 Arc::new(crate::selector::RoutingSelector::new(transport.clone()));
             let selection = selector_client
                 .select(&crate::selector::SelectionRequest {
+                    caller_class: "flow".into(),
                     iq: 70,
                     eq: 20,
                     flow_id: "flow-a".into(),
@@ -1598,6 +1599,7 @@ mod tests {
                 let send = format!("send-{}", requests.len());
                 let chosen = selection
                     .select(&SelectionRequest {
+                        caller_class: "flow".into(),
                         iq: 70,
                         eq: 20,
                         flow_id: "flow-a".into(),

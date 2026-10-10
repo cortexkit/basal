@@ -74,7 +74,7 @@ fn call<T: Serialize, R: for<'de> Deserialize<'de>>(
 }
 
 /// Resolve only tools declared by the daemon, not schemas carried by core or
-/// script input. Model tools will be inserted by basal separately when enabled.
+/// script input. Basal inserts its own model tools separately.
 pub fn catalog(daemon: &Value, entries: &[CatalogEntry]) -> Result<Value, WireError> {
     let modules = daemon["modules"]
         .as_array()

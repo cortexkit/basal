@@ -245,6 +245,9 @@ impl RoutingHost {
     }
 }
 impl Host for RoutingHost {
+    fn attach_codemode(&self, sink: Arc<dyn CompletionSink>) {
+        self.model.attach_codemode(sink);
+    }
     fn scope_describe(
         &self,
         owner: &subc_protocol::Principal,

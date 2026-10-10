@@ -1,6 +1,7 @@
 Run a short JavaScript program that calls your own tools and returns one result.
 
 - Call a tool with `await tools.<name>(input)`: any of your tools except codemode, with the same input you'd pass to it directly. The tool decides allow, ask and deny exactly as for a direct call, and an ask waits for its answer.
+- `tools.model({prompt, system?, max_output?})` asks a model for one completion, and `tools.classify({text, labels})` picks one label; both count against the run's model budget (20 calls, 200,000 tokens).
 - `console.log(...)` output is captured, up to 64 KiB.
 - The program's last `return value` is the result, as JSON, up to 16 KiB.
 - There is no file, network, shell or other global access except through your tools.

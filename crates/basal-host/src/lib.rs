@@ -407,6 +407,8 @@ pub trait CompletionSink: Send + Sync {
 /// The hosts a flow reaches. Implementations must be safe to call from
 /// several threads at once: the runtime runs a run's calls concurrently.
 pub trait Host: Send + Sync {
+    /// Model completions for one-attempt runs have a separate recipient from flows.
+    fn attach_codemode(&self, _sink: Arc<dyn CompletionSink>) {}
     /// Reads the daemon's current scope attestation before admission. The
     /// response keeps the status and optional live stamp together; an absent
     /// daemon must not be mistaken for authority to start a run.

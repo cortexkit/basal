@@ -22,6 +22,7 @@
 pub mod admission;
 pub mod canonical;
 pub mod catalog;
+pub mod models;
 pub mod retention;
 pub mod scope;
 pub mod store;
