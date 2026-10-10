@@ -556,14 +556,12 @@ fn legacy_temporary_files_are_removed_once_from_written_directories() {
 fn remove_temp_removes_only_a_recorded_regular_file() {
     let files = Files::new("fs-temps-remove");
     let sub = files.root.join("sub");
+    #[cfg(unix)]
     let dir = std::fs::canonicalize(&sub).expect("real dir");
     #[cfg(windows)]
-    let dir = PathBuf::from(
-        dir.to_str()
-            .unwrap()
-            .strip_prefix(r"\\?\")
-            .unwrap_or(dir.to_str().unwrap()),
-    );
+    // Windows leases retain the write's drive-path spelling. Canonicalization
+    // could expand a short-name alias while the grant retains its original spelling.
+    let dir = sub.clone();
     let roots = vec![files.root.display().to_string()];
     let lease = |temp: &str| TempLease {
         call_key: "k".into(),

@@ -217,7 +217,9 @@ fn calls_outside_the_manifest_are_refused_in_the_parent_and_journaled() {
         outside = files.outside.join("secret.txt").display().to_string(),
         escape = files
             .root
-            .join("../outside/secret.txt")
+            .join("..")
+            .join("outside")
+            .join("secret.txt")
             .display()
             .to_string(),
         root = files.root.display().to_string(),
@@ -453,7 +455,7 @@ fn install_refuses_bad_roots_hosts_and_methods() {
         ),
         (
             "dotdot root",
-            json!({ "fs": { "read": [format!("{root}/../outside")] } }),
+            json!({ "fs": { "read": [files.root.join("..").join("outside").display().to_string()] } }),
         ),
         (
             "missing read root",
