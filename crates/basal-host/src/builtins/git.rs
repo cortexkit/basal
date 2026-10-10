@@ -15,14 +15,26 @@
 #[cfg(test)]
 mod tests;
 
+pub mod windows;
+
+#[cfg(not(windows))]
 use std::io::Read;
+#[cfg(not(windows))]
 use std::os::fd::AsRawFd;
+#[cfg(not(windows))]
 use std::os::unix::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
+#[cfg(not(windows))]
+use std::process::Command;
+#[cfg(not(windows))]
+use std::process::{Child, ExitStatus, Stdio};
+#[cfg(not(windows))]
 use std::sync::mpsc::{self, Sender};
+#[cfg(not(windows))]
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(not(windows))]
+use std::time::Instant;
 
 use basal_proto::Primitive;
 use serde_json::{Value, json};
@@ -31,7 +43,7 @@ use super::{Denial, codes, expand_home, options, string_arg};
 
 /// How long one git command may run.
 pub const TIMEOUT: Duration = Duration::from_secs(20);
-const STDERR_BYTES: usize = 4096;
+pub(crate) const STDERR_BYTES: usize = 4096;
 /// The most output one git command may produce: a log, a blob or a diff.
 pub const MAX_OUTPUT_BYTES: usize = super::MAX_TEXT_RESULT_BYTES;
 /// `git.log`'s default and largest entry counts.
@@ -246,6 +258,7 @@ pub fn repo(repo: &str, repos: &[String]) -> Result<PathBuf, Denial> {
 ///
 /// Repositories must belong to the service uid. Global `safe.directory`
 /// exceptions are deliberately ignored, rather than trusting foreign config.
+#[cfg(not(windows))]
 pub fn hardened_command(repo: &Path) -> Command {
     let mut command = Command::new("git");
     command.env_clear();
@@ -287,6 +300,9 @@ pub fn hardened_command(repo: &Path) -> Command {
     command
 }
 
+#[cfg(windows)]
+pub use windows::hardened_command;
+
 /// How a git command ended.
 pub struct Ran {
     pub success: bool,
@@ -297,10 +313,15 @@ pub struct Ran {
 
 /// Runs a git command under [`TIMEOUT`], refusing output over
 /// [`MAX_OUTPUT_BYTES`].
+#[cfg(not(windows))]
 pub fn run_command(command: Command) -> Result<Ran, Denial> {
     run_command_until(command, None)
 }
 
+#[cfg(windows)]
+pub use windows::run_command;
+
+#[cfg(not(windows))]
 fn run_command_until(mut command: Command, max_lines: Option<usize>) -> Result<Ran, Denial> {
     command.process_group(0);
     let child = command
@@ -383,6 +404,7 @@ fn run_command_until(mut command: Command, max_lines: Option<usize>) -> Result<R
     })
 }
 
+#[cfg(not(windows))]
 fn timeout_denial() -> Denial {
     Denial::new(
         codes::TIMEOUT,
@@ -390,17 +412,20 @@ fn timeout_denial() -> Denial {
     )
 }
 
+#[cfg(not(windows))]
 enum Completion {
     Exit(std::io::Result<ExitStatus>),
     Stdout(Result<PipeOutput, Denial>),
     Stderr(Result<PipeOutput, Denial>),
 }
 
+#[cfg(not(windows))]
 struct ProcessGroup {
     pid: u32,
     child: Option<Child>,
     waiter: Option<JoinHandle<()>>,
 }
+#[cfg(not(windows))]
 impl ProcessGroup {
     fn new(child: Child) -> Self {
         Self {
@@ -425,6 +450,7 @@ impl ProcessGroup {
         }
     }
 }
+#[cfg(not(windows))]
 impl Drop for ProcessGroup {
     fn drop(&mut self) {
         self.kill();
@@ -437,11 +463,13 @@ impl Drop for ProcessGroup {
     }
 }
 
+#[cfg(not(windows))]
 struct PipeOutput {
     bytes: Vec<u8>,
     limit_reached: bool,
 }
 
+#[cfg(not(windows))]
 fn drain_pipe<R: Read + AsRawFd>(
     mut pipe: Option<R>,
     cap: usize,
@@ -522,9 +550,13 @@ fn git(repo: &Path, args: &[&str]) -> Result<Ran, Denial> {
     run_command(command)
 }
 
+#[cfg(not(windows))]
 fn run_tags_command(command: Command) -> Result<Ran, Denial> {
     run_command_until(command, Some(MAX_TAGS))
 }
+
+#[cfg(windows)]
+use windows::run_tags_command;
 
 fn failed(ran: &Ran) -> Denial {
     Denial::new(codes::GIT, ran.stderr.trim().to_owned())
