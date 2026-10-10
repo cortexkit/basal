@@ -638,11 +638,12 @@ fn journal_count_failure_is_fatal_not_zero_replayed_calls() {
     cleanup(engine, path);
 }
 
-#[test]
-fn module_drop_joins_activation_after_slot_release() {
+/// Starts a whole module on a fresh store. Its worker spawner panics when
+/// `spawn_panics` is set and refuses otherwise. Returns the store path and the
+/// consent adapter, which stays attached.
+fn module(spawn_panics: bool) -> (crate::module::Module, std::path::PathBuf, Arc<MockConsent>) {
     use crate::dryrun::DryRunConfig;
     use crate::module::{Hosts, Module, ModuleConfig};
-    use std::sync::{Barrier, mpsc};
 
     let (old_engine, path) = engine(false);
     cleanup(old_engine, path.clone());
@@ -670,9 +671,17 @@ fn module_drop_joins_activation_after_slot_release() {
             consent: consent.clone(),
             hooks: Arc::new(NoHooks),
         },
-        Arc::new(RefuseOrPanic(true)),
+        Arc::new(RefuseOrPanic(spawn_panics)),
     )
     .unwrap();
+    (module, path, consent)
+}
+
+#[test]
+fn module_drop_joins_activation_after_slot_release() {
+    use std::sync::{Barrier, mpsc};
+
+    let (module, path, consent) = module(true);
     install_flow(&module.rt, "cut");
     module
         .rt
@@ -729,4 +738,83 @@ fn module_drop_joins_activation_after_slot_release() {
     // The consent adapter is deliberately still alive and attached here.
     drop(consent);
     std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+}
+
+/// Makes the module's shutdown stall inside the engine's thread join until the
+/// returned sender is dropped, and shortens how long drop waits for it.
+fn stall_shutdown(module: &mut crate::module::Module) -> std::sync::mpsc::Sender<()> {
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let released = std::sync::Mutex::new(released);
+    *module.engine.inner.joining.lock().unwrap() = Some(Arc::new(move || {
+        let _ = released.lock().unwrap_or_else(|p| p.into_inner()).recv();
+    }));
+    module.shutdown_grace = Duration::from_millis(100);
+    release
+}
+
+const UNWINDING_DROP_CHILD: &str =
+    "engine::lifecycle_tests::stalled_module_drop_while_unwinding_child";
+const UNWINDING_DROP_ENV: &str = "BASAL_STALLED_MODULE_DROP_CHILD";
+const UNWINDING_DROP_SURVIVED: &str = "the process survived a stalled module drop while unwinding";
+
+/// Does its work only in the subprocess the next test starts: a panic unwinds
+/// past a module whose shutdown stalls, so the module is dropped while the
+/// thread is already panicking. A second panic from that drop would abort the
+/// process, which only a separate process can observe.
+#[test]
+fn stalled_module_drop_while_unwinding_child() {
+    if std::env::var_os(UNWINDING_DROP_ENV).is_none() {
+        return;
+    }
+    let (mut module, path, consent) = module(false);
+    let release = stall_shutdown(&mut module);
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _owned = module;
+        panic!("a failure while the module is alive");
+    }));
+    let payload = unwound.expect_err("the closure panics");
+    assert_eq!(
+        payload.downcast_ref::<&str>(),
+        Some(&"a failure while the module is alive"),
+        "the original panic must be the one that reaches the caller"
+    );
+    println!("{UNWINDING_DROP_SURVIVED}");
+    drop(release);
+    drop(consent);
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[test]
+fn a_stalled_module_drop_while_unwinding_does_not_abort_the_process() {
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", UNWINDING_DROP_CHILD, "--nocapture"])
+        .env(UNWINDING_DROP_ENV, "1")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // The marker also proves the child test ran rather than matching nothing.
+    assert!(
+        output.status.success() && stdout.contains(UNWINDING_DROP_SURVIVED),
+        "child exited with {:?}\n{stdout}\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn a_stalled_module_drop_panics_when_not_unwinding() {
+    let (mut module, path, consent) = module(false);
+    let release = stall_shutdown(&mut module);
+    let dropped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || drop(module)));
+    let payload = dropped.expect_err("a stalled shutdown must fail loudly");
+    let message = payload
+        .downcast_ref::<String>()
+        .expect("the stall panic carries a formatted message");
+    assert!(
+        message.contains("module shutdown did not release its threads"),
+        "{message}"
+    );
+    drop(release);
+    drop(consent);
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }

@@ -49,7 +49,9 @@ pub struct Hosts {
 }
 
 /// Drop stops and joins module-owned engine and runtime threads, and revokes
-/// the consent sink's runtime. A stalled shutdown panics after 60 seconds.
+/// the consent sink's runtime. A stalled shutdown panics after 60 seconds,
+/// unless the dropping thread is already panicking: a second panic there
+/// would abort the process, so drop logs the stall and returns instead.
 /// Caller-owned runtime, engine or store clones must also be dropped before
 /// reopening the same storage.
 pub struct Module {
@@ -64,7 +66,12 @@ pub struct Module {
     pub metrics: Arc<Metrics>,
     pub fatal: Fatal,
     decisions: Arc<DecisionApplier>,
+    /// How long drop waits for shutdown to release the module's threads.
+    /// Tests shorten it to exercise a stalled shutdown quickly.
+    pub(crate) shutdown_grace: Duration,
 }
+
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(60);
 
 impl Module {
     /// Opens the store, recovers, and builds the rest. Nothing reads or
@@ -188,6 +195,7 @@ impl Module {
             metrics,
             fatal,
             decisions,
+            shutdown_grace: SHUTDOWN_GRACE,
         })
     }
 }
@@ -390,9 +398,39 @@ impl Drop for Module {
             drop((engine, pool, rt, decisions));
             let _ = done.send(());
         });
-        receiver
-            .recv_timeout(Duration::from_secs(60))
-            .expect("module shutdown did not release its threads within 60 seconds");
-        shutdown.join().expect("module shutdown panicked");
+        // Drop runs during unwinding too, for example when a test's assertion
+        // fails while it owns a module. A panic raised there aborts the whole
+        // process, hiding the original failure, so an unwinding thread only
+        // logs a stalled or panicked shutdown and leaves the shutdown thread
+        // running.
+        let unwinding = std::thread::panicking();
+        match receiver.recv_timeout(self.shutdown_grace) {
+            Ok(()) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) if unwinding => {
+                tracing::error!(
+                    grace = ?self.shutdown_grace,
+                    "module shutdown did not release its threads; abandoning it because the dropping thread is already panicking"
+                );
+                return;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                panic!(
+                    "module shutdown did not release its threads within {:?}",
+                    self.shutdown_grace
+                );
+            }
+            // The shutdown thread ended without signalling, so it panicked;
+            // joining it below reports that.
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {}
+        }
+        if shutdown.join().is_err() {
+            if unwinding {
+                tracing::error!(
+                    "module shutdown panicked while the dropping thread was already panicking"
+                );
+            } else {
+                panic!("module shutdown panicked");
+            }
+        }
     }
 }

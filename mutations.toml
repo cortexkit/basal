@@ -1380,9 +1380,10 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/schema.rs"
-# The final table is rebuilt to add deferred dispatches, so its constraint,
-# rather than the superseded ALTER TABLE constraint, must be neutralized.
-old = "        CHECK (dispatch <> 'unknown' OR unknown_reason IS NOT NULL),"
+# Later migrations rebuild the journal table with their own copy of this
+# constraint. Migration 16 (grant losses) is the last rebuild, so its copy is
+# the one the current schema carries and the one that must be neutralized.
+old = "        CHECK (dispatch<>'unknown' OR unknown_reason IS NOT NULL),"
 new = "        , -- NON-VACUITY BREAK"
 
 # dispatch: 47 controls
@@ -8800,6 +8801,40 @@ package = "basal-module"
 platforms = ["macos"]
 target = "--lib"
 expect_red = ["engine::lifecycle_tests::panicking_activation_releases_run_and_flow_slots"]
+only = false
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "module-drop-panics-while-unwinding"
+guards = "a stalled module shutdown dropped during unwinding logs and returns instead of aborting the process with a second panic"
+file = "crates/basal-module/src/module.rs"
+old = "Err(std::sync::mpsc::RecvTimeoutError::Timeout) if unwinding => {"
+new = "Err(std::sync::mpsc::RecvTimeoutError::Timeout) if false => { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-module/src/engine_tests.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--lib"
+expect_red = ["engine::lifecycle_tests::a_stalled_module_drop_while_unwinding_does_not_abort_the_process"]
+only = false
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "module-drop-swallows-a-stalled-shutdown"
+guards = "a stalled module shutdown dropped outside unwinding still panics"
+file = "crates/basal-module/src/module.rs"
+old = "Err(std::sync::mpsc::RecvTimeoutError::Timeout) if unwinding => {"
+new = "Err(std::sync::mpsc::RecvTimeoutError::Timeout) if true => { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-module/src/engine_tests.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--lib"
+expect_red = ["engine::lifecycle_tests::a_stalled_module_drop_panics_when_not_unwinding"]
 only = false
 timeout_s = 600
 build_timeout_s = 3600
