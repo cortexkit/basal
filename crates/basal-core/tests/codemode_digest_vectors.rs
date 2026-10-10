@@ -404,7 +404,7 @@ fn published_vectors_cover_reordering_numbers_and_strings() {
     assert!(exponent.canonical.contains("e+21") && exponent.canonical.contains("e-7"));
     // Non-ASCII text is written as itself; a control character is escaped.
     let string = vector(&vectors, "string");
-    assert!(string.canonical.chars().any(|c| !c.is_ascii()));
+    assert!(!string.canonical.is_ascii());
     assert!(string.canonical.contains("\\u0007"));
     let catalog: Value = serde_json::from_str(&string.catalog).unwrap();
     assert!(catalog.to_string().contains("\\u0007"));
