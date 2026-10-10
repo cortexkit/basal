@@ -2,6 +2,9 @@
 //! the engine freezes its global object, both directly and through the worker.
 //! Frozen globals reject new names before a call can run; scoped functions can
 //! recurse. Direct versus worker entry separates those engine costs from OS confinement.
+
+// Windows: gated until basal-testkit builds there.
+#![cfg_attr(windows, allow(dead_code, unused_imports))]
 use basal_proto::{ActivationRequest, ActivationResult, Budgets, JsonText, Profile};
 use basal_worker::{engine, link::Channel};
 use std::cell::RefCell;
@@ -30,6 +33,12 @@ fn direct(request: &ActivationRequest) -> ActivationResult {
     )));
     engine::run_activation(request, link)
 }
+#[cfg(windows)]
+fn main() {
+    panic!("wrapper_stack needs basal-testkit, which does not build on Windows yet");
+}
+
+#[cfg(not(windows))]
 fn main() {
     let mode = std::env::args().nth(1).unwrap_or_else(|| "direct".into());
     println!(

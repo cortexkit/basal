@@ -1,4 +1,8 @@
 //! Adversarial scripts at the sandbox's function and exception boundaries.
+
+// Windows: gated until basal-testkit builds there.
+#![cfg(not(windows))]
+
 mod common;
 
 use basal_proto::{ActivationResult, Failure};

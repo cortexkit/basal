@@ -1,4 +1,8 @@
 //! Codemode's confined wire contract, without the flow parent's journal or hosts.
+
+// Windows: gated until basal-testkit builds there.
+#![cfg(not(windows))]
+
 mod common;
 
 use std::time::Duration;

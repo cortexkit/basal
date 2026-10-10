@@ -1,5 +1,8 @@
 //! The real worker must discard inherited authority even in probe mode.
 
+// Windows: gated until basal-testkit builds there.
+#![cfg(not(windows))]
+
 mod common;
 
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
