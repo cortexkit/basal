@@ -127,9 +127,12 @@ fn outside_missing_and_symlink_targets_have_identical_refusals() {
         assert_eq!(a.code, codes::DENIED);
         assert!(!a.message.contains(tree.0.to_str().unwrap()));
     }
+    let op = git::Op::RevParse {
+        reference: "HEAD".into(),
+    };
     assert_eq!(
-        git::repo(existing.to_str().unwrap(), &tree.roots()).unwrap_err(),
-        git::repo(missing.to_str().unwrap(), &tree.roots()).unwrap_err()
+        git::run(existing.to_str().unwrap(), &tree.roots(), &op).unwrap_err(),
+        git::run(missing.to_str().unwrap(), &tree.roots(), &op).unwrap_err()
     );
 }
 
