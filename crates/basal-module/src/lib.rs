@@ -21,6 +21,7 @@
 
 pub mod caller;
 pub mod card;
+pub mod codemode;
 pub mod dryrun;
 pub mod engine;
 pub mod fatal;

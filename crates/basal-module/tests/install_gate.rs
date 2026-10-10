@@ -47,6 +47,7 @@ fn gated_with_options(
     let consent = Arc::new(CoreConsent::new(fake.clone()));
     let catalog = Arc::new(SubcCatalog::new(fake.clone()));
     let hosts = Hosts {
+        transport: Arc::new(basal_module::unconfigured::UnconfiguredTransport),
         host: Arc::new(RoutingHost::new(
             Arc::new(ModuleOpsHost::new(fake.clone(), catalog.clone())),
             Arc::new(CoreHost::new(fake.clone())),

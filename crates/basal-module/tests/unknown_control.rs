@@ -228,6 +228,7 @@ async fn unknown_control_field_is_refused_and_the_following_health_check_is_answ
             }
         }),
         Box::new(|| basal_module::module::Hosts {
+            transport: Arc::new(basal_module::unconfigured::UnconfiguredTransport),
             host: Arc::new(basal_host::mock::MockHost::new()),
             catalog: Arc::new(basal_host::MockCatalog::standard()),
             consent: Arc::new(basal_host::MockConsent::new()),

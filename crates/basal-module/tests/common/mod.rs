@@ -51,6 +51,7 @@ pub fn scratch(tag: &str) -> PathBuf {
 
 pub struct Options {
     pub hosts: Option<Hosts>,
+    pub worker_binary: Option<PathBuf>,
     pub selector: Arc<dyn basal_host::selector::ModelSelector>,
     pub warm_spares: usize,
     pub max_concurrent: usize,
@@ -71,6 +72,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             hosts: None,
+            worker_binary: None,
             selector: Arc::new(basal_host::selector::FakeSelector::default()),
             warm_spares: 0,
             max_concurrent: 4,
@@ -100,7 +102,10 @@ impl Options {
 }
 
 pub fn pool_config(o: &Options) -> PoolConfig {
-    let mut pool = PoolConfig::new(worker_binary(), WorkerLaunch::Plain);
+    let mut pool = PoolConfig::new(
+        o.worker_binary.clone().unwrap_or_else(worker_binary),
+        WorkerLaunch::Plain,
+    );
     pool.warm_spares = o.warm_spares;
     pool.max_activations = o.max_activations;
     pool.idle_retire = o.idle_retire;
@@ -153,6 +158,7 @@ pub fn fixture_with_store(
     let module = Module::start_with_store(
         config,
         o.hosts.unwrap_or_else(|| Hosts {
+            transport: Arc::new(basal_module::unconfigured::UnconfiguredTransport),
             host: Arc::new(mock.clone()),
             catalog: Arc::new(catalog.clone()),
             consent: Arc::new(consent.clone()),

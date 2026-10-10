@@ -13336,3 +13336,184 @@ only = false
 file = "crates/basal-core/src/codemode/supervisor.rs"
 old = "interrupted(\"basal_restarted\", \"basal restarted before the run ended\")"
 new = "interrupted(\"worker_lost\", \"basal restarted before the run ended\") /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "s7-codemode-manifest-names"
+guards = "codemode operations are declared under their public names"
+test_file = "crates/basal-module/tests/codemode.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test codemode"
+expect_red = ["codemode_manifest_declares_core_only_operation_kinds"]
+only = true
+file = "crates/basal-module/src/manifest.rs"
+old = '"codemode.result",'
+new = '"codemode.missing", // NON-VACUITY BREAK'
+
+[[control]]
+id = "s7-codemode-manifest-kinds"
+guards = "codemode run is a mutation, result a query, and cancel a mutation"
+test_file = "crates/basal-module/tests/codemode.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test codemode"
+expect_red = ["codemode_manifest_declares_core_only_operation_kinds"]
+only = true
+file = "crates/basal-module/src/manifest.rs"
+old = '''"codemode.cancel",
+        ManagementOperationKind::Mutate,'''
+new = '''"codemode.cancel",
+        ManagementOperationKind::Query, // NON-VACUITY BREAK'''
+
+[[control]]
+id = "s7-codemode-manifest-core-only"
+guards = "each codemode operation's description declares core-only authority"
+test_file = "crates/basal-module/tests/codemode.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test codemode"
+expect_red = ["codemode_manifest_declares_core_only_operation_kinds"]
+only = true
+file = "crates/basal-module/src/manifest.rs"
+old = '"Admit a scoped JavaScript run and return its state; core only.",'
+new = '"Admit a scoped JavaScript run and return its state.", // NON-VACUITY BREAK'
+
+[[control]]
+id = "s7-codemode-core-callers"
+guards = "all three codemode handlers refuse every caller other than attested core"
+test_file = "crates/basal-module/tests/codemode.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test codemode"
+expect_red = ["codemode_ops_refuse_every_non_core_caller_before_decoding"]
+only = true
+file = "crates/basal-module/src/ops.rs"
+old = 'if *caller != Caller::Core {'
+new = 'if *caller == Caller::Local { // NON-VACUITY BREAK'
+
+[[control]]
+id = "s7-codemode-nonblocking-admission"
+guards = "codemode admission replies without waiting for a held provider"
+test_file = "crates/basal-module/tests/codemode.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test codemode"
+expect_red = ["codemode_run_returns_while_provider_is_held_and_other_ops_are_served"]
+only = false
+file = "crates/basal-module/src/codemode.rs"
+old = 'self.supervisor.start(*run, *start)?;'
+new = '''let id = run.run_id.clone(); // NON-VACUITY BREAK
+                        self.supervisor.start(*run, *start)?;
+                        while self.supervisor.result(&id)?.is_some_and(|v| v["status"] == "running") {
+                            std::thread::park_timeout(std::time::Duration::from_millis(10));
+                        }'''
+
+[[control]]
+id = "s7-codemode-unknown-run"
+guards = "missing codemode rows are refused unknown_run, including flow run ids"
+test_file = "crates/basal-module/tests/codemode.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test codemode"
+expect_red = ["codemode_cancel_unknown_terminal_and_running_and_hide_flow_ids"]
+only = true
+file = "crates/basal-module/src/codemode.rs"
+old = 'code: "unknown_run",'
+new = 'code: "not_found", // NON-VACUITY BREAK'
+
+[[control]]
+id = "s7-codemode-cancel-route"
+guards = "cancel invokes termination instead of returning a still-running snapshot"
+test_file = "crates/basal-module/tests/codemode.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test codemode"
+expect_red = ["codemode_cancel_unknown_terminal_and_running_and_hide_flow_ids"]
+only = true
+file = "crates/basal-module/src/codemode.rs"
+old = 'self.known(self.supervisor.cancel(&id)?, &id)'
+new = 'self.result(&id) // NON-VACUITY BREAK'
+
+[[control]]
+id = "s7-codemode-separate-pool"
+guards = "codemode execution cannot acquire a flow-pool worker or change flow PoolStats"
+test_file = "crates/basal-module/tests/codemode.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test codemode"
+expect_red = ["codemode_workers_are_separate_from_flow_pool_and_never_shared"]
+only = false
+file = "crates/basal-module/src/module.rs"
+old = '            codemode_pool.clone(),'
+new = '            pool.clone(), // NON-VACUITY BREAK'
+
+[[control]]
+id = "s7-codemode-single-use-lease"
+guards = "even an unused codemode lease is retired rather than cached for reuse"
+test_file = "crates/basal-module/tests/codemode.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test codemode"
+expect_red = ["codemode_pool_retires_even_an_unused_lease"]
+only = true
+file = "crates/basal-module/src/pool.rs"
+old = '(Binding::DryRun(_) | Binding::Codemode, false) => None,'
+new = '''(Binding::DryRun(_), false) => None,
+            (Binding::Codemode, false) => Some("codemode".into()), // NON-VACUITY BREAK'''
+
+[[control]]
+id = "s7-codemode-linux-address-space"
+guards = "a live Linux codemode worker has exactly the protocol's address-space cap"
+test_file = "crates/basal-module/tests/codemode.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test codemode"
+expect_red = ["codemode_linux_worker_address_space_equals_protocol_limit"]
+only = true
+file = "crates/basal-module/src/process.rs"
+old = '''rlim_cur: basal_proto::CODEMODE_ADDRESS_SPACE_BYTES as libc::rlim_t,
+                    rlim_max: basal_proto::CODEMODE_ADDRESS_SPACE_BYTES as libc::rlim_t,'''
+new = '''rlim_cur: (basal_proto::CODEMODE_ADDRESS_SPACE_BYTES + 4096) as libc::rlim_t, // NON-VACUITY BREAK
+                    rlim_max: (basal_proto::CODEMODE_ADDRESS_SPACE_BYTES + 4096) as libc::rlim_t,'''
+
+[[control]]
+id = "s7-codemode-macos-no-address-space-limit"
+hub = "The macOS-only limit prohibition also protects end-to-end codemode worker startup"
+hub_targets = ["codemode"]
+guards = "macOS codemode launches inherit limits rather than applying the Linux address-space cap"
+test_file = "crates/basal-module/src/process.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--lib"
+expect_red = ["process::codemode_limits::macos_codemode_leaves_address_space_limit_inherited"]
+only = true
+file = "crates/basal-module/src/process.rs"
+old = '''    #[cfg(target_os = "linux")]
+    if codemode {'''
+new = '''    #[cfg(any(target_os = "linux", target_os = "macos"))] // NON-VACUITY BREAK
+    if codemode {'''
+
+[[control]]
+id = "s7-codemode-shutdown-storage-failure"
+guards = "shutdown revokes a held codemode worker even when storage can no longer commit cancel"
+test_file = "crates/basal-module/tests/codemode.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test codemode"
+expect_red = ["codemode_shutdown_after_store_cut_revokes_a_held_worker"]
+only = true
+file = "crates/basal-module/src/module.rs"
+old = 'codemode_pool.kill_busy();'
+new = '// NON-VACUITY BREAK: leave outstanding workers alive'

@@ -664,6 +664,7 @@ fn module_drop_joins_activation_after_slot_release() {
             dry_run: DryRunConfig::new(path.parent().unwrap().join("dry")),
         },
         Hosts {
+            transport: Arc::new(crate::unconfigured::UnconfiguredTransport),
             host: Arc::new(MockHost::new()),
             catalog: Arc::new(MockCatalog::standard()),
             consent: consent.clone(),

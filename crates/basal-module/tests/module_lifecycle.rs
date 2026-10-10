@@ -60,6 +60,7 @@ fn startup_binds_the_model_store_before_host_recovery() {
         dry_run: DryRunConfig::new(dir.join("scratch")),
     };
     let hosts = Hosts {
+        transport: Arc::new(basal_module::unconfigured::UnconfiguredTransport),
         host: Arc::new(RecoverOnAttach(snapshots.clone())),
         catalog: Arc::new(MockCatalog::standard()),
         consent: Arc::new(MockConsent::new()),
@@ -114,6 +115,7 @@ fn failed_start_does_not_bind_or_retain_the_store() {
         dry_run: DryRunConfig::new(&scratch),
     };
     let hosts = Hosts {
+        transport: Arc::new(basal_module::unconfigured::UnconfiguredTransport),
         host: Arc::new(MockHost::new()),
         catalog: Arc::new(MockCatalog::standard()),
         consent: Arc::new(MockConsent::new()),

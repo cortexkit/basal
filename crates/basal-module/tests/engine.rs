@@ -128,6 +128,7 @@ fn the_unconfigured_host_refuses_every_dispatch_as_never_sent() {
             dry_run: DryRunConfig::new(dir.join("dry-run")),
         },
         Hosts {
+            transport: Arc::new(basal_module::unconfigured::UnconfiguredTransport),
             host: Arc::new(UnconfiguredHost::new()),
             // The mock catalog, so the flow can be installed at all.
             catalog: Arc::new(MockCatalog::standard()),

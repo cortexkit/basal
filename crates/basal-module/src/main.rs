@@ -183,6 +183,7 @@ fn serve() -> ExitCode {
                 selector,
             });
             Hosts {
+                transport: transport.clone(),
                 host: Arc::new(RoutingHost::new(
                     Arc::new(ModuleOpsHost::new(transport.clone(), catalog.clone())),
                     Arc::new(CoreHost::new(transport.clone())),

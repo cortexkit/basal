@@ -150,6 +150,7 @@ pub struct ProcessSpawner {
     launch: WorkerLaunch,
     timeout: Duration,
     landlock: LandlockPolicy,
+    codemode: bool,
 }
 
 impl ProcessSpawner {
@@ -159,17 +160,28 @@ impl ProcessSpawner {
             launch: config.worker_launch.clone(),
             timeout: config.handshake_timeout,
             landlock: config.landlock,
+            codemode: false,
+        }
+    }
+
+    /// Applies the flow worker's per-OS sandbox checks, plus the Linux
+    /// address-space cap for codemode. No address-space cap is set on macOS.
+    pub fn codemode(config: &PoolConfig) -> Self {
+        Self {
+            codemode: true,
+            ..Self::new(config)
         }
     }
 }
 
 impl Spawn for ProcessSpawner {
     fn spawn(&self) -> Result<WorkerProcess, SpawnError> {
-        let process = WorkerProcess::start_with_policy(
+        let process = WorkerProcess::start_for_profile(
             &self.binary,
             &self.launch,
             self.timeout,
             self.landlock,
+            self.codemode,
         )?;
         // A worker that could not sandbox itself would run flow code with
         // file and network access; it is refused, not used.
@@ -212,6 +224,8 @@ pub enum Binding {
     Flow(String),
     /// One dry-run activation, then retirement.
     DryRun(String),
+    /// One codemode run, never returned to a flow's idle list.
+    Codemode,
 }
 
 /// Where a handed-out worker came from.
@@ -656,6 +670,14 @@ impl Pool {
         self.shared.changed();
     }
 
+    /// Kills workers that could not have their run cancellation committed.
+    /// Recovery at the next startup records any unfinished run as interrupted.
+    pub(crate) fn kill_busy(&self) {
+        for busy in self.lock().busy.values() {
+            busy.killer.kill();
+        }
+    }
+
     /// Takes a lease back. A worker that was killed, died, served a dry run
     /// or reached its activation count is ended and replaced; any other goes
     /// back to its flow's idle list.
@@ -674,7 +696,7 @@ impl Pool {
         let crashed = crash_status.is_some();
         let keep = match (&lease.binding, lease.killed || crashed) {
             (_, true) => None,
-            (Binding::DryRun(_), false) => None,
+            (Binding::DryRun(_) | Binding::Codemode, false) => None,
             (Binding::Flow(_), false) if activations >= self.shared.config.max_activations => None,
             (Binding::Flow(flow), false) if !state.stopped => Some(flow.clone()),
             (Binding::Flow(_), false) => None,
