@@ -176,6 +176,59 @@ struct DecisionApplier {
 }
 
 impl DecisionSink for DecisionApplier {
+    fn decision_paths(&self) -> Result<Vec<basal_host::DecisionPath>, SinkError> {
+        self.rt
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .ok_or_else(|| SinkError("the module is stopped".into()))?
+            .decision_paths()
+            .map_err(|e| SinkError(e.to_string()))
+    }
+
+    fn has_open_cards_on(&self, path: &basal_host::DecisionPath) -> Result<bool, SinkError> {
+        self.rt
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .ok_or_else(|| SinkError("the module is stopped".into()))?
+            .has_open_cards_on(path)
+            .map_err(|e| SinkError(e.to_string()))
+    }
+
+    fn answer_cursor(&self, path: &basal_host::DecisionPath) -> Result<i64, SinkError> {
+        self.rt
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .ok_or_else(|| SinkError("the module is stopped".into()))?
+            .decision_answer_cursor(path)
+            .map_err(|e| SinkError(e.to_string()))
+    }
+
+    fn save_answer_cursor(
+        &self,
+        path: &basal_host::DecisionPath,
+        cursor: i64,
+    ) -> Result<(), SinkError> {
+        self.rt
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .ok_or_else(|| SinkError("the module is stopped".into()))?
+            .save_decision_answer_cursor(path, cursor)
+            .map_err(|e| SinkError(e.to_string()))
+    }
+
+    fn expire_on(&self, path: &basal_host::DecisionPath, id: &str) -> Result<(), SinkError> {
+        self.rt
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .ok_or_else(|| SinkError("the module is stopped".into()))?
+            .expire_decision_on(path, id)
+            .map_err(|e| SinkError(e.to_string()))
+    }
     fn has_open_cards(&self) -> Result<bool, SinkError> {
         let rt = self.rt.lock().unwrap_or_else(|p| p.into_inner());
         rt.as_ref()
@@ -233,11 +286,19 @@ impl DecisionSink for DecisionApplier {
     }
 
     fn answer(&self, answer: &DecisionAnswer) -> Result<(), SinkError> {
+        self.answer_on(&basal_host::DecisionPath::Legacy, answer)
+    }
+
+    fn answer_on(
+        &self,
+        path: &basal_host::DecisionPath,
+        answer: &DecisionAnswer,
+    ) -> Result<(), SinkError> {
         let rt = self.rt.lock().unwrap_or_else(|p| p.into_inner());
         let rt = rt
             .as_ref()
             .ok_or_else(|| SinkError("the module is stopped".into()))?;
-        match rt.answer_decision(answer) {
+        match rt.answer_decision_on(path, answer) {
             Ok(answered) => {
                 let what = match &answered {
                     Answered::Now(state) => state.as_str(),
@@ -254,7 +315,7 @@ impl DecisionSink for DecisionApplier {
                 Ok(())
             }
             Err(e) if is_storage(&e) => {
-                // The decision card's answer was not recorded: core keeps
+                // The decision card's answer was not recorded: its provider keeps
                 // it, since its page is not acknowledged, and delivers it
                 // again after the restart.
                 self.fatal

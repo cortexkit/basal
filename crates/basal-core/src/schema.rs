@@ -295,7 +295,35 @@ ALTER TABLE installs ADD COLUMN revoked_reason TEXT;
         version: 17,
         statements: GRANT_DECISIONS,
     },
+    Migration {
+        version: 18,
+        statements: DECISION_PATHS,
+    },
 ];
+
+const DECISION_PATHS: &str = r#"
+ALTER TABLE decision_cards ADD COLUMN consent_path TEXT;
+-- Existing intents may have reached core even when their replies were lost.
+-- Preserve that ownership; only newly inserted cards select from the catalog.
+UPDATE decision_cards SET consent_path = 'legacy';
+ALTER TABLE decision_withdrawals RENAME TO decision_withdrawals_legacy;
+CREATE TABLE decision_withdrawals (
+    consent_path TEXT NOT NULL,
+    elicitation_id TEXT NOT NULL,
+    PRIMARY KEY (consent_path, elicitation_id)
+);
+INSERT INTO decision_withdrawals SELECT 'legacy', elicitation_id FROM decision_withdrawals_legacy;
+DROP TABLE decision_withdrawals_legacy;
+CREATE TABLE decision_answer_cursors (
+    consent_path TEXT PRIMARY KEY,
+    cursor INTEGER NOT NULL CHECK (cursor >= 0)
+);
+CREATE TABLE decision_superseded_ids (
+    card_seq INTEGER NOT NULL REFERENCES decision_cards(seq) ON DELETE CASCADE,
+    elicitation_id TEXT NOT NULL,
+    PRIMARY KEY (card_seq, elicitation_id)
+);
+"#;
 
 // One row for each `fs.write` temporary file that may exist on disk. The row
 // is committed before the file is created and deleted once the file has been
@@ -951,6 +979,10 @@ mod package_tests;
 #[cfg(test)]
 #[path = "schema_health_tests.rs"]
 mod health_tests;
+
+#[cfg(test)]
+#[path = "schema_consent_tests.rs"]
+mod consent_tests;
 
 #[cfg(test)]
 #[path = "schema_retention_tests.rs"]

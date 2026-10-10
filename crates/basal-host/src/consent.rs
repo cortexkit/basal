@@ -145,7 +145,7 @@ impl DecisionContext {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecisionCard {
     /// The consent plane's deduplication key: raising a card under a key
-    /// whose card is still open updates that card instead of adding one.
+    /// whose card is still open refreshes or replaces that pending card.
     /// basal's own cards always carry one.
     pub dedup_key: Option<String>,
     pub flow_id: String,
@@ -156,12 +156,12 @@ pub struct DecisionCard {
     /// Lowercase hex digest of what is being decided.
     pub args_digest: Option<String>,
     pub options: Vec<DecisionOption>,
-    /// How long the card stays open before it expires to its default.
+    /// How long the card stays open. Expiry never applies a choice in basal.
     pub expires_in_ms: u64,
 }
 
 impl DecisionCard {
-    /// The option taken when nobody answers: the one that declines.
+    /// The fail-closed default shown by the consent plane: the one that declines.
     pub fn default_option(&self) -> Option<&DecisionOption> {
         self.options.iter().find(|o| o.decline)
     }
@@ -190,8 +190,8 @@ impl DecisionCard {
 /// An answer to a decision card, as the consent plane delivers it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecisionAnswer {
-    /// The grant-loss context (provider, reference, label and refusal time)
-    /// copied from core's answer, to reject answers to an older card body.
+    /// For grant_lost cards, the echoed provider, grant reference, label and
+    /// refusal time must match the current stored context, not an older refusal.
     pub grant_context: Option<DecisionContext>,
     pub elicitation_id: String,
     /// The option chosen; `None` when the card expired unanswered, which
@@ -204,6 +204,32 @@ pub struct DecisionAnswer {
     pub decision: DecisionKind,
     pub run_id: Option<String>,
     pub call_key: Option<String>,
+}
+
+/// The endpoint that owns a decision. Provider identity is retained even when
+/// the provider is temporarily absent from the daemon catalog.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DecisionPath {
+    Legacy,
+    Consent(String),
+}
+
+impl DecisionPath {
+    pub fn key(&self) -> String {
+        match self {
+            Self::Legacy => "legacy".into(),
+            Self::Consent(provider) => format!("consent:{provider}"),
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        if key == "legacy" {
+            return Some(Self::Legacy);
+        }
+        key.strip_prefix("consent:")
+            .filter(|p| !p.trim().is_empty())
+            .map(|p| Self::Consent(p.to_owned()))
+    }
 }
 
 /// The consent plane could not take the card.
@@ -247,6 +273,32 @@ pub trait DecisionSink: Send + Sync {
         Ok(true)
     }
 
+    fn decision_paths(&self) -> Result<Vec<DecisionPath>, SinkError> {
+        Ok(vec![DecisionPath::Legacy])
+    }
+
+    fn has_open_cards_on(&self, _path: &DecisionPath) -> Result<bool, SinkError> {
+        self.has_open_cards()
+    }
+
+    fn answer_cursor(&self, _path: &DecisionPath) -> Result<i64, SinkError> {
+        Ok(0)
+    }
+
+    fn save_answer_cursor(&self, _path: &DecisionPath, _cursor: i64) -> Result<(), SinkError> {
+        Ok(())
+    }
+
+    fn answer_on(&self, _path: &DecisionPath, answer: &DecisionAnswer) -> Result<(), SinkError> {
+        self.answer(answer)
+    }
+
+    /// After retention, the feed supplies only the settled card's id, not its
+    /// body or historical choice. Close that id on this path without an action.
+    fn expire_on(&self, _path: &DecisionPath, _id: &str) -> Result<(), SinkError> {
+        Err(SinkError("decision retention handling unavailable".into()))
+    }
+
     fn decide(&self, decision: &DecisionEvent) -> Result<(), SinkError>;
 
     /// Applies an answer to a decision card. An error means it was not
@@ -262,8 +314,41 @@ pub trait Consent: Send + Sync {
 
     /// Raises an operator decision card and returns the consent plane's id
     /// for it. Raising under a key whose card is still open updates that
-    /// card and returns its id.
+    /// card. An identical refresh keeps its id; changed content may return a
+    /// replacement id, which the runtime must retain.
     fn raise_decision(&self, card: &DecisionCard) -> Result<String, ConsentError>;
+
+    /// Select before sending so the runtime can persist ownership even if the
+    /// request's reply is lost. Retries never select another endpoint.
+    fn decision_path(&self) -> Result<DecisionPath, ConsentError> {
+        Ok(DecisionPath::Legacy)
+    }
+
+    fn raise_decision_on(
+        &self,
+        path: &DecisionPath,
+        card: &DecisionCard,
+    ) -> Result<String, ConsentError> {
+        if !matches!(path, DecisionPath::Legacy) {
+            return Err(ConsentError::Unavailable(
+                "this adapter cannot raise on the recorded consent path".into(),
+            ));
+        }
+        self.raise_decision(card)
+    }
+
+    fn withdraw_decision_on(
+        &self,
+        path: &DecisionPath,
+        elicitation_id: &str,
+    ) -> Result<(), ConsentError> {
+        if !matches!(path, DecisionPath::Legacy) {
+            return Err(ConsentError::Unavailable(
+                "this adapter cannot withdraw on the recorded consent path".into(),
+            ));
+        }
+        self.withdraw_decision(elicitation_id)
+    }
 
     fn withdraw_decision(&self, _elicitation_id: &str) -> Result<(), ConsentError> {
         Err(ConsentError::Unavailable(

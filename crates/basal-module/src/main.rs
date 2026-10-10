@@ -146,7 +146,7 @@ fn serve() -> ExitCode {
         }),
         Box::new(move || {
             use basal_host::{
-                core_consent::CoreConsent,
+                cingulate_consent::CingulateConsent,
                 core_host::CoreHost,
                 routing::{ModuleOpsHost, RoutingHost},
                 subc_catalog::SubcCatalog,
@@ -189,7 +189,7 @@ fn serve() -> ExitCode {
                     model_host,
                 )),
                 catalog,
-                consent: Arc::new(CoreConsent::new(transport).with_polling()),
+                consent: Arc::new(CingulateConsent::new(transport).with_polling()),
                 hooks: runtime_hooks(&store_path_cell),
             }
         }),
