@@ -5,7 +5,9 @@
 //! raw call in a fresh child, with readiness before the attempt; seccomp denial
 //! kills that child with SIGSYS. On macOS it tries to read a file, create a file,
 //! connect a TCP socket and execute a program, and prints one JSON line saying
-//! how each attempt went. Tests and the signing gate run the real binary.
+//! how each attempt went. On Windows one native operation runs per child, with
+//! a readiness marker before the attempt. Tests and the signing gate run the
+//! real binary.
 //!
 //! `--no-sandbox` skips confinement so the same attempts can be shown to
 //! succeed without it. It is accepted only in probe mode: the engine itself
@@ -16,23 +18,28 @@ mod linux;
 #[cfg(target_os = "linux")]
 pub use linux::run;
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+pub use windows::run;
+
+#[cfg(not(any(target_os = "linux", windows)))]
 use std::io::Write;
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 use std::net::{SocketAddr, TcpStream};
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 use std::time::Duration;
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 use crate::confinement;
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 struct Attempt {
     name: &'static str,
     result: Result<(), String>,
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 fn json_string(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 2);
     out.push('"');
@@ -50,7 +57,7 @@ fn json_string(text: &str) -> String {
 
 /// Runs the probe with the arguments after `--confinement-probe` and returns
 /// the process exit code.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 pub fn run(args: &[String]) -> u8 {
     let mut sandbox = true;
     let mut read = None;

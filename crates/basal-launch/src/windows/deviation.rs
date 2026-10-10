@@ -19,6 +19,10 @@ use super::launch::MITIGATION_POLICY;
 /// For a worker check, the parent's own checks expect the broken property, so
 /// the worker gets to start and must refuse by itself. For a parent check,
 /// the parent still expects the full recipe and must refuse before resume.
+#[cfg_attr(
+    not(feature = "deviations"),
+    doc = "```compile_fail\nuse basal_launch::Deviation;\nlet _ = Deviation::PlainWithoutHandleList;\n```"
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Deviation {
     /// The full confinement. The only variant in production builds.
@@ -33,6 +37,9 @@ pub enum Deviation {
     /// Positive control: no AppContainer at all.
     #[cfg(feature = "deviations")]
     Plain,
+    /// Plain positive control with all inheritable parent handles passed through.
+    #[cfg(feature = "deviations")]
+    PlainWithoutHandleList,
 
     /// Worker check `thread-token-present`. The parent cannot leave a thread
     /// token behind in a correctly built worker, so it asks the worker to
@@ -110,10 +117,11 @@ pub(crate) enum Shape {
 impl Deviation {
     /// Every variant, for tests that cover them all.
     #[cfg(feature = "deviations")]
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 18] = [
         Self::Full,
         Self::LpacOnly,
         Self::Plain,
+        Self::PlainWithoutHandleList,
         Self::ThreadTokenPresent,
         Self::IntegrityLowerFailed,
         Self::NotLpac,
@@ -139,6 +147,8 @@ impl Deviation {
             Self::LpacOnly => "lpac-only",
             #[cfg(feature = "deviations")]
             Self::Plain => "plain",
+            #[cfg(feature = "deviations")]
+            Self::PlainWithoutHandleList => "plain-without-handle-list",
             #[cfg(feature = "deviations")]
             Self::ThreadTokenPresent => "thread-token-present",
             #[cfg(feature = "deviations")]
@@ -222,7 +232,7 @@ impl Deviation {
         #[cfg(feature = "deviations")]
         match self {
             Self::LpacOnly => return Shape::LpacOnly,
-            Self::Plain => return Shape::Plain,
+            Self::Plain | Self::PlainWithoutHandleList => return Shape::Plain,
             _ => {}
         }
         Shape::Confined
@@ -295,7 +305,7 @@ impl Deviation {
     /// Whether the explicit inherited-handle list is passed.
     pub(crate) const fn restricts_inherited_handles(self) -> bool {
         #[cfg(feature = "deviations")]
-        if matches!(self, Self::HandleNotAllowed) {
+        if matches!(self, Self::HandleNotAllowed | Self::PlainWithoutHandleList) {
             return false;
         }
         true
@@ -384,7 +394,10 @@ mod tests {
                 + usize::from(deviation.parent_refusal().is_some());
             let control = matches!(
                 deviation,
-                Deviation::Full | Deviation::LpacOnly | Deviation::Plain
+                Deviation::Full
+                    | Deviation::LpacOnly
+                    | Deviation::Plain
+                    | Deviation::PlainWithoutHandleList
             );
             assert_eq!(checks, usize::from(!control), "{deviation}");
             if let Some(reason) = deviation.worker_reason() {
@@ -411,6 +424,21 @@ mod tests {
                 _ => 1,
             };
             assert_eq!(changed, expected, "{deviation}");
+        }
+    }
+
+    #[cfg(feature = "deviations")]
+    #[test]
+    fn dropped_handle_list_controls_change_only_the_handle_list() {
+        for (normal, dropped) in [
+            (Deviation::Full, Deviation::HandleNotAllowed),
+            (Deviation::Plain, Deviation::PlainWithoutHandleList),
+        ] {
+            assert_eq!(normal.shape(), dropped.shape());
+            let mut expected = knobs(normal);
+            assert_eq!(expected[7], 1);
+            expected[7] = 0;
+            assert_eq!(knobs(dropped), expected);
         }
     }
 
