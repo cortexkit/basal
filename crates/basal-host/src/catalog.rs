@@ -11,6 +11,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
+/// Read-only tool used by install validation and the event-body fetch that
+/// runs before an event-triggered script starts.
+pub const EVENT_BODY_OP: &str = "events_get";
+
 /// The marker a module declares on an op: whether it only reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpKind {

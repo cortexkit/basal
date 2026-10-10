@@ -408,18 +408,36 @@ impl Activation<'_> {
         if let Flow::Done { end, idle } = self.recover_calls()? {
             return Ok(done(end, idle));
         }
+        let trigger = match self
+            .rt
+            .event_preamble(&self.run, self.manifest.as_ref().expect("parsed manifest"))?
+        {
+            crate::events::Preamble::Ready(trigger) => trigger,
+            crate::events::Preamble::Retry => {
+                self.exit(Exit::Requeue { broken: false })?;
+                return Ok(done(ActivationEnd::Requeued, true));
+            }
+            crate::events::Preamble::Failed { kind, detail } => {
+                return self.fail(&kind, detail, true);
+            }
+        };
+        self.trigger = serde_json::from_str(trigger.as_str())
+            .map_err(|e| CoreError::Corrupt(e.to_string()))?;
         let prefix = self
             .rt
             .store()
             .read(|c| journal::prefix(c, &self.lease.run_id))?;
         self.next_position = prefix.len() as u64;
+        if self.run_deadline_passed() {
+            return self.fail("deadline", RUN_DEADLINE.into(), true);
+        }
         let request = ActivationRequest {
             activation_id: self.lease.generation,
             profile: Profile::Flow,
             tools: vec![],
             prelude_hash: self.worker.welcome().prelude_hash,
             script: self.run.script.clone(),
-            trigger: self.run.trigger.clone(),
+            trigger,
             self_input: self.run.self_input.clone(),
             budgets: self.rt.config.budgets,
             prefix,

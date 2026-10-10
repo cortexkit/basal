@@ -241,7 +241,11 @@ impl Runtime {
         let config = &self.config.retention;
         let runs = self.prune(now, millis(config.runs))?;
         let history_full = self.prune_history(now, now.saturating_sub(millis(config.history)))?;
-        let backlog = runs.pruned.len() == BATCH || history_full;
+        let events_full = self
+            .store()
+            .write(|tx| crate::events::prune_receipts(tx, now))?
+            == BATCH;
+        let backlog = runs.pruned.len() == BATCH || history_full || events_full;
         let interval = if backlog {
             config.interval.min(Duration::from_secs(1))
         } else {

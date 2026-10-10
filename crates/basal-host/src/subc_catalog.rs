@@ -1,9 +1,35 @@
 //! Daemon declarations are read on demand so revocations do not linger in a cache.
 use crate::transport::{Transport, WireError};
-use crate::{Catalog, EventDecl, OpDecl, OpKind};
+use crate::{Catalog, EventBody, EventDecl, EventOrigin, OpDecl, OpKind};
 use serde_json::{Value, json};
 use std::sync::Arc;
-use subc_protocol::manifest::{ExecutionMode, ManagementOperationKind, ProviderRole};
+use subc_protocol::manifest::{
+    EventDeclaration, ExecutionMode, ManagementOperationKind, ProviderRole,
+};
+
+/// Convert the publisher's manifest declarations, not inferred subject names.
+/// Notices contain no event body; the read-only `events_get` tool supplies
+/// that body under the receiving flow's own daemon scope, before script startup.
+pub fn declared_event(events: &[EventDeclaration], name: &str, version: u32) -> Option<EventDecl> {
+    events
+        .iter()
+        .find(|e| e.name == name && e.version == version)
+        .map(|_| EventDecl {
+            // The declaration has no provenance marker. Treat all publisher text
+            // as external rather than granting trust the publisher did not declare.
+            origin: EventOrigin::External,
+            body: EventBody::Resolved {
+                resolve_op: crate::catalog::EVENT_BODY_OP.into(),
+            },
+        })
+}
+
+/// Adapter pending the daemon catalog release that carries EventDeclaration.
+/// The current catalog has no authoritative event field: fail closed until
+/// that field ships, rather than treating roles or subject names as declarations.
+fn catalog_event_declarations(_entry: &Value) -> Option<Vec<EventDeclaration>> {
+    None
+}
 
 pub const CORE: &str = "prefrontal-core";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -192,8 +218,13 @@ impl Catalog for SubcCatalog {
             })
             .unwrap_or(false)
     }
-    fn event(&self, _: &str, _: &str, _: u32) -> Option<EventDecl> {
-        None
+    fn event(&self, module: &str, name: &str, version: u32) -> Option<EventDecl> {
+        let catalog = self.transport.catalog().ok()?;
+        let entry = catalog["modules"]
+            .as_array()?
+            .iter()
+            .find(|e| e["module_id"] == module)?;
+        declared_event(&catalog_event_declarations(entry)?, name, version)
     }
     fn op(&self, module: &str, op: &str) -> Option<OpDecl> {
         self.resolve(module, op)
@@ -206,5 +237,27 @@ impl Catalog for SubcCatalog {
     }
     fn agent_id(&self, agent: &str) -> Option<String> {
         self.resolve_agent(agent).ok().flatten()
+    }
+}
+
+#[cfg(test)]
+mod event_tests {
+    use super::*;
+
+    #[test]
+    fn catalog_event_lookup_requires_the_declared_name_and_version() {
+        let events =
+            vec![EventDeclaration::new("github_pr_changed", 1).with_headers(vec!["repo".into()])];
+        let declaration = declared_event(&events, "github_pr_changed", 1).expect("declared event");
+        assert_eq!(
+            declaration.body,
+            EventBody::Resolved {
+                resolve_op: crate::catalog::EVENT_BODY_OP.into()
+            }
+        );
+        assert_eq!(declaration.origin, EventOrigin::External);
+        assert!(declared_event(&events, "github_issue_changed", 1).is_none());
+        assert!(declared_event(&events, "github_pr_changed", 2).is_none());
+        assert!(declared_event(&[], "github_pr_changed", 1).is_none());
     }
 }

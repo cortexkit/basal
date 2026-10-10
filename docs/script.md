@@ -8,6 +8,44 @@ parent process, and journals it there. This note documents the digest item
 shape, then two behaviours of the script runtime that are deliberate limits,
 not guarantees.
 
+## Module-event triggers
+
+An event-triggered script receives `trigger` in this shape:
+
+```json
+{
+  "event": {
+    "module": "plexus",
+    "name": "github_pr_changed",
+    "version": 1,
+    "event_key": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "headers": { "kind": "github_pr_changed", "repo": "owner/repo", "pr": "42" },
+    "body": { "action": "opened" }
+  }
+}
+```
+
+Before sending any script to the worker, basal calls the source's `events_get`
+query on **that flow's scoped route**, with `{event_key, event_name}`. It hashes
+the exact UTF-8 bytes of the returned body string with SHA-256 and requires
+that hash and the reply's bare lowercase-hex digest to equal the notice's
+digest. Only a notice's `sha256:` prefix is normalized; uppercase and other
+spellings are refused. The verified body bytes are journaled before the body
+is parsed as JSON and passed to the script. Replay reads those bytes and
+never calls the source again.
+
+An invisible or unknown body fails the run as `event_not_visible`; changed
+bytes or inconsistent digests fail it as `event_body_mismatch`. Other source
+refusals retain their code as the failure kind. An unavailable source defers
+the preamble with durable exponential backoff until the run's deadline. No
+script instruction runs before a body has been verified.
+
+For a capture-mode dry run, supply the complete synthetic `{event: {...}}`
+value above as the `flow.dry_run` request's `trigger`. The supplied `body` is
+already a JSON value, not stored text; it is delivered without a live body
+lookup or any other live call. Header labels are context for script logic,
+not authority, and manifest header filters remain a follow-up.
+
 ## Digest items
 
 `sink.digest(agent, item, action)` delivers `item` to the agent's digest

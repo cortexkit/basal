@@ -67,6 +67,9 @@ pub struct LastRun {
 /// an operator.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FlowHealth {
+    pub skipped_before_install: u64,
+    pub event_backlog: u64,
+    pub event_overflow: u64,
     pub grant_losses: Vec<crate::grant_loss::GrantLoss>,
     pub agent_retirement: Option<serde_json::Value>,
     pub waiting_reason: Option<String>,
@@ -199,6 +202,27 @@ pub fn flow_health(conn: &Connection, now_ms: i64) -> Result<Vec<FlowHealth>> {
             )?,
         };
         flows.push(FlowHealth {
+            skipped_before_install: conn
+                .query_row(
+                    "SELECT skipped_before_install FROM event_flow_health WHERE flow_id=?1",
+                    [&flow_id],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .unwrap_or(0),
+            event_backlog: conn.query_row(
+                "SELECT COUNT(*) FROM event_receipts WHERE flow_id=?1 AND state='backlog'",
+                [&flow_id],
+                |r| r.get(0),
+            )?,
+            event_overflow: conn
+                .query_row(
+                    "SELECT overflow FROM event_flow_health WHERE flow_id=?1",
+                    [&flow_id],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .unwrap_or(0),
             grant_losses: crate::grant_loss::losses(conn, Some(&flow_id))?
                 .into_iter()
                 .filter(|g| matches!(g.state.as_str(), "polling" | "stopped"))

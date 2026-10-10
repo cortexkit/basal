@@ -62,6 +62,10 @@ pub enum InstallError {
         module: String,
         op: String,
     },
+    EventBodyOpNotGranted {
+        module: String,
+        op: String,
+    },
     UnknownOp {
         module: String,
         op: String,
@@ -225,6 +229,12 @@ pub(crate) fn validate_inner(
                 let kind = catalog.op(&e.module, resolve_op).and_then(|d| d.kind);
                 if kind != Some(OpKind::Query) {
                     return Err(InstallError::ResolveOpNotQuery {
+                        module: e.module.clone(),
+                        op: resolve_op.clone(),
+                    });
+                }
+                if !manifest.lists_op(&e.module, resolve_op) {
+                    return Err(InstallError::EventBodyOpNotGranted {
                         module: e.module.clone(),
                         op: resolve_op.clone(),
                     });
@@ -500,8 +510,8 @@ fn approve_using_catalog(
     }
     crate::grant_loss::clear(tx, flow_id, now_ms)?;
     tx.execute(
-        "UPDATE flows SET approved_version = ?2, owner = ?3 WHERE flow_id = ?1",
-        params![flow_id, version_i64(version), author],
+        "UPDATE flows SET approved_version = ?2, owner = ?3, first_approved_at = COALESCE(first_approved_at, ?4) WHERE flow_id = ?1",
+        params![flow_id, version_i64(version), author, now_ms],
     )?;
     let approval = schedule_approved(tx, flow_id, version, now_ms, schedule)?;
     // When core revokes the approved version (see `revoke`), it disables the

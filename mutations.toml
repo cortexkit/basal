@@ -542,8 +542,8 @@ build_timeout_s = 3600
 timeout_s = 600
 edits = [
   { file = "crates/basal-worker/Cargo.toml", old = "rquickjs.workspace = true\n", new = "rquickjs.workspace = true\nsubc-protocol = \"0.24.1\" # NON-VACUITY BREAK\n" },
-  { file = "Cargo.lock", old = " \"rusqlite\",\n \"serde\",\n \"serde_json\",\n \"subc-protocol\",\n \"tracing\",\n", new = " \"rusqlite\",\n \"serde\",\n \"serde_json\",\n \"subc-protocol 0.30.0\",\n \"tracing\",\n" },
-  { file = "Cargo.lock", old = " \"subc-client-rs\",\n \"subc-protocol\",\n \"subc-transport\",\n \"tokio\",\n \"tracing\",\n \"webpki-roots\",\n", new = " \"subc-client-rs\",\n \"subc-protocol 0.30.0\",\n \"subc-transport\",\n \"tokio\",\n \"tracing\",\n \"webpki-roots\",\n" },
+  { file = "Cargo.lock", old = " \"rusqlite\",\n \"serde\",\n \"serde_json\",\n \"sha2\",\n \"subc-protocol\",\n \"tracing\",\n", new = " \"rusqlite\",\n \"serde\",\n \"serde_json\",\n \"sha2\",\n \"subc-protocol 0.30.0\",\n \"tracing\",\n" },
+  { file = "Cargo.lock", old = " \"subc-client-rs\",\n \"subc-protocol\",\n \"subc-transport\",\n \"tokio\",\n \"tracing\",\n \"webpki-roots 1.0.9\",\n", new = " \"subc-client-rs\",\n \"subc-protocol 0.30.0\",\n \"subc-transport\",\n \"tokio\",\n \"tracing\",\n \"webpki-roots 1.0.9\",\n" },
   { file = "Cargo.lock", old = " \"serde\",\n \"serde_json\",\n \"sha2\",\n \"subc-client-rs\",\n \"subc-os\",\n \"subc-protocol\",\n \"subc-transport\",\n \"tokio\",\n \"tracing\",\n", new = " \"serde\",\n \"serde_json\",\n \"sha2\",\n \"subc-client-rs\",\n \"subc-os\",\n \"subc-protocol 0.30.0\",\n \"subc-transport\",\n \"tokio\",\n \"tracing\",\n" },
   { file = "Cargo.lock", old = " \"rcgen\",\n \"rusqlite\",\n \"rustls\",\n \"serde_json\",\n \"subc-protocol\",\n", new = " \"rcgen\",\n \"rusqlite\",\n \"rustls\",\n \"serde_json\",\n \"subc-protocol 0.30.0\",\n" },
   { file = "Cargo.lock", old = " \"rusqlite\",\n \"serde_json\",\n \"sha2\",\n \"subc-client-rs\",\n \"subc-protocol\",\n \"tokio\",\n]\n", new = " \"rusqlite\",\n \"serde_json\",\n \"sha2\",\n \"subc-client-rs\",\n \"subc-protocol 0.30.0\",\n \"tokio\",\n]\n" },
@@ -3828,8 +3828,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-module/src/ops.rs"
-old = "\"overflowed\": false,"
-new = "\"overflow\": false,"
+old = "\"overflowed\": f.event_overflow > 0,"
+new = "\"overflow\": f.event_overflow > 0,"
 
 [[control]]
 id = "health-s-auto-disabled-is-null-when-false"
@@ -5643,7 +5643,7 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/subc_catalog.rs"
-old = "fn event(&self, _: &str, _: &str, _: u32) -> Option<EventDecl> {\n        None\n    }"
+old = "fn event(&self, module: &str, name: &str, version: u32) -> Option<EventDecl> {\n        let catalog = self.transport.catalog().ok()?;\n        let entry = catalog[\"modules\"]\n            .as_array()?\n            .iter()\n            .find(|e| e[\"module_id\"] == module)?;\n        declared_event(&catalog_event_declarations(entry)?, name, version)\n    }"
 new = "fn event(&self, _: &str, _: &str, _: u32) -> Option<EventDecl> { Some(EventDecl { origin: crate::EventOrigin::Internal, body: crate::EventBody::Inline }) }"
 
 [[control]]
@@ -9424,8 +9424,8 @@ build_timeout_s = 7200
 id = "retention-full-batches-catch-up"
 guards = "Full retention batches prompt another bounded pass rather than impose an hourly throughput ceiling"
 file = "crates/basal-core/src/retention.rs"
-old = "let backlog = runs.pruned.len() == BATCH || history_full;"
-new = "let backlog = false && (runs.pruned.len() == BATCH || history_full); // NON-VACUITY BREAK"
+old = "let backlog = runs.pruned.len() == BATCH || history_full || events_full;"
+new = "let backlog = false && (runs.pruned.len() == BATCH || history_full || events_full); // NON-VACUITY BREAK"
 edits = []
 test_file = "crates/basal-core/tests/retention_backlog.rs"
 runner = "cargo"
@@ -9441,8 +9441,8 @@ build_timeout_s = 3600
 id = "retention-history-only-backlogs-catch-up"
 guards = "A full history batch schedules catch-up even when there are no terminal runs to prune"
 file = "crates/basal-core/src/retention.rs"
-old = "let backlog = runs.pruned.len() == BATCH || history_full;"
-new = "let backlog = runs.pruned.len() == BATCH || false; // NON-VACUITY BREAK"
+old = "let backlog = runs.pruned.len() == BATCH || history_full || events_full;"
+new = "let backlog = runs.pruned.len() == BATCH || false || events_full; // NON-VACUITY BREAK"
 edits = []
 test_file = "crates/basal-core/tests/retention_backlog.rs"
 runner = "cargo"
@@ -14734,3 +14734,342 @@ expect_red = ["codemode::supervisor::tests::models::both_model_tools_refuse_inva
 only = false
 build_timeout_s = 3600
 timeout_s = 600
+
+# Module events: portable proofs run on Linux, including the real JetStream fixture.
+[[control]]
+id = "event-backlog-bound-removed"
+guards = "event backlog is bounded with durable overflow health"
+test_file = "crates/basal-core/src/events_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["events::tests::backlog_is_bounded_overflow_is_reported_and_oldest_runs_first"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/events.rs"
+old = "if queued < BACKLOG_BOUND {"
+new = "if true { // NON-VACUITY BREAK"
+
+[[control]]
+id = "event-receipt-dedup-removed"
+guards = "redelivered queued or refused notices do not consume another backlog slot"
+test_file = "crates/basal-core/src/events_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["events::tests::backlog_is_bounded_overflow_is_reported_and_oldest_runs_first"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/events.rs"
+old = "if known {"
+new = "if known && false { // NON-VACUITY BREAK"
+
+[[control]]
+id = "event-key-omits-subject"
+guards = "event dedup keys distinguish equal keys on different subjects"
+test_file = "crates/basal-core/src/events_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["events::tests::same_key_on_different_subjects_is_not_a_duplicate"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/events.rs"
+old = 'format!("event:{}:{}", self.subject, self.event_key)'
+new = 'format!("event:{}", self.event_key) // NON-VACUITY BREAK'
+
+[[control]]
+id = "event-receipt-retention-removed"
+guards = "event receipts survive seven days plus retention sweep slack"
+test_file = "crates/basal-core/src/events_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["events::tests::receipts_keep_eight_days_and_prune_by_index_with_tombstone_dedup"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/events.rs"
+old = "pub const RECEIPT_RETENTION_MS: i64 = 8 * 24 * 60 * 60 * 1000;"
+new = "pub const RECEIPT_RETENTION_MS: i64 = 0; // NON-VACUITY BREAK"
+
+[[control]]
+id = "event-body-hash-check-removed"
+guards = "event body bytes are hashed independently of the source digest"
+test_file = "crates/basal-core/src/events_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["events::tests::body_bytes_are_hashed_independently"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/events.rs"
+old = "if hash != expected || supplied != expected {"
+new = "if supplied != expected { // NON-VACUITY BREAK"
+
+[[control]]
+id = "event-reply-digest-check-removed"
+guards = "event source reply digest must match the notice digest"
+test_file = "crates/basal-core/src/events_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["events::tests::reply_digest_must_match_notice"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/events.rs"
+old = "if hash != expected || supplied != expected {"
+new = "if hash != expected { // NON-VACUITY BREAK"
+
+[[control]]
+id = "event-notice-digest-check-removed"
+guards = "event notice digest is the independent authority for both body and reply"
+test_file = "crates/basal-core/src/events_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["events::tests::notice_digest_must_match_body"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/events.rs"
+old = 'let expected = digest_hex(&notice.digest).ok_or("event_body_mismatch")?;'
+new = 'let expected = supplied; // NON-VACUITY BREAK'
+
+[[control]]
+id = "event-replay-fetches-live"
+guards = "event body replay uses journaled bytes without another live call"
+test_file = "crates/basal-core/src/events_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["events::tests::body_is_journaled_before_script_and_replay_never_calls_live"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/events.rs"
+old = "if let Some((Some(body), _, _)) = &saved {"
+new = "if let Some((Some(body), _, _)) = &None::<(Option<Vec<u8>>, i64, Option<i64>)> { // NON-VACUITY BREAK"
+
+[[control]]
+id = "event-refusal-code-lost"
+guards = "each event body refusal preserves its typed terminal failure"
+test_file = "crates/basal-core/src/events_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["events::tests::each_events_get_refusal_preserves_its_failure_kind"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/events.rs"
+old = "kind: code.into(),"
+new = 'kind: "events_get_refused".into(), // NON-VACUITY BREAK'
+
+[[control]]
+id = "event-deferred-run-starts-early"
+guards = "unavailable event bodies respect durable retry backoff"
+test_file = "crates/basal-core/src/events_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["events::tests::unavailable_body_is_deferred_with_backoff_until_deadline"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/runtime.rs"
+old = "runs.retain(|(run_id, _)| !waiting.contains(run_id));"
+new = "runs.retain(|(run_id, _)| true || !waiting.contains(run_id)); // NON-VACUITY BREAK"
+
+[[control]]
+id = "event-late-body-admitted"
+guards = "a body returned at the run deadline never starts a script"
+test_file = "crates/basal-core/src/events_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["events::tests::body_returning_after_deadline_is_not_delivered_to_script"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/events.rs"
+old = ".is_some_and(|deadline| self.config.clock.now_ms() >= deadline)"
+new = ".is_some_and(|deadline| self.config.clock.now_ms() > deadline) // NON-VACUITY BREAK"
+
+[[control]]
+id = "event-catalog-name-check-removed"
+guards = "catalog event lookup needs the declared name and version"
+test_file = "crates/basal-host/src/subc_catalog.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["subc_catalog::event_tests::catalog_event_lookup_requires_the_declared_name_and_version"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/subc_catalog.rs"
+old = ".find(|e| e.name == name && e.version == version)"
+new = ".find(|e| e.version == version) // NON-VACUITY BREAK"
+
+[[control]]
+id = "event-resolver-grant-check-removed"
+guards = "install requires a manifest grant for the event body resolver"
+test_file = "crates/basal-core/src/events_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["events::tests::event_body_resolver_must_be_granted"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/install.rs"
+old = "if !manifest.lists_op(&e.module, resolve_op) {"
+new = "if false && !manifest.lists_op(&e.module, resolve_op) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "event-resolver-query-check-removed"
+guards = "install refuses a mutating event body resolver"
+test_file = "crates/basal-core/src/events_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["events::tests::event_body_resolver_must_be_query"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/install.rs"
+old = "if kind != Some(OpKind::Query) {"
+new = "if false && kind != Some(OpKind::Query) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "event-no-match-ack-removed"
+guards = "a notice no flow wants is acknowledged without a row"
+test_file = "crates/basal-module/tests/module_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test module_events"
+expect_red = ["no_match_is_acked_without_any_store_row"]
+select = "expected"
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/events.rs"
+old = "if acknowledge {"
+new = "if acknowledge && false { // NON-VACUITY BREAK"
+
+[[control]]
+id = "event-ack-precedes-commit"
+guards = "fanout commits atomically before any final acknowledgment"
+test_file = "crates/basal-module/tests/module_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test module_events"
+expect_red = ["per_flow_fanout_rolls_back_before_ack_on_commit_failure"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/events.rs"
+old = "let mut commit = tokio::task::spawn_blocking(move || rt.admit_events(&notices));"
+new = '''// NON-VACUITY BREAK: settle before the durable fan-out.
+    if acknowledge { for message in messages { message.double_ack().await.map_err(|e| e.to_string())?; } }
+    let mut commit = tokio::task::spawn_blocking(move || rt.admit_events(&notices));'''
+
+[[control]]
+id = "event-slow-commit-progress-removed"
+guards = "slow event commits send in-progress acknowledgments before redelivery"
+test_file = "crates/basal-module/tests/module_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test module_events"
+expect_red = ["slow_commit_sends_progress_before_ack_wait_expires"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/events.rs"
+old = "for message in messages { message.ack_with(jetstream::AckKind::Progress).await.map_err(|e| e.to_string())?; }"
+new = "for message in &messages[..0] { message.ack_with(jetstream::AckKind::Progress).await.map_err(|e| e.to_string())?; } // NON-VACUITY BREAK"
+
+[[control]]
+id = "event-verified-trigger-not-forwarded"
+guards = "the real worker receives the verified event body before running the script"
+test_file = "crates/basal-module/tests/event_preamble.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test event_preamble"
+expect_red = ["worker_preamble_supplies_verified_json_and_synthetic_capture_calls_nothing_live"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "crate::events::Preamble::Ready(trigger) => trigger,"
+new = "crate::events::Preamble::Ready(_trigger) => self.run.trigger.clone(), // NON-VACUITY BREAK"
+
+[[control]]
+id = "event-before-first-approval-cutoff-removed"
+guards = "retained notices older than the flow's first approval are acked without a run"
+test_file = "crates/basal-module/tests/module_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test module_events"
+expect_red = ["notices_before_first_approval_are_acked_and_reported"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/events.rs"
+old = "if first_approved.is_some_and(|first| notice.published_at_ms >= first) {"
+new = "if true { // NON-VACUITY BREAK"
+
+[[control]]
+id = "event-upgrade-moves-first-approval-cutoff"
+guards = "upgrades retain the first approval time so intervening events are not lost"
+test_file = "crates/basal-module/tests/module_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test module_events"
+expect_red = ["newer_version_keeps_first_approval_cutoff"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/install.rs"
+old = "first_approved_at = COALESCE(first_approved_at, ?4)"
+new = "first_approved_at = ?4 /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "event-publish-time-trusts-header"
+guards = "event admission uses JetStream publish metadata rather than a forged publisher header"
+test_file = "crates/basal-module/tests/module_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test module_events"
+expect_red = ["notices_before_first_approval_are_acked_and_reported"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/events.rs"
+old = "        published_at_ms,"
+new = '        published_at_ms: get("published_at_ms").ok().and_then(|v| v.parse().ok()).unwrap_or(published_at_ms), // NON-VACUITY BREAK'

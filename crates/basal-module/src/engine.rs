@@ -263,6 +263,7 @@ impl Engine {
             why
         };
         inner.rt.poll_lost_grants().map_err(fatal)?;
+        inner.rt.drain_event_backlog().map_err(fatal)?;
         let tick = inner.scheduler.tick().map_err(fatal)?;
         let admitted: Vec<String> = tick.new_runs().into_iter().map(str::to_owned).collect();
         let expired = inner.rt.enforce_deadlines().map_err(fatal)?;
