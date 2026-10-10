@@ -6753,19 +6753,39 @@ new = ".management_for_flow(&request.flow_id, \"prefrontal-routing\", \"route.se
 
 [[control]]
 id = "flow-no-selector-is-deferred"
-guards = "no_flow_scope cannot be represented as deferred state"
+guards = "no_flow_scope cannot be represented as deferred state in the current schema"
 test_file = "crates/basal-core/src/schema_flow_deferral_tests.rs"
 runner = "cargo"
 package = "basal-core"
 platforms = ["linux"]
 target = "--lib"
-expect_red = ["schema::flow_deferral_tests::deferred_state_requires_closed_typed_refusal_and_retry_metadata"]
-only = false
+expect_red = ["schema::flow_deferral_tests::current_store_refuses_a_deferred_call_with_a_refusal_outside_the_closed_set"]
+only = true
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/schema.rs"
-old = "'scope_unsupported', 'resource_busy', 'consent_unavailable'))"
-new = "'scope_unsupported', 'resource_busy', 'consent_unavailable', 'no_flow_scope')) /* NON-VACUITY BREAK */"
+# Migration 16 (grant losses) is the last migration to rebuild the journal
+# table, so its refusal list is the one the current schema enforces. The list
+# migration 9 created is replaced by it.
+old = "'module_grant_absent','agent_grant_absent')),"
+new = "'module_grant_absent','agent_grant_absent','no_flow_scope')), /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "journal-refusal-check-accepts-an-unlisted-refusal"
+guards = "the current schema refuses a deferred call whose refusal code is outside the closed set"
+test_file = "crates/basal-core/src/schema_flow_deferral_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["schema::flow_deferral_tests::current_store_refuses_a_deferred_call_with_a_refusal_outside_the_closed_set"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/schema.rs"
+# Widens the refusal list of migration 16, the governing journal definition.
+old = "'module_grant_absent','agent_grant_absent')),"
+new = "'module_grant_absent','agent_grant_absent','new_reason')), /* NON-VACUITY BREAK */"
 
 [[control]]
 id = "flow-target-readiness-preflight-is-disabled"

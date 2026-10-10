@@ -156,3 +156,49 @@ fn grant_decision_migration_preserves_existing_cards_and_named_indexes() {
         0
     );
 }
+
+/// A store opened the normal way, through every migration, carries the
+/// journal table migration 16 last rebuilt. Its refusal list, not the list an
+/// earlier migration created, decides which refusals a deferred call may hold.
+#[test]
+fn current_store_refuses_a_deferred_call_with_a_refusal_outside_the_closed_set() {
+    use crate::store::{Durability, Store};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "basal-current-refusal-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::SeqCst)
+    ));
+    let store = Store::open(dir.join("core.db"), Durability { fullfsync: false }).unwrap();
+    store
+        .write(|tx| {
+            tx.execute_batch("INSERT INTO flows (flow_id,created_at) VALUES ('f',1); INSERT INTO runs (run_id,flow_id,trigger_id,attempt,trigger,script,manifest,code_hash,state,admitted_at) VALUES ('r','f','t',1,'{}','return 1','{}',zeroblob(32),'pending',1)")?;
+            Ok(())
+        })
+        .unwrap();
+    let defer = |position: i64, refusal: &str| {
+        store.write(|tx| {
+            Ok(tx.execute(
+                "INSERT INTO journal (run_id,position,kind_code,args,args_digest,idempotency_key,class,dispatch,issued_generation,refusal,retry_not_before,refusal_detail) VALUES ('r',?1,1,'{}',zeroblob(32),?2,'query','deferred',1,?3,250,json_object('reason',?3,'provider','mock','action','send'))",
+                rusqlite::params![position, format!("key:{position}"), refusal],
+            ))
+        })
+        .unwrap()
+    };
+    // A refusal from the closed set is accepted, so the rejections below
+    // come from the refusal list rather than from some other constraint.
+    defer(0, "scope_ended").expect("a deferred call with a listed refusal");
+    // An unlisted code, and the two flow refusals that settle a call as
+    // refused rather than deferring it.
+    for refusal in ["new_reason", "no_flow_scope", "target_flow_unsupported"] {
+        let error = defer(1, refusal).expect_err(refusal).to_string();
+        assert!(
+            error.contains("CHECK constraint failed"),
+            "{refusal}: {error}"
+        );
+    }
+    drop(store);
+    let _ = std::fs::remove_dir_all(dir);
+}
