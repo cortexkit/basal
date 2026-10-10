@@ -13292,3 +13292,47 @@ only = false
 file = "crates/basal-core/src/codemode/supervisor.rs"
 old = "BudgetKind::JsTime => Budget::JsCpu,"
 new = "BudgetKind::JsTime => Budget::Wall, // NON-VACUITY BREAK"
+
+# Codemode startup interrupts durable runs that were still running before
+# making operations available.
+[[control]]
+id = "s6-codemode-recover-before-serving"
+guards = "a constructed codemode supervisor has already interrupted every running row"
+test_file = "crates/basal-core/src/codemode/restart_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::restart::construction_recovers_every_running_row_before_returning"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "supervisor.recover()?;"
+new = "if false { supervisor.recover()?; } // NON-VACUITY BREAK"
+
+[[control]]
+id = "s6-codemode-recovery-failure-stops-startup"
+guards = "failed codemode settlement prevents a supervisor from being exposed"
+test_file = "crates/basal-core/src/codemode/restart_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::restart::construction_refuses_to_serve_when_recovery_cannot_settle"]
+only = true
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "supervisor.recover()?;"
+new = "let _ = supervisor.recover(); // NON-VACUITY BREAK"
+
+[[control]]
+id = "s6-codemode-restart-terminal-reason"
+guards = "a crash is interrupted with basal_restarted rather than a worker failure or cancel"
+test_file = "crates/basal-core/src/codemode/restart_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::supervisor::tests::restart::crash_after_query_send_is_unknown_and_provider_sees_one_attempt"]
+only = false
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "interrupted(\"basal_restarted\", \"basal restarted before the run ended\")"
+new = "interrupted(\"worker_lost\", \"basal restarted before the run ended\") /* NON-VACUITY BREAK */"

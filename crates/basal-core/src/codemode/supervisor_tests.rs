@@ -26,6 +26,8 @@ struct Attempt {
     reply: mpsc::SyncSender<std::result::Result<Value, WireError>>,
 }
 
+type Provider = dyn Fn(&str, Value, &str) -> std::result::Result<Value, WireError> + Send + Sync;
+
 struct FakeTransport {
     attempts: mpsc::Sender<Attempt>,
     events: Arc<Mutex<Vec<String>>>,
@@ -34,6 +36,7 @@ struct FakeTransport {
     readiness: Mutex<Option<FlowRefusal>>,
     readiness_clock: Mutex<Option<(Clock, i64)>>,
     store: Arc<Store>,
+    provider: Mutex<Option<Arc<Provider>>>,
 }
 
 impl Transport for FakeTransport {
@@ -105,6 +108,10 @@ impl Transport for FakeTransport {
             running,
             "durable intent and entry must precede provider send"
         );
+        let provider = self.provider.lock().unwrap().clone();
+        if let Some(provider) = provider {
+            return provider(flow, input, key);
+        }
         let (tx, rx) = mpsc::sync_channel(1);
         self.events.lock().unwrap().push("send".into());
         self.attempts
@@ -191,6 +198,12 @@ impl Fixture {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::SeqCst)
         ));
+        Self::at(dir)
+    }
+    fn at(dir: PathBuf) -> Self {
+        Self::at_with_provider(dir, None)
+    }
+    fn at_with_provider(dir: PathBuf, provider: Option<Arc<Provider>>) -> Self {
         let store =
             Arc::new(Store::open(dir.join("core.db"), Durability { fullfsync: false }).unwrap());
         let events = Arc::new(Mutex::new(Vec::new()));
@@ -222,6 +235,7 @@ impl Fixture {
             readiness: Mutex::new(None),
             readiness_clock: Mutex::new(None),
             store: store.clone(),
+            provider: Mutex::new(provider),
         });
         let catalog = Arc::new(MockCatalog::new());
         catalog.set_op(
@@ -242,7 +256,8 @@ impl Fixture {
             clock.clone(),
             hash,
             ShellDenylist::default(),
-        );
+        )
+        .unwrap();
         Self {
             worker_panic,
             worker_exit,
@@ -391,6 +406,9 @@ impl Fixture {
         );
     }
 }
+
+#[path = "restart_tests.rs"]
+mod restart;
 impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = self.supervisor.cancel("r");
