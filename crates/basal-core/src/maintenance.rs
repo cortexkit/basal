@@ -17,7 +17,8 @@ impl Runtime {
             let schedule: Option<i64> = c.query_row(NEXT_SCHEDULE, [], |r| r.get(0))?;
             let deadline: Option<i64> = c.query_row(NEXT_DEADLINE, [], |r| r.get(0))?;
             let retry: Option<i64> = c.query_row(NEXT_DEFERRED, [], |r| r.get(0))?;
-            Ok([schedule, deadline, retry].into_iter().flatten().min())
+            let grant: Option<i64> = c.query_row("SELECT MIN(next_poll_at) FROM flow_grant_losses WHERE state='polling' AND echoable=1", [], |r| r.get(0))?;
+            Ok([schedule, deadline, retry, grant].into_iter().flatten().min())
         })?;
         let retention = *self
             .shared

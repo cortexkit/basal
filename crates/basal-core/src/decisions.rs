@@ -63,6 +63,8 @@ pub const CANCEL: &str = "cancel";
 pub const KEEP: &str = "keep";
 /// Re-enable card option: enable the flow again.
 pub const REENABLE: &str = "reenable";
+pub const CHECK_NOW: &str = "check_now";
+pub const KEEP_DISABLED: &str = "keep_disabled";
 
 fn option(id: &str, label: &str, decline: bool) -> DecisionOption {
     DecisionOption {
@@ -78,6 +80,10 @@ fn option(id: &str, label: &str, decline: bool) -> DecisionOption {
 /// actions come first.
 pub fn options(kind: DecisionKind) -> Vec<DecisionOption> {
     match kind {
+        DecisionKind::GrantLost => vec![
+            option(CHECK_NOW, "Check now", false),
+            option(KEEP_DISABLED, "Keep disabled", true),
+        ],
         DecisionKind::Reconcile => vec![
             option(NOT_APPLIED, "Send the call again", false),
             option(APPLIED, "Continue as applied", false),
@@ -100,6 +106,14 @@ pub fn reconcile_key(flow_id: &str, run_id: &str, position: u64) -> String {
 /// auto-disable episode of a flow.
 pub fn reenable_key(flow_id: &str, episode: u64) -> String {
     format!("flow_decision:reenable:{flow_id}:{episode}")
+}
+
+pub fn grant_lost_key(flow_id: &str, provider: &str, grant: &str) -> String {
+    let identity = serde_json::to_vec(&(flow_id, provider, grant)).expect("string tuple");
+    format!(
+        "flow_decision:grant_lost:{}",
+        blake3::hash(&identity).to_hex()
+    )
 }
 
 /// Where a card stands.
@@ -146,8 +160,10 @@ pub struct DecisionRecord {
     pub run_id: Option<String>,
     pub position: Option<u64>,
     pub call_key: Option<String>,
-    /// For a reconcile card, the call's send attempt that ended unknown;
-    /// for a re-enable card, the auto-disable episode.
+    /// Identifies the occurrence being decided, so a settled occurrence is
+    /// not asked again. For reconciliation it is the unknown send attempt;
+    /// for a re-enable card, the auto-disable episode; for grant loss, the
+    /// durable loss revision.
     pub instance: u64,
     /// What the card is about, as stored: the typed context (see
     /// [`context_json`]), plus `args_digest` on a reconcile card.
@@ -183,6 +199,12 @@ impl DecisionRecord {
                 .ok_or_else(|| corrupt(name))
         };
         Ok(match self.kind {
+            DecisionKind::GrantLost => DecisionContext::GrantLost {
+                provider: text("provider")?,
+                grant: text("grant")?,
+                grant_label: text("grant_label")?,
+                refused_at_ms: int("refused_at_ms")?,
+            },
             DecisionKind::Reconcile => DecisionContext::Reconcile {
                 run_id: text("run_id")?,
                 run_admitted_at_ms: int("run_admitted_at_ms")?,
@@ -232,6 +254,14 @@ impl DecisionRecord {
 /// is stored only when known.
 pub fn context_json(context: &DecisionContext) -> Value {
     match context {
+        DecisionContext::GrantLost {
+            provider,
+            grant,
+            grant_label,
+            refused_at_ms,
+        } => json!({
+            "provider":provider,"grant":grant,"grant_label":grant_label,"refused_at_ms":refused_at_ms,
+        }),
         DecisionContext::Reconcile {
             run_id,
             run_admitted_at_ms,
@@ -317,6 +347,14 @@ fn title(flow_id: &str) -> String {
 /// The card's prompt: one readable sentence written from its context.
 pub fn prompt(flow_id: &str, context: &DecisionContext) -> String {
     match context {
+        DecisionContext::GrantLost {
+            provider,
+            refused_at_ms,
+            ..
+        } => format!(
+            "{flow_id} was disabled after {provider} refused its grant at {}. Check now re-checks the existing grant; keep disabled stops polling. No answer keeps background polling without applying a choice.",
+            clock(*refused_at_ms, "%Y-%m-%d %H:%M UTC")
+        ),
         DecisionContext::Reconcile {
             run_admitted_at_ms,
             op,
@@ -581,6 +619,24 @@ pub fn record_auto_disable(
 /// disabled by the runtime in this card's episode.
 pub fn stands(conn: &Connection, card: &DecisionRecord) -> Result<bool> {
     match (card.kind, &card.run_id, card.position) {
+        (DecisionKind::GrantLost, _, None) => {
+            let DecisionContext::GrantLost {
+                provider, grant, ..
+            } = card.context()?
+            else {
+                unreachable!()
+            };
+            let loss = crate::grant_loss::losses(conn, Some(&card.flow_id))?
+                .into_iter()
+                .find(|loss| loss.provider == provider && loss.grant == grant);
+            match loss {
+                Some(loss) => Ok(loss.echoable
+                    && loss.state == "polling"
+                    && u64::try_from(loss.revision).ok() == Some(card.instance)
+                    && crate::grant_loss::eligible(conn, &loss)?),
+                None => Ok(false),
+            }
+        }
         (DecisionKind::Reconcile, Some(run_id), Some(position)) => {
             let state: Option<String> = conn
                 .query_row("SELECT state FROM runs WHERE run_id = ?1", [run_id], |r| {
@@ -643,14 +699,16 @@ pub fn due(conn: &Connection) -> Result<Vec<DecisionRecord>> {
 }
 
 /// Records that core accepted `revision` of a card under `elicitation_id`.
+/// An older in-flight acceptance cannot replace a newer card identity.
 pub fn mark_raised(tx: &Transaction, seq: i64, revision: u64, elicitation_id: &str) -> Result<()> {
     let revision =
         i64::try_from(revision).map_err(|_| CoreError::Invalid(format!("revision {revision}")))?;
     tx.execute(
-        "UPDATE decision_cards SET elicitation_id = ?3, \
+        "UPDATE decision_cards SET elicitation_id = CASE WHEN COALESCE(raised_revision,0) <= ?2 THEN ?3 ELSE elicitation_id END, \
          raised_revision = MAX(COALESCE(raised_revision, 0), ?2) WHERE seq = ?1",
         params![seq, revision, elicitation_id],
     )?;
+    tx.execute("INSERT OR IGNORE INTO decision_withdrawals SELECT ?2 FROM decision_cards WHERE seq=?1 AND kind='grant_lost' AND state='stale'", params![seq,elicitation_id])?;
     Ok(())
 }
 
@@ -689,6 +747,19 @@ fn find(conn: &Connection, answer: &DecisionAnswer) -> Result<Option<DecisionRec
         return Ok(Some(card));
     }
     match answer.decision {
+        DecisionKind::GrantLost => {
+            let Some(DecisionContext::GrantLost {
+                provider, grant, ..
+            }) = &answer.grant_context
+            else {
+                return Ok(None);
+            };
+            first(
+                conn,
+                "WHERE kind='grant_lost' AND dedup_key=?1 ORDER BY state='open' DESC,seq DESC",
+                [grant_lost_key(&answer.flow_id, provider, grant)],
+            )
+        }
         DecisionKind::Reconcile => first(
             conn,
             "WHERE kind = 'reconcile' AND flow_id = ?1 AND run_id = ?2 AND call_key = ?3 \
@@ -718,6 +789,11 @@ pub fn answer(
     }
     if card.state != CardState::Open {
         return Ok((Answered::AlreadyAnswered(card.state), None));
+    }
+    if card.kind == DecisionKind::GrantLost
+        && answer.grant_context.as_ref() != Some(&card.context()?)
+    {
+        return Ok((Answered::Superseded, None));
     }
     let audit = |action: &str, detail: &str| {
         reconcile::audit_answer(
@@ -750,6 +826,21 @@ pub fn answer(
             audit("decision.expired", &card.dedup_key)?;
             CardState::Expired
         }
+        Some(_) if card.kind == DecisionKind::GrantLost && !stands(tx, &card)? => {
+            audit("decision.stale", &card.dedup_key)?;
+            CardState::Stale
+        }
+        Some(KEEP_DISABLED) if card.kind == DecisionKind::GrantLost => {
+            let DecisionContext::GrantLost {
+                provider, grant, ..
+            } = card.context()?
+            else {
+                unreachable!()
+            };
+            crate::grant_loss::stop_polling(tx, &card.flow_id, &provider, &grant)?;
+            audit("grant.keep_disabled", &card.dedup_key)?;
+            CardState::Declined
+        }
         Some(choice) if choice == declined => {
             audit("decision.declined", &card.dedup_key)?;
             CardState::Declined
@@ -766,6 +857,16 @@ pub fn answer(
         }
         Some(choice) => {
             match (card.kind, &card.run_id, card.position) {
+                (DecisionKind::GrantLost, _, None) => {
+                    let DecisionContext::GrantLost {
+                        provider, grant, ..
+                    } = card.context()?
+                    else {
+                        unreachable!()
+                    };
+                    crate::grant_loss::check_now(tx, &card.flow_id, &provider, &grant, now_ms)?;
+                    audit("grant.check_now", &card.dedup_key)?;
+                }
                 (DecisionKind::Reconcile, Some(run_id), Some(position)) => {
                     let resolution = match choice {
                         NOT_APPLIED => Resolution::NotApplied,
@@ -810,6 +911,24 @@ pub fn answer(
 }
 
 impl Runtime {
+    pub fn decision_withdrawals(&self) -> Result<Vec<String>> {
+        self.store().read(|conn| {
+            Ok(conn
+                .prepare("SELECT elicitation_id FROM decision_withdrawals ORDER BY elicitation_id")?
+                .query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
+    pub fn decision_withdrawn(&self, elicitation_id: &str) -> Result<()> {
+        self.store().write(|tx| {
+            tx.execute(
+                "DELETE FROM decision_withdrawals WHERE elicitation_id=?1",
+                [elicitation_id],
+            )?;
+            Ok(())
+        })
+    }
     /// Brings the reconcile card intents up to date and returns the cards
     /// to raise, in one transaction.
     pub fn decisions_due(&self) -> Result<Vec<DecisionRecord>> {
@@ -842,4 +961,66 @@ impl Runtime {
     pub fn decision_cards(&self) -> Result<Vec<DecisionRecord>> {
         self.store().read(all)
     }
+}
+
+/// Record the grant-loss card in the same transaction as the refusal and
+/// disable. Core deduplicates (flow_id, provider, grant); the opaque grant
+/// is preserved in the body even though the local lookup key is hashed.
+pub(crate) fn record_grant_loss(
+    tx: &Transaction,
+    loss: &crate::grant_loss::GrantLoss,
+) -> Result<()> {
+    if !loss.echoable {
+        return Ok(());
+    }
+    let key = grant_lost_key(&loss.flow_id, &loss.provider, &loss.grant);
+    let body = context_json(&DecisionContext::GrantLost {
+        provider: loss.provider.clone(),
+        grant: loss.grant.clone(),
+        grant_label: loss.grant_label.clone(),
+        refused_at_ms: loss.lost_at_ms,
+    })
+    .to_string();
+    let open: Option<i64> = tx
+        .query_row(
+            "SELECT seq FROM decision_cards WHERE dedup_key=?1 AND state='open'",
+            [&key],
+            |r| r.get(0),
+        )
+        .optional()?;
+    match open {
+        Some(seq) => {
+            tx.execute("UPDATE decision_cards SET card=?2,run_id=?3,version=?4,instance=?5,revision=revision+1 WHERE seq=?1",params![seq,body,loss.run_id,loss.version,loss.revision])?;
+        }
+        None => {
+            tx.execute("INSERT OR IGNORE INTO decision_cards(dedup_key,kind,flow_id,version,run_id,instance,card,state,created_at) VALUES (?1,'grant_lost',?2,?3,?4,?5,?6,'open',?7)",params![key,loss.flow_id,loss.version,loss.run_id,loss.revision,body,loss.lost_at_ms])?;
+        }
+    }
+    Ok(())
+}
+
+/// Close grant-loss cards whose loss no longer stands, so an old choice
+/// cannot change the current flow. Queue retraction of core's operator card;
+/// the queue survives a restart or a temporarily unreachable consent plane.
+pub(crate) fn close_stale_grants(tx: &Transaction, flow_id: &str, now_ms: i64) -> Result<()> {
+    for card in select(
+        tx,
+        "WHERE kind='grant_lost' AND flow_id=?1 AND state='open'",
+        [flow_id],
+    )? {
+        if stands(tx, &card)? {
+            continue;
+        }
+        if let Some(id) = &card.elicitation_id {
+            tx.execute(
+                "INSERT OR IGNORE INTO decision_withdrawals(elicitation_id) VALUES (?1)",
+                [id],
+            )?;
+        }
+        tx.execute(
+            "UPDATE decision_cards SET state='stale',answered_at=?2 WHERE seq=?1 AND state='open'",
+            params![card.seq, now_ms],
+        )?;
+    }
+    Ok(())
 }

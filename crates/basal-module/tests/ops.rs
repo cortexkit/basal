@@ -752,3 +752,23 @@ fn the_owner_disables_and_enables_its_flow() {
     let unknown = call(&f, &Caller::Operator, "flow.nothing", Value::Null);
     assert!(matches!(&unknown, Err(e) if e.starts_with("unknown_method")));
 }
+
+#[test]
+fn retired_flow_enable_has_a_typed_retirement_not_permission_denied() {
+    let f = fixture("retired-enable", Options::default());
+    let owner = agent(OWNER);
+    let flow = install_approved(&f, &owner, "return 1;", &events_manifest("retired-flow"));
+    let retirement = json!({"agent_id":OWNER,"agent_reference":OWNER,"provider":"prefrontal-core","action":"sink.status","at_ms":T0});
+    f.module.rt.store().write(|tx| {
+        tx.execute("UPDATE flows SET state='disabled',disabled_by='core',disabled_reason='agent_retired',agent_retirement=?2 WHERE flow_id=?1",rusqlite::params![flow,retirement.to_string()])?;
+        Ok(())
+    }).unwrap();
+    for caller in [&Caller::Operator, &owner] {
+        let error = f
+            .module
+            .handle(caller, "flow.enable", json!({"flow_id":flow}))
+            .unwrap_err();
+        assert_eq!(error.code, "agent_retired");
+        assert_eq!(error.detail, Some(retirement.clone()));
+    }
+}

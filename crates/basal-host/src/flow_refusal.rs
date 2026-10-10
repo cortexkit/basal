@@ -17,6 +17,8 @@ pub enum RefusalReason {
     TargetFlowUnsupported,
     ResourceBusy,
     ConsentUnavailable,
+    ModuleGrantAbsent,
+    AgentGrantAbsent,
     NoFlowScope,
     AgentRetired,
     FlowScopeRequired,
@@ -35,6 +37,8 @@ impl RefusalReason {
             Self::TargetFlowUnsupported => "target_flow_unsupported",
             Self::ResourceBusy => "resource_busy",
             Self::ConsentUnavailable => "consent_unavailable",
+            Self::ModuleGrantAbsent => "module_grant_absent",
+            Self::AgentGrantAbsent => "agent_grant_absent",
             Self::NoFlowScope => "no_flow_scope",
             Self::AgentRetired => "agent_retired",
             Self::FlowScopeRequired => "flow_scope_required",
@@ -52,6 +56,29 @@ pub struct FlowRefusal {
 }
 
 impl FlowRefusal {
+    pub fn grant_absent(&self) -> bool {
+        matches!(
+            self.reason,
+            RefusalReason::ModuleGrantAbsent | RefusalReason::AgentGrantAbsent
+        )
+    }
+
+    pub fn lost_grant(&self) -> Result<(&Value, &str), String> {
+        let detail = self.detail.as_ref().ok_or("missing grant detail")?;
+        let grant = detail
+            .get("grant")
+            .filter(|v| !v.is_null())
+            .ok_or("missing grant reference")?;
+        if grant.as_str().is_some_and(|s| s.is_empty()) {
+            return Err("empty grant reference".into());
+        }
+        let label = detail
+            .get("grant_label")
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .ok_or("missing grant label")?;
+        Ok((grant, label))
+    }
     pub fn readiness(&self) -> bool {
         matches!(
             self.reason,
@@ -67,6 +94,9 @@ impl FlowRefusal {
             RefusalReason::ResourceBusy => "the provider's exclusive resource is busy",
             RefusalReason::ConsentUnavailable => {
                 "the provider requires a standing grant for this action"
+            }
+            RefusalReason::ModuleGrantAbsent | RefusalReason::AgentGrantAbsent => {
+                "a standing grant for this flow was lost"
             }
             RefusalReason::AgentRetired => "the target agent retired",
             RefusalReason::FlowScopeRequired => {
@@ -110,6 +140,8 @@ impl FlowRefusal {
             "target_flow_unsupported" => RefusalReason::TargetFlowUnsupported,
             "resource_busy" => RefusalReason::ResourceBusy,
             "consent_unavailable" => RefusalReason::ConsentUnavailable,
+            "module_grant_absent" => RefusalReason::ModuleGrantAbsent,
+            "agent_grant_absent" => RefusalReason::AgentGrantAbsent,
             "agent_retired" => RefusalReason::AgentRetired,
             "flow_scope_required" => RefusalReason::FlowScopeRequired,
             _ => return Ok(None),
@@ -122,8 +154,15 @@ impl FlowRefusal {
             busy.validate().map_err(|e| e.to_string())?;
             refusal.retry_after_ms = Some(busy.retry_after_ms);
         }
-        // Provider details are display-only except the validated busy hint.
-        refusal.detail = body.detail.clone().filter(|d| d.to_string().len() <= 4096);
+        // Grant references must reach the store intact: it hashes oversized
+        // references instead of truncating authority-bearing bytes.
+        refusal.detail = body
+            .detail
+            .clone()
+            .filter(|d| refusal.grant_absent() || d.to_string().len() <= 4096);
+        if refusal.grant_absent() {
+            refusal.lost_grant()?;
+        }
         Ok(Some(refusal))
     }
 }
@@ -143,6 +182,27 @@ mod tests {
         assert_eq!(decoded.reason, RefusalReason::ResourceBusy);
         assert_eq!(decoded.retry_after_ms, Some(250));
         assert_eq!(decoded.detail, body.detail);
+    }
+
+    #[test]
+    fn grant_absence_is_typed_and_preserves_oversized_references() {
+        for code in ["module_grant_absent", "agent_grant_absent"] {
+            let body = ErrorBody::new(code, "not authority")
+                .with_detail(json!({"grant":"x".repeat(4097),"grant_label":"restore this grant"}));
+            let refusal = FlowRefusal::decode(&body).unwrap().unwrap();
+            assert!(refusal.grant_absent());
+            assert_eq!(refusal.lost_grant().unwrap().0, &json!("x".repeat(4097)));
+            for detail in [
+                json!({}),
+                json!({"grant":"g","grant_label":""}),
+                json!({"grant":null,"grant_label":"label"}),
+            ] {
+                assert!(
+                    FlowRefusal::decode(&ErrorBody::new(code, "ignored").with_detail(detail))
+                        .is_err()
+                );
+            }
+        }
     }
 
     #[test]

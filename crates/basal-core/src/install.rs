@@ -129,6 +129,10 @@ pub enum InstallError {
         flow_id: String,
         disabled_by: String,
     },
+    AgentRetired {
+        flow_id: String,
+        retirement: String,
+    },
     /// An agent tried to disable a flow it does not own.
     NotOwner {
         flow_id: String,
@@ -409,6 +413,29 @@ pub fn approve(
     now_ms: i64,
     schedule: &SchedulerConfig,
 ) -> std::result::Result<Option<Approval>, InstallError> {
+    approve_using_catalog(
+        tx,
+        flow_id,
+        version,
+        code_hash,
+        approval_ref,
+        now_ms,
+        schedule,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn approve_using_catalog(
+    tx: &Transaction,
+    flow_id: &str,
+    version: u32,
+    code_hash: &[u8; 32],
+    approval_ref: &str,
+    now_ms: i64,
+    schedule: &SchedulerConfig,
+    catalog: Option<&dyn Catalog>,
+) -> std::result::Result<Option<Approval>, InstallError> {
     let row: Option<(Vec<u8>, String, String, Option<i64>)> = tx
         .query_row(
             "SELECT code_hash, state, author, revoked_at FROM installs \
@@ -463,6 +490,15 @@ pub fn approve(
          WHERE flow_id = ?1 AND version = ?2",
         params![flow_id, version_i64(version), approval_ref, now_ms],
     )?;
+    let manifest: String = tx.query_row(
+        "SELECT manifest FROM installs WHERE flow_id=?1 AND version=?2",
+        params![flow_id, version],
+        |r| r.get(0),
+    )?;
+    if crate::grant_loss::retirement_cleared_by(tx, flow_id, &author, &manifest, catalog)? {
+        tx.execute("UPDATE flows SET agent_retirement=NULL, disabled_reason=CASE WHEN disabled_by='core' AND disabled_reason='agent_retired' THEN 'retirement_cleared' ELSE disabled_reason END WHERE flow_id=?1", [flow_id])?;
+    }
+    crate::grant_loss::clear(tx, flow_id, now_ms)?;
     tx.execute(
         "UPDATE flows SET approved_version = ?2, owner = ?3 WHERE flow_id = ?1",
         params![flow_id, version_i64(version), author],
@@ -476,9 +512,9 @@ pub fn approve(
     // and the disable is cleared. A disable by anyone else (the operator,
     // the owner, the runtime) was not about the approved version, so it
     // stays. A flow is also disabled with core as the actor when core
-    // refuses one of its calls because its agent was retired; that is about
-    // the agent, not the version, and a new version cannot bring a retired
-    // agent back, so it stays too.
+    // refuses a call involving a retired agent. That stop stays unless the
+    // new owner and manifest no longer involve the retired agent, as checked
+    // above; changing code alone cannot bring a retired agent back.
     if flow(tx, flow_id)?.is_some_and(|f| {
         f.disabled_by.as_deref() == Some(CORE_ACTOR)
             && f.disabled_reason.as_deref() != Some("agent_retired")
@@ -816,9 +852,13 @@ pub fn disable(
         // operator must be able to take over a disable the owner (or the
         // runtime) made, or the operator could not stop a flow its owner
         // had paused and would re-enable. The record moves to the
-        // operator; the schedule is already stopped. Agent and runtime
-        // disables of a disabled flow change nothing.
-        let takes_over = matches!(actor, Actor::Operator(_))
+        // operator; the schedule is already stopped. An owner may also take
+        // over a grant-loss pause, so restoration cannot undo the owner's stop.
+        // Other agent and runtime disables of a disabled flow change nothing.
+        let takes_over = (matches!(actor, Actor::Operator(_))
+            || (matches!(actor, Actor::Agent(_))
+                && record.disabled_by.as_deref() == Some(CORE_ACTOR)
+                && record.disabled_reason.as_deref() == Some("grant_lost")))
             && !record.enabled
             && !record
                 .disabled_by
@@ -915,7 +955,7 @@ impl Runtime {
         let now = self.config().clock.now_ms();
         let schedule = self.config().schedule.clone();
         decide(self, |tx| {
-            approve(
+            approve_using_catalog(
                 tx,
                 flow_id,
                 version,
@@ -923,6 +963,7 @@ impl Runtime {
                 approval_ref,
                 now,
                 &schedule,
+                Some(self.shared.catalog.as_ref()),
             )
         })
     }
@@ -987,8 +1028,10 @@ impl Runtime {
     }
 }
 
-/// Enables a disabled flow for `actor`. The operator may always. An agent
-/// may only undo a disable it made itself, on a flow it owns: a disable by
+const RETIREMENT: &str = "SELECT COALESCE(agent_retirement,CASE WHEN disabled_reason='agent_retired' THEN '{}' END) FROM flows WHERE flow_id=?1";
+
+/// Enables a disabled flow for `actor`, unless retirement still stands. An agent
+/// may undo its own disable, or a stopped grant-loss pause: a disable by
 /// the operator is the operator's stop, and an auto-disable is the loop
 /// protection for a flow whose limits saturated, so letting the owner undo
 /// either would let a flow's own author override its brakes. The runtime
@@ -1003,6 +1046,14 @@ pub fn enable_as(
     let Some(record) = flow(tx, flow_id)? else {
         return Err(InstallError::NoSuchFlow(flow_id.to_owned()));
     };
+    if let Some(retirement) =
+        tx.query_row(RETIREMENT, [flow_id], |r| r.get::<_, Option<String>>(0))?
+    {
+        return Err(InstallError::AgentRetired {
+            flow_id: flow_id.to_owned(),
+            retirement,
+        });
+    }
     match actor {
         Actor::Operator(_) => {}
         Actor::Runtime | Actor::Core => {
@@ -1028,6 +1079,9 @@ pub fn enable_as(
             };
             match record.disabled_by.as_deref() {
                 Some(by) if by == own => {}
+                Some(CORE_ACTOR)
+                    if record.disabled_reason.as_deref() == Some("grant_lost")
+                        && !crate::grant_loss::has_polling(tx, flow_id)? => {}
                 _ => return Err(refused()),
             }
         }
@@ -1047,12 +1101,20 @@ pub fn enable(
     if flow(tx, flow_id)?.is_none() {
         return Err(InstallError::NoSuchFlow(flow_id.to_owned()));
     }
+    let retirement: Option<String> = tx.query_row(RETIREMENT, [flow_id], |r| r.get(0))?;
+    if let Some(retirement) = retirement {
+        return Err(InstallError::AgentRetired {
+            flow_id: flow_id.to_owned(),
+            retirement,
+        });
+    }
     let changed = tx.execute(
         "UPDATE flows SET state = 'enabled', disabled_by = NULL, disabled_reason = NULL, \
          disabled_at = NULL WHERE flow_id = ?1 AND state = 'disabled'",
         [flow_id],
     )?;
     if changed > 0 {
+        crate::grant_loss::clear(tx, flow_id, now_ms)?;
         tx.execute(
             "UPDATE rate_windows SET saturated = 0 WHERE flow_id = ?1",
             [flow_id],

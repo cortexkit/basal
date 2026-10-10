@@ -126,6 +126,19 @@ pub fn decision_request(card: &DecisionCard) -> Result<Value, ConsentError> {
     if let Some(problem) = body_problem(card) {
         return refused(problem);
     }
+    if card.decision() == DecisionKind::GrantLost
+        && (card.options.len() != 2
+            || !card
+                .options
+                .iter()
+                .any(|o| o.id == "check_now" && !o.decline)
+            || !card
+                .options
+                .iter()
+                .any(|o| o.id == "keep_disabled" && o.decline))
+    {
+        return refused("a grant-loss card offers check_now and keep_disabled");
+    }
     if card.expires_in_ms == 0 || card.expires_in_ms > DECISION_EXPIRES_IN_MS {
         return refused("a card expires within a day");
     }
@@ -156,17 +169,35 @@ pub fn decision_request(card: &DecisionCard) -> Result<Value, ConsentError> {
 }
 
 /// What core would refuse in a card's body, if anything: a blank flow id or
-/// one over 256 bytes, a version of 0; on a reconcile card a blank or
+/// one over 256 bytes, a version of 0 for versioned decisions; on a reconcile card a blank or
 /// overlong run id or call key, no attempts, or an op that is not two or
 /// more dot-separated segments of lowercase letters, digits, `_` and `-`,
 /// at most 128 bytes; on a re-enable card a zero limit, window or
-/// saturated-window count.
+/// saturated-window count; on a grant-loss card a blank provider or label,
+/// or an empty or over-4-KiB opaque grant.
 pub fn body_problem(card: &DecisionCard) -> Option<&'static str> {
     let id_ok = |id: &str| !id.trim().is_empty() && id.len() <= 256;
-    if !id_ok(&card.flow_id) || card.version == 0 {
-        return Some("a card names a flow and a version above 0");
+    if !id_ok(&card.flow_id) || (card.version == 0 && card.decision() != DecisionKind::GrantLost) {
+        return Some("a card names a flow; versioned decisions need a version above 0");
     }
     match &card.context {
+        DecisionContext::GrantLost {
+            provider,
+            grant,
+            grant_label,
+            ..
+        } => {
+            if provider.trim().is_empty()
+                || provider.len() > 256
+                || grant.is_empty()
+                || grant.len() > 4096
+                || grant_label.trim().is_empty()
+            {
+                Some("a grant-loss card names a provider, a grant within 4 KiB, and a label")
+            } else {
+                None
+            }
+        }
         DecisionContext::Reconcile {
             run_id,
             call_key,
@@ -206,12 +237,27 @@ pub fn body_problem(card: &DecisionCard) -> Option<&'static str> {
 /// reconcile card `run_id`, `run_admitted_at_ms`, `step` (only when known),
 /// `call_key`, `op` (`module.op`), `attempts` and `unknown_reason`; for a
 /// re-enable card `disabled_at_ms`, `disabled_reason`, `limit`, `window_ms`
-/// and `saturated_windows`. Core refuses any other key and any reason
+/// and `saturated_windows`; for grant loss `provider`, `grant`, `grant_label`
+/// and `refused_at_ms`, without `version`. Core refuses any other key and any reason
 /// outside its closed sets.
 pub fn flow_decision_body(card: &DecisionCard) -> Value {
-    let mut body = json!({"flow_id":card.flow_id,"version":card.version,
+    let mut body = json!({"flow_id":card.flow_id,
         "decision":card.decision().as_str()});
+    if card.decision() != DecisionKind::GrantLost {
+        body["version"] = json!(card.version);
+    }
     match &card.context {
+        DecisionContext::GrantLost {
+            provider,
+            grant,
+            grant_label,
+            refused_at_ms,
+        } => {
+            body["provider"] = json!(provider);
+            body["grant"] = json!(grant);
+            body["grant_label"] = json!(grant_label);
+            body["refused_at_ms"] = json!(refused_at_ms);
+        }
         DecisionContext::Reconcile {
             run_id,
             run_admitted_at_ms,
@@ -268,20 +314,36 @@ pub fn decision_answer(record: &Value) -> Result<DecisionAnswer, ConsentError> {
     };
     let body = &record["flow_decision"];
     let flow_id = body["flow_id"].as_str().ok_or_else(|| bad("no flow id"))?;
-    let version = body["version"]
-        .as_u64()
-        .and_then(|v| u32::try_from(v).ok())
-        .ok_or_else(|| bad("version is invalid"))?;
     let decision = body["decision"]
         .as_str()
         .and_then(DecisionKind::parse)
-        .ok_or_else(|| bad("decision is not reconcile or reenable"))?;
+        .ok_or_else(|| bad("unknown decision kind"))?;
+    let version = if decision == DecisionKind::GrantLost {
+        0
+    } else {
+        body["version"]
+            .as_u64()
+            .and_then(|v| u32::try_from(v).ok())
+            .ok_or_else(|| bad("version is invalid"))?
+    };
     let text = |name: &str| body[name].as_str().map(str::to_owned);
     let (run_id, call_key) = (text("run_id"), text("call_key"));
     if decision == DecisionKind::Reconcile && (run_id.is_none() || call_key.is_none()) {
         return Err(bad("a reconcile answer names no run or call"));
     }
     Ok(DecisionAnswer {
+        grant_context: if decision == DecisionKind::GrantLost {
+            Some(DecisionContext::GrantLost {
+                provider: text("provider").ok_or_else(|| bad("no grant provider"))?,
+                grant: text("grant").ok_or_else(|| bad("no grant reference"))?,
+                grant_label: text("grant_label").ok_or_else(|| bad("no grant label"))?,
+                refused_at_ms: body["refused_at_ms"]
+                    .as_i64()
+                    .ok_or_else(|| bad("no refusal time"))?,
+            })
+        } else {
+            None
+        },
         elicitation_id: elicitation_id.to_owned(),
         choice,
         dedup_key: record["dedup_key"].as_str().map(str::to_owned),
@@ -525,6 +587,26 @@ fn apply_record(
     .map_err(|e| ConsentError::Unavailable(e.to_string()))
 }
 impl Consent for CoreConsent {
+    fn withdraw_decision(&self, elicitation_id: &str) -> Result<(), ConsentError> {
+        let reply = self
+            .state
+            .transport
+            .management(
+                CORE,
+                "elicitation.withdraw",
+                json!({"elicitation_id":elicitation_id}),
+            )
+            .map_err(error)?;
+        if !matches!(
+            reply["state"].as_str(),
+            Some("withdrawn" | "answered" | "expired")
+        ) {
+            return Err(ConsentError::Unavailable(
+                "withdrawal returned no settled card".into(),
+            ));
+        }
+        Ok(())
+    }
     fn raise(&self, card: &InstallCard) -> Result<(), ConsentError> {
         let reply = self
             .state

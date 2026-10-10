@@ -113,6 +113,20 @@ impl ModuleOpsHost {
     }
 }
 impl Host for ModuleOpsHost {
+    fn grant_would_ask(
+        &self,
+        flow_id: &str,
+        agent_id: Option<&str>,
+        provider: &str,
+        grant: &str,
+    ) -> Result<bool, TransportError> {
+        self.transport
+            .grant_would_ask(flow_id, agent_id, provider, grant)
+            .map_err(|e| match e {
+                WireError::Typed(refusal) => TransportError::Refused(refusal),
+                other => TransportError::unsent(format!("grant diagnostic: {other:?}")),
+            })
+    }
     fn provider_ready(
         &self,
         flow_id: &str,
@@ -195,6 +209,15 @@ impl RoutingHost {
     }
 }
 impl Host for RoutingHost {
+    fn grant_would_ask(
+        &self,
+        flow_id: &str,
+        agent_id: Option<&str>,
+        provider: &str,
+        grant: &str,
+    ) -> Result<bool, TransportError> {
+        self.ops.grant_would_ask(flow_id, agent_id, provider, grant)
+    }
     fn provider_ready(
         &self,
         flow_id: &str,

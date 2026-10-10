@@ -19,6 +19,7 @@ pub struct Fake {
     /// The principal the daemon attests for the caller. The real transport
     /// carries it on the route; here a test sets it.
     pub requester: Mutex<String>,
+    pub post_barrier: Mutex<Option<Arc<std::sync::Barrier>>>,
 }
 
 /// The `flow_decision` cards the fake's core holds, and the answers it
@@ -91,6 +92,12 @@ impl Fake {
             .insert(op.into(), replies.into());
     }
     fn reply(&self, op: &str, params: &Value) -> Result<Value, WireError> {
+        if op == "post" {
+            let barrier = self.post_barrier.lock().unwrap().clone();
+            if let Some(barrier) = barrier {
+                barrier.wait();
+            }
+        }
         if let Some(r) = self
             .replies
             .lock()
@@ -127,6 +134,17 @@ impl Fake {
             "elicitation.request" => flow_install_request(&self.scopes.lock().unwrap(), params),
             "flow.install_status" => install_status(&self.installs.lock().unwrap(), params),
             "elicitation.report_execution" => self.report_execution(params),
+            "elicitation.withdraw" => {
+                let mut decisions = self.decisions.lock().unwrap();
+                let index = decisions
+                    .cards
+                    .iter()
+                    .position(|(id, _, _)| params["elicitation_id"] == *id);
+                if let Some(index) = index {
+                    decisions.open.retain(|_, open| *open != index);
+                }
+                Ok(json!({"state":"withdrawn","elicitation_id":params["elicitation_id"]}))
+            }
             "elicitation.answers" => {
                 let decisions = self.decisions.lock().unwrap();
                 let records: Vec<Value> =
@@ -384,6 +402,24 @@ fn check_body(body: &Value) -> Result<(), String> {
             .all(|k| body.get(*k).is_some_and(|v| !v.is_null()))
     };
     let (keys, valid) = match body["decision"].as_str() {
+        Some("grant_lost") => (
+            &[
+                "decision",
+                "flow_id",
+                "provider",
+                "grant",
+                "grant_label",
+                "refused_at_ms",
+            ][..],
+            id_ok("provider")
+                && body["grant"]
+                    .as_str()
+                    .is_some_and(|g| !g.is_empty() && g.len() <= 4096)
+                && body["grant_label"]
+                    .as_str()
+                    .is_some_and(|s| !s.trim().is_empty())
+                && body["refused_at_ms"].is_i64(),
+        ),
         Some("reconcile") => {
             let op = body["op"].as_str().unwrap_or("");
             let segments: Vec<&str> = op.split('.').collect();
@@ -418,13 +454,16 @@ fn check_body(body: &Value) -> Result<(), String> {
                     .as_str()
                     .is_some_and(|r| DISABLED_REASONS.contains(&r)),
         ),
-        _ => return Err("flow_decision.decision is reconcile or reenable".into()),
+        _ => return Err("unknown flow_decision.decision".into()),
     };
     keys_within(body, keys, "flow_decision")?;
     if !required(keys) {
         return Err("flow_decision: a required field is missing".into());
     }
-    if !(valid && id_ok("flow_id") && body["version"].as_i64().is_some_and(|v| v > 0)) {
+    if !(valid
+        && id_ok("flow_id")
+        && (body["decision"] == "grant_lost" || body["version"].as_i64().is_some_and(|v| v > 0)))
+    {
         return Err("invalid flow_decision body".into());
     }
     Ok(())
@@ -514,6 +553,19 @@ fn check_flow_decision(params: &Value) -> Result<(), (&'static str, String)> {
         return Err(invalid("flow_decision body is required".into()));
     }
     check_body(body).map_err(invalid)?;
+    if body["decision"] == "grant_lost"
+        && (options.len() != 2
+            || !options
+                .iter()
+                .any(|o| o["id"] == "check_now" && o["effect"] == "choose")
+            || !options
+                .iter()
+                .any(|o| o["id"] == "keep_disabled" && o["effect"] == "decline"))
+    {
+        return Err(invalid(
+            "grant_lost requires check_now and keep_disabled".into(),
+        ));
+    }
     if params["title"].as_str().unwrap_or("").trim().is_empty()
         || params["prompt"].as_str().unwrap_or("").trim().is_empty()
     {

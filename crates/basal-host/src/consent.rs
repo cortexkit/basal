@@ -54,6 +54,8 @@ pub enum DecisionKind {
     /// Whether a flow the runtime disabled for sustained saturation runs
     /// again.
     Reenable,
+    /// Re-check a lost grant or stop polling; neither choice grants access.
+    GrantLost,
 }
 
 impl DecisionKind {
@@ -61,6 +63,7 @@ impl DecisionKind {
         match self {
             Self::Reconcile => "reconcile",
             Self::Reenable => "reenable",
+            Self::GrantLost => "grant_lost",
         }
     }
 
@@ -68,14 +71,15 @@ impl DecisionKind {
         match text {
             "reconcile" => Some(Self::Reconcile),
             "reenable" => Some(Self::Reenable),
+            "grant_lost" => Some(Self::GrantLost),
             _ => None,
         }
     }
 }
 
 /// One option of a decision card. Exactly one option of a card declines:
-/// it does nothing and is the card's default, so a card nobody answers
-/// leaves everything as it is.
+/// it is the card's default. Expiry never applies a choice; an explicit
+/// declining choice may stop background restoration without enabling anything.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecisionOption {
     pub id: String,
@@ -87,6 +91,12 @@ pub struct DecisionOption {
 /// and its prompt is written from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecisionContext {
+    GrantLost {
+        provider: String,
+        grant: String,
+        grant_label: String,
+        refused_at_ms: i64,
+    },
     /// One call of a run whose outcome basal cannot prove.
     Reconcile {
         run_id: String,
@@ -124,13 +134,14 @@ impl DecisionContext {
         match self {
             Self::Reconcile { .. } => DecisionKind::Reconcile,
             Self::Reenable { .. } => DecisionKind::Reenable,
+            Self::GrantLost { .. } => DecisionKind::GrantLost,
         }
     }
 }
 
 /// One operator decision card: a question only the operator may answer
-/// (what happened to an unknown call, or whether an auto-disabled flow runs
-/// again), raised by basal itself rather than by an agent.
+/// (reconcile an unknown call, re-enable an auto-disabled flow, or handle a
+/// lost grant), raised by basal itself rather than by an agent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecisionCard {
     /// The consent plane's deduplication key: raising a card under a key
@@ -163,7 +174,7 @@ impl DecisionCard {
     pub fn run_id(&self) -> Option<&str> {
         match &self.context {
             DecisionContext::Reconcile { run_id, .. } => Some(run_id),
-            DecisionContext::Reenable { .. } => None,
+            DecisionContext::Reenable { .. } | DecisionContext::GrantLost { .. } => None,
         }
     }
 
@@ -171,7 +182,7 @@ impl DecisionCard {
     pub fn call_key(&self) -> Option<&str> {
         match &self.context {
             DecisionContext::Reconcile { call_key, .. } => Some(call_key),
-            DecisionContext::Reenable { .. } => None,
+            DecisionContext::Reenable { .. } | DecisionContext::GrantLost { .. } => None,
         }
     }
 }
@@ -179,9 +190,12 @@ impl DecisionCard {
 /// An answer to a decision card, as the consent plane delivers it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecisionAnswer {
+    /// The grant-loss context (provider, reference, label and refusal time)
+    /// copied from core's answer, to reject answers to an older card body.
+    pub grant_context: Option<DecisionContext>,
     pub elicitation_id: String,
     /// The option chosen; `None` when the card expired unanswered, which
-    /// is the same as choosing its default.
+    /// never applies its default as an action.
     pub choice: Option<String>,
     /// The card's deduplication key, when the consent plane echoes it.
     pub dedup_key: Option<String>,
@@ -251,6 +265,12 @@ pub trait Consent: Send + Sync {
     /// card and returns its id.
     fn raise_decision(&self, card: &DecisionCard) -> Result<String, ConsentError>;
 
+    fn withdraw_decision(&self, _elicitation_id: &str) -> Result<(), ConsentError> {
+        Err(ConsentError::Unavailable(
+            "decision withdrawal unavailable".into(),
+        ))
+    }
+
     /// Tells the consent plane where to deliver decisions. Decisions made
     /// and not yet accepted are delivered again to the new sink.
     fn attach(&self, sink: Arc<dyn DecisionSink>);
@@ -265,6 +285,7 @@ struct State {
     /// Decision cards by deduplication key, with their elicitation ids.
     decision_cards: BTreeMap<String, (String, DecisionCard)>,
     decision_raises: BTreeMap<String, usize>,
+    withdrawn: Vec<String>,
     /// Answers to decision cards not yet accepted by the sink.
     undelivered_answers: Vec<DecisionAnswer>,
     unavailable: bool,
@@ -343,6 +364,10 @@ impl MockConsent {
             .unwrap_or(0)
     }
 
+    pub fn withdrawn_decisions(&self) -> Vec<String> {
+        self.lock().withdrawn.clone()
+    }
+
     /// Answers the decision card raised under `dedup_key` with `choice`
     /// (`None` for an expiry) and delivers the answer. Returns false for a
     /// card never raised.
@@ -353,6 +378,8 @@ impl MockConsent {
                 return false;
             };
             state.undelivered_answers.push(DecisionAnswer {
+                grant_context: (card.decision() == DecisionKind::GrantLost)
+                    .then(|| card.context.clone()),
                 elicitation_id,
                 choice: choice.map(str::to_owned),
                 dedup_key: card.dedup_key.clone(),
@@ -408,6 +435,17 @@ impl MockConsent {
 }
 
 impl Consent for MockConsent {
+    fn withdraw_decision(&self, elicitation_id: &str) -> Result<(), ConsentError> {
+        let mut state = self.lock();
+        if state.unavailable {
+            return Err(ConsentError::Unavailable("mock consent offline".into()));
+        }
+        state
+            .decision_cards
+            .retain(|_, (id, _)| id != elicitation_id);
+        state.withdrawn.push(elicitation_id.to_owned());
+        Ok(())
+    }
     fn raise(&self, card: &InstallCard) -> Result<(), ConsentError> {
         let mut state = self.lock();
         if state.unavailable {

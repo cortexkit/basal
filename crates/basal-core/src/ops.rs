@@ -67,6 +67,8 @@ pub struct LastRun {
 /// an operator.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FlowHealth {
+    pub grant_losses: Vec<crate::grant_loss::GrantLoss>,
+    pub agent_retirement: Option<serde_json::Value>,
     pub waiting_reason: Option<String>,
     pub flow_id: String,
     pub enabled: bool,
@@ -197,6 +199,21 @@ pub fn flow_health(conn: &Connection, now_ms: i64) -> Result<Vec<FlowHealth>> {
             )?,
         };
         flows.push(FlowHealth {
+            grant_losses: crate::grant_loss::losses(conn, Some(&flow_id))?
+                .into_iter()
+                .filter(|g| matches!(g.state.as_str(), "polling" | "stopped"))
+                .collect(),
+            agent_retirement: conn
+                .query_row(
+                    "SELECT agent_retirement FROM flows WHERE flow_id=?1",
+                    [&flow_id],
+                    |r| r.get::<_, Option<String>>(0),
+                )?
+                .map(|body| {
+                    serde_json::from_str(&body)
+                        .map_err(|e| crate::CoreError::Corrupt(e.to_string()))
+                })
+                .transpose()?,
             waiting_reason,
             auto_disabled: record.disabled_by.as_deref() == Some(crate::install::RUNTIME_ACTOR),
             disabled_reason: record.disabled_reason,

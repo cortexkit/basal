@@ -3704,8 +3704,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/install.rs"
-old = "match record.disabled_by.as_deref() {\n                Some(by) if by == own => {}\n                _ => return Err(refused()),\n            }"
-new = "match record.disabled_by.as_deref() {\n                Some(by) if by == own => {}\n                Some(RUNTIME_ACTOR) => {} // NON-VACUITY BREAK\n                _ => return Err(refused()),\n            }"
+old = "_ => return Err(refused()),"
+new = "Some(RUNTIME_ACTOR) => {} // NON-VACUITY BREAK\n                _ => return Err(refused()),"
 
 [[control]]
 id = "an-operator-disable-of-a-flow-the-owner-disabled-changes-nothing"
@@ -3720,8 +3720,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/install.rs"
-old = "let takes_over = matches!(actor, Actor::Operator(_))"
-new = "let takes_over = false && matches!(actor, Actor::Operator(_))"
+old = "let takes_over = (matches!(actor, Actor::Operator(_))"
+new = "let takes_over = (false && matches!(actor, Actor::Operator(_))"
 
 [[control]]
 id = "health-has-no-as-of"
@@ -3820,8 +3820,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-module/src/ops.rs"
-old = "\"waiting_reason\": f.waiting_reason,\n                \"needs_reconcile\": !f.needs_reconcile.is_empty(),"
-new = "\"waiting_reason\": f.waiting_reason,\n                \"needs_reconcile\": f.needs_reconcile.clone(),"
+old = "\"needs_reconcile\": !f.needs_reconcile.is_empty(),"
+new = "\"needs_reconcile\": f.needs_reconcile.clone(),"
 
 [[control]]
 id = "health-s-overflowed-is-left-out"
@@ -8567,10 +8567,10 @@ id = "health-index-predicate-selects-deferred"
 hub = "The pending Broca index covers exactly the unacknowledged, undeferred calls, asserted by the migration health test and the store's pending-lookup query plan test"
 hub_targets = ["broca_store"]
 guards = "migration 11 must retain the exact pending Broca predicate on populated stores"
-file = "crates/basal-core/src/schema.rs"
-old = "CREATE INDEX broca_calls_pending ON broca_calls(send_id) WHERE json_extract(snapshot, '$.acknowledged') = 0 AND COALESCE(json_extract(snapshot, '$.deferred'), 0) = 0;"
-new = "CREATE INDEX broca_calls_pending ON broca_calls(send_id) WHERE json_extract(snapshot, '$.acknowledged') = 0 AND COALESCE(json_extract(snapshot, '$.deferred'), 0) = 1; -- NON-VACUITY BREAK"
-edits = []
+edits = [
+  { file = "crates/basal-core/src/schema.rs", old = "CREATE INDEX broca_calls_pending ON broca_calls(send_id) WHERE json_extract(snapshot, '$.acknowledged') = 0 AND COALESCE(json_extract(snapshot, '$.deferred'), 0) = 0;", new = "CREATE INDEX broca_calls_pending ON broca_calls(send_id) WHERE json_extract(snapshot, '$.acknowledged') = 0 AND COALESCE(json_extract(snapshot, '$.deferred'), 0) = 1; -- NON-VACUITY BREAK" },
+  { file = "crates/basal-core/src/schema.rs", old = "CREATE INDEX broca_calls_pending ON broca_calls (send_id) WHERE json_extract(snapshot, '$.acknowledged') = 0 AND COALESCE(json_extract(snapshot, '$.deferred'), 0) = 0;", new = "CREATE INDEX broca_calls_pending ON broca_calls (send_id) WHERE json_extract(snapshot, '$.acknowledged') = 0 AND COALESCE(json_extract(snapshot, '$.deferred'), 0) = 1; -- NON-VACUITY BREAK" },
+]
 test_file = "crates/basal-core/src/schema_health_tests.rs"
 runner = "cargo"
 package = "basal-core"
@@ -8637,7 +8637,9 @@ id = "retirement-is-not-version-disapproval"
 guards = "retirement fails through the terminal transition and blocks approval reenable"
 file = "crates/basal-core/src/install.rs"
 old = '&& f.disabled_reason.as_deref() != Some("agent_retired")'
-new = "&& true // NON-VACUITY BREAK"
+# A retirement without an agent ID still blocks enabling: new code alone
+# cannot prove that the unknown retired agent is no longer involved.
+new = '''&& (f.disabled_reason.as_deref() != Some("agent_retired") || tx.query_row("SELECT json_extract(agent_retirement, '$.agent_id') IS NULL FROM flows WHERE flow_id=?1", [flow_id], |r| r.get::<_,bool>(0)).unwrap_or(false)) /* NON-VACUITY BREAK */'''
 edits = []
 test_file = "crates/basal-core/src/runtime_regressions.rs"
 runner = "cargo"
@@ -10036,3 +10038,537 @@ only = false
 file = "crates/basal-core/src/driver.rs"
 old = "return self.fail(\n                        \"profile_violation\",\n                        \"console output is not available to flows\".into(),\n                        false,\n                    );"
 new = "continue; // NON-VACUITY BREAK"
+
+# Lost-grant restoration: each control runs on exactly one named operating system.
+[[control]]
+id = "grant-loss-agent-refusal-must-disable"
+guards = "an agent grant loss disables before restoration can run"
+file = "crates/basal-core/src/grant_loss.rs"
+old = 'install::disable(tx, flow_id, &install::Actor::Core, "grant_lost", now)'
+new = 'if refusal.reason == basal_host::flow_refusal::RefusalReason::AgentGrantAbsent { return Ok(()); } /* NON-VACUITY BREAK */ install::disable(tx, flow_id, &install::Actor::Core, "grant_lost", now)'
+test_file = "crates/basal-core/src/grant_loss_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["runtime::grant_loss_tests::grant_absence_disables_and_keeps_one_durable_subject"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "grant-loss-repeat-updates-subject"
+guards = "a repeated lost grant updates the same durable subject with the latest run"
+file = "crates/basal-core/src/grant_loss.rs"
+old = "run_id=excluded.run_id,version=excluded.version,revision=revision+1"
+new = "run_id=flow_grant_losses.run_id,version=excluded.version,revision=revision+1 /* NON-VACUITY BREAK */"
+test_file = "crates/basal-core/src/grant_loss_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["runtime::grant_loss_tests::grant_absence_disables_and_keeps_one_durable_subject"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "grant-loss-yes-restores-flow"
+guards = "a positive diagnostic lifts its own lost-grant disable"
+file = "crates/basal-core/src/grant_loss.rs"
+old = "install::enable(tx, &loss.flow_id, now).map_err(|e| CoreError::Invalid(e.to_string()))?;"
+new = "let _ = (tx, &loss.flow_id, now); // NON-VACUITY BREAK"
+test_file = "crates/basal-core/src/grant_loss_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["runtime::grant_loss_tests::restored_grant_reenables_only_its_own_disable"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "grant-loss-manual-disable-wins"
+guards = "restoration never overrides operator or agent stops"
+file = "crates/basal-core/src/grant_loss.rs"
+old = 'f.disabled_by.as_deref()==Some(install::CORE_ACTOR) && f.disabled_reason.as_deref()==Some("grant_lost")'
+new = 'f.disabled_by.is_some() /* NON-VACUITY BREAK */'
+test_file = "crates/basal-core/src/grant_loss_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["runtime::grant_loss_tests::restored_grant_reenables_only_its_own_disable"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "grant-loss-backoff-doubles"
+guards = "negative restoration diagnostics use exponential injected-clock backoff"
+file = "crates/basal-core/src/grant_loss.rs"
+old = "1i64 << loss.failures.min(16)"
+new = "1i64 << (loss.failures * 0) /* NON-VACUITY BREAK */"
+test_file = "crates/basal-core/src/grant_loss_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["runtime::grant_loss_tests::grant_polling_uses_injected_backoff_and_requires_registered_scope"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "grant-loss-stop-polling-is-effective"
+guards = "keeping a grant disabled stops its restoration reads"
+file = "crates/basal-core/src/grant_loss.rs"
+old = "SET state='stopped',revision=revision+1 WHERE flow_id=?1 AND provider=?2 AND grant_key=?3 AND state='polling'"
+new = "SET state=CASE WHEN grant_key='g1.opaque' THEN 'polling' ELSE 'stopped' END,revision=revision+1 /* NON-VACUITY BREAK */ WHERE flow_id=?1 AND provider=?2 AND grant_key=?3 AND state='polling'"
+test_file = "crates/basal-core/src/grant_loss_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["runtime::grant_loss_tests::keeping_disabled_stops_polling_until_explicit_owner_enable"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "grant-loss-oversized-reference-is-not-echoed"
+hub = "Grant subjects hash oversized references instead of truncating or echoing them, asserted by runtime recording and public key-boundary tests"
+hub_targets = ["grant_subjects"]
+guards = "the four-KiB reference limit produces a marked hash fallback"
+file = "crates/basal-core/src/grant_loss.rs"
+old = "if bytes.len() > 4096 {"
+new = "if false { // NON-VACUITY BREAK"
+test_file = "crates/basal-core/src/grant_loss_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["runtime::grant_loss_tests::structured_grants_have_stable_keys_and_oversized_grants_are_not_echoed"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "grant-loss-migration-preserves-children"
+guards = "widening journal refusal codes preserves existing foreign-key children"
+file = "crates/basal-core/src/schema.rs"
+old = "INSERT INTO broca_calls SELECT * FROM migration_14_broca;"
+new = "INSERT INTO broca_calls SELECT * FROM migration_14_broca WHERE 0; -- NON-VACUITY BREAK"
+test_file = "crates/basal-core/src/schema_flow_deferral_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["schema::flow_deferral_tests::grant_loss_migration_preserves_journal_children_and_backfills_retirement"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "grant-loss-wire-refusal-stays-typed"
+guards = "grant absence remains a typed unsent refusal with intact metadata"
+file = "crates/basal-host/src/flow_refusal.rs"
+old = '"agent_grant_absent" => RefusalReason::AgentGrantAbsent,'
+new = '"agent_grant_absent" => RefusalReason::ConsentUnavailable, // NON-VACUITY BREAK'
+test_file = "crates/basal-host/src/flow_refusal.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["flow_refusal::tests::grant_absence_is_typed_and_preserves_oversized_references"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "grant-loss-poll-never-unscoped"
+guards = "restoration uses the registered flow route even when no scope is available"
+file = "crates/basal-host/src/transport.rs"
+old = '''let reply = self.call_for_flow(
+            flow,
+            RouteTarget::ManagementSurface {
+                module_id: module.into(),
+            },
+            serde_json::to_vec(&management_body("grants.would_ask", params))
+                .map_err(|e| WireError::NeverSent(e.to_string()))?,
+            true,
+            module,
+            "grants.would_ask",
+        )?;'''
+new = '''let _ = flow;
+        let reply = self.management(module, "grants.would_ask", params)?; // NON-VACUITY BREAK'''
+test_file = "crates/basal-host/src/transport.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["transport::tests::grant_polling_never_uses_an_unscoped_route"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "grant-loss-reply-reference-must-match"
+guards = "a diagnostic for another grant cannot restore this one"
+file = "crates/basal-host/src/transport.rs"
+old = '|| items[0]["grant"].as_str() != Some(grant)'
+new = '|| (items[0]["grant"].as_str() != Some(grant) && false) /* NON-VACUITY BREAK */'
+test_file = "crates/basal-host/src/transport.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["transport::tests::grant_reply_must_name_the_requested_reference_and_known_verdict"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "grant-loss-retirement-evidence-is-durable"
+guards = "an agent-owned retirement is retained independently of manual disable precedence"
+file = "crates/basal-core/src/grant_loss.rs"
+old = "UPDATE flows SET agent_retirement=?2 WHERE flow_id=?1"
+new = "UPDATE flows SET agent_retirement=?2 WHERE flow_id=?1 AND owner='operator' /* NON-VACUITY BREAK */"
+test_file = "crates/basal-core/src/grant_loss_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["runtime::grant_loss_tests::retirement_is_durable_health_without_a_card_and_enable_is_typed_refusal"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "grant-loss-retired-enable-fails-closed"
+guards = "no actor including the operator can enable while retirement stands"
+file = "crates/basal-core/src/install.rs"
+old = "SELECT COALESCE(agent_retirement,CASE WHEN disabled_reason='agent_retired' THEN '{}' END) FROM flows WHERE flow_id=?1"
+new = "SELECT NULL /* NON-VACUITY BREAK */ FROM flows WHERE flow_id=?1"
+test_file = "crates/basal-core/src/grant_loss_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["runtime::grant_loss_tests::retirement_is_durable_health_without_a_card_and_enable_is_typed_refusal"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "grant-loss-reinstall-still-targets-retired-agent"
+guards = "a global reinstall cannot clear retirement while its manifest still targets that agent"
+file = "crates/basal-core/src/grant_loss.rs"
+old = "Ok(different_owner && no_target)"
+new = "Ok(different_owner && (!agent_owned || no_target)) // NON-VACUITY BREAK"
+test_file = "crates/basal-core/src/grant_loss_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["runtime::grant_loss_tests::retirement_clears_only_when_reinstall_no_longer_involves_the_agent"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "grant-loss-health-list-evidence-visible"
+guards = "flow listing retains the lost-grant subject visible in health"
+file = "crates/basal-module/src/ops.rs"
+old = 'row["grant_losses"] = json!(losses);'
+new = 'let _ = losses; row["grant_losses"] = json!([]); // NON-VACUITY BREAK'
+test_file = "crates/basal-module/tests/health_contract.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test health_contract"
+expect_red = ["health_and_list_show_grant_loss_and_retirement_evidence"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "grant-loss-retired-enable-wire-refusal"
+hub = "Retirement refuses enable with typed evidence for operator and owner, asserted by health visibility and caller-contract tests"
+hub_targets = ["ops"]
+guards = "flow.enable exposes the retirement refusal rather than an ordinary permission denial"
+file = "crates/basal-module/src/ops.rs"
+old = '''"agent_retired",
+                format!("flow {flow_id} involves a retired agent"),'''
+new = '''"not_permitted", /* NON-VACUITY BREAK */
+                format!("flow {flow_id} involves a retired agent"),'''
+test_file = "crates/basal-module/tests/health_contract.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test health_contract"
+expect_red = ["health_and_list_show_grant_loss_and_retirement_evidence"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "grant-loss-removed-flow-stops-polling"
+guards = "removed flows cannot perform restoration reads"
+file = "crates/basal-core/src/grant_loss.rs"
+old = "&& !crate::packages::removed(conn, &loss.flow_id)?"
+new = "&& (!crate::packages::removed(conn, &loss.flow_id)? || true) /* NON-VACUITY BREAK */"
+test_file = "crates/basal-core/src/grant_loss_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["runtime::grant_loss_tests::removed_flow_stops_restoration_without_provider_reads"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "grant-loss-stale-positive-is-fenced"
+guards = "a diagnostic started before a repeat loss cannot clear its newer revision"
+file = "crates/basal-core/src/grant_loss.rs"
+old = "AND revision=?4 AND state='polling'"
+new = "AND (revision=?4 OR 1) /* NON-VACUITY BREAK */ AND state='polling'"
+test_file = "crates/basal-core/src/grant_loss_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["runtime::grant_loss_tests::stale_positive_diagnostic_cannot_clear_a_repeat_loss"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "grant-loss-backoff-cap-is-modest"
+guards = "restoration backoff never exceeds its one-minute cap"
+file = "crates/basal-core/src/grant_loss.rs"
+old = ".min(RETRY_MAX_MS)"
+new = ".min(RETRY_MAX_MS * 2) /* NON-VACUITY BREAK */"
+test_file = "crates/basal-core/src/grant_loss_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["runtime::grant_loss_tests::grant_polling_uses_injected_backoff_and_requires_registered_scope"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "grant-loss-structured-reference-is-canonical"
+hub = "Structured grants have stable compact sorted bytes, asserted by durable runtime subjects and the public key contract"
+hub_targets = ["grant_subjects"]
+guards = "structured grant references are compact canonical strings"
+file = "crates/basal-core/src/grant_loss.rs"
+old = "serde_json::to_string(&sorted(other))"
+new = "serde_json::to_string_pretty(&sorted(other)) /* NON-VACUITY BREAK */"
+test_file = "crates/basal-core/src/grant_loss_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["runtime::grant_loss_tests::structured_grants_have_stable_keys_and_oversized_grants_are_not_echoed"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "grant-loss-retirement-health-visible"
+guards = "flow health exposes standing retirement evidence"
+file = "crates/basal-module/src/ops.rs"
+old = '"agent_retirement": f.agent_retirement,'
+new = '"agent_retirement": Value::Null, /* NON-VACUITY BREAK */'
+test_file = "crates/basal-module/tests/health_contract.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test health_contract"
+expect_red = ["health_and_list_show_grant_loss_and_retirement_evidence"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "grant-card-agent-loss-writes-intent"
+guards = "an agent grant refusal writes its decision intent in the disabling commit"
+file = "crates/basal-core/src/grant_loss.rs"
+old = "if echoable {"
+new = "if echoable && refusal.reason != basal_host::flow_refusal::RefusalReason::AgentGrantAbsent { // NON-VACUITY BREAK"
+test_file = "crates/basal-core/src/grant_loss_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["runtime::grant_loss_tests::grant_absence_disables_and_keeps_one_durable_subject"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "grant-card-expiry-never-applies-default"
+guards = "silence does not stop grant restoration polling"
+file = "crates/basal-core/src/decisions.rs"
+old = 'audit("decision.expired", &card.dedup_key)?;'
+new = '''if let DecisionContext::GrantLost { provider, grant, .. } = card.context()? { crate::grant_loss::stop_polling(tx, &card.flow_id, &provider, &grant)?; } // NON-VACUITY BREAK
+            audit("decision.expired", &card.dedup_key)?;'''
+test_file = "crates/basal-core/src/grant_loss_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["runtime::grant_loss_tests::grant_card_expiry_keeps_polling_and_explicit_keep_stops_it"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "grant-card-keep-disabled-stops-polling"
+guards = "the explicit keep_disabled choice invokes the stop-polling switch"
+file = "crates/basal-core/src/decisions.rs"
+old = "crate::grant_loss::stop_polling(tx, &card.flow_id, &provider, &grant)?;"
+new = "let _ = (provider, grant); // NON-VACUITY BREAK"
+test_file = "crates/basal-core/src/grant_loss_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["runtime::grant_loss_tests::grant_card_expiry_keeps_polling_and_explicit_keep_stops_it"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "grant-card-check-now-is-immediate"
+guards = "check_now bypasses the existing restoration timer without granting access"
+file = "crates/basal-core/src/decisions.rs"
+old = "crate::grant_loss::check_now(tx, &card.flow_id, &provider, &grant, now_ms)?;"
+new = "let _ = (provider, grant); // NON-VACUITY BREAK"
+test_file = "crates/basal-core/src/grant_loss_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["runtime::grant_loss_tests::grant_card_check_now_schedules_an_immediate_scoped_read"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "grant-card-oversized-reference-has-no-card"
+guards = "a hash fallback is health evidence, never an opaque reference on a card"
+edits = [
+  { file = "crates/basal-core/src/grant_loss.rs", old = "if echoable {", new = "if true { // NON-VACUITY BREAK" },
+  { file = "crates/basal-core/src/decisions.rs", old = "if !loss.echoable {", new = "if false { // NON-VACUITY BREAK" },
+]
+test_file = "crates/basal-core/src/grant_loss_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["runtime::grant_loss_tests::structured_grants_have_stable_keys_and_oversized_grants_are_not_echoed"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "grant-card-late-acceptance-queues-withdrawal"
+guards = "a card accepted after restoration still gets a durable withdrawal"
+file = "crates/basal-core/src/decisions.rs"
+old = "AND kind='grant_lost' AND state='stale'"
+new = "AND kind='grant_lost' AND state='stale' AND 0 /* NON-VACUITY BREAK */"
+test_file = "crates/basal-core/src/grant_loss_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["runtime::grant_loss_tests::restored_card_withdrawal_is_durable_even_after_a_late_raise_ack"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "grant-card-newer-acceptance-identity-wins"
+guards = "an older raise reply cannot overwrite the latest accepted card identity"
+file = "crates/basal-core/src/decisions.rs"
+old = "CASE WHEN COALESCE(raised_revision,0) <= ?2 THEN ?3 ELSE elicitation_id END"
+new = "?3 /* NON-VACUITY BREAK */"
+test_file = "crates/basal-core/src/grant_loss_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["runtime::grant_loss_tests::older_raise_ack_cannot_replace_the_current_grant_card_identity"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "grant-card-engine-retracts-core-card"
+guards = "withdrawal obligations are sent to core before they are acknowledged locally"
+file = "crates/basal-module/src/engine.rs"
+old = "inner.consent.withdraw_decision(&id)"
+new = "Ok::<(),basal_host::ConsentError>(()) /* NON-VACUITY BREAK */"
+test_file = "crates/basal-module/tests/decisions.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test decisions"
+expect_red = ["repeated_grant_loss_raises_one_card_and_enable_retracts_it_after_restart"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "grant-card-body-omits-version"
+guards = "grant_lost uses its exact closed body with no version field"
+file = "crates/basal-host/src/core_consent.rs"
+old = "if card.decision() != DecisionKind::GrantLost {"
+new = "if true { // NON-VACUITY BREAK"
+test_file = "crates/basal-host/src/core_consent_tests.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["core_consent::polling_tests::grant_lost_request_has_closed_body_and_choice_ids"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "grant-card-migration-preserves-old-cards"
+guards = "adding grant_lost preserves every existing decision card and its indexes"
+file = "crates/basal-core/src/schema.rs"
+old = "INSERT INTO decision_cards_new SELECT * FROM decision_cards;"
+new = "INSERT INTO decision_cards_new SELECT * FROM decision_cards WHERE 0; -- NON-VACUITY BREAK"
+test_file = "crates/basal-core/src/schema_flow_deferral_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["schema::flow_deferral_tests::grant_decision_migration_preserves_existing_cards_and_named_indexes"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "grant-card-retirement-keeps-prior-uncertainty"
+guards = "retirement cannot relabel an earlier possibly-sent mutation as rejected"
+file = "crates/basal-core/src/runtime.rs"
+old = "if let Some(reason) = maybe_sent {"
+new = "if let Some(reason) = maybe_sent.filter(|_| refusal.reason != basal_host::flow_refusal::RefusalReason::AgentRetired) { // NON-VACUITY BREAK"
+test_file = "crates/basal-core/src/grant_loss_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["runtime::grant_loss_tests::retirement_after_unknown_preserves_reconcile_then_not_applied_fails_once"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600

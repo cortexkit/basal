@@ -234,3 +234,62 @@ fn flow_health_decodes_as_core_decodes_it() {
     );
     assert!(matches!(refused, Err(e) if e.code == "invalid_params"));
 }
+
+#[test]
+fn health_and_list_show_grant_loss_and_retirement_evidence() {
+    let f = fixture("grant-health", Options::default());
+    let owner = agent("SYNAPSE");
+    let flow = install_approved(&f, &owner, "return 1;", &events_manifest("lost-grant"));
+    f.module
+        .rt
+        .disable_flow(&flow, &Actor::Core, "grant_lost")
+        .unwrap();
+    f.module.rt.store().write(|tx| {
+        tx.execute("INSERT INTO flow_grant_losses(flow_id,provider,grant_key,grant_label,echoable,run_id,version,state,next_poll_at,lost_at) VALUES (?1,'plexus','g1.ref','github: create_issue',1,'run-evidence',1,'stopped',0,0)",[&flow])?;
+        Ok(())
+    }).unwrap();
+    for method in ["flow.health", "flow.list"] {
+        let raw = f
+            .module
+            .handle(&Caller::Operator, method, json!({}))
+            .unwrap();
+        let entry = raw["flows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["flow_id"] == flow)
+            .unwrap();
+        assert_eq!(entry["disabled"]["reason"], "grant_lost");
+        assert_eq!(entry["grant_losses"][0]["grant"], "g1.ref");
+        assert_eq!(
+            entry["grant_losses"][0]["grant_label"],
+            "github: create_issue"
+        );
+        assert_eq!(entry["grant_losses"][0]["state"], "stopped");
+    }
+    let retirement = json!({"agent_id":"SYNAPSE","agent_reference":"SYNAPSE","provider":"prefrontal-core","action":"sink.status","at_ms":T0});
+    f.module.rt.store().write(|tx| {
+        tx.execute("UPDATE flows SET disabled_reason='agent_retired',agent_retirement=?2 WHERE flow_id=?1",rusqlite::params![flow,retirement.to_string()])?;
+        Ok(())
+    }).unwrap();
+    for method in ["flow.health", "flow.list"] {
+        let raw = f
+            .module
+            .handle(&Caller::Operator, method, json!({}))
+            .unwrap();
+        let entry = raw["flows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["flow_id"] == flow)
+            .unwrap();
+        assert_eq!(entry["disabled"]["reason"], "agent_retired");
+        assert_eq!(entry["agent_retirement"], retirement);
+    }
+    let refused = f
+        .module
+        .handle(&Caller::Operator, "flow.enable", json!({"flow_id":flow}))
+        .unwrap_err();
+    assert_eq!(refused.code, "agent_retired");
+    assert_eq!(refused.detail, Some(retirement));
+}

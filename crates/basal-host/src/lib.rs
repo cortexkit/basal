@@ -401,6 +401,19 @@ pub trait CompletionSink: Send + Sync {
 /// The hosts a flow reaches. Implementations must be safe to call from
 /// several threads at once: the runtime runs a run's calls concurrently.
 pub trait Host: Send + Sync {
+    /// Read a lost grant only on its flow's scoped route. Hosts without a
+    /// scoped diagnostic implementation fail closed, never use a carrier route.
+    fn grant_would_ask(
+        &self,
+        _flow_id: &str,
+        _agent_id: Option<&str>,
+        _provider: &str,
+        _grant: &str,
+    ) -> Result<bool, TransportError> {
+        Err(TransportError::unsent(
+            "scoped grant diagnostics unavailable",
+        ))
+    }
     /// Only flow-owned provider calls use scope readiness. Plumbing and local
     /// built-ins keep the default so they cannot accidentally acquire a scope.
     fn provider_ready(
