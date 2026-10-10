@@ -12,7 +12,7 @@ use std::time::Duration;
 use basal_core::{
     Config, InstallError, InstallRequest, NoHooks, RunState, Runtime, Store, StoredClass, Warning,
 };
-use basal_host::builtins::{self, BuiltinHost};
+use basal_host::builtins::{self, BuiltinHost, codes};
 use basal_host::{
     CallClass, CallRequest, CompletionSink, Dispatched, Host, HostOutcome, InstallStatus,
     TransportError,
@@ -227,12 +227,19 @@ fn calls_outside_the_manifest_are_refused_in_the_parent_and_journaled() {
     let run_id = admit_with(&rt, &world, &script, &files.manifest());
     let run = finish(&rt, &world, &run_id);
     assert_eq!(run.state, RunState::Succeeded, "{run:#?}");
+    // Windows rejects raw relative components as malformed arguments; Unix
+    // resolves the spelling and refuses the resulting outside-root target.
+    let escape_code = if cfg!(windows) {
+        codes::INVALID_ARGUMENTS
+    } else {
+        codes::DENIED
+    };
     assert_eq!(
         result(&run),
         json!({
             "inside": "PRIVATE-FILE-TEXT",
             "outside": "denied",
-            "escape": "denied",
+            "escape": escape_code,
             "git": "denied",
             "host": "denied",
             "method": "denied",
@@ -247,7 +254,11 @@ fn calls_outside_the_manifest_are_refused_in_the_parent_and_journaled() {
         assert_eq!(outcome.settlement, Settlement::Rejected, "{row:?}");
         assert_eq!(
             code_of(&outcome.value).as_deref(),
-            Some("denied"),
+            Some(if row.position == 2 {
+                escape_code
+            } else {
+                codes::DENIED
+            }),
             "{row:?}"
         );
     }
