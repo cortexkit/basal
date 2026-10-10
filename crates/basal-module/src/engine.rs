@@ -108,6 +108,13 @@ struct Inner {
     /// leave everything as it was.
     progress: AtomicU64,
     wake: Arc<Wake>,
+    // None prevents new engine threads. Register under this lock so shutdown
+    // cannot miss a thread between its spawn and its handle being saved.
+    threads: Mutex<Option<Vec<thread::JoinHandle<()>>>>,
+    #[cfg(test)]
+    activation_exit: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
+    joining: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 /// Release both reservations even if a host, hook or spawner unwinds. A panic
@@ -141,6 +148,37 @@ impl Drop for ActivationSlot<'_> {
 #[derive(Clone)]
 pub struct Engine {
     inner: Arc<Inner>,
+}
+
+/// A loop observer. The engine owns the actual thread handle so module
+/// shutdown can join it even when its caller discards this observer.
+pub struct EngineLoop {
+    done: std::sync::mpsc::Receiver<thread::Result<()>>,
+}
+
+#[cfg(test)]
+struct ActivationExit<'a>(&'a Engine);
+
+#[cfg(test)]
+impl Drop for ActivationExit<'_> {
+    fn drop(&mut self) {
+        if let Some(exit) = self
+            .0
+            .inner
+            .activation_exit
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+        {
+            exit();
+        }
+    }
+}
+
+impl EngineLoop {
+    pub fn join(self) -> thread::Result<()> {
+        self.done.recv().expect("engine loop completion was lost")
+    }
 }
 
 impl Engine {
@@ -191,6 +229,11 @@ impl Engine {
                 cond: Condvar::new(),
                 progress: AtomicU64::new(0),
                 wake,
+                threads: Mutex::new(Some(Vec::new())),
+                #[cfg(test)]
+                activation_exit: Mutex::new(None),
+                #[cfg(test)]
+                joining: Mutex::new(None),
             }),
         }
     }
@@ -226,6 +269,22 @@ impl Engine {
         inner.pool.maintain();
         self.raise_decisions().map_err(fatal)?;
         let mut started = Vec::new();
+        let mut threads = inner.threads.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(threads) = threads.as_mut() else {
+            return Ok(PassReport {
+                admitted,
+                expired,
+                started,
+            });
+        };
+        for index in (0..threads.len()).rev() {
+            if threads[index].is_finished() {
+                threads
+                    .swap_remove(index)
+                    .join()
+                    .expect("engine thread failed outside its panic boundary");
+            }
+        }
         for (run_id, flow_id) in inner.rt.startable().map_err(fatal)? {
             {
                 let mut active = self.active();
@@ -239,8 +298,16 @@ impl Engine {
                 active.flows.insert(flow_id.clone());
             }
             started.push(run_id.clone());
-            let engine = self.clone();
-            thread::spawn(move || engine.activate(run_id, flow_id));
+            threads.push(
+                self.spawn_task(move |engine| {
+                    // The slot is released inside activate, before the captured
+                    // engine is dropped. Empty run/flow slots are not thread exit.
+                    #[cfg(test)]
+                    let _exit = ActivationExit(engine);
+                    engine.activate(run_id, flow_id);
+                })
+                .0,
+            );
         }
         inner.cond.notify_all();
         Ok(PassReport {
@@ -489,6 +556,48 @@ impl Engine {
         self.inner.wake.cond.notify_all();
     }
 
+    pub(crate) fn join_threads(&self) {
+        self.stop();
+        let handles = self
+            .inner
+            .threads
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        #[cfg(test)]
+        if let Some(joining) = self
+            .inner
+            .joining
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+        {
+            joining();
+        }
+        for handle in handles.into_iter().flatten() {
+            handle
+                .join()
+                .expect("engine thread failed outside its panic boundary");
+        }
+    }
+
+    fn spawn_task(
+        &self,
+        f: impl FnOnce(&Engine) + Send + 'static,
+    ) -> (thread::JoinHandle<()>, EngineLoop) {
+        let engine = self.clone();
+        let (done, receiver) = std::sync::mpsc::channel();
+        let handle = thread::spawn(move || {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&engine)));
+            if result.is_err() {
+                engine.inner.fatal.raise("engine thread panicked");
+            }
+            drop(engine);
+            let _ = done.send(result);
+        });
+        (handle, EngineLoop { done: receiver })
+    }
+
     fn next_wait(&self) -> Result<Duration, CoreError> {
         let next = self
             .inner
@@ -506,9 +615,14 @@ impl Engine {
     /// The production loop: work signals and the earliest timer, with a slow
     /// fallback. Capture the epoch before the pass so a commit between the
     /// scan and the wait cannot be lost.
-    pub fn spawn_loop(&self) -> thread::JoinHandle<()> {
-        let engine = self.clone();
-        thread::spawn(move || engine.run_loop(|seen, wait| engine.inner.wake.wait(seen, wait)))
+    pub fn spawn_loop(&self) -> EngineLoop {
+        let mut threads = self.inner.threads.lock().unwrap_or_else(|p| p.into_inner());
+        let threads = threads.as_mut().expect("cannot start a stopped engine");
+        let (handle, observer) = self.spawn_task(|engine| {
+            engine.run_loop(|seen, wait| engine.inner.wake.wait(seen, wait));
+        });
+        threads.push(handle);
+        observer
     }
 
     fn run_loop(&self, mut wait: impl FnMut(u64, Duration)) {

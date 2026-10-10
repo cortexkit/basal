@@ -637,3 +637,95 @@ fn journal_count_failure_is_fatal_not_zero_replayed_calls() {
     assert!(engine.inner.fatal.get().is_some());
     cleanup(engine, path);
 }
+
+#[test]
+fn module_drop_joins_activation_after_slot_release() {
+    use crate::dryrun::DryRunConfig;
+    use crate::module::{Hosts, Module, ModuleConfig};
+    use std::sync::{Barrier, mpsc};
+
+    let (old_engine, path) = engine(false);
+    cleanup(old_engine, path.clone());
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let consent = Arc::new(MockConsent::new());
+    let mut pool = PoolConfig::new("missing", WorkerLaunch::Plain);
+    pool.warm_spares = 0;
+    let module = Module::start(
+        ModuleConfig {
+            store_path: path.clone(),
+            durability: Durability { fullfsync: false },
+            runtime: Config {
+                clock: basal_core::Clock::manual(0),
+                install_gate: basal_core::InstallGate::Off,
+                ..Config::default()
+            },
+            pool,
+            engine: EngineConfig::default(),
+            dry_run: DryRunConfig::new(path.parent().unwrap().join("dry")),
+        },
+        Hosts {
+            host: Arc::new(MockHost::new()),
+            catalog: Arc::new(MockCatalog::standard()),
+            consent: consent.clone(),
+            hooks: Arc::new(NoHooks),
+        },
+        Arc::new(RefuseOrPanic(true)),
+    )
+    .unwrap();
+    install_flow(&module.rt, "cut");
+    module
+        .rt
+        .admit_trigger("cut", "event", basal_proto::JsonText::null())
+        .unwrap();
+
+    let release = Arc::new(Barrier::new(2));
+    let tail_release = release.clone();
+    let (parked_tx, parked) = mpsc::channel();
+    *module.engine.inner.activation_exit.lock().unwrap() = Some(Arc::new(move || {
+        parked_tx.send(()).unwrap();
+        tail_release.wait();
+    }));
+    module.engine.pass().unwrap();
+    parked.recv_timeout(Duration::from_secs(60)).unwrap();
+    assert_eq!(module.engine.active_count(), 0);
+    assert!(module.fatal.get().unwrap().contains("panicked"));
+
+    #[derive(Debug, PartialEq)]
+    enum Event {
+        Joining,
+        Dropped,
+    }
+    let (event_tx, events) = mpsc::channel();
+    let joining_tx = event_tx.clone();
+    *module.engine.inner.joining.lock().unwrap() = Some(Arc::new(move || {
+        joining_tx.send(Event::Joining).unwrap();
+    }));
+    let dropping = thread::spawn(move || {
+        drop(module);
+        event_tx.send(Event::Dropped).unwrap();
+    });
+    // With the join removed, Dropped arrives while the activation still owns
+    // the engine. Open before releasing that barrier to expose the lease race
+    // without depending on the scheduler or an elapsed-time assertion.
+    let first = events.recv_timeout(Duration::from_secs(60)).unwrap();
+    if first == Event::Joining {
+        release.wait();
+        assert_eq!(
+            events.recv_timeout(Duration::from_secs(60)).unwrap(),
+            Event::Dropped
+        );
+    }
+    let reopened = Store::open(&path, Durability { fullfsync: false });
+    if first == Event::Dropped {
+        release.wait();
+    }
+    dropping.join().unwrap();
+    assert!(
+        reopened.is_ok(),
+        "drop returned with the storage lease still held: {:?}",
+        reopened.err()
+    );
+    // The consent adapter is deliberately still alive and attached here.
+    drop(consent);
+    std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+}

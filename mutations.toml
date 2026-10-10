@@ -1,4 +1,5 @@
 
+
 # Safety proofs replayed by the pinned ckdev-mutate runner.
 # Names are full libtest paths; the named guard must fail.
 # Other tests in the target may also fail: the original proofs ran
@@ -11463,3 +11464,19 @@ expect_red = ["runtime::grant_loss_tests::retirement_after_unknown_preserves_rec
 only = true
 build_timeout_s = 3600
 timeout_s = 600
+
+[[control]]
+id = "module-drop-detaches-activation-tail"
+guards = "Module drop joins an activation after its reservation is released"
+test_file = "crates/basal-module/src/engine_tests.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["engine::lifecycle_tests::module_drop_joins_activation_after_slot_release"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/module.rs"
+old = "            engine.join_threads();"
+new = "            // NON-VACUITY BREAK: detach engine threads during shutdown."

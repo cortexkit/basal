@@ -4,7 +4,8 @@
 //! `running` is mistaken for one in progress.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use basal_core::cards::{Decided, Decision};
 use basal_core::decisions::Answered;
@@ -44,6 +45,10 @@ pub struct Hosts {
     pub hooks: Arc<dyn Hooks>,
 }
 
+/// Drop stops and joins module-owned engine and runtime threads, and revokes
+/// the consent sink's runtime. A stalled shutdown panics after 60 seconds.
+/// Caller-owned runtime, engine or store clones must also be dropped before
+/// reopening the same storage.
 pub struct Module {
     pub rt: Runtime,
     pub pool: Pool,
@@ -53,6 +58,7 @@ pub struct Module {
     pub catalog: Arc<dyn Catalog>,
     pub metrics: Arc<Metrics>,
     pub fatal: Fatal,
+    decisions: Arc<DecisionApplier>,
 }
 
 impl Module {
@@ -140,10 +146,11 @@ impl Module {
             runtime_config,
             metrics.clone(),
         );
-        hosts.consent.attach(Arc::new(DecisionApplier {
-            rt: rt.clone(),
+        let decisions = Arc::new(DecisionApplier {
+            rt: Mutex::new(Some(rt.clone())),
             fatal: fatal.clone(),
-        }));
+        });
+        hosts.consent.attach(decisions.clone());
         pool.replenish();
         Ok(Self {
             rt,
@@ -154,31 +161,38 @@ impl Module {
             catalog: hosts.catalog,
             metrics,
             fatal,
+            decisions,
         })
     }
 }
 
 /// Applies card decisions from the consent plane.
 struct DecisionApplier {
-    rt: Runtime,
+    // Hosts may retain an attached sink after the module is gone. Clearing
+    // its runtime under the callback lock releases that store reference and
+    // waits for any callback already using it.
+    rt: Mutex<Option<Runtime>>,
     fatal: Fatal,
 }
 
 impl DecisionSink for DecisionApplier {
     fn has_open_cards(&self) -> Result<bool, SinkError> {
-        self.rt
+        let rt = self.rt.lock().unwrap_or_else(|p| p.into_inner());
+        rt.as_ref()
+            .ok_or_else(|| SinkError("the module is stopped".into()))?
             .has_open_cards()
             .map_err(|e| SinkError(e.to_string()))
     }
     fn decide(&self, event: &DecisionEvent) -> Result<(), SinkError> {
+        let rt = self.rt.lock().unwrap_or_else(|p| p.into_inner());
+        let rt = rt
+            .as_ref()
+            .ok_or_else(|| SinkError("the module is stopped".into()))?;
         let decision = match event.decision {
             CardDecision::Approve => Decision::Approve,
             CardDecision::Reject => Decision::Reject,
         };
-        match self
-            .rt
-            .decide_card(&event.card_id, decision, &event.decided_by)
-        {
+        match rt.decide_card(&event.card_id, decision, &event.decided_by) {
             Ok(Decided::Applied(state)) => {
                 tracing::info!(
                     target: "consent",
@@ -219,7 +233,11 @@ impl DecisionSink for DecisionApplier {
     }
 
     fn answer(&self, answer: &DecisionAnswer) -> Result<(), SinkError> {
-        match self.rt.answer_decision(answer) {
+        let rt = self.rt.lock().unwrap_or_else(|p| p.into_inner());
+        let rt = rt
+            .as_ref()
+            .ok_or_else(|| SinkError("the module is stopped".into()))?;
+        match rt.answer_decision(answer) {
             Ok(answered) => {
                 let what = match &answered {
                     Answered::Now(state) => state.as_str(),
@@ -255,7 +273,30 @@ impl DecisionSink for DecisionApplier {
 
 impl Drop for Module {
     fn drop(&mut self) {
-        self.engine.stop();
-        self.pool.stop();
+        let engine = self.engine.clone();
+        let pool = self.pool.clone();
+        let rt = self.rt.clone();
+        let decisions = self.decisions.clone();
+        // Waiting for empty run/flow slots is insufficient: an unwinding
+        // activation frees its slot before dropping its engine and runtime.
+        // A stalled host must fail shutdown loudly, not leave drop hung forever.
+        let (done, receiver) = std::sync::mpsc::channel();
+        let shutdown = std::thread::spawn(move || {
+            engine.stop();
+            pool.stop();
+            engine.join_threads();
+            rt.quiesce();
+            decisions
+                .rt
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .take();
+            drop((engine, pool, rt, decisions));
+            let _ = done.send(());
+        });
+        receiver
+            .recv_timeout(Duration::from_secs(60))
+            .expect("module shutdown did not release its threads within 60 seconds");
+        shutdown.join().expect("module shutdown panicked");
     }
 }
