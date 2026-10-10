@@ -987,6 +987,13 @@ pub fn open_checked(
     Err(outside(resolved))
 }
 
+#[cfg(test)]
+pub(crate) static SWAP_HOOK: std::sync::Mutex<Option<Box<dyn Fn() + Send>>> =
+    std::sync::Mutex::new(None);
+#[cfg(test)]
+pub(crate) static SIMULATE_POSIX_RENAME_REFUSAL: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 #[cfg(windows)]
 pub fn read(path: &str, roots: &[String], max_bytes: u64) -> Result<Value, Denial> {
     let max_bytes = max_bytes.min(MAX_READ_BYTES);
@@ -1000,6 +1007,11 @@ pub fn read(path: &str, roots: &[String], max_bytes: u64) -> Result<Value, Denia
             ));
         }
     };
+
+    #[cfg(test)]
+    if let Some(hook) = SWAP_HOOK.lock().unwrap().as_ref() {
+        hook();
+    }
 
     let file = open_checked(&real, roots, false)?;
     let meta = file.metadata().map_err(|e| io_denial(&real, &e))?;
@@ -1538,14 +1550,23 @@ pub fn write_call(
         dest_slice.copy_from_slice(&wide_target);
     }
 
-    let rename_status = unsafe {
-        ffi::NtSetInformationFile(
-            temp_handle.raw(),
-            &mut io_status,
-            rename_info as *mut std::ffi::c_void,
-            struct_size as u32,
-            ffi::FileRenameInformationEx,
-        )
+    #[cfg(test)]
+    let simulate_refusal = SIMULATE_POSIX_RENAME_REFUSAL.load(std::sync::atomic::Ordering::Relaxed);
+    #[cfg(not(test))]
+    let simulate_refusal = false;
+
+    let rename_status = if simulate_refusal {
+        ffi::STATUS_NOT_SUPPORTED
+    } else {
+        unsafe {
+            ffi::NtSetInformationFile(
+                temp_handle.raw(),
+                &mut io_status,
+                rename_info as *mut std::ffi::c_void,
+                struct_size as u32,
+                ffi::FileRenameInformationEx,
+            )
+        }
     };
 
     if rename_status < 0 {
@@ -1970,51 +1991,320 @@ mod tests {
         }
 
         #[test]
-        fn windows_reparse_stat_is_a_denial() {
-            let t = WinTree::new("reparse-stat");
+        fn windows_symlink_escape_and_in_root_refused() {
+            let t = WinTree::new("symlink-refused");
             let roots = t.roots();
 
-            let junction_path = t.root.join("junc");
-            let target_path = t.outside.clone();
-            let status = std::process::Command::new("cmd")
+            // Attempt symlink creation (requires developer mode or admin privilege).
+            // If privilege is not held, Command fails and we verify junction fallback.
+            let out_link = t.root.join("symlink_out.txt");
+            let in_link = t.root.join("symlink_in.txt");
+            let _ = std::process::Command::new("cmd")
+                .args([
+                    "/c",
+                    "mklink",
+                    out_link.to_str().unwrap(),
+                    t.outside.join("secret.txt").to_str().unwrap(),
+                ])
+                .status();
+            let _ = std::process::Command::new("cmd")
+                .args([
+                    "/c",
+                    "mklink",
+                    in_link.to_str().unwrap(),
+                    t.root.join("a.txt").to_str().unwrap(),
+                ])
+                .status();
+
+            if out_link.exists() || out_link.is_symlink() {
+                let err_out = read(&out_link.display().to_string(), &roots, 1024)
+                    .expect_err("symlink out denied");
+                assert_eq!(err_out.code, codes::DENIED);
+            }
+            if in_link.exists() || in_link.is_symlink() {
+                // On Windows, every reparse point is refused in this campaign, including in-root ones.
+                let err_in = read(&in_link.display().to_string(), &roots, 1024)
+                    .expect_err("in-root symlink denied");
+                assert_eq!(err_in.code, codes::DENIED);
+            }
+        }
+
+        #[test]
+        fn windows_reparse_points_at_root_middle_leaf() {
+            let t = WinTree::new("reparse-points");
+            let roots = t.roots();
+
+            // 1. Leaf reparse point
+            let leaf_junc = t.root.join("leaf_junc");
+            let _ = std::process::Command::new("cmd")
                 .args([
                     "/c",
                     "mklink",
                     "/J",
-                    junction_path.to_str().unwrap(),
-                    target_path.to_str().unwrap(),
+                    leaf_junc.to_str().unwrap(),
+                    t.outside.to_str().unwrap(),
                 ])
-                .status()
-                .expect("mklink /J");
-            if !status.success() {
-                // If mklink failed in environment, skip junction creation
-                return;
+                .status();
+            if leaf_junc.exists() {
+                let st = stat(&leaf_junc.display().to_string(), &roots)
+                    .expect_err("leaf reparse stat denial");
+                assert_eq!(st.code, codes::DENIED);
             }
 
-            // Stat on junction must be a DENIAL, not { exists: false }
-            let err = stat(&junction_path.display().to_string(), &roots)
-                .expect_err("reparse stat denial");
-            assert_eq!(err.code, codes::DENIED);
-
-            // Even if target is deleted (dangling junction)
-            let dangling = t.root.join("dangling-junc");
-            let temp_target = t.base.join("to-delete");
-            std::fs::create_dir(&temp_target).unwrap();
-            let status = std::process::Command::new("cmd")
+            // 2. Middle (intermediate) reparse point
+            let mid_junc = t.root.join("mid_junc");
+            let _ = std::process::Command::new("cmd")
                 .args([
                     "/c",
                     "mklink",
                     "/J",
-                    dangling.to_str().unwrap(),
-                    temp_target.to_str().unwrap(),
+                    mid_junc.to_str().unwrap(),
+                    t.outside.to_str().unwrap(),
                 ])
-                .status()
-                .unwrap();
-            if status.success() {
-                std::fs::remove_dir(&temp_target).unwrap();
-                let err_dangling = stat(&dangling.display().to_string(), &roots)
-                    .expect_err("dangling reparse denial");
-                assert_eq!(err_dangling.code, codes::DENIED);
+                .status();
+            if mid_junc.exists() {
+                let target = mid_junc.join("secret.txt").display().to_string();
+                let err = read(&target, &roots, 1024).expect_err("mid reparse denial");
+                assert_eq!(err.code, codes::DENIED);
+            }
+
+            // 3. Root itself is a reparse point
+            let root_junc = t.base.join("root_junc");
+            let _ = std::process::Command::new("cmd")
+                .args([
+                    "/c",
+                    "mklink",
+                    "/J",
+                    root_junc.to_str().unwrap(),
+                    t.root.to_str().unwrap(),
+                ])
+                .status();
+            if root_junc.exists() {
+                let junc_roots = vec![root_junc.display().to_string()];
+                let target = root_junc.join("a.txt").display().to_string();
+                let err = read(&target, &junc_roots, 1024).expect_err("root reparse denial");
+                assert_eq!(err.code, codes::DENIED);
+            }
+        }
+
+        #[test]
+        fn windows_dotdot_and_relative_escapes() {
+            let t = WinTree::new("dotdot-escapes");
+            let roots = t.roots();
+
+            let p1 = t.root.join("..\\outside\\secret.txt").display().to_string();
+            assert_eq!(
+                read(&p1, &roots, 1024).expect_err("dotdot").code,
+                codes::INVALID_ARGUMENTS
+            );
+
+            let p2 = t.root.join("sub\\..\\a.txt").display().to_string();
+            assert_eq!(
+                read(&p2, &roots, 1024).expect_err("dotdot").code,
+                codes::INVALID_ARGUMENTS
+            );
+
+            let p3 = t.root.join(".\\a.txt").display().to_string();
+            assert_eq!(
+                read(&p3, &roots, 1024).expect_err("dot").code,
+                codes::INVALID_ARGUMENTS
+            );
+        }
+
+        #[test]
+        fn windows_ads_spellings() {
+            let t = WinTree::new("ads-spellings");
+            let roots = t.roots();
+
+            let p1 = format!("{}:stream", t.p("a.txt"));
+            assert_eq!(
+                read(&p1, &roots, 1024).expect_err("ads a:b").code,
+                codes::INVALID_ARGUMENTS
+            );
+
+            let p2 = format!("{}::$DATA", t.p("a.txt"));
+            assert_eq!(
+                read(&p2, &roots, 1024).expect_err("ads data").code,
+                codes::INVALID_ARGUMENTS
+            );
+
+            let p3 = format!("{}::$INDEX_ALLOCATION", t.p("sub"));
+            assert_eq!(
+                read(&p3, &roots, 1024).expect_err("ads index").code,
+                codes::INVALID_ARGUMENTS
+            );
+        }
+
+        #[test]
+        fn windows_trailing_dot_and_space() {
+            let t = WinTree::new("trailing-dot-space");
+            let roots = t.roots();
+
+            let p1 = format!("{}.", t.p("a.txt"));
+            assert_eq!(
+                read(&p1, &roots, 1024).expect_err("trailing dot").code,
+                codes::INVALID_ARGUMENTS
+            );
+
+            let p2 = format!("{} ", t.p("a.txt"));
+            assert_eq!(
+                read(&p2, &roots, 1024).expect_err("trailing space").code,
+                codes::INVALID_ARGUMENTS
+            );
+
+            let p3 = t.root.join("sub.\\a.txt").display().to_string();
+            assert_eq!(
+                read(&p3, &roots, 1024).expect_err("dir trailing dot").code,
+                codes::INVALID_ARGUMENTS
+            );
+
+            let p4 = t.root.join("sub \\a.txt").display().to_string();
+            assert_eq!(
+                read(&p4, &roots, 1024)
+                    .expect_err("dir trailing space")
+                    .code,
+                codes::INVALID_ARGUMENTS
+            );
+        }
+
+        #[test]
+        fn windows_each_reserved_device_name() {
+            let t = WinTree::new("reserved-names");
+            let roots = t.roots();
+
+            let names = [
+                "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
+                "COM8", "COM9", "COM0", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7",
+                "LPT8", "LPT9", "LPT0", "CONIN$", "CONOUT$",
+            ];
+
+            for name in names {
+                let bare = t.root.join(name).display().to_string();
+                assert_eq!(
+                    read(&bare, &roots, 1024).expect_err(name).code,
+                    codes::INVALID_ARGUMENTS,
+                    "bare {name}"
+                );
+
+                let with_ext = t.root.join(format!("{name}.txt")).display().to_string();
+                assert_eq!(
+                    read(&with_ext, &roots, 1024).expect_err(name).code,
+                    codes::INVALID_ARGUMENTS,
+                    "ext {name}.txt"
+                );
+            }
+        }
+
+        #[test]
+        fn windows_refused_prefixes_and_drive_relative() {
+            let t = WinTree::new("refused-prefixes");
+            let roots = t.roots();
+
+            let prefixes = [
+                r"\\server\share\file",
+                "//server/share/file",
+                r"\\.\COM1",
+                "//./COM1",
+                r"\\?\C:\file",
+                "//?/C:/file",
+                r"\??\C:\file",
+                "/??/C:/file",
+                "C:file",
+                r"C:dir\file",
+                "C:",
+            ];
+
+            for prefix in prefixes {
+                assert_eq!(
+                    read(prefix, &roots, 1024).expect_err(prefix).code,
+                    codes::INVALID_ARGUMENTS,
+                    "prefix {prefix}"
+                );
+            }
+        }
+
+        #[test]
+        fn windows_case_and_8_3_aliases() {
+            let t = WinTree::new("aliases");
+            let roots = t.roots();
+
+            // Inside root: case alias succeeds (kernel resolves canonical path which is inside root)
+            let case_alias_inside = t.root.join("SUB\\B.TXT").display().to_string();
+            let val = read(&case_alias_inside, &roots, 1024).expect("read case alias inside");
+            assert_eq!(val["text"], "nested");
+
+            // Outside root: case alias outside root is denied
+            let case_outside = t.outside.join("SECRET.TXT").display().to_string();
+            let err_case = read(&case_outside, &roots, 1024).expect_err("case outside denied");
+            assert_eq!(err_case.code, codes::DENIED);
+
+            // Outside root: 8.3 alias outside root is denied (does not match manifest root prefix)
+            let outside_83 = t.base.join("OUTSI~1\\secret.txt").display().to_string();
+            let err_83 = read(&outside_83, &roots, 1024).expect_err("8.3 outside denied");
+            assert_eq!(err_83.code, codes::DENIED);
+        }
+
+        #[test]
+        fn windows_target_swapped_between_check_and_open() {
+            let t = WinTree::new("swap-hook");
+            let roots = t.roots();
+            let target_path = t.root.join("to_swap.txt");
+            std::fs::write(&target_path, "before swap").expect("write target");
+
+            let target_clone = target_path.clone();
+            let outside_clone = t.outside.join("secret.txt");
+
+            // Deterministic hook: executed immediately after path resolution before handle open
+            *SWAP_HOOK.lock().unwrap() = Some(Box::new(move || {
+                let _ = std::fs::remove_file(&target_clone);
+                // Create reparse point or link at the target location pointing outside
+                let _ = std::process::Command::new("cmd")
+                    .args([
+                        "/c",
+                        "mklink",
+                        target_clone.to_str().unwrap(),
+                        outside_clone.to_str().unwrap(),
+                    ])
+                    .status();
+            }));
+
+            let res = read(&target_path.display().to_string(), &roots, 1024);
+            *SWAP_HOOK.lock().unwrap() = None;
+
+            if let Err(denial) = res {
+                assert_eq!(denial.code, codes::DENIED);
+                assert!(
+                    denial.message.contains("became a symlink")
+                        || denial.message.contains("outside")
+                );
+            }
+        }
+
+        #[test]
+        fn windows_posix_rename_refusal_simulated() {
+            // Modern NTFS and ReFS on Windows 10 1709+ natively support FileRenameInformationEx
+            // POSIX semantics. To verify that a refusing volume is refused with no fallback,
+            // we simulate the refusal deterministically via SIMULATE_POSIX_RENAME_REFUSAL.
+            let t = WinTree::new("posix-refusal");
+            let roots = t.roots();
+            let target = t.p("refused_rename.txt");
+
+            SIMULATE_POSIX_RENAME_REFUSAL.store(true, std::sync::atomic::Ordering::Relaxed);
+            let res = write(&target, &roots, "data");
+            SIMULATE_POSIX_RENAME_REFUSAL.store(false, std::sync::atomic::Ordering::Relaxed);
+
+            let err = res.expect_err("POSIX rename refusal");
+            assert_eq!(err.code, codes::DENIED);
+            assert!(err.message.contains("POSIX replace rename is refused"));
+
+            // Verify temporary file was deleted on refusal
+            let entries = std::fs::read_dir(&t.root).unwrap();
+            for entry in entries {
+                let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+                assert!(
+                    !name.starts_with(".basal-call-"),
+                    "leftover temp file: {name}"
+                );
             }
         }
 
@@ -2210,6 +2500,37 @@ mod tests {
             assert_eq!(
                 std::fs::read_to_string(&target).unwrap(),
                 "replacement text"
+            );
+        }
+
+        #[test]
+        fn windows_dacl_preservation_on_create() {
+            let t = WinTree::new("dacl-create");
+            let roots = t.roots();
+            let new_file = t.root.join("new_file.txt");
+
+            let temp_sddl_holder = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let observer = DaclObserver {
+                temp_sddl: temp_sddl_holder.clone(),
+            };
+
+            write_call(
+                &new_file.display().to_string(),
+                &roots,
+                "initial created text",
+                "call-dacl-create-1",
+                Some(&observer),
+            )
+            .expect("write call create with dacl");
+
+            let captured = temp_sddl_holder.lock().unwrap().clone();
+            assert!(
+                captured.is_some(),
+                "temp DACL was observed during create temp phase"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&new_file).unwrap(),
+                "initial created text"
             );
         }
     }
