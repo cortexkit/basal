@@ -1,5 +1,8 @@
-//! Core owns run-scope authority. Basal carries the invoking stamp and an
-//! immutable expiry to core on its reserved route, never through the worker.
+//! prefrontal-core authorizes run scopes. The invoking tool route's daemon stamp
+//! records the verified principal, scope owner, reference, epoch and agent_id.
+//! Basal sends that agent and scope identity with a fixed expiry to core over its
+//! own route stamped reserved:basal, the daemon-verified basal module principal.
+//! The confined worker never makes these authority-bearing control requests.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

@@ -74,9 +74,9 @@ pub struct Module {
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(60);
 
 impl Module {
-    /// The tool surface for an embedding with a bound daemon route. Context
-    /// must contain that route's verified principal and ScopeStamp, as supplied
-    /// by the daemon; model arguments are never a source of caller authority.
+    /// Handle a tool call on an already bound daemon route. The caller must
+    /// supply Context using the principal and scope the daemon recorded when
+    /// binding that route, never values supplied in model arguments.
     pub fn handle_tool(
         &self,
         context: &crate::tool::Context,

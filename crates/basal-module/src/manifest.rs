@@ -105,8 +105,9 @@ pub fn manifest() -> ModuleManifest {
                     .collect(),
                 config_schema: json!({"type": "object"}),
                 observability: Vec::new(),
-                // The daemon-attested agent_id limits an agent to its own flows.
-                // A bind identity's project and session cannot change that authority.
+                // The daemon records the route's principal and scope when
+                // binding it. The scope's agent_id limits an agent to its own
+                // flows; project and session configuration cannot change that.
                 identity_scope: Vec::new(),
                 // Blocking request threads and the engine share the store's serial
                 // SQLite writes and conditional transitions, preventing races.

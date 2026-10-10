@@ -2,7 +2,7 @@
 
 Core's scoped relay exposes these five operations: `flow.install`, `flow.dry_run`, `flow.disable`, `flow.enable` and `flow.list`. Caller identity comes from the daemon's route stamp, never request parameters. `flow.health` is not relayed: core uses it to decide whether a flow's claim to replace a source remains healthy, and the operator uses its runtime-wide figures.
 
-Basal also provides the agent-facing `codemode` tool directly: the daemon delivers named tool requests to basal, rather than core forwarding them. See [codemode](#codemode).
+The daemon delivers agent-facing `codemode` calls directly to basal; prefrontal-core does not forward them. See [codemode](#codemode).
 
 Package management is not agent-relayed: `package.register` is available to the attested operator and core; `package.get`, `flow.instance.ensure`, and `flow.instance.remove` are core-only. The attested operator is a caller on a route the daemon stamps as the reserved `callosum` module, the operator's own module. A plain local caller is a process holding the daemon's direct connection key, on a route with no scope, which the daemon cannot vouch for. A plain local caller refused any of these receives `operator_attestation_required`, consistently with the other management operations; other unauthorized callers receive `not_permitted`. See [package manifests](packages.md).
 
@@ -102,7 +102,7 @@ Reply (machine-checked by `list_contract`):
 
 ## Codemode
 
-Basal is a `tool-provider/v1` provider with one agent tool, `codemode`. Core grants access and owns each ephemeral run scope; it does not carry the tool or provide its input schemas. The daemon verifies the caller's principal and stamps the incoming route with scope owner, ref, epoch and authoritative attributes including `agent_id`; basal takes its agent and invoking scope only from that stamp. Arguments cannot override either. Each child provider route carries the invoking route's `BindIdentity` unchanged (project root, harness, session and any other protocol identity fields), so relative paths and shell working directories resolve as for the agent's direct calls. Bind identity is configuration only: basal never derives agent or scope authority from it.
+Basal is a `tool-provider/v1` provider with one agent tool, `codemode`. Core grants access and owns each ephemeral run scope; it does not carry the tool or provide its input schemas. The daemon verifies the caller's principal and stamps the incoming route with scope owner, ref, epoch and authoritative attributes including `agent_id`; basal takes its agent and invoking scope only from that stamp. Arguments cannot override either. Each child provider route carries the invoking route's `BindIdentity` unchanged. Its project root configures where relative paths and shell commands run; its harness and session configure the provider's client and session context. A registered project ID is also copied unchanged when present. These values preserve the configuration of the agent's direct calls, never authority: basal identifies the agent and scope only from the daemon's recorded principal and scope.
 
 The named tool request uses the daemon wire protocol's [`ToolCallRequest`](https://docs.rs/subc-protocol/0.30.0/subc_protocol/tool_call/struct.ToolCallRequest.html):
 ```json
