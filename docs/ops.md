@@ -1,10 +1,12 @@
 # Agent-facing basal operations
 
-Core's scoped relay exposes these five operations. Caller identity comes from the daemon's route stamp, never request parameters. `flow.health` is not relayed: core uses it to decide whether a flow's claim to replace a source remains healthy, and the operator uses its runtime-wide figures.
+Core's scoped relay exposes these five operations: `flow.install`, `flow.dry_run`, `flow.disable`, `flow.enable` and `flow.list`. Caller identity comes from the daemon's route stamp, never request parameters. `flow.health` is not relayed: core uses it to decide whether a flow's claim to replace a source remains healthy, and the operator uses its runtime-wide figures.
+
+The codemode operations `codemode.run`, `codemode.result` and `codemode.cancel` are core-only and not agent-relayed. See [codemode operations](#codemode-operations).
 
 Package management is not agent-relayed: `package.register` is available to the attested operator and core; `package.get`, `flow.instance.ensure`, and `flow.instance.remove` are core-only. The attested operator is a caller on a route the daemon stamps as the reserved `callosum` module, the operator's own module. A plain local caller is a process holding the daemon's direct connection key, on a route with no scope, which the daemon cannot vouch for. A plain local caller refused any of these receives `operator_attestation_required`, consistently with the other management operations; other unauthorized callers receive `not_permitted`. See [package manifests](packages.md).
 
-Shapes below use type names, `|` for alternatives, and a one-element array to describe each array item. `?` on a request key means optional. Reply keys are always present. `object` and `any` describe open JSON values.
+Shapes below use type names, `|` for alternatives, and a one-element array to describe each array item. `?` on a request key means optional. Reply keys are always present, except in the codemode result shape, where `?` marks a key that is omitted when absent. `object` and `any` describe open JSON values.
 
 ## flow.install
 
@@ -97,6 +99,206 @@ Reply (machine-checked by `list_contract`):
 {"as_of":"integer","flows":[{"flow_id":"string","state":"enabled|disabled|unapproved","approved_version":"integer|null","pending_version":"integer|null","disabled":{"by":"operator|owner|auto|core","reason":"string","at":"integer"},"last_run":{"run_id":"string","state":"string","ended_at":"integer"},"needs_reconcile":"boolean","grant_losses":[{"flow_id":"string","provider":"string","grant":"string","grant_label":"string","echoable":"boolean","run_id":"string","version":"integer","revision":"integer","state":"polling|stopped","failures":"integer","next_poll_at_ms":"integer","lost_at_ms":"integer"}],"agent_retirement":{"agent_id":"string|null","agent_reference":"string|null","provider":"string","action":"string","at_ms":"integer"}}]}
 ```
 `disabled` and `last_run` may each be null, but their keys must be present. All times are Unix epoch milliseconds. `pending_version` is the newest version with an open card, or null; `approved_version` is null until approval. `state` uses the same approval-first computation as `flow.health`. `last_run` is the most recent finished run, not an in-flight run. `needs_reconcile` is true if any run awaits reconciliation. The disable's actor kind, reason and time are the recorded disable, or null after enabling. `by` is `operator`, `owner` (the owning agent), `auto` (the runtime's loop protection) or `core`. A `core` disable may mean core revoked the version, holds no install of that version, or approved a different code hash for it; it may also mean `grant_lost` or `agent_retired`. Losing core's approval also clears the approved version, so the flow lists as `unapproved`; approval of a newer version clears that stop, but does not override an operator or owner stop.
+
+## Codemode operations
+
+Codemode runs one short JavaScript program that calls tools from a catalog and returns one result. prefrontal-core owns the agent-facing tool, builds the catalog and issues the run's scope; basal runs the program in a fresh confined worker and dispatches each tool call on that scope.
+
+`codemode.run`, `codemode.result` and `codemode.cancel` are core-only and not agent-relayed: only prefrontal-core, on its own route stamped `reserved:prefrontal-core`, may call them, and core's scoped relay never forwards them for an agent. A plain local caller is refused `operator_attestation_required`; the operator, agents and every other caller are refused `not_permitted`. A refusal is an op error with a code and a message and has no result body. Every success reply is the [codemode result](#codemode-result).
+
+## codemode.run
+
+Core-only, not agent-relayed. Kind: mutate.
+
+Params:
+```json
+{"run_id":"string","agent_id":"string","program":"string","catalog":[{"name":"string","input_schema":"any","module":"string","op":"string"}],"limits?":{"wall_ms?":"integer","tool_calls?":"integer","output_bytes?":"integer"},"description?":"string","scope":{"owner":"object","ref":"string","epoch":"integer"},"deadline_ms":"integer"}
+```
+- `program` is a function body, wrapped the way flow scripts are; its return value is the run's `value`. It sees only `tools` (one async function per catalog `name`), `console.log` and the frozen JavaScript intrinsics.
+- `catalog` entries have exactly these four keys. `op` is the tool name sent to `module`'s tool provider; the program calls `tools[name]`. `input_schema` is a JSON Schema draft 2020-12 that checks every input before it is sent; it may refer only to itself (`#` or `#/...`). An empty array is valid.
+- `limits` may hold only `wall_ms`, `tool_calls` (1 to 200, default 200) and `output_bytes` (1 to 65,536, default 65,536). The run's wall deadline is `min(deadline_ms, admission time + wall_ms)`; omitted `wall_ms` means `deadline_ms`.
+- `description` is optional: the one-line summary the agent wrote, which the person's phone shows. It is a string of at most 1,024 UTF-8 bytes with no line break (U+000A, U+000D, U+2028 or U+2029). basal stores it with the run and `codemode.result` returns it unchanged. It plays no part in idempotency.
+- `scope` is the live scope core issued for this run: `owner` is a reserved principal (`{"kind":"reserved","module_id":"..."}`), `ref` is non-blank, and `epoch` is the scope epoch. basal asks the daemon to describe the scope and admits the run only if it is live at that epoch and its attested `agent_id` and `run_id` equal the request's. Every tool call is dispatched on that scope, so the daemon stamps it on each call.
+- `deadline_ms` is an absolute Unix-millisecond time on basal's runtime clock.
+
+The reply is returned as soon as the run is recorded; the program keeps running if the caller disconnects. Its `status` is `running`, or terminal if the run ended at admission. A run admitted at or after `deadline_ms` is recorded `budget_exhausted:wall` with `duration_ms` 0 and never starts a worker.
+
+Admission checks run in this order; the first failure refuses with the code shown and records nothing:
+1. A known `run_id` returns the stored run, whatever the other parameters are (program, catalog, scope, limits or description), with its admitted `catalog_digest` and `description`. It never starts a second run or sends a call. A `run_id` pruned by retention is refused `unknown_run`.
+2. `unsupported_platform` on Windows.
+3. `no_scope`: `scope` missing or malformed, an owner that is not a reserved principal, or a blank `ref`.
+4. `no_scope` when the daemon's description of the scope is not `live` at `epoch`; `scope_mismatch` when its attested `agent_id` or `run_id` differs from the request's.
+5. `invalid_request`: a missing or non-string `run_id`, `agent_id` or `program`; a missing `catalog`; a missing or non-integer `deadline_ms`; a `program` over 1 MiB; a non-string, over-long or multi-line `description`.
+6. `invalid_limits`: an unknown key, a non-integer, a value below 1, or a value above its maximum.
+7. `invalid_catalog`: not an array; an entry with a missing or extra key; a duplicate `name`; a `name` not matching `^[A-Za-z_][A-Za-z0-9_]*$`, longer than 128 bytes, or one of `__proto__`, `constructor`, `prototype`, `tools` and `console`; an empty or over-128-byte `module` or `op`; an `input_schema` that does not compile or refers outside itself.
+8. `busy`: the attested agent already has 2 running codemode runs, or basal has 16.
+
+Reply: the [codemode result](#codemode-result).
+
+## codemode.result
+
+Core-only, not agent-relayed. Kind: query.
+
+Params:
+```json
+{"run_id":"string"}
+```
+Returns the run's current or final state. An unknown run id, a flow run id, or a run pruned 24 hours after it ended is refused `unknown_run`; a non-string `run_id` is refused `invalid_request`.
+
+Reply: the [codemode result](#codemode-result).
+
+## codemode.cancel
+
+Core-only, not agent-relayed. Kind: mutate.
+
+Params:
+```json
+{"run_id":"string"}
+```
+An unknown or pruned run id is refused `unknown_run`. A run that has already ended returns its stored state unchanged. A running run is stopped: its worker is killed, its queued calls become `cancelled`, calls already sent without a recorded answer become `outcome_unknown` / `no_outcome`, its scope is released, and it ends `cancelled`. An answer that arrives after the cancel is not recorded.
+
+Reply: the [codemode result](#codemode-result).
+
+## Codemode result
+
+Result (machine-checked by `codemode_results_decode_against_documented_shape`):
+```json
+{"status":"running|completed|failed|budget_exhausted:js_cpu|budget_exhausted:memory|budget_exhausted:stack|budget_exhausted:wall|budget_exhausted:tool_calls|cancelled|interrupted","value?":"any","error?":{"code":"string","message":"string"},"output":"string","calls":[{"tool":"string","outcome":"pending|ok|error|refused|consent_unavailable|tool_unavailable|outcome_unknown|cancelled","code?":"string","duration_ms?":"integer"}],"warnings":[{"code":"output_truncated","message":"string"}],"catalog_digest":"string","description?":"string","duration_ms":"integer"}
+```
+Keys marked `?` are omitted when absent, never null:
+- `value` is the program's JSON return value, present only when `status` is `completed`.
+- `error` is `{code, message}`, present exactly when `status` is `failed`, `budget_exhausted:*` or `interrupted`, with a code from the terminal table below and a non-empty message.
+- `description` is present only when the admitted run carried one.
+- In each call, `code` is present only for the outcomes that carry one (see the call outcomes table), and `duration_ms` only once basal began dispatching the call to its provider.
+
+The other keys are always present:
+- `output` is the kept `console.log` text: each call's arguments (strings as they are, other values as JSON) joined by one space, with a newline after each line. Lines are kept while the total stays within the output budget; the line that would cross it and every later line are dropped, with one `output_truncated` warning. Output kept before a cancel or a kill is still returned.
+- `calls` lists every tool call in the order the program made them. Provider answers are never returned. A call's `duration_ms` is runtime-clock milliseconds from dispatch to its recorded outcome, or to the run's end for a call that ends `outcome_unknown` / `no_outcome`; time spent queued is excluded.
+- `warnings` is an array of `{code, message}`; the only code is `output_truncated`, at most once.
+- `catalog_digest` is the lowercase hex BLAKE3-256 of the admitted catalog's RFC 8785 canonical JSON, entries sorted by `name`. See [catalog digest vectors](#catalog-digest-vectors).
+- `duration_ms` is runtime-clock milliseconds since admission, frozen when the run ends.
+
+### Terminal codes
+
+| Terminal path | `status` | `error.code` |
+| --- | --- | --- |
+| The program returned a JSON value of at most 16,384 bytes | `completed` | none |
+| A budget was exhausted (JS CPU, memory, stack, wall or tool calls) | `budget_exhausted:<kind>` | equal to `status` |
+| The worker made a call other than a tool call | `failed` | `profile_violation` |
+| The worker's prelude differs from basal's | `failed` | `engine_mismatch` |
+| A tool input over 1 MiB | `failed` | `arguments_too_large` (the message has the size) |
+| A return value over 16,384 bytes of JSON | `failed` | `result_too_large` (the message has the size) |
+| A return value that is not JSON | `failed` | `result_not_json` |
+| An uncaught error in the program | `failed` | `script` |
+| The program awaits a promise no call will settle | `failed` | `stalled` |
+| Any other engine failure | `failed` | `engine_error` |
+| The worker exited, or could not start, without basal stopping it | `failed` | `worker_lost` |
+| The scope closed and a later call was refused | `interrupted` | the scope reason: `scope_ended`, `scope_not_live`, `scope_not_synced` or `scope_changed` |
+| basal restarted while the run was running | `interrupted` | `basal_restarted` |
+| `codemode.cancel` | `cancelled` | none |
+
+A worker basal stopped itself (a cancel, the wall deadline, or any other end of the run) is never reported `worker_lost`.
+
+### Call outcomes
+
+| Outcome | Produced when | `code` | Ends the run |
+| --- | --- | --- | --- |
+| `pending` | queued, or sent with no answer yet; only while the run is `running` | none | no |
+| `ok` | the provider answered with a value of at most 1 MiB | none | no |
+| `error` | the provider answered with a value over 1 MiB, or refused the call | `value_too_large`, or the provider's refusal code | no |
+| `refused` | basal refused the call before sending it | `unknown_tool`, `invalid_input`, `shell_capable`, `not_in_catalog` or `queue_full` | no |
+| `refused` | the daemon refused the call because the scope closed | `scope_ended`, `scope_not_live`, `scope_not_synced` or `scope_changed` | yes, `interrupted` |
+| `consent_unavailable` | the provider could not obtain consent | `consent_unavailable` | no |
+| `tool_unavailable` | the call could not be routed to a ready provider | `tool_unavailable` | no |
+| `outcome_unknown` | the connection was lost, the reply timed out, or the reply could not be read | `connection_lost`, `reply_timeout` or `reply_unreadable` | no |
+| `outcome_unknown` | the run ended after the call was sent and before an answer was recorded | `no_outcome` | already ended |
+| `cancelled` | the run ended while the call was still queued | none | already ended |
+
+Each call is sent at most once and never retried; an unknown outcome is reported, never re-sent. A call outcome other than `ok` that does not end the run rejects the program's promise with an `Error` carrying `code`, `tool` and `outcome`, which the program can catch.
+
+## Catalog digest vectors
+
+`catalog_digest` is the lowercase hex BLAKE3-256 of the catalog array's RFC 8785 (JCS) canonical JSON, with its entries sorted by `name`. Canonical JSON sorts object members by name, has no whitespace, writes numbers the way JavaScript does (`1.0` is `1`, `1e21` is `1e+21`), writes non-ASCII text as itself and escapes control characters. Core computes the same digest; these vectors pin it. Each shows a catalog as sent, its canonical JSON, and its digest. `crates/basal-core/tests/codemode_digest_vectors.rs` reproduces every vector with its own canonical JSON and BLAKE3 code and checks basal's digest against them.
+
+### Vector `base`
+
+```json
+[{"name":"find","module":"search","op":"search.find","input_schema":{"type":"object","properties":{"q":{"type":"string","maxLength":200}},"required":["q"]}},{"name":"read","module":"notes","op":"notes.read","input_schema":{"type":"object","properties":{"id":{"type":"integer","minimum":1}}}}]
+```
+```text
+[{"input_schema":{"properties":{"q":{"maxLength":200,"type":"string"}},"required":["q"],"type":"object"},"module":"search","name":"find","op":"search.find"},{"input_schema":{"properties":{"id":{"minimum":1,"type":"integer"}},"type":"object"},"module":"notes","name":"read","op":"notes.read"}]
+```
+Digest: `aa6c1832de7397efb328c47d6c9d3dbfc15f09294ba77d84424fae2ed8537697`
+
+### Vector `keys-reordered`
+
+The `base` catalog with the members of every object in another order; the digest is the same.
+
+```json
+[{"op":"search.find","input_schema":{"required":["q"],"properties":{"q":{"maxLength":200,"type":"string"}},"type":"object"},"name":"find","module":"search"},{"module":"notes","input_schema":{"properties":{"id":{"minimum":1,"type":"integer"}},"type":"object"},"op":"notes.read","name":"read"}]
+```
+```text
+[{"input_schema":{"properties":{"q":{"maxLength":200,"type":"string"}},"required":["q"],"type":"object"},"module":"search","name":"find","op":"search.find"},{"input_schema":{"properties":{"id":{"minimum":1,"type":"integer"}},"type":"object"},"module":"notes","name":"read","op":"notes.read"}]
+```
+Digest: `aa6c1832de7397efb328c47d6c9d3dbfc15f09294ba77d84424fae2ed8537697`
+
+### Vector `entries-reordered`
+
+The `base` catalog with its entries in the other order; the digest is the same.
+
+```json
+[{"name":"read","module":"notes","op":"notes.read","input_schema":{"type":"object","properties":{"id":{"type":"integer","minimum":1}}}},{"name":"find","module":"search","op":"search.find","input_schema":{"type":"object","properties":{"q":{"type":"string","maxLength":200}},"required":["q"]}}]
+```
+```text
+[{"input_schema":{"properties":{"q":{"maxLength":200,"type":"string"}},"required":["q"],"type":"object"},"module":"search","name":"find","op":"search.find"},{"input_schema":{"properties":{"id":{"minimum":1,"type":"integer"}},"type":"object"},"module":"notes","name":"read","op":"notes.read"}]
+```
+Digest: `aa6c1832de7397efb328c47d6c9d3dbfc15f09294ba77d84424fae2ed8537697`
+
+### Vector `trailing-zero`
+
+`1.0` is written `1`.
+
+```json
+[{"name":"scale","module":"math","op":"math.scale","input_schema":{"type":"number","multipleOf":0.5,"maximum":1.0}}]
+```
+```text
+[{"input_schema":{"maximum":1,"multipleOf":0.5,"type":"number"},"module":"math","name":"scale","op":"math.scale"}]
+```
+Digest: `b3f666837a0021f0cdb2fb3815d50858d69577993c4ee657ab2cdbee99eba9a0`
+
+### Vector `exponent`
+
+Numbers at or above 1e21, and below 1e-6, take the exponent form with a lowercase `e` and an explicit sign.
+
+```json
+[{"name":"measure","module":"lab","op":"lab.measure","input_schema":{"type":"number","minimum":2.5E-7,"maximum":1e21}}]
+```
+```text
+[{"input_schema":{"maximum":1e+21,"minimum":2.5e-7,"type":"number"},"module":"lab","name":"measure","op":"lab.measure"}]
+```
+Digest: `c57fc8b429409c4fbd9ba5d30f9c13561a7a6a3a4c2011d85791d2a67a2a8cda`
+
+### Vector `string`
+
+Non-ASCII text is written as itself, whether it was sent raw or escaped; the control character U+0007 is written `\u0007`.
+
+```json
+[{"name":"greet","module":"cafe","op":"cafe.greet","input_schema":{"type":"string","description":"Grüße, \u6771\u4eac\u0007!"}}]
+```
+```text
+[{"input_schema":{"description":"Grüße, 東京\u0007!","type":"string"},"module":"cafe","name":"greet","op":"cafe.greet"}]
+```
+Digest: `dceff93392fb8a334efca1083e5503e335d450e2ad80be38a55291d7941f0eb6`
+
+### Vector `empty`
+
+```json
+[]
+```
+```text
+[]
+```
+Digest: `d53d18c23212ea7b6300594bb89bce60218f6eff2b9d628b8cc42d3e79bbd5ab`
 
 ## Operator decision cards
 
