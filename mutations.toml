@@ -9924,9 +9924,9 @@ new = "self.fail(\"budget_exhausted\", format!(\"{kind:?}\"), true) // NON-VACUI
 # proofs run once on Linux; workspace gates run the tests on both supported OSes.
 [[control]]
 id = "codemode-protocol-version"
-hub = "Both the codemode version assertion and the fixed Welcome wire fixture pin version 4"
+hub = "Both the protocol version assertion and the fixed Welcome wire fixture pin version 5"
 hub_targets = ["basal_proto"]
-guards = "codemode wire requires protocol version 4"
+guards = "the worker wire requires protocol version 5 (codemode tools in 4, the Windows confinement report in 5)"
 test_file = "crates/basal-proto/src/lib.rs"
 runner = "cargo"
 package = "basal-proto"
@@ -9935,8 +9935,8 @@ target = "--lib"
 expect_red = ["tests::codemode_wire_codes_preserve_shell_and_round_trip_tool_json"]
 only = false
 file = "crates/basal-proto/src/limits.rs"
-old = "pub const PROTOCOL_VERSION: u32 = 4;"
-new = "pub const PROTOCOL_VERSION: u32 = 3; // NON-VACUITY BREAK"
+old = "pub const PROTOCOL_VERSION: u32 = 5;"
+new = "pub const PROTOCOL_VERSION: u32 = 4; // NON-VACUITY BREAK"
 
 [[control]]
 id = "codemode-address-space-headroom"
