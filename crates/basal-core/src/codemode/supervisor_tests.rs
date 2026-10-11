@@ -16,6 +16,34 @@ use crate::store::Durability;
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 const TIMEOUT: Duration = Duration::from_secs(10);
 
+// Cleanup may hit the same broken invariant that is already failing a test.
+// Run it off the unwinding thread so that a second panic cannot abort libtest,
+// and bound the join observation so a stuck event-driven driver fails the test.
+fn teardown(action: impl FnOnce() + Send + 'static) {
+    let unwinding = thread::panicking();
+    let (done, finished) = mpsc::channel();
+    let cleanup = thread::spawn(move || {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(action));
+        let _ = done.send(result);
+    });
+    match finished.recv_timeout(TIMEOUT) {
+        Ok(result) => {
+            cleanup.join().unwrap();
+            if let Err(panic) = result {
+                if unwinding {
+                    tracing::error!("codemode test cleanup panicked while unwinding");
+                } else {
+                    std::panic::resume_unwind(panic);
+                }
+            }
+        }
+        Err(error) if unwinding => {
+            tracing::error!(%error, "codemode test cleanup did not finish while unwinding");
+        }
+        Err(error) => panic!("codemode test cleanup did not finish: {error}"),
+    }
+}
+
 struct Attempt {
     flow: String,
     module: String,
@@ -509,6 +537,22 @@ impl Fixture {
             (0, 0)
         );
     }
+    fn cleanup(&self, shutdown: bool) {
+        if thread::panicking() {
+            // Release the fake reader and wake the driver only after an assertion
+            // has failed; normal teardown must still prove the real kill and join.
+            self.worker_exit.store(true, Ordering::SeqCst);
+            self.clock.set(i64::MAX);
+        }
+        let supervisor = self.supervisor.clone();
+        teardown(move || {
+            if shutdown {
+                supervisor.shutdown().unwrap();
+            } else {
+                let _ = supervisor.cancel("r");
+            }
+        });
+    }
 }
 
 #[path = "restart_tests.rs"]
@@ -576,9 +620,49 @@ fn shutdown_refuses_to_start_a_new_driver() {
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
-        let _ = self.supervisor.cancel("r");
+        self.cleanup(false);
         let _ = std::fs::remove_dir_all(&self.dir);
     }
+}
+
+#[test]
+fn teardown_preserves_the_original_panic_when_cleanup_also_panics() {
+    const CHILD: &str = "BASAL_CODEMODE_UNWIND_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        struct FailingCleanup;
+        impl Drop for FailingCleanup {
+            fn drop(&mut self) {
+                teardown(|| panic!("cleanup failure"));
+            }
+        }
+        let original = std::panic::catch_unwind(|| {
+            let _cleanup = FailingCleanup;
+            panic!("original failure");
+        })
+        .unwrap_err();
+        assert_eq!(original.downcast_ref::<&str>(), Some(&"original failure"));
+        return;
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "codemode::supervisor::tests::teardown_preserves_the_original_panic_when_cleanup_also_panics",
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "cleanup aborted the child: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn teardown_still_propagates_cleanup_panics_without_an_existing_panic() {
+    let failure = std::panic::catch_unwind(|| teardown(|| panic!("cleanup failure"))).unwrap_err();
+    assert_eq!(failure.downcast_ref::<&str>(), Some(&"cleanup failure"));
 }
 
 fn rejection(delivery: Delivery, tool: &str, outcome: &str, code: &str) {

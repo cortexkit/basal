@@ -258,7 +258,7 @@ impl ModelFixture {
 }
 impl Drop for ModelFixture {
     fn drop(&mut self) {
-        self.f.supervisor.shutdown().unwrap();
+        self.f.cleanup(true);
     }
 }
 
