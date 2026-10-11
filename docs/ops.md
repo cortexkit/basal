@@ -150,10 +150,11 @@ expiry is the scope's actual lifetime. The scope is owned by core, carried by
 basal, and stamped with `{flow_id, agent_id}`. Its `delegates` attribute is true
 only when an approved op grant declares `for_target: "delegate"`.
 
-Basal caches live refs for each flow and stable target and pins one per run and
-target. It asks only when no cached ref covers the run's deadline, or on replay
-or after that ref's scope ends or changes. Core can roll a new ref for a later
-deadline without closing one still used by an older run. There is no target
+Basal caches the live refs for each flow and target agent, and a run keeps
+using the first ref it got for each target. It asks core only when no cached
+ref covers the run's deadline, on replay, or after that ref's scope ends or
+changes. For a later deadline, core registers a new ref and leaves older ones
+valid until they expire, so a run already using one is never cut off. There is no target
 scope close op: expiry and install revocation clean up all such scopes. Revoking
 an install ends every target scope for the flow. Provider route opens use these
 selectors exactly as they use the flow's own selector. A scope close during a

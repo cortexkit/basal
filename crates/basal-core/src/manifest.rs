@@ -54,7 +54,9 @@ pub struct Manifest {
     pub version: u32,
     pub purpose: String,
     pub trigger: Trigger,
-    /// Delivery reach, covered by the approved manifest's exact bytes.
+    /// Who the flow may deliver to and act for: every agent, one workspace's
+    /// agents, or one agent. It lives in the manifest so the approval covers it,
+    /// and widening it needs a new version and a new approval.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audience: Option<Audience>,
     /// Distinct target agents a run may call for.

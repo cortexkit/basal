@@ -104,7 +104,9 @@ impl TargetScopes {
                 return Ok(scope);
             }
         }
-        // A failed revalidation must not let a caught refusal reuse an old audience.
+        // Asking core again re-checks the target against the current audience.
+        // Drop this run's earlier scope first: if core refuses and the script
+        // catches the refusal, a later call must not quietly reuse the old scope.
         self.pins.remove(&pin_key);
         if self.scopes.contains_key(&cache_key) {
             self.refresh_required.insert(cache_key.clone());
@@ -128,7 +130,9 @@ impl TargetScopes {
                 message: "core returned an ended target scope".into(),
             });
         }
-        // An epoch change invalidates only that ref. Rolled refs remain live for pinned runs.
+        // An epoch change invalidates only that ref. When core issues a new ref
+        // for a later deadline, the older refs stay valid until they expire, so
+        // runs already using one keep it.
         for old in self.scopes.values().flatten() {
             if old.scope_ref == scope.scope_ref && old.epoch != scope.epoch {
                 self.invalid

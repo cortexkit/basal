@@ -98,11 +98,13 @@ to fall back to that run's old cached authority.
 Audience manifests with a run deadline above 12 hours are refused at install
 and dry run with `run_bound_exceeds_audience_limit`. Core registers target scopes
 for twice the maximum run duration, which must fit the daemon's 24-hour scope
-limit. It rolls to a new ref when a later run needs more life, leaving the old
-ref alive for runs pinned to it until expiry. Basal reuses a scope only if its
-actual expiry covers the asking run's deadline, and each run pins its first
-scope for each target. A scope close invalidates that ref; if it cuts a call
-already in flight, mutations need reconciliation and only queries may retry.
+limit. When a later run needs a scope that lasts longer, core registers a new
+one (a new ref) instead of extending the old one, and the old one stays valid
+until it expires, so no run loses its scope because another run asked. Basal
+reuses a scope only if its expiry covers the asking run's deadline, and a run
+keeps using the first scope it got for each target. A scope that ends is never
+reused; if it ends while a call is in flight, a mutation needs reconciliation
+and only queries may retry.
 
 ### `trigger`
 
