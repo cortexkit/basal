@@ -44,7 +44,7 @@ The `rig-kill-hook` feature adds a one-shot kill switch used only by the test ri
 
 ## Mutation proofs
 
-A passing safety test proves little until it has been seen to fail. [`mutations.toml`](mutations.toml) is the checked-in catalogue of source edits and the exact full libtest paths that must catch them. The shared `ckdev-mutate` runner builds each mutant separately, runs its target's tests, requires the named test to fail, and restores the saved source bytes and checks `Cargo.lock`. The existing proofs name one guard each; other tests may also catch the mutant (`only = false`). Install the reviewed, immutable revision (ckdev-mutate 0.9.5):
+A passing safety test proves little until it has been seen to fail. [`mutations.toml`](mutations.toml) is the checked-in catalogue of source edits and the exact full libtest paths that must catch them. The shared `ckdev-mutate` runner builds each mutant separately, runs its target's tests, requires the named test to fail, and restores the saved source bytes and checks `Cargo.lock`. The existing proofs name one guard each; other tests may also catch the mutant (`only = false`). Install the reviewed, immutable revision (ckdev-mutate 0.9.8):
 
 ```sh
 cargo install --locked --git https://github.com/cortexkit/commons --rev 0c99c7e16d8ae22b6e114136b6b7b68be6f1394e cortexkit-mutate
