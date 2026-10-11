@@ -15819,6 +15819,7 @@ new = "    STOP_THE_WORLD=0 # NON-VACUITY BREAK"
 edits = []
 test_file = "script/tests/stage_card.py"
 runner = "command"
+platforms = ["linux"]
 command = ["python3.14", "-m", "unittest", "{test}"]
 test_count_pattern = "Ran {count} test"
 expect_red = ["script.tests.stage_card.StageCardChecks.test_protocol_change_selects_stop_the_world"]
