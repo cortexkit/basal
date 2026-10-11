@@ -77,6 +77,8 @@ pub struct FlowHealth {
     pub enabled: bool,
     pub owner: Option<String>,
     pub approved_version: Option<u32>,
+    pub approval: Option<serde_json::Value>,
+    pub install_checks: Vec<serde_json::Value>,
     /// Who disabled the flow, as recorded with the disable:
     /// `operator:<who>`, `agent:<id>` or `runtime` (auto-disable).
     pub disabled_by: Option<String>,
@@ -239,6 +241,8 @@ pub fn flow_health(conn: &Connection, now_ms: i64) -> Result<Vec<FlowHealth>> {
                 })
                 .transpose()?,
             waiting_reason,
+            approval: crate::install_policy::approval(conn, &flow_id, record.approved_version)?,
+            install_checks: crate::install_policy::check_errors(conn, &flow_id)?,
             auto_disabled: record.disabled_by.as_deref() == Some(crate::install::RUNTIME_ACTOR),
             disabled_reason: record.disabled_reason,
             flow_id,

@@ -530,7 +530,7 @@ fn approve_using_catalog(
         [flow_id],
     )?;
     tx.execute(
-        "UPDATE installs SET state = 'approved', approval_ref = ?3, approved_at = ?4 \
+        "UPDATE installs SET state = 'approved', approval_ref = ?3, approved_at = ?4, approval_kind='card', install_check_error=NULL \
          WHERE flow_id = ?1 AND version = ?2",
         params![flow_id, version_i64(version), approval_ref, now_ms],
     )?;
@@ -551,7 +551,7 @@ fn approve_using_catalog(
     // When core revokes the approved version (see `revoke`), it disables the
     // flow with core as the actor. That disable says only that core no longer
     // stood behind the version approved at the time. In production an
-    // approval is the operator's answer to a card on core's consent plane,
+    // approval is a card answer or a confirmed policy decision from core,
     // so approving a newer version means core stands behind the flow again,
     // and the disable is cleared. A disable by anyone else (the operator,
     // the owner, the runtime) was not about the approved version, so it

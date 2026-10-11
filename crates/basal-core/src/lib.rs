@@ -49,6 +49,7 @@ pub mod grant_loss;
 pub mod hooks;
 pub mod ids;
 pub mod install;
+pub mod install_policy;
 pub mod journal;
 pub mod kv;
 pub mod maintenance;

@@ -3,7 +3,7 @@ use crate::subc_catalog::CORE;
 use crate::transport::{Transport, WireError};
 use crate::{
     CardDecision, Consent, ConsentError, DecisionAnswer, DecisionCard, DecisionContext,
-    DecisionEvent, DecisionKind, DecisionPath, DecisionSink, InstallCard,
+    DecisionEvent, DecisionKind, DecisionPath, DecisionSink, InstallCard, InstallOutcome,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -30,6 +30,37 @@ pub(crate) fn error(e: WireError) -> ConsentError {
         other => ConsentError::Unavailable(format!("{other:?}")),
     }
 }
+/// Older core replies have no outcome and contain an elicitation id. Unknown
+/// outcomes are errors, even if they also carry a plausible id or hash.
+pub fn decode_install_outcome(reply: &Value) -> Result<InstallOutcome, ConsentError> {
+    match reply.get("outcome") {
+        None | Some(Value::String(_))
+            if reply.get("outcome").is_none() || reply["outcome"] == "card_raised" =>
+        {
+            if !reply["elicitation_id"].is_string() {
+                return Err(ConsentError::Unavailable("missing elicitation id".into()));
+            }
+            Ok(InstallOutcome::CardRaised)
+        }
+        Some(Value::String(outcome)) if outcome == "approved_by_policy" => {
+            let rule = reply["rule"].as_str().filter(|rule| !rule.is_empty());
+            let hash = reply["code_hash"]
+                .as_str()
+                .filter(|hash| crate::core_host::is_code_hash(hash));
+            match (rule, hash) {
+                (Some(rule), Some(code_hash)) => Ok(InstallOutcome::ApprovedByPolicy {
+                    rule: rule.into(),
+                    code_hash: code_hash.into(),
+                }),
+                _ => Err(ConsentError::Unavailable(
+                    "policy approval is missing a valid rule or code hash".into(),
+                )),
+            }
+        }
+        _ => Err(ConsentError::Unavailable("unknown install outcome".into())),
+    }
+}
+
 fn field<'a>(v: &'a Value, name: &str) -> Result<&'a str, ConsentError> {
     v.get(name)
         .and_then(Value::as_str)
@@ -790,17 +821,17 @@ impl Consent for CoreConsent {
         }
         Ok(())
     }
-    fn raise(&self, card: &InstallCard) -> Result<(), ConsentError> {
+    fn raise(&self, card: &InstallCard) -> Result<InstallOutcome, ConsentError> {
         let reply = self
             .state
             .transport
             .management(CORE, "elicitation.request", request(card)?)
             .map_err(error)?;
-        if !reply["elicitation_id"].is_string() {
-            return Err(ConsentError::Unavailable("missing elicitation id".into()));
+        let outcome = decode_install_outcome(&reply)?;
+        if outcome == InstallOutcome::CardRaised {
+            self.state.raised();
         }
-        self.state.raised();
-        Ok(())
+        Ok(outcome)
     }
     fn raise_decision(&self, card: &DecisionCard) -> Result<String, ConsentError> {
         let reply = self

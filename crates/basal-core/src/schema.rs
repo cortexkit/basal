@@ -319,7 +319,23 @@ ALTER TABLE installs ADD COLUMN revoked_reason TEXT;
         version: 23,
         statements: TARGET_SCOPES,
     },
+    Migration {
+        version: 24,
+        statements: INSTALL_POLICY,
+    },
 ];
+
+// Before policy installs existed every local card represented the consent
+// path. Preserve that ownership on upgrade; new cards start unconfirmed.
+const INSTALL_POLICY: &str = r#"
+ALTER TABLE installs ADD COLUMN card_confirmed INTEGER NOT NULL DEFAULT 0 CHECK (card_confirmed IN (0,1));
+ALTER TABLE installs ADD COLUMN approval_kind TEXT CHECK (approval_kind IN ('card','policy','unknown'));
+ALTER TABLE installs ADD COLUMN approval_rule TEXT;
+ALTER TABLE installs ADD COLUMN install_check_error TEXT;
+UPDATE installs SET card_confirmed=1 WHERE EXISTS (
+    SELECT 1 FROM install_cards c WHERE c.flow_id=installs.flow_id AND c.version=installs.version);
+UPDATE installs SET approval_kind='card' WHERE approval_ref IN (SELECT card_id FROM install_cards);
+"#;
 
 // Rebuild the issue log to admit the transient audience refusal. Copy its
 // foreign-key children before replacement, preserving completed calls and replies.

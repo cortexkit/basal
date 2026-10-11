@@ -5,7 +5,206 @@
 
 
 
-# Safety proofs replayed by the pinned ckdev-mutate runner.
+# Source edits below are replayed against their named tests by ckdev-mutate
+# (the reviewed revision is pinned in CI). Policy install controls replay once
+# on Linux; the workspace suites exercise their tests on both platforms.
+[[control]]
+id = "policy-capability-not-declared"
+guards = "core policy installs require basal's capability declaration"
+test_file = "crates/basal-module/tests/install_policy.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test install_policy"
+expect_red = ["declares_flow_install_policy_capability"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/manifest.rs"
+old = '"flow-install-policy/v1".into(),'
+new = '"flow-install-policy-disabled/v1".into(), // NON-VACUITY BREAK'
+
+[[control]]
+id = "policy-card-raised-no-longer-decodes"
+guards = "the explicit card_raised reply preserves the legacy card path"
+test_file = "crates/basal-module/tests/install_policy.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test install_policy"
+expect_red = ["card_raised_preserves_the_legacy_reply_and_card_decision"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = 'reply["outcome"] == "card_raised"'
+new = 'reply["outcome"] == "card_raised_disabled" /* NON-VACUITY BREAK */'
+
+[[control]]
+id = "policy-matching-reply-never-confirms"
+guards = "a matching policy reply and active status approve without a card answer"
+test_file = "crates/basal-module/tests/install_policy.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test install_policy"
+expect_red = ["matching_policy_reply_and_active_status_approve_on_both_consent_paths"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/install_policy.rs"
+old = 'if reply_hash != crate::ids::hex(hash) {'
+new = 'if reply_hash == crate::ids::hex(hash) { // NON-VACUITY BREAK'
+
+[[control]]
+id = "policy-reply-hash-not-bound"
+guards = "a mismatched policy reply hash cannot authorize the local version"
+test_file = "crates/basal-module/tests/install_policy.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test install_policy"
+expect_red = ["mismatched_policy_reply_hash_never_asks_status_or_approves"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/install_policy.rs"
+old = 'if reply_hash != crate::ids::hex(hash) {'
+new = 'if false && reply_hash != crate::ids::hex(hash) { // NON-VACUITY BREAK'
+
+[[control]]
+id = "policy-status-state-not-active"
+guards = "only an active install status authorizes policy approval"
+test_file = "crates/basal-module/tests/install_policy.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test install_policy"
+expect_red = ["policy_status_must_be_active_with_the_local_hash"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/install_policy.rs"
+old = 'Ok((InstallStatus::Active { code_hash, .. }, approval)) if code_hash == expected => {'
+new = 'Ok((InstallStatus::Active { code_hash, .. } | InstallStatus::Revoked { code_hash }, approval)) if code_hash == expected => { // NON-VACUITY BREAK'
+
+[[control]]
+id = "policy-status-hash-not-bound"
+guards = "an active status must name the local version's hash"
+test_file = "crates/basal-module/tests/install_policy.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test install_policy"
+expect_red = ["policy_status_must_be_active_with_the_local_hash"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/install_policy.rs"
+old = 'if code_hash == expected => {'
+new = 'if !code_hash.is_empty() && !expected.is_empty() => { // NON-VACUITY BREAK'
+
+[[control]]
+id = "policy-unknown-outcome-accepted"
+guards = "unknown install outcomes are errors, not cards or approvals"
+test_file = "crates/basal-module/tests/install_policy.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test install_policy"
+expect_red = ["unknown_install_outcome_is_an_error_even_with_a_valid_hash_or_card_id"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = '_ => Err(ConsentError::Unavailable("unknown install outcome".into())),'
+new = '_ => Ok(InstallOutcome::CardRaised), // NON-VACUITY BREAK'
+
+[[control]]
+id = "policy-startup-recovery-skipped"
+guards = "startup recovers approvals whose install replies were lost"
+test_file = "crates/basal-module/tests/install_policy.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test install_policy"
+expect_red = ["startup_checks_only_pending_versions_without_confirmed_cards_once"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/module.rs"
+old = '''rt.recover_cardless_installs()
+            .map_err(|e| format!("recovering pending installs: {e}"))?;'''
+new = '// NON-VACUITY BREAK: startup confirmation omitted'
+
+[[control]]
+id = "policy-startup-confirmed-card-queried"
+guards = "startup leaves versions with confirmed cards on the consent path"
+test_file = "crates/basal-module/tests/install_policy.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test install_policy"
+expect_red = ["startup_checks_only_pending_versions_without_confirmed_cards_once"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/install_policy.rs"
+old = 'AND i.card_confirmed=0 AND NOT EXISTS'
+new = 'AND i.card_confirmed IN (0,1) /* NON-VACUITY BREAK */ AND NOT EXISTS'
+
+[[control]]
+id = "policy-idle-recovery-polls"
+guards = "idle basal never polls install status, including pending policy installs"
+test_file = "crates/basal-module/tests/install_policy.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test install_policy"
+expect_red = ["idle_policy_install_has_zero_status_calls_after_confirmation"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/engine.rs"
+old = 'inner.rt.poll_lost_grants().map_err(fatal)?;'
+new = '''inner.rt.recover_cardless_installs().map_err(fatal)?; // NON-VACUITY BREAK
+        inner.rt.poll_lost_grants().map_err(fatal)?;'''
+
+[[control]]
+id = "policy-shared-approval-skipped"
+guards = "policy approval uses the card approval function for version, schedule and disable rules"
+test_file = "crates/basal-module/tests/install_policy.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test install_policy"
+expect_red = ["policy_approval_uses_card_version_schedule_and_core_disable_rules"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/install_policy.rs"
+old = '''install::approve(tx, flow_id, version, hash, &reference, now, schedule).map_err(|e| match e {
+                install::InstallError::Store(e) => e,
+                other => CoreError::Invalid(other.to_string()),
+            })?;'''
+new = 'let _ = (tx, flow_id, version, hash, &reference, now, schedule); // NON-VACUITY BREAK'
+
+[[control]]
+id = "policy-provenance-not-stored"
+guards = "approval and policy provenance are recorded in one transaction"
+test_file = "crates/basal-module/tests/install_policy.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test install_policy"
+expect_red = ["policy_provenance_and_approval_roll_back_in_one_transaction"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/install_policy.rs"
+old = 'approval_kind=?3, approval_rule=?4, install_check_error=NULL'
+new = 'approval_kind=?3, approval_rule=NULLIF(?4,?4) /* NON-VACUITY BREAK */, install_check_error=NULL'
+
 # Names are full libtest paths; the named guard must fail.
 # Other tests in the target may also fail: the original proofs ran
 # only the named test and did not assert target-wide exclusivity.
@@ -2861,8 +3060,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-module/src/manifest.rs"
-old = 'provides: vec![cortexkit_role_tool_provider::PROVIDES.into()],'
-new = 'provides: vec!["Not A Capability".into()], // NON-VACUITY BREAK'
+old = 'cortexkit_role_tool_provider::PROVIDES.into(),'
+new = '"Not A Capability".into(), // NON-VACUITY BREAK'
 
 [[control]]
 id = "the-manifest-leaves-out-an-op-the-module-serves"

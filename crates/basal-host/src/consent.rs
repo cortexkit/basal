@@ -306,11 +306,20 @@ pub trait DecisionSink: Send + Sync {
     fn answer(&self, answer: &DecisionAnswer) -> Result<(), SinkError>;
 }
 
+/// Core's synchronous disposition of an install request. A policy reply is
+/// only a claim of approval; basal must independently confirm install status.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InstallOutcome {
+    CardRaised,
+    ApprovedByPolicy { rule: String, code_hash: String },
+}
+
 /// The consent plane, as basal sees it. Implementations must be safe to
 /// call from several threads.
 pub trait Consent: Send + Sync {
-    /// Raises a card. Raising a card id already raised changes nothing.
-    fn raise(&self, card: &InstallCard) -> Result<(), ConsentError>;
+    /// Asks core to authorize an install, by card or by policy. Reusing a card
+    /// id is idempotent. Policy replies still require status confirmation.
+    fn raise(&self, card: &InstallCard) -> Result<InstallOutcome, ConsentError>;
 
     /// Raises an operator decision card and returns the consent plane's id
     /// for it. Raising under a key whose card is still open updates that
@@ -531,7 +540,7 @@ impl Consent for MockConsent {
         state.withdrawn.push(elicitation_id.to_owned());
         Ok(())
     }
-    fn raise(&self, card: &InstallCard) -> Result<(), ConsentError> {
+    fn raise(&self, card: &InstallCard) -> Result<InstallOutcome, ConsentError> {
         let mut state = self.lock();
         if state.unavailable {
             return Err(ConsentError::Unavailable(
@@ -543,7 +552,7 @@ impl Consent for MockConsent {
             .cards
             .entry(card.card_id.clone())
             .or_insert_with(|| card.clone());
-        Ok(())
+        Ok(InstallOutcome::CardRaised)
     }
 
     fn raise_decision(&self, card: &DecisionCard) -> Result<String, ConsentError> {

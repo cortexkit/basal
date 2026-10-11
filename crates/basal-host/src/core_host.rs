@@ -2,8 +2,8 @@
 use crate::subc_catalog::CORE;
 use crate::transport::{Transport, WireError};
 use crate::{
-    CallClass, CallRequest, CompletionSink, Dispatched, Host, HostOutcome, InstallStatus,
-    TransportError, UnknownReason,
+    CallClass, CallRequest, CompletionSink, Dispatched, Host, HostOutcome, InstallApproval,
+    InstallStatus, TransportError, UnknownReason,
 };
 use basal_proto::{CallKind, JsonText, Primitive};
 use serde_json::{Value, json};
@@ -210,6 +210,14 @@ impl Host for CoreHost {
     }
     fn attach(&self, _: Arc<dyn CompletionSink>) {}
     fn install_status(&self, flow_id: &str, version: u32) -> Result<InstallStatus, TransportError> {
+        self.install_status_with_approval(flow_id, version)
+            .map(|(status, _)| status)
+    }
+    fn install_status_with_approval(
+        &self,
+        flow_id: &str,
+        version: u32,
+    ) -> Result<(InstallStatus, Option<InstallApproval>), TransportError> {
         // A refusal is no answer either: whatever core refused (a route
         // that is not `reserved:basal`, a malformed request), it did not say
         // it stands behind the version.
@@ -227,7 +235,23 @@ impl Host for CoreHost {
                     None => TransportError::unsent(detail),
                 }
             })?;
-        decode_install_status(&reply)
+        let decode = || -> Result<(InstallStatus, Option<InstallApproval>), String> {
+            let status = decode_install_status(&reply)?;
+            let approval = match reply.get("approval") {
+                None => None,
+                Some(value) if matches!(status, InstallStatus::Active { .. }) => {
+                    let approval: InstallApproval = serde_json::from_value(value.clone())
+                        .map_err(|e| format!("unreadable install approval: {e}"))?;
+                    if matches!(&approval, InstallApproval::Policy { rule } if rule.is_empty()) {
+                        return Err("empty policy rule".into());
+                    }
+                    Some(approval)
+                }
+                _ => return Err("only an active install may carry approval provenance".into()),
+            };
+            Ok((status, approval))
+        };
+        decode()
             .map_err(|detail| TransportError::maybe_sent(UnknownReason::ReplyUnreadable, detail))
     }
 }

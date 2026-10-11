@@ -120,7 +120,10 @@ pub fn manifest() -> ModuleManifest {
             },
         ])
         .capabilities(Some(subc_protocol::manifest::CapabilityDeclarations {
-            provides: vec![cortexkit_role_tool_provider::PROVIDES.into()],
+            provides: vec![
+                cortexkit_role_tool_provider::PROVIDES.into(),
+                "flow-install-policy/v1".into(),
+            ],
             requires: vec![],
             must_never_reach: vec![],
         }))

@@ -212,6 +212,8 @@ impl Module {
             fatal: fatal.clone(),
         });
         hosts.consent.attach(decisions.clone());
+        rt.recover_cardless_installs()
+            .map_err(|e| format!("recovering pending installs: {e}"))?;
         pool.replenish();
         Ok(Self {
             rt,

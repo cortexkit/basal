@@ -50,7 +50,7 @@ pub use catalog::{Catalog, EventBody, EventDecl, EventOrigin, MockCatalog, OpDec
 pub use consent::{
     CardDecision, Consent, ConsentError, DecisionAnswer, DecisionCard, DecisionContext,
     DecisionEvent, DecisionKind, DecisionOption, DecisionPath, DecisionSink, InstallCard,
-    MockConsent,
+    InstallOutcome, MockConsent,
 };
 pub use scope_describe::{ScopeDescribeError, ScopeDescription};
 pub use subc_protocol::scope::{ScopeStamp, ScopeStatus};
@@ -342,6 +342,14 @@ pub enum InstallStatus {
     Unknown,
 }
 
+/// Provenance returned by core with an active install. Older cores omit it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum InstallApproval {
+    Card,
+    Policy { rule: String },
+}
+
 /// A long-running call's outcome, delivered after dispatch returned.
 ///
 /// A completion names the call it settles by run, position and the handle
@@ -507,5 +515,16 @@ pub trait Host: Send + Sync {
         Err(TransportError::unsent(format!(
             "this host cannot ask core about {flow_id} v{version}"
         )))
+    }
+
+    /// One status request, including approval provenance when core supplies it.
+    /// Hosts without provenance retain the old status contract.
+    fn install_status_with_approval(
+        &self,
+        flow_id: &str,
+        version: u32,
+    ) -> Result<(InstallStatus, Option<InstallApproval>), TransportError> {
+        self.install_status(flow_id, version)
+            .map(|status| (status, None))
     }
 }
