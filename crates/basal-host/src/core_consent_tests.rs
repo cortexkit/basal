@@ -44,20 +44,20 @@ impl DecisionSink for Sink {
         }
         Ok(self.open.load(Ordering::Acquire))
     }
-    fn decide(&self, _: &DecisionEvent) -> Result<(), crate::SinkError> {
+    fn decide(&self, _: &crate::DecisionEvent) -> Result<(), crate::SinkError> {
+        panic!("install decisions do not use the answer feed")
+    }
+    fn answer(&self, _: &DecisionAnswer) -> Result<(), crate::SinkError> {
         self.calls.lock().unwrap().push("apply");
         self.open.store(false, Ordering::Release);
         Ok(())
-    }
-    fn answer(&self, _: &DecisionAnswer) -> Result<(), crate::SinkError> {
-        panic!("unexpected answer")
     }
 }
 
 fn setup(open: bool, answered: bool) -> (Arc<Wire>, Arc<Sink>, mpsc::Receiver<()>) {
     let wire = Arc::new(Wire::default());
     *wire.page.lock().unwrap() = if answered {
-        json!({"cursor":1,"records":[{"elicitation_id":"old", "state":"answered", "answered_choice_id":"approve", "flow_install":{"flow_id":"flow","version":1,"code_hash":"a".repeat(64)}}]})
+        json!({"cursor":1,"records":[{"elicitation_id":"old", "state":"answered", "answered_choice_id":"reenable", "flow_decision":{"decision":"reenable","flow_id":"flow","version":1}}]})
     } else {
         json!({"cursor":0,"records":[]})
     };
@@ -127,10 +127,35 @@ fn open_cards_back_off_to_five_seconds_and_a_raise_resets_fast_polling() {
     consent.poll_once().unwrap();
     assert_eq!(*wire.calls.lock().unwrap(), ["answers"]);
     let seen = consent.state.wake.lock().unwrap().0;
-    consent.raise(&InstallCard {
-        card_id: "card".into(), flow_id: "flow".into(), version: 1,
-        fields: json!({"code_hash":"a".repeat(64), "code":{"script":"return 1;", "manifest":"{}"}, "purpose":"Polling test", "wire_author":{"operator":true}}),
-    }).unwrap();
+    consent
+        .raise_decision(&DecisionCard {
+            dedup_key: None,
+            flow_id: "flow".into(),
+            version: 1,
+            context: DecisionContext::GrantLost {
+                provider: "plexus".into(),
+                grant: "g".into(),
+                grant_label: "restore".into(),
+                refused_at_ms: 0,
+            },
+            title: "Decide".into(),
+            prompt: "Check grant".into(),
+            args_digest: None,
+            expires_in_ms: 60_000,
+            options: vec![
+                crate::DecisionOption {
+                    id: "check_now".into(),
+                    label: "Check".into(),
+                    decline: false,
+                },
+                crate::DecisionOption {
+                    id: "keep_disabled".into(),
+                    label: "Keep disabled".into(),
+                    decline: true,
+                },
+            ],
+        })
+        .unwrap();
     assert_ne!(consent.state.wake.lock().unwrap().0, seen);
 }
 

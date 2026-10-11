@@ -62,7 +62,7 @@ impl Fake {
     /// that version, with the code hash the card carried.
     pub fn approve_install(&self, flow_id: &str, version: i64) {
         let hash = self
-            .calls("elicitation.request")
+            .calls("flow.install_request")
             .iter()
             .rev()
             .map(|c| &c["params"]["flow_install"])
@@ -131,7 +131,7 @@ impl Fake {
                     message: "choose is only valid for flow_decision".into(),
                 })
             }
-            "elicitation.request" => flow_install_request(&self.scopes.lock().unwrap(), params),
+            "flow.install_request" => flow_install_request(&self.scopes.lock().unwrap(), params),
             "flow.install_status" => install_status(&self.installs.lock().unwrap(), params),
             "elicitation.report_execution" => self.report_execution(params),
             "elicitation.withdraw" => {
@@ -279,7 +279,9 @@ fn flow_install_request(
         .and_then(|m| m["sinks"].as_array().map(Vec::len))
         .unwrap_or(0);
     if *author == json!({ "operator": true }) {
-        return Ok(json!({"elicitation_id":"el_1"}));
+        return Ok(
+            json!({"outcome":"card_raised","flow_id":install["flow_id"],"version":install["version"],"attempt":1}),
+        );
     }
     if *author == json!({ "local": true }) {
         if sinks == 0 {
@@ -288,7 +290,9 @@ fn flow_install_request(
                 "a local caller's flow has no digest sink to route its card through",
             );
         }
-        return Ok(json!({"elicitation_id":"el_1"}));
+        return Ok(
+            json!({"outcome":"card_raised","flow_id":install["flow_id"],"version":install["version"],"attempt":1}),
+        );
     }
     let scope_ref = author
         .as_object()
@@ -309,7 +313,9 @@ fn flow_install_request(
         Some(CoreScope {
             agent: Some(_),
             live: true,
-        }) => Ok(json!({"elicitation_id":"el_1"})),
+        }) => Ok(
+            json!({"outcome":"card_raised","flow_id":install["flow_id"],"version":install["version"],"attempt":1}),
+        ),
         Some(CoreScope {
             agent: Some(_),
             live: false,
@@ -745,6 +751,16 @@ impl Fake {
             .unwrap()
             .iter()
             .filter(|(_, v)| v["method"] == op || v["name"] == op)
+            .map(|(_, v)| v.clone())
+            .collect()
+    }
+
+    pub fn calls_to(&self, module: &str, op: &str) -> Vec<Value> {
+        self.records
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(destination, v)| destination == module && v["method"] == op)
             .map(|(_, v)| v.clone())
             .collect()
     }

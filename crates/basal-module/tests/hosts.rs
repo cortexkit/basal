@@ -9,9 +9,7 @@ use basal_host::core_host::{CoreHost, IntentContext, intent, validate_reply};
 use basal_host::routing::{ModuleOpsHost, RoutingHost};
 use basal_host::subc_catalog::SubcCatalog;
 use basal_host::transport::{WireError, map_error, tool_body};
-use basal_host::{
-    CallRequest, CardDecision, Consent, DecisionEvent, DecisionSink, Dispatched, Host, SinkError,
-};
+use basal_host::{CallRequest, Consent, DecisionEvent, DecisionSink, Dispatched, Host, SinkError};
 use basal_module::caller::Caller;
 use basal_module::module::Hosts;
 use basal_module::unconfigured::UnconfiguredHost;
@@ -237,10 +235,21 @@ fn fixture_with_options(
         },
     )
 }
-fn approve(f: &Fake, consent: &CoreConsent) {
-    let flow = f.calls("elicitation.request")[0]["params"]["flow_install"].clone();
-    f.enqueue("elicitation.answers",vec![Ok(json!({"records":[{"state":"answered","answered_choice_id":"approve","flow_install":flow}],"cursor":1}))]);
-    consent.poll_once().unwrap();
+fn approve(f: &Fake, module: &basal_module::module::Module) {
+    let flow = f.calls("flow.install_request")[0]["params"]["flow_install"].clone();
+    f.enqueue(
+        "flow.install_status",
+        vec![Ok(
+            json!({"state":"active","code_hash":flow["code_hash"],"approval":{"kind":"card"}}),
+        )],
+    );
+    module
+        .handle(
+            &Caller::Core,
+            "flow.install_decided",
+            json!({"flow_id":flow["flow_id"],"version":flow["version"],"attempt":1}),
+        )
+        .unwrap();
 }
 #[test]
 fn catalog_install_refuses_missing_ops_and_events_and_marks_mutations() {
@@ -324,7 +333,7 @@ fn install_card_is_byte_exact_and_scope_comes_from_the_route_stamp() {
             json!({"script":script,"manifest":m}),
         )
         .unwrap();
-    let sent = fake.calls("elicitation.request")[0]["params"].clone();
+    let sent = fake.calls("flow.install_request")[0]["params"].clone();
     let hash = basal_module::card::code_hash_hex(&basal_core::ids::code_hash(script, &m));
     assert_eq!(sent["args_digest"], hash);
     assert_eq!(sent["flow_install"]["code_hash"], hash);
@@ -355,7 +364,7 @@ fn install_card_is_byte_exact_and_scope_comes_from_the_route_stamp() {
     let mut m = manifest();
     m["id"] = json!("operator-flow");
     common::install(&f, &Caller::Operator, script, &m);
-    let operator = fake.calls("elicitation.request")[1]["params"].clone();
+    let operator = fake.calls("flow.install_request")[1]["params"].clone();
     assert!(operator.get("session_ref").is_none());
     assert_eq!(operator["flow_install"]["author"], json!({"operator":true}));
     assert_eq!(
@@ -376,7 +385,7 @@ fn card_author_is_scope_operator_or_local_and_nothing_else() {
     // A local caller's card reaches core as {"local": true} with no session,
     // and core's fake accepts it because the flow declares a digest sink.
     common::install(&f, &Caller::Local, script, &manifest());
-    let calls = fake.calls("elicitation.request");
+    let calls = fake.calls("flow.install_request");
     assert_eq!(calls.len(), 1);
     let local = &calls[0]["params"];
     assert_eq!(local["flow_install"]["author"], json!({ "local": true }));
@@ -395,7 +404,7 @@ fn card_author_is_scope_operator_or_local_and_nothing_else() {
         r.map_err(|e| e.code),
         Err("local_install_needs_digest_sink".to_owned())
     );
-    assert_eq!(fake.calls("elicitation.request").len(), 1, "nothing sent");
+    assert_eq!(fake.calls("flow.install_request").len(), 1, "nothing sent");
 
     // The consent host sends only the three author forms core accepts
     // (operator, scope, local), and never a session_ref, even when the
@@ -486,7 +495,7 @@ fn core_refusing_the_author_scope_is_a_clear_install_error() {
     // recorded when the card was first created.
     let reply = install_as(&agent_on_scope("ag_synapse", "scope-live")).expect("raised");
     assert_eq!(reply["state"], "pending");
-    let calls = fake.calls("elicitation.request");
+    let calls = fake.calls("flow.install_request");
     let last = &calls.last().expect("sent")["params"];
     assert_eq!(
         last["flow_install"]["author"],
@@ -497,6 +506,7 @@ fn core_refusing_the_author_scope_is_a_clear_install_error() {
 #[derive(Default)]
 struct Decisions {
     events: Mutex<Vec<DecisionEvent>>,
+    answers: Mutex<Vec<basal_host::DecisionAnswer>>,
     fail: Mutex<bool>,
 }
 impl DecisionSink for Decisions {
@@ -507,8 +517,12 @@ impl DecisionSink for Decisions {
         self.events.lock().unwrap().push(d.clone());
         Ok(())
     }
-    fn answer(&self, _: &basal_host::DecisionAnswer) -> Result<(), SinkError> {
-        Err(SinkError("this sink takes install decisions only".into()))
+    fn answer(&self, answer: &basal_host::DecisionAnswer) -> Result<(), SinkError> {
+        if *self.fail.lock().unwrap() {
+            return Err(SinkError("disk cut".into()));
+        }
+        self.answers.lock().unwrap().push(answer.clone());
+        Ok(())
     }
 }
 #[test]
@@ -516,7 +530,7 @@ fn decisions_ack_only_after_sink_commit_and_survive_restart() {
     let fake = Fake::new();
     let sink = Arc::new(Decisions::default());
     *sink.fail.lock().unwrap() = true;
-    let record = json!({"state":"answered","answered_choice_id":"approve","flow_install":{"flow_id":"f","version":1,"code_hash":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}});
+    let record = json!({"elicitation_id":"el-decision","state":"answered","answered_choice_id":"reenable","flow_decision":{"decision":"reenable","flow_id":"f","version":1}});
     let page = json!({"records":[record],"cursor":9});
     fake.enqueue("elicitation.answers", vec![Ok(page.clone()), Ok(page)]);
     let consent = CoreConsent::new(fake.clone());
@@ -529,13 +543,10 @@ fn decisions_ack_only_after_sink_commit_and_survive_restart() {
     restarted.attach(sink.clone());
     restarted.poll_once().unwrap();
     assert_eq!(
-        sink.events.lock().unwrap()[0],
-        DecisionEvent {
-            card_id: "card:f:v1:0123456789abcdef".into(),
-            decision: CardDecision::Approve,
-            decided_by: "core:elicitation".into()
-        }
+        sink.answers.lock().unwrap()[0].choice.as_deref(),
+        Some("reenable")
     );
+    assert!(sink.events.lock().unwrap().is_empty());
     assert_eq!(
         fake.calls("elicitation.ack")[0]["params"],
         json!({"cursor":9})
@@ -552,7 +563,7 @@ fn routing_host_runs_install_decision_facts_ops_and_sinks_end_to_end() {
         "const a=await facts('SYNAPSE'); const b=await ops.call('mock','echo',{n:2}); await sink.digest('SYNAPSE',{title:'facts',body:'unknown'},'piggyback'); const s=await sink.status('SYNAPSE','ready'); return {state:a.activity.state.status,n:b.n,status:s.disposition};",
         &manifest(),
     );
-    approve(&fake, &consent);
+    approve(&fake, &f.module);
     let run = common::admit(&f, "host-flow", "one");
     f.module.engine.run_until_idle(50).unwrap();
     let done = f.module.rt.run(&run).unwrap();
@@ -576,7 +587,7 @@ fn refused_status_tag(group: Option<&str>, tag: Value, expected: &str) {
     );
     let installed = common::install(&f, &Caller::Operator, &script, &m);
     assert_eq!(installed["dry_run"]["runs"][0]["result"], expected);
-    approve(&fake, &consent);
+    approve(&fake, &f.module);
     let run = common::admit(&f, "host-flow", "tag");
     f.module.engine.run_until_idle(50).unwrap();
     let done = f.module.rt.run(&run).unwrap();
@@ -627,7 +638,7 @@ fn digest_status_tag_is_top_level_and_absence_preserves_wire_bytes() {
         "await sink.digest('SYNAPSE',{title:'x',body:'y',data:{n:1}},'silent',{status_tag:'NRPR'}); await sink.digest('SYNAPSE',{title:'x',body:'y',data:{n:1}},'silent'); return 1;",
         &m,
     );
-    let card = &fake.calls("elicitation.request")[0]["params"]["flow_install"];
+    let card = &fake.calls("flow.install_request")[0]["params"]["flow_install"];
     let approved_manifest: Value =
         serde_json::from_str(card["manifest_json"].as_str().unwrap()).unwrap();
     assert_eq!(approved_manifest["sinks"][0]["status_group"], "GH");
@@ -638,7 +649,7 @@ fn digest_status_tag_is_top_level_and_absence_preserves_wire_bytes() {
             card["manifest_json"].as_str().unwrap()
         ))
     );
-    approve(&fake, &consent);
+    approve(&fake, &f.module);
     let run = common::admit(&f, "host-flow", "tag");
     f.module.engine.run_until_idle(50).unwrap();
     assert_eq!(f.module.rt.run(&run).unwrap().state, RunState::Succeeded);
@@ -692,7 +703,7 @@ fn transport_failures_reach_journal_with_safe_retries_only() {
             &format!("await ops.call('mock','{op}',{{n:1}});return 1;"),
             &manifest(),
         );
-        approve(&fake, &consent);
+        approve(&fake, &f.module);
         fake.enqueue(op, vec![Err(failure)]);
         let run = common::admit(&f, "host-flow", "one");
         f.module.engine.run_until_idle(50).unwrap();
@@ -714,7 +725,7 @@ fn transport_failures_reach_journal_with_safe_retries_only() {
         "try { await sink.digest('SYNAPSE',{title:'x',body:'y'},'piggyback'); await ops.call('mock','post',{}); } catch(e) { return e.data.code; } return 'wrong';",
         &manifest(),
     );
-    approve(&fake, &consent);
+    approve(&fake, &f.module);
     fake.enqueue(
         "sink.digest",
         vec![Err(WireError::Unknown("reply cut".into()))],
@@ -811,7 +822,7 @@ fn journaled_sink_intent_is_byte_identical_after_a_cut() {
                 json!({"script":script,"manifest":tagged_manifest.to_string()}),
             )
             .unwrap();
-        approve(&fake, &consent);
+        approve(&fake, &module);
         let run = module
             .rt
             .admit_trigger(
@@ -980,23 +991,21 @@ fn denylist_and_paged_agent_registry_fail_closed() {
     assert!(!cat.agent_known("ALF"));
 }
 #[test]
-fn decline_and_expiry_are_rejections_and_unrecognised_answers_are_not_acked() {
+fn install_answers_are_ignored_in_the_decision_feed() {
     let fake = Fake::new();
     let sink = Arc::new(Decisions::default());
     let consent = CoreConsent::new(fake.clone());
     consent.attach(sink.clone());
-    for (state, choice) in [("answered", "decline"), ("expired", "")] {
+    for (state, choice) in [
+        ("answered", "approve"),
+        ("answered", "decline"),
+        ("expired", ""),
+    ] {
         fake.enqueue("elicitation.answers",vec![Ok(json!({"records":[{"state":state,"answered_choice_id":choice,"flow_install":{"flow_id":"f","version":1,"code_hash":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}],"cursor":1}))]);
         consent.poll_once().unwrap();
     }
-    assert_eq!(sink.events.lock().unwrap().len(), 2);
-    assert!(
-        sink.events
-            .lock()
-            .unwrap()
-            .iter()
-            .all(|e| e.decision == CardDecision::Reject)
-    );
+    assert!(sink.events.lock().unwrap().is_empty());
+    assert!(sink.answers.lock().unwrap().is_empty());
     fake.enqueue(
         "elicitation.answers",
         vec![Ok(
@@ -1004,7 +1013,7 @@ fn decline_and_expiry_are_rejections_and_unrecognised_answers_are_not_acked() {
         )],
     );
     assert!(consent.poll_once().is_err());
-    assert_eq!(fake.calls("elicitation.ack").len(), 2);
+    assert_eq!(fake.calls("elicitation.ack").len(), 3);
 }
 
 #[test]
@@ -1118,7 +1127,7 @@ fn operator_keyed_tools_retry_but_unfenceable_tools_do_not() {
         "await ops.call('mock','send',{n:1});return 1;",
         &manifest(),
     );
-    approve(&fake, &consent);
+    approve(&fake, &f.module);
     fake.enqueue("send", vec![Err(WireError::Unknown("reply lost".into()))]);
     let run = common::admit(&f, "host-flow", "one");
     f.module.engine.run_until_idle(50).unwrap();
@@ -1139,16 +1148,13 @@ fn expired_answer_tombstones_read_the_owned_record_before_ack() {
     let consent = CoreConsent::new(fake.clone());
     consent.attach(sink.clone());
     fake.enqueue("elicitation.answers",vec![Ok(json!({"records":[{"elicitation_id":"el_old","state":"expired","settled_at":10}],"cursor":2}))]);
-    fake.enqueue("elicitation.await",vec![Ok(json!({"state":"expired","flow_install":{"flow_id":"old","version":1,"code_hash":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}))]);
+    fake.enqueue("elicitation.await",vec![Ok(json!({"elicitation_id":"el_old","state":"expired","flow_decision":{"decision":"reenable","flow_id":"old","version":1}}))]);
     consent.poll_once().unwrap();
     assert_eq!(
         fake.calls("elicitation.await")[0]["params"],
         json!({"elicitation_id":"el_old","timeout_ms":0})
     );
-    assert_eq!(
-        sink.events.lock().unwrap()[0].decision,
-        CardDecision::Reject
-    );
+    assert_eq!(sink.answers.lock().unwrap()[0].choice, None);
     assert_eq!(
         fake.calls("elicitation.ack")[0]["params"],
         json!({"cursor":2})
@@ -1176,7 +1182,7 @@ fn consent_refusal_codes_and_unknown_transport_are_typed() {
         "elicitation_unknown_kind",
     ] {
         fake.enqueue(
-            "elicitation.request",
+            "flow.install_request",
             vec![Err(WireError::Refused {
                 code: code.into(),
                 message: "reason".into(),
@@ -1191,7 +1197,7 @@ fn consent_refusal_codes_and_unknown_transport_are_typed() {
         WireError::Unknown("lost".into()),
         WireError::NeverSent("not written".into()),
     ] {
-        fake.enqueue("elicitation.request", vec![Err(e)]);
+        fake.enqueue("flow.install_request", vec![Err(e)]);
         assert!(matches!(
             consent.raise(&card),
             Err(ConsentError::Unavailable(_))
@@ -1228,7 +1234,7 @@ fn catalog_changes_cannot_execute_mutations_under_a_query_retry_policy() {
         "try { await ops.call('mock','echo',{}); } catch(e) { return e.data.code; } return 'sent';",
         &manifest(),
     );
-    approve(&fake, &consent);
+    approve(&fake, &f.module);
     let run = common::admit(&f, "host-flow", "one");
     f.module.engine.run_until_idle(50).unwrap();
     assert_eq!(
@@ -1642,7 +1648,7 @@ fn omitted_digest_action_uses_each_recipient_approved_cap() {
             "await sink.digest('SYNAPSE',{title:'x'});return 1;",
             &m,
         );
-        approve(&wire, &consent);
+        approve(&wire, &f.module);
         let run = common::admit(&f, "host-flow", "one");
         f.module.engine.run_until_idle(50).unwrap();
         assert_eq!(f.module.rt.run(&run).unwrap().state, RunState::Succeeded);

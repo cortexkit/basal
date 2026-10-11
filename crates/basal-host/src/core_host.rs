@@ -144,10 +144,10 @@ pub(crate) fn is_code_hash(value: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-/// Decodes core's `flow.install_status` reply, `{state, code_hash}`: an
-/// `active` or `revoked` version carries the hash core approved, an
-/// `unknown` one a null hash. Anything else is refused, so a reply basal
-/// cannot read never counts as core standing behind a version.
+/// Decodes core's `flow.install_status` reply, `{state, code_hash}`. Known
+/// versions carry their code hash, including cards not approved; an `unknown`
+/// version carries a null hash. Unreadable replies are refused and cannot serve
+/// as evidence of approval.
 pub fn decode_install_status(value: &Value) -> Result<InstallStatus, String> {
     let scope = crate::flow_scope::decode(value)?;
     if scope.is_some() && value["state"] != "active" {
@@ -166,6 +166,15 @@ pub fn decode_install_status(value: &Value) -> Result<InstallStatus, String> {
             scope,
         }),
         Some("revoked") => Ok(InstallStatus::Revoked {
+            code_hash: approved_hash()?,
+        }),
+        Some("pending") => Ok(InstallStatus::Pending {
+            code_hash: approved_hash()?,
+        }),
+        Some("declined") => Ok(InstallStatus::Declined {
+            code_hash: approved_hash()?,
+        }),
+        Some("expired") => Ok(InstallStatus::Expired {
             code_hash: approved_hash()?,
         }),
         Some("unknown") if hash.is_none_or(Value::is_null) => Ok(InstallStatus::Unknown),

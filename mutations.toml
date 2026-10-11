@@ -26,19 +26,19 @@ new = '"flow-install-policy-disabled/v1".into(), // NON-VACUITY BREAK'
 
 [[control]]
 id = "policy-card-raised-no-longer-decodes"
-guards = "the explicit card_raised reply preserves the legacy card path"
+guards = "core's explicit card_raised reply needs no elicitation id and binds its attempt"
 test_file = "crates/basal-module/tests/install_policy.rs"
 runner = "cargo"
 package = "basal-module"
 platforms = ["linux"]
 target = "--test install_policy"
-expect_red = ["card_raised_preserves_the_legacy_reply_and_card_decision"]
+expect_red = ["card_raised_without_elicitation_id_is_keyed_on_the_triple"]
 only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/core_consent.rs"
-old = 'reply["outcome"] == "card_raised"'
-new = 'reply["outcome"] == "card_raised_disabled" /* NON-VACUITY BREAK */'
+old = 'Some(Value::String(outcome)) if outcome == "card_raised" => {'
+new = 'Some(Value::String(outcome)) if outcome == "card_raised_disabled" => { // NON-VACUITY BREAK'
 
 [[control]]
 id = "policy-matching-reply-never-confirms"
@@ -118,7 +118,7 @@ build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/core_consent.rs"
 old = '_ => Err(ConsentError::Unavailable("unknown install outcome".into())),'
-new = '_ => Ok(InstallOutcome::CardRaised), // NON-VACUITY BREAK'
+new = '_ => Ok(InstallOutcome::CardRaised { flow_id: "policy-flow".into(), version: 1, attempt: 1 }), // NON-VACUITY BREAK'
 
 [[control]]
 id = "policy-startup-recovery-skipped"
@@ -128,7 +128,7 @@ runner = "cargo"
 package = "basal-module"
 platforms = ["linux"]
 target = "--test install_policy"
-expect_red = ["startup_checks_only_pending_versions_without_confirmed_cards_once"]
+expect_red = ["startup_checks_every_undecided_card_and_pending_policy_once"]
 only = false
 build_timeout_s = 3600
 timeout_s = 600
@@ -138,20 +138,20 @@ old = '''rt.recover_cardless_installs()
 new = '// NON-VACUITY BREAK: startup confirmation omitted'
 
 [[control]]
-id = "policy-startup-confirmed-card-queried"
-guards = "startup leaves versions with confirmed cards on the consent path"
+id = "install-startup-confirmed-card-skipped"
+guards = "startup also checks confirmed but undecided install cards"
 test_file = "crates/basal-module/tests/install_policy.rs"
 runner = "cargo"
 package = "basal-module"
 platforms = ["linux"]
 target = "--test install_policy"
-expect_red = ["startup_checks_only_pending_versions_without_confirmed_cards_once"]
+expect_red = ["startup_checks_every_undecided_card_and_pending_policy_once"]
 only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/install_policy.rs"
-old = 'AND i.card_confirmed=0 AND NOT EXISTS'
-new = 'AND i.card_confirmed IN (0,1) /* NON-VACUITY BREAK */ AND NOT EXISTS'
+old = 'AND i.revoked_at IS NULL AND NOT EXISTS'
+new = 'AND i.revoked_at IS NULL AND NOT EXISTS (SELECT 1 FROM install_cards raised WHERE raised.flow_id=i.flow_id AND raised.version=i.version AND raised.attempt IS NOT NULL) /* NON-VACUITY BREAK */ AND NOT EXISTS'
 
 [[control]]
 id = "policy-idle-recovery-polls"
@@ -5880,22 +5880,6 @@ old = ".any(|(m, o)| m.eq_ignore_ascii_case(module) && o.eq_ignore_ascii_case(op
 new = ".any(|_| false)"
 
 [[control]]
-id = "hosts-declining-answer-approves"
-guards = "hosts: declining answer approves"
-test_file = "crates/basal-module/tests/hosts.rs"
-runner = "cargo"
-package = "basal-module"
-platforms = ["macos"]
-target = "--test hosts"
-expect_red = ["decline_and_expiry_are_rejections_and_unrecognised_answers_are_not_acked"]
-only = false
-build_timeout_s = 3600
-timeout_s = 600
-file = "crates/basal-host/src/core_consent.rs"
-old = "(Some(\"answered\"), Some(\"decline\")) | (Some(\"expired\"), _) => CardDecision::Reject"
-new = "(Some(\"answered\"), Some(\"decline\")) | (Some(\"expired\"), _) => CardDecision::Approve"
-
-[[control]]
 id = "hosts-proven-unsent-becomes-unknown"
 guards = "hosts: proven unsent becomes unknown"
 test_file = "crates/basal-module/tests/hosts.rs"
@@ -6105,26 +6089,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/core_consent.rs"
-old = ".map_err(|e| ConsentError::Unavailable(e.to_string()))"
-new = ".or(Ok(())) // NON-VACUITY BREAK"
-
-[[control]]
-id = "hosts-approval-decoded-as-rejection"
-hub = "Core's answered approve choice decodes as approval, asserted by decision acknowledgements, decision recovery and install-gate tests"
-hub_targets = ["decisions", "install_gate"]
-guards = "hosts: approval decoded as rejection"
-test_file = "crates/basal-module/tests/hosts.rs"
-runner = "cargo"
-package = "basal-module"
-platforms = ["macos"]
-target = "--test hosts"
-expect_red = ["decisions_ack_only_after_sink_commit_and_survive_restart"]
-only = false
-build_timeout_s = 3600
-timeout_s = 600
-file = "crates/basal-host/src/core_consent.rs"
-old = "(Some(\"answered\"), Some(\"approve\")) => CardDecision::Approve"
-new = "(Some(\"answered\"), Some(\"approve\")) => CardDecision::Reject"
+old = "if let Err(e) = sink.answer_on(path, &answer) {"
+new = "if let Err(e) = sink.answer_on(path, &answer).or(Ok::<(), crate::SinkError>(())) { // NON-VACUITY BREAK"
 
 [[control]]
 id = "hosts-reissue-ignores-journaled-envelope"
@@ -17549,3 +17515,261 @@ timeout_s = 600
 file = "crates/basal-core/src/events.rs"
 old = "if let Some((Some(body), _, _)) = &saved {\n            if !body_targets_run(&notice, body, &run.flow_id) {"
 new = "if let Some((Some(body), _, _)) = &saved {\n            if false && !body_targets_run(&notice, body, &run.flow_id) { // NON-VACUITY BREAK"
+
+# Core owns install cards; these controls replay the request and hint contract.
+[[control]]
+id = "install-request-not-dedicated"
+guards = "install cards enter through core's dedicated request, never generic elicitation or cingulate"
+file = "crates/basal-host/src/core_consent.rs"
+old = '.management(CORE, "flow.install_request", request(card)?)'
+new = '.management(CORE, "elicitation.request", request(card)?) /* NON-VACUITY BREAK */'
+test_file = "crates/basal-module/tests/install_policy.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test install_policy"
+expect_red = ["install_cards_only_use_core_install_request_and_never_wake_answer_polling"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "install-card-attempt-not-recorded"
+guards = "card_raised records core's attempt rather than inventing one"
+file = "crates/basal-core/src/install_policy.rs"
+old = "params![flow_id, version, attempt])?;"
+new = "params![flow_id, version, { let _ = attempt; 1 }])?; // NON-VACUITY BREAK"
+test_file = "crates/basal-module/tests/install_policy.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test install_policy"
+expect_red = ["card_raised_without_elicitation_id_is_keyed_on_the_triple"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "install-hint-revoked-status-approves"
+guards = "a decided hint cannot approve a non-active status even with the local hash"
+file = "crates/basal-core/src/install_policy.rs"
+old = '''Ok((InstallStatus::Active { code_hash, .. }, approval))
+                if code_hash == crate::ids::hex(&card.code_hash) =>'''
+new = '''Ok((InstallStatus::Active { code_hash, .. } | InstallStatus::Revoked { code_hash }, approval))
+                if code_hash == crate::ids::hex(&card.code_hash) => // NON-VACUITY BREAK'''
+test_file = "crates/basal-module/tests/install_policy.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test install_policy"
+expect_red = ["decided_hint_requires_active_status_with_the_local_hash"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "install-hint-hash-not-bound"
+guards = "an active install status approves only the exact local code hash"
+file = "crates/basal-core/src/install_policy.rs"
+old = 'if code_hash == crate::ids::hex(&card.code_hash) =>'
+new = 'if !code_hash.is_empty() => // NON-VACUITY BREAK'
+test_file = "crates/basal-module/tests/install_policy.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test install_policy"
+expect_red = ["decided_hint_requires_active_status_with_the_local_hash"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "install-hint-provenance-discarded"
+guards = "hint approvals preserve core's card or policy provenance in shared approval"
+file = "crates/basal-core/src/install_policy.rs"
+old = 'self.approve_confirmed_install(flow_id, version, &card.code_hash, approval)?;'
+new = 'self.approve_confirmed_install(flow_id, version, &card.code_hash, { let _ = approval; None })?; // NON-VACUITY BREAK'
+test_file = "crates/basal-module/tests/install_policy.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test install_policy"
+expect_red = ["decided_hint_confirms_card_or_policy_provenance_in_the_shared_transaction"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "install-declined-card-left-pending"
+guards = "declined cards are terminal and visible without approving their version"
+file = "crates/basal-core/src/install_policy.rs"
+old = 'self.settle_install_card(card, "declined")?'
+new = '() /* NON-VACUITY BREAK */'
+test_file = "crates/basal-module/tests/install_policy.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test install_policy"
+expect_red = ["declined_and_expired_hints_settle_unapproved_cards_and_are_visible"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "install-expired-card-left-pending"
+guards = "expired cards are terminal and visible without approving their version"
+file = "crates/basal-core/src/install_policy.rs"
+old = 'self.settle_install_card(card, "expired")?'
+new = '() /* NON-VACUITY BREAK */'
+test_file = "crates/basal-module/tests/install_policy.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test install_policy"
+expect_red = ["declined_and_expired_hints_settle_unapproved_cards_and_are_visible"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "install-decided-caller-unchecked"
+guards = "only prefrontal-core can trigger install decision handling"
+file = "crates/basal-module/src/ops.rs"
+old = '''fn op_install_decided(&self, caller: &Caller, params: Value) -> OpResult {
+        if !matches!(caller, Caller::Core) {'''
+new = '''fn op_install_decided(&self, caller: &Caller, params: Value) -> OpResult {
+        if false && !matches!(caller, Caller::Core) { // NON-VACUITY BREAK'''
+test_file = "crates/basal-module/tests/install_policy.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test install_policy"
+expect_red = ["install_decided_refuses_every_non_core_caller"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "install-duplicate-hint-queries-again"
+guards = "duplicate hints for terminal cards neither query again nor repeat approval effects"
+file = "crates/basal-core/src/install_policy.rs"
+old = "AND attempt=?3 AND state='pending'"
+new = "AND attempt=?3 /* NON-VACUITY BREAK */"
+test_file = "crates/basal-module/tests/install_policy.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test install_policy"
+expect_red = ["duplicate_and_unknown_hints_are_harmless"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "install-unknown-attempt-trusted"
+guards = "hints whose attempt is not locally recorded are ignored without a status read"
+file = "crates/basal-core/src/install_policy.rs"
+old = "AND attempt=?3 AND state='pending'"
+new = "AND (?3>0) AND state='pending' /* NON-VACUITY BREAK */"
+test_file = "crates/basal-module/tests/install_policy.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test install_policy"
+expect_red = ["duplicate_and_unknown_hints_are_harmless"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "install-pending-hint-settles-card"
+guards = "pending status leaves an undecided card untouched"
+file = "crates/basal-core/src/install_policy.rs"
+old = 'Ok((InstallStatus::Pending { .. }, _)) => {}'
+new = 'Ok((InstallStatus::Pending { .. }, _)) => self.settle_install_card(card, "expired")?, // NON-VACUITY BREAK'
+test_file = "crates/basal-module/tests/install_policy.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test install_policy"
+expect_red = ["decided_hint_requires_active_status_with_the_local_hash"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "install-six-state-decoder-refuses-pending"
+guards = "the install-status decoder includes unapproved card states as well as active, revoked and unknown"
+file = "crates/basal-host/src/core_host.rs"
+old = 'Some("pending") => Ok(InstallStatus::Pending {'
+new = 'Some("pending_disabled") => Ok(InstallStatus::Pending { // NON-VACUITY BREAK'
+test_file = "crates/basal-module/tests/install_gate.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test install_gate"
+expect_red = ["install_status_replies_decode_strictly"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "install-feed-applies-retired-install-answer"
+guards = "install answers can no longer drive approvals through the decision feed"
+file = "crates/basal-host/src/core_consent.rs"
+old = '''if record.get("flow_install").is_some() {
+        return Ok(());
+    }'''
+new = '''if record.get("flow_install").is_some() {
+        return sink.decide(&crate::DecisionEvent { card_id: "retired".into(), decision: crate::CardDecision::Approve, decided_by: "retired".into() }).map_err(sink_error); // NON-VACUITY BREAK
+    }'''
+test_file = "crates/basal-module/tests/hosts.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test hosts"
+expect_red = ["install_answers_are_ignored_in_the_decision_feed"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "install-request-migration-drops-history"
+guards = "the install-request migration retains old local cards without inventing core attempts"
+file = "crates/basal-core/src/schema.rs"
+old = 'INSERT INTO install_cards_new SELECT *, NULL FROM install_cards;'
+new = 'INSERT INTO install_cards_new SELECT *, NULL FROM install_cards WHERE 0; -- NON-VACUITY BREAK'
+test_file = "crates/basal-core/src/schema_consent_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["schema::consent_tests::install_request_migration_preserves_history_without_inventing_attempts"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "install-unapproved-state-opens-activation-gate"
+guards = "pending, declined and expired install statuses cancel activation just like unknown"
+file = "crates/basal-core/src/gate.rs"
+old = '''Ok(
+                InstallStatus::Pending { .. }
+                | InstallStatus::Declined { .. }
+                | InstallStatus::Expired { .. },
+            ) => ('''
+new = '''Ok(
+                InstallStatus::Pending { .. }
+                | InstallStatus::Declined { .. }
+                | InstallStatus::Expired { .. },
+            ) => return Ok(Gate::Open), // NON-VACUITY BREAK
+            _ if false => ('''
+test_file = "crates/basal-module/tests/install_gate.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test install_gate"
+expect_red = ["unapproved_core_states_close_the_activation_gate_like_unknown"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600

@@ -202,6 +202,7 @@ impl Module {
             | "flow.instance.ensure"
             | "flow.instance.remove" => self.op_package(caller, method, params),
             "flow.install" => self.op_install(caller, params),
+            "flow.install_decided" => self.op_install_decided(caller, params),
             "flow.dry_run" => self.op_dry_run(caller, params),
             "flow.health" => self.op_health(caller, params),
             "flow.audience" => self.op_audience(caller, params),
@@ -507,10 +508,21 @@ impl Module {
                 fields: raised_fields,
             });
             match raised {
-                Ok(InstallOutcome::CardRaised) => {
+                Ok(InstallOutcome::CardRaised {
+                    flow_id,
+                    version,
+                    attempt,
+                }) => {
+                    if flow_id != record.flow_id || version != record.version {
+                        return Err(OpError::new(
+                            "consent_unavailable",
+                            "core's install reply names another flow version",
+                        ));
+                    }
                     self.rt
-                        .confirm_install_card(&record.flow_id, record.version)
+                        .confirm_install_card(&record.flow_id, record.version, attempt)
                         .map_err(|e| self.core_error(e))?;
+                    record.attempt = Some(attempt);
                 }
                 Ok(InstallOutcome::ApprovedByPolicy { rule, code_hash }) => {
                     if !self
@@ -584,6 +596,7 @@ impl Module {
             "code_hash": code_hash_hex(&record.code_hash),
             "card_id": if policy { Value::Null } else { json!(record.card_id) },
             "state": record.state.as_str(),
+            "attempt": record.attempt,
             "new": installed.new,
             "warnings": fields.get("warnings").cloned().unwrap_or(Value::Null),
             "dry_run": fields.get("dry_run_summary").cloned().unwrap_or(Value::Null),
@@ -592,6 +605,36 @@ impl Module {
             reply["approval"] = json!(approval);
         }
         Ok(reply)
+    }
+
+    fn op_install_decided(&self, caller: &Caller, params: Value) -> OpResult {
+        if !matches!(caller, Caller::Core) {
+            return Err(OpError::new(
+                "not_permitted",
+                format!(
+                    "flow.install_decided is core-only; caller is {}",
+                    caller.label()
+                ),
+            ));
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Params {
+            flow_id: String,
+            version: u32,
+            attempt: i64,
+        }
+        let p: Params = serde_json::from_value(params).map_err(invalid_params)?;
+        if p.flow_id.is_empty() || p.version == 0 || p.attempt < 1 {
+            return Err(OpError::new(
+                "invalid_params",
+                "flow_id, positive version and positive attempt are required",
+            ));
+        }
+        self.rt
+            .install_decided(&p.flow_id, p.version, p.attempt)
+            .map_err(|e| self.core_error(e))?;
+        Ok(json!({}))
     }
 
     // ---- flow.dry_run --------------------------------------------------
@@ -814,9 +857,11 @@ impl Module {
                     .into_iter().filter(|g| matches!(g.state.as_str(), "polling" | "stopped")).collect::<Vec<_>>();
                 let approval = basal_core::install_policy::approval(c, flow_id, row["approved_version"].as_u64().map(|v| v as u32))?;
                 let install_checks = basal_core::install_policy::check_errors(c, flow_id)?;
+                let install_cards = basal_core::cards::for_flow(c, flow_id)?.iter().map(|card| json!({"version":card.version,"attempt":card.attempt,"state":card.state.as_str()})).collect::<Vec<_>>();
                 row["grant_losses"] = json!(losses);
                 row["approval"] = json!(approval);
                 row["install_checks"] = json!(install_checks);
+                row["install_cards"] = json!(install_cards);
                 if let Some(body) = row["agent_retirement"].as_str() {
                     row["agent_retirement"] = serde_json::from_str(body)
                         .map_err(|e| CoreError::Corrupt(e.to_string()))?;
@@ -927,6 +972,7 @@ impl Module {
                 "approved_version": f.approved_version,
                 "approval": f.approval,
                 "install_checks": f.install_checks,
+                "install_cards": self.rt.cards(&f.flow_id).map_err(|e| self.core_error(e))?.iter().map(|card| json!({"version":card.version,"attempt":card.attempt,"state":card.state.as_str()})).collect::<Vec<_>>(),
                 "disabled_by": f.disabled_by,
                 // Who disabled the flow, by kind (operator, the owning
                 // agent, or auto for the runtime's own saturation

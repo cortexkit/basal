@@ -338,6 +338,12 @@ pub enum InstallStatus {
     /// The operator revoked the version in core, which now refuses its sink
     /// writes.
     Revoked { code_hash: String },
+    /// Core has an open install card, not an approval.
+    Pending { code_hash: String },
+    /// The operator declined the install card.
+    Declined { code_hash: String },
+    /// The install card expired without approval.
+    Expired { code_hash: String },
     /// Core holds no install of the version.
     Unknown,
 }

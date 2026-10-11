@@ -125,13 +125,13 @@ fn declares_flow_install_policy_capability() {
 }
 
 #[test]
-fn card_raised_preserves_the_legacy_reply_and_card_decision() {
+fn card_raised_without_elicitation_id_is_keyed_on_the_triple() {
     let fake = Fake::new();
     let f = fixture(&fake, "policy-card");
     fake.enqueue(
-        "elicitation.request",
+        "flow.install_request",
         vec![Ok(
-            json!({"outcome":"card_raised","elicitation_id":"el-policy"}),
+            json!({"outcome":"card_raised","flow_id":FLOW,"version":1,"attempt":7}),
         )],
     );
     let first = install_version(&f, 1).unwrap();
@@ -139,30 +139,231 @@ fn card_raised_preserves_the_legacy_reply_and_card_decision() {
     assert!(first["card_id"].is_string());
     assert!(first.get("approval").is_none());
     assert!(fake.calls("flow.install_status").is_empty());
-    // Repeating the install with a reply containing only `elicitation_id`
-    // changes only the `new` field.
+    assert_eq!(first["attempt"], 7);
+    assert_eq!(f.module.rt.cards(FLOW).unwrap()[0].attempt, Some(7));
+    // Repeating core's same card key changes only the `new` field.
     fake.enqueue(
-        "elicitation.request",
-        vec![Ok(json!({"elicitation_id":"el-policy"}))],
+        "flow.install_request",
+        vec![Ok(
+            json!({"outcome":"card_raised","flow_id":FLOW,"version":1,"attempt":7}),
+        )],
     );
     let mut repeated = install_version(&f, 1).unwrap();
     assert_eq!(repeated["new"], false);
     repeated["new"] = json!(true);
     assert_eq!(first, repeated);
-    let card_id = first["card_id"].as_str().unwrap();
-    f.module
-        .rt
-        .decide_card(card_id, basal_core::cards::Decision::Approve, "operator")
-        .unwrap();
+    assert!(fake.calls("flow.install_status").is_empty());
+    assert!(decode_install_outcome(&json!({"elicitation_id":"retired"})).is_err());
+}
+
+fn raised_fixture(tag: &str) -> (Arc<Fake>, common::Fixture) {
+    let fake = Fake::new();
+    let f = fixture(&fake, tag);
+    fake.enqueue(
+        "flow.install_request",
+        vec![Ok(
+            json!({"outcome":"card_raised","flow_id":FLOW,"version":1,"attempt":7}),
+        )],
+    );
+    install_version(&f, 1).unwrap();
+    (fake, f)
+}
+
+fn hint(
+    f: &common::Fixture,
+    caller: &Caller,
+    attempt: i64,
+) -> Result<Value, basal_module::ops::OpError> {
+    f.module.handle(
+        caller,
+        "flow.install_decided",
+        json!({"flow_id":FLOW,"version":1,"attempt":attempt}),
+    )
+}
+
+#[test]
+fn decided_hint_requires_active_status_with_the_local_hash() {
+    for status in [
+        json!({"state":"unknown","code_hash":null}),
+        json!({"state":"pending","code_hash":hash(FLOW,1),"attempt":7}),
+        json!({"state":"revoked","code_hash":hash(FLOW,1)}),
+        active(&"ab".repeat(32)),
+        json!({"state":"active","code_hash":"bad"}),
+    ] {
+        let (fake, f) = raised_fixture("hint-not-approved");
+        fake.enqueue("flow.install_status", vec![Ok(status)]);
+        assert_eq!(hint(&f, &Caller::Core, 7).unwrap(), json!({}));
+        assert_eq!(
+            f.module.rt.flow(FLOW).unwrap().unwrap().approved_version,
+            None
+        );
+        assert_eq!(
+            entry(&f, "flow.list", FLOW)["install_cards"][0]["state"],
+            "pending"
+        );
+        assert_eq!(fake.calls("flow.install_status").len(), 1);
+        assert!(f.module.rt.outbox().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn decided_hint_confirms_card_or_policy_provenance_in_the_shared_transaction() {
+    for approval in [json!({"kind":"card"}), json!({"kind":"policy","rule":RULE})] {
+        let (fake, f) = raised_fixture("hint-approved");
+        fake.enqueue(
+            "flow.install_status",
+            vec![Ok(
+                json!({"state":"active","code_hash":hash(FLOW,1),"approval":approval}),
+            )],
+        );
+        assert_eq!(hint(&f, &Caller::Core, 7).unwrap(), json!({}));
+        assert_eq!(
+            f.module.rt.flow(FLOW).unwrap().unwrap().approved_version,
+            Some(1)
+        );
+        for op in ["flow.list", "flow.health"] {
+            let row = entry(&f, op, FLOW);
+            assert_eq!(row["approval"], approval);
+            assert_eq!(
+                row["install_cards"],
+                json!([{"version":1,"attempt":7,"state":"approved"}])
+            );
+        }
+        let schedules: i64 = f
+            .module
+            .rt
+            .store()
+            .read(|c| {
+                Ok(c.query_row(
+                    "SELECT count(*) FROM schedules WHERE flow_id=?1",
+                    [FLOW],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(schedules, 1);
+        assert_eq!(
+            f.module.rt.outbox().unwrap().last().unwrap().kind,
+            "flow.install_approved"
+        );
+    }
+}
+
+#[test]
+fn declined_and_expired_hints_settle_unapproved_cards_and_are_visible() {
+    for state in ["declined", "expired"] {
+        let (fake, f) = raised_fixture("hint-terminal");
+        fake.enqueue(
+            "flow.install_status",
+            vec![Ok(
+                json!({"state":state,"code_hash":hash(FLOW,1),"attempt":7}),
+            )],
+        );
+        hint(&f, &Caller::Core, 7).unwrap();
+        assert_eq!(
+            f.module.rt.flow(FLOW).unwrap().unwrap().approved_version,
+            None
+        );
+        for op in ["flow.list", "flow.health"] {
+            let row = entry(&f, op, FLOW);
+            assert_eq!(row["state"], "unapproved");
+            assert_eq!(
+                row["install_cards"],
+                json!([{"version":1,"attempt":7,"state":state}])
+            );
+        }
+        assert_eq!(
+            f.module.rt.outbox().unwrap().last().unwrap().kind,
+            format!("flow.install_{state}")
+        );
+    }
+}
+
+#[test]
+fn install_decided_refuses_every_non_core_caller() {
+    let (fake, f) = raised_fixture("hint-caller");
+    for caller in [
+        Caller::Operator,
+        Caller::Local,
+        common::agent("SYNAPSE"),
+        Caller::Module {
+            module_id: "cingulate".into(),
+        },
+        Caller::Other("unknown".into()),
+    ] {
+        assert_eq!(hint(&f, &caller, 7).unwrap_err().code, "not_permitted");
+    }
+    assert!(fake.calls("flow.install_status").is_empty());
     assert_eq!(
         f.module.rt.flow(FLOW).unwrap().unwrap().approved_version,
-        Some(1)
+        None
     );
-    assert_eq!(
-        entry(&f, "flow.list", FLOW)["approval"],
-        json!({"kind":"card"})
-    );
-    assert!(fake.calls("flow.install_status").is_empty());
+}
+
+#[test]
+fn duplicate_and_unknown_hints_are_harmless() {
+    for state in ["active", "declined", "expired"] {
+        let (fake, f) = raised_fixture("hint-duplicate");
+        assert_eq!(hint(&f, &Caller::Core, 6).unwrap(), json!({}));
+        assert_eq!(
+            f.module
+                .handle(
+                    &Caller::Core,
+                    "flow.install_decided",
+                    json!({"flow_id":"absent","version":1,"attempt":7})
+                )
+                .unwrap(),
+            json!({})
+        );
+        assert!(fake.calls("flow.install_status").is_empty());
+        let mut status = json!({"state":state,"code_hash":hash(FLOW,1)});
+        if state == "active" {
+            status["approval"] = json!({"kind":"card"});
+        }
+        fake.enqueue("flow.install_status", vec![Ok(status)]);
+        hint(&f, &Caller::Core, 7).unwrap();
+        let before = f.module.rt.outbox().unwrap().len();
+        for _ in 0..3 {
+            assert_eq!(hint(&f, &Caller::Core, 7).unwrap(), json!({}));
+        }
+        assert_eq!(fake.calls("flow.install_status").len(), 1);
+        assert_eq!(f.module.rt.outbox().unwrap().len(), before);
+        assert_eq!(before, 1);
+    }
+}
+
+#[test]
+fn install_cards_only_use_core_install_request_and_never_wake_answer_polling() {
+    for catalog_consent in [false, true] {
+        let fake = Fake::new();
+        fake.catalog.lock().unwrap()["modules"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"module_id":"cingulate","capabilities":{"provides":["consent/v1"]}}));
+        let f = common::fixture(
+            "install-route",
+            common::Options {
+                hosts: Some(hosts(&fake, catalog_consent)),
+                ..common::Options::default()
+            },
+        );
+        install_version(&f, 1).unwrap();
+        assert_eq!(fake.calls("flow.install_request").len(), 1);
+        assert_eq!(
+            fake.calls_to("prefrontal-core", "flow.install_request")
+                .len(),
+            1
+        );
+        assert!(fake.calls("elicitation.request").is_empty());
+        assert!(fake.calls("consent.request").is_empty());
+        assert!(!f.module.rt.has_open_cards().unwrap());
+        assert!(
+            !f.module
+                .rt
+                .has_open_cards_on(&basal_host::DecisionPath::Legacy)
+                .unwrap()
+        );
+    }
 }
 
 #[test]
@@ -178,7 +379,7 @@ fn matching_policy_reply_and_active_status_approve_on_both_consent_paths() {
             },
         );
         fake.enqueue(
-            "elicitation.request",
+            "flow.install_request",
             vec![Ok(policy_reply(&hash(FLOW, 1)))],
         );
         fake.enqueue("flow.install_status", vec![Ok(active(&hash(FLOW, 1)))]);
@@ -213,7 +414,7 @@ fn mismatched_policy_reply_hash_never_asks_status_or_approves() {
     let fake = Fake::new();
     let f = fixture(&fake, "policy-reply-mismatch");
     fake.enqueue(
-        "elicitation.request",
+        "flow.install_request",
         vec![Ok(policy_reply(&"ab".repeat(32)))],
     );
     fake.enqueue("flow.install_status", vec![Ok(active(&hash(FLOW, 1)))]);
@@ -236,7 +437,7 @@ fn policy_status_must_be_active_with_the_local_hash() {
         let fake = Fake::new();
         let f = fixture(&fake, "policy-status-refused");
         fake.enqueue(
-            "elicitation.request",
+            "flow.install_request",
             vec![Ok(policy_reply(&hash(FLOW, 1)))],
         );
         fake.enqueue("flow.install_status", vec![Ok(reply)]);
@@ -254,7 +455,7 @@ fn unknown_install_outcome_is_an_error_even_with_a_valid_hash_or_card_id() {
     let fake = Fake::new();
     let f = fixture(&fake, "policy-unknown");
     let reply = json!({"outcome":"approved_maybe","elicitation_id":"el-unknown","rule":RULE,"code_hash":hash(FLOW,1)});
-    fake.enqueue("elicitation.request", vec![Ok(reply.clone())]);
+    fake.enqueue("flow.install_request", vec![Ok(reply.clone())]);
     assert!(decode_install_outcome(&reply).is_err());
     assert_eq!(
         install_version(&f, 1).unwrap_err().code,
@@ -294,8 +495,8 @@ fn seed(store: &Store, id: &str, card: bool, confirmed: bool) {
                 basal_core::cards::record(tx, id, 1, &installed.code_hash, "operator", "{}", 0)?;
             }
             tx.execute(
-                "UPDATE installs SET card_confirmed=?2 WHERE flow_id=?1",
-                params![id, confirmed],
+                "UPDATE install_cards SET attempt=?2 WHERE flow_id=?1",
+                params![id, if confirmed { Some(7) } else { None }],
             )?;
             Ok(())
         })
@@ -341,7 +542,7 @@ impl Transport for StartupTransport {
 }
 
 #[test]
-fn startup_checks_only_pending_versions_without_confirmed_cards_once() {
+fn startup_checks_every_undecided_card_and_pending_policy_once() {
     let fake = Fake::new();
     let ids = [
         "active",
@@ -401,6 +602,7 @@ fn startup_checks_only_pending_versions_without_confirmed_cards_once() {
         "saved-request",
         "legacy",
         "card-provenance",
+        "confirmed-card",
         "approved",
     ] {
         assert_eq!(
@@ -409,13 +611,7 @@ fn startup_checks_only_pending_versions_without_confirmed_cards_once() {
             "{id}"
         );
     }
-    for id in [
-        "unknown",
-        "revoked",
-        "wrong-hash",
-        "confirmed-card",
-        "rejected",
-    ] {
+    for id in ["unknown", "revoked", "wrong-hash", "rejected"] {
         assert_eq!(
             f.module.rt.flow(id).unwrap().unwrap().approved_version,
             None,
@@ -448,6 +644,7 @@ fn startup_checks_only_pending_versions_without_confirmed_cards_once() {
         [
             "active",
             "card-provenance",
+            "confirmed-card",
             "legacy",
             "revoked",
             "saved-request",
@@ -458,7 +655,47 @@ fn startup_checks_only_pending_versions_without_confirmed_cards_once() {
     for _ in 0..5 {
         f.module.engine.run_until_idle(10).unwrap();
     }
-    assert_eq!(fake.calls("flow.install_status").len(), 7);
+    assert_eq!(fake.calls("flow.install_status").len(), 8);
+}
+
+#[test]
+fn startup_recovers_declined_expired_and_pending_cards_once() {
+    let fake = Fake::new();
+    for state in ["declined", "expired", "pending"] {
+        let f = common::fixture_with_store(
+            "startup-card",
+            common::Options {
+                hosts: Some(hosts(&fake, false)),
+                ..common::Options::default()
+            },
+            |store| {
+                seed(&store, FLOW, true, true);
+                fake.enqueue(
+                    "flow.install_status",
+                    vec![Ok(
+                        json!({"state":state,"code_hash":hash(FLOW,1),"attempt":7}),
+                    )],
+                );
+                Ok(())
+            },
+        );
+        assert_eq!(
+            f.module.rt.flow(FLOW).unwrap().unwrap().approved_version,
+            None
+        );
+        for op in ["flow.list", "flow.health"] {
+            assert_eq!(
+                entry(&f, op, FLOW)["install_cards"],
+                json!([{"version":1,"attempt":7,"state":state}])
+            );
+        }
+        let before = fake.calls("flow.install_status").len();
+        for _ in 0..5 {
+            f.module.engine.run_until_idle(10).unwrap();
+        }
+        assert_eq!(fake.calls("flow.install_status").len(), before);
+    }
+    assert_eq!(fake.calls("flow.install_status").len(), 3);
 }
 
 #[test]
@@ -466,7 +703,7 @@ fn idle_policy_install_has_zero_status_calls_after_confirmation() {
     let fake = Fake::new();
     let f = fixture(&fake, "policy-idle");
     fake.enqueue(
-        "elicitation.request",
+        "flow.install_request",
         vec![Ok(policy_reply(&hash(FLOW, 1)))],
     );
     fake.enqueue("flow.install_status", vec![Ok(active(&hash(FLOW, 1)))]);
@@ -484,7 +721,7 @@ fn idle_policy_install_has_zero_status_calls_after_confirmation() {
     let pending_fake = Fake::new();
     let pending = fixture(&pending_fake, "policy-idle-pending");
     pending_fake.enqueue(
-        "elicitation.request",
+        "flow.install_request",
         vec![Ok(policy_reply(&hash(FLOW, 1)))],
     );
     pending_fake.enqueue(
@@ -519,7 +756,7 @@ fn policy_approval_uses_card_version_schedule_and_core_disable_rules() {
         .disable_flow(FLOW, &basal_core::Actor::Core, "install_revoked")
         .unwrap();
     fake.enqueue(
-        "elicitation.request",
+        "flow.install_request",
         vec![Ok(policy_reply(&hash(FLOW, 2)))],
     );
     fake.enqueue("flow.install_status", vec![Ok(active(&hash(FLOW, 2)))]);
@@ -559,7 +796,7 @@ fn policy_approval_uses_card_version_schedule_and_core_disable_rules() {
         )
         .unwrap();
     fake.enqueue(
-        "elicitation.request",
+        "flow.install_request",
         vec![Ok(policy_reply(&hash(FLOW, 3)))],
     );
     fake.enqueue("flow.install_status", vec![Ok(active(&hash(FLOW, 3)))]);
@@ -589,7 +826,7 @@ fn policy_provenance_and_approval_roll_back_in_one_transaction() {
         Ok(())
     }).unwrap();
     fake.enqueue(
-        "elicitation.request",
+        "flow.install_request",
         vec![Ok(policy_reply(&hash(FLOW, 2)))],
     );
     fake.enqueue("flow.install_status", vec![Ok(active(&hash(FLOW, 2)))]);

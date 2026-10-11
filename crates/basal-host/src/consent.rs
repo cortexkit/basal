@@ -1,13 +1,7 @@
-//! The consent plane: where basal raises a flow's install card, and where
-//! the decision on it comes back from.
-//!
-//! In production this is core's consent plane (a passive elicitation of kind
-//! `flow_install`, answered by the operator from a phone or a session).
-//! basal only raises cards and applies decisions; who may decide is the
-//! consent plane's business. A decision can arrive long after the card was
-//! raised and after basal restarted, and can arrive twice, so it is
-//! delivered to an attached [`DecisionSink`] until the sink accepts it, the
-//! same way completions of long-running calls are.
+//! Install requests go to core, which owns their cards and durable approval.
+//! Install decision hints trigger status reads, not answer-feed actions.
+//! Operator decision cards use the consent provider and deliver their answers
+//! to an attached [`DecisionSink`] until accepted, including after a restart.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -310,8 +304,15 @@ pub trait DecisionSink: Send + Sync {
 /// only a claim of approval; basal must independently confirm install status.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstallOutcome {
-    CardRaised,
-    ApprovedByPolicy { rule: String, code_hash: String },
+    CardRaised {
+        flow_id: String,
+        version: u32,
+        attempt: i64,
+    },
+    ApprovedByPolicy {
+        rule: String,
+        code_hash: String,
+    },
 }
 
 /// The consent plane, as basal sees it. Implementations must be safe to
@@ -552,7 +553,11 @@ impl Consent for MockConsent {
             .cards
             .entry(card.card_id.clone())
             .or_insert_with(|| card.clone());
-        Ok(InstallOutcome::CardRaised)
+        Ok(InstallOutcome::CardRaised {
+            flow_id: card.flow_id.clone(),
+            version: card.version,
+            attempt: 1,
+        })
     }
 
     fn raise_decision(&self, card: &DecisionCard) -> Result<String, ConsentError> {

@@ -2,8 +2,8 @@
 use crate::subc_catalog::CORE;
 use crate::transport::{Transport, WireError};
 use crate::{
-    CardDecision, Consent, ConsentError, DecisionAnswer, DecisionCard, DecisionContext,
-    DecisionEvent, DecisionKind, DecisionPath, DecisionSink, InstallCard, InstallOutcome,
+    Consent, ConsentError, DecisionAnswer, DecisionCard, DecisionContext, DecisionKind,
+    DecisionPath, DecisionSink, InstallCard, InstallOutcome,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -30,17 +30,27 @@ pub(crate) fn error(e: WireError) -> ConsentError {
         other => ConsentError::Unavailable(format!("{other:?}")),
     }
 }
-/// Older core replies have no outcome and contain an elicitation id. Unknown
-/// outcomes are errors, even if they also carry a plausible id or hash.
+/// Install cards are owned by core and identified by flow, version and attempt.
+/// Generic elicitation replies cannot confirm an install request.
 pub fn decode_install_outcome(reply: &Value) -> Result<InstallOutcome, ConsentError> {
     match reply.get("outcome") {
-        None | Some(Value::String(_))
-            if reply.get("outcome").is_none() || reply["outcome"] == "card_raised" =>
-        {
-            if !reply["elicitation_id"].is_string() {
-                return Err(ConsentError::Unavailable("missing elicitation id".into()));
+        Some(Value::String(outcome)) if outcome == "card_raised" => {
+            let flow_id = reply["flow_id"].as_str().filter(|id| !id.is_empty());
+            let version = reply["version"]
+                .as_u64()
+                .and_then(|v| u32::try_from(v).ok())
+                .filter(|v| *v > 0);
+            let attempt = reply["attempt"].as_i64().filter(|a| *a > 0);
+            match (flow_id, version, attempt) {
+                (Some(flow_id), Some(version), Some(attempt)) => Ok(InstallOutcome::CardRaised {
+                    flow_id: flow_id.into(),
+                    version,
+                    attempt,
+                }),
+                _ => Err(ConsentError::Unavailable(
+                    "install card is missing a valid flow, version or attempt".into(),
+                )),
             }
-            Ok(InstallOutcome::CardRaised)
         }
         Some(Value::String(outcome)) if outcome == "approved_by_policy" => {
             let rule = reply["rule"].as_str().filter(|rule| !rule.is_empty());
@@ -608,8 +618,8 @@ fn apply_record(
             "consent answer has no decision body".into(),
         ));
     }
-    // Old expired answers omit the install payload. Fetch the owned full
-    // record before deciding so the decision keeps its flow identity.
+    // Retained decision answers can omit their body. Fetch the owned record
+    // before applying them; install settlements never use this feed.
     let full;
     let record = if record.get("flow_install").is_none() && record.get("flow_decision").is_none() {
         let id = field(record, "elicitation_id")?;
@@ -625,9 +635,11 @@ fn apply_record(
     } else {
         record
     };
+    if record.get("flow_install").is_some() {
+        return Ok(());
+    }
     if record.get("flow_decision").is_some() {
-        // A decision card's answer. The page stays unacknowledged until
-        // the sink has applied it, like an install decision.
+        // The page stays unacknowledged until the sink has applied the answer.
         let answer = decision_answer(record)?;
         // Consent requester v1 forbids consent.report_execution for
         // flow_decision cards: these settle policy questions, not execution work.
@@ -639,36 +651,9 @@ fn apply_record(
         }
         return Ok(());
     }
-    let decision = match (
-        record["state"].as_str(),
-        record["answered_choice_id"].as_str(),
-    ) {
-        (Some("answered"), Some("approve")) => CardDecision::Approve,
-        (Some("answered"), Some("decline")) | (Some("expired"), _) => CardDecision::Reject,
-        _ => {
-            return Err(ConsentError::Unavailable(
-                "unrecognised card decision".into(),
-            ));
-        }
-    };
-    let f = &record["flow_install"];
-    let flow = field(f, "flow_id")?;
-    let version = f["version"]
-        .as_u64()
-        .filter(|v| *v > 0 && *v <= u32::MAX as u64)
-        .ok_or_else(|| ConsentError::Unavailable("decision version is invalid".into()))?;
-    let hash = field(f, "code_hash")?;
-    if !crate::core_host::is_code_hash(hash) {
-        return Err(ConsentError::Unavailable("decision hash is invalid".into()));
-    }
-    // Card identity is derived from the approved bytes, not an in-memory
-    // elicitation-id map that would be lost on process restart.
-    sink.decide(&DecisionEvent {
-        card_id: format!("card:{flow}:v{version}:{}", &hash[..16]),
-        decision,
-        decided_by: "core:elicitation".into(),
-    })
-    .map_err(|e| ConsentError::Unavailable(e.to_string()))
+    Err(ConsentError::Unavailable(
+        "answer has no decision body".into(),
+    ))
 }
 
 fn sink_error(error: crate::SinkError) -> ConsentError {
@@ -825,11 +810,17 @@ impl Consent for CoreConsent {
         let reply = self
             .state
             .transport
-            .management(CORE, "elicitation.request", request(card)?)
+            .management(CORE, "flow.install_request", request(card)?)
             .map_err(error)?;
         let outcome = decode_install_outcome(&reply)?;
-        if outcome == InstallOutcome::CardRaised {
-            self.state.raised();
+        if let InstallOutcome::CardRaised {
+            flow_id, version, ..
+        } = &outcome
+            && (flow_id != &card.flow_id || *version != card.version)
+        {
+            return Err(ConsentError::Unavailable(
+                "install reply names another flow version".into(),
+            ));
         }
         Ok(outcome)
     }
