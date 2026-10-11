@@ -103,10 +103,12 @@ The item fields are:
 
 | Field | Type | Limit |
 | --- | --- | --- |
-| `title` | string, not blank | 200 characters |
-| `body` | string, not blank | 4,096 bytes |
+| `title` | string | at most 200 characters |
+| `body` | string | at most 4,096 bytes |
 | `data` | object, optional, default `{}` | 8,192 bytes as canonical JSON |
 | `links` | array, optional, default `[]` | 8 entries |
+
+Title and body must not both be empty.
 
 A link is either `{ kind: 'url', url: 'https://…' }`, an HTTPS URL with a
 host, or `{ kind: 'work', id: 'wi_…' }`. The whole item may be at most 16,384

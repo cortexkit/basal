@@ -13,6 +13,10 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+mod common;
+#[path = "module_events/lifecycle.rs"]
+mod lifecycle;
+
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 const STREAM: &str = "CK_ACCOUNT_EVENT";
 const SUBJECT: &str = "ck.account.event.plexus.pull_request_review.v1";
@@ -115,7 +119,8 @@ impl Server {
         subject: &str,
         headers: cortexkit_bus_trait::Headers,
     ) {
-        self.bus
+        let receipt = self
+            .bus
             .stream(STREAM)
             .publish(
                 subject,
@@ -125,6 +130,7 @@ impl Server {
             )
             .await
             .unwrap();
+        assert!(!receipt.duplicate());
     }
 }
 impl Drop for Server {

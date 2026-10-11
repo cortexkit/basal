@@ -170,6 +170,59 @@ fn admission_wakes_the_sleeping_engine() {
     );
 }
 
+fn template(rt: &Runtime) -> String {
+    let mut request = request("watch");
+    let mut m: serde_json::Value = serde_json::from_str(&request.manifest).unwrap();
+    m["params"] = serde_json::json!({});
+    m["template"] = serde_json::json!({"max_per_agent":1,"max_lifetime":"1h"});
+    request.manifest = m.to_string();
+    rt.register_package(&request.script, &request.manifest)
+        .unwrap();
+    rt.catalog().agent_id("BASAL").unwrap()
+}
+
+#[test]
+fn template_instantiation_wakes_sleeping_engine() {
+    wake_case(
+        |engine| {
+            let rt = &engine.inner.rt;
+            let agent = template(rt);
+            rt.instantiate("watch", 1, &agent, &serde_json::json!({}), "1m")
+                .unwrap();
+        },
+        true,
+    );
+}
+
+#[test]
+fn idle_engine_wakes_at_unscheduled_instance_expiry() {
+    let (engine, path) = engine_with_spawner(
+        Arc::new(RefuseOrPanic(false)),
+        EngineConfig {
+            pass_interval: Duration::from_secs(600),
+            ..Default::default()
+        },
+    );
+    let rt = &engine.inner.rt;
+    let agent = template(rt);
+    rt.instantiate("watch", 1, &agent, &serde_json::json!({}), "1m")
+        .unwrap();
+    let mut waits = Vec::new();
+    engine.run_loop(|_, timeout| {
+        waits.push(timeout);
+        if waits.len() == 1 {
+            rt.config().clock.advance(timeout.as_millis() as i64);
+        } else {
+            engine.stop();
+        }
+    });
+    assert_eq!(waits[0], Duration::from_secs(60));
+    let events = rt.pending_template_events(32).unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[1].event_name, "flow_instance_expired");
+    cleanup(engine, path);
+}
+
 #[test]
 fn install_approval_enable_and_disable_wake_the_engine() {
     wake_case(

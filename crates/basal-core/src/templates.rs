@@ -591,8 +591,18 @@ impl crate::Runtime {
                 }
             }
             let expiry = existing.as_ref().and_then(|e|e.5).unwrap_or(expires_at).max(expires_at);
+            // Record a passed deadline before a renewal can replace it, even if
+            // the scheduler has not yet had a chance to observe the expiry.
+            expire_schedules(tx, now)?;
             tx.execute("INSERT INTO flows (flow_id,owner,approved_version,created_at,package,first_approved_at) VALUES (?1,?2,?3,?4,?5,?4) ON CONFLICT(flow_id) DO UPDATE SET approved_version=excluded.approved_version,removed=0,first_approved_at=COALESCE(flows.first_approved_at,excluded.first_approved_at)", params![id,agent,version,now,template])?;
             tx.execute("INSERT INTO template_instances(flow_id,params,expires_at,grant_guards) VALUES (?1,?2,?3,?5) ON CONFLICT(flow_id) DO UPDATE SET expires_at=excluded.expires_at,grant_guards=excluded.grant_guards,incarnation=template_instances.incarnation+?4", params![id,stored,expiry,i64::from(reopen),grant_guards])?;
+            tx.execute("UPDATE template_instances SET expiry_notified=0 WHERE flow_id=?1 AND expires_at>?2", params![id,now])?;
+            let event = if existing.is_none() || existing.as_ref().is_some_and(|e|e.3) {
+                Some("flow_instance_created")
+            } else if existing.as_ref().is_some_and(|e|e.2 != Some(version) || e.5 != Some(expiry)) {
+                Some("flow_instance_extended")
+            } else { None };
+            if let Some(event) = event { crate::template_events::enqueue(tx, &id, event, now)?; }
             let time = jiff::Timestamp::from_millisecond(now).map_err(|e|crate::CoreError::Invalid(e.to_string()))?;
             if existing.as_ref().and_then(|e|e.2) != Some(version) {
                 if let Some(spec) = effective_manifest.trigger.schedule.clone() {
@@ -606,6 +616,7 @@ impl crate::Runtime {
         if let Some(error) = refusal {
             return Err(error);
         }
+        self.shared.signal.bump();
         Ok(reply)
     }
 
@@ -618,6 +629,7 @@ impl crate::Runtime {
             let ended = end(tx, flow_id, now)?;
             Ok(Some(json!({"flow_id":flow_id,"ended":ended})))
         })?;
+        self.shared.signal.bump();
         result.ok_or_else(|| refused("package_not_template", Value::Null))
     }
 }
@@ -639,8 +651,10 @@ pub(crate) fn expired(conn: &rusqlite::Connection, flow_id: &str, now: i64) -> c
 }
 
 pub(crate) fn end(tx: &rusqlite::Transaction<'_>, flow_id: &str, now: i64) -> crate::Result<bool> {
+    expire_schedules(tx, now)?;
     let changed = tx.execute("UPDATE flows SET removed=1 WHERE flow_id=?1 AND removed=0 AND EXISTS(SELECT 1 FROM template_instances WHERE flow_id=?1)", [flow_id])?;
     if changed > 0 {
+        crate::template_events::enqueue(tx, flow_id, "flow_instance_ended", now)?;
         let now = jiff::Timestamp::from_millisecond(now)
             .map_err(|e| crate::CoreError::Invalid(e.to_string()))?;
         crate::schedule::table::disable(tx, flow_id, now)?;
@@ -660,6 +674,19 @@ pub(crate) fn finish_run(tx: &rusqlite::Transaction<'_>, run_id: &str) -> crate:
 }
 
 pub(crate) fn expire_schedules(tx: &rusqlite::Transaction<'_>, now: i64) -> crate::Result<()> {
+    crate::template_events::prune(tx, now)?;
+    let ids = {
+        let mut stmt = tx.prepare("SELECT t.flow_id FROM template_instances t JOIN flows f USING(flow_id) WHERE t.expires_at<=?1 AND t.expiry_notified=0 AND f.removed=0 ORDER BY t.flow_id")?;
+        stmt.query_map([now], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    for id in ids {
+        crate::template_events::enqueue(tx, &id, "flow_instance_expired", now)?;
+        tx.execute(
+            "UPDATE template_instances SET expiry_notified=1 WHERE flow_id=?1",
+            [&id],
+        )?;
+    }
     tx.execute("UPDATE schedules SET state='disabled',updated_at=?1 WHERE flow_id IN (SELECT flow_id FROM template_instances WHERE expires_at<=?1)", [now])?;
     Ok(())
 }

@@ -73,6 +73,164 @@ fn no_admission(f: &Fixture, id: &str, key: &str) {
 }
 
 #[test]
+fn live_snapshot_is_core_only_and_keeps_expired_not_ended_instances() {
+    let f = setup("live-snapshot", false);
+    register(&f, &manifest(), "return 1;");
+    let a = create(&f, OWNER, json!({"note":"expired"}), 1, "1m").unwrap();
+    let b = create(&f, OTHER, json!({"note":"ended"}), 1, "1h").unwrap();
+    f.module.rt.end_instance(id(&b)).unwrap();
+    f.clock.set(a["expires_at"].as_i64().unwrap());
+    f.module.rt.scheduler().unwrap().tick().unwrap();
+    for caller in [
+        Caller::Operator,
+        Caller::Local,
+        agent(OWNER),
+        agent(OTHER),
+        Caller::Other("module".into()),
+    ] {
+        assert_eq!(
+            f.module
+                .handle(&caller, "flow.instance.live", json!({}))
+                .unwrap_err()
+                .code,
+            "not_permitted"
+        );
+    }
+    let reply = f
+        .module
+        .handle(&Caller::Core, "flow.instance.live", json!({}))
+        .unwrap();
+    assert_eq!(
+        reply,
+        json!({"instances":[{"flow_id":id(&a),"template":"watch","version":1,"agent_id":OWNER,"expires_at":a["expires_at"],"seq":2}]})
+    );
+    assert_eq!(
+        f.module
+            .handle(
+                &Caller::Core,
+                "flow.instance.live",
+                json!({"agent_id":OWNER})
+            )
+            .unwrap_err()
+            .code,
+        "invalid_params"
+    );
+}
+
+#[test]
+fn lifecycle_sequence_changes_only_for_committed_changes_across_kinds() {
+    let f = setup("lifecycle-sequence", false);
+    let m = manifest();
+    register(&f, &m, "return 1;");
+    let a = create(&f, OWNER, json!({"note":"a"}), 1, "1m").unwrap();
+    create(&f, OWNER, json!({"note":"a"}), 1, "1m").unwrap();
+    let mut m2 = m;
+    m2["version"] = json!(2);
+    register(&f, &m2, "return 2;");
+    create(&f, OWNER, json!({"note":"a"}), 2, "1m").unwrap();
+    let extended = create(&f, OWNER, json!({"note":"a"}), 2, "2m").unwrap();
+    f.clock.set(extended["expires_at"].as_i64().unwrap());
+    f.module.rt.scheduler().unwrap().tick().unwrap();
+    f.module.rt.end_instance(id(&a)).unwrap();
+    f.module.rt.end_instance(id(&a)).unwrap();
+    create(&f, OWNER, json!({"note":"a"}), 2, "1m").unwrap();
+    let events = f.module.rt.pending_template_events(32).unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .map(|e| (e.seq, e.event_name.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            (1, "flow_instance_created"),
+            (2, "flow_instance_extended"),
+            (3, "flow_instance_extended"),
+            (4, "flow_instance_expired"),
+            (5, "flow_instance_ended"),
+            (6, "flow_instance_created")
+        ]
+    );
+    assert_eq!(
+        f.module.rt.live_instances().unwrap()["instances"][0]["seq"],
+        6
+    );
+}
+
+#[test]
+fn expiry_wakes_without_schedule_at_deadline_and_carries_canonical_params() {
+    let f = setup("expiry-notice", false);
+    register(&f, &manifest(), "return 1;");
+    let a = create(&f, OWNER, json!({"note":"private watch"}), 1, "1m").unwrap();
+    let at = a["expires_at"].as_i64().unwrap();
+    // The engine's first maintenance pass establishes its retention timer.
+    f.module.engine.pass().unwrap();
+    assert_eq!(f.module.rt.next_wake_at(None).unwrap(), Some(at));
+    f.clock.set(at - 1);
+    f.module.rt.scheduler().unwrap().tick().unwrap();
+    assert_eq!(f.module.rt.pending_template_events(32).unwrap().len(), 1);
+    f.clock.set(at);
+    f.module.rt.scheduler().unwrap().tick().unwrap();
+    let events = f.module.rt.pending_template_events(32).unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[1].event_name, "flow_instance_expired");
+    let body: Value = serde_json::from_str(&events[1].body).unwrap();
+    assert_eq!(body["params"], json!({"note":"private watch"}));
+    assert_eq!(body["expires_at"], at);
+    f.module.rt.scheduler().unwrap().tick().unwrap();
+    assert_eq!(f.module.rt.pending_template_events(32).unwrap().len(), 2);
+}
+
+#[test]
+fn lifecycle_change_rolls_back_if_outbox_insert_fails() {
+    let f = setup("outbox-atomic", false);
+    register(&f, &manifest(), "return 1;");
+    f.module.rt.store().write(|tx| {
+        tx.execute_batch("CREATE TRIGGER reject_event BEFORE INSERT ON template_event_outbox BEGIN SELECT RAISE(ABORT,'forced outbox failure'); END;")?;
+        Ok(())
+    }).unwrap();
+    assert!(
+        f.module
+            .rt
+            .instantiate("watch", 1, OWNER, &json!({"note":"atomic"}), "1h")
+            .is_err()
+    );
+    assert!(
+        f.module.rt.live_instances().unwrap()["instances"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    f.module
+        .rt
+        .store()
+        .write(|tx| {
+            tx.execute_batch("DROP TRIGGER reject_event")?;
+            Ok(())
+        })
+        .unwrap();
+    let a = create(&f, OWNER, json!({"note":"atomic"}), 1, "1h").unwrap();
+    f.module.rt.store().write(|tx| {
+        tx.execute_batch("CREATE TRIGGER reject_event BEFORE INSERT ON template_event_outbox BEGIN SELECT RAISE(ABORT,'forced outbox failure'); END;")?; Ok(())
+    }).unwrap();
+    assert!(f.module.rt.end_instance(id(&a)).is_err());
+    assert_eq!(
+        f.module.rt.live_instances().unwrap()["instances"][0]["seq"],
+        1
+    );
+    assert!(
+        f.module
+            .rt
+            .instantiate("watch", 1, OWNER, &json!({"note":"atomic"}), "2h")
+            .is_err()
+    );
+    f.clock.set(a["expires_at"].as_i64().unwrap());
+    assert!(f.module.rt.scheduler().unwrap().tick().is_err());
+    assert_eq!(
+        f.module.rt.live_instances().unwrap()["instances"][0]["seq"],
+        1
+    );
+}
+
+#[test]
 fn instantiate_caller_version_and_reply_are_stamped_without_cards() {
     let f = setup("template-caller", false);
     let m = manifest();
@@ -1079,4 +1237,61 @@ fn null_optional_at_does_not_end_a_recurring_instance() {
             .unwrap(),
         Admission::Admitted { .. }
     ));
+}
+
+#[test]
+fn overdue_expiry_is_recorded_before_renewal_or_end_without_scheduler_tick() {
+    let f = setup("expiry-before-change", false);
+    register(&f, &manifest(), "return 1;");
+    let a = create(&f, OWNER, json!({"note":"renew"}), 1, "1m").unwrap();
+    f.clock.set(a["expires_at"].as_i64().unwrap());
+    create(&f, OWNER, json!({"note":"renew"}), 1, "1m").unwrap();
+    let events = f.module.rt.pending_template_events(32).unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .map(|e| e.event_name.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "flow_instance_created",
+            "flow_instance_expired",
+            "flow_instance_extended"
+        ]
+    );
+    let b = create(&f, OTHER, json!({"note":"end"}), 1, "1m").unwrap();
+    f.clock.set(b["expires_at"].as_i64().unwrap());
+    f.module.rt.end_instance(id(&b)).unwrap();
+    let events = f.module.rt.pending_template_events(32).unwrap();
+    let ended = events
+        .iter()
+        .filter(|e| e.flow_id == id(&b))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        ended
+            .iter()
+            .map(|e| e.event_name.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "flow_instance_created",
+            "flow_instance_expired",
+            "flow_instance_ended"
+        ]
+    );
+    assert_eq!(
+        ended.iter().map(|e| e.seq).collect::<Vec<_>>(),
+        vec![1, 2, 3]
+    );
+    f.module.rt.end_instance(id(&a)).unwrap();
+    f.clock.advance(120_000);
+    f.module.rt.scheduler().unwrap().tick().unwrap();
+    assert!(
+        f.module
+            .rt
+            .pending_template_events(32)
+            .unwrap()
+            .iter()
+            .filter(|e| e.flow_id == id(&b))
+            .count()
+            == 3
+    );
 }

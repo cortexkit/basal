@@ -64,11 +64,28 @@ impl Notice {
             .and_then(|v| v.parse::<u32>().ok())
             .filter(|v| *v > 0 && parts[5] == format!("v{v}"))
             .ok_or_else(|| CoreError::Invalid("invalid event version".into()))?;
-        if self.event_key.len() != 64
-            || !self
-                .event_key
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        let lifecycle_key = parts[3] == "basal"
+            && version == 1
+            && crate::template_events::EVENTS.contains(&parts[4])
+            && self
+                .headers
+                .get("flow_id")
+                .zip(self.headers.get("seq"))
+                .is_some_and(|(flow, seq)| {
+                    !flow.is_empty()
+                        && !flow.contains(':')
+                        && seq
+                            .parse::<i64>()
+                            .ok()
+                            .is_some_and(|n| n > 0 && seq == &n.to_string())
+                        && self.event_key == format!("{flow}:{seq}")
+                });
+        if !lifecycle_key
+            && (self.event_key.len() != 64
+                || !self
+                    .event_key
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
         {
             return Err(CoreError::Invalid("invalid event key".into()));
         }

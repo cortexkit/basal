@@ -9,7 +9,7 @@ Typical templates:
 - a pull request or issue changes state;
 - a time is reached.
 
-A template is a flow package ([packages.md](packages.md)) whose manifest declares parameters. Everything packages already do still holds: an immutable registry, one approval per version, `$self` for the agent, and instances that are flows with their own state. This document adds parameters, the bounds that check them, the operations agents and core call, and the planned lifecycle synchronization contract.
+A template is a flow package ([packages.md](packages.md)) whose manifest declares parameters. Package rules still apply: the registry preserves each version's exact script and manifest bytes, the operator approves each version once, `$self` names the creating agent, and each instance keeps its own flow state. This document adds parameters, the bounds that check them, the operations agents and core call, and the lifecycle synchronization contract.
 
 ## Parameters in the manifest
 
@@ -115,9 +115,7 @@ A template run may call `await instance.end()` with no arguments. It returns `tr
 
 A dry run naming a registered template version or a template instance returns `template_values_required`. No sample values are guessed. Ordinary `flow.install` and ordinary-flow dry runs carrying `params` or `template` return `params_require_package`, naming the field. Parameter-aware template dry runs with explicit supplied values are not available yet.
 
-### `flow.instance.live` (planned)
-
-Lifecycle events and this snapshot operation are not implemented yet. The following sections specify their future synchronization contract; creation, ending and expiry already enforce the rules above without publishing events.
+### `flow.instance.live`
 
 Caller: prefrontal-core only; anyone else is refused with `not_permitted`. Request `{}`. Reply:
 
@@ -147,12 +145,16 @@ It lists every template instance that hasn't ended, including expired ones that 
 | `params_require_package` | ordinary install or ordinary-flow dry run carries `params` or `template` | `{"field": "params" \| "template"}` |
 | `template_values_required` | dry run names a registered template or template instance | |
 | `not_a_template_instance` | a non-template run calls `instance.end()` | |
+| `sink_instance_expired` | core receives a digest write at or after `expires_at` on its own clock | `{"flow_id": id, "expires_at_ms": ms}` |
+| `sink_flow_not_installed` | core receives a write from an ended or revoked instance | |
 | `not_found` | the operator ends an unknown flow id | |
 | `not_permitted` | unauthorized caller or ending another agent's instance | |
 
+When core refuses a sink write with `sink_instance_expired` or `sink_flow_not_installed`, basal rejects the script's sink call with that code unchanged. Basal does not retry: these are lifecycle refusals, not temporary bus or service failures.
+
 `bound` is the full declaration (including `type`) for a missing or invalid declared value, and `null` for an unknown name. Bounds and unknown names are checked in one UTF-8 name order. A live instance for quota purposes is neither ended nor expired; a disable or revocation does not free its slot.
 
-## Lifecycle events (planned)
+## Lifecycle events
 
 An instance can end or expire without any reply passing through the component that tracks it: an operator ends it, or its expiry passes. So basal publishes a module event of module `basal` on each change, and declares all four in its daemon manifest:
 
@@ -163,12 +165,24 @@ An instance can end or expire without any reply passing through the component th
 | `flow_instance_ended` | it is ended, or its one-shot fire has run |
 | `flow_instance_expired` | its `expires_at` passes |
 
-Each is published on `ck.<account>.event.basal.<event>.v1`, version 1. The message body is the JSON object:
+Each is published on `ck.<account>.event.basal.<event>.v1`, version 1, as a notice with an empty payload. The `Nats-Msg-Id` is `<flow_id>:<seq>`; `Ck-Content-Digest` is bare lowercase SHA-256 hex over the body's canonical JSON bytes. Notice headers `flow_id`, `agent` (the instance's `agent_id`) and `seq` let core discard stale notices without fetching a body. Lifecycle event bodies stay off the NATS bus because parameters can contain an agent's private note text.
+
+The retrievable body is the JSON object:
 
 ```json
 {"flow_id": "string", "template": "string", "version": 1, "agent_id": "string",
  "expires_at": 1793001600000, "seq": 3}
 ```
+
+`flow_instance_expired` also includes `params`, the instance's canonical parameter object, so core can tell the instance's owning agent which watch parameters have expired.
+
+### Body retrieval: `events_get`
+
+Caller: prefrontal-core only. Request `{"event_key":"<flow_id>:<seq>","event_name":"flow_instance_expired"}`. Reply `{"body":"<exact canonical JSON bytes>","digest":"<bare lowercase SHA-256 hex>","event_key":"<flow_id>:<seq>","event_name":"flow_instance_expired","published_at":1793001600000}`. `body` is a JSON string, not a parsed object. `published_at` is Unix milliseconds when basal recorded the publish acknowledgement; it is `null` while that local acknowledgement is pending, including after a crash between the server acknowledgement and its local recording. A notice's body is retrievable in that gap too. An unknown key and any non-core caller receive the same `event_not_visible` refusal with message `event not visible`. For core, an existing key with a different `event_name` is refused as `event_name_mismatch`, with message `event_name mismatch: expected <stored>, got <given>`. Non-core callers receive `event_not_visible` even when the name mismatches, so they learn nothing about the stored event.
+
+Changes, sequence increments and immutable event bodies commit together in a durable outbox. Basal retries bus failures with exponential backoff and marks rows published only after a fresh or duplicate receipt. Published bodies remain retrievable for at least seven days after acknowledgement, then maintenance prunes them. Unpublished rows never expire.
+
+### Ordering and recovery
 
 `seq` strictly increases with every change to that instance, across all four events, so a reader drops any event whose `seq` is at or below the last one it applied for that `flow_id`. That makes redelivery and reordering harmless: the bus delivers at least once and can reorder across a reconnect. The message id (`Nats-Msg-Id`) is `<flow_id>:<seq>`, so the bus deduplicates a republished change.
 
@@ -187,4 +201,4 @@ Instance id vectors are pinned in [`test-vectors/templates/instance-ids.json`](.
 | `watch` | `agent_d1e7002e2c9b9f43` | `{"interval":"15m","path":"/work/notes/todo"}` | `watch_d5475a5580c9b252` |
 | `watch` | `agent_47120287c700722b` | `{"interval":"900s","path":"/work/notes/todo"}` | `watch_9ab76103d538a9e1` |
 
-The JSON corpus also pins quotes, backslashes and non-ASCII UTF-8 text, and equivalent UTC timestamp spellings. Event byte vectors will accompany the lifecycle implementation.
+The JSON corpus also pins quotes, backslashes and non-ASCII UTF-8 text, and equivalent UTC timestamp spellings. Captured lifecycle notice subjects, headers and digests, `events_get` request/reply bytes, and a `flow.instance.live` request and reply are pinned in [`lifecycle.json`](../test-vectors/templates/lifecycle.json); the module tests produce them through the real NATS publisher and dispatcher.
