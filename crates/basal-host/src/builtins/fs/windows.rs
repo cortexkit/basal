@@ -2344,7 +2344,9 @@ mod tests {
 
         /// Creates a directory junction; needs no privilege.
         fn junction(link: &Path, target: &Path) {
-            let status = std::process::Command::new("cmd")
+            // Subprocess text must not interrupt libtest's result lines.
+            // Keep it for diagnostics only when fixture creation fails.
+            let output = std::process::Command::new("cmd")
                 .args([
                     "/c",
                     "mklink",
@@ -2352,9 +2354,15 @@ mod tests {
                     link.to_str().unwrap(),
                     target.to_str().unwrap(),
                 ])
-                .status()
+                .output()
                 .expect("run mklink /J");
-            assert!(status.success(), "mklink /J {} failed", link.display());
+            assert!(
+                output.status.success(),
+                "mklink /J {} failed: {} {}",
+                link.display(),
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
             assert_link(link);
         }
 
