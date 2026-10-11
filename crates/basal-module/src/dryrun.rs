@@ -430,6 +430,9 @@ impl DryRunner {
             owner: format!("basal-dry-run-{}", std::process::id()),
             clock: clock.clone(),
             auto_resume: false,
+            // A template replay has no real instance to end. Send its authorized
+            // end calls to the capture host, leaving local KV replay unchanged.
+            capture_instance_end: request.template.is_some(),
             selector: Arc::new(CapturedSelector),
             // No install gate: core has approved nothing for a dry run, and
             // its capture host never reaches core. Only module ops the

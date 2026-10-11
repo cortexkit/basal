@@ -1,0 +1,18 @@
+{
+  "format": 1,
+  "id": "watch-git",
+  "version": 1,
+  "purpose": "Wake the creating agent once when a Git ref exists or a new commit subject matches text.",
+  "trigger": { "schedule": { "interval": "$params.every" } },
+  "sinks": [{ "agent": "$self", "digest_max": "wake" }],
+  "git": { "read": ["$params.repo"] },
+  "params": {
+    "note": { "type": "string", "max_bytes": 4096 },
+    "repo": { "type": "repo", "under": ["~/Work"] },
+    "condition": { "type": "enum", "values": ["ref_exists", "commit_matching"] },
+    "ref": { "type": "string", "max_bytes": 256 },
+    "pattern": { "type": "string", "max_bytes": 256 },
+    "every": { "type": "duration", "min": "5m", "max": "1d" }
+  },
+  "template": { "max_per_agent": 100, "max_lifetime": "365d" }
+}

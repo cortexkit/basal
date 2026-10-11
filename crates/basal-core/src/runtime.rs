@@ -97,6 +97,10 @@ pub struct Config {
     /// A run made runnable by a completion is resumed at once on a worker
     /// from the source.
     pub auto_resume: bool,
+    /// Route authorized self-ending calls to a capture host instead of applying
+    /// the local instance lifecycle effect. Only disposable dry-run runtimes
+    /// enable this; ordinary-flow authorization still refuses the primitive.
+    pub capture_instance_end: bool,
     /// The clock for token windows, rate windows and run deadlines.
     pub clock: Clock,
     /// Module ops no flow may call, even when its manifest lists them.
@@ -131,6 +135,7 @@ impl Default for Config {
             deferral_retry_max: Duration::from_secs(60),
             max_broken_activations: 3,
             auto_resume: false,
+            capture_instance_end: false,
             clock: Clock::system(),
             shell_denylist: ShellDenylist::default(),
             limits: RunLimits::default(),
@@ -1032,10 +1037,11 @@ impl Runtime {
             return StoredClass::Sync;
         }
         if crate::kv::is_kv(kind)
-            || matches!(
-                kind,
-                basal_proto::CallKind::Primitive(basal_proto::Primitive::InstanceEnd)
-            )
+            || (!self.config.capture_instance_end
+                && matches!(
+                    kind,
+                    basal_proto::CallKind::Primitive(basal_proto::Primitive::InstanceEnd)
+                ))
         {
             return StoredClass::Local;
         }
