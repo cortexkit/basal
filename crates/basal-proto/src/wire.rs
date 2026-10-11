@@ -6,6 +6,8 @@ use crate::limits::{
 };
 use crate::types::*;
 
+mod windows;
+
 // Parent and worker tags live in disjoint ranges, so a frame sent in the
 // wrong direction is refused as an unknown tag instead of being misread.
 const TAG_HELLO: u8 = 1;
@@ -663,12 +665,14 @@ pub(crate) fn encode_worker(enc: &mut Encoder, m: &WorkerMessage) {
                     mitigations,
                     handle_table,
                 } => {
-                    enc.u8(3);
-                    enc.u8(u8::from(lpac));
-                    enc.u8(u8::from(untrusted));
-                    enc.u8(u8::from(no_thread_token));
-                    enc.u8(u8::from(mitigations));
-                    enc.u8(u8::from(handle_table));
+                    windows::encode(
+                        enc,
+                        lpac,
+                        untrusted,
+                        no_thread_token,
+                        mitigations,
+                        handle_table,
+                    );
                 }
             }
         }
@@ -724,13 +728,7 @@ pub(crate) fn decode_worker(dec: &mut Decoder<'_>) -> Result<WorkerMessage, Deco
                         })
                     })?,
                 },
-                3 => Confinement::Windows {
-                    lpac: dec.bool("lpac")?,
-                    untrusted: dec.bool("untrusted")?,
-                    no_thread_token: dec.bool("no_thread_token")?,
-                    mitigations: dec.bool("mitigations")?,
-                    handle_table: dec.bool("handle_table")?,
-                },
+                windows::TAG => windows::decode(dec)?,
                 tag => {
                     return Err(DecodeError::UnknownTag {
                         field: "confinement",

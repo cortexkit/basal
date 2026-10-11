@@ -1,5 +1,5 @@
-//! The AppContainer profile every worker shares, and the test-only grant on
-//! the directory of a worker binary.
+//! The AppContainer profile every worker shares, the parent's loaded user
+//! profile, and the test-only grant on the directory of a worker binary.
 
 use super::error::{LaunchError, Refusal};
 use super::native::{Result, SidBuf, check, last, owned, wide};
@@ -9,7 +9,7 @@ use std::path::Path;
 use std::ptr::{null, null_mut};
 use std::sync::Mutex;
 use windows_sys::Win32::Foundation::{
-    FreeLibrary, HMODULE, LocalFree, WAIT_ABANDONED, WAIT_OBJECT_0,
+    FreeLibrary, HANDLE, HMODULE, LocalFree, WAIT_ABANDONED, WAIT_OBJECT_0,
 };
 use windows_sys::Win32::Security::Authorization::{
     EXPLICIT_ACCESS_W, GRANT_ACCESS, GetNamedSecurityInfoW, NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT,
@@ -17,14 +17,14 @@ use windows_sys::Win32::Security::Authorization::{
 };
 use windows_sys::Win32::Security::{
     DACL_SECURITY_INFORMATION, FreeSid, PSID, SID_AND_ATTRIBUTES,
-    SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+    SUB_CONTAINERS_AND_OBJECTS_INHERIT, TOKEN_QUERY,
 };
 use windows_sys::Win32::Storage::FileSystem::{FILE_GENERIC_EXECUTE, FILE_GENERIC_READ};
 use windows_sys::Win32::System::LibraryLoader::{
     GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
 };
 use windows_sys::Win32::System::Threading::{
-    CreateMutexW, INFINITE, ReleaseMutex, WaitForSingleObject,
+    CreateMutexW, GetCurrentProcess, INFINITE, OpenProcessToken, ReleaseMutex, WaitForSingleObject,
 };
 
 /// The name of the one AppContainer profile all basal workers run under.
@@ -47,6 +47,40 @@ type CreateProfile = unsafe extern "system" fn(
     *mut PSID,
 ) -> i32;
 type DeriveSid = unsafe extern "system" fn(*const u16, *mut PSID) -> i32;
+type UserProfileDirectory = unsafe extern "system" fn(HANDLE, *mut u16, *mut u32) -> i32;
+
+/// Reads the loaded profile folder from the process's primary token, never
+/// from environment variables or a thread's impersonation token. Userenv is
+/// resolved from System32 only in the parent, not imported into worker images.
+pub fn process_profile_directory() -> Result<String> {
+    let mut token = null_mut();
+    // SAFETY: the process pseudo-handle is valid and token is writable.
+    check(
+        unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) },
+        "OpenProcessToken(profile)",
+    )?;
+    let token = owned(token, "OpenProcessToken(profile)")?;
+    let userenv = Library::system32("userenv.dll")?;
+    // SAFETY: the function type matches the documented Userenv export.
+    let directory: UserProfileDirectory = unsafe { userenv.symbol(b"GetUserProfileDirectoryW\0")? };
+    let mut size = 0;
+    // SAFETY: a null buffer asks for the size; the owned token stays open.
+    unsafe { directory(token.as_raw_handle(), null_mut(), &mut size) };
+    if std::io::Error::last_os_error().raw_os_error() != Some(122) || size <= 1 || size > 32768 {
+        return Err(last("GetUserProfileDirectoryW(size)"));
+    }
+    let mut buffer = vec![0u16; size as usize];
+    // SAFETY: the buffer has the requested capacity and the token is live.
+    check(
+        unsafe { directory(token.as_raw_handle(), buffer.as_mut_ptr(), &mut size) },
+        "GetUserProfileDirectoryW",
+    )?;
+    let end = buffer
+        .iter()
+        .position(|unit| *unit == 0)
+        .ok_or_else(|| "user profile path is not terminated".to_owned())?;
+    String::from_utf16(&buffer[..end]).map_err(|_| "user profile path is not Unicode".to_owned())
+}
 
 /// The package SID of an AppContainer profile.
 #[derive(Clone, PartialEq, Eq)]
@@ -306,6 +340,34 @@ impl Drop for SessionMutex {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_process_token_profile_ignores_userprofile_environment() {
+        const MARKER: &str = "BASAL_PROFILE_ENV_CONTROL";
+        if let Some(fake) = std::env::var_os(MARKER) {
+            let fake = fake.to_str().expect("fixture profile is Unicode");
+            let actual = process_profile_directory().expect("loaded process token profile");
+            assert_ne!(actual.to_lowercase(), fake.to_lowercase());
+            return;
+        }
+        // A subprocess changes only its own environment, so concurrent profile
+        // and launcher tests never see the hostile USERPROFILE value.
+        let fake = std::env::temp_dir().join(format!("basal-fake-profile-{}", std::process::id()));
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "windows::profile::tests::the_process_token_profile_ignores_userprofile_environment", "--nocapture"])
+            .env(MARKER, &fake)
+            .env("USERPROFILE", &fake)
+            .output().expect("run profile environment control");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "the profile control did not execute"
+        );
+    }
     use std::sync::{Arc, Barrier};
 
     /// A profile used only by the race test below, so deleting it cannot

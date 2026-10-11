@@ -11,9 +11,10 @@ import re
 import tomllib
 
 
-PLATFORMS = ("linux", "macos")
+PLATFORMS = ("linux", "macos", "windows")
 PORTABLE_PACKAGES = {"basal-proto", "basal-core", "basal-host"}
 SUCCESS = {"CAUGHT", "CAUGHT_BROADLY", "HUB", "EQUIVALENT", "UNREACHABLE"}
+ARTIFACT_PATTERN = re.compile(r"mutations-(linux|macos|windows)-[1-9][0-9]*")
 
 
 def partition(rows):
@@ -21,13 +22,18 @@ def partition(rows):
     selected = {platform: set() for platform in PLATFORMS}
     seen = set()
     for row in rows:
-        hosts = set(row.get("platforms", PLATFORMS)) & set(PLATFORMS)
-        if len(hosts) != 1:
+        platforms = row.get("platforms", PLATFORMS)
+        hosts = set(platforms) & set(PLATFORMS)
+        if len(platforms) != 1 or len(hosts) != 1:
             raise ValueError(f"{row['id']}: expected exactly one CI platform, got {sorted(hosts)}")
         host = hosts.pop()
         package = row.get("package")
-        if package in PORTABLE_PACKAGES and host != "linux":
-            raise ValueError(f"{row['id']}: {package} proofs belong on Linux")
+        file = Path(row.get("file", ""))
+        windows_module = "windows" in file.parts or file.name == "windows.rs"
+        if package in PORTABLE_PACKAGES and host != "linux" and not (
+            host == "windows" and windows_module
+        ):
+            raise ValueError(f"{row['id']}: {package} proofs belong on Linux unless targeting a Windows-only module on Windows")
         if row["id"] in seen:
             raise ValueError(f"duplicate catalogue ID: {row['id']}")
         seen.add(row["id"])
@@ -55,7 +61,7 @@ def verify_reports(selected, reports):
             executed[platform][identity] += 1
     for platform in PLATFORMS:
         # Each host shards the entire catalogue; the runner reports the other
-        # host's rows as skips. Checking both views also detects a missing shard.
+        # hosts' rows as skips. Checking every view also detects a missing shard.
         if reported[platform] != Counter({identity: 1 for identity in expected}):
             raise ValueError(f"{platform}: reports must contain every catalogue ID exactly once")
         if executed[platform] != Counter({identity: 1 for identity in selected[platform]}):
@@ -74,12 +80,12 @@ def main():
     if args.reports:
         reports = []
         for path in sorted(args.reports.glob("mutations-*/all.json")):
-            match = re.fullmatch(r"mutations-(linux|macos)-[1-9][0-9]*", path.parent.name)
+            match = ARTIFACT_PATTERN.fullmatch(path.parent.name)
             if not match:
                 raise ValueError(f"unrecognized mutation artifact: {path.parent.name}")
             reports.append((match[1], json.loads(path.read_text())))
         counts = verify_reports(selected, reports)
-    print(f"Mutation coverage: linux={counts['linux']}, macos={counts['macos']}, "
+    print(f"Mutation coverage: linux={counts['linux']}, macos={counts['macos']}, windows={counts['windows']}, "
           f"total={sum(counts.values())} catalogue rows; exactly one platform per row")
 
 

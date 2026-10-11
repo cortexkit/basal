@@ -17,6 +17,17 @@ use basal_proto::{CODEMODE_JOB_COMMIT_BYTES, FLOW_JOB_COMMIT_BYTES};
 
 use crate::process::SpawnError;
 
+/// A Windows worker must report every startup check, not just its token kind.
+pub(crate) fn accepts_report(
+    lpac: bool,
+    untrusted: bool,
+    no_thread_token: bool,
+    mitigations: bool,
+    handle_table: bool,
+) -> bool {
+    lpac && untrusted && no_thread_token && mitigations && handle_table
+}
+
 /// `STATUS_ACCESS_VIOLATION`: the worker touched memory it may not, for
 /// example code the dynamic-code policy refused to make executable.
 pub const STATUS_ACCESS_VIOLATION: u32 = 0xC000_0005;

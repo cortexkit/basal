@@ -195,6 +195,21 @@ mod deviations {
     use super::*;
     use basal_launch::Refusal;
 
+    #[test]
+    fn a_confined_child_is_created_under_the_shared_spawn_lock() {
+        let mut options = LaunchOptions::new(placed_child(), COMMIT_BYTES);
+        options.before_resume = Some(|_, _| {
+            assert!(
+                basal_launch::spawn_lock_held(),
+                "the child's pipe ends are still inheritable before resume"
+            );
+            Ok(())
+        });
+        let child = launch(&options).expect("launch under the shared spawn lock");
+        assert!(!basal_launch::spawn_lock_held());
+        kill_and_reap(&child);
+    }
+
     fn assert_refused(deviation: Deviation, refusal: Refusal) {
         assert_eq!(deviation.parent_refusal(), Some(refusal));
         let options = LaunchOptions::new(placed_child(), COMMIT_BYTES).deviation(deviation);

@@ -67,7 +67,7 @@ async-trait = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 # The fleet's log format and retention; the module logs through it as
 # entorhinal does.
-cortexkit-log = "0.3.3"
+cortexkit-log = "0.3.5"
 tracing = "0.1"
 # net.fetch, the network built-in. basal writes its own small HTTP/1.1
 # client over rustls so it controls every step the safety rules name:
