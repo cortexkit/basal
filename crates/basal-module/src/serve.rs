@@ -53,6 +53,7 @@ struct RouteStamp {
     scope: Option<ScopeStamp>,
     tool_surface: bool,
     bind_identity: subc_protocol::BindIdentity,
+    call_mode: subc_client_rs::CallMode,
 }
 
 /// The stamp of every bound route, and the caller each one names.
@@ -75,6 +76,7 @@ impl Routes {
                 principal: request.principal.clone(),
                 scope: request.scope.clone(),
                 bind_identity: request.identity.clone(),
+                call_mode: request.call_mode.clone(),
                 tool_surface: matches!(
                     request.target,
                     subc_protocol::RouteTarget::ToolProvider { .. }
@@ -107,6 +109,7 @@ impl Routes {
             principal: stamp.principal.clone().unwrap_or(Principal::Unverified),
             scope: stamp.scope.clone(),
             bind_identity: stamp.bind_identity.clone(),
+            call_mode: stamp.call_mode.clone(),
         })
     }
 }
@@ -208,6 +211,9 @@ impl BasalHandler {
                     return tool_error(crate::tool::invalid("request", error.to_string()));
                 }
             };
+        if let Err(error) = crate::tool::check_call_mode(&request.name, &context.call_mode) {
+            return tool_error(error);
+        }
         let module = match &*lock(&self.phase) {
             Phase::Ready(module) => module.clone(),
             _ => {

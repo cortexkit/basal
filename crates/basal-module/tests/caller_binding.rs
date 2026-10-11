@@ -56,18 +56,16 @@ fn scope_ref_of(channel: u16) -> String {
 
 /// A session scope owned by `reserved:<owner>`, naming `agent`.
 fn scope(owner: &str, agent: &str, owner_authorized: bool, scope_ref: String) -> ScopeStamp {
-    ScopeStamp {
-        owner: Principal::Reserved {
+    ScopeStamp::new(
+        Principal::Reserved {
             module_id: owner.to_owned(),
         },
         scope_ref,
-        scope_epoch: 1,
-        kind: ScopeKind::Head,
-        parent: None,
-        parent_state: None,
-        attributes: ScopeAttributes::new().with_agent_id(Some(agent.to_owned())),
-        owner_authorized,
-    }
+        1,
+        ScopeKind::Head,
+    )
+    .with_attributes(ScopeAttributes::new().with_agent_id(Some(agent.to_owned())))
+    .with_owner_authorized(owner_authorized)
 }
 
 /// Binds the route through the handler and returns the caller it decides.

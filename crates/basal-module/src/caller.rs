@@ -150,18 +150,16 @@ mod tests {
     use super::*;
 
     fn scope(owner: &str, agent: Option<&str>, authorized: bool) -> ScopeStamp {
-        ScopeStamp {
-            owner: Principal::Reserved {
+        ScopeStamp::new(
+            Principal::Reserved {
                 module_id: owner.to_owned(),
             },
-            scope_ref: "s-1".into(),
-            scope_epoch: 1,
-            kind: ScopeKind::Head,
-            parent: None,
-            parent_state: None,
-            attributes: ScopeAttributes::new().with_agent_id(agent.map(str::to_owned)),
-            owner_authorized: authorized,
-        }
+            "s-1",
+            1,
+            ScopeKind::Head,
+        )
+        .with_attributes(ScopeAttributes::new().with_agent_id(agent.map(str::to_owned)))
+        .with_owner_authorized(authorized)
     }
 
     #[test]

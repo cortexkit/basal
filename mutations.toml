@@ -12380,8 +12380,8 @@ target = "--lib"
 expect_red = ["codemode::admission::tests::describe_can_write_while_admission_is_attesting"]
 only = false
 file = "crates/basal-core/src/codemode/admission.rs"
-old = "let agent_id = attest(host, &scope, request)?;"
-new = "let agent_id = store.write(|_| Ok(attest(host, &scope, request))).unwrap()?; // NON-VACUITY BREAK"
+old = "let agent_id = attest(host, &scope, request, None)?;"
+new = "let agent_id = store.write(|_| Ok(attest(host, &scope, request, None))).unwrap()?; // NON-VACUITY BREAK"
 
 [[control]]
 id = "codemode-admission-known-id-read-only"
@@ -18526,3 +18526,163 @@ timeout_s = 600
 file = "crates/basal-core/src/runtime.rs"
 old = "!self.config.capture_instance_end"
 new = "true /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "call-modes-unserved-bind-accepted"
+guards = "codemode cannot execute from codemode or flow binds even when the body claims classic"
+file = "crates/basal-module/src/tool.rs"
+old = '|| (name == "codemode" && !serves_call_mode(&catalog_tool(), mode))'
+new = '|| (name == "codemode" && false && !serves_call_mode(&catalog_tool(), mode)) // NON-VACUITY BREAK'
+test_file = "crates/basal-module/tests/tool_provider_conformance.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test tool_provider_conformance"
+expect_red = ["unserved_modes_are_refused_from_the_bind_not_the_body"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "call-modes-unknown-role-accepted"
+guards = "unknown bind modes fail closed on tools and role operations"
+file = "crates/basal-module/src/tool.rs"
+old = 'if matches!(mode, CallMode::Unknown(_))'
+new = 'if false && matches!(mode, CallMode::Unknown(_)) // NON-VACUITY BREAK'
+test_file = "crates/basal-module/tests/tool_provider_conformance.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test tool_provider_conformance"
+expect_red = ["unknown_bind_mode_is_refused_for_tools_and_role_operations"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "call-modes-codemode-catalog-serves-flow"
+guards = "the public catalog declares only classic for codemode"
+file = "crates/basal-module/src/tool.rs"
+old = 'let tool = tool.with_modes(vec![CallMode::Classic]);'
+new = 'let tool = tool.with_modes(vec![CallMode::Flow]); // NON-VACUITY BREAK'
+test_file = "crates/basal-module/tests/tool_provider_conformance.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test tool_provider_conformance"
+expect_red = ["every_public_tool_declares_its_served_modes"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "call-modes-capability-not-declared"
+guards = "the daemon manifest promises call-mode enforcement"
+file = "crates/basal-module/src/manifest.rs"
+old = 'cortexkit_role_tool_provider::CALL_MODES_CAPABILITY.into(),'
+new = '"call-modes-disabled/v1".into(), // NON-VACUITY BREAK'
+test_file = "crates/basal-module/tests/tool_provider_conformance.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test tool_provider_conformance"
+expect_red = ["declares_call_modes_capability"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "call-modes-conformance-probe-missing"
+guards = "conformance must exercise the restricted-mode probe rather than skip it"
+file = "crates/basal-module/tests/tool_provider_conformance.rs"
+old = 'Capability::CallModes,'
+new = '// Capability::CallModes, NON-VACUITY BREAK'
+test_file = "crates/basal-module/tests/tool_provider_conformance.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test tool_provider_conformance"
+expect_red = ["basal_tool_provider_conforms_for_declared_capabilities"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "call-modes-legacy-bind-forced-classic"
+guards = "scope-derived SDK modes from legacy daemon binds reach the provider unchanged"
+file = "crates/basal-module/src/serve.rs"
+old = 'call_mode: request.call_mode.clone(),'
+new = 'call_mode: subc_client_rs::CallMode::Classic, // NON-VACUITY BREAK'
+test_file = "crates/basal-module/tests/tool_provider_conformance.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test tool_provider_conformance"
+expect_red = ["legacy_daemon_binds_derive_modes_and_missing_run_expiry_still_runs"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "call-modes-stamp-deadline-lower-bound-ignored"
+guards = "scope expiry before Basal's requested deadline emits a warning"
+file = "crates/basal-core/src/codemode/admission.rs"
+old = 'i128::from(expiry) < i128::from(requested)'
+new = 'false && i128::from(expiry) < i128::from(requested) /* NON-VACUITY BREAK */'
+test_file = "crates/basal-core/src/codemode/deadline_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::deadline_tests::out_of_range_stamp_deadlines_warn_without_refusing"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "call-modes-stamp-deadline-upper-bound-ignored"
+guards = "scope expiry beyond core's returned deadline cap emits a warning"
+file = "crates/basal-core/src/codemode/admission.rs"
+old = 'i128::from(expiry) > i128::from(core_cap)'
+new = 'false && i128::from(expiry) > i128::from(core_cap) /* NON-VACUITY BREAK */'
+test_file = "crates/basal-core/src/codemode/deadline_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::deadline_tests::out_of_range_stamp_deadlines_warn_without_refusing"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "call-modes-legacy-stamp-deadline-not-logged"
+guards = "missing legacy scope expiry logs at debug level without refusing"
+file = "crates/basal-core/src/codemode/admission.rs"
+old = 'tracing::debug!(target: "codemode", "run scope stamp deadline absent");'
+new = '// tracing::debug!(target: "codemode", "run scope stamp deadline absent"); NON-VACUITY BREAK'
+test_file = "crates/basal-core/src/codemode/deadline_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::deadline_tests::absent_legacy_stamp_deadline_logs_debug_without_refusing"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "call-modes-tool-open-skips-stamp-deadline"
+guards = "opening a codemode tool run checks the attested stamp deadline"
+file = "crates/basal-core/src/codemode/admission.rs"
+old = 'Some((expires_at_ms, opened.expires_at_ms)),'
+new = 'None, // NON-VACUITY BREAK'
+test_file = "crates/basal-core/src/codemode/deadline_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::admission::deadline_tests::tool_scope_open_checks_the_attested_deadline"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600

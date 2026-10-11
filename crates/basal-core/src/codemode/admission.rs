@@ -131,7 +131,7 @@ pub fn admit(
     }
     let checked = (|| {
         let scope = scope_shape(request)?;
-        let agent_id = attest(host, &scope, request)?;
+        let agent_id = attest(host, &scope, request, None)?;
         let fields = request_fields(request)?;
         let limits = limits(request.get("limits"))?;
         let resolved = super::models::add_catalog(fields.catalog)
@@ -241,7 +241,12 @@ fn scope_shape(request: &Value) -> Checked<FlowScope> {
     Ok(scope)
 }
 
-fn attest(host: &dyn Host, scope: &FlowScope, request: &Value) -> Checked<String> {
+fn attest(
+    host: &dyn Host,
+    scope: &FlowScope,
+    request: &Value,
+    deadline_bounds: Option<(i64, i64)>,
+) -> Checked<String> {
     let description = host
         .scope_describe(&scope.owner, &scope.scope_ref)
         .map_err(|e| Refusal::new("no_scope", format!("scope cannot be attested: {e}")))?;
@@ -263,6 +268,9 @@ fn attest(host: &dyn Host, scope: &FlowScope, request: &Value) -> Checked<String
             "scope_mismatch",
             "the daemon stamp does not attest the requested scope",
         ));
+    }
+    if let Some((requested, core_cap)) = deadline_bounds {
+        log_stamp_deadline(stamp.expires_at_ms, requested, core_cap);
     }
     let agent_id = stamp
         .attributes
@@ -297,6 +305,29 @@ fn attest(host: &dyn Host, scope: &FlowScope, request: &Value) -> Checked<String
         ));
     }
     Ok(agent_id)
+}
+
+fn log_stamp_deadline(expiry: Option<u64>, requested: i64, core_cap: i64) {
+    match expiry {
+        Some(expiry)
+            if i128::from(expiry) < i128::from(requested)
+                || i128::from(expiry) > i128::from(core_cap) =>
+        {
+            tracing::warn!(
+                target: "codemode",
+                stamp_expires_at_ms = expiry,
+                requested_expires_at_ms = requested,
+                core_expires_at_ms = core_cap,
+                "run scope stamp deadline mismatch"
+            );
+        }
+        None => {
+            // SUBC daemons predating call modes omit ScopeStamp::expires_at_ms.
+            // Basal still enforces the run's wall-time and person-wait limits.
+            tracing::debug!(target: "codemode", "run scope stamp deadline absent");
+        }
+        Some(_) => {}
+    }
 }
 
 struct Fields<'a> {
@@ -576,8 +607,13 @@ pub fn admit_tool(
                 json!({"code":"scope_mismatch","message":"core changed the immutable run expiry"}),
             );
         }
-        attest(host, &selector, &request)
-            .map_err(|e| json!({"code":e.code,"message":e.message}))?;
+        attest(
+            host,
+            &selector,
+            &request,
+            Some((expires_at_ms, opened.expires_at_ms)),
+        )
+        .map_err(|e| json!({"code":e.code,"message":e.message}))?;
         let daemon = transport.catalog().map_err(super::scope::error_value)?;
         let resolved =
             run_scope::catalog(&daemon, &opened.catalog).map_err(super::scope::error_value)?;
@@ -660,3 +696,7 @@ pub fn admit_tool(
     };
     Ok(Admission::Admitted { run, start })
 }
+
+#[cfg(test)]
+#[path = "deadline_tests.rs"]
+mod deadline_tests;
