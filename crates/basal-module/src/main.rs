@@ -123,6 +123,8 @@ fn serve() -> ExitCode {
     let store_path_cell = Arc::new(std::sync::OnceLock::<std::path::PathBuf>::new());
     let configured_store = store_path_cell.clone();
     tracing::info!("basal module starting");
+    let daemon_capabilities = Arc::new(basal_host::subc_catalog::DaemonCapabilities::default());
+    let catalog_capabilities = daemon_capabilities.clone();
     let handler = BasalHandler::new(
         Box::new(move |store_path| {
             let _ = configured_store.set(store_path.clone());
@@ -153,7 +155,10 @@ fn serve() -> ExitCode {
                 subc_catalog::SubcCatalog,
             };
             let transport = transport.clone();
-            let catalog = Arc::new(SubcCatalog::new(transport.clone()));
+            let catalog = Arc::new(
+                SubcCatalog::new(transport.clone())
+                    .with_daemon_capabilities(catalog_capabilities.clone()),
+            );
             let selector = Arc::new(basal_host::selector::RoutingSelector::new(
                 transport.clone(),
             ));
@@ -196,6 +201,7 @@ fn serve() -> ExitCode {
             }
         }),
     )
+    .with_daemon_capabilities(daemon_capabilities)
     .with_store_initializer(Box::new(move |shared| {
         if let Some(models) = initialized_models
             .lock()

@@ -121,6 +121,7 @@ pub struct BasalHandler {
     ready: Arc<ReadyHosts>,
     event_transport: Arc<Option<Arc<dyn basal_host::transport::Transport>>>,
     initialized: Arc<std::sync::atomic::AtomicBool>,
+    daemon_capabilities: Arc<basal_host::subc_catalog::DaemonCapabilities>,
     tool_foreground: Duration,
 }
 
@@ -139,8 +140,16 @@ impl BasalHandler {
             ready: Arc::new(Box::new(|| {})),
             event_transport: Arc::new(None),
             initialized: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            daemon_capabilities: Arc::new(basal_host::subc_catalog::DaemonCapabilities::default()),
             tool_foreground: Duration::from_secs(25),
         }
+    }
+    pub fn with_daemon_capabilities(
+        mut self,
+        capabilities: Arc<basal_host::subc_catalog::DaemonCapabilities>,
+    ) -> Self {
+        self.daemon_capabilities = capabilities;
+        self
     }
     pub fn with_store_initializer(mut self, initialize: InitializeHosts) -> Self {
         self.initialize = Arc::new(initialize);
@@ -442,6 +451,8 @@ impl ModuleHandler for BasalHandler {
     }
 
     async fn on_hello_ack(&self, ack: &ModuleHelloAckBody) {
+        // Reconnects can change daemon capabilities without reopening the store.
+        self.daemon_capabilities.observe_hello_ack(ack);
         // A replacement SDK connection changes the describer, not the module's
         // store, workers or runtime. Reopening would contend with our own lease.
         if self
@@ -575,5 +586,41 @@ mod error_tests {
         assert!(
             matches!(outcome,HandlerOutcome::ErrorWithDetail {code,message,detail} if code == "generation_stale" && message == "stale" && detail == json!({"current":9}))
         );
+    }
+}
+
+#[cfg(test)]
+mod capability_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn hello_ack_refreshes_catalog_events_on_reconnect() {
+        let capabilities = Arc::new(basal_host::subc_catalog::DaemonCapabilities::default());
+        let handler = BasalHandler::new(
+            Box::new(|_| panic!("reconnect must not configure the store")),
+            Box::new(|| panic!("reconnect must not rebuild hosts")),
+        )
+        .with_daemon_capabilities(capabilities.clone());
+        assert!(!capabilities.supports_catalog_events());
+        // Exercise the reconnect callback without starting a second store owner.
+        handler
+            .initialized
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        for present in [false, true, false, true] {
+            let ack = serde_json::from_value(json!({
+                "negotiated_ver": subc_protocol::PROTOCOL_VERSION,
+                "subc_ops": [],
+                "subc_capabilities": if present {
+                    vec![subc_protocol::manifest::CAP_CATALOG_EVENTS_V1]
+                } else {
+                    vec!["flow-scopes/v1"]
+                },
+                "storage": null,
+                "machine_id": null,
+            }))
+            .unwrap();
+            handler.on_hello_ack(&ack).await;
+            assert_eq!(capabilities.supports_catalog_events(), present);
+        }
     }
 }
