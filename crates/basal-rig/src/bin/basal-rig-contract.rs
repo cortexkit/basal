@@ -54,6 +54,9 @@ mod ownership;
 mod package_cases;
 #[path = "basal-rig-contract/seeded.rs"]
 mod seeded;
+#[cfg(windows)]
+#[path = "basal-rig-contract/windows.rs"]
+mod windows;
 
 const CORE: &str = "prefrontal-core";
 const BASAL: &str = "basal";
@@ -1408,6 +1411,7 @@ async fn relay_refusals(rig: &Rig, flow: &Flow, agent: &Agent) -> Case {
     case
 }
 
+#[cfg(unix)]
 fn basal_pid() -> Option<String> {
     let out = std::process::Command::new("ps")
         .args(["-axo", "pid=,command="])
@@ -1423,6 +1427,11 @@ fn basal_pid() -> Option<String> {
                 .ends_with("/bin/ckdev-basal")
                 .then(|| pid.to_owned())
         })
+}
+
+#[cfg(windows)]
+fn basal_pid() -> Option<String> {
+    windows::basal_pid()
 }
 
 async fn crash(rig: &Rig, flow: &Flow, agent: &Agent, since: i64) -> Case {

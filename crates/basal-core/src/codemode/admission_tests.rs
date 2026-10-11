@@ -329,22 +329,23 @@ fn pruned_id_is_unknown_and_never_admitted_again() {
 }
 
 #[test]
-fn injected_windows_is_refused_before_scope_or_request_checks() {
+fn windows_admission_uses_the_same_scope_and_budget_checks() {
     let t = temp_store();
-    let h = host("agent");
-    let Admission::Refused(refusal) = admit(
+    let h = host_for_run("agent", "windows");
+    let admitted = admit(
         &t.store,
         &h,
         &Clock::manual(NOW),
         Platform::Windows,
-        &json!({}),
+        &request("windows", "agent"),
     )
-    .unwrap() else {
-        panic!("Windows must refuse without a start token");
-    };
-    assert_eq!(refusal.code, "unsupported_platform");
-    assert_eq!(row_count(&t.store), 0);
-    assert!(h.scope_queries().is_empty());
+    .unwrap();
+    assert!(matches!(
+        admitted,
+        Admission::Admitted { start: Some(_), .. }
+    ));
+    assert_eq!(row_count(&t.store), 1);
+    assert_eq!(h.scope_queries().len(), 1);
 }
 
 #[test]

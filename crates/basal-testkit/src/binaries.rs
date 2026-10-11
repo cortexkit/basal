@@ -208,14 +208,21 @@ pub fn dev_binary(binary: impl AsRef<Path>) -> PathBuf {
     static COPIES: OnceLock<Mutex<HashMap<PathBuf, DevBinaries>>> = OnceLock::new();
     let mut copies = COPIES.get_or_init(Mutex::default).lock().unwrap();
     let placed = copies.entry(binary.to_path_buf()).or_insert_with(|| {
-        let worker = binary.with_file_name("ck-basal-worker");
-        let module = binary.with_file_name("ck-basal");
+        let suffix = if cfg!(windows) { ".exe" } else { "" };
+        let worker_name = format!("ck-basal-worker{suffix}");
+        let module_name = format!("ck-basal{suffix}");
+        let worker = binary.with_file_name(&worker_name);
+        let module = binary.with_file_name(&module_name);
         let mut sources = vec![binary];
-        if binary.file_name().is_some_and(|name| name == "ck-basal") && worker.is_file() {
+        if binary
+            .file_name()
+            .is_some_and(|name| name == module_name.as_str())
+            && worker.is_file()
+        {
             sources.push(&worker);
         } else if binary
             .file_name()
-            .is_some_and(|name| name == "ck-basal-worker")
+            .is_some_and(|name| name == worker_name.as_str())
             && module.is_file()
         {
             sources.insert(0, &module);
@@ -223,6 +230,26 @@ pub fn dev_binary(binary: impl AsRef<Path>) -> PathBuf {
         DevBinaries::new(&sources).expect("place development executables")
     });
     placed.path(binary).expect("development executable path")
+}
+
+/// Places a test worker and makes that directory launchable by the Windows
+/// AppContainer. Production installation never uses this test-only ACL grant.
+pub(crate) fn dev_worker_binary(binary: impl AsRef<Path>) -> PathBuf {
+    let binary = dev_binary(binary);
+    #[cfg(windows)]
+    {
+        use std::collections::HashSet;
+        static GRANTED: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+        let directory = binary.parent().expect("worker directory").to_path_buf();
+        let mut granted = GRANTED.get_or_init(Mutex::default).lock().unwrap();
+        if !granted.contains(&directory) {
+            let package = basal_launch::create_or_open_profile().expect("test worker package SID");
+            basal_launch::grant_test_binary_directory(&binary, &package)
+                .expect("test worker directory ACL");
+            granted.insert(directory);
+        }
+    }
+    binary
 }
 
 #[cfg(test)]
@@ -258,6 +285,7 @@ mod tests {
 
     #[test]
     fn module_and_worker_share_a_content_addressed_development_directory() {
+        #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt;
 
         let source = SourceFiles::new();
@@ -270,6 +298,7 @@ mod tests {
             assert_eq!(path.file_name().unwrap(), name);
             assert_eq!(fs::read(&path).unwrap(), fs::read(original).unwrap());
             assert_eq!(path.parent(), Some(placed.directory.as_path()));
+            #[cfg(unix)]
             assert_eq!(
                 fs::metadata(&path).unwrap().permissions().mode() & 0o777,
                 0o755
@@ -279,6 +308,7 @@ mod tests {
 
     #[test]
     fn repeated_placement_reuses_the_same_file_and_inode() {
+        #[cfg(unix)]
         use std::os::unix::fs::MetadataExt;
 
         let source = SourceFiles::new();
@@ -286,10 +316,33 @@ mod tests {
         let first = DevBinaries::new(&[&binary]).unwrap().path(&binary).unwrap();
         let second = DevBinaries::new(&[&binary]).unwrap().path(&binary).unwrap();
         assert_eq!(first, second);
+        #[cfg(unix)]
         assert_eq!(
             fs::metadata(first).unwrap().ino(),
             fs::metadata(second).unwrap().ino()
         );
+        #[cfg(windows)]
+        assert_eq!(file_identity(&first), file_identity(&second));
+    }
+
+    #[cfg(windows)]
+    fn file_identity(path: &Path) -> (u32, u32, u32) {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+        };
+        let file = File::open(path).unwrap();
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        // SAFETY: file owns the handle and info is writable for the call.
+        assert_ne!(
+            unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) },
+            0
+        );
+        (
+            info.dwVolumeSerialNumber,
+            info.nFileIndexHigh,
+            info.nFileIndexLow,
+        )
     }
 
     #[test]

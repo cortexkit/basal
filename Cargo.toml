@@ -7,6 +7,7 @@ members = [
     "crates/basal-core",
     "crates/basal-testkit",
     "crates/basal-module",
+    "crates/basal-launch",
     "crates/basal-rig",
 ]
 
@@ -20,6 +21,7 @@ rust-version = "1.88"
 # Dependencies do not require sibling checkouts.
 basal-core = { path = "crates/basal-core" }
 basal-host = { path = "crates/basal-host" }
+basal-launch = { path = "crates/basal-launch" }
 basal-proto = { path = "crates/basal-proto" }
 basal-testkit = { path = "crates/basal-testkit" }
 blake3 = "1.8"
@@ -35,7 +37,7 @@ croner = { version = "4.0", default-features = false, features = ["jiff"] }
 jiff = { version = "0.2.37", default-features = false, features = ["std", "tzdb-bundle-always"] }
 # The fleet's storage mechanics: open with the single-writer lease, WAL and a
 # busy timeout, and versioned migrations. Pinned exactly, as astrocyte does.
-cortexkit-store = { version = "=0.2.1", features = ["sqlite"] }
+cortexkit-store = { version = "=0.2.4", features = ["sqlite"] }
 cortexkit-store-types = "0.2.2"
 cortexkit-role-tool-provider = "=0.6.0"
 cortexkit-role-tool-provider-conformance = "=0.6.0"
@@ -74,7 +76,7 @@ futures-util = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 # The fleet's log format and retention; the module logs through it as
 # entorhinal does.
-cortexkit-log = "0.3.3"
+cortexkit-log = "0.3.5"
 tracing = "0.1"
 # net.fetch, the network built-in. basal writes its own small HTTP/1.1
 # client over rustls so it controls every step the safety rules name:

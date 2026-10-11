@@ -7,13 +7,19 @@ use serde_json::{Value, json};
 struct Scratch(PathBuf);
 impl Scratch {
     fn new() -> Self {
-        let output = std::process::Command::new("mktemp")
-            .arg("-d")
-            .arg(std::env::temp_dir().join("basal-rig-store.XXXXXXXX"))
-            .output()
-            .expect("create isolated store directory");
-        assert!(output.status.success(), "{output:?}");
-        let dir = PathBuf::from(String::from_utf8(output.stdout).unwrap().trim());
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let dir = loop {
+            let dir = std::env::temp_dir().join(format!(
+                "basal-rig-store-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            match std::fs::create_dir(&dir) {
+                Ok(()) => break dir,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("create isolated store directory: {error}"),
+            }
+        };
         Self(dir.join("store.db"))
     }
 }

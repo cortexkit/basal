@@ -12,7 +12,7 @@ use std::time::Duration;
 use basal_core::{
     Config, InstallError, InstallRequest, NoHooks, RunState, Runtime, Store, StoredClass, Warning,
 };
-use basal_host::builtins::{self, BuiltinHost};
+use basal_host::builtins::{self, BuiltinHost, codes};
 use basal_host::{
     CallClass, CallRequest, CompletionSink, Dispatched, Host, HostOutcome, InstallStatus,
     TransportError,
@@ -217,7 +217,9 @@ fn calls_outside_the_manifest_are_refused_in_the_parent_and_journaled() {
         outside = files.outside.join("secret.txt").display().to_string(),
         escape = files
             .root
-            .join("../outside/secret.txt")
+            .join("..")
+            .join("outside")
+            .join("secret.txt")
             .display()
             .to_string(),
         root = files.root.display().to_string(),
@@ -225,12 +227,19 @@ fn calls_outside_the_manifest_are_refused_in_the_parent_and_journaled() {
     let run_id = admit_with(&rt, &world, &script, &files.manifest());
     let run = finish(&rt, &world, &run_id);
     assert_eq!(run.state, RunState::Succeeded, "{run:#?}");
+    // Windows rejects raw relative components as malformed arguments; Unix
+    // resolves the spelling and refuses the resulting outside-root target.
+    let escape_code = if cfg!(windows) {
+        codes::INVALID_ARGUMENTS
+    } else {
+        codes::DENIED
+    };
     assert_eq!(
         result(&run),
         json!({
             "inside": "PRIVATE-FILE-TEXT",
             "outside": "denied",
-            "escape": "denied",
+            "escape": escape_code,
             "git": "denied",
             "host": "denied",
             "method": "denied",
@@ -245,7 +254,11 @@ fn calls_outside_the_manifest_are_refused_in_the_parent_and_journaled() {
         assert_eq!(outcome.settlement, Settlement::Rejected, "{row:?}");
         assert_eq!(
             code_of(&outcome.value).as_deref(),
-            Some("denied"),
+            Some(if row.position == 2 {
+                escape_code
+            } else {
+                codes::DENIED
+            }),
             "{row:?}"
         );
     }
@@ -265,7 +278,7 @@ fn calls_outside_the_manifest_are_refused_in_the_parent_and_journaled() {
         [
             ("fs.read", "allowed"),
             ("fs.read", "denied"),
-            ("fs.read", "denied"),
+            ("fs.read", escape_code),
             ("git.log", "denied"),
             ("net.fetch", "denied"),
             ("net.fetch", "denied"),
@@ -453,7 +466,7 @@ fn install_refuses_bad_roots_hosts_and_methods() {
         ),
         (
             "dotdot root",
-            json!({ "fs": { "read": [format!("{root}/../outside")] } }),
+            json!({ "fs": { "read": [files.root.join("..").join("outside").display().to_string()] } }),
         ),
         (
             "missing read root",

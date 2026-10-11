@@ -20,6 +20,25 @@ pub const EXIT_STORE_FAILURE: i32 = 75;
 /// The supervisor must report this refusal and restart, never launch plainly.
 pub const EXIT_PRIVACY_IDENTITY_FAILURE: u8 = 76;
 
+/// Ends this process at once, as an outside kill would: no destructors, no
+/// flushing, no exit handlers. The test hooks that simulate a module crash
+/// use it. On Unix it is SIGKILL to the process itself; on Windows,
+/// `TerminateProcess` on the current process.
+pub fn kill_self() -> ! {
+    #[cfg(unix)]
+    // SAFETY: kill(2) on our own pid has no memory-safety preconditions.
+    unsafe {
+        libc::kill(libc::getpid(), libc::SIGKILL);
+    }
+    #[cfg(windows)]
+    crate::windows::terminate_self();
+    // The kill can return before it takes the process down; the calling
+    // thread must not go on to its next step meanwhile.
+    loop {
+        std::thread::park();
+    }
+}
+
 /// Whether a core error is a failure of the store itself, as opposed to a
 /// refusal or a request the core found invalid.
 pub fn is_storage(e: &CoreError) -> bool {

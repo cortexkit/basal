@@ -150,6 +150,9 @@ struct Rig {
 impl Drop for Rig {
     fn drop(&mut self) {
         self.core.release();
+        // This caller-owned store clone is only for assertions during the run;
+        // it must not outlive the fixture's module shutdown and cleanup.
+        self.core.store.lock().unwrap().take();
     }
 }
 fn rig(tag: &str, missing_worker: bool) -> Rig {
@@ -515,7 +518,7 @@ fn codemode_engine_budgets_still_apply_end_to_end() {
         ),
         ("while (true) {}", "budget_exhausted:js_cpu"),
     ] {
-        let rig = rig(status, false);
+        let rig = rig("codemode-budgets", false);
         let result = call(&rig, "budget", code, Duration::from_secs(180));
         assert_eq!(result["status"], status, "{result}");
     }

@@ -17,8 +17,29 @@ static NEXT: AtomicUsize = AtomicUsize::new(0);
 const STREAM: &str = "CK_ACCOUNT_EVENT";
 const SUBJECT: &str = "ck.account.event.plexus.pull_request_review.v1";
 
+#[cfg(windows)]
+#[path = "module_events/windows.rs"]
+mod windows;
+#[cfg(unix)]
+use std::process::Child;
+#[cfg(windows)]
+use windows::{Child, start_server};
+
+#[cfg(unix)]
+fn start_server(dir: &std::path::Path, port: u16, log: std::fs::File) -> Child {
+    std::process::Command::new("nats-server")
+        .args(["-js", "-a", "127.0.0.1", "-p", &port.to_string(), "-sd"])
+        .arg(dir.join("jetstream"))
+        .stdout(log.try_clone().unwrap())
+        .stderr(log)
+        .spawn()
+        .expect(
+            "REAL NATS TEST REQUIRES nats-server ON PATH; install pinned v2.15.0 (no silent skip)",
+        )
+}
+
 struct Server {
-    child: std::process::Child,
+    child: Child,
     dir: std::path::PathBuf,
     bus: NatsConnection,
 }
@@ -38,10 +59,7 @@ impl Server {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
         let log = std::fs::File::create(dir.join("server.log")).unwrap();
-        let mut child = std::process::Command::new("nats-server")
-            .args(["-js","-a","127.0.0.1","-p", &port.to_string(),"-sd"])
-            .arg(dir.join("jetstream")).stdout(log.try_clone().unwrap()).stderr(log)
-            .spawn().expect("REAL NATS TEST REQUIRES nats-server ON PATH; install pinned v2.15.0 (no silent skip)");
+        let mut child = start_server(&dir, port, log);
         let until = Instant::now() + Duration::from_secs(10);
         let bus = loop {
             match NatsConnection::connect(

@@ -16,6 +16,11 @@ use basal_proto::Confinement;
 #[cfg(target_os = "linux")]
 pub mod linux;
 
+// The pure checks under `windows` are also built for unit tests elsewhere,
+// so their accept and reject cases run on every system.
+#[cfg(any(windows, test))]
+pub mod windows;
+
 /// The Seatbelt profile, checked in beside the crate and embedded at build
 /// time so the binary cannot be pointed at a different one.
 pub const SEATBELT_PROFILE: &str = include_str!("../sandbox/worker.sb");
@@ -33,6 +38,9 @@ pub enum ConfinementError {
     /// A Linux startup precondition or confinement layer failed.
     #[cfg(target_os = "linux")]
     Linux(&'static str),
+    /// A Windows startup check failed, with its reason token.
+    #[cfg(windows)]
+    Windows(windows::Refusal),
 }
 
 impl fmt::Display for ConfinementError {
@@ -43,6 +51,8 @@ impl fmt::Display for ConfinementError {
             Self::Unsupported => write!(f, "no supported OS sandbox on this platform"),
             #[cfg(target_os = "linux")]
             Self::Linux(token) => f.write_str(token),
+            #[cfg(windows)]
+            Self::Windows(refusal) => write!(f, "{refusal}"),
         }
     }
 }

@@ -2,25 +2,9 @@
 mod common;
 
 use basal_core::RunState;
-use basal_module::engine::{Engine, EngineConfig};
 use common::{Options, admit, agent, events_manifest, fixture, install_approved};
 use serde_json::json;
 use std::time::Duration;
-
-fn loop_engine(f: &common::Fixture, max: usize) -> Engine {
-    Engine::new(
-        f.module.rt.clone(),
-        f.module.pool.clone(),
-        f.module.consent.clone(),
-        EngineConfig {
-            max_concurrent_activations: max,
-            pass_interval: Duration::from_secs(600),
-        },
-        f.module.metrics.clone(),
-        f.module.fatal.clone(),
-    )
-    .unwrap()
-}
 
 #[test]
 fn completing_a_run_and_returning_pool_capacity_start_the_next_flow() {
@@ -28,6 +12,7 @@ fn completing_a_run_and_returning_pool_capacity_start_the_next_flow() {
         "idle-completion",
         Options {
             max_concurrent: 1,
+            engine_pass_interval: Duration::from_secs(600),
             ..Options::default()
         },
     );
@@ -40,7 +25,7 @@ fn completing_a_run_and_returning_pool_capacity_start_the_next_flow() {
     let next = install_approved(&f, &agent("SYNAPSE"), "return 2;", &events_manifest("next"));
     let first = admit(&f, &held, "first");
     let second = admit(&f, &next, "second");
-    let engine = loop_engine(&f, 1);
+    let engine = f.module.engine.clone();
     let loop_thread = engine.spawn_loop();
     assert!(engine.wait_active(&first, Duration::from_secs(60)));
     assert_eq!(f.module.rt.run(&second).unwrap().state, RunState::Pending);
@@ -57,7 +42,14 @@ fn completing_a_run_and_returning_pool_capacity_start_the_next_flow() {
 
 #[test]
 fn a_host_completion_resumes_a_suspended_run_without_the_fallback() {
-    let f = fixture("idle-host-completion", Options::default());
+    let f = fixture(
+        "idle-host-completion",
+        Options {
+            max_concurrent: 1,
+            engine_pass_interval: Duration::from_secs(600),
+            ..Options::default()
+        },
+    );
     let mut manifest = events_manifest("long");
     manifest["ops"]
         .as_array_mut()
@@ -70,7 +62,7 @@ fn a_host_completion_resumes_a_suspended_run_without_the_fallback() {
         &manifest,
     );
     let run = admit(&f, &flow, "first");
-    let engine = loop_engine(&f, 1);
+    let engine = f.module.engine.clone();
     let loop_thread = engine.spawn_loop();
     f.module
         .rt

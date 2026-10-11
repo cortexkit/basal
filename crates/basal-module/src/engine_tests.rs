@@ -609,8 +609,69 @@ fn a_pool_spawn_retry_wakes_before_the_fallback() {
 
 fn cleanup(engine: Engine, path: std::path::PathBuf) {
     engine.inner.pool.stop();
+    // An activation releases its slot before its thread drops the runtime and
+    // scheduler store handles. Empty slots are not enough to permit deletion.
+    engine.join_threads();
+    engine.inner.rt.quiesce();
     drop(engine);
     std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+}
+
+#[test]
+fn engine_cleanup_joins_activation_before_removing_its_store() {
+    use std::sync::mpsc;
+
+    let (engine, path) = engine(false);
+    install_flow(&engine.inner.rt, "cleanup");
+    engine
+        .inner
+        .rt
+        .admit_trigger("cleanup", "event", basal_proto::JsonText::null())
+        .unwrap();
+
+    let (release, released) = mpsc::channel();
+    let released = Mutex::new(released);
+    let (parked_tx, parked) = mpsc::channel();
+    *engine.inner.activation_exit.lock().unwrap() = Some(Arc::new(move || {
+        parked_tx.send(()).unwrap();
+        released.lock().unwrap().recv().unwrap();
+    }));
+    engine.pass().unwrap();
+    parked.recv_timeout(Duration::from_secs(60)).unwrap();
+    engine.wait_quiet();
+    assert_eq!(engine.active_count(), 0);
+
+    #[derive(Debug)]
+    enum Event {
+        Joining,
+        CleanupFinished,
+    }
+    let (event_tx, events) = mpsc::channel();
+    let joining_tx = event_tx.clone();
+    *engine.inner.joining.lock().unwrap() = Some(Arc::new(move || {
+        joining_tx.send(Event::Joining).unwrap();
+    }));
+    let retained = Arc::downgrade(&engine.inner);
+    let directory = path.parent().unwrap().to_path_buf();
+    let cleaning = thread::spawn(move || {
+        let result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cleanup(engine, path)));
+        event_tx.send(Event::CleanupFinished).unwrap();
+        result
+    });
+    let first = events.recv_timeout(Duration::from_secs(60));
+    let directory_present_before_release = directory.exists();
+    let store_owner_present_before_release = retained.upgrade().is_some();
+    // Release the activation even when cleanup failed, so a failed ordering
+    // assertion cannot strand the thread that still owns the store.
+    release.send(()).unwrap();
+    let cleaned = cleaning.join().unwrap();
+    assert!(matches!(first, Ok(Event::Joining)), "{first:?}");
+    assert!(directory_present_before_release);
+    assert!(store_owner_present_before_release);
+    assert!(cleaned.is_ok(), "store removal failed after joining");
+    assert!(retained.upgrade().is_none());
+    assert!(!directory.exists());
 }
 
 #[test]
@@ -740,6 +801,8 @@ fn module_drop_joins_activation_after_slot_release() {
     );
     // The consent adapter is deliberately still alive and attached here.
     drop(consent);
+    // On Windows an open database blocks deleting its directory.
+    drop(reopened);
     std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
 

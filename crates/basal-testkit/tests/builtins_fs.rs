@@ -5,10 +5,13 @@
 //! reads refuse text that is not UTF-8 or is over the cap; writes replace
 //! the whole file and never through a symlink.
 
+#[cfg(unix)]
 use std::os::unix::fs::symlink;
 use std::path::PathBuf;
 
-use basal_host::builtins::fs::{self, Purpose, Target};
+use basal_host::builtins::fs;
+#[cfg(unix)]
+use basal_host::builtins::fs::{Purpose, Target};
 use basal_host::builtins::{BuiltinHost, Denial, Failure, Grant, codes, envelope};
 use basal_proto::Primitive;
 use basal_testkit::harness::scratch;
@@ -44,7 +47,16 @@ impl Tree {
     }
 
     fn p(&self, rel: &str) -> String {
-        self.root.join(rel).display().to_string()
+        let path = if rel.is_empty() {
+            self.root.clone()
+        } else {
+            self.root.join(rel)
+        };
+        if cfg!(windows) {
+            path.display().to_string().replace('/', "\\")
+        } else {
+            path.display().to_string()
+        }
     }
 }
 
@@ -69,14 +81,25 @@ fn reads_inside_a_root_and_refuses_a_dotdot_escape() {
         fs::read(&t.p("a.txt"), &roots, 1024).expect("read"),
         json!({ "text": "inside" })
     );
+    #[cfg(unix)]
     assert_eq!(
         fs::read(&t.p("sub/../a.txt"), &roots, 1024).expect("read"),
         json!({ "text": "inside" })
     );
     let escape = t.p("../outside/secret.txt");
-    assert_eq!(code(fs::read(&escape, &roots, 1024)), codes::DENIED);
-    assert_eq!(code(fs::stat(&escape, &roots)), codes::DENIED);
-    assert_eq!(code(fs::list(&t.p(".."), &roots)), codes::DENIED);
+    let escape_code = if cfg!(windows) {
+        codes::INVALID_ARGUMENTS
+    } else {
+        codes::DENIED
+    };
+    #[cfg(windows)]
+    assert_eq!(
+        code(fs::read(&t.p("sub/../a.txt"), &roots, 1024)),
+        codes::INVALID_ARGUMENTS
+    );
+    assert_eq!(code(fs::read(&escape, &roots, 1024)), escape_code);
+    assert_eq!(code(fs::stat(&escape, &roots)), escape_code);
+    assert_eq!(code(fs::list(&t.p(".."), &roots)), escape_code);
     // A sibling whose name only starts with the root's is not under it.
     let sibling = t.base.join("rootx");
     std::fs::create_dir_all(&sibling).expect("sibling");
@@ -97,6 +120,7 @@ fn reads_inside_a_root_and_refuses_a_dotdot_escape() {
 }
 
 #[test]
+#[cfg(unix)]
 fn a_symlink_resolving_outside_the_root_is_refused() {
     let t = Tree::new("fs-symlink");
     let roots = t.roots();
@@ -154,13 +178,22 @@ fn stat_of_a_missing_path_is_exists_false_only_when_its_parent_is_in_scope() {
 fn list_names_entries_and_their_kinds() {
     let t = Tree::new("fs-list");
     let roots = t.roots();
+    #[cfg(unix)]
     symlink(t.root.join("a.txt"), t.root.join("link")).expect("link");
+    #[cfg(unix)]
     assert_eq!(
         fs::list(&t.p(""), &roots).expect("list"),
         json!([
             { "name": "a.txt", "kind": "file" },
             { "name": "link", "kind": "symlink" },
             { "name": "sub", "kind": "dir" },
+        ])
+    );
+    #[cfg(windows)]
+    assert_eq!(
+        fs::list(&t.p(""), &roots).expect("list"),
+        json!([
+            { "name": "a.txt", "kind": "file" }, { "name": "sub", "kind": "dir" }
         ])
     );
     for i in 0..=fs::MAX_LIST_ENTRIES {
@@ -225,21 +258,37 @@ fn write_replaces_the_whole_file_inside_a_write_root_only() {
         .collect();
     assert!(names.iter().all(|n| !n.contains(".basal-")), "{names:?}");
 
-    // Outside the root, through `..`, through a directory symlink, or onto
-    // a symlink: refused, and nothing outside changes.
-    symlink(&t.outside, t.root.join("out-dir")).expect("dir link");
-    symlink(t.outside.join("secret.txt"), t.root.join("out-link")).expect("link");
-    for path in [
-        t.p("../outside/new.txt"),
-        t.p("out-dir/new.txt"),
-        t.p("out-link"),
-    ] {
-        assert_eq!(
-            code(fs::write(&path, &roots, "pwned")),
-            codes::DENIED,
-            "{path}"
-        );
+    // Raw relative components are refused on Windows before resolution.
+    #[cfg(windows)]
+    assert_eq!(
+        code(fs::write(&t.p("../outside/new.txt"), &roots, "pwned")),
+        codes::INVALID_ARGUMENTS
+    );
+    // Unix permits symlink creation without an elevated test account.
+    #[cfg(unix)]
+    {
+        symlink(&t.outside, t.root.join("out-dir")).expect("dir link");
+        symlink(t.outside.join("secret.txt"), t.root.join("out-link")).expect("link");
+        for path in [
+            t.p("../outside/new.txt"),
+            t.p("out-dir/new.txt"),
+            t.p("out-link"),
+        ] {
+            assert_eq!(
+                code(fs::write(&path, &roots, "pwned")),
+                codes::DENIED,
+                "{path}"
+            );
+        }
     }
+    assert_eq!(
+        code(fs::write(
+            t.outside.join("new.txt").to_str().unwrap(),
+            &roots,
+            "pwned"
+        )),
+        codes::DENIED
+    );
     assert_eq!(
         std::fs::read_to_string(t.outside.join("secret.txt")).expect("secret"),
         "secret"
@@ -259,6 +308,7 @@ fn write_replaces_the_whole_file_inside_a_write_root_only() {
 /// component is then swapped for a symlink to a file outside. The open
 /// refuses to follow it.
 #[test]
+#[cfg(unix)]
 fn a_symlink_swapped_into_the_last_component_after_the_check_is_not_followed() {
     let t = Tree::new("fs-swap-last");
     let roots = t.roots();
@@ -278,6 +328,7 @@ fn a_symlink_swapped_into_the_last_component_after_the_check_is_not_followed() {
 /// directory outside after the check. The open succeeds, but the opened
 /// file's real path lies outside the root, so it is refused.
 #[test]
+#[cfg(unix)]
 fn a_directory_swapped_for_a_symlink_after_the_check_is_caught_after_the_open() {
     let t = Tree::new("fs-swap-dir");
     let roots = t.roots();

@@ -1,0 +1,1932 @@
+{
+  "handles": [
+    {
+      "access": "0x1f0003",
+      "handle": 4,
+      "name": null,
+      "stack": [
+        {
+          "address": "0xfffff80081109db1",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0xfffff80080e451e5",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0x7ff8cc880324",
+          "displacement": 20,
+          "module": "ntdll",
+          "symbol": "NtCreateEvent",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc87e339",
+          "displacement": 89,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeInternal",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc85882e",
+          "displacement": 14,
+          "module": "ntdll",
+          "symbol": "LdrInitializeThunk",
+          "symbol_type": 3
+        }
+      ],
+      "type": "Event"
+    },
+    {
+      "access": "0x1f0003",
+      "handle": 8,
+      "name": null,
+      "stack": [
+        {
+          "address": "0xfffff80081109db1",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0xfffff80080e451e5",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0x7ff8cc880324",
+          "displacement": 20,
+          "module": "ntdll",
+          "symbol": "NtCreateEvent",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc858936",
+          "displacement": 122,
+          "module": "ntdll",
+          "symbol": "LdrpInitialize",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc87e3cd",
+          "displacement": 237,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeInternal",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc85882e",
+          "displacement": 14,
+          "module": "ntdll",
+          "symbol": "LdrInitializeThunk",
+          "symbol_type": 3
+        }
+      ],
+      "type": "Event"
+    },
+    {
+      "access": "0x1f0003",
+      "handle": 12,
+      "name": null,
+      "stack": [
+        {
+          "address": "0xfffff80081109db1",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0xfffff80080e451e5",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0x7ff8cc880324",
+          "displacement": 20,
+          "module": "ntdll",
+          "symbol": "NtCreateEvent",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e312f",
+          "displacement": 47,
+          "module": "ntdll",
+          "symbol": "EtwpRegisterTpNotificationOnce",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7ea47a",
+          "displacement": 154,
+          "module": "ntdll",
+          "symbol": "RtlRunOnceExecuteOnce",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7ea668",
+          "displacement": 120,
+          "module": "ntdll",
+          "symbol": "EtwpRegisterProvider",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7ea847",
+          "displacement": 215,
+          "module": "ntdll",
+          "symbol": "EtwNotificationRegister",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e9e10",
+          "displacement": 32,
+          "module": "ntdll",
+          "symbol": "EtwEventRegister",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc8b5cdd",
+          "displacement": 2653,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeProcess",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc858a28",
+          "displacement": 364,
+          "module": "ntdll",
+          "symbol": "LdrpInitialize",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc87e3cd",
+          "displacement": 237,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeInternal",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc85882e",
+          "displacement": 14,
+          "module": "ntdll",
+          "symbol": "LdrInitializeThunk",
+          "symbol_type": 3
+        }
+      ],
+      "type": "Event"
+    },
+    {
+      "access": "0x1",
+      "handle": 16,
+      "name": null,
+      "stack": [
+        {
+          "address": "0xfffff800811664d8",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0xfffff80080e451e5",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0x7ff8cc8813d4",
+          "displacement": 20,
+          "module": "ntdll",
+          "symbol": "NtCreateWaitCompletionPacket",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e664a",
+          "displacement": 186,
+          "module": "ntdll",
+          "symbol": "TpAllocWait",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e314e",
+          "displacement": 78,
+          "module": "ntdll",
+          "symbol": "EtwpRegisterTpNotificationOnce",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7ea47a",
+          "displacement": 154,
+          "module": "ntdll",
+          "symbol": "RtlRunOnceExecuteOnce",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7ea668",
+          "displacement": 120,
+          "module": "ntdll",
+          "symbol": "EtwpRegisterProvider",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7ea847",
+          "displacement": 215,
+          "module": "ntdll",
+          "symbol": "EtwNotificationRegister",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e9e10",
+          "displacement": 32,
+          "module": "ntdll",
+          "symbol": "EtwEventRegister",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc8b5cdd",
+          "displacement": 2653,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeProcess",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc858a28",
+          "displacement": 364,
+          "module": "ntdll",
+          "symbol": "LdrpInitialize",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc87e3cd",
+          "displacement": 237,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeInternal",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc85882e",
+          "displacement": 14,
+          "module": "ntdll",
+          "symbol": "LdrInitializeThunk",
+          "symbol_type": 3
+        }
+      ],
+      "type": "WaitCompletionPacket"
+    },
+    {
+      "access": "0x1f0003",
+      "handle": 20,
+      "name": null,
+      "stack": [
+        {
+          "address": "0xfffff80081174055",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0xfffff80080e451e5",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0x7ff8cc880ff4",
+          "displacement": 20,
+          "module": "ntdll",
+          "symbol": "NtCreateIoCompletion",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e4235",
+          "displacement": 629,
+          "module": "ntdll",
+          "symbol": "TpAllocPoolInternal",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e80b4",
+          "displacement": 168,
+          "module": "ntdll",
+          "symbol": "TppPoolpReferenceGlobalPool",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7f06c0",
+          "displacement": 536,
+          "module": "ntdll",
+          "symbol": "TppCleanupGroupMemberInitialize",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7f0e61",
+          "displacement": 33,
+          "module": "ntdll",
+          "symbol": "TppWorkInitialize",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e6bf3",
+          "displacement": 67,
+          "module": "ntdll",
+          "symbol": "TppInitializeTimer",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e667c",
+          "displacement": 236,
+          "module": "ntdll",
+          "symbol": "TpAllocWait",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e314e",
+          "displacement": 78,
+          "module": "ntdll",
+          "symbol": "EtwpRegisterTpNotificationOnce",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7ea47a",
+          "displacement": 154,
+          "module": "ntdll",
+          "symbol": "RtlRunOnceExecuteOnce",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7ea668",
+          "displacement": 120,
+          "module": "ntdll",
+          "symbol": "EtwpRegisterProvider",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7ea847",
+          "displacement": 215,
+          "module": "ntdll",
+          "symbol": "EtwNotificationRegister",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e9e10",
+          "displacement": 32,
+          "module": "ntdll",
+          "symbol": "EtwEventRegister",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc8b5cdd",
+          "displacement": 2653,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeProcess",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc858a28",
+          "displacement": 364,
+          "module": "ntdll",
+          "symbol": "LdrpInitialize",
+          "symbol_type": 3
+        }
+      ],
+      "type": "IoCompletion"
+    },
+    {
+      "access": "0xf00ff",
+      "handle": 24,
+      "name": null,
+      "stack": [
+        {
+          "address": "0xfffff8008110216c",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0xfffff80080e451e5",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0x7ff8cc881434",
+          "displacement": 20,
+          "module": "ntdll",
+          "symbol": "NtCreateWorkerFactory",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e42a6",
+          "displacement": 742,
+          "module": "ntdll",
+          "symbol": "TpAllocPoolInternal",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e80b4",
+          "displacement": 168,
+          "module": "ntdll",
+          "symbol": "TppPoolpReferenceGlobalPool",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7f06c0",
+          "displacement": 536,
+          "module": "ntdll",
+          "symbol": "TppCleanupGroupMemberInitialize",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7f0e61",
+          "displacement": 33,
+          "module": "ntdll",
+          "symbol": "TppWorkInitialize",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e6bf3",
+          "displacement": 67,
+          "module": "ntdll",
+          "symbol": "TppInitializeTimer",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e667c",
+          "displacement": 236,
+          "module": "ntdll",
+          "symbol": "TpAllocWait",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e314e",
+          "displacement": 78,
+          "module": "ntdll",
+          "symbol": "EtwpRegisterTpNotificationOnce",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7ea47a",
+          "displacement": 154,
+          "module": "ntdll",
+          "symbol": "RtlRunOnceExecuteOnce",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7ea668",
+          "displacement": 120,
+          "module": "ntdll",
+          "symbol": "EtwpRegisterProvider",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7ea847",
+          "displacement": 215,
+          "module": "ntdll",
+          "symbol": "EtwNotificationRegister",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e9e10",
+          "displacement": 32,
+          "module": "ntdll",
+          "symbol": "EtwEventRegister",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc8b5cdd",
+          "displacement": 2653,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeProcess",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc858a28",
+          "displacement": 364,
+          "module": "ntdll",
+          "symbol": "LdrpInitialize",
+          "symbol_type": 3
+        }
+      ],
+      "type": "TpWorkerFactory"
+    },
+    {
+      "access": "0x100002",
+      "handle": 28,
+      "name": null,
+      "stack": [
+        {
+          "address": "0xfffff8008110232d",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0xfffff80080e451e5",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0x7ff8cc881314",
+          "displacement": 20,
+          "module": "ntdll",
+          "symbol": "NtCreateTimer2",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e56c6",
+          "displacement": 78,
+          "module": "ntdll",
+          "symbol": "TppInitializeTimerSubQueue",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e5635",
+          "displacement": 49,
+          "module": "ntdll",
+          "symbol": "TppInitializeTimerQueue",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e432e",
+          "displacement": 878,
+          "module": "ntdll",
+          "symbol": "TpAllocPoolInternal",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e80b4",
+          "displacement": 168,
+          "module": "ntdll",
+          "symbol": "TppPoolpReferenceGlobalPool",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7f06c0",
+          "displacement": 536,
+          "module": "ntdll",
+          "symbol": "TppCleanupGroupMemberInitialize",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7f0e61",
+          "displacement": 33,
+          "module": "ntdll",
+          "symbol": "TppWorkInitialize",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e6bf3",
+          "displacement": 67,
+          "module": "ntdll",
+          "symbol": "TppInitializeTimer",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e667c",
+          "displacement": 236,
+          "module": "ntdll",
+          "symbol": "TpAllocWait",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e314e",
+          "displacement": 78,
+          "module": "ntdll",
+          "symbol": "EtwpRegisterTpNotificationOnce",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7ea47a",
+          "displacement": 154,
+          "module": "ntdll",
+          "symbol": "RtlRunOnceExecuteOnce",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7ea668",
+          "displacement": 120,
+          "module": "ntdll",
+          "symbol": "EtwpRegisterProvider",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7ea847",
+          "displacement": 215,
+          "module": "ntdll",
+          "symbol": "EtwNotificationRegister",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e9e10",
+          "displacement": 32,
+          "module": "ntdll",
+          "symbol": "EtwEventRegister",
+          "symbol_type": 3
+        }
+      ],
+      "type": "IRTimer"
+    },
+    {
+      "access": "0x1",
+      "handle": 32,
+      "name": null,
+      "stack": [
+        {
+          "address": "0xfffff800811664d8",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0xfffff80080e451e5",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0x7ff8cc8813d4",
+          "displacement": 20,
+          "module": "ntdll",
+          "symbol": "NtCreateWaitCompletionPacket",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e56de",
+          "displacement": 102,
+          "module": "ntdll",
+          "symbol": "TppInitializeTimerSubQueue",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e5635",
+          "displacement": 49,
+          "module": "ntdll",
+          "symbol": "TppInitializeTimerQueue",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e432e",
+          "displacement": 878,
+          "module": "ntdll",
+          "symbol": "TpAllocPoolInternal",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e80b4",
+          "displacement": 168,
+          "module": "ntdll",
+          "symbol": "TppPoolpReferenceGlobalPool",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7f06c0",
+          "displacement": 536,
+          "module": "ntdll",
+          "symbol": "TppCleanupGroupMemberInitialize",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7f0e61",
+          "displacement": 33,
+          "module": "ntdll",
+          "symbol": "TppWorkInitialize",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e6bf3",
+          "displacement": 67,
+          "module": "ntdll",
+          "symbol": "TppInitializeTimer",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e667c",
+          "displacement": 236,
+          "module": "ntdll",
+          "symbol": "TpAllocWait",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e314e",
+          "displacement": 78,
+          "module": "ntdll",
+          "symbol": "EtwpRegisterTpNotificationOnce",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7ea47a",
+          "displacement": 154,
+          "module": "ntdll",
+          "symbol": "RtlRunOnceExecuteOnce",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7ea668",
+          "displacement": 120,
+          "module": "ntdll",
+          "symbol": "EtwpRegisterProvider",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7ea847",
+          "displacement": 215,
+          "module": "ntdll",
+          "symbol": "EtwNotificationRegister",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e9e10",
+          "displacement": 32,
+          "module": "ntdll",
+          "symbol": "EtwEventRegister",
+          "symbol_type": 3
+        }
+      ],
+      "type": "WaitCompletionPacket"
+    },
+    {
+      "access": "0x100002",
+      "handle": 36,
+      "name": null,
+      "stack": [
+        {
+          "address": "0xfffff8008110232d",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0xfffff80080e451e5",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0x7ff8cc881314",
+          "displacement": 20,
+          "module": "ntdll",
+          "symbol": "NtCreateTimer2",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e56c6",
+          "displacement": 78,
+          "module": "ntdll",
+          "symbol": "TppInitializeTimerSubQueue",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e564d",
+          "displacement": 73,
+          "module": "ntdll",
+          "symbol": "TppInitializeTimerQueue",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e432e",
+          "displacement": 878,
+          "module": "ntdll",
+          "symbol": "TpAllocPoolInternal",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e80b4",
+          "displacement": 168,
+          "module": "ntdll",
+          "symbol": "TppPoolpReferenceGlobalPool",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7f06c0",
+          "displacement": 536,
+          "module": "ntdll",
+          "symbol": "TppCleanupGroupMemberInitialize",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7f0e61",
+          "displacement": 33,
+          "module": "ntdll",
+          "symbol": "TppWorkInitialize",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e6bf3",
+          "displacement": 67,
+          "module": "ntdll",
+          "symbol": "TppInitializeTimer",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e667c",
+          "displacement": 236,
+          "module": "ntdll",
+          "symbol": "TpAllocWait",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e314e",
+          "displacement": 78,
+          "module": "ntdll",
+          "symbol": "EtwpRegisterTpNotificationOnce",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7ea47a",
+          "displacement": 154,
+          "module": "ntdll",
+          "symbol": "RtlRunOnceExecuteOnce",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7ea668",
+          "displacement": 120,
+          "module": "ntdll",
+          "symbol": "EtwpRegisterProvider",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7ea847",
+          "displacement": 215,
+          "module": "ntdll",
+          "symbol": "EtwNotificationRegister",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e9e10",
+          "displacement": 32,
+          "module": "ntdll",
+          "symbol": "EtwEventRegister",
+          "symbol_type": 3
+        }
+      ],
+      "type": "IRTimer"
+    },
+    {
+      "access": "0x1",
+      "handle": 40,
+      "name": null,
+      "stack": [
+        {
+          "address": "0xfffff800811664d8",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0xfffff80080e451e5",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0x7ff8cc8813d4",
+          "displacement": 20,
+          "module": "ntdll",
+          "symbol": "NtCreateWaitCompletionPacket",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e56de",
+          "displacement": 102,
+          "module": "ntdll",
+          "symbol": "TppInitializeTimerSubQueue",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e564d",
+          "displacement": 73,
+          "module": "ntdll",
+          "symbol": "TppInitializeTimerQueue",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e432e",
+          "displacement": 878,
+          "module": "ntdll",
+          "symbol": "TpAllocPoolInternal",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e80b4",
+          "displacement": 168,
+          "module": "ntdll",
+          "symbol": "TppPoolpReferenceGlobalPool",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7f06c0",
+          "displacement": 536,
+          "module": "ntdll",
+          "symbol": "TppCleanupGroupMemberInitialize",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7f0e61",
+          "displacement": 33,
+          "module": "ntdll",
+          "symbol": "TppWorkInitialize",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e6bf3",
+          "displacement": 67,
+          "module": "ntdll",
+          "symbol": "TppInitializeTimer",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e667c",
+          "displacement": 236,
+          "module": "ntdll",
+          "symbol": "TpAllocWait",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e314e",
+          "displacement": 78,
+          "module": "ntdll",
+          "symbol": "EtwpRegisterTpNotificationOnce",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7ea47a",
+          "displacement": 154,
+          "module": "ntdll",
+          "symbol": "RtlRunOnceExecuteOnce",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7ea668",
+          "displacement": 120,
+          "module": "ntdll",
+          "symbol": "EtwpRegisterProvider",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7ea847",
+          "displacement": 215,
+          "module": "ntdll",
+          "symbol": "EtwNotificationRegister",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e9e10",
+          "displacement": 32,
+          "module": "ntdll",
+          "symbol": "EtwEventRegister",
+          "symbol_type": 3
+        }
+      ],
+      "type": "WaitCompletionPacket"
+    },
+    {
+      "access": "0x3",
+      "handle": 44,
+      "name": "\\KnownDlls",
+      "stack": [
+        {
+          "address": "0xfffff8008115fca2",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0xfffff80080e451e5",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0x7ff8cc880524",
+          "displacement": 20,
+          "module": "ntdll",
+          "symbol": "NtOpenDirectoryObject",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc8b5ee6",
+          "displacement": 3174,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeProcess",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc858a28",
+          "displacement": 364,
+          "module": "ntdll",
+          "symbol": "LdrpInitialize",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc87e3cd",
+          "displacement": 237,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeInternal",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc85882e",
+          "displacement": 14,
+          "module": "ntdll",
+          "symbol": "LdrInitializeThunk",
+          "symbol_type": 3
+        }
+      ],
+      "type": "Directory"
+    },
+    {
+      "access": "0x1f0003",
+      "handle": 52,
+      "name": null,
+      "stack": [
+        {
+          "address": "0xfffff80081109db1",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0xfffff80080e451e5",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0x7ff8cc880324",
+          "displacement": 20,
+          "module": "ntdll",
+          "symbol": "NtCreateEvent",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc8625c7",
+          "displacement": 35,
+          "module": "ntdll",
+          "symbol": "LdrpCreateLoaderEvents",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc8b646c",
+          "displacement": 4588,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeProcess",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc858a28",
+          "displacement": 364,
+          "module": "ntdll",
+          "symbol": "LdrpInitialize",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc87e3cd",
+          "displacement": 237,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeInternal",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc85882e",
+          "displacement": 14,
+          "module": "ntdll",
+          "symbol": "LdrInitializeThunk",
+          "symbol_type": 3
+        }
+      ],
+      "type": "Event"
+    },
+    {
+      "access": "0x1f0003",
+      "handle": 56,
+      "name": null,
+      "stack": [
+        {
+          "address": "0xfffff80081109db1",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0xfffff80080e451e5",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0x7ff8cc880324",
+          "displacement": 20,
+          "module": "ntdll",
+          "symbol": "NtCreateEvent",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc8625ea",
+          "displacement": 70,
+          "module": "ntdll",
+          "symbol": "LdrpCreateLoaderEvents",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc8b646c",
+          "displacement": 4588,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeProcess",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc858a28",
+          "displacement": 364,
+          "module": "ntdll",
+          "symbol": "LdrpInitialize",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc87e3cd",
+          "displacement": 237,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeInternal",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc85882e",
+          "displacement": 14,
+          "module": "ntdll",
+          "symbol": "LdrInitializeThunk",
+          "symbol_type": 3
+        }
+      ],
+      "type": "Event"
+    },
+    {
+      "access": "0x1f0003",
+      "handle": 88,
+      "name": null,
+      "stack": [
+        {
+          "address": "0xfffff80081174055",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0xfffff80080e451e5",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0x7ff8cc880ff4",
+          "displacement": 20,
+          "module": "ntdll",
+          "symbol": "NtCreateIoCompletion",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e4235",
+          "displacement": 629,
+          "module": "ntdll",
+          "symbol": "TpAllocPoolInternal",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e2e95",
+          "displacement": 57,
+          "module": "ntdll",
+          "symbol": "LdrpEnableParallelLoading",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc8b6d86",
+          "displacement": 6918,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeProcess",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc858a28",
+          "displacement": 364,
+          "module": "ntdll",
+          "symbol": "LdrpInitialize",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc87e3cd",
+          "displacement": 237,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeInternal",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc85882e",
+          "displacement": 14,
+          "module": "ntdll",
+          "symbol": "LdrInitializeThunk",
+          "symbol_type": 3
+        }
+      ],
+      "type": "IoCompletion"
+    },
+    {
+      "access": "0xf00ff",
+      "handle": 92,
+      "name": null,
+      "stack": [
+        {
+          "address": "0xfffff8008110216c",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0xfffff80080e451e5",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0x7ff8cc881434",
+          "displacement": 20,
+          "module": "ntdll",
+          "symbol": "NtCreateWorkerFactory",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e42a6",
+          "displacement": 742,
+          "module": "ntdll",
+          "symbol": "TpAllocPoolInternal",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e2e95",
+          "displacement": 57,
+          "module": "ntdll",
+          "symbol": "LdrpEnableParallelLoading",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc8b6d86",
+          "displacement": 6918,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeProcess",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc858a28",
+          "displacement": 364,
+          "module": "ntdll",
+          "symbol": "LdrpInitialize",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc87e3cd",
+          "displacement": 237,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeInternal",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc85882e",
+          "displacement": 14,
+          "module": "ntdll",
+          "symbol": "LdrInitializeThunk",
+          "symbol_type": 3
+        }
+      ],
+      "type": "TpWorkerFactory"
+    },
+    {
+      "access": "0x100002",
+      "handle": 96,
+      "name": null,
+      "stack": [
+        {
+          "address": "0xfffff8008110232d",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0xfffff80080e451e5",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0x7ff8cc881314",
+          "displacement": 20,
+          "module": "ntdll",
+          "symbol": "NtCreateTimer2",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e56c6",
+          "displacement": 78,
+          "module": "ntdll",
+          "symbol": "TppInitializeTimerSubQueue",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e5635",
+          "displacement": 49,
+          "module": "ntdll",
+          "symbol": "TppInitializeTimerQueue",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e432e",
+          "displacement": 878,
+          "module": "ntdll",
+          "symbol": "TpAllocPoolInternal",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e2e95",
+          "displacement": 57,
+          "module": "ntdll",
+          "symbol": "LdrpEnableParallelLoading",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc8b6d86",
+          "displacement": 6918,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeProcess",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc858a28",
+          "displacement": 364,
+          "module": "ntdll",
+          "symbol": "LdrpInitialize",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc87e3cd",
+          "displacement": 237,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeInternal",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc85882e",
+          "displacement": 14,
+          "module": "ntdll",
+          "symbol": "LdrInitializeThunk",
+          "symbol_type": 3
+        }
+      ],
+      "type": "IRTimer"
+    },
+    {
+      "access": "0x1",
+      "handle": 100,
+      "name": null,
+      "stack": [
+        {
+          "address": "0xfffff800811664d8",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0xfffff80080e451e5",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0x7ff8cc8813d4",
+          "displacement": 20,
+          "module": "ntdll",
+          "symbol": "NtCreateWaitCompletionPacket",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e56de",
+          "displacement": 102,
+          "module": "ntdll",
+          "symbol": "TppInitializeTimerSubQueue",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e5635",
+          "displacement": 49,
+          "module": "ntdll",
+          "symbol": "TppInitializeTimerQueue",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e432e",
+          "displacement": 878,
+          "module": "ntdll",
+          "symbol": "TpAllocPoolInternal",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e2e95",
+          "displacement": 57,
+          "module": "ntdll",
+          "symbol": "LdrpEnableParallelLoading",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc8b6d86",
+          "displacement": 6918,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeProcess",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc858a28",
+          "displacement": 364,
+          "module": "ntdll",
+          "symbol": "LdrpInitialize",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc87e3cd",
+          "displacement": 237,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeInternal",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc85882e",
+          "displacement": 14,
+          "module": "ntdll",
+          "symbol": "LdrInitializeThunk",
+          "symbol_type": 3
+        }
+      ],
+      "type": "WaitCompletionPacket"
+    },
+    {
+      "access": "0x100002",
+      "handle": 104,
+      "name": null,
+      "stack": [
+        {
+          "address": "0xfffff8008110232d",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0xfffff80080e451e5",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0x7ff8cc881314",
+          "displacement": 20,
+          "module": "ntdll",
+          "symbol": "NtCreateTimer2",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e56c6",
+          "displacement": 78,
+          "module": "ntdll",
+          "symbol": "TppInitializeTimerSubQueue",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e564d",
+          "displacement": 73,
+          "module": "ntdll",
+          "symbol": "TppInitializeTimerQueue",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e432e",
+          "displacement": 878,
+          "module": "ntdll",
+          "symbol": "TpAllocPoolInternal",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e2e95",
+          "displacement": 57,
+          "module": "ntdll",
+          "symbol": "LdrpEnableParallelLoading",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc8b6d86",
+          "displacement": 6918,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeProcess",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc858a28",
+          "displacement": 364,
+          "module": "ntdll",
+          "symbol": "LdrpInitialize",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc87e3cd",
+          "displacement": 237,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeInternal",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc85882e",
+          "displacement": 14,
+          "module": "ntdll",
+          "symbol": "LdrInitializeThunk",
+          "symbol_type": 3
+        }
+      ],
+      "type": "IRTimer"
+    },
+    {
+      "access": "0x1",
+      "handle": 108,
+      "name": null,
+      "stack": [
+        {
+          "address": "0xfffff800811664d8",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0xfffff80080e451e5",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0x7ff8cc8813d4",
+          "displacement": 20,
+          "module": "ntdll",
+          "symbol": "NtCreateWaitCompletionPacket",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e56de",
+          "displacement": 102,
+          "module": "ntdll",
+          "symbol": "TppInitializeTimerSubQueue",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e564d",
+          "displacement": 73,
+          "module": "ntdll",
+          "symbol": "TppInitializeTimerQueue",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e432e",
+          "displacement": 878,
+          "module": "ntdll",
+          "symbol": "TpAllocPoolInternal",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7e2e95",
+          "displacement": 57,
+          "module": "ntdll",
+          "symbol": "LdrpEnableParallelLoading",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc8b6d86",
+          "displacement": 6918,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeProcess",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc858a28",
+          "displacement": 364,
+          "module": "ntdll",
+          "symbol": "LdrpInitialize",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc87e3cd",
+          "displacement": 237,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeInternal",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc85882e",
+          "displacement": 14,
+          "module": "ntdll",
+          "symbol": "LdrInitializeThunk",
+          "symbol_type": 3
+        }
+      ],
+      "type": "WaitCompletionPacket"
+    },
+    {
+      "access": "0x100003",
+      "handle": 140,
+      "name": null,
+      "stack": [
+        {
+          "address": "0xfffff800810a7875",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0xfffff80080e451e5",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0x7ff8cc881274",
+          "displacement": 20,
+          "module": "ntdll",
+          "symbol": "NtCreateSemaphore",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7eaece",
+          "displacement": 190,
+          "module": "ntdll",
+          "symbol": "RtlInitializeResource",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8ca05593b",
+          "displacement": 63,
+          "module": "bcrypt",
+          "symbol": "InitializeSystemPreferredCache",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8ca0558c6",
+          "displacement": 122,
+          "module": "bcrypt",
+          "symbol": "InitializeCNG",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8ca05a617",
+          "displacement": 135,
+          "module": "bcrypt",
+          "symbol": "DllMain",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc8073b7",
+          "displacement": 107,
+          "module": "ntdll",
+          "symbol": "LdrpCallInitRoutine",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc84fc8a",
+          "displacement": 458,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeNode",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc84fa36",
+          "displacement": 66,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeGraphRecurse",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc84faa0",
+          "displacement": 172,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeGraphRecurse",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc84faa0",
+          "displacement": 172,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeGraphRecurse",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc84faa0",
+          "displacement": 172,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeGraphRecurse",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc8b6f2a",
+          "displacement": 7338,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeProcess",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc858a28",
+          "displacement": 364,
+          "module": "ntdll",
+          "symbol": "LdrpInitialize",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc87e3cd",
+          "displacement": 237,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeInternal",
+          "symbol_type": 3
+        }
+      ],
+      "type": "Semaphore"
+    },
+    {
+      "access": "0x100003",
+      "handle": 144,
+      "name": null,
+      "stack": [
+        {
+          "address": "0xfffff800810a7875",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0xfffff80080e451e5",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0x7ff8cc881274",
+          "displacement": 20,
+          "module": "ntdll",
+          "symbol": "NtCreateSemaphore",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc7eaefd",
+          "displacement": 237,
+          "module": "ntdll",
+          "symbol": "RtlInitializeResource",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8ca05593b",
+          "displacement": 63,
+          "module": "bcrypt",
+          "symbol": "InitializeSystemPreferredCache",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8ca0558c6",
+          "displacement": 122,
+          "module": "bcrypt",
+          "symbol": "InitializeCNG",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8ca05a617",
+          "displacement": 135,
+          "module": "bcrypt",
+          "symbol": "DllMain",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc8073b7",
+          "displacement": 107,
+          "module": "ntdll",
+          "symbol": "LdrpCallInitRoutine",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc84fc8a",
+          "displacement": 458,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeNode",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc84fa36",
+          "displacement": 66,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeGraphRecurse",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc84faa0",
+          "displacement": 172,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeGraphRecurse",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc84faa0",
+          "displacement": 172,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeGraphRecurse",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc84faa0",
+          "displacement": 172,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeGraphRecurse",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc8b6f2a",
+          "displacement": 7338,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeProcess",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc858a28",
+          "displacement": 364,
+          "module": "ntdll",
+          "symbol": "LdrpInitialize",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc87e3cd",
+          "displacement": 237,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeInternal",
+          "symbol_type": 3
+        }
+      ],
+      "type": "Semaphore"
+    },
+    {
+      "access": "0x1f0003",
+      "handle": 148,
+      "name": null,
+      "stack": [
+        {
+          "address": "0xfffff80081109db1",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0xfffff80080e451e5",
+          "module": "kernel (unsymbolized)"
+        },
+        {
+          "address": "0x7ff8cc880324",
+          "displacement": 20,
+          "module": "ntdll",
+          "symbol": "NtCreateEvent",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8ca0e9f82",
+          "displacement": 146,
+          "module": "kernelbase",
+          "symbol": "CreateEventW",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8ca055b1c",
+          "displacement": 88,
+          "module": "bcrypt",
+          "symbol": "BcpRegisterConfigChangeNotifyNoLogging",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8ca0559e5",
+          "displacement": 233,
+          "module": "bcrypt",
+          "symbol": "InitializeSystemPreferredCache",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8ca0558c6",
+          "displacement": 122,
+          "module": "bcrypt",
+          "symbol": "InitializeCNG",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8ca05a617",
+          "displacement": 135,
+          "module": "bcrypt",
+          "symbol": "DllMain",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc8073b7",
+          "displacement": 107,
+          "module": "ntdll",
+          "symbol": "LdrpCallInitRoutine",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc84fc8a",
+          "displacement": 458,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeNode",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc84fa36",
+          "displacement": 66,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeGraphRecurse",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc84faa0",
+          "displacement": 172,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeGraphRecurse",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc84faa0",
+          "displacement": 172,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeGraphRecurse",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc84faa0",
+          "displacement": 172,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeGraphRecurse",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc8b6f2a",
+          "displacement": 7338,
+          "module": "ntdll",
+          "symbol": "LdrpInitializeProcess",
+          "symbol_type": 3
+        },
+        {
+          "address": "0x7ff8cc858a28",
+          "displacement": 364,
+          "module": "ntdll",
+          "symbol": "LdrpInitialize",
+          "symbol_type": 3
+        }
+      ],
+      "type": "Event"
+    },
+    {
+      "access": "0x120196",
+      "creator": "parent CreatePipe / explicit HANDLE_LIST",
+      "handle": 336,
+      "stack": [],
+      "type": "File"
+    },
+    {
+      "access": "0x120189",
+      "creator": "parent CreatePipe / explicit HANDLE_LIST",
+      "handle": 348,
+      "stack": [],
+      "type": "File"
+    },
+    {
+      "access": "0x120196",
+      "creator": "parent CreatePipe / explicit HANDLE_LIST",
+      "handle": 360,
+      "stack": [],
+      "type": "File"
+    }
+  ],
+  "image": "\\\\?\\D:\\a\\basal\\basal\\target\\release\\ck-basal-worker.exe",
+  "profile": "windows-2022",
+  "runner_image": "win22",
+  "runner_version": "20261004.326.1",
+  "total": 25,
+  "tracing_class": 32,
+  "tracing_slots": 16384,
+  "unresolved": []
+}

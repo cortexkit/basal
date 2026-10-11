@@ -134,14 +134,20 @@ impl Wire {
 struct Live {
     wire: Arc<Wire>,
     core: Arc<MockCore>,
-    provider: tokio::task::JoinHandle<()>,
-    reader: tokio::task::JoinHandle<()>,
+    provider: Option<tokio::task::JoinHandle<()>>,
+    reader: Option<tokio::task::JoinHandle<()>>,
+    stopped: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
 }
 impl Drop for Live {
     fn drop(&mut self) {
         self.core.scopes.release();
-        self.provider.abort();
-        self.reader.abort();
+        for task in [self.provider.take(), self.reader.take()]
+            .into_iter()
+            .flatten()
+        {
+            task.abort();
+            self.stopped.lock().unwrap().push(task);
+        }
     }
 }
 #[derive(Clone)]
@@ -218,6 +224,23 @@ impl ToolRoute for Route {
 #[derive(Default)]
 struct Subject {
     core: Mutex<Option<Arc<MockCore>>>,
+    stopped: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+}
+impl Subject {
+    // An abort only requests cancellation. Join every dropped provider,
+    // including the conformance suite's copies, before reusing or deleting its
+    // store: Windows refuses deletion while any database handle is still open.
+    async fn join_stopped(&self) {
+        let tasks = std::mem::take(&mut *self.stopped.lock().unwrap());
+        for task in tasks {
+            if let Err(error) = tokio::time::timeout(Duration::from_secs(180), task)
+                .await
+                .expect("provider teardown timed out")
+            {
+                assert!(error.is_cancelled(), "provider teardown panicked: {error}");
+            }
+        }
+    }
 }
 fn principals() -> ScopedPrincipals {
     ScopedPrincipals {
@@ -254,6 +277,7 @@ impl Harness for Subject {
         vec![]
     }
     async fn spawn(&self, state_root: &Path) -> Result<Live, HarnessError> {
+        self.join_stopped().await;
         std::fs::create_dir_all(state_root).unwrap();
         let root = state_root.to_path_buf();
         let core = Arc::new(MockCore {
@@ -372,8 +396,9 @@ impl Harness for Subject {
                 channel: AtomicU16::new(1),
             }),
             core,
-            provider,
-            reader,
+            provider: Some(provider),
+            reader: Some(reader),
+            stopped: self.stopped.clone(),
         };
         tokio::time::timeout(Duration::from_secs(180), async {
             prepared.await.unwrap();
@@ -507,12 +532,10 @@ impl ToolProviderSubject for Subject {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn basal_tool_provider_conforms_for_declared_capabilities() {
     let root = common::scratch("tool-conformance");
-    let report = cortexkit_role_tool_provider_conformance::run_suite(
-        &Subject::default(),
-        &root.join("suite"),
-    )
-    .await
-    .unwrap();
+    let subject = Subject::default();
+    let report = cortexkit_role_tool_provider_conformance::run_suite(&subject, &root.join("suite"))
+        .await
+        .unwrap();
     use cortexkit_role_tool_provider_conformance::{CaseOutcome, SuiteVerdict};
     println!("{}", report.render());
     assert!(
@@ -544,6 +567,7 @@ async fn basal_tool_provider_conforms_for_declared_capabilities() {
         .into_iter()
         .collect()
     );
+    subject.join_stopped().await;
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -615,6 +639,7 @@ async fn real_route_late_cursor_ack_and_custodian_only_serving() {
         "an ack must not republish its entry"
     );
     drop((carrier, other, owner, live));
+    subject.join_stopped().await;
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -662,6 +687,7 @@ async fn real_route_late_retention_and_direct_call_owner_custody() {
         assert_eq!(expired["entries"][0][key], page["entries"][0][key]);
     }
     drop((direct, owner, live));
+    subject.join_stopped().await;
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -704,6 +730,7 @@ async fn real_route_late_incarnation_changes_and_event_identity_survives_restart
     );
     assert_eq!(page["entries"], reread["entries"]);
     drop((route, live));
+    subject.join_stopped().await;
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -729,6 +756,7 @@ async fn real_route_held_action_reaches_marker_after_core_releases_admission() {
     complete(&route, "marker-control").await;
     assert_eq!(std::fs::read(&marker).unwrap(), b"executed");
     drop((route, live));
+    subject.join_stopped().await;
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -761,5 +789,6 @@ async fn real_route_malformed_key_types_and_withdraw_null_key_name_the_field() {
         );
     }
     drop((route, live));
+    subject.join_stopped().await;
     std::fs::remove_dir_all(root).unwrap();
 }

@@ -31,12 +31,34 @@ pub struct Fixture {
     pub catalog: MockCatalog,
     pub clock: Clock,
     pub dir: PathBuf,
+    // Fields drop in declaration order, so Module shutdown must precede this
+    // guard's directory removal.
+    _cleanup: DirectoryCleanup,
+}
+
+struct DirectoryCleanup {
+    dir: PathBuf,
+    store: std::sync::Weak<basal_core::Store>,
+}
+
+impl Drop for DirectoryCleanup {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            // Do not turn the test's original failure into a double-panic abort.
+            let _ = std::fs::remove_dir_all(&self.dir);
+            return;
+        }
+        assert!(
+            self.store.upgrade().is_none(),
+            "fixture cleanup still has an open store owner"
+        );
+        std::fs::remove_dir_all(&self.dir).expect("remove fixture after module shutdown");
+    }
 }
 
 impl Drop for Fixture {
     fn drop(&mut self) {
         self.module.pool.stop();
-        let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 
@@ -55,6 +77,7 @@ pub struct Options {
     pub selector: Arc<dyn basal_host::selector::ModelSelector>,
     pub warm_spares: usize,
     pub max_concurrent: usize,
+    pub engine_pass_interval: Duration,
     pub spawner: Option<Arc<dyn Spawn>>,
     pub hooks: Arc<dyn Hooks>,
     pub default_deadline: Duration,
@@ -76,6 +99,7 @@ impl Default for Options {
             selector: Arc::new(basal_host::selector::FakeSelector::default()),
             warm_spares: 0,
             max_concurrent: 4,
+            engine_pass_interval: EngineConfig::default().pass_interval,
             spawner: None,
             hooks: Arc::new(NoHooks),
             default_deadline: Duration::from_secs(600),
@@ -151,10 +175,11 @@ pub fn fixture_with_store(
         pool,
         engine: EngineConfig {
             max_concurrent_activations: o.max_concurrent,
-            ..EngineConfig::default()
+            pass_interval: o.engine_pass_interval,
         },
         dry_run: DryRunConfig::new(dir.join("dry-run")),
     };
+    let mut store = None;
     let module = Module::start_with_store(
         config,
         o.hosts.unwrap_or_else(|| Hosts {
@@ -165,7 +190,10 @@ pub fn fixture_with_store(
             hooks: o.hooks.clone(),
         }),
         spawner,
-        initialize,
+        |opened| {
+            store = Some(Arc::downgrade(&opened));
+            initialize(opened)
+        },
     )
     .expect("module starts");
     Fixture {
@@ -174,6 +202,10 @@ pub fn fixture_with_store(
         consent,
         catalog,
         clock,
+        _cleanup: DirectoryCleanup {
+            dir: dir.clone(),
+            store: store.expect("module initialized its store"),
+        },
         dir,
     }
 }

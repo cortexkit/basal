@@ -1,3 +1,9 @@
 [env]
 # Allocation accounting is unused; its global mutex serializes SQLite callers.
 LIBSQLITE3_FLAGS = "-DSQLITE_DEFAULT_MEMSTATUS=0"
+
+# Link the C runtime statically on Windows, so no image imports a C runtime
+# DLL. The confined worker should load only the system's own DLLs, and the
+# dynamic C runtime is a separately installed component.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

@@ -25,8 +25,8 @@ pub const MAX_DESCRIPTION_BYTES: usize = 1_024;
 pub const MAX_AGENT_RUNS: u64 = 2;
 pub const MAX_BASAL_RUNS: u64 = 16;
 
-/// Injectable so a Linux or macOS test can verify that Windows is refused
-/// without requiring a Windows worker or sandbox.
+/// The admission caller's operating system. Scope and budget checks are the
+/// same on every supported platform; worker confinement is checked at launch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Platform {
     Unix,
@@ -121,19 +121,13 @@ pub fn admit(
     store: &Store,
     host: &dyn Host,
     clock: &Clock,
-    platform: Platform,
+    _platform: Platform,
     request: &Value,
 ) -> Result<Admission> {
     if let Some(run_id) = request.get("run_id").and_then(Value::as_str)
         && let Some(known) = store.read(|conn| known(conn, run_id))?
     {
         return Ok(known);
-    }
-    if platform == Platform::Windows {
-        return Ok(Admission::Refused(Refusal::new(
-            "unsupported_platform",
-            "codemode is not supported on Windows",
-        )));
     }
     let checked = (|| {
         let scope = scope_shape(request)?;
@@ -468,7 +462,7 @@ pub fn admit_tool(
     host: &dyn Host,
     transport: &dyn basal_host::transport::Transport,
     clock: &Clock,
-    platform: Platform,
+    _platform: Platform,
     invocation: &ToolInvocation<'_>,
     arguments: &Value,
 ) -> Result<Admission> {
@@ -476,12 +470,6 @@ pub fn admit_tool(
     use serde_json::json;
     if let Some(known) = store.read(|conn| known(conn, invocation.run_id))? {
         return Ok(known);
-    }
-    if platform == Platform::Windows {
-        return Ok(Admission::Refused(Refusal::new(
-            "unsupported_platform",
-            "codemode is not supported on Windows",
-        )));
     }
     let Some(fields_in) = arguments.as_object() else {
         return Ok(Admission::Refused(Refusal::new(

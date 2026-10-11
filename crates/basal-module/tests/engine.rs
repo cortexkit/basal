@@ -169,5 +169,6 @@ fn the_unconfigured_host_refuses_every_dispatch_as_never_sent() {
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].dispatch, basal_core::DispatchState::Sent);
     module.pool.stop();
-    let _ = std::fs::remove_dir_all(&dir);
+    drop(module);
+    std::fs::remove_dir_all(&dir).expect("remove store after module shutdown");
 }

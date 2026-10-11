@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(unix)]
+use std::process::Stdio;
 
 #[test]
 fn overflowing_or_malformed_log_timestamps_are_refused_not_dropped() {
@@ -22,6 +24,7 @@ fn show_distinguishes_missing_blob_from_broken_repository() {
 }
 
 #[test]
+#[cfg(unix)]
 fn tag_output_is_bounded_while_reading_not_after_completion() {
     let mut command = Command::new("/bin/sh");
     command
@@ -41,6 +44,7 @@ fn tag_output_is_bounded_while_reading_not_after_completion() {
 }
 
 #[test]
+#[cfg(unix)]
 fn git_waiter_timeout_kills_the_process_group_and_reaps_the_child() {
     let directory = std::env::temp_dir().join(format!("basal-git-timeout-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();

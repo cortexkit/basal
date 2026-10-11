@@ -13,6 +13,7 @@
 //! a wire daemon and measures a real worker's responsible-process identity.
 
 use std::io::{BufRead, BufReader, Read, Write};
+#[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
@@ -388,6 +389,31 @@ fn scratch(tag: &str) -> PathBuf {
     basal_testkit::harness::scratch(&format!("e2e-{tag}"))
 }
 
+/// Whether the module ended the way an outside kill ends it. On Unix that is
+/// SIGKILL either way. On Windows a module that killed itself
+/// (`fatal::kill_self`) exits with the launcher's kill code, and one killed
+/// with `Child::kill` exits with 1, the code the standard library
+/// terminates with.
+fn assert_killed(status: ExitStatus, killed_itself: bool) {
+    #[cfg(unix)]
+    {
+        let _ = killed_itself;
+        assert_eq!(status.signal(), Some(libc::SIGKILL), "{status:?}");
+    }
+    #[cfg(windows)]
+    {
+        let code = if killed_itself {
+            basal_launch::KILL_EXIT_CODE as i32
+        } else {
+            1
+        };
+        assert_eq!(status.code(), Some(code), "{status:?}");
+    }
+}
+
+// Reaping is a POSIX notion: a dropped child that was not waited for stays
+// a zombie. A Windows process handle is simply closed.
+#[cfg(unix)]
 #[test]
 fn e2e_fixture_drop_reaps_its_child() {
     let dir = scratch("drop-reaps");
@@ -621,8 +647,7 @@ fn a_schedule_flow_survives_a_catch_up_a_worker_kill_and_a_module_kill_with_each
         h.send(json!({ "cmd": "pump" })).is_none(),
         "the module died mid-run"
     );
-    let status = h.wait();
-    assert_eq!(status.signal(), Some(libc::SIGKILL), "{status:?}");
+    assert_killed(h.wait(), true);
 
     // The restart recovers the run and finishes both fires.
     let mut h = Harness::start(&dir, &["--routing-fake"]);
@@ -740,8 +765,7 @@ fn a_broca_llm_suspends_survives_module_kill_and_settles_after_restart() {
     assert_eq!(sends[0]["params"]["tools"], json!([]));
     assert_eq!(sends[0]["params"]["generation"]["max_output_tokens"], 32);
     h.child.kill().expect("kill the module");
-    let status = h.wait();
-    assert_eq!(status.signal(), Some(libc::SIGKILL));
+    assert_killed(h.wait(), false);
 
     let mut h = Harness::start(&dir, &["--broca"]);
     assert_eq!(h.ok(json!({"cmd":"runs"}))[0]["state"], "suspended");

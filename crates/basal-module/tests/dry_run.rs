@@ -192,6 +192,24 @@ fn kinds_and_actions(run: &Value) -> Vec<(String, String)> {
         .collect()
 }
 
+/// On Windows, the directory canonicalized to its long name, with the
+/// `\\?\` prefix removed: the `fs` built-in refuses that prefix, and the
+/// temp directory is often spelt with 8.3 short names (`RUNNER~1`), which
+/// the built-in's alias checks are not meant to be exercised by here. On
+/// other systems, unchanged.
+fn spelled(dir: &std::path::Path) -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        let canonical = std::fs::canonicalize(dir).expect("canonical scratch directory");
+        let text = canonical.display().to_string();
+        std::path::PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(&text))
+    }
+    #[cfg(not(windows))]
+    {
+        dir.to_path_buf()
+    }
+}
+
 /// Capture mode captures every built-in, reads included. Live mode runs
 /// only the built-ins that read (here `fs.read`), and only inside the
 /// manifest's scope: a read outside it is refused in the parent, and a
@@ -199,8 +217,9 @@ fn kinds_and_actions(run: &Value) -> Vec<(String, String)> {
 #[test]
 fn dry_runs_capture_every_built_in_and_live_runs_only_reads_in_scope() {
     let f = fixture("dry-builtins", Options::default());
-    let root = f.dir.join("files");
-    let outside = f.dir.join("outside");
+    let base = spelled(&f.dir);
+    let root = base.join("files");
+    let outside = base.join("outside");
     std::fs::create_dir_all(&root).expect("root");
     std::fs::create_dir_all(&outside).expect("outside");
     std::fs::write(root.join("notes.txt"), "notes").expect("notes");

@@ -1,5 +1,5 @@
+use crate::command::Command;
 use std::ffi::{OsStr, OsString};
-use std::process::Command;
 
 /// Starts git without inheriting caller configuration or environment.
 ///
@@ -19,14 +19,19 @@ fn git_command_with_env(base_env: impl IntoIterator<Item = (OsString, OsString)>
     // would reach git, and the isolation test would see the difference.
     command.envs(base_env.iter().cloned());
     command.env_clear();
-    for key in [OsStr::new("PATH"), OsStr::new("HOME")] {
+    for key in [
+        OsStr::new("PATH"),
+        OsStr::new("HOME"),
+        OsStr::new("SystemRoot"),
+        OsStr::new("USERPROFILE"),
+    ] {
         if let Some((_, value)) = base_env.iter().rev().find(|(name, _)| name == key) {
             command.env(key, value);
         }
     }
     command
         .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_GLOBAL", empty_global_config())
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_AUTHOR_NAME", "Basal Test")
         .env("GIT_AUTHOR_EMAIL", "basal-test@example.com")
@@ -35,7 +40,17 @@ fn git_command_with_env(base_env: impl IntoIterator<Item = (OsString, OsString)>
     command
 }
 
-#[cfg(test)]
+fn empty_global_config() -> &'static std::path::Path {
+    static CONFIG: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    CONFIG.get_or_init(|| {
+        let dir = crate::harness::scratch("empty-git-config");
+        let path = dir.join("global.gitconfig");
+        std::fs::write(&path, []).expect("empty git global config");
+        path
+    })
+}
+
+#[cfg(all(test, unix))]
 mod tests {
     use std::os::unix::fs::PermissionsExt;
 

@@ -11,6 +11,7 @@
 
 mod common;
 
+#[cfg(unix)]
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
@@ -170,7 +171,7 @@ impl Files {
     }
 
     fn out(&self) -> PathBuf {
-        self.root.join("sub/out.txt")
+        self.root.join("sub").join("out.txt")
     }
 
     fn secret(&self) -> PathBuf {
@@ -323,11 +324,14 @@ fn a_cancelled_runs_write_that_dies_mid_flight_is_cleaned_up() {
 enum Tamper {
     /// Nothing: recovery removes it.
     None,
+    #[cfg(unix)]
     /// The file was replaced by a symlink to a file outside the root.
     SymlinkedTemp,
+    #[cfg(unix)]
     /// The directory was moved outside the root and a symlink to it put in
     /// its place.
     DirectoryMovedOutside,
+    #[cfg(unix)]
     /// The directory was moved elsewhere inside the root and a symlink to it
     /// put in its place.
     DirectoryMovedWithin,
@@ -369,8 +373,11 @@ fn crash_mid_write(world: &World, files: &Files, manifest: &Value) -> (String, T
 fn a_crash_mid_write_is_cleaned_up_by_recovery_without_following_a_swapped_path() {
     for tamper in [
         Tamper::None,
+        #[cfg(unix)]
         Tamper::SymlinkedTemp,
+        #[cfg(unix)]
         Tamper::DirectoryMovedOutside,
+        #[cfg(unix)]
         Tamper::DirectoryMovedWithin,
     ] {
         let world = World::new("fs-temps-crash");
@@ -380,19 +387,22 @@ fn a_crash_mid_write_is_cleaned_up_by_recovery_without_following_a_swapped_path(
         assert!(temp.is_file(), "{tamper:?}: {temp:?}");
         let sub = files.root.join("sub");
         // Where the recorded file is after tampering, if it is anywhere.
-        let left = match tamper {
+        let left: Option<PathBuf> = match tamper {
             Tamper::None => None,
+            #[cfg(unix)]
             Tamper::SymlinkedTemp => {
                 std::fs::remove_file(&temp).expect("remove");
                 symlink(files.secret(), &temp).expect("symlink");
                 Some(temp.clone())
             }
+            #[cfg(unix)]
             Tamper::DirectoryMovedOutside => {
                 let moved = files.outside.join("sub");
                 std::fs::rename(&sub, &moved).expect("move out");
                 symlink(&moved, &sub).expect("symlink");
                 Some(moved.join(&lease.temp))
             }
+            #[cfg(unix)]
             Tamper::DirectoryMovedWithin => {
                 let moved = files.root.join("moved");
                 std::fs::rename(&sub, &moved).expect("move within");
@@ -411,7 +421,10 @@ fn a_crash_mid_write_is_cleaned_up_by_recovery_without_following_a_swapped_path(
             Some(left) => {
                 let meta = std::fs::symlink_metadata(&left)
                     .unwrap_or_else(|e| panic!("{tamper:?}: {left:?} was removed: {e}"));
+                #[cfg(unix)]
                 assert_eq!(meta.is_symlink(), tamper == Tamper::SymlinkedTemp);
+                #[cfg(windows)]
+                assert!(!meta.is_symlink());
             }
         }
         assert_eq!(
@@ -437,6 +450,7 @@ fn a_crash_mid_write_is_cleaned_up_by_recovery_without_following_a_swapped_path(
 /// directory still exists under its recorded path, but no longer lies in
 /// the root the write was granted, so its file is not removed.
 #[test]
+#[cfg(unix)]
 fn a_crash_record_whose_directory_left_its_root_is_not_acted_on() {
     let world = World::new("fs-temps-retarget");
     let files = Files::new("fs-temps-retarget-files");
@@ -495,6 +509,7 @@ fn legacy_temporary_files_are_removed_once_from_written_directories() {
     for name in keep {
         std::fs::write(sub.join(name), "keep").expect("decoy");
     }
+    #[cfg(unix)]
     symlink(files.secret(), sub.join(".basal-55-6.tmp")).expect("symlink");
     std::fs::write(files.root.join(".basal-7-8.tmp"), "unwritten dir").expect("root stray");
     std::fs::write(files.outside.join(".basal-9-9.tmp"), "outside").expect("outside");
@@ -507,9 +522,11 @@ fn legacy_temporary_files_are_removed_once_from_written_directories() {
 
     assert!(!sub.join(".basal-123-4.tmp").exists());
     let mut expected: Vec<String> = keep.iter().map(|n| (*n).to_owned()).collect();
+    #[cfg(unix)]
     expected.push(".basal-55-6.tmp".to_owned());
     expected.sort();
     assert_eq!(temps_in(&sub), expected);
+    #[cfg(unix)]
     assert!(
         std::fs::symlink_metadata(sub.join(".basal-55-6.tmp"))
             .expect("symlink kept")
@@ -539,7 +556,12 @@ fn legacy_temporary_files_are_removed_once_from_written_directories() {
 fn remove_temp_removes_only_a_recorded_regular_file() {
     let files = Files::new("fs-temps-remove");
     let sub = files.root.join("sub");
+    #[cfg(unix)]
     let dir = std::fs::canonicalize(&sub).expect("real dir");
+    #[cfg(windows)]
+    // Windows leases retain the write's drive-path spelling. Canonicalization
+    // could expand a short-name alias while the grant retains its original spelling.
+    let dir = sub.clone();
     let roots = vec![files.root.display().to_string()];
     let lease = |temp: &str| TempLease {
         call_key: "k".into(),

@@ -176,7 +176,7 @@ The JavaScript function body sees only `tools.<name>(input)`, `console.log(...)`
 - `description` is optional, at most 1,024 UTF-8 bytes, and has no line breaks.
 - `limits` may only lower wall time (1–1,800,000 ms), tool calls (1–200), and captured output (1–65,536 bytes).
 - The parent enforces 30 minutes of wall time, excluding intervals when the worker is blocked and every in-flight call is held on a person. Person wait has one cumulative 10-minute cap per run. The confined worker enforces 10 seconds of JavaScript CPU, 64 MiB heap and 1 MiB stack.
-- Windows refuses `unsupported_platform` until worker confinement is available there.
+- Windows runs codemode under the launcher's full worker confinement, with the codemode job commit limit rather than the larger flow limit.
 
 Basal records the run before calling core's `codemode.run_scope.open` over its own route stamped `reserved:basal` (the daemon-verified basal module principal), never by borrowing a program's agent authority:
 ```json

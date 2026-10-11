@@ -10,6 +10,7 @@
 mod backoff;
 pub mod binaries;
 pub mod channel;
+pub mod command;
 pub mod fuzz;
 pub mod git;
 pub mod harness;

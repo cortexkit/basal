@@ -1,0 +1,16 @@
+[
+  {
+    "control": "crates/basal-worker/src/confinement/windows/startup.rs: remove startup allowlist enforcement",
+    "expected_red": "planted_handle_startup_refuses_and_the_allowlist_mutant_writes_the_fixture",
+    "captured_output": "test planted_handle_startup_refuses_and_the_allowlist_mutant_writes_the_fixture ... FAILED; 0 passed; 1 failed; other tests filtered; fixture bytes [101, 115, 99, 97, 112, 101, 100]",
+    "applied_evidence": "crates/basal-worker/src/confinement/windows/startup.rs; during: crates/basal-worker/src/confinement/windows/startup.rs | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-); after: (empty)",
+    "outcome": "reddened"
+  },
+  {
+    "control": "crates/basal-worker/tests/data/windows-imports.txt: remove the real kernel32 import from the committed inventory",
+    "expected_red": "the_worker_is_a_gui_image_without_gui_com_or_c_runtime_imports",
+    "captured_output": "test the_worker_is_a_gui_image_without_gui_com_or_c_runtime_imports ... FAILED; 0 passed; 1 failed; other tests filtered; kernel32.dll is not in",
+    "applied_evidence": "crates/basal-worker/tests/data/windows-imports.txt; during: crates/basal-worker/tests/data/windows-imports.txt | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-); after: (empty)",
+    "outcome": "reddened"
+  }
+]

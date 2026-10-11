@@ -1,4 +1,5 @@
 //! The real worker must discard inherited authority even in probe mode.
+#![cfg(unix)]
 
 mod common;
 

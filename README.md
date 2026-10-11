@@ -10,23 +10,24 @@ basal runs as a module supervised by the subc daemon, with the binary `ck-basal`
 
 Basal provides one agent-facing tool, `codemode({code, description?, limits?})`, on its tool route, where the daemon verifies the caller's principal and stamps its agent and scope identities. A short JavaScript program can await the agent's own tools, capture console output and return one JSON result. prefrontal-core, which manages agents and their tool grants, grants access to codemode and opens the run scope; basal owns the description, run records, budgets and rendered result. Tool schemas come from the daemon catalog, and each provider decides allow, ask and deny using the daemon-recorded agent identity and run scope, just as for a direct call. Model tools are a later extension.
 
-A keyed call derives its run ID from the stamped agent and call key; retries attach without replay. A keyless call executes once under an OS-random ID and warns that its reply cannot be recovered. Basal's parent process (outside the confined worker) caps wall time at 30 minutes plus a separate cumulative 10 minutes waiting only on people: the worker must be blocked and every in-flight tool call waiting for a person's approval or decision. It closes the scope before cancellation kills its worker, and interrupts leftover runs at startup. Long keyed calls can return before the program finishes; `late_results` lets the caller retrieve the finished result later, and `tool.withdraw` cancels the run. Windows refuses `unsupported_platform`. See [the tool and role operations](docs/ops.md#codemode).
+A keyed call derives its run ID from the stamped agent and call key; retries attach without replay. A keyless call executes once under an OS-random ID and warns that its reply cannot be recovered. Basal's parent process (outside the confined worker) caps wall time at 30 minutes plus a separate cumulative 10 minutes waiting only on people: the worker must be blocked and every in-flight tool call waiting for a person's approval or decision. It closes the scope before cancellation kills its worker, and interrupts leftover runs at startup. Long keyed calls can return before the program finishes; `late_results` lets the caller retrieve the finished result later, and `tool.withdraw` cancels the run. Codemode runs on macOS, Linux and Windows under each OS's full worker confinement. See [the tool and role operations](docs/ops.md#codemode).
 
 ## Crates
 
 | Crate | What |
 |---|---|
 | `basal-proto` | The versioned IPC protocol between the parent and its worker processes. |
-| `basal-worker` | `ck-basal-worker`: the confined QuickJS engine. It confines itself before reading anything: Seatbelt on macOS, seccomp and Landlock on Linux. See [docs/sandbox.md](docs/sandbox.md). |
+| `basal-worker` | `ck-basal-worker`: the confined QuickJS engine. Before reading anything it checks its confinement: Seatbelt on macOS, seccomp and Landlock on Linux, and the launcher's restricted LPAC token, job and mitigations on Windows. See [docs/sandbox.md](docs/sandbox.md). |
 | `basal-core` | Runtime state: the SQLite store, admission, the run state machine, the journal and mailbox, manifests and authorization, the scheduler and the activation driver. |
 | `basal-host` | The `Host` boundary that flow calls go through (module ops, facts, model calls, sinks), the adapters to the fleet's modules, and a deterministic mock. |
 | `basal-module` | `ck-basal`: the supervised module, with its subc manifest, the codemode tool-provider role, the worker pool, the flow ops, dry runs and consent cards. |
+| `basal-launch` | Windows process creation: restricted LPAC workers and job-owned child processes, with a shared spawn lock. |
 | `basal-testkit` | Test parents, crash and cut harnesses, and benchmarks. |
 | `basal-rig` | Test support for the isolated ckdev-flows rig only: a callosum stub and the live contract suite against a real prefrontal-core. Never deployed. |
 
 ## Building and testing
 
-basal needs Rust 1.88 or newer (edition 2024) on macOS or Linux (x86_64 or aarch64). Dependencies are published on crates.io or pinned to an immutable Git revision.
+basal needs Rust 1.88 or newer (edition 2024) on macOS, Linux (x86_64 or aarch64), or Windows. CI runs natively on both Windows runner images, windows-latest and windows-2022. Dependencies are published on crates.io or pinned to an immutable Git revision.
 
 ```sh
 cargo build --workspace

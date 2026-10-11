@@ -19,6 +19,15 @@ libc.workspace = true
 rcgen.workspace = true
 rustls.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+basal-launch.workspace = true
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
+] }
+
 [build-dependencies]
 serde_json.workspace = true
 
