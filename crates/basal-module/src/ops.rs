@@ -33,7 +33,7 @@
 use std::time::Duration;
 
 use basal_core::cards::CardState;
-use basal_core::manifest::{Manifest, duration_ms};
+use basal_core::manifest::{Manifest, ManifestError, duration_ms};
 use basal_core::{Actor, CoreError, InstallError, InstallRequest, Resolution};
 use basal_host::{ConsentError, HostOutcome, InstallCard};
 use basal_proto::{JsonText, Settlement};
@@ -130,6 +130,22 @@ impl Module {
             return OpError::new("store_failure", text);
         }
         match e {
+            InstallError::Manifest(ManifestError::AudienceSinkNamed) => {
+                OpError::new("audience_sink_named", e.to_string())
+            }
+            InstallError::Manifest(ManifestError::AudiencePlaceholderWithoutAudience) => {
+                OpError::new("audience_placeholder_without_audience", e.to_string())
+            }
+            InstallError::AudienceRequiresOperator => OpError::new(
+                "audience_requires_operator",
+                "only operator and local authors may request workspace or global delivery",
+            ),
+            InstallError::UnknownWorkspace(id) => {
+                OpError::new("unknown_workspace", format!("no workspace {id}"))
+            }
+            InstallError::WorkspaceRegistryUnavailable(reason) => {
+                OpError::new("workspace_registry_unavailable", reason)
+            }
             InstallError::AgentRetired {
                 flow_id,
                 retirement,
@@ -181,6 +197,7 @@ impl Module {
             "flow.install" => self.op_install(caller, params),
             "flow.dry_run" => self.op_dry_run(caller, params),
             "flow.health" => self.op_health(caller, params),
+            "flow.audience" => self.op_audience(caller, params),
             "flow.list" => self.op_list(caller, params),
             "flow.reconcile" => self.op_reconcile(caller, params),
             "flow.drain" => self.op_drain(caller, params),
@@ -308,8 +325,15 @@ impl Module {
             loop_override: bool,
         }
         let p: Params = serde_json::from_value(params).map_err(invalid_params)?;
-        let manifest = Manifest::parse(&p.manifest).map_err(|e| {
-            OpError::new("install_refused", format!("the manifest is invalid: {e}"))
+        let manifest = Manifest::parse(&p.manifest).map_err(|e| match e {
+            e @ (ManifestError::AudienceSinkNamed
+            | ManifestError::AudiencePlaceholderWithoutAudience) => {
+                self.install_error(InstallError::Manifest(e))
+            }
+            other => OpError::new(
+                "install_refused",
+                format!("the manifest is invalid: {other}"),
+            ),
         })?;
         // Package instances derive their ids from the package and agent.
         // Plain installs must not occupy that namespace before an instance exists.
@@ -370,11 +394,8 @@ impl Module {
                         manifest.id
                     )));
                 }
-                // Core shows a local caller's install card in the session
-                // where the agent named by the manifest's first digest sink
-                // (`sinks[0].agent`) currently lives. With no digest sink
-                // there is no such session, so the install is refused here,
-                // before the version is recorded or a card raised.
+                // Core needs a declared digest sink to route a local install's
+                // approval card, whether the target is static or audience-wide.
                 if manifest.sinks.is_empty() {
                     return Err(OpError::new(
                         "local_install_needs_digest_sink",
@@ -383,7 +404,7 @@ impl Module {
                 }
                 LOCAL_AUTHOR.to_owned()
             }
-            Caller::Core | Caller::Other(_) => {
+            Caller::Core | Caller::Module { .. } | Caller::Other(_) => {
                 return Err(OpError::not_permitted("flow.install", caller));
             }
         };
@@ -639,12 +660,45 @@ impl Module {
 
     // ---- flow.list -----------------------------------------------------
 
+    fn op_audience(&self, caller: &Caller, params: Value) -> OpResult {
+        if !matches!(
+            caller,
+            Caller::Core | Caller::Operator | Caller::Module { .. }
+        ) {
+            return Err(OpError::new(
+                "not_permitted",
+                "flow.audience requires an attested unscoped module route",
+            ));
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Params {
+            flow_id: String,
+        }
+        let p: Params = serde_json::from_value(params).map_err(invalid_params)?;
+        let manifest = self.rt.store().read(|c| {
+            Ok(c.query_row(
+                "SELECT i.manifest FROM flows f JOIN installs i ON i.flow_id=f.flow_id AND i.version=f.approved_version WHERE f.flow_id=?1 AND i.state='approved'",
+                [p.flow_id.as_str()], |r| r.get::<_, String>(0),
+            ).optional()?)
+        }).map_err(|e| self.core_error(e))?;
+        let Some(manifest) = manifest else {
+            return Err(OpError::new(
+                "flow_not_approved",
+                "no approved flow audience",
+            ));
+        };
+        let parsed = Manifest::parse(&manifest)
+            .map_err(|e| OpError::new("internal", format!("approved manifest: {e}")))?;
+        Ok(json!({"audience": parsed.audience}))
+    }
+
     fn op_list(&self, caller: &Caller, params: Value) -> OpResult {
         let owner = match caller {
             Caller::Operator => None,
             Caller::Agent { agent_id, .. } => Some(agent_id.as_str()),
             Caller::Local => Some(LOCAL_AUTHOR),
-            Caller::Core | Caller::Other(_) => {
+            Caller::Core | Caller::Module { .. } | Caller::Other(_) => {
                 return Err(OpError::not_permitted("flow.list", caller));
             }
         };
@@ -1001,7 +1055,9 @@ fn card_author(caller: &Caller) -> Result<Value, OpError> {
         Caller::Operator => Ok(json!({ "operator": true })),
         Caller::Agent { scope_ref, .. } => Ok(json!({ "scope": scope_ref })),
         Caller::Local => Ok(json!({ "local": true })),
-        Caller::Core | Caller::Other(_) => Err(OpError::not_permitted("flow.install", caller)),
+        Caller::Core | Caller::Module { .. } | Caller::Other(_) => {
+            Err(OpError::not_permitted("flow.install", caller))
+        }
     }
 }
 

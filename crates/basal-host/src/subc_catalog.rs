@@ -156,6 +156,34 @@ impl SubcCatalog {
         self.resolve_agent(agent).map(|id| id.is_some())
     }
 
+    pub fn known_workspace(&self, id: &str) -> Result<bool, WireError> {
+        let Some(op) = self.resolve("entorhinal", "enumerate")? else {
+            return Err(WireError::Unreadable("entorhinal.enumerate missing".into()));
+        };
+        if op.surface != Surface::Management || op.declaration.kind != Some(OpKind::Query) {
+            return Err(WireError::Unreadable(
+                "entorhinal.enumerate is not a management query".into(),
+            ));
+        }
+        let reply =
+            self.transport
+                .management("entorhinal", "enumerate", json!({"workspaceId": id}))?;
+        let workspaces = reply["result"]["workspaces"].as_array().ok_or_else(|| {
+            WireError::Unreadable("entorhinal.enumerate workspaces missing".into())
+        })?;
+        let mut found = false;
+        for workspace in workspaces {
+            let workspace_id = workspace["workspaceId"]
+                .as_str()
+                .filter(|id| !id.trim().is_empty())
+                .ok_or_else(|| {
+                    WireError::Unreadable("entorhinal.enumerate workspaceId missing".into())
+                })?;
+            found |= workspace_id == id;
+        }
+        Ok(found)
+    }
+
     /// Resolves either public agent identifier through core's agent registry.
     pub fn resolve_agent(&self, agent: &str) -> Result<Option<String>, WireError> {
         let mut cursor: Option<String> = None;
@@ -203,6 +231,9 @@ impl SubcCatalog {
     }
 }
 impl Catalog for SubcCatalog {
+    fn workspace_known(&self, id: &str) -> Result<bool, WireError> {
+        self.known_workspace(id)
+    }
     fn supports_flow_scopes(&self, module: &str) -> bool {
         self.transport
             .catalog()

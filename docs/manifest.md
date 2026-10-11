@@ -18,6 +18,7 @@ A flow is a script plus a manifest. The manifest says everything the flow may do
 | `version` | integer | yes | | At least 1. A new install must be above the approved version. |
 | `purpose` | string | yes | | 1 to 1024 bytes, no control characters except newline. Shown on the card. |
 | `trigger` | object | yes | | Exactly one of `events` and `schedule` (below). |
+| `audience` | `{kind, id?}` | no | none | Approved delivery reach: global, workspace or agent. See below. |
 | `sinks` | list of sink grants | no | `[]` | Agents whose digest the flow may write. |
 | `status` | list of agent names | no | `[]` | Agents whose status line the flow may set. |
 | `claims` | list of claims | no | `[]` | Source kinds the flow takes over from core for an agent. |
@@ -40,6 +41,39 @@ A duration is a positive whole number followed by one unit: `s`, `m`, `h` or `d`
 Agent fields also accept the literal `$self` in [package manifests](packages.md). Registration permits only `$self`; activation resolves it to the instance's stable owner id. Ordinary `flow.install` refuses `$self` with `self_requires_package`.
 
 Every agent named by `sinks[].agent`, `status[]`, `claims[].agent` and `facts.targets[]` must be known to the catalog. Fields may use a display name or a stable `agent_id`; the catalog resolves both to that id. For an agent-owned flow, every resolved id must equal its author's stable id: the flow acts only for its owner. Install and dry run refuse a foreign target with `foreign_agent_target`, naming the field and agent, before recording an install or raising a consent card. The author's id comes from the daemon-stamped caller scope for an agent install, not the manifest. An operator installing in an agent's name uses that agent's stable id as the author and follows the same rule. Global flows authored as `operator` and local-caller installs authored as `local:unverified` may still name any known agent.
+
+### `audience`
+
+The audience is part of the manifest bytes, so changing or widening it changes
+the code hash and requires a new version and approval. Core renders this reach
+on the approval card. The only shapes are `{ "kind": "global" }`,
+`{ "kind": "workspace", "id": "workspace-id" }` and
+`{ "kind": "agent", "id": "agent-id-or-name" }`. Global forbids `id`;
+the others require it. Unknown fields are refused. Workspace ids are nonblank
+strings of at most 512 bytes; agent ids follow the agent-name rules above.
+
+At install and dry run, agent ids resolve through core's `agent.list` registry
+to a stable id. An unreadable registry fails closed. Workspace ids must exactly
+match a workspace returned by Entorhinal's management query `enumerate` with
+`{ "workspaceId": "workspace-id" }`; a missing workspace returns
+`unknown_workspace`, and an unavailable or unreadable registry returns
+`workspace_registry_unavailable`.
+
+An agent-authored agent audience must resolve to that author, or installation
+and dry run return `foreign_agent_target`. An agent-authored workspace or global
+audience returns `audience_requires_operator`. Operator and local authors may
+request any audience; installing in an agent's name still applies that agent's
+authorship rules. Claims and facts retain their static self-only rules.
+
+With an audience, every digest sink must declare `agent: "$audience"` and every
+status entry must be `"$audience"`. A named sink or status target returns
+`audience_sink_named`; static and audience targets cannot mix. Without an
+audience, `$audience` is refused with `audience_placeholder_without_audience`.
+It is not valid in claims, facts, or an agent audience id. A declaration grants only
+its sink kind, not another kind. Scripts still pass a recipient on each write;
+core checks current audience membership at delivery time and refuses an outside
+recipient with `sink_target_not_in_audience`. Basal passes that code through
+unchanged. An omitted audience keeps all existing static-target behavior.
 
 ### `trigger`
 
@@ -98,8 +132,8 @@ event field. The declaration conversion already accepts the protocol's
 
 | Field | Type | Required | Default | Meaning |
 |---|---|---|---|---|
-| `agent` | agent name | yes | | Must be a known agent. |
-| `digest_max` | `"silent"`, `"piggyback"` or `"wake"` | yes | | The most intrusive action the flow may request for this agent. An omitted action uses this approved cap, in both live dispatch and dry runs. A `sink.digest` call asking for more is refused. |
+| `agent` | agent name or `$audience` | yes | | A known static agent without an audience; exactly `$audience` with one. |
+| `digest_max` | `"silent"`, `"piggyback"` or `"wake"` | yes | | The most intrusive action approved for the sink. An omitted action uses this cap, in both live dispatch and dry runs. Basal refuses static writes above the cap; audience writes go to core for delivery admission. |
 | `break_through` | boolean | no | `false` | Shown on the card as requested. Only the operator grants it, through policy. |
 
 ### Claim

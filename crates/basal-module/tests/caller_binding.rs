@@ -296,7 +296,7 @@ fn a_route_without_a_scope_is_never_an_agent() {
         Caller::Core
     );
 
-    // Everyone else is refused: another module, an unverified route, a
+    // These callers cannot manage agents' flows: another module, an unverified route, a
     // route whose principal the daemon did not record, a route never bound,
     // and a route that has gone, even one an agent's scope admitted.
     let others = [
@@ -342,7 +342,10 @@ fn a_route_without_a_scope_is_never_an_agent() {
         );
     }
     for caller in &others {
-        assert!(matches!(caller, Caller::Other(_)), "{caller:?}");
+        assert!(
+            matches!(caller, Caller::Other(_) | Caller::Module { .. }),
+            "{caller:?}"
+        );
         assert_refused_on_the_flow(&f, caller);
         let r = call(&f, caller, "flow.health", Value::Null);
         assert!(refused(&r), "flow.health as {}: {r:?}", caller.label());

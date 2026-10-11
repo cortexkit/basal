@@ -144,6 +144,9 @@ pub fn resolve_self(manifest: &mut Manifest, agent_id: &str) {
     for sink in &mut manifest.sinks {
         resolve(&mut sink.agent);
     }
+    if let Some(crate::manifest::Audience::Agent { id }) = &mut manifest.audience {
+        resolve(id);
+    }
     for agent in &mut manifest.status {
         resolve(agent);
     }
@@ -240,6 +243,13 @@ pub fn check(
             }
             Primitive::SinkDigest => {
                 let agent = agent_arg(args, *p)?;
+                if manifest.audience.is_some() {
+                    return if manifest.sinks.is_empty() {
+                        Err(Refusal::denied("the manifest grants no digest sink"))
+                    } else {
+                        Ok(())
+                    };
+                }
                 let Some(cap) = manifest.digest_cap(agent) else {
                     return Err(Refusal::denied(format!(
                         "{agent} is not among the manifest's sinks"
@@ -265,6 +275,13 @@ pub fn check(
             }
             Primitive::SinkStatus => {
                 let agent = agent_arg(args, *p)?;
+                if manifest.audience.is_some() {
+                    return if manifest.status.is_empty() {
+                        Err(Refusal::denied("the manifest grants no status sink"))
+                    } else {
+                        Ok(())
+                    };
+                }
                 if manifest.status.iter().any(|a| a == agent) {
                     Ok(())
                 } else {

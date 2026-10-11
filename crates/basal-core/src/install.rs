@@ -20,7 +20,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use crate::authorize::ShellDenylist;
 use crate::error::{CoreError, Result};
 use crate::ids::code_hash;
-use crate::manifest::{Manifest, ManifestError, OpRef};
+use crate::manifest::{Audience, Manifest, ManifestError, OpRef};
 use crate::runtime::Runtime;
 use crate::schedule::{self, Approval, ScheduledFlow, SchedulerConfig};
 
@@ -42,6 +42,9 @@ pub struct InstallRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstallError {
     SelfRequiresPackage,
+    AudienceRequiresOperator,
+    UnknownWorkspace(String),
+    WorkspaceRegistryUnavailable(String),
     FlowScopeUnsupported {
         module: String,
         op: String,
@@ -214,6 +217,7 @@ pub(crate) fn validate_inner(
     loop_override: bool,
     package: bool,
 ) -> std::result::Result<Vec<Warning>, InstallError> {
+    validate_audience(manifest, author, catalog)?;
     let mut warnings = Vec::new();
     let mut trigger_modules: Vec<&str> = Vec::new();
     if let Some(events) = &manifest.trigger.events {
@@ -331,6 +335,36 @@ pub(crate) fn validate_inner(
         }
     }
     Ok(warnings)
+}
+
+/// Broad delivery by an agent author is opt-in policy, not implied by a sink grant.
+fn agent_may_request_broad_audience() -> bool {
+    false
+}
+
+fn validate_audience(
+    manifest: &Manifest,
+    author: &str,
+    catalog: &dyn Catalog,
+) -> std::result::Result<(), InstallError> {
+    let Some(audience) = &manifest.audience else {
+        return Ok(());
+    };
+    if author != crate::decisions::OPERATOR_ACTOR
+        && author != "local:unverified"
+        && !matches!(audience, Audience::Agent { .. })
+        && !agent_may_request_broad_audience()
+    {
+        return Err(InstallError::AudienceRequiresOperator);
+    }
+    if let Audience::Workspace { id } = audience {
+        match catalog.workspace_known(id) {
+            Ok(true) => {}
+            Ok(false) => return Err(InstallError::UnknownWorkspace(id.clone())),
+            Err(e) => return Err(InstallError::WorkspaceRegistryUnavailable(format!("{e:?}"))),
+        }
+    }
+    Ok(())
 }
 
 fn version_i64(v: u32) -> i64 {

@@ -52,6 +52,11 @@ pub const OPERATIONS: &[(&str, ManagementOperationKind, &str)] = &[
         "List caller-visible flows and their approval, disable and last-run state.",
     ),
     (
+        "flow.audience",
+        ManagementOperationKind::Query,
+        "Return the currently approved manifest's delivery audience; attested unscoped modules only.",
+    ),
+    (
         "flow.health",
         ManagementOperationKind::Query,
         "Per-flow health (state, last run, overdue work, consecutive failures, runs needing reconcile) and the runtime's own figures.",

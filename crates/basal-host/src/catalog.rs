@@ -83,6 +83,12 @@ pub trait Catalog: Send + Sync {
     /// Resolves an agent's display name or stable id to its stable id.
     /// Unknown agents and unavailable registries must not resolve.
     fn agent_id(&self, agent: &str) -> Option<String>;
+    /// The workspace registry must be readable before a workspace audience is admitted.
+    fn workspace_known(&self, _id: &str) -> Result<bool, crate::transport::WireError> {
+        Err(crate::transport::WireError::Unreadable(
+            "workspace registry unavailable".into(),
+        ))
+    }
 }
 
 #[derive(Default)]
@@ -91,6 +97,7 @@ struct Entries {
     events: BTreeMap<(String, String, u32), EventDecl>,
     ops: BTreeMap<(String, String), OpDecl>,
     agents: BTreeMap<String, String>,
+    workspaces: BTreeSet<String>,
 }
 
 /// An in-memory catalog. Cloning shares the same entries, so a test can
@@ -215,6 +222,10 @@ impl MockCatalog {
         self.add_named_agent(agent, agent);
     }
 
+    pub fn add_workspace(&self, id: &str) {
+        self.write().workspaces.insert(id.to_owned());
+    }
+
     pub fn add_named_agent(&self, agent_id: &str, name: &str) {
         let mut entries = self.write();
         entries
@@ -225,6 +236,9 @@ impl MockCatalog {
 }
 
 impl Catalog for MockCatalog {
+    fn workspace_known(&self, id: &str) -> Result<bool, crate::transport::WireError> {
+        Ok(self.read().workspaces.contains(id))
+    }
     fn supports_flow_scopes(&self, module: &str) -> bool {
         self.read().flow_capable.contains(module)
     }

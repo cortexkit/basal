@@ -69,10 +69,12 @@ pub enum Caller {
     Local,
     /// Core itself, on its own route (not under an agent's scope).
     Core,
+    /// Another daemon-attested module on an unscoped route.
+    Module { module_id: String },
     /// An agent, by the `agent_id` its session scope carries, and that
     /// scope's `scope_ref` exactly as the daemon stamped it.
     Agent { agent_id: String, scope_ref: String },
-    /// Anyone else: another module, an unverified route, or a route whose
+    /// Anyone else: an unverified route, or a route whose
     /// principal the daemon did not record. Refused by every op that names
     /// a caller.
     Other(String),
@@ -85,6 +87,7 @@ impl Caller {
             Self::Operator => "operator".to_owned(),
             Self::Local => "local".to_owned(),
             Self::Core => format!("reserved:{CORE_MODULE}"),
+            Self::Module { module_id } => format!("reserved:{module_id}"),
             Self::Agent { agent_id, .. } => format!("agent:{agent_id}"),
             Self::Other(o) => o.clone(),
         }
@@ -133,6 +136,9 @@ pub fn from_route(principal: Option<&Principal>, scope: Option<&ScopeStamp>) -> 
         Some(Principal::Reserved { module_id }) if module_id == OPERATOR_MODULE => Caller::Operator,
         Some(Principal::Direct) => Caller::Local,
         Some(Principal::Reserved { module_id }) if module_id == CORE_MODULE => Caller::Core,
+        Some(Principal::Reserved { module_id }) => Caller::Module {
+            module_id: module_id.clone(),
+        },
         other => Caller::Other(principal_label(other)),
     }
 }
@@ -217,7 +223,7 @@ mod tests {
                 }),
                 None
             ),
-            Caller::Other(_)
+            Caller::Module { .. }
         ));
     }
 }

@@ -48,9 +48,25 @@ not authority, and manifest header filters remain a follow-up.
 
 ## Digest items
 
+Sink signatures are unchanged by an install audience:
+`sink.digest(agent, item, action)` and `sink.status(agent, value)`. With no
+audience, the recipient must be listed statically in `sinks[].agent` or
+`status[]`. With an audience, the corresponding manifest entry is `$audience`,
+and the script supplies a concrete recipient on every write. For example:
+
+```json
+{"audience":{"kind":"workspace","id":"my-workspace"},"sinks":[{"agent":"$audience","digest_max":"piggyback"}],"status":["$audience"]}
+```
+
+These are manifest fields, not a complete manifest. Basal checks the requested
+sink kind is declared; prefrontal-core checks whether the recipient is inside
+the approved audience at delivery time. A refusal such as
+`sink_target_not_in_audience` reaches the script unchanged, so it can catch the
+rejection. Membership is not cached at install or decided by the script.
+
 `sink.digest(agent, item, action)` delivers `item` to the agent's digest
 through prefrontal-core, which validates it strictly. `action` is `silent`,
-`piggyback` or `wake`, capped by the manifest's `digest_max`. The item has
+`piggyback` or `wake`; the manifest's `digest_max` is the approved cap. The item has
 these four fields. `data` and `links` may be omitted, and then default to
 empty. Core refuses a missing `title` or `body`, or any field not listed
 here, with `sink_item_invalid`, and the refusal names the field:
