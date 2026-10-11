@@ -106,17 +106,20 @@ published yet.
 
 ## Differences between the systems
 
-| | Linux | macOS |
-| --- | --- | --- |
-| Boundary | seccomp allowlist, fatal SIGSYS | Seatbelt profile, denied calls fail |
-| Second layer | Landlock | none |
-| Threads | blocked by seccomp | not blocked |
-| Ptrace and memory reads | blocked by non-dumpable | blocked by the hardened runtime |
-| Privacy grants | not applicable | launched detached from the module's privacy grants |
-| Health counter | SIGSYS deaths | none |
+| | Linux | macOS | Windows |
+| --- | --- | --- | --- |
+| Boundary | seccomp allowlist, fatal SIGSYS | Seatbelt profile, denied calls fail | Untrusted LPAC restricted token, job and process mitigations |
+| Second layer | Landlock | none | startup token, mitigation and handle attestation |
+| Threads | blocked by seccomp | not blocked | allowed inside the worker |
+| Ptrace and memory reads | blocked by non-dumpable | blocked by the hardened runtime | worker cannot open another process for query or memory reads |
+| Privacy grants | not applicable | launched detached from the module's privacy grants | no capabilities; environment cleared except SystemRoot |
+| Health counter | SIGSYS deaths | none | `fatal_status_deaths` for invalid-handle and access-violation exits |
+| Host fs mounts and links | mounts traversed; in-root links allowed | mounts traversed; in-root links allowed | mounts and in-root links not traversed; every reparse point refused, including stat |
+| Strict-handle misuse | not applicable | not applicable | fatal `0xc0000008`, not a returned error |
 
 A denied operation on Linux kills the worker; on macOS the call fails and the
-engine keeps running.
+engine keeps running. On Windows most denied operations return an error, but
+strict-handle misuse is fatal rather than an error the engine can catch.
 
 ### CPU bound of a pooled worker
 
@@ -127,7 +130,7 @@ flow and reused for that flow's later activations until it is retired after 256
 activations or after sitting idle for 10 minutes.
 
 On Linux the engine thread is the worker's only thread, so the CPU budget
-covers all of the worker's CPU use. On macOS a subverted engine could start
+covers all of the worker's CPU use. On macOS and Windows a subverted engine could start
 another thread whose CPU the engine thread's clock does not count, and that
 thread could keep running after its activation returns. The CPU such a pooled
 worker can use is therefore bounded only by time: the wall-clock deadline
@@ -146,6 +149,126 @@ normally, the worker is reused for that flow.
 
 ## Windows
 
-Windows confinement is not provided yet. The worker has no Windows sandbox,
-and the module refuses any worker whose `Welcome` reports no confinement, so
-no flow runs there.
+### Layers and guarantees
+
+The native launcher creates a GUI-subsystem worker suspended, with a
+Less Privileged AppContainer (LPAC) primary token for the fixed profile
+`cortexkit.basal.worker`, zero capabilities, no privileges, NULL-only
+restricting SIDs, and every access group deny-only. The primary is Low at birth
+so the loader can initialize. A matching Low impersonation token on the initial
+thread is used only during startup. The environment is cleared except
+`SystemRoot`; an explicit handle list passes only the three stdio pipes.
+
+Before resume, the parent checks the actual suspended primary and initial
+thread tokens, the owned job's limits and the child's membership in that job.
+The job has kill-on-close, no breakaway, an active-process limit of one, and all
+UI restrictions. Its process memory limit bounds **committed memory**, not
+address space as Linux's `RLIMIT_AS` does. The flow and codemode profiles have
+separate commit limits with headroom above their JavaScript heap budgets.
+Dropping or killing a worker terminates its job and every thread in the process.
+
+Before reading its first frame, the worker reverts the thread token, checks that
+none remains, lowers its actual primary to Untrusted, and closes all Advanced
+Local Procedure Call (ALPC) ports
+and non-inheritable non-stdio File handles (including KsecDD on Server 2022).
+It attests the actual token, required process mitigations and the handle table.
+A failed check exits 70 with a named reason, never a weaker sandbox. The parent
+accepts only a Windows `Welcome` with all five confinement fields true. Its
+`fatal_status_deaths` health counter counts worker exits `0xc0000008` (invalid
+handle) and `0xc0000005` (access violation), not refusal exit 70 or an intentional
+parent kill.
+
+The mitigations prohibit dynamic code, child-process creation, Win32k system
+calls and extension points; require Microsoft-signed images; reject remote and
+low-label images; prefer System32 when loading images; and permanently enable
+strict handle checks.
+Thread opt-out and remote downgrade of dynamic-code policy are forbidden.
+
+A confined worker can read stdin, write stdout and stderr, allocate private
+memory, read clocks, create threads inside itself and exit. The measured probes
+deny file data and metadata opens, package-folder creates and native package-hive
+writes, new IPC, process creation, access to another process, and network access
+through Winsock, including loopback. Host calls remain the only authorized way
+for a flow to affect the outside world: the parent checks their manifest grants.
+
+### Residual handles and production measurements
+
+Windows needs runtime handles beyond stdio. The startup allowlist fits the
+entire inventory to **one image profile**: either the windows-latest ceilings
+or the windows-2022 ceilings in the table below, never their union.
+Stdio and `\KnownDlls` must be present at exactly their counts; all other rows
+are ceilings. Unknown types, access masks, extra inheritable handles and excess
+counts are refused. Each profile permits at most **26 handles**:
+
+| Type | Access | windows-latest ceiling | windows-2022 ceiling | windows-latest production | windows-2022 production |
+| --- | --- | ---: | ---: | ---: | ---: |
+| File stdin | `0x120189` | 1 (exact) | 1 (exact) | 1 | 1 |
+| File stdout/stderr | `0x120196` | 2 (exact) | 2 (exact) | 2 | 2 |
+| Directory `\KnownDlls` | `0x3` | 1 (exact) | 1 (exact) | 1 | 1 |
+| Event | `0x1f0003` | ≤7 | ≤7 | 6 | 6 |
+| IoCompletion | `0x1f0003` | ≤2 | ≤2 | 2 | 2 |
+| TpWorkerFactory | `0xf00ff` | ≤2 | ≤2 | 2 | 2 |
+| IRTimer | `0x100002` | ≤4 | ≤4 | 4 | 4 |
+| WaitCompletionPacket | `0x1` | ≤6 | ≤5 | 6 | 5 |
+| Semaphore | `0x100003` | 0 | ≤2 | 0 | 2 |
+| SchedulerSharedData | `0x1` | ≤1 | 0 | 1 | 0 |
+| **Total** | | **≤26** | **≤26** | **25** | **25** |
+
+The production counts and creator chains are committed in
+[`windows-handle-provenance.md`](../crates/basal-worker/tests/data/windows-handle-provenance.md).
+CI measurements counted 25 pre-input handles per production release worker
+and traced their creators in a production build without test-only options that
+can weaken the worker's startup checks. The images were `win25-vs2026` version
+`20260925.250.1` and `win22` version `20261004.326.1`. An image change requires
+remeasurement, not an automatic widening of the allowlist. Production used six
+Event handles per image, one below each seven-Event ceiling.
+
+`\KnownDlls` is shared and read-only (query and traverse). Every other residual
+object beyond stdio is unnamed and was private to the worker in the measured
+snapshots. Their access masks are **not all read-only**: events, queues, timers,
+wait packets and semaphores carry process-local runtime authority. Closing the
+pool's completion and synchronization handles crashes real pool work, so they
+must remain open.
+
+On images with SchedulerSharedData, the worker can duplicate its `0x1` handle
+with `GENERIC_ALL` and obtain `0x000f0001`, the type's full rights. This
+**self-escalation** affects its own private, unnamed scheduler object; no other
+process held that object in the measurement. It is not a file, network, peer or
+persistent-state capability. Closing it crashes the worker when the pool runs.
+
+### Non-claims and profile reuse
+
+These measurements do not establish denial of direct native access to the AFD
+network device bypassing Winsock, or of KnownDlls-relative section opens.
+Native API probing covered a finite set of operations, not every operation
+against every residual handle type.
+The CSR ALPC port is closed before input; whether it would accept messages is
+not part of the residual claim. An unnamed handle is not, by itself, proof of
+harmlessness; the inventory, creator chains and finite probes delimit the claim.
+
+All workers reuse the `cortexkit.basal.worker` AppContainer profile. Profile
+reuse is a state channel for a **weaker token** that can create package files or
+write the package hive. The full token denies both operations; there is no
+per-worker profile and no claim that LPAC alone gives the full boundary.
+
+### Clock and thread bounds
+
+The engine thread's CPU clock uses `GetThreadTimes`, kernel plus user time, with
+scheduler-tick resolution. A sub-tick CPU budget is imprecise; the wall deadline
+is the hard bound. Small budgets are not refused. A subverted engine can use
+additional threads whose CPU is not counted by that clock. For a pooled worker,
+those threads are bounded by the activation wall deadline plus idle retirement,
+not by the engine-thread CPU budget. Killing or retiring the worker ends every
+thread. Pooled workers are retired after 256 activations or 10 minutes idle;
+extra threads cannot outlive that retirement or a kill at the wall deadline.
+
+### Production placement requirements
+
+Windows confinement is implemented, but production placement also needs SUBC,
+the module-hosting daemon, to support Windows placement, an install-directory
+read/execute ACE for basal's
+AppContainer SID, and a deployment account with a loaded user profile. The
+launcher does not add that install ACE in production; test harnesses grant it
+only on their worker binary's directory. Store and log files must retain their
+owner-only Windows DACLs. Users install with `ck setup` and update with
+`ck upgrade`; `script/stage.sh` is not a Windows or Linux installer.

@@ -10,4 +10,5 @@ def load_tests(loader, tests, pattern):
         "script.tests.flows_rig",
         "script.tests.sign_worker",
         "script.tests.stage_card",
+        "script.tests.witness_mutations",
     ])

@@ -23,7 +23,10 @@ pub use launch::{
 };
 pub use plain::{PlainCommand, PlainStdio, spawn_plain};
 pub use process::{ConfinedProcess, KILL_EXIT_CODE, OwnedProcess};
-pub use profile::{PROFILE_NAME, PackageSid, create_or_open_profile, grant_test_binary_directory};
+pub use profile::{
+    PROFILE_NAME, PackageSid, create_or_open_profile, grant_test_binary_directory,
+    process_profile_directory,
+};
 pub use spawn_lock::{SpawnLock, make_inheritable, spawn_lock, spawn_lock_held};
 pub use token::{
     IMPERSONATION_LEVEL, LOW_INTEGRITY, NULL_SID, TOKEN_IMPERSONATION, TOKEN_PRIMARY, TokenFacts,

@@ -999,6 +999,35 @@ fn failure_rank(d: &Denial) -> u8 {
     }
 }
 
+/// Resolve the profile of the process token, not a caller-controlled
+/// environment variable. A missing or unreadable profile grants no root.
+#[cfg(windows)]
+fn process_profile_directory() -> Result<String, Denial> {
+    basal_launch::process_profile_directory().map_err(|error| Denial::new(codes::IO, error))
+}
+
+#[cfg(windows)]
+fn expand_root(root: &str) -> Result<std::borrow::Cow<'_, str>, Denial> {
+    let suffix = if root == "~" {
+        ""
+    } else if let Some(suffix) = root.strip_prefix("~/") {
+        suffix
+    } else {
+        return Ok(std::borrow::Cow::Borrowed(root));
+    };
+    let mut profile = process_profile_directory()?;
+    validate_raw_spelling(&profile)?;
+    if !suffix.is_empty() {
+        if !profile.ends_with('\\') {
+            profile.push('\\');
+        }
+        // Preserve components, including refused spellings, until validation.
+        profile.push_str(&suffix.replace('/', "\\"));
+    }
+    validate_raw_spelling(&profile)?;
+    Ok(std::borrow::Cow::Owned(profile))
+}
+
 /// Finds a manifest root that `path` lies under and walks it
 /// ([`walk_from_volume_root`]). A file root grants only its own path. When
 /// every root `path` lies under fails to walk, the most telling failure is
@@ -1011,10 +1040,11 @@ fn select_root(path: &str, roots: &[String], share: u32) -> Result<VerifiedRoot,
     validate_raw_spelling(path)?;
     let mut failure: Option<Denial> = None;
     for r in roots {
-        if validate_raw_spelling(r).is_err() || !path_under(path, r) {
+        let r = expand_root(r)?;
+        if validate_raw_spelling(&r).is_err() || !path_under(path, &r) {
             continue;
         }
-        match walk_from_volume_root(r, share) {
+        match walk_from_volume_root(&r, share) {
             Ok(vr) if vr.is_directory || path == vr.manifest => return Ok(vr),
             Ok(_) => {}
             Err(d) => {
@@ -2218,8 +2248,12 @@ mod tests {
 
         impl WinTree {
             fn new(tag: &str) -> Self {
+                Self::new_under(tag, &std::env::temp_dir())
+            }
+
+            fn new_under(tag: &str, parent: &Path) -> Self {
                 static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-                let base = std::env::temp_dir().join(format!(
+                let base = parent.join(format!(
                     "basal-win-tree-{tag}-{}-{}",
                     std::process::id(),
                     SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -2259,6 +2293,25 @@ mod tests {
         impl Drop for WinTree {
             fn drop(&mut self) {
                 let _ = std::fs::remove_dir_all(&self.base);
+            }
+        }
+
+        #[test]
+        fn tilde_root_reads_below_the_process_tokens_profile() {
+            let profile = process_profile_directory().expect("process token profile");
+            let tree = WinTree::new_under("profile", Path::new(&profile));
+            let name = tree.base.file_name().unwrap().to_str().unwrap();
+            let roots = vec![format!("~/{name}/root")];
+            assert_eq!(
+                read(&tree.p("sub\\b.txt"), &roots, 100).unwrap()["text"],
+                "nested"
+            );
+            for root in [
+                format!("~/{name}/root/.."),
+                format!("~/{name}//root"),
+                format!("~/{name}/root:stream"),
+            ] {
+                assert!(read(&tree.p("sub\\b.txt"), &[root], 100).is_err());
             }
         }
 
