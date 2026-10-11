@@ -15809,3 +15809,19 @@ timeout_s = 600
 file = "crates/basal-host/src/target_scope.rs"
 old = "self.refresh_required.insert(cache_key.clone());"
 new = "let _ = &cache_key; // NON-VACUITY BREAK"
+
+[[control]]
+id = "stage-worker-protocol-change-stops-basal"
+guards = "A changed worker protocol requires stop-the-world placement rather than an incompatible rolling pair"
+file = "script/stage.sh"
+old = "    STOP_THE_WORLD=1"
+new = "    STOP_THE_WORLD=0 # NON-VACUITY BREAK"
+edits = []
+test_file = "script/tests/stage_card.py"
+runner = "command"
+command = ["python3.14", "-m", "unittest", "{test}"]
+test_count_pattern = "Ran {count} test"
+expect_red = ["script.tests.stage_card.StageCardChecks.test_protocol_change_selects_stop_the_world"]
+only = false
+timeout_s = 600
+build_timeout_s = 1800

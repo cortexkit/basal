@@ -402,12 +402,53 @@ print(max(versions), live)
   fi
 }
 
+# A Hello requesting reserved version 0 elicits VersionMismatch with the worker's
+# supported version, without activating a flow. This handshake also works with
+# older workers that do not expose their protocol in --version. Never infer it
+# from a checkout: the staged and placed files are the peers being compared.
+worker_protocol() {
+  python3 - "$1" <<'PY'
+import struct, subprocess, sys
+try:
+    result = subprocess.run([sys.argv[1]], input=struct.pack(">IBI", 5, 1, 0),
+                            capture_output=True, timeout=10, check=False)
+    if result.returncode != 0:
+        raise ValueError("worker exited %s: %s" %
+                         (result.returncode, result.stderr.decode(errors="replace")))
+    # A big-endian length, Refused tag, VersionMismatch tag, supported, requested.
+    if len(result.stdout) != 14:
+        raise ValueError("expected exactly one VersionMismatch frame")
+    length, tag, refusal, supported, requested = struct.unpack(">IBBII", result.stdout)
+    if (length, tag, refusal, requested) != (10, 105, 3, 0) or supported == 0:
+        raise ValueError("invalid VersionMismatch frame")
+    print(supported)
+except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+    sys.exit("cannot measure worker protocol: %s" % error)
+PY
+}
+
+worker_protocols() {
+  # Only placed binaries run under ck- names. A hard link probes the staged bytes
+  # under a development name; remove an earlier probe before linking again.
+  probe="$CONTROL_DIR/ckdev-basal-worker-protocol"
+  rm -f "$probe"
+  ln "$CARD_BIN_DIR/ck-basal-worker" "$probe" 2>/dev/null \
+    || cp "$CARD_BIN_DIR/ck-basal-worker" "$probe"
+  BUILD_PROTOCOL=$(worker_protocol "$probe") || die "cannot measure the staged worker protocol; no card written"
+  LIVE_PROTOCOL=$(worker_protocol "$LIVE_BIN/ck-basal-worker") || die "cannot measure the live worker protocol; no card written"
+  if [ "$BUILD_PROTOCOL" != "$LIVE_PROTOCOL" ]; then
+    STOP_THE_WORLD=1
+  fi
+  say "worker protocol: staged $BUILD_PROTOCOL / live $LIVE_PROTOCOL (stop-the-world=$STOP_THE_WORLD)"
+}
+
 # Validate before publishing a stage or opening card.md, so a failed gate cannot
 # leave a declaration that looks ready for placement.
 prepare_card() {
 CARD_BIN_DIR=$1
 LIVE_STORE="$CK_SHARE/basal/store.db"
 UPDATE=0
+STOP_THE_WORLD=0
 if [ -e "$LIVE_BIN/ck-basal" ]; then
   UPDATE=1
   [ -n "$BASAL_MARKER" ] && [ -n "$BASAL_CONTROL" ] \
@@ -440,6 +481,7 @@ for bin in $BINARIES; do
 done
 if [ "$UPDATE" = 1 ]; then
   store_versions
+  worker_protocols
 fi
 }
 
@@ -536,8 +578,12 @@ EOF
 }
 
 write_update_card() {
-cat > "$CARD" <<EOF
-@SUBC basal: an UPDATE, two binaries, worker first and ck-basal restarted last
+if [ "$STOP_THE_WORLD" = 1 ]; then
+  say '@SUBC basal: a STOP-THE-WORLD UPDATE, stop ck-basal before replacing either binary' > "$CARD"
+else
+  say '@SUBC basal: an UPDATE, two binaries, worker first and ck-basal restarted last' > "$CARD"
+fi
+cat >> "$CARD" <<EOF
 
 **Card**
 - stage: $STAGE_DIR (both binaries)
@@ -568,8 +614,29 @@ if [ -n "$MIGRATES_ARG" ]; then
 - Rollback is the old binary AND the store backup together, with both binaries restored as a pair. A binary-only rollback refuses to open the newer store: basal_core::Store::open returns "the store's schema is at version N but this build knows only up to M". Stop basal before restoring the store backup; do not let it reopen the store until both old binaries and the backup are restored.
 EOF
 else
-  say "- No schema rise: no store migration or store backup is requested. Roll back both binaries together with place-module.sh's --older mode." >> "$CARD"
+  if [ "$STOP_THE_WORLD" = 1 ]; then
+    say "- No schema rise: no migration snapshot is requested from place-module.sh. Retain the read-only backup below and roll back both binaries together with place-module.sh's --older mode." >> "$CARD"
+  else
+    say "- No schema rise: no store migration or store backup is requested. Roll back both binaries together with place-module.sh's --older mode." >> "$CARD"
+  fi
 fi
+if [ "$STOP_THE_WORLD" = 1 ]; then
+cat >> "$CARD" <<EOF
+
+**Order and restart** (stop-the-world)
+- Measured worker protocol: staged $BUILD_PROTOCOL / live $LIVE_PROTOCOL. Different versions cannot share a running parent: stop basal before either placement, and keep it stopped until both files are replaced.
+1. Back up the store read-only before stopping (retain the directory and sidecar for rollback):
+   \`BACKUP=\$(mktemp -d ~/.local/share/cortexkit/staging/basal-store.XXXXXX) && sqlite3 "file:\$HOME/.local/share/cortexkit/basal/store.db?mode=ro" ".backup '\$BACKUP/store.db'" && (cd "\$BACKUP" && shasum -a 256 store.db > store.db.sha256 && shasum -c store.db.sha256)\`
+2. Stop and disable the module (persists until start); confirm no basal parent or worker remains before placing:
+   \`ck module stop basal\`
+3. Place both binaries without restarting:
+   \`place-module.sh --module basal --staged $(shell_quote "$STAGE_DIR/ck-basal-worker") --marker $(shell_quote "$WORKER_MARKER") --control $(shell_quote "$WORKER_CONTROL") --dest ~/.local/share/cortexkit/bin/ck-basal-worker --no-restart\`
+   \`place-module.sh --module basal --staged $(shell_quote "$STAGE_DIR/ck-basal") --marker $(shell_quote "$BASAL_MARKER") --control $(shell_quote "$BASAL_CONTROL")$MIGRATES_ARG --no-restart\`
+4. Only after both placements succeed, enable and start the module:
+   \`ck module start basal\`
+- The place-module.sh commands are read-only gate runs; the SUBC operator adds \`--place\` to both for actual placement. Never start between placements. If either fails, leave basal stopped and recover the binary pair and matching store backup before starting.
+EOF
+else
 cat >> "$CARD" <<EOF
 
 **Order and restart**
@@ -578,8 +645,17 @@ cat >> "$CARD" <<EOF
 2. Then ck-basal, with the default update restart:
    \`place-module.sh --module basal --staged $(shell_quote "$STAGE_DIR/ck-basal") --marker $(shell_quote "$BASAL_MARKER") --control $(shell_quote "$BASAL_CONTROL")$MIGRATES_ARG\`
 - These commands are read-only gate runs; SUBC adds \`--place\` for placement. Warm workers are spawned by ck-basal, so restarting ck-basal last makes every worker come from the new file. Between the two placements the old parent may spawn a new worker, so this order requires that the worker protocol change is additive: the old parent must decode every message the new worker sends. Check that before placing; a change that is not additive needs basal stopped while both binaries are replaced.
+EOF
+fi
+cat >> "$CARD" <<EOF
 
-**Post-placement check** (mine)
+EOF
+if [ "$STOP_THE_WORLD" = 1 ]; then
+  say '**Post-placement checks**' >> "$CARD"
+else
+  say '**Post-placement check** (mine)' >> "$CARD"
+fi
+cat >> "$CARD" <<EOF
 - \`ck --json provenance basal\`: build_git_sha $SHA, and the observed pid's running image is the placed ck-basal (same inode).
 - a worker's running image is the placed ck-basal-worker (same inode) once a flow runs.
 - BASAL_WORKER_IDENTIFIER=ck-basal-worker sh script/sign-worker.sh verify ~/.local/share/cortexkit/bin/ck-basal-worker passes at the placed path.

@@ -144,6 +144,24 @@ else:
                 b"\x00" + (SHA + "\n" + marker + "\n" + marker + "\n" + control
                           + "\n" + install_control + "\n").encode() + b"\x00")
             (self.live / binary).write_bytes(b"\x00old revision\n" + control.encode() + b"\n\x00")
+        self.write_worker(self.stage, 7, staged=True)
+        self.write_worker(self.live, 7)
+
+    def write_worker(self, directory, protocol, staged=False, response=None, exit_code=0):
+        needles = ([SHA, "new worker", "new worker", "worker control", "refusing to run unconfined"]
+                   if staged else ["old revision", "worker control"])
+        binary = directory / "ck-basal-worker"
+        code = "#!/usr/bin/env python3\n" + "".join("# " + needle + "\n" for needle in needles)
+        code += '''import pathlib, struct, sys
+name = pathlib.Path(sys.argv[0]).name
+assert name == "ck-basal-worker" or name.startswith("ckdev-"), name
+assert sys.stdin.buffer.read() == struct.pack(">IBI", 5, 1, 0)
+'''
+        code += (f"sys.stdout.buffer.write(struct.pack('>IBBII', 10, 105, 3, {protocol}, 0))\n"
+                 if response is None else f"sys.stdout.buffer.write({response!r})\n")
+        code += f"sys.exit({exit_code})\n"
+        binary.write_text(code)
+        binary.chmod(0o755)
 
     def store(self, version):
         path = self.share / "basal/store.db"
@@ -249,6 +267,60 @@ write_card --prepared
             self.assertEqual(cmd[cmd.index("--module") + 1], "basal")
         self.assertIn("Warm workers are spawned by ck-basal", card)
         self.assertIn("requires that the worker protocol change is additive", card)
+
+    def test_protocol_change_selects_stop_the_world(self):
+        self.store(7)
+        for staged, live in [(7, 1), (6, 7), (7, 8), (8, 7)]:
+            with self.subTest(staged=staged, live=live):
+                self.write_worker(self.stage, staged, staged=True)
+                self.write_worker(self.live, live)
+                card = self.success()
+                self.assertIn("a STOP-THE-WORLD UPDATE", card)
+                self.assertIn(f"worker protocol: staged {staged} / live {live}", card)
+                self.assertNotIn("Worker first, without restarting the parent", card)
+                for command in self.commands(card):
+                    self.assertIn("--no-restart", command)
+                self.assertLess(card.index(".backup"), card.index("ck module stop basal"))
+                self.assertLess(card.index("ck module stop basal"), card.index("`place-module.sh"))
+                self.assertGreater(card.index("ck module start basal"), card.rindex("`place-module.sh"))
+
+    def test_matching_protocol_keeps_rolling_update(self):
+        self.store(7)
+        for protocol in [1, 7, 8]:
+            with self.subTest(protocol=protocol):
+                self.write_worker(self.stage, protocol, staged=True)
+                self.write_worker(self.live, protocol)
+                card = self.success()
+                self.assertIn("worker first and ck-basal restarted last", card)
+                self.assertNotIn("STOP-THE-WORLD", card)
+                worker, basal = self.commands(card)
+                self.assertIn("--no-restart", worker)
+                self.assertNotIn("--no-restart", basal)
+
+    def test_stop_the_world_card_golden(self):
+        self.store(6)
+        self.write_worker(self.live, 1)
+        card = self.success()
+        expected = (Path(__file__).parent / "fixtures/stop_the_world_card.md").read_text()
+        expected = (expected.replace("@STAGE@", str(self.stage)).replace("@SHA@", SHA)
+                    .replace("@HOME@", str(self.home)))
+        self.assertEqual(card, expected)
+
+    def test_protocol_measurement_fails_closed(self):
+        self.store(7)
+        for directory in [self.stage, self.live]:
+            for response, exit_code in [(b"", 0), (b"truncated", 0),
+                                        (b"\x00\x00\x00\x0a\x69\x03" + b"\x00" * 8, 0),
+                                        (b"\x00\x00\x00\x0a\x69\x03\x00\x00\x00\x07\x00\x00\x00\x01", 0),
+                                        (None, 17)]:
+                with self.subTest(directory=directory, response=response, exit_code=exit_code):
+                    self.write_binaries()
+                    self.write_worker(directory, 7, staged=directory == self.stage,
+                                      response=response, exit_code=exit_code)
+                    result, card = self.run_card()
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("cannot measure", result.stderr)
+                    self.assertIsNone(card)
 
     def test_marker_refusal_writes_no_card(self):
         self.store(7)
