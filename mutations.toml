@@ -552,6 +552,8 @@ edits = [
   { file = "Cargo.lock", old = "dependencies = [\n \"serde\",\n \"serde_json\",\n \"subc-protocol\",\n]\n", new = "dependencies = [\n \"serde\",\n \"serde_json\",\n \"subc-protocol 0.30.0\",\n]\n" },
   { file = "Cargo.lock", old = "dependencies = [\n \"libc\",\n \"rustix\",\n]\n\n[[package]]\n", new = "dependencies = [\n \"libc\",\n \"rustix\",\n]\n\n[[package]]\nname = \"subc-protocol\"\nversion = \"0.24.1\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"3b0fb1bc9305afe14d1202970b7e361253dba6108525b356a7e10274436bc80d\"\ndependencies = [\n \"serde\",\n \"serde_json\",\n]\n\n[[package]]\n" },
   { file = "Cargo.lock", old = " \"serde\",\n \"serde_json\",\n \"sha2\",\n \"subc-protocol\",\n \"subtle\",\n \"tokio\",\n]\n", new = " \"serde\",\n \"serde_json\",\n \"sha2\",\n \"subc-protocol 0.30.0\",\n \"subtle\",\n \"tokio\",\n]\n" },
+  { file = "Cargo.lock", old = " \"serde_jcs\",\n \"serde_json\",\n \"sha2\",\n \"subc-protocol\",\n", new = " \"serde_jcs\",\n \"serde_json\",\n \"sha2\",\n \"subc-protocol 0.30.0\",\n" },
+  { file = "Cargo.lock", old = " \"cortexkit-role-tool-provider\",\n \"futures-util\",\n \"serde_json\",\n \"subc-protocol\",\n", new = " \"cortexkit-role-tool-provider\",\n \"futures-util\",\n \"serde_json\",\n \"subc-protocol 0.30.0\",\n" },
 ]
 
 [[control]]
@@ -6764,11 +6766,9 @@ only = true
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/schema.rs"
-# Migration 16 (grant losses) is the last migration to rebuild the journal
-# table, so its refusal list is the one the current schema enforces. The list
-# migration 9 created is replaced by it.
-old = "'module_grant_absent','agent_grant_absent')),"
-new = "'module_grant_absent','agent_grant_absent','no_flow_scope')), /* NON-VACUITY BREAK */"
+# Migration 23 rebuilds the journal table, so its refusal list determines which codes the current table accepts.
+old = "'module_grant_absent','agent_grant_absent','sink_audience_unavailable')),"
+new = "'module_grant_absent','agent_grant_absent','sink_audience_unavailable','no_flow_scope')), /* NON-VACUITY BREAK */"
 
 [[control]]
 id = "journal-refusal-check-accepts-an-unlisted-refusal"
@@ -6783,9 +6783,9 @@ only = true
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/schema.rs"
-# Widens the refusal list of migration 16, the governing journal definition.
-old = "'module_grant_absent','agent_grant_absent')),"
-new = "'module_grant_absent','agent_grant_absent','new_reason')), /* NON-VACUITY BREAK */"
+# Widens migration 23's refusal list, the governing journal definition.
+old = "'module_grant_absent','agent_grant_absent','sink_audience_unavailable')),"
+new = "'module_grant_absent','agent_grant_absent','sink_audience_unavailable','new_reason')), /* NON-VACUITY BREAK */"
 
 [[control]]
 id = "flow-target-readiness-preflight-is-disabled"
@@ -12137,11 +12137,13 @@ platforms = ["linux"]
 target = "--lib"
 expect_red = ["codemode::admission::tests::catalog_array_and_exact_entry_keys_are_required"]
 only = false
-file = "crates/basal-core/src/codemode/admission.rs"
-old = '''let entries = value
+file = "crates/basal-core/src/codemode/models.rs"
+# Built-in model tools are appended to the supplied catalog before the combined catalog is validated.
+old = '''let mut entries = catalog
         .as_array()
-        .ok_or_else(|| Refusal::new("invalid_catalog", "catalog must be an array"))?;'''
-new = '''let entries = value.as_array().map(Vec::as_slice).unwrap_or(&[]); // NON-VACUITY BREAK'''
+        .ok_or("catalog must be an array")?
+        .clone();'''
+new = '''let mut entries = catalog.as_array().cloned().unwrap_or_default(); // NON-VACUITY BREAK'''
 
 [[control]]
 id = "codemode-admission-limits-object"
@@ -13961,7 +13963,9 @@ package = "basal-core"
 platforms = ["linux"]
 target = "--lib"
 expect_red = ["codemode::supervisor::tests::a_manual_clock_jump_past_the_deadline_ends_a_sleeping_run"]
-only = true
+# Clock wakeups let sleeping runs notice both wall deadlines and accumulated person-wait budget expiry.
+# Collateral: codemode::supervisor::tests::person_wait_hook_exhausts_one_accumulated_run_budget.
+only = false
 file = "crates/basal-core/src/codemode/supervisor.rs"
 old = 'self.shared.clock.watch(&watcher);'
 new = 'let _ = &watcher; // NON-VACUITY BREAK'
@@ -15386,7 +15390,9 @@ package = "basal-testkit"
 platforms = ["linux"]
 target = "--test flow_scopes"
 expect_red = ["target_mutation_requires_its_own_delegating_grant_but_queries_do_not"]
-only = true
+# A mutation needs its own op's delegating grant; both caught and uncaught refusal tests depend on this check.
+# Collateral: delegation_refusals_do_not_penalize_uncaught_runs.
+only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/authorize.rs"
@@ -15402,7 +15408,17 @@ package = "basal-testkit"
 platforms = ["linux"]
 target = "--test flow_scopes"
 expect_red = ["targeted_call_opens_target_scope_and_ordinary_call_keeps_flow_scope"]
-only = true
+# Target calls must use a target scope instead of the ordinary flow scope, including cuts, caching and refusals.
+# Collateral: distinct_target_default_bound_and_manifest_override,
+# midcall_target_scope_cut_makes_even_keyed_mutations_outcome_unknown,
+# midcall_target_scope_cut_retries_a_query_on_a_new_ref,
+# midcall_target_scope_cut_survives_restart_without_resending_keyed_mutation,
+# replay_reasks_core_and_outside_audience_call_fails_unsent,
+# target_core_refusals_are_typed_unsent_without_retry_or_health_penalty,
+# target_scope_is_shared_across_runs_while_it_covers_both_deadlines,
+# target_scope_principal_refusal_is_a_terminal_carrier_bug, and
+# transient_target_audience_unavailability_defers_until_recovery_or_run_deadline.
+only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/routing.rs"
@@ -15418,7 +15434,11 @@ package = "basal-testkit"
 platforms = ["linux"]
 target = "--test flow_scopes"
 expect_red = ["target_scope_is_shared_across_runs_while_it_covers_both_deadlines"]
-only = true
+# Cached target scopes avoid repeated asks and keep covered runs on the same ref and epoch.
+# Collateral: changed_target_epoch_drops_old_routes_and_invalidates_old_run_pins,
+# distinct_target_default_bound_and_manifest_override, rolling_target_scopes_preserve_each_runs_pinned_ref,
+# and targeted_call_opens_target_scope_and_ordinary_call_keeps_flow_scope.
+only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/target_scope.rs"
@@ -15450,7 +15470,9 @@ package = "basal-testkit"
 platforms = ["linux"]
 target = "--test flow_scopes"
 expect_red = ["target_scope_expiry_and_deadline_extension_reask_and_expired_refs_are_dropped"]
-only = true
+# Checking expiry against the run deadline rolls short-lived scopes without replacing earlier runs' valid pins.
+# Collateral: rolling_target_scopes_preserve_each_runs_pinned_ref.
+only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/target_scope.rs"
@@ -15482,7 +15504,9 @@ package = "basal-testkit"
 platforms = ["linux"]
 target = "--test flow_scopes"
 expect_red = ["closed_target_scope_reasks_and_never_reopens_the_ended_ref"]
-only = true
+# A closed target scope cannot be reused; a query interrupted by its closure must retry on a fresh ref.
+# Collateral: midcall_target_scope_cut_retries_a_query_on_a_new_ref.
+only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/target_scope.rs"
@@ -15530,7 +15554,9 @@ package = "basal-testkit"
 platforms = ["linux"]
 target = "--test flow_scopes"
 expect_red = ["target_core_refusals_are_typed_unsent_without_retry_or_health_penalty"]
-only = true
+# Core's out-of-audience code must remain distinct from a missing audience, including during replay.
+# Collateral: replay_reasks_core_and_outside_audience_call_fails_unsent.
+only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/target_scope.rs"
@@ -15546,7 +15572,12 @@ package = "basal-testkit"
 platforms = ["linux"]
 target = "--test flow_scopes"
 expect_red = ["provider_delegation_unsupported_is_typed_unsent_without_retry_or_health_penalty"]
-only = true
+# Terminal scope and delegation refusals must not enter the transient retry path or become run health failures.
+# Collateral: delegation_refusals_do_not_penalize_uncaught_runs,
+# replay_reasks_core_and_outside_audience_call_fails_unsent,
+# target_core_refusals_are_typed_unsent_without_retry_or_health_penalty, and
+# target_scope_principal_refusal_is_a_terminal_carrier_bug.
+only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/runtime.rs"
@@ -15626,7 +15657,9 @@ package = "basal-testkit"
 platforms = ["linux"]
 target = "--test flow_scopes"
 expect_red = ["midcall_target_scope_cut_makes_even_keyed_mutations_outcome_unknown"]
-only = true
+# A target mutation cut after send has an unknown outcome, so even an idempotency key cannot permit resend.
+# Collateral: midcall_target_scope_cut_survives_restart_without_resending_keyed_mutation.
+only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/runtime.rs"
@@ -15706,7 +15739,11 @@ package = "basal-testkit"
 platforms = ["linux"]
 target = "--test flow_scopes"
 expect_red = ["targeted_call_opens_target_scope_and_ordinary_call_keeps_flow_scope"]
-only = true
+# The journal's target marker preserves targeted-call identity for target counting and replay after deferral.
+# Collateral: distinct_target_default_bound_and_manifest_override,
+# replay_reasks_core_and_outside_audience_call_fails_unsent, and
+# transient_target_audience_unavailability_defers_until_recovery_or_run_deadline.
+only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/journal.rs"
@@ -15820,7 +15857,7 @@ edits = []
 test_file = "script/tests/stage_card.py"
 runner = "command"
 platforms = ["linux"]
-command = ["python3.14", "-m", "unittest", "{test}"]
+command = ["python3", "-m", "unittest", "{test}"]
 test_count_pattern = "Ran {count} test"
 expect_red = ["script.tests.stage_card.StageCardChecks.test_protocol_change_selects_stop_the_world"]
 only = false
