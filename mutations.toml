@@ -15177,8 +15177,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/builtins/git/windows.rs"
-old = "\"core.fsmonitor=false\","
-new = "\"core.fsmonitor=true\", // NON-VACUITY BREAK"
+old = "            \"-c\",\n            \"core.fsmonitor=false\","
+new = "            // NON-VACUITY BREAK: use the repository's fsmonitor hook"
 
 [[control]]
 id = "windows-git-skips-environment-isolation"

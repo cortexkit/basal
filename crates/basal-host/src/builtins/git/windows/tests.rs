@@ -687,6 +687,9 @@ fn plain_git(repo: &Path) -> HardenedCommand {
         .arg("-C")
         .arg(repo)
         .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("TMP", &isolation.directory)
+        .env("TEMP", &isolation.directory)
+        .env("TMPDIR", &isolation.directory)
         .env(
             "GIT_CONFIG_GLOBAL",
             isolation.directory.join("global.config"),
