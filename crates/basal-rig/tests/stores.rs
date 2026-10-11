@@ -48,9 +48,12 @@ fn codemode_evidence_reads_actual_keyed_run_and_owner_scope() {
     assert_eq!(scope["agent_id"], "agent-1");
     assert_eq!(
         scope["selector"],
-        json!({"owner":{"kind":"reserved","module_id":"prefrontal-core"},"ref":"opaque-scope","epoch":9})
+        json!({"owner":{"kind":"reserved","module_id":"prefrontal-core"},"ref":"opaque-scope","scope_epoch":9})
     );
     assert_eq!(scope["catalog"][0]["tool"], "probe_echo");
+    let selector: subc_protocol::scope::ScopeSelector =
+        serde_json::from_value(scope["selector"].clone()).unwrap();
+    assert_eq!(selector.scope_epoch, Some(9));
     assert_eq!(scope["lifecycle"], "terminal");
     assert_eq!(scope["end_settled"], true);
     assert_eq!(core.codemode_scope("other").unwrap(), None);

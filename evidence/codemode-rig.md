@@ -37,6 +37,9 @@ post-close call proves that ended scopes cannot dispatch to the probe.
   `refuses_flow_scope`. Restored probe tests passed. Rows select Linux only.
 - Sidekick reviewed comments in all ten implementation files; flagged wording
   was clarified. No raw rig logs are committed.
+- Native release builds passed for the probe, contract runner, basal module
+  and worker. On macOS 27.0.1 the worker signing/confinement gate passed before
+  any shared-rig operations.
 
 ## Coverage boundaries
 

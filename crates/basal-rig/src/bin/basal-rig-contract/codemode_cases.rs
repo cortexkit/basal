@@ -64,7 +64,8 @@ pub(super) async fn run(rig: &Rig, agent: &Agent, tag: &str) -> Vec<Case> {
         .await;
     success.record("host_scope_identity", evidence(&identity));
     let selector = identity.as_ref().ok().and_then(|s| {
-        Some(json!({"owner":s.get("owner")?,"ref":s.get("ref")?,"epoch":s.get("scope_epoch")?}))
+        let scope: subc_protocol::scope::ScopeSelector = serde_json::from_value(s.clone()).ok()?;
+        scope.scope_epoch.map(|_| s.clone())
     });
     if !success.check(
         "core returns a real agent selector for this registered host session",
