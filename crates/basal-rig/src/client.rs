@@ -202,7 +202,7 @@ impl Client {
             )
             .await;
         let _ = self.consumer.close_handle(&route, Default::default()).await;
-        decode(reply)
+        decode_tool(reply)
     }
 
     /// One `flow` tool call as a head makes it: core's `flow.relay` on a
@@ -302,12 +302,18 @@ fn refusal(error: CallError) -> Refusal {
     }
 }
 
-fn decode(reply: Result<Vec<u8>, CallError>) -> Reply {
+// ToolProvider replies are the provider's JSON itself; only management replies
+// use a result/error envelope. Tool refusals arrive as daemon Error frames.
+fn decode_tool(reply: Result<Vec<u8>, CallError>) -> Reply {
     let bytes = reply.map_err(refusal)?;
-    let value: Value = serde_json::from_slice(&bytes).map_err(|e| Refusal {
+    serde_json::from_slice(&bytes).map_err(|e| Refusal {
         code: "undecodable_reply".into(),
         message: format!("{e}: {}", String::from_utf8_lossy(&bytes)),
-    })?;
+    })
+}
+
+fn decode(reply: Result<Vec<u8>, CallError>) -> Reply {
+    let value = decode_tool(reply)?;
     if let Some(error) = value.get("error") {
         return Err(Refusal {
             code: error["code"].as_str().unwrap_or("unknown").to_owned(),
@@ -320,5 +326,27 @@ fn decode(reply: Result<Vec<u8>, CallError>) -> Reply {
             code: "no_result_envelope".into(),
             message: value.to_string(),
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_replies_are_bare_json_not_management_envelopes() {
+        let result = json!({"status":"completed","value":{"answer":42},"error":"ordinary data"});
+        assert_eq!(
+            decode_tool(Ok(serde_json::to_vec(&result).unwrap())),
+            Ok(result)
+        );
+    }
+
+    #[test]
+    fn tool_refusals_preserve_the_cpu_budget_code() {
+        let error =
+            subc_protocol::ErrorBody::new("budget_exhausted:js_cpu", "run budget exhausted");
+        let refusal = decode_tool(Err(CallError::Module(error))).unwrap_err();
+        assert_eq!(refusal.code, "budget_exhausted:js_cpu");
     }
 }

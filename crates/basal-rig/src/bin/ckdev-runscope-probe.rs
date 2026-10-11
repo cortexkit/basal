@@ -123,7 +123,12 @@ impl ModuleHandler for Probe {
                 message: "expected probe_echo with string text".into(),
             };
         }
-        HandlerOutcome::Response(serde_json::to_vec(&json!({"result":{"text":request.arguments["text"],"agent_id":agent_id,"run_id":run_id}})).unwrap())
+        HandlerOutcome::Response(
+            serde_json::to_vec(
+                &json!({"text":request.arguments["text"],"agent_id":agent_id,"run_id":run_id}),
+            )
+            .unwrap(),
+        )
     }
 }
 

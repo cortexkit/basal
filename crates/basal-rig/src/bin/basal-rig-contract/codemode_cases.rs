@@ -239,9 +239,7 @@ pub(super) async fn run(rig: &Rig, agent: &Agent, args: &Args, tag: &str) -> Vec
     cpu.record("tool_reply", evidence(&reply));
     cpu.check(
         "an infinite loop ends with the JavaScript CPU budget refusal",
-        reply
-            .as_ref()
-            .is_ok_and(|v| v["status"] == "budget_exhausted:js_cpu"),
+        code(&reply) == Some("budget_exhausted:js_cpu"),
         evidence(&reply),
     );
     closed(rig, agent, &key, &mut cpu).await;
