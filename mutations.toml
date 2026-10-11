@@ -18510,3 +18510,19 @@ timeout_s = 600
 file = "crates/basal-host/src/subc_catalog.rs"
 old = "serde_json::from_value(event).ok()"
 new = "Some(EventDeclaration::new(\"fabricated_event\", 99)) // NON-VACUITY BREAK"
+
+[[control]]
+id = "template-dry-run-self-end-not-captured"
+guards = "template dry-run self-ending calls are captured without applying instance lifecycle effects"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["template_dry_run_captures_self_end_with_values_and_bound_instance"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/runtime.rs"
+old = "!self.config.capture_instance_end"
+new = "true /* NON-VACUITY BREAK */"

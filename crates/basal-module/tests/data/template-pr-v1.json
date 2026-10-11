@@ -1,0 +1,8 @@
+{
+  "id": 1001,
+  "number": 42,
+  "state": "closed",
+  "merged": true,
+  "title": "Document the release process",
+  "html_url": "https://github.com/example/project/pull/42"
+}

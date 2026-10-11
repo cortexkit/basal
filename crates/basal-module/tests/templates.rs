@@ -1485,6 +1485,86 @@ fn template_dry_run_at_fires_once_immediately_with_canonical_timestamp() {
 }
 
 #[test]
+fn template_dry_run_captures_self_end_with_values_and_bound_instance() {
+    let f = setup("template-dry-self-end", true);
+    register(
+        &f,
+        &manifest(),
+        "return await instance.end().catch(e => e.data.code);",
+    );
+    let before = f.module.rt.live_instances().unwrap();
+    let reply = dry(
+        &f,
+        &agent(OWNER),
+        json!({"flow_id":"watch","params":{"note":"preview"},"trigger":{}}),
+    )
+    .unwrap();
+    assert_captured_end(&reply);
+    assert_eq!(f.module.rt.live_instances().unwrap(), before);
+
+    let instance = create(&f, OWNER, json!({"note":"real"}), 1, "1h").unwrap();
+    let before = f.module.rt.live_instances().unwrap();
+    let reply = dry(
+        &f,
+        &agent(OWNER),
+        json!({"flow_id":id(&instance),"trigger":{}}),
+    )
+    .unwrap();
+    assert_captured_end(&reply);
+    assert_eq!(f.module.rt.live_instances().unwrap(), before);
+    assert!(
+        f.module
+            .rt
+            .pending_template_events(32)
+            .unwrap()
+            .iter()
+            .all(|e| e.event_name != "flow_instance_ended")
+    );
+    assert_eq!(f.mock.total_sends(), 0);
+}
+
+fn assert_captured_end(reply: &Value) {
+    assert_eq!(reply["summary"]["mode"], "capture");
+    assert_eq!(reply["summary"]["partial"], false);
+    let runs = reply["summary"]["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0]["state"], "succeeded", "{reply:#}");
+    assert_eq!(runs[0]["result"], "captured", "{reply:#}");
+    let calls = runs[0]["calls"].as_array().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["kind"], "instance.end");
+    assert_eq!(calls[0]["action"], "captured");
+    assert_eq!(calls[0]["outcome"]["rejected"], "captured");
+}
+
+#[test]
+fn ordinary_flow_dry_run_still_refuses_self_end() {
+    let f = setup("ordinary-dry-self-end", true);
+    common::install_approved(
+        &f,
+        &Caller::Operator,
+        "return await instance.end().catch(e => e.data.code);",
+        &events_manifest("ordinary"),
+    );
+    let reply = dry(
+        &f,
+        &Caller::Operator,
+        json!({"flow_id":"ordinary","trigger":{}}),
+    )
+    .unwrap();
+    let run = &reply["summary"]["runs"][0];
+    assert_eq!(run["state"], "succeeded", "{reply:#}");
+    assert_eq!(run["result"], "not_a_template_instance");
+    assert_eq!(run["calls"][0]["kind"], "instance.end");
+    assert_eq!(run["calls"][0]["action"], "refused");
+    assert_eq!(
+        run["calls"][0]["outcome"]["rejected"],
+        "not_a_template_instance"
+    );
+    assert_eq!(f.mock.total_sends(), 0);
+}
+
+#[test]
 fn instance_dry_run_uses_bound_values_owner_grants_and_approved_version() {
     let f = setup("instance-dry-bound", true);
     let target = f.dir.join("target");

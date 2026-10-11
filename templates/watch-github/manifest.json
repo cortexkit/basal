@@ -1,0 +1,23 @@
+{
+  "format": 1,
+  "id": "watch-github",
+  "version": 1,
+  "purpose": "Wake the creating agent once for a matching GitHub PR, issue, or published release event.",
+  "trigger": {
+    "events": [
+      { "module": "plexus", "name": "github_pr_changed", "version": 1 },
+      { "module": "plexus", "name": "github_issue_changed", "version": 1 },
+      { "module": "plexus", "name": "github_release_published", "version": 1 }
+    ]
+  },
+  "sinks": [{ "agent": "$self", "digest_max": "wake" }],
+  "ops": [{ "module": "plexus", "op": "events_get" }],
+  "params": {
+    "note": { "type": "string", "max_bytes": 4096 },
+    "repo": { "type": "string", "max_bytes": 200 },
+    "kind": { "type": "enum", "values": ["pr", "issue", "release"] },
+    "number": { "type": "integer", "min": 1, "max": 10000000 },
+    "state": { "type": "enum", "values": ["merged", "closed", "any_change"] }
+  },
+  "template": { "max_per_agent": 100, "max_lifetime": "365d" }
+}
