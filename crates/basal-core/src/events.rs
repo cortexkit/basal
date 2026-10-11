@@ -31,7 +31,25 @@ pub struct Notice {
     pub published_at_ms: i64,
 }
 
+// EventDeclaration currently has no flow-targeting field. Keep the known
+// flow-targeted event contracts here so ingress, fan-out and body replay use
+// the same rule without inventing a declaration wire field.
+const FLOW_TARGETED_EVENTS: &[(&str, &str)] = &[("prefrontal-core", "digest_delivered")];
+
 impl Notice {
+    pub fn target_flow(&self) -> Result<Option<&str>> {
+        let (module, name, _) = self.identity()?;
+        if !FLOW_TARGETED_EVENTS.contains(&(module, name)) {
+            return Ok(None);
+        }
+        self.headers
+            .get("flow_id")
+            .map(String::as_str)
+            .filter(|flow| !flow.is_empty())
+            .map(Some)
+            .ok_or_else(|| CoreError::Invalid("flow-targeted event lacks flow_id header".into()))
+    }
+
     pub fn identity(&self) -> Result<(&str, &str, u32)> {
         let parts: Vec<_> = self.subject.split('.').collect();
         if parts.len() != 6
@@ -77,7 +95,13 @@ pub struct Report {
     pub overflow: usize,
 }
 
-fn matches(manifest: &str, notice: &Notice) -> Result<bool> {
+fn matches(manifest: &str, notice: &Notice, flow_id: &str) -> Result<bool> {
+    if notice
+        .target_flow()?
+        .is_some_and(|target| target != flow_id)
+    {
+        return Ok(false);
+    }
     let (module, name, version) = notice.identity()?;
     let manifest = Manifest::parse(manifest).map_err(|e| CoreError::Corrupt(e.to_string()))?;
     Ok(manifest.trigger.events.as_ref().is_some_and(|events| {
@@ -183,10 +207,10 @@ impl Runtime {
                 .collect::<Result<Vec<_>>>()?;
             let mut report = Report::default();
             for notice in notices {
-                notice.identity()?;
+                notice.target_flow()?;
                 for (flow, first_approved, approved) in &approved {
                     if let Some(approved) = approved
-                        && matches(&approved.manifest, notice)?
+                        && matches(&approved.manifest, notice, flow)?
                     {
                         // Upgrades retain the first approval point, so events
                         // during an upgrade remain eligible for the current code.
@@ -222,7 +246,7 @@ impl Runtime {
                     continue;
                 }
                 let approved = install::approved(tx, &flow)?;
-                if !approved.as_ref().map(|a| matches(&a.manifest, &notice)).transpose()?.unwrap_or(false) {
+                if !approved.as_ref().map(|a| matches(&a.manifest, &notice, &flow)).transpose()?.unwrap_or(false) {
                     tx.execute("UPDATE event_receipts SET state='refused' WHERE rowid=?1", [rowid])?;
                     continue;
                 }
@@ -319,6 +343,18 @@ fn script_trigger(notice: &Notice, body: &[u8]) -> Result<JsonText> {
     .map_err(|e| CoreError::Invalid(e.to_string()))
 }
 
+fn body_targets_run(notice: &Notice, body: &[u8], flow_id: &str) -> bool {
+    match notice.target_flow() {
+        Ok(None) => true,
+        Ok(Some(target)) => {
+            target == flow_id
+                && serde_json::from_slice::<serde_json::Value>(body)
+                    .is_ok_and(|body| body["flow_id"].as_str() == Some(flow_id))
+        }
+        Err(_) => false,
+    }
+}
+
 impl Runtime {
     pub(crate) fn event_preamble(&self, run: &crate::Run, manifest: &Manifest) -> Result<Preamble> {
         use basal_host::{CallClass, CallRequest, Dispatched, TransportError};
@@ -350,6 +386,9 @@ impl Runtime {
             .optional()?)
         })?;
         if let Some((Some(body), _, _)) = &saved {
+            if !body_targets_run(&notice, body, &run.flow_id) {
+                return Ok(mismatch("flow-targeted body does not name the run's flow"));
+            }
             return Ok(Preamble::Ready(script_trigger(&notice, body)?));
         }
         if saved
@@ -424,6 +463,9 @@ impl Runtime {
                     Ok(body) => body,
                     Err(kind) => return Ok(mismatch(kind)),
                 };
+                if !body_targets_run(&notice, &body, &run.flow_id) {
+                    return Ok(mismatch("flow-targeted body does not name the run's flow"));
+                }
                 let trigger = script_trigger(&notice, &body)?;
                 self.store().write(|tx| {
                     tx.execute("UPDATE event_body_journal SET body=?2,digest=?3,retry_at=NULL WHERE run_id=?1", params![run.run_id, body, notice.digest])?;

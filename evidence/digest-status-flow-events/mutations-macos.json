@@ -1,0 +1,109 @@
+{
+  "rustc": "1.99.0",
+  "proofs": [
+    {
+      "control": "digest-status-tag-needs-group",
+      "platform": "macos",
+      "command": "cargo test --locked -p basal-module --test hosts status_tag_without_group_is_refused_before_send -- --exact",
+      "expected_red": "status_tag_without_group_is_refused_before_send",
+      "captured_output": "test status_tag_without_group_is_refused_before_send ... FAILED\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.25s",
+      "green_names": [
+        "closed_sink_dispositions_and_unknown_facts_survive"
+      ],
+      "other_failures": [],
+      "applied_evidence": "crates/basal-core/src/authorize.rs: during: crates/basal-core/src/authorize.rs | 4 ++--\n 1 file changed, 2 insertions(+), 2 deletions(-); after restore: git diff --stat empty",
+      "outcome": "reddened"
+    },
+    {
+      "control": "digest-status-tag-validation",
+      "platform": "macos",
+      "command": "cargo test --locked -p basal-module --test hosts malformed_status_tag_is_refused_before_send -- --exact",
+      "expected_red": "malformed_status_tag_is_refused_before_send",
+      "captured_output": "test malformed_status_tag_is_refused_before_send ... FAILED\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.21s",
+      "green_names": [
+        "closed_sink_dispositions_and_unknown_facts_survive"
+      ],
+      "other_failures": [],
+      "applied_evidence": "crates/basal-core/src/authorize.rs: during: crates/basal-core/src/authorize.rs | 4 ++--\n 1 file changed, 2 insertions(+), 2 deletions(-); after restore: git diff --stat empty",
+      "outcome": "reddened"
+    },
+    {
+      "control": "digest-status-tag-top-level",
+      "platform": "macos",
+      "command": "cargo test --locked -p basal-module --test hosts digest_status_tag_is_top_level_and_absence_preserves_wire_bytes -- --exact",
+      "expected_red": "digest_status_tag_is_top_level_and_absence_preserves_wire_bytes",
+      "captured_output": "test digest_status_tag_is_top_level_and_absence_preserves_wire_bytes ... FAILED\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.26s",
+      "green_names": [
+        "closed_sink_dispositions_and_unknown_facts_survive"
+      ],
+      "other_failures": [],
+      "applied_evidence": "crates/basal-host/src/core_host.rs: during: crates/basal-host/src/core_host.rs | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-); after restore: git diff --stat empty",
+      "outcome": "reddened"
+    },
+    {
+      "control": "digest-status-tag-omission",
+      "platform": "macos",
+      "command": "cargo test --locked -p basal-module --test hosts digest_status_tag_is_top_level_and_absence_preserves_wire_bytes -- --exact",
+      "expected_red": "digest_status_tag_is_top_level_and_absence_preserves_wire_bytes",
+      "captured_output": "test digest_status_tag_is_top_level_and_absence_preserves_wire_bytes ... FAILED\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.27s",
+      "green_names": [
+        "closed_sink_dispositions_and_unknown_facts_survive"
+      ],
+      "other_failures": [],
+      "applied_evidence": "crates/basal-host/src/core_host.rs: during: crates/basal-host/src/core_host.rs | 1 +\n 1 file changed, 1 insertion(+); after restore: git diff --stat empty",
+      "outcome": "reddened"
+    },
+    {
+      "control": "digest-status-tag-replay",
+      "platform": "macos",
+      "command": "cargo test --locked -p basal-module --test hosts journaled_sink_intent_is_byte_identical_after_a_cut -- --exact",
+      "expected_red": "journaled_sink_intent_is_byte_identical_after_a_cut",
+      "captured_output": "test journaled_sink_intent_is_byte_identical_after_a_cut ... FAILED\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 33 filtered out; finished in 0.23s",
+      "green_names": [
+        "closed_sink_dispositions_and_unknown_facts_survive"
+      ],
+      "other_failures": [],
+      "applied_evidence": "crates/basal-core/src/model.rs: during: crates/basal-core/src/model.rs | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-); after restore: git diff --stat empty",
+      "outcome": "reddened"
+    },
+    {
+      "control": "event-flow-target-only",
+      "platform": "macos",
+      "command": "cargo test --locked -p basal-module --test module_events delivered_notice_targets_only_named_flow_and_acks_no_match -- --exact",
+      "expected_red": "delivered_notice_targets_only_named_flow_and_acks_no_match",
+      "captured_output": "test delivered_notice_targets_only_named_flow_and_acks_no_match ... FAILED\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.09s",
+      "green_names": [
+        "no_match_is_acked_without_any_store_row"
+      ],
+      "other_failures": [],
+      "applied_evidence": "crates/basal-core/src/events.rs: during: crates/basal-core/src/events.rs | 4 ++--\n 1 file changed, 2 insertions(+), 2 deletions(-); after restore: git diff --stat empty",
+      "outcome": "reddened"
+    },
+    {
+      "control": "event-flow-target-ingress",
+      "platform": "macos",
+      "command": "cargo test --locked -p basal-module --test module_events delivered_notice_missing_flow_header_is_malformed_and_acked -- --exact",
+      "expected_red": "delivered_notice_missing_flow_header_is_malformed_and_acked",
+      "captured_output": "test delivered_notice_missing_flow_header_is_malformed_and_acked ... FAILED\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.09s",
+      "green_names": [
+        "no_match_is_acked_without_any_store_row"
+      ],
+      "other_failures": [],
+      "applied_evidence": "crates/basal-module/src/events.rs: during: crates/basal-module/src/events.rs | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-); after restore: git diff --stat empty",
+      "outcome": "reddened"
+    },
+    {
+      "control": "event-flow-target-body",
+      "platform": "macos",
+      "command": "cargo test --locked -p basal-module --test event_preamble delivered_body_flow_mismatch_fails_run_before_script -- --exact",
+      "expected_red": "delivered_body_flow_mismatch_fails_run_before_script",
+      "captured_output": "test delivered_body_flow_mismatch_fails_run_before_script ... FAILED\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.16s",
+      "green_names": [
+        "worker_preamble_supplies_verified_json_and_synthetic_capture_calls_nothing_live"
+      ],
+      "other_failures": [],
+      "applied_evidence": "crates/basal-core/src/events.rs: during: crates/basal-core/src/events.rs | 3 ++-\n 1 file changed, 2 insertions(+), 1 deletion(-); after restore: git diff --stat empty",
+      "outcome": "reddened"
+    }
+  ]
+}

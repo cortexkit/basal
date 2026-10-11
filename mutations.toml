@@ -17373,3 +17373,179 @@ edits = [
     {file="crates/basal-module/tests/common/mod.rs",old="pub struct Fixture {\n    pub module: Module,",new="pub struct Fixture {\n    _cleanup: DirectoryCleanup, // NON-VACUITY BREAK\n    pub module: Module,"},
     {file="crates/basal-module/tests/common/mod.rs",old="    _cleanup: DirectoryCleanup,\n}",new="}"},
 ]
+
+[[control]]
+id = "digest-status-group-validation"
+guards = "digest status groups accept only one to four uppercase ASCII letters"
+test_file = "crates/basal-core/src/manifest.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["manifest::tests::status_group_is_one_to_four_uppercase_ascii_letters"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/manifest.rs"
+old = "&& !valid_status_label(group)"
+new = "&& false && !valid_status_label(group) // NON-VACUITY BREAK"
+
+[[control]]
+id = "digest-status-tag-needs-group"
+guards = "a digest status tag without a group is refused before send"
+test_file = "crates/basal-module/tests/hosts.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test hosts"
+expect_red = ["status_tag_without_group_is_refused_before_send"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/authorize.rs"
+old = "if !manifest\n                        .sinks\n                        .iter()\n                        .any(|s| s.agent == target && s.status_group.is_some())"
+new = "if false && !manifest\n                        .sinks\n                        .iter()\n                        .any(|s| s.agent == target && s.status_group.is_some()) // NON-VACUITY BREAK"
+
+[[control]]
+id = "digest-status-tag-validation"
+guards = "malformed digest status tags are refused before send"
+test_file = "crates/basal-module/tests/hosts.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test hosts"
+expect_red = ["malformed_status_tag_is_refused_before_send"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/authorize.rs"
+old = "if !tag\n                        .as_str()\n                        .is_some_and(crate::manifest::valid_status_label)"
+new = "if false && !tag\n                        .as_str()\n                        .is_some_and(crate::manifest::valid_status_label) // NON-VACUITY BREAK"
+
+[[control]]
+id = "digest-status-tag-top-level"
+guards = "digest status tags reach core outside item data"
+test_file = "crates/basal-module/tests/hosts.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test hosts"
+expect_red = ["digest_status_tag_is_top_level_and_absence_preserves_wire_bytes"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_host.rs"
+old = "request[\"status_tag\"] = tag.clone();"
+new = "request[\"item\"][\"data\"][\"status_tag\"] = tag.clone(); // NON-VACUITY BREAK"
+
+[[control]]
+id = "digest-status-tag-omission"
+guards = "untagged digest writes preserve the existing request bytes"
+test_file = "crates/basal-module/tests/hosts.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test hosts"
+expect_red = ["digest_status_tag_is_top_level_and_absence_preserves_wire_bytes"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_host.rs"
+old = "if let Some(tag) = args.get(\"options\").and_then(|o| o.get(\"status_tag\")) {"
+new = "request[\"status_tag\"] = Value::Null; // NON-VACUITY BREAK\n            if let Some(tag) = args.get(\"options\").and_then(|o| o.get(\"status_tag\")) {"
+
+[[control]]
+id = "digest-status-tag-replay"
+guards = "a crash reissue preserves the journaled digest tag"
+test_file = "crates/basal-module/tests/hosts.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test hosts"
+expect_red = ["journaled_sink_intent_is_byte_identical_after_a_cut"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/model.rs"
+old = "self.request.clone().unwrap_or_else(|| self.args.clone())"
+new = "{ let mut value: serde_json::Value = serde_json::from_str(self.request.as_ref().unwrap_or(&self.args).as_str()).unwrap(); if let Some(object) = value.as_object_mut() { object.remove(\"status_tag\"); } JsonText::new(value.to_string()).unwrap() } // NON-VACUITY BREAK"
+
+[[control]]
+id = "event-flow-target-only"
+guards = "flow-targeted notices are not fanned out to other declaring flows"
+test_file = "crates/basal-module/tests/module_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test module_events"
+expect_red = ["delivered_notice_targets_only_named_flow_and_acks_no_match"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/events.rs"
+old = "if notice\n        .target_flow()?\n        .is_some_and(|target| target != flow_id)"
+new = "if false && notice\n        .target_flow()?\n        .is_some_and(|target| target != flow_id) // NON-VACUITY BREAK"
+
+[[control]]
+id = "event-flow-target-header-required"
+guards = "flow-targeted notices without a flow header are malformed even without candidate flows"
+test_file = "crates/basal-core/src/events_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["events::tests::flow_targeted_notice_missing_header_is_refused_without_flows"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/events.rs"
+old = ".ok_or_else(|| CoreError::Invalid(\"flow-targeted event lacks flow_id header\".into()))"
+new = ".map_or(Ok(None), Ok) // NON-VACUITY BREAK"
+
+[[control]]
+id = "event-flow-target-ingress"
+guards = "the reader refuses and acknowledges a malformed flow-targeted notice"
+test_file = "crates/basal-module/tests/module_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test module_events"
+expect_red = ["delivered_notice_missing_flow_header_is_malformed_and_acked"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/events.rs"
+old = "notice.target_flow().map_err(|e| e.to_string())?;"
+new = "notice.identity().map_err(|e| e.to_string())?; // NON-VACUITY BREAK"
+
+[[control]]
+id = "event-flow-target-body"
+guards = "a resolved flow-targeted body must name the run's flow before script startup"
+test_file = "crates/basal-module/tests/event_preamble.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test event_preamble"
+expect_red = ["delivered_body_flow_mismatch_fails_run_before_script"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/events.rs"
+old = "match notice.target_flow() {"
+new = "let _ = (notice, body, flow_id); return true; // NON-VACUITY BREAK\n    #[allow(unreachable_code)] match notice.target_flow() {"
+
+[[control]]
+id = "event-flow-target-body-replay"
+guards = "a journaled event body must still name the run's flow"
+test_file = "crates/basal-core/src/events_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["events::tests::journaled_flow_targeted_body_is_checked_against_run"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/events.rs"
+old = "if let Some((Some(body), _, _)) = &saved {\n            if !body_targets_run(&notice, body, &run.flow_id) {"
+new = "if let Some((Some(body), _, _)) = &saved {\n            if false && !body_targets_run(&notice, body, &run.flow_id) { // NON-VACUITY BREAK"

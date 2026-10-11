@@ -301,8 +301,8 @@
       return callPrimitive(LLM, request);
     },
     sink: {
-      digest(agent, item, action) {
-        return callPrimitive(SINK_DIGEST, { agent, item, action });
+      digest(agent, item, action, options) {
+        return callPrimitive(SINK_DIGEST, { agent, item, action, options });
       },
       status(agent, value) {
         return callPrimitive(SINK_STATUS, { agent, value });

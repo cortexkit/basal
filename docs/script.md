@@ -64,7 +64,7 @@ as any other module query.
 ## Digest items
 
 Sink signatures are unchanged by an install audience:
-`sink.digest(agent, item, action)` and `sink.status(agent, value)`. With no
+`sink.digest(agent, item, action, options)` and `sink.status(agent, value)`. With no
 audience, the recipient must be listed statically in `sinks[].agent` or
 `status[]`. With an audience, the corresponding manifest entry is `$audience`,
 and the script supplies a concrete recipient on every write. For example:
@@ -79,12 +79,27 @@ the approved audience at delivery time. A refusal such as
 `sink_target_not_in_audience` reaches the script unchanged, so it can catch the
 rejection. Membership is not cached at install or decided by the script.
 
-`sink.digest(agent, item, action)` delivers `item` to the agent's digest
+`sink.digest(agent, item, action, options)` delivers `item` to the agent's digest
 through prefrontal-core, which validates it strictly. `action` is `silent`,
 `piggyback` or `wake`; the manifest's `digest_max` is the approved cap. The item has
 these four fields. `data` and `links` may be omitted, and then default to
 empty. Core refuses a missing `title` or `body`, or any field not listed
-here, with `sink_item_invalid`, and the refusal names the field:
+here, with `sink_item_invalid`, and the refusal names the field.
+
+The optional fourth argument may contain `{ status_tag: 'NI' }`. The tag must
+match `[A-Z]{1,4}`; malformed values (including `null`) are refused with
+`status_tag_invalid`. The recipient's digest sink grant must have a
+`status_group`, or basal refuses the write with `status_tag_without_group`
+before preparing or sending a core request. The same checks apply in dry runs
+and to the `$audience` sink grant. To use the default action with a tag, pass
+`undefined` as the third argument.
+
+Basal sends the tag to prefrontal-core as top-level `status_tag`, not in the
+item or its `data`. Without a tag that field is omitted and the wire request
+is unchanged. The journal freezes it with the request, so crash replay resends
+the same bytes.
+
+The item fields are:
 
 | Field | Type | Limit |
 | --- | --- | --- |
@@ -103,7 +118,7 @@ await sink.digest('BASAL', {
   body: 'Commit 0123abc, started 2026-10-09T03:17:00Z.',
   data: { run_id: 123 },
   links: [{ kind: 'url', url: 'https://github.com/cortexkit/basal/actions/runs/123' }],
-}, 'wake');
+}, 'wake', { status_tag: 'NI' });
 ```
 
 ## The script body is not a syntactic boundary

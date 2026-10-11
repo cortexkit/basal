@@ -135,10 +135,14 @@ impl Drop for Server {
     }
 }
 fn runtime(path: &std::path::Path) -> Runtime {
+    runtime_with_catalog(path, MockCatalog::standard())
+}
+
+fn runtime_with_catalog(path: &std::path::Path, catalog: MockCatalog) -> Runtime {
     Runtime::new(
         Arc::new(Store::open(path, Durability { fullfsync: false }).unwrap()),
         Arc::new(MockHost::new()),
-        Arc::new(MockCatalog::standard()),
+        Arc::new(catalog),
         Arc::new(basal_core::NoHooks),
         None,
         Config {
@@ -147,6 +151,129 @@ fn runtime(path: &std::path::Path) -> Runtime {
             ..Default::default()
         },
     )
+}
+
+const DELIVERED_SUBJECT: &str = "ck.account.event.prefrontal-core.digest_delivered.v1";
+
+fn delivered_runtime(path: &std::path::Path) -> Runtime {
+    let catalog = MockCatalog::standard();
+    catalog.set_flow_capable("prefrontal-core", true);
+    catalog.set_event(
+        "prefrontal-core",
+        "digest_delivered",
+        1,
+        basal_host::EventDecl {
+            origin: basal_host::EventOrigin::External,
+            body: basal_host::EventBody::Resolved {
+                resolve_op: basal_host::catalog::EVENT_BODY_OP.into(),
+            },
+        },
+    );
+    catalog.set_op(
+        "prefrontal-core",
+        basal_host::catalog::EVENT_BODY_OP,
+        basal_host::OpDecl {
+            kind: Some(basal_host::OpKind::Query),
+            cause_echo: false,
+            shell_capable: false,
+        },
+    );
+    let rt = runtime_with_catalog(path, catalog);
+    for id in ["a", "b"] {
+        let installed = rt.install(&InstallRequest {
+            script: "return 1;".into(), author: "operator".into(), loop_override: false,
+            manifest: json!({"id":id,"version":1,"purpose":"Receive digest delivery",
+                "trigger":{"events":[{"module":"prefrontal-core","name":"digest_delivered","version":1}]},
+                "ops":[{"module":"prefrontal-core","op":basal_host::catalog::EVENT_BODY_OP}]}).to_string(),
+        }).unwrap();
+        rt.approve(id, 1, &installed.code_hash, "test").unwrap();
+    }
+    rt
+}
+
+#[tokio::test]
+async fn delivered_notice_targets_only_named_flow_and_acks_no_match() {
+    let server = Server::start().await;
+    let rt = delivered_runtime(&server.dir.join("basal.db"));
+    server
+        .publish_with_headers(
+            0,
+            DELIVERED_SUBJECT,
+            std::collections::BTreeMap::from([
+                ("flow_id".into(), "b".into()),
+                ("agent".into(), "SYNAPSE".into()),
+            ]),
+        )
+        .await;
+    let mut consumer = bind(&server.bus, STREAM).await.unwrap();
+    let messages = pull(&consumer).await.unwrap();
+    assert_eq!(messages.len(), 1);
+    let report = commit_batch(rt.clone(), &messages, true).await.unwrap();
+    assert_eq!((report.matched, report.admitted), (1, 1));
+    let flows: Vec<String> = rt
+        .store()
+        .read(|c| {
+            Ok(c.prepare("SELECT flow_id FROM runs")?
+                .query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?)
+        })
+        .unwrap();
+    assert_eq!(flows, ["b"]);
+    let receipts: Vec<String> = rt
+        .store()
+        .read(|c| {
+            Ok(c.prepare("SELECT flow_id FROM event_receipts")?
+                .query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?)
+        })
+        .unwrap();
+    assert_eq!(
+        receipts,
+        ["b"],
+        "other declaring flows are no-match, not backlog"
+    );
+    assert_eq!(consumer.info().await.unwrap().num_ack_pending, 0);
+    server
+        .publish_with_headers(
+            1,
+            DELIVERED_SUBJECT,
+            std::collections::BTreeMap::from([("flow_id".into(), "absent".into())]),
+        )
+        .await;
+    let messages = pull(&consumer).await.unwrap();
+    assert_eq!(
+        commit_batch(rt.clone(), &messages, true)
+            .await
+            .unwrap()
+            .matched,
+        0
+    );
+    assert_eq!(run_count(&rt), 1);
+    assert_eq!(consumer.info().await.unwrap().num_ack_pending, 0);
+}
+
+#[tokio::test]
+async fn delivered_notice_missing_flow_header_is_malformed_and_acked() {
+    let server = Server::start().await;
+    let rt = delivered_runtime(&server.dir.join("basal.db"));
+    server.publish(0, DELIVERED_SUBJECT).await;
+    let mut consumer = bind(&server.bus, STREAM).await.unwrap();
+    let messages = pull(&consumer).await.unwrap();
+    assert_eq!(messages.len(), 1);
+    assert!(
+        basal_module::events::decode(&messages[0])
+            .unwrap_err()
+            .contains("flow_id")
+    );
+    assert_eq!(
+        commit_batch(rt.clone(), &messages, true)
+            .await
+            .unwrap()
+            .matched,
+        0
+    );
+    assert_eq!(run_count(&rt), 0);
+    assert_eq!(consumer.info().await.unwrap().num_ack_pending, 0);
 }
 fn approve(rt: &Runtime, id: &str) {
     let installed=rt.install(&InstallRequest {script:"return 1;".into(), manifest:json!({"id":id,"version":1,"purpose":"Consume retained events","trigger":{"events":[{"module":"plexus","name":"pull_request_review","version":1}]}}).to_string(),author:"local:unverified".into(),loop_override:false}).unwrap();
