@@ -52,12 +52,18 @@ impl RunScopes {
             state.hold_next = false;
             state.held = Some(request.run_id.clone());
             self.changed.notify_all();
-            state = self
+            let (released, timeout) = self
                 .changed
-                .wait_while(state, |state| {
+                .wait_timeout_while(state, std::time::Duration::from_secs(60), |state| {
                     state.held.as_deref() == Some(&request.run_id)
                 })
                 .unwrap();
+            // A handler running this synchronous mock on a Tokio worker can
+            // starve the withdrawal that releases it. Fail the artificial hold
+            // instead of leaving the test runtime blocked forever.
+            drop(released);
+            assert!(!timeout.timed_out(), "held core open was never released");
+            return Ok(opened);
         }
         drop(state);
         Ok(opened)
@@ -80,7 +86,17 @@ impl RunScopes {
     }
 
     pub fn release(&self) {
-        self.state.lock().unwrap().held = None;
+        let mut state = match self.state.lock() {
+            Ok(state) => state,
+            Err(poison) if std::thread::panicking() => {
+                // A failed await_held poisons the lock. Release still has to
+                // unblock providers when a fixture drops during that failure.
+                eprintln!("run-scope fixture: releasing poisoned state during unwinding");
+                poison.into_inner()
+            }
+            Err(poison) => panic!("run-scope fixture state poisoned: {poison}"),
+        };
+        state.held = None;
         self.changed.notify_all();
     }
 

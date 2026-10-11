@@ -3099,8 +3099,8 @@ new = "core_owned"
 
 [[control]]
 id = "the-scope-stamp-on-a-route-s-bind-is-dropped"
-hub = "The daemon's attested scope stamp survives route binding and supplies the agent identity and scope used by scoped model flows"
-hub_targets = ["e2e"]
+hub = "The daemon's attested scope stamp survives route binding and supplies the agent identity and scope used by model flows and codemode admission through the SDK and tool-provider routes"
+hub_targets = ["e2e", "codemode_scope", "tool_provider_conformance"]
 guards = "the scope stamp on a route's bind is dropped"
 test_file = "crates/basal-module/tests/caller_binding.rs"
 runner = "cargo"
@@ -9630,6 +9630,8 @@ build_timeout_s = 3600
 
 [[control]]
 id = "management-fixture-default-starts-a-spare"
+hub = "Management fixtures start no flow workers by default, so dedicated codemode execution leaves the ordinary flow pool unchanged"
+hub_targets = ["codemode"]
 guards = "management fixtures start no worker unless explicitly requested"
 file = "crates/basal-module/tests/common/mod.rs"
 old = "warm_spares: 0,"
@@ -9640,7 +9642,7 @@ runner = "cargo"
 package = "basal-module"
 target = "--test list_contract"
 expect_red = ["management_fixture_starts_no_worker"]
-only = true
+only = false
 platforms = ["macos"]
 timeout_s = 600
 build_timeout_s = 3600
@@ -11083,6 +11085,8 @@ new = '''.map_err(|error| match error { // NON-VACUITY BREAK
 
 [[control]]
 id = "codemode-host-route-register"
+hub = "A live codemode scope registers a usable route key, including the transport's run-scoped tool route"
+hub_targets = ["basal_host"]
 guards = "a codemode route key is silently ignored at registration"
 test_file = "crates/basal-host/tests/flow_scope_routes.rs"
 runner = "cargo"
@@ -11090,7 +11094,7 @@ package = "basal-host"
 platforms = ["linux"]
 target = "--test flow_scope_routes"
 expect_red = ["configure_flow_registers_a_codemode_route_key"]
-only = true
+only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/flow_scope.rs"
@@ -11604,6 +11608,8 @@ timeout_s = 600
 
 [[control]]
 id = "grant-card-engine-retracts-core-card"
+hub = "A superseded grant card is withdrawn through the path that raised it before its local withdrawal obligation is acknowledged"
+hub_targets = ["consent_paths"]
 guards = "withdrawal obligations are sent to core before they are acknowledged locally"
 file = "crates/basal-module/src/engine.rs"
 old = "inner.consent.withdraw_decision_on(&path, &id)"
@@ -11614,7 +11620,7 @@ package = "basal-module"
 platforms = ["linux"]
 target = "--test decisions"
 expect_red = ["repeated_grant_loss_raises_one_card_and_enable_retracts_it_after_restart"]
-only = true
+only = false
 build_timeout_s = 3600
 timeout_s = 600
 
@@ -13561,7 +13567,7 @@ package = "basal-module"
 platforms = ["macos"]
 target = "--test consent_paths"
 expect_red = ["requester_vectors_are_pinned_and_all_three_requests_match_bytes"]
-only = true
+only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/core_consent.rs"
@@ -13775,7 +13781,7 @@ package = "basal-module"
 platforms = ["macos"]
 target = "--test consent_paths"
 expect_red = ["consent_endpoint_cannot_weaken_v2_body_validation"]
-only = true
+only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/core_consent.rs"
@@ -13899,7 +13905,7 @@ package = "basal-module"
 platforms = ["macos"]
 target = "--test consent_paths"
 expect_red = ["answers_on_both_paths_apply_once_and_ack_their_own_owner"]
-only = true
+only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/decisions.rs"
@@ -14042,8 +14048,8 @@ new = '''rlim_cur: (basal_proto::CODEMODE_ADDRESS_SPACE_BYTES + 4096) as libc::r
 
 [[control]]
 id = "s7-codemode-macos-no-address-space-limit"
-hub = "The macOS-only limit prohibition also protects end-to-end codemode worker startup"
-hub_targets = ["codemode"]
+hub = "The macOS-only limit prohibition protects codemode worker startup in pool, SDK, and tool-provider route tests"
+hub_targets = ["codemode", "codemode_scope", "tool_provider_conformance"]
 guards = "macOS codemode launches inherit limits rather than applying the Linux address-space cap"
 test_file = "crates/basal-module/src/process.rs"
 runner = "cargo"
@@ -14051,7 +14057,11 @@ package = "basal-module"
 platforms = ["macos"]
 target = "--lib"
 expect_red = ["process::codemode_limits::macos_codemode_leaves_address_space_limit_inherited"]
-only = true
+only = false
+# Applying RLIMIT_AS prevents macOS workers from starting. Several codemode
+# tests then exhaust their 180-second waits for a provider call; allow their
+# cumulative duration in the broad replay without shortening those waits.
+timeout_s = 1800
 file = "crates/basal-module/src/process.rs"
 old = '''    #[cfg(target_os = "linux")]
     if codemode {'''
@@ -14193,6 +14203,8 @@ new = 'let _ = host; // NON-VACUITY BREAK: retain old connection'
 
 [[control]]
 id = "s7-codemode-handler-blocking-thread"
+hub = "Synchronous admission runs off Tokio workers so SDK descriptions and held core opens cannot starve route requests or withdrawals"
+hub_targets = ["tool_provider_conformance"]
 guards = "SDK admission runs off the Tokio worker, where its describe block_on is legal"
 test_file = "crates/basal-module/tests/codemode_scope.rs"
 runner = "cargo"
@@ -14200,7 +14212,8 @@ package = "basal-module"
 platforms = ["linux"]
 target = "--test codemode_scope"
 expect_red = ["codemode_handler_attests_via_real_sdk_and_replaces_the_describe_connection"]
-only = true
+only = false
+timeout_s = 1800
 file = "crates/basal-module/src/serve.rs"
 old = '''tokio::task::spawn_blocking(move || {
             codemode.begin_guarded(&context, &request, || cancellation.is_cancelled())

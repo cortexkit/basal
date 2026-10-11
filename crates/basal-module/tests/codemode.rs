@@ -29,7 +29,17 @@ struct Core {
 
 impl Core {
     fn release(&self) {
-        self.state.lock().unwrap().1 = true;
+        let mut state = match self.state.lock() {
+            Ok(state) => state,
+            Err(poison) if std::thread::panicking() => {
+                // A failed wait asserts while holding this lock. Teardown must
+                // release blocked providers without hiding that failure in an abort.
+                eprintln!("codemode fixture: releasing poisoned state during unwinding");
+                poison.into_inner()
+            }
+            Err(poison) => panic!("codemode fixture state poisoned: {poison}"),
+        };
+        state.1 = true;
         self.changed.notify_all();
     }
     fn wait_sent(&self, count: usize) {
