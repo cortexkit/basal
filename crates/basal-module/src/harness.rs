@@ -239,20 +239,18 @@ fn bind_request(handle: RouteHandle, who: &Value) -> RouteBindRequest {
         Value::Object(o) if o.contains_key("agent") => {
             let agent = o.get("agent").and_then(Value::as_str).map(str::to_owned);
             let attributes = ScopeAttributes::new().with_agent_id(agent);
-            request
-                .with_principal(Principal::Direct)
-                .with_scope(ScopeStamp {
-                    owner: Principal::Reserved {
+            request.with_principal(Principal::Direct).with_scope(
+                ScopeStamp::new(
+                    Principal::Reserved {
                         module_id: CORE_MODULE.into(),
                     },
-                    scope_ref: "harness-session".into(),
-                    scope_epoch: 1,
-                    kind: ScopeKind::Head,
-                    parent: None,
-                    parent_state: None,
-                    attributes,
-                    owner_authorized: true,
-                })
+                    "harness-session",
+                    1,
+                    ScopeKind::Head,
+                )
+                .with_attributes(attributes)
+                .with_owner_authorized(true),
+            )
         }
         Value::Object(o) if o.contains_key("module") => {
             request.with_principal(Principal::Reserved {

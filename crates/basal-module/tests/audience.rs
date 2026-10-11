@@ -63,19 +63,18 @@ fn audience_op_requires_verified_unscoped_module_route() {
             );
         }
     }
-    let scope = subc_protocol::scope::ScopeStamp {
-        owner: Principal::Reserved {
+    let scope = subc_protocol::scope::ScopeStamp::new(
+        Principal::Reserved {
             module_id: "prefrontal-core".into(),
         },
-        scope_ref: "s".into(),
-        scope_epoch: 1,
-        kind: subc_protocol::scope::ScopeKind::Head,
-        parent: None,
-        parent_state: None,
-        attributes: subc_protocol::scope::ScopeAttributes::new()
-            .with_agent_id(Some("SYNAPSE".into())),
-        owner_authorized: true,
-    };
+        "s",
+        1,
+        subc_protocol::scope::ScopeKind::Head,
+    )
+    .with_attributes(
+        subc_protocol::scope::ScopeAttributes::new().with_agent_id(Some("SYNAPSE".into())),
+    )
+    .with_owner_authorized(true);
     let scoped = caller::from_route(
         Some(&Principal::Reserved {
             module_id: "plexus".into(),

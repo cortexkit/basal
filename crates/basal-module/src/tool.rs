@@ -1,8 +1,10 @@
 //! Basal's provider surface. Only the route stamp supplies caller authority;
 //! the model supplies a program, a one-line description and lower limits.
 
+use cortexkit_role_tool_provider::CallMode;
 use cortexkit_role_tool_provider::catalog::{
-    CatalogAnswer, CatalogRequest, CatalogTool, composition_digest, schema_digest,
+    CatalogAnswer, CatalogRequest, CatalogTool, check_modes, composition_digest, schema_digest,
+    serves_call_mode,
 };
 use serde_json::{Value, json};
 use subc_protocol::{ErrorBody, Principal, scope::ScopeStamp};
@@ -31,7 +33,26 @@ pub fn catalog_tool() -> CatalogTool {
     tool.description = Some(DESCRIPTION.into());
     tool.reply =
         Some(serde_json::from_value(json!({"max_ms":2_520_000})).expect("static reply deadline"));
+    let tool = tool.with_modes(vec![CallMode::Classic]);
+    check_modes(&tool).expect("static codemode call modes");
     tool
+}
+
+pub fn check_call_mode(name: &str, mode: &CallMode) -> Result<(), ErrorBody> {
+    // Role operations are metadata and custody operations, not catalog tools.
+    // Unknown bind modes still fail closed, even on those operations.
+    if matches!(mode, CallMode::Unknown(_))
+        || (name == "codemode" && !serves_call_mode(&catalog_tool(), mode))
+    {
+        let mode = serde_json::to_value(mode).expect("call mode wire spelling");
+        let spelling = mode.as_str().expect("call mode is a string");
+        return Err(ErrorBody::new(
+            cortexkit_role_tool_provider::errors::CALL_MODE_UNSUPPORTED,
+            format!("tool {name:?} does not serve mode {spelling}"),
+        )
+        .with_detail(json!({"tool":name,"mode":mode})));
+    }
+    Ok(())
 }
 
 pub fn describe() -> Value {
@@ -106,6 +127,7 @@ pub struct Context {
     pub principal: Principal,
     pub scope: Option<ScopeStamp>,
     pub bind_identity: subc_protocol::BindIdentity,
+    pub call_mode: CallMode,
 }
 
 impl Context {

@@ -53,18 +53,16 @@ fn flags() -> Flags {
 }
 
 fn route_bind_with_future_scope_field() -> Vec<u8> {
-    let scope = ScopeStamp {
-        owner: Principal::Reserved {
+    let scope = ScopeStamp::new(
+        Principal::Reserved {
             module_id: "prefrontal-core".into(),
         },
-        scope_ref: "scope-1".into(),
-        scope_epoch: 1,
-        kind: ScopeKind::Head,
-        parent: None,
-        parent_state: None,
-        attributes: ScopeAttributes::new().with_agent_id(Some("SYNAPSE".into())),
-        owner_authorized: true,
-    };
+        "scope-1",
+        1,
+        ScopeKind::Head,
+    )
+    .with_attributes(ScopeAttributes::new().with_agent_id(Some("SYNAPSE".into())))
+    .with_owner_authorized(true);
     let request = ModuleControlRequest::RouteBind {
         route_channel: 7,
         epoch: 1,
@@ -77,6 +75,7 @@ fn route_bind_with_future_scope_field() -> Vec<u8> {
         role_versions: None,
         admission_facts: None,
         scope: Some(scope),
+        call_mode: None,
     };
     let mut value = serde_json::to_value(request).expect("encode valid route bind");
     value["scope"]["attributes"]["future_scope_fact"] = json!("future daemon value");
