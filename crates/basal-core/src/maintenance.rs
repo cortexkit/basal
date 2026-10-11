@@ -46,14 +46,18 @@ impl Runtime {
             .min())
     }
 
-    /// Whether basal has any install card or operator decision card still
-    /// waiting for an answer. The consent poller reads this from the store, not
-    /// from memory, so it stays correct across a restart.
+    /// Whether basal has any operator decision card still waiting for an
+    /// answer. Install cards instead read status when core signals a committed
+    /// decision. The operator-answer poller reads durable inventory so it stays
+    /// correct across a restart.
     pub fn has_open_cards(&self) -> Result<bool> {
-        self.store().read(|c| Ok(c.query_row(
-            "SELECT EXISTS(SELECT 1 FROM install_cards WHERE state='pending') OR EXISTS(SELECT 1 FROM decision_cards WHERE state='open')",
-            [], |r| r.get(0),
-        )?))
+        self.store().read(|c| {
+            Ok(c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM decision_cards WHERE state='open')",
+                [],
+                |r| r.get(0),
+            )?)
+        })
     }
 }
 

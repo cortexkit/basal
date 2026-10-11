@@ -174,16 +174,18 @@ impl Rig {
                 json!({"script":script,"manifest":manifest().to_string()}),
             )
             .expect("install");
-        let flow = self.fake.calls("elicitation.request")[0]["params"]["flow_install"].clone();
-        self.fake.enqueue(
-            "elicitation.answers",
-            vec![Ok(json!({"records":[{"state":"answered","answered_choice_id":"approve","flow_install":flow}],"cursor":0}))],
-        );
-        self.consent.poll_once().expect("approval applied");
+        let flow = self.fake.calls("flow.install_request")[0]["params"]["flow_install"].clone();
         // Core holds the install it approved, so the install gate basal asks
         // before every activation finds the version active.
         let version = flow["version"].as_i64().expect("version");
         self.fake.approve_install(FLOW, version);
+        self.m()
+            .handle(
+                &Caller::Core,
+                "flow.install_decided",
+                json!({"flow_id":FLOW,"version":version,"attempt":1}),
+            )
+            .expect("approval applied");
     }
 
     fn admit(&self, trigger: &str) -> Option<String> {

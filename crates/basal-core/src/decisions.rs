@@ -965,7 +965,7 @@ impl Runtime {
 
     pub fn has_open_cards_on(&self, path: &basal_host::DecisionPath) -> Result<bool> {
         self.store().read(|c| Ok(c.query_row(
-            "SELECT EXISTS(SELECT 1 FROM decision_cards WHERE state='open' AND COALESCE(consent_path,'legacy')=?1) OR (?1='legacy' AND EXISTS(SELECT 1 FROM install_cards WHERE state='pending'))",
+            "SELECT EXISTS(SELECT 1 FROM decision_cards WHERE state='open' AND COALESCE(consent_path,'legacy')=?1)",
             [path.key()], |r| r.get(0),
         )?))
     }

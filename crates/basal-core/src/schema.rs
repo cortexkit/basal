@@ -323,7 +323,38 @@ ALTER TABLE installs ADD COLUMN revoked_reason TEXT;
         version: 24,
         statements: INSTALL_POLICY,
     },
+    Migration {
+        version: 25,
+        statements: INSTALL_REQUEST,
+    },
 ];
+
+// An install card is identified by the flow, version and core's attempt number.
+// Old local requests never received that number. Keep their approval history,
+// leaving the attempt null rather than inventing an identity for core's card.
+const INSTALL_REQUEST: &str = r#"
+CREATE TABLE install_cards_new (
+    card_id TEXT PRIMARY KEY,
+    flow_id TEXT NOT NULL,
+    version INTEGER NOT NULL CHECK (version >= 1),
+    code_hash BLOB NOT NULL CHECK (length(code_hash) = 32),
+    author TEXT NOT NULL,
+    card TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('pending','approved','rejected','stale','declined','expired')),
+    decided_by TEXT,
+    created_at INTEGER NOT NULL,
+    decided_at INTEGER,
+    attempt INTEGER CHECK (attempt >= 1),
+    UNIQUE (flow_id, version),
+    UNIQUE (flow_id, version, attempt),
+    FOREIGN KEY (flow_id, version) REFERENCES installs (flow_id, version),
+    CHECK ((state = 'pending') = (decided_by IS NULL))
+);
+INSERT INTO install_cards_new SELECT *, NULL FROM install_cards;
+DROP TABLE install_cards;
+ALTER TABLE install_cards_new RENAME TO install_cards;
+ALTER TABLE installs DROP COLUMN card_confirmed;
+"#;
 
 // Before policy installs existed every local card represented the consent
 // path. Preserve that ownership on upgrade; new cards start unconfirmed.

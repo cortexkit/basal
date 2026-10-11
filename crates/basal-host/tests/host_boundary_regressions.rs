@@ -139,13 +139,13 @@ fn core_dispatch_reads_scope_capability_and_op_from_one_snapshot() {
     );
 }
 #[derive(Default)]
-struct Sink(Mutex<Vec<DecisionEvent>>);
+struct Sink(Mutex<Vec<DecisionAnswer>>);
 impl DecisionSink for Sink {
-    fn decide(&self, event: &DecisionEvent) -> Result<(), SinkError> {
-        self.0.lock().unwrap().push(event.clone());
-        Ok(())
+    fn decide(&self, _: &DecisionEvent) -> Result<(), SinkError> {
+        panic!("install decisions must not arrive on the answer feed")
     }
-    fn answer(&self, _: &DecisionAnswer) -> Result<(), SinkError> {
+    fn answer(&self, answer: &DecisionAnswer) -> Result<(), SinkError> {
+        self.0.lock().unwrap().push(answer.clone());
         Ok(())
     }
 }
@@ -153,8 +153,8 @@ impl DecisionSink for Sink {
 fn bad_answer_does_not_block_later_valid_decisions_or_acknowledge_the_bad_one() {
     let wire = Arc::new(Wire::default());
     wire.pages.lock().unwrap().push_back(json!({"cursor":2,"records":[
-        {"state":"unknown","flow_install":{}},
-        {"state":"answered","answered_choice_id":"approve","flow_install":{"flow_id":"flow","version":1,"code_hash":"a".repeat(64)}}
+        {"state":"unknown","flow_decision":{}},
+        {"elicitation_id":"el-valid","state":"answered","answered_choice_id":"reenable","flow_decision":{"decision":"reenable","flow_id":"flow","version":1}}
     ]}));
     let sink = Arc::new(Sink::default());
     let consent = CoreConsent::new(wire.clone());

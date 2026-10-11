@@ -68,19 +68,18 @@ fn gated_with_options(
     (f, consent)
 }
 
-/// Installs the flow as the operator and approves its card through core's
-/// answers. `in_core` says whether core then holds the install, as it does
-/// after a real approval.
-fn install_approved(f: &common::Fixture, fake: &Fake, consent: &CoreConsent, in_core: bool) {
-    common::install(f, &Caller::Operator, SCRIPT, &manifest());
-    let card = fake.calls("elicitation.request")[0]["params"]["flow_install"].clone();
-    fake.enqueue(
-        "elicitation.answers",
-        vec![Ok(
-            json!({"records":[{"state":"answered","answered_choice_id":"approve","flow_install":card}],"cursor":1}),
-        )],
-    );
-    consent.poll_once().expect("decision applied");
+/// Seeds local approval so these tests isolate activation-time status checks.
+/// `in_core` says whether core also holds the approved install.
+fn install_approved(f: &common::Fixture, fake: &Fake, _consent: &CoreConsent, in_core: bool) {
+    let reply = common::install(f, &Caller::Operator, SCRIPT, &manifest());
+    f.module
+        .rt
+        .decide_card(
+            reply["card_id"].as_str().unwrap(),
+            basal_core::cards::Decision::Approve,
+            "fixture",
+        )
+        .unwrap();
     if in_core {
         fake.approve_install(FLOW, 1);
     }
@@ -213,16 +212,17 @@ fn a_core_revoke_raises_no_reenable_card_and_a_new_approval_brings_the_flow_back
 
     let mut v2 = manifest();
     v2["version"] = json!(2);
-    common::install(&f, &Caller::Operator, "return 2;", &v2);
-    let card = fake.calls("elicitation.request")[1]["params"]["flow_install"].clone();
+    let reply = common::install(&f, &Caller::Operator, "return 2;", &v2);
+    let card = fake.calls("flow.install_request")[1]["params"]["flow_install"].clone();
     assert_eq!(card["version"], 2);
-    fake.enqueue(
-        "elicitation.answers",
-        vec![Ok(
-            json!({"records":[{"state":"answered","answered_choice_id":"approve","flow_install":card}],"cursor":2}),
-        )],
-    );
-    consent.poll_once().expect("decision applied");
+    f.module
+        .rt
+        .decide_card(
+            reply["card_id"].as_str().unwrap(),
+            basal_core::cards::Decision::Approve,
+            "fixture",
+        )
+        .unwrap();
     fake.approve_install(FLOW, 2);
     let listed = list_entry(&f);
     assert_eq!(listed["state"], "enabled", "{listed:#}");
@@ -244,6 +244,20 @@ fn unknown_in_core_cancels_the_run() {
     let run_id = common::admit(&f, FLOW, "one");
     f.module.engine.run_until_idle(20).expect("idle");
     assert_cancelled_and_unapproved(&f, &run_id);
+}
+
+#[test]
+fn unapproved_core_states_close_the_activation_gate_like_unknown() {
+    for state in ["pending", "declined", "expired"] {
+        let fake = Fake::new();
+        let (f, consent) = gated(&fake, "gate-not-approved");
+        install_approved(&f, &fake, &consent, true);
+        fake.enqueue("flow.install_status", vec![Ok(json!({"state":state,"code_hash":basal_core::ids::hex(&basal_core::ids::code_hash(SCRIPT, &manifest().to_string()))}))]);
+        let run = common::admit(&f, FLOW, "one");
+        f.module.engine.run_until_idle(20).unwrap();
+        assert_cancelled_and_unapproved(&f, &run);
+        assert_eq!(status_calls(&fake).len(), 1);
+    }
 }
 
 /// Core unreachable: the run stays pending, the engine's passes do not ask
@@ -305,8 +319,8 @@ fn an_undecodable_reply_defers_the_run() {
 }
 
 /// Core's reply decodes only as `{state, code_hash}` with `state` one of
-/// `active`, `revoked` (each with a 64-digit lowercase hex hash) or
-/// `unknown` (with a null hash); a refusal is no answer.
+/// `active`, `revoked`, `pending`, `declined`, `expired` (each with a
+/// 64-digit lowercase hex hash) or `unknown` (with a null hash).
 #[test]
 fn install_status_replies_decode_strictly() {
     let hash = "0123456789abcdef".repeat(4);
@@ -327,6 +341,38 @@ fn install_status_replies_decode_strictly() {
         decode_install_status(&json!({"state":"unknown","code_hash":null})),
         Ok(InstallStatus::Unknown)
     );
+    for (state, expected) in [
+        (
+            "pending",
+            InstallStatus::Pending {
+                code_hash: hash.clone(),
+            },
+        ),
+        (
+            "declined",
+            InstallStatus::Declined {
+                code_hash: hash.clone(),
+            },
+        ),
+        (
+            "expired",
+            InstallStatus::Expired {
+                code_hash: hash.clone(),
+            },
+        ),
+    ] {
+        assert_eq!(
+            decode_install_status(&json!({"state":state,"code_hash":hash,"attempt":1})),
+            Ok(expected)
+        );
+        for bad in [
+            json!({"state":state}),
+            json!({"state":state,"code_hash":null}),
+            json!({"state":state,"code_hash":"bad"}),
+        ] {
+            assert!(decode_install_status(&bad).is_err());
+        }
+    }
     for bad in [
         json!({"state":"active"}),
         json!({"state":"active","code_hash":null}),
@@ -360,19 +406,19 @@ fn placement_is_sent_only_when_the_manifest_states_one() {
     let fake = Fake::new();
     let (f, _consent) = gated(&fake, "gate-wire-placement");
     common::install(&f, &Caller::Operator, SCRIPT, &manifest());
-    let sent = fake.calls("elicitation.request")[0]["params"]["flow_install"].clone();
+    let sent = fake.calls("flow.install_request")[0]["params"]["flow_install"].clone();
     assert!(sent.get("placement").is_none(), "{sent:#}");
 
     let mut placed = manifest();
     placed["id"] = json!("placed-flow");
     placed["placement"] = json!("machine:local");
     common::install(&f, &Caller::Operator, SCRIPT, &placed);
-    let sent = fake.calls("elicitation.request")[1]["params"]["flow_install"].clone();
+    let sent = fake.calls("flow.install_request")[1]["params"]["flow_install"].clone();
     assert_eq!(sent["placement"], "machine:local");
 
-    let mut empty = fake.calls("elicitation.request")[1]["params"].clone();
+    let mut empty = fake.calls("flow.install_request")[1]["params"].clone();
     empty["flow_install"]["placement"] = json!("");
-    let refused = fake.management(CORE, "elicitation.request", empty);
+    let refused = fake.management(CORE, "flow.install_request", empty);
     assert!(
         matches!(&refused, Err(WireError::Refused { code, .. }) if code == "elicitation_invalid_request"),
         "{refused:?}"

@@ -42,6 +42,11 @@ pub const OPERATIONS: &[(&str, ManagementOperationKind, &str)] = &[
         "Validate a flow version, run its capture-only dry run and raise its consent card; returns the pending install.",
     ),
     (
+        "flow.install_decided",
+        ManagementOperationKind::Mutate,
+        "Recheck core's install status after a card decision; prefrontal-core only, idempotent.",
+    ),
+    (
         "flow.dry_run",
         ManagementOperationKind::Query,
         "Run a flow against a schedule window or a synthetic trigger in an isolated scratch store and return the trace of every call and sink write.",

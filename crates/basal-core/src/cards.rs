@@ -2,12 +2,10 @@
 //! approving it.
 //!
 //! `flow.install` validates a version, records it, runs its capture-only dry
-//! run and raises a card on the consent plane. The decision comes back later,
-//! through the consent interface, maybe after a restart, maybe more than
-//! once. So the card is a durable record keyed by a card id derived from the
-//! exact version it shows (flow, version and code hash): raising the same
-//! version again finds the same card, and a decision is applied at most once,
-//! in the same transaction as the approval it causes.
+//! run and asks core to authorize it. Core's card identity (flow, version and
+//! attempt) is saved when core replies. Decision hints cause a status read,
+//! never an approval on their own. The local request id still binds the exact
+//! bytes, and approval and card settlement commit in the same transaction.
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
@@ -26,6 +24,8 @@ pub enum CardState {
     /// until a newer one was approved).
     Approved,
     Rejected,
+    Declined,
+    Expired,
     /// An approval that arrived after a newer version of the flow had
     /// already been approved. Approving it would roll the flow back, so it
     /// changed nothing.
@@ -38,6 +38,8 @@ impl CardState {
             Self::Pending => "pending",
             Self::Approved => "approved",
             Self::Rejected => "rejected",
+            Self::Declined => "declined",
+            Self::Expired => "expired",
             Self::Stale => "stale",
         }
     }
@@ -47,6 +49,8 @@ impl CardState {
             "pending" => Ok(Self::Pending),
             "approved" => Ok(Self::Approved),
             "rejected" => Ok(Self::Rejected),
+            "declined" => Ok(Self::Declined),
+            "expired" => Ok(Self::Expired),
             "stale" => Ok(Self::Stale),
             other => Err(CoreError::Corrupt(format!("card state {other:?}"))),
         }
@@ -67,6 +71,9 @@ pub struct CardRecord {
     pub card: String,
     pub state: CardState,
     pub decided_by: Option<String>,
+    /// The attempt number core returned with this flow id and version. Together
+    /// they identify the displayed install card; absent before a card reply.
+    pub attempt: Option<i64>,
 }
 
 /// The decision on a card.
@@ -95,7 +102,8 @@ pub fn card_id(flow_id: &str, version: u32, code_hash: &[u8; 32]) -> String {
     format!("card:{flow_id}:v{version}:{hex}")
 }
 
-const COLUMNS: &str = "card_id, flow_id, version, code_hash, author, card, state, decided_by";
+const COLUMNS: &str =
+    "card_id, flow_id, version, code_hash, author, card, state, decided_by, attempt";
 
 fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<CardRecord>> {
     let card_id: String = row.get(0)?;
@@ -117,6 +125,7 @@ fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<CardRecord>> {
             card,
             state: CardState::parse(&state)?,
             decided_by,
+            attempt: row.get(8)?,
         })
     })())
 }
