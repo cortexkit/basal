@@ -23,6 +23,7 @@ fn error(e: WireError) -> BrocaError {
             detail,
         },
         WireError::Unknown(detail)
+        | WireError::ScopeCut(detail)
         | WireError::TimedOut(detail)
         | WireError::Unreadable(detail) => BrocaError::Unavailable {
             proven_unsent: false,

@@ -248,7 +248,7 @@ pub(crate) fn validate_inner(
         }
     }
     let reads_text = manifest.facts.as_ref().is_some_and(|f| f.text);
-    for OpRef { module, op } in &manifest.ops {
+    for OpRef { module, op, .. } in &manifest.ops {
         if module == basal_host::subc_catalog::CORE && !catalog.supports_flow_scopes(module) {
             return Err(InstallError::FlowScopeUnsupported {
                 module: module.clone(),

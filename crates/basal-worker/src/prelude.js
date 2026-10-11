@@ -31,6 +31,8 @@
   const ObjectDefineProperty = Object.defineProperty;
   const ObjectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
   const ObjectGetPrototypeOf = Object.getPrototypeOf;
+  const ObjectKeys = Object.keys;
+  const ObjectHasOwn = Object.hasOwn;
   const ReflectApply = Reflect.apply;
   const ReflectConstruct = Reflect.construct;
   const ReflectOwnKeys = Reflect.ownKeys;
@@ -276,10 +278,17 @@
 
   const api = {
     ops: {
-      call(module, op, args) {
+      call(module, op, args, options) {
         requireName(module, 'module');
         requireName(op, 'op');
-        return register(issueOp(module, op, encodeArgs(args)));
+        if (options !== undefined) {
+          if (options === null || typeof options !== 'object' || ObjectKeys(options).length !== 1 || !ObjectHasOwn(options, 'for')) {
+            throw new TypeErrorCtor('call options must contain only for');
+          }
+          requireName(options.for, 'for');
+          return register(issueOp(module, op, encodeArgs({for: options.for, args}), true));
+        }
+        return register(issueOp(module, op, encodeArgs(args), false));
       },
     },
     facts(agent, options) {

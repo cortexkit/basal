@@ -146,7 +146,9 @@ impl MockHost {
                 },
                 _ => ready(Settlement::Fulfilled, call.args.clone()),
             },
-            CallKind::Op { .. } => ready(Settlement::Fulfilled, call.args.clone()),
+            CallKind::Op { .. } | CallKind::OpFor { .. } => {
+                ready(Settlement::Fulfilled, call.args.clone())
+            }
             CallKind::Primitive(p) => match p {
                 Primitive::Llm => Answer::LongRunning,
                 Primitive::Facts => ready(

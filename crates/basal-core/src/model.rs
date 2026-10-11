@@ -174,6 +174,7 @@ pub fn parse_settlement(s: &str) -> Result<Settlement> {
 pub fn kind_columns(kind: &CallKind) -> Result<(i64, Option<&str>, Option<&str>)> {
     Ok(match kind {
         CallKind::Op { module, op } => (0, Some(module.as_str()), Some(op.as_str())),
+        CallKind::OpFor { module, op } => (0, Some(module.as_str()), Some(op.as_str())),
         CallKind::Primitive(p) => (i64::from(p.code()), None, None),
         CallKind::Tool { .. } => {
             return Err(CoreError::Corrupt(
@@ -233,11 +234,13 @@ pub struct CallRow {
     /// or core sink/facts request) alongside the intent, so re-issues do not
     /// reconstruct the request from script arguments or a new clock sample.
     pub request: Option<JsonText>,
+    /// A daemon scope close cut this call after it may have been sent.
+    pub scope_cut: bool,
 }
 
 /// The columns [`CallRow::from_row`] expects, in order.
 pub const CALL_COLUMNS: &str = "position, kind_code, module, op, args, args_digest, \
-    idempotency_key, class, dispatch, attempts, handle, settlement, value, delivery_order, request";
+    idempotency_key, class, dispatch, attempts, handle, settlement, value, delivery_order, request, targeted, scope_cut";
 
 impl CallRow {
     pub fn from_row(row: &Row<'_>) -> rusqlite::Result<Result<Self>> {
@@ -256,6 +259,8 @@ impl CallRow {
         let value: Option<String> = row.get(12)?;
         let order: Option<i64> = row.get(13)?;
         let request: Option<String> = row.get(14)?;
+        let targeted: bool = row.get(15)?;
+        let scope_cut: bool = row.get(16)?;
         Ok((|| {
             let outcome = match (settlement, value, order) {
                 (Some(s), Some(v), Some(o)) => Some(RecordedOutcome {
@@ -268,7 +273,10 @@ impl CallRow {
             };
             Ok(CallRow {
                 position: to_u64(position, "position")?,
-                kind: kind_from_columns(code, module, op)?,
+                kind: match kind_from_columns(code, module, op)? {
+                    CallKind::Op { module, op } if targeted => CallKind::OpFor { module, op },
+                    kind => kind,
+                },
                 args: json(args, "arguments")?,
                 args_digest: ArgsDigest(digest(args_digest)?),
                 idempotency_key: key,
@@ -279,6 +287,7 @@ impl CallRow {
                 handle,
                 outcome,
                 request: request.map(|r| json(r, "request")).transpose()?,
+                scope_cut,
             })
         })())
     }

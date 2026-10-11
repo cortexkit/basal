@@ -1381,10 +1381,10 @@ build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/schema.rs"
 # Later migrations rebuild the journal table with their own copy of this
-# constraint. Migration 16 (grant losses) is the last rebuild, so its copy is
-# the one the current schema carries and the one that must be neutralized.
-old = "        CHECK (dispatch<>'unknown' OR unknown_reason IS NOT NULL),"
-new = "        , -- NON-VACUITY BREAK"
+# constraint. Neutralize the newest rebuild's copy: an older copy would be
+# reinstated before the current store's guard can exercise it.
+old = "    CHECK (unknown_reason IS NOT NULL OR dispatch <> 'unknown'),"
+new = "    , -- NON-VACUITY BREAK"
 
 # dispatch: 47 controls
 
@@ -8763,6 +8763,7 @@ guards = "migration 11 must retain the exact pending Broca predicate on populate
 edits = [
   { file = "crates/basal-core/src/schema.rs", old = "CREATE INDEX broca_calls_pending ON broca_calls(send_id) WHERE json_extract(snapshot, '$.acknowledged') = 0 AND COALESCE(json_extract(snapshot, '$.deferred'), 0) = 0;", new = "CREATE INDEX broca_calls_pending ON broca_calls(send_id) WHERE json_extract(snapshot, '$.acknowledged') = 0 AND COALESCE(json_extract(snapshot, '$.deferred'), 0) = 1; -- NON-VACUITY BREAK" },
   { file = "crates/basal-core/src/schema.rs", old = "CREATE INDEX broca_calls_pending ON broca_calls (send_id) WHERE json_extract(snapshot, '$.acknowledged') = 0 AND COALESCE(json_extract(snapshot, '$.deferred'), 0) = 0;", new = "CREATE INDEX broca_calls_pending ON broca_calls (send_id) WHERE json_extract(snapshot, '$.acknowledged') = 0 AND COALESCE(json_extract(snapshot, '$.deferred'), 0) = 1; -- NON-VACUITY BREAK" },
+  { file = "crates/basal-core/src/schema.rs", old = "CREATE INDEX broca_calls_pending\nON broca_calls(send_id) WHERE json_extract(snapshot, '$.acknowledged') = 0 AND COALESCE(json_extract(snapshot, '$.deferred'), 0) = 0;", new = "CREATE INDEX broca_calls_pending\nON broca_calls(send_id) WHERE json_extract(snapshot, '$.acknowledged') = 0 AND COALESCE(json_extract(snapshot, '$.deferred'), 0) = 1; -- NON-VACUITY BREAK" },
 ]
 test_file = "crates/basal-core/src/schema_health_tests.rs"
 runner = "cargo"
@@ -9924,9 +9925,9 @@ new = "self.fail(\"budget_exhausted\", format!(\"{kind:?}\"), true) // NON-VACUI
 # proofs run once on Linux; workspace gates run the tests on both supported OSes.
 [[control]]
 id = "codemode-protocol-version"
-hub = "Both the protocol version assertion and the fixed Welcome wire fixture pin version 5"
+hub = "Both the protocol version assertion and the fixed Welcome wire fixture pin version 7"
 hub_targets = ["basal_proto"]
-guards = "the worker wire requires protocol version 5 (codemode tools in 4, the Windows confinement report in 5)"
+guards = "the worker wire requires protocol version 7 to distinguish target-agent module calls"
 test_file = "crates/basal-proto/src/lib.rs"
 runner = "cargo"
 package = "basal-proto"
@@ -9935,8 +9936,8 @@ target = "--lib"
 expect_red = ["tests::codemode_wire_codes_preserve_shell_and_round_trip_tool_json"]
 only = false
 file = "crates/basal-proto/src/limits.rs"
-old = "pub const PROTOCOL_VERSION: u32 = 6;"
-new = "pub const PROTOCOL_VERSION: u32 = 5; // NON-VACUITY BREAK"
+old = "pub const PROTOCOL_VERSION: u32 = 7;"
+new = "pub const PROTOCOL_VERSION: u32 = 6; // NON-VACUITY BREAK"
 
 [[control]]
 id = "codemode-address-space-headroom"
@@ -15358,3 +15359,453 @@ timeout_s = 600
 file = "crates/basal-core/src/install.rs"
 old = '} else if !catalog.agent_known(agent) {'
 new = '} else if !catalog.agent_known(agent) && field != "audience.id" { // NON-VACUITY BREAK'
+
+# Target-agent calls: one selected guard per control, replayed on Linux.
+[[control]]
+id = "target-call-requires-audience"
+guards = "Target calls refuse an absent install audience before dispatch"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test flow_scopes"
+expect_red = ["for_requires_an_audience_and_never_sends"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/authorize.rs"
+old = "if matches!(kind, CallKind::OpFor { .. }) && manifest.audience.is_none() {"
+new = "if false && matches!(kind, CallKind::OpFor { .. }) && manifest.audience.is_none() { // NON-VACUITY BREAK"
+
+[[control]]
+id = "target-mutation-requires-own-delegating-grant"
+guards = "Another op's delegation cannot authorize this target mutation"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test flow_scopes"
+expect_red = ["target_mutation_requires_its_own_delegating_grant_but_queries_do_not"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/authorize.rs"
+old = ".is_none_or(|d| d.kind != Some(basal_host::catalog::OpKind::Query))"
+new = ".is_none_or(|_d| false) // NON-VACUITY BREAK"
+
+[[control]]
+id = "target-call-opens-target-route"
+guards = "A target call uses its target selector, not the ordinary flow selector"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test flow_scopes"
+expect_red = ["targeted_call_opens_target_scope_and_ordinary_call_keeps_flow_scope"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/routing.rs"
+old = "(self.transport.target_flow(request, &call)?, call.args)"
+new = "(request.flow_id.clone(), call.args) // NON-VACUITY BREAK"
+
+[[control]]
+id = "target-scope-shared-epoch-cache"
+guards = "Runs with covered deadlines share the cached target scope without another ask"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test flow_scopes"
+expect_red = ["target_scope_is_shared_across_runs_while_it_covers_both_deadlines"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/target_scope.rs"
+old = "if !call.replay {"
+new = "if false && !call.replay { // NON-VACUITY BREAK"
+
+[[control]]
+id = "target-scope-run-pin"
+guards = "A rolled scope does not replace the earlier run's pinned ref"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test flow_scopes"
+expect_red = ["rolling_target_scopes_preserve_each_runs_pinned_ref"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/target_scope.rs"
+old = "self.pins.get(&pin_key).filter(usable)"
+new = "self.pins.get(&pin_key).filter(|_| false) /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "target-scope-deadline-coverage"
+guards = "A target scope whose expiry cannot cover the run deadline is not reused"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test flow_scopes"
+expect_red = ["target_scope_expiry_and_deadline_extension_reask_and_expired_refs_are_dropped"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/target_scope.rs"
+old = "s.expires_at_ms >= call.expires_at_ms"
+new = "true /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "target-scope-expired-cache-pruning"
+guards = "Expired refs are removed from the cache, not only from route aliases"
+test_file = "crates/basal-host/src/target_scope.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["target_scope::tests::expired_refs_are_removed_from_the_cache"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/target_scope.rs"
+old = "scopes.retain(|s| s.expires_at_ms > now_ms);"
+new = "scopes.retain(|_| true); // NON-VACUITY BREAK"
+
+[[control]]
+id = "target-scope-close-invalidation"
+guards = "An ended target scope is reasked and its selector is never reopened"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test flow_scopes"
+expect_red = ["closed_target_scope_reasks_and_never_reopens_the_ended_ref"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/target_scope.rs"
+old = "if ended(scope) {"
+new = "if false && ended(scope) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "target-scope-epoch-invalidation"
+guards = "An epoch change invalidates older pins for the same ref"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test flow_scopes"
+expect_red = ["changed_target_epoch_drops_old_routes_and_invalidates_old_run_pins"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/target_scope.rs"
+old = "if old.scope_ref == scope.scope_ref && old.epoch != scope.epoch {"
+new = "if false && old.scope_ref == scope.scope_ref && old.epoch != scope.epoch { // NON-VACUITY BREAK"
+
+[[control]]
+id = "target-replay-revalidates-audience"
+guards = "Replayed target calls reask core even when an old scope remains cached"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test flow_scopes"
+expect_red = ["replay_reasks_core_and_outside_audience_call_fails_unsent"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "envelope[\"replay\"] = Value::Bool(true);"
+new = "envelope[\"replay\"] = Value::Bool(false); // NON-VACUITY BREAK"
+
+[[control]]
+id = "target-core-refusal-code-passthrough"
+guards = "Core's out-of-audience refusal reaches the script with its exact code"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test flow_scopes"
+expect_red = ["target_core_refusals_are_typed_unsent_without_retry_or_health_penalty"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/target_scope.rs"
+old = "\"sink_target_not_in_audience\" => RefusalReason::SinkTargetNotInAudience,"
+new = "\"sink_target_not_in_audience\" => RefusalReason::FlowHasNoAudience, // NON-VACUITY BREAK"
+
+[[control]]
+id = "target-provider-delegation-refusal-is-terminal"
+guards = "Unsupported provider delegation is unsent and never deferred for retry"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test flow_scopes"
+expect_red = ["provider_delegation_unsupported_is_typed_unsent_without_retry_or_health_penalty"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/runtime.rs"
+old = "} else if refusal.terminal() {"
+new = "} else if false && refusal.terminal() { // NON-VACUITY BREAK"
+
+[[control]]
+id = "target-bound-honors-manifest-override"
+guards = "Target budgets use max_targets rather than a fixed 64-target fence"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test flow_scopes"
+expect_red = ["distinct_target_default_bound_and_manifest_override"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "if !targets.contains(&agent) && targets.len() >= manifest.max_targets as usize {"
+new = "if !targets.contains(&agent) && targets.len() >= 64 { // NON-VACUITY BREAK"
+
+[[control]]
+id = "target-grant-requires-audience-at-install"
+guards = "Delegating grants without an audience are refused when validating installs"
+test_file = "crates/basal-module/tests/audience.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test audience"
+expect_red = ["target_grants_and_audience_run_bounds_are_validated_by_install_and_dry_run"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/manifest.rs"
+old = "if o.for_target.is_some() && self.audience.is_none() {"
+new = "if false && o.for_target.is_some() && self.audience.is_none() { // NON-VACUITY BREAK"
+
+[[control]]
+id = "target-audience-run-bound-limit"
+guards = "Audience manifests cannot promise a run longer than half the daemon scope limit"
+test_file = "crates/basal-core/tests/audience.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--test audience"
+expect_red = ["audience_run_bound_may_not_exceed_twelve_hours"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/manifest.rs"
+old = "if self.audience.is_some() && self.deadline_ms(600_000) > 12 * 60 * 60 * 1000 {"
+new = "if false && self.audience.is_some() && self.deadline_ms(600_000) > 12 * 60 * 60 * 1000 { // NON-VACUITY BREAK"
+
+[[control]]
+id = "target-max-targets-range"
+guards = "max_targets remains bounded between one and 1024"
+test_file = "crates/basal-core/tests/audience.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--test audience"
+expect_red = ["max_targets_defaults_to_sixty_four_and_accepts_only_one_to_1024"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/manifest.rs"
+old = "if !(1..=1024).contains(&self.max_targets) {"
+new = "if false && !(1..=1024).contains(&self.max_targets) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "target-cut-mutation-cannot-retry"
+guards = "Even keyed target mutations reconcile after a scope cuts the in-flight call"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test flow_scopes"
+expect_red = ["midcall_target_scope_cut_makes_even_keyed_mutations_outcome_unknown"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/runtime.rs"
+old = "if class == StoredClass::Query && retries < self.config.unavailable_retries {"
+new = "if class.safe_to_resend() && retries < self.config.unavailable_retries { // NON-VACUITY BREAK"
+
+[[control]]
+id = "target-cut-policy-survives-recovery"
+guards = "Recovery cannot resend a keyed mutation whose in-flight target scope was cut"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test flow_scopes"
+expect_red = ["midcall_target_scope_cut_survives_restart_without_resending_keyed_mutation"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "(class, _) if row.scope_cut && class != StoredClass::Query => {"
+new = "(class, _) if false && row.scope_cut && class != StoredClass::Query => { // NON-VACUITY BREAK"
+
+[[control]]
+id = "target-route-cut-before-control-push"
+guards = "A typed route end cuts target authority before the control reader catches up"
+test_file = "crates/basal-host/src/transport.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["transport::tests::target_route_end_is_a_scope_cut_even_before_the_control_push"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/transport.rs"
+old = "flow.starts_with(\"target:\") && matches!(cause, Some(OutcomeUnknownCause::RouteEnded))"
+new = "false && flow.starts_with(\"target:\") && matches!(cause, Some(OutcomeUnknownCause::RouteEnded)) // NON-VACUITY BREAK"
+
+[[control]]
+id = "target-call-distinct-wire-kind"
+guards = "Worker target calls cannot decode as ordinary module calls"
+test_file = "crates/basal-proto/src/lib.rs"
+runner = "cargo"
+package = "basal-proto"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["tests::target_module_calls_have_a_distinct_wire_kind_and_round_trip"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-proto/src/wire.rs"
+old = "enc.u8(CALL_OP_FOR);"
+new = "enc.u8(0); // NON-VACUITY BREAK"
+
+[[control]]
+id = "target-distinct-target-bound-enforced"
+guards = "The default target budget stops the 65th distinct target but not repeats"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test flow_scopes"
+expect_red = ["distinct_target_default_bound_and_manifest_override"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "if !targets.contains(&agent) && targets.len() >= manifest.max_targets as usize {"
+new = "if false && !targets.contains(&agent) && targets.len() >= manifest.max_targets as usize { // NON-VACUITY BREAK"
+
+[[control]]
+id = "target-journal-kind-marker"
+guards = "Journal rows retain the distinction between target calls and ordinary calls"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test flow_scopes"
+expect_red = ["targeted_call_opens_target_scope_and_ordinary_call_keeps_flow_scope"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/journal.rs"
+old = "matches!(call.kind, CallKind::OpFor { .. }),"
+new = "false, // NON-VACUITY BREAK"
+
+[[control]]
+id = "target-delegation-health-exemption"
+guards = "An uncaught target delegation refusal does not count as a flow failure"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test flow_scopes"
+expect_red = ["delegation_refusals_do_not_penalize_uncaught_runs"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/ops.rs"
+old = "| \"for_target_requires_delegate\","
+new = "| \"NON-VACUITY BREAK\","
+
+[[control]]
+id = "target-audience-unavailability-is-transient"
+guards = "An unreadable current audience defers and retries rather than becoming a permanent refusal"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test flow_scopes"
+expect_red = ["transient_target_audience_unavailability_defers_until_recovery_or_run_deadline"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/target_scope.rs"
+old = "\"sink_audience_unavailable\" => RefusalReason::SinkAudienceUnavailable,"
+new = "\"sink_audience_unavailable\" => RefusalReason::FlowHasNoAudience, // NON-VACUITY BREAK"
+
+[[control]]
+id = "target-principal-refusal-is-terminal"
+guards = "A wrong carrier principal fails the call instead of retrying a routing bug"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test flow_scopes"
+expect_red = ["target_scope_principal_refusal_is_a_terminal_carrier_bug"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/target_scope.rs"
+old = "\"flow_target_scope_principal_refused\" => RefusalReason::FlowTargetScopePrincipalRefused,"
+new = "\"flow_target_scope_principal_refused\" => RefusalReason::SinkAudienceUnavailable, // NON-VACUITY BREAK"
+
+[[control]]
+id = "target-journal-schema-rejects-targeted-primitives"
+guards = "A journal target marker belongs only to a module call, including after migration"
+test_file = "crates/basal-core/src/schema_flow_deferral_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["schema::flow_deferral_tests::target_scope_migration_preserves_existing_calls_and_children"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/schema.rs"
+old = "targeted IN (0,1) AND (targeted=0 OR kind_code=0)"
+new = "targeted IN (0,1) /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "target-route-cut-real-transport"
+guards = "Real in-flight target route closure is a scope cut, while an ordinary flow keeps its existing connection-loss disposition"
+test_file = "crates/basal-host/src/transport.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["transport::tests::real_target_scope_cut_is_unknown_while_ordinary_flow_keeps_connection_loss"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+edits = [
+    {file="crates/basal-host/src/transport.rs",old="return Err(WireError::ScopeCut(\"target route ended during call\".into()));",new="return Err(WireError::Unknown(\"target route ended during call\".into())); // NON-VACUITY BREAK"},
+    {file="crates/basal-host/src/transport.rs",old="return Err(WireError::ScopeCut(\"scope closed during call\".into()));",new="return Err(WireError::Unknown(\"scope closed during call\".into())); // NON-VACUITY BREAK"},
+]
+
+[[control]]
+id = "target-revalidation-refusal-invalidates-old-authority"
+guards = "Catching an audience refusal on replay cannot make the next call reuse an old cached scope"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test flow_scopes"
+expect_red = ["replay_reasks_core_and_outside_audience_call_fails_unsent"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/target_scope.rs"
+old = "self.refresh_required.insert(cache_key.clone());"
+new = "let _ = &cache_key; // NON-VACUITY BREAK"

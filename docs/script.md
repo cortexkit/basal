@@ -46,6 +46,21 @@ already a JSON value, not stored text; it is delivered without a live body
 lookup or any other live call. Header labels are context for script logic,
 not authority, and manifest header filters remain a follow-up.
 
+## Module calls for a target agent
+
+`ops.call(module, op, args)` uses the flow's own daemon scope. A manifest with
+an audience may instead call `ops.call(module, op, args, {for: "agent"})`.
+The options object contains only `for`, a nonempty agent name or stable id.
+The target is journaled separately from the provider's arguments; the provider
+receives `args` unchanged on that agent's core-owned scope. Targeted queries
+read as the agent; mutations require the op's own `for_target: "delegate"`
+grant. See [the manifest rules](manifest.md#audience) for limits and refusals.
+
+There is no script-triggered lazy fetch of `trigger.event.body`: basal resolves
+it before the script starts, on the flow scope. A script that explicitly calls
+a granted body resolver such as `events_get` can use the same fourth argument
+as any other module query.
+
 ## Digest items
 
 Sink signatures are unchanged by an install audience:

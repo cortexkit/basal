@@ -76,8 +76,9 @@ impl ModuleOpsHost {
         request: &CallRequest,
         expected: Option<CallClass>,
     ) -> Result<Dispatched, TransportError> {
-        let CallKind::Op { module, op } = &request.kind else {
-            return outcome(Err(WireError::NeverSent("not a module op".into())));
+        let (module, op) = match &request.kind {
+            CallKind::Op { module, op } | CallKind::OpFor { module, op } => (module, op),
+            _ => return outcome(Err(WireError::NeverSent("not a module op".into()))),
         };
         let result = (|| {
             let (decl, flow_capable) =
@@ -121,18 +122,19 @@ impl ModuleOpsHost {
             }
             let args = serde_json::from_str(request.args.as_str())
                 .map_err(|e| WireError::NeverSent(e.to_string()))?;
+            let (flow, args) = if matches!(request.kind, CallKind::OpFor { .. }) {
+                let call: crate::target_scope::TargetCall = serde_json::from_value(args)
+                    .map_err(|e| WireError::NeverSent(e.to_string()))?;
+                (self.transport.target_flow(request, &call)?, call.args)
+            } else {
+                (request.flow_id.clone(), args)
+            };
             match decl.surface {
-                Surface::Management => {
+                Surface::Management => self.transport.management_for_flow(&flow, module, op, args),
+                Surface::Tool => {
                     self.transport
-                        .management_for_flow(&request.flow_id, module, op, args)
+                        .tool_for_flow(&flow, module, op, args, &request.idempotency_key)
                 }
-                Surface::Tool => self.transport.tool_for_flow(
-                    &request.flow_id,
-                    module,
-                    op,
-                    args,
-                    &request.idempotency_key,
-                ),
             }
         })();
         outcome(result.map_err(|e| crate::transport::contextual(e, module, op)))
@@ -183,7 +185,7 @@ impl Host for ModuleOpsHost {
         self.transport.configure_flow(flow_id, agent_owned, scope);
     }
     fn classify(&self, kind: &CallKind) -> CallClass {
-        if let CallKind::Op { module, op } = kind
+        if let CallKind::Op { module, op } | CallKind::OpFor { module, op } = kind
             && let Some(decl) = self.catalog.resolve(module, op).ok().flatten()
         {
             return self.declared_class(module, op, &decl);
@@ -235,7 +237,7 @@ impl RoutingHost {
     }
     fn target(&self, kind: &CallKind) -> &dyn Host {
         match kind {
-            CallKind::Op { .. } => self.ops.as_ref(),
+            CallKind::Op { .. } | CallKind::OpFor { .. } => self.ops.as_ref(),
             CallKind::Primitive(
                 Primitive::SinkDigest | Primitive::SinkStatus | Primitive::Facts,
             ) => self.core.as_ref(),

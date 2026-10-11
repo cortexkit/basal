@@ -202,3 +202,69 @@ fn current_store_refuses_a_deferred_call_with_a_refusal_outside_the_closed_set()
     drop(store);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn target_scope_migration_preserves_existing_calls_and_children() {
+    let conn = old_store();
+    for migration in MIGRATIONS.iter().filter(|m| (9..23).contains(&m.version)) {
+        conn.execute_batch(migration.statements).unwrap();
+    }
+    let columns = conn
+        .prepare("SELECT * FROM journal")
+        .unwrap()
+        .column_count();
+    let before = rows(&conn, "journal", columns);
+    let indexes = || {
+        conn.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name IN ('journal','mailbox','broca_calls') ORDER BY name")
+            .unwrap().query_map([],|r|r.get::<_,String>(0)).unwrap().collect::<Result<Vec<_>,_>>().unwrap()
+    };
+    let before_indexes = indexes();
+    let mailbox = rows(&conn, "mailbox", 9);
+    let broca = rows(&conn, "broca_calls", 4);
+    conn.execute_batch(
+        MIGRATIONS
+            .iter()
+            .find(|m| m.version == 23)
+            .unwrap()
+            .statements,
+    )
+    .unwrap();
+    assert_eq!(rows(&conn, "journal", columns), before);
+    assert_eq!(rows(&conn, "mailbox", 9), mailbox);
+    assert_eq!(rows(&conn, "broca_calls", 4), broca);
+    assert_eq!(indexes(), before_indexes);
+    let flags: Vec<(bool, bool)> = conn
+        .prepare("SELECT targeted,scope_cut FROM journal ORDER BY position")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(flags, vec![(false, false); 5]);
+    assert!(
+        conn.execute_batch("UPDATE journal SET targeted=1 WHERE position=0")
+            .is_err()
+    );
+    assert!(
+        conn.execute_batch("UPDATE journal SET scope_cut=2 WHERE position=0")
+            .is_err()
+    );
+    conn.execute_batch(
+        "UPDATE journal SET kind_code=0,module='mock',op='echo',targeted=1 WHERE position=0",
+    )
+    .unwrap();
+    assert!(matches!(
+        crate::journal::row(&conn, "r", 0).unwrap().unwrap().kind,
+        basal_proto::CallKind::OpFor { .. }
+    ));
+    conn.execute_batch("UPDATE journal SET dispatch='deferred',refusal='sink_audience_unavailable',retry_not_before=100,refusal_detail='{\"reason\":\"sink_audience_unavailable\",\"provider\":\"prefrontal-core\",\"action\":\"flow.target_scope\"}' WHERE position=0").unwrap();
+    assert!(
+        conn.prepare("PRAGMA foreign_key_check")
+            .unwrap()
+            .query([])
+            .unwrap()
+            .next()
+            .unwrap()
+            .is_none()
+    );
+}

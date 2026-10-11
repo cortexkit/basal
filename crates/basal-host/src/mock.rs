@@ -185,7 +185,9 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 
 fn op_names(kind: &CallKind) -> (String, String) {
     match kind {
-        CallKind::Op { module, op } => (module.clone(), op.clone()),
+        CallKind::Op { module, op } | CallKind::OpFor { module, op } => {
+            (module.clone(), op.clone())
+        }
         CallKind::Primitive(p) => ("primitive".to_owned(), p.name().to_owned()),
         CallKind::Tool { .. } => ("unsupported".into(), "tool".into()),
     }
@@ -577,14 +579,16 @@ impl MockHost {
             CallKind::Tool { .. } => CallClass::Mutation {
                 honours_idempotency_keys: false,
             },
-            CallKind::Op { module, op } if module == "mock" => match op.as_str() {
-                "send" | "long" => keyed,
-                "post" => CallClass::Mutation {
-                    honours_idempotency_keys: false,
-                },
-                _ => CallClass::Query,
-            },
-            CallKind::Op { .. } => CallClass::Query,
+            CallKind::Op { module, op } | CallKind::OpFor { module, op } if module == "mock" => {
+                match op.as_str() {
+                    "send" | "long" => keyed,
+                    "post" => CallClass::Mutation {
+                        honours_idempotency_keys: false,
+                    },
+                    _ => CallClass::Query,
+                }
+            }
+            CallKind::Op { .. } | CallKind::OpFor { .. } => CallClass::Query,
             // The class a built-in has before its arguments are known (the
             // runtime classes `net.fetch` by its method).
             CallKind::Primitive(p) if p.is_builtin() => crate::builtins::class(kind, &Value::Null)

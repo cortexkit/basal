@@ -227,7 +227,9 @@ impl DryRunner {
         };
         let manifest = Manifest::parse(&request.install.manifest).map_err(|e| match e {
             e @ (basal_core::manifest::ManifestError::AudienceSinkNamed
-            | basal_core::manifest::ManifestError::AudiencePlaceholderWithoutAudience) => {
+            | basal_core::manifest::ManifestError::AudiencePlaceholderWithoutAudience
+            | basal_core::manifest::ManifestError::ForTargetRequiresAudience
+            | basal_core::manifest::ManifestError::RunBoundExceedsAudienceLimit) => {
                 DryRunError::InstallRefused(basal_core::InstallError::Manifest(e))
             }
             other => DryRunError::Invalid(format!("manifest: {other}")),
@@ -547,7 +549,9 @@ fn outcome_code(call: &CallRow) -> Option<String> {
 
 fn describe_call(call: &CallRow, config: &DryRunConfig) -> Value {
     let (kind, module, op) = match &call.kind {
-        CallKind::Op { module, op } => ("op".to_owned(), Some(module.clone()), Some(op.clone())),
+        CallKind::Op { module, op } | CallKind::OpFor { module, op } => {
+            ("op".to_owned(), Some(module.clone()), Some(op.clone()))
+        }
         CallKind::Primitive(p) => (p.name().to_owned(), None, None),
         CallKind::Tool { .. } => ("unsupported_tool".to_owned(), None, None),
     };

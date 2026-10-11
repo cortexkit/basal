@@ -195,8 +195,8 @@ pub fn insert_call(
     let changed = tx.execute(
         &format!(
             "INSERT INTO journal (run_id, position, kind_code, module, op, args, args_digest, \
-             idempotency_key, class, dispatch, attempts, issued_generation, request) \
-             SELECT ?1, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?3, ?14 \
+             idempotency_key, class, dispatch, attempts, issued_generation, request, targeted) \
+             SELECT ?1, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?3, ?14, ?16 \
              WHERE {FENCE} AND ?4 = ?15"
         ),
         params![
@@ -215,6 +215,7 @@ pub fn insert_call(
             attempts,
             call.request.map(JsonText::as_str),
             pos(next)?,
+            matches!(call.kind, CallKind::OpFor { .. }),
         ],
     )?;
     if changed == 0 {
@@ -393,6 +394,8 @@ pub(crate) struct SavedRefusal {
     key: String,
     attempt: u32,
     detail: String,
+    #[serde(default)]
+    targeted: bool,
 }
 
 impl SavedRefusal {
@@ -401,11 +404,14 @@ impl SavedRefusal {
             flow_id: self.flow_id.clone(),
             run_id: self.run_id.clone(),
             position: to_u64(self.position, "position")?,
-            kind: crate::model::kind_from_columns(
+            kind: match crate::model::kind_from_columns(
                 self.kind_code,
                 self.module.clone(),
                 self.op.clone(),
-            )?,
+            )? {
+                CallKind::Op { module, op } if self.targeted => CallKind::OpFor { module, op },
+                kind => kind,
+            },
             args: json(self.args.clone(), "dispatch args")?,
             idempotency_key: self.key.clone(),
             attempt: self.attempt,
@@ -444,7 +450,7 @@ impl SavedRefusal {
 pub fn expire_deferred(tx: &Transaction, run_id: &str) -> Result<()> {
     let mut stmt = tx.prepare(
         "SELECT r.flow_id,j.position,j.kind_code,j.module,j.op,COALESCE(j.request,j.args),\
-         j.idempotency_key,j.attempts,j.refusal_detail FROM journal j JOIN runs r USING(run_id) \
+         j.idempotency_key,j.attempts,j.refusal_detail,j.targeted FROM journal j JOIN runs r USING(run_id) \
          WHERE j.run_id=?1 AND j.dispatch='deferred' ORDER BY j.position",
     )?;
     let rows = stmt
@@ -460,6 +466,7 @@ pub fn expire_deferred(tx: &Transaction, run_id: &str) -> Result<()> {
                 key: r.get(6)?,
                 attempt: r.get(7)?,
                 detail: r.get(8)?,
+                targeted: r.get(9)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;

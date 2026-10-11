@@ -277,6 +277,11 @@ pub enum CallKind {
         module: String,
         op: String,
     },
+    /// A module call whose arguments include the target agent and payload.
+    OpFor {
+        module: String,
+        op: String,
+    },
     Primitive(Primitive),
     /// A catalog tool; its JSON input is carried in `HostCall::args`.
     Tool {
@@ -302,6 +307,7 @@ impl fmt::Display for CallKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Op { module, op } => write!(f, "op ({module}, {op})"),
+            Self::OpFor { module, op } => write!(f, "target op ({module}, {op})"),
             Self::Primitive(p) => write!(f, "{}", p.name()),
             Self::Tool { name } => write!(f, "tool ({name})"),
         }

@@ -166,6 +166,7 @@ fn listed_op_on_the_denylist_is_refused_at_dispatch() {
     denylist.0.push(OpRef {
         module: "MOCK".into(),
         op: "Post".into(),
+        for_target: None,
     });
     let rt = world
         .runtime(

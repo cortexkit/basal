@@ -130,6 +130,12 @@ impl Module {
             return OpError::new("store_failure", text);
         }
         match e {
+            InstallError::Manifest(ManifestError::ForTargetRequiresAudience) => {
+                OpError::new("for_target_requires_audience", e.to_string())
+            }
+            InstallError::Manifest(ManifestError::RunBoundExceedsAudienceLimit) => {
+                OpError::new("run_bound_exceeds_audience_limit", e.to_string())
+            }
             InstallError::Manifest(ManifestError::AudienceSinkNamed) => {
                 OpError::new("audience_sink_named", e.to_string())
             }
@@ -327,7 +333,9 @@ impl Module {
         let p: Params = serde_json::from_value(params).map_err(invalid_params)?;
         let manifest = Manifest::parse(&p.manifest).map_err(|e| match e {
             e @ (ManifestError::AudienceSinkNamed
-            | ManifestError::AudiencePlaceholderWithoutAudience) => {
+            | ManifestError::AudiencePlaceholderWithoutAudience
+            | ManifestError::ForTargetRequiresAudience
+            | ManifestError::RunBoundExceedsAudienceLimit) => {
                 self.install_error(InstallError::Manifest(e))
             }
             other => OpError::new(

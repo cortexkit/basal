@@ -617,6 +617,9 @@ impl Activation<'_> {
                     })?;
                 }
                 (_, DispatchState::NotApplied) => resend.push(row.clone()),
+                (class, _) if row.scope_cut && class != StoredClass::Query => {
+                    unknown.push(row.position)
+                }
                 (class, _) if class.safe_to_resend() => resend.push(row.clone()),
                 _ => unknown.push(row.position),
             }
@@ -659,8 +662,16 @@ impl Activation<'_> {
             self.at(Boundary::ResendAuthorized {
                 position: row.position,
             })?;
+            let mut request = Runtime::request(&self.run, &row, attempt);
+            if matches!(request.kind, CallKind::OpFor { .. }) {
+                let mut envelope: Value = serde_json::from_str(request.args.as_str())
+                    .map_err(|e| CoreError::Corrupt(e.to_string()))?;
+                envelope["replay"] = Value::Bool(true);
+                request.args = JsonText::new(envelope.to_string())
+                    .map_err(|e| CoreError::Corrupt(e.to_string()))?;
+            }
             self.rt.spawn_dispatch(
-                Runtime::request(&self.run, &row, attempt),
+                request,
                 row.class,
                 matches!(
                     row.dispatch,
@@ -929,16 +940,57 @@ impl Activation<'_> {
             &call.kind,
             &args,
         )?;
-        self.rt
-            .shared
-            .host
-            .provider_ready(&self.run.flow_id, &call.kind)
-            .map_err(|refusal| {
-                let mut rejected = Refusal::new(refusal.reason.as_str(), refusal.message());
-                rejected.module = Some(refusal.provider);
-                rejected
-            })?;
+        if !matches!(call.kind, CallKind::OpFor { .. }) {
+            self.rt
+                .shared
+                .host
+                .provider_ready(&self.run.flow_id, &call.kind)
+                .map_err(|refusal| {
+                    let mut rejected = Refusal::new(refusal.reason.as_str(), refusal.message());
+                    rejected.module = Some(refusal.provider);
+                    rejected
+                })?;
+        }
         let prepared: std::result::Result<Prepared, Refusal> = match &call.kind {
+            CallKind::OpFor { .. } => {
+                let name = args
+                    .get("for")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| {
+                        Refusal::new(codes::INVALID_ARGUMENTS, "for must name an agent")
+                    })?;
+                let agent = self.rt.catalog().agent_id(name).ok_or_else(|| {
+                    Refusal::new(
+                        "sink_audience_unavailable",
+                        "target agent registry unavailable or target unknown",
+                    )
+                })?;
+                let targets = self.rt.store().read(|c| {
+                    let mut stmt = c.prepare("SELECT DISTINCT json_extract(request,'$.agent') FROM journal WHERE run_id=?1 AND targeted=1 AND request IS NOT NULL")?;
+                    Ok(stmt.query_map([&self.run.run_id], |row| row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?)
+                }).map_err(|e| Refusal::new("store_failure", e.to_string()))?;
+                if !targets.contains(&agent) && targets.len() >= manifest.max_targets as usize {
+                    return Err(Refusal::new(
+                        "too_many_targets",
+                        "distinct target limit reached",
+                    ));
+                }
+                let version = self
+                    .run
+                    .flow_version
+                    .ok_or_else(|| Refusal::denied("target calls require an installed version"))?;
+                let expires_at_ms = self
+                    .run
+                    .deadline_at
+                    .ok_or_else(|| Refusal::denied("target calls require a run deadline"))?;
+                let request = JsonText::new(serde_json::json!({"agent":agent,"version":version,"expires_at_ms":expires_at_ms,"args":args.get("args").unwrap_or(&Value::Null)}).to_string())
+                    .map_err(|e| Refusal::new(codes::TOO_LARGE,e.to_string()))?;
+                Ok(Prepared {
+                    request: Some(request),
+                    ..Prepared::default()
+                })
+            }
             CallKind::Primitive(p @ (Primitive::Llm | Primitive::Classify)) => {
                 let Some(grant) = &manifest.llm else {
                     return Err(Refusal::denied("the manifest grants no model calls"));

@@ -134,6 +134,31 @@ Reply (machine-checked by `list_contract`):
 ```
 `disabled` and `last_run` may each be null, but their keys must be present. All times are Unix epoch milliseconds. `pending_version` is the newest version with an open card, or null; `approved_version` is null until approval. `state` uses the same approval-first computation as `flow.health`. `last_run` is the most recent finished run, not an in-flight run. `needs_reconcile` is true if any run awaits reconciliation. The disable's actor kind, reason and time are the recorded disable, or null after enabling. `by` is `operator`, `owner` (the owning agent), `auto` (the runtime's loop protection) or `core`. A `core` disable may mean core revoked the version, holds no install of that version, or approved a different code hash for it; it may also mean `grant_lost` or `agent_retired`. Losing core's approval also clears the approved version, so the flow lists as `unapproved`; approval of a newer version clears that stop, but does not override an operator or owner stop.
 
+## Target flow scopes
+
+For an audience flow's targeted module call, basal uses its reserved carrier
+route to prefrontal-core for `flow.target_scope`:
+
+```json
+{"flow_id":"flow-id","version":1,"agent":"stable-agent-id","expires_at_ms":123456789}
+```
+
+`expires_at_ms` is the asking run's absolute deadline. Core checks that the
+version is approved and not revoked and that the agent belongs to its audience.
+It replies with `{ref, epoch, delegates, expires_at_ms}`, where the reply's
+expiry is the scope's actual lifetime. The scope is owned by core, carried by
+basal, and stamped with `{flow_id, agent_id}`. Its `delegates` attribute is true
+only when an approved op grant declares `for_target: "delegate"`.
+
+Basal caches live refs for each flow and stable target and pins one per run and
+target. It asks only when no cached ref covers the run's deadline, or on replay
+or after that ref's scope ends or changes. Core can roll a new ref for a later
+deadline without closing one still used by an older run. There is no target
+scope close op: expiry and install revocation clean up all such scopes. Revoking
+an install ends every target scope for the flow. Provider route opens use these
+selectors exactly as they use the flow's own selector. A scope close during a
+call is a lost reply, never evidence that a mutation was unsent.
+
 ## Codemode
 
 Basal is a `tool-provider/v1` provider with one agent tool, `codemode`. Core grants access and owns each ephemeral run scope; it does not carry the tool or provide its input schemas. The daemon verifies the caller's principal and stamps the incoming route with scope owner, ref, epoch and authoritative attributes including `agent_id`; basal takes its agent and invoking scope only from that stamp. Arguments cannot override either. Each child provider route carries the invoking route's `BindIdentity` unchanged. Its project root configures where relative paths and shell commands run; its harness and session configure the provider's client and session context. A registered project ID is also copied unchanged when present. These values preserve the configuration of the agent's direct calls, never authority: basal identifies the agent and scope only from the daemon's recorded principal and scope.
