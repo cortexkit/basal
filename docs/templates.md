@@ -113,7 +113,19 @@ A template run may call `await instance.end()` with no arguments. It returns `tr
 
 ### Dry runs
 
-A dry run naming a registered template version or a template instance returns `template_values_required`. No sample values are guessed. Ordinary `flow.install` and ordinary-flow dry runs carrying `params` or `template` return `params_require_package`, naming the field. Parameter-aware template dry runs with explicit supplied values are not available yet.
+An agent can test a registered template before creating an instance:
+
+```json
+{"flow_id": "watch", "version": 1, "params": {"path": "/workspace/project"}, "trigger": {}}
+```
+
+`version` is optional: a template name selects the newest registered version by default; an instance selects its approved version. Supply a synthetic `trigger`, or a schedule replay `window` such as `"6h"`. Basal validates supplied `params` through the same path as `flow.instantiate`, including canonical paths and repositories, timestamp rules and integer bounds. The script receives the canonical values as activation input `params`, and `self` is the calling agent. Grant and timing placeholders are replaced by those values.
+
+Template dry runs are capture-only: authorized host calls, including reads, receive `captured` without execution; calls outside the effective grants are refused. No instance is created, no lifetime is needed, and neither `max_per_agent` nor `max_live` is consumed or checked. All run state is disposable, and the only result is the dry-run trace. A one-shot `at` template replays once immediately, not at its future timestamp; its schedule trigger carries `dry_run: true` and `due` is the request time.
+
+Naming an existing template instance without `params` uses its bound values, recorded path boundaries and effective manifest. Its owning agent or the operator may do this; `self` remains the bound owner. Supplying `params`, even the same values or `null`, returns `params_not_allowed`. A registered template without `params` still returns `template_values_required`; basal never guesses sample values. Operators cannot dry-run a template package directly because they have no calling agent identity. `mode: "live"` is refused for both templates and instances.
+
+Ordinary `flow.install` manifests carrying `params` or `template`, and ordinary-flow dry-run requests carrying `params`, return `params_require_package`, naming the field. The ordinary dry runner also refuses stored manifests carrying package-only fields.
 
 ### `flow.instance.live`
 
@@ -143,7 +155,8 @@ It lists every template instance that hasn't ended, including expired ones that 
 | `template_bound_invalid` | at registration: a bound breaks its rules | names the field |
 | `package_has_params` | `flow.instance.ensure` names a template | |
 | `params_require_package` | ordinary install or ordinary-flow dry run carries `params` or `template` | `{"field": "params" \| "template"}` |
-| `template_values_required` | dry run names a registered template or template instance | |
+| `template_values_required` | dry run names a registered template without `params` | |
+| `params_not_allowed` | dry run of a template instance supplies `params` | |
 | `not_a_template_instance` | a non-template run calls `instance.end()` | |
 | `sink_instance_expired` | core receives a digest write at or after `expires_at` on its own clock | `{"flow_id": id, "expires_at_ms": ms}` |
 | `sink_flow_not_installed` | core receives a write from an ended or revoked instance | |

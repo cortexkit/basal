@@ -134,9 +134,18 @@ pub struct DryRunRequest {
 
 struct BorrowedRequest<'a> {
     install: &'a InstallRequest,
+    template: Option<&'a TemplateDryRun>,
     mode: Mode,
     trigger: &'a DryTrigger,
     now_ms: i64,
+}
+
+/// Canonical values and path limits captured before replay, without creating an instance.
+pub(crate) struct TemplateDryRun {
+    pub manifest: String,
+    pub params: Value,
+    pub guards: Vec<basal_host::builtins::TemplateRoot>,
+    pub agent_id: String,
 }
 
 #[derive(Debug)]
@@ -219,22 +228,62 @@ impl DryRunner {
         trigger: &DryTrigger,
         now_ms: i64,
     ) -> Result<Value, DryRunError> {
+        self.run_prepared(install, mode, trigger, now_ms, None)
+    }
+
+    pub(crate) fn run_template(
+        &self,
+        request: &DryRunRequest,
+        template: &TemplateDryRun,
+    ) -> Result<Value, DryRunError> {
+        let install = InstallRequest {
+            script: request.script.clone(),
+            manifest: template.manifest.clone(),
+            author: template.agent_id.clone(),
+            loop_override: request.loop_override,
+        };
+        self.run_prepared(
+            &install,
+            Mode::Capture,
+            &request.trigger,
+            request.now_ms,
+            Some(template),
+        )
+    }
+
+    fn run_prepared(
+        &self,
+        install: &InstallRequest,
+        mode: Mode,
+        trigger: &DryTrigger,
+        now_ms: i64,
+        template: Option<&TemplateDryRun>,
+    ) -> Result<Value, DryRunError> {
         let request = &BorrowedRequest {
             install,
+            template,
             mode,
             trigger,
             now_ms,
         };
-        let manifest =
-            Manifest::parse_ordinary(&request.install.manifest).map_err(|e| match e {
-                e @ (basal_core::manifest::ManifestError::AudienceSinkNamed
-                | basal_core::manifest::ManifestError::AudiencePlaceholderWithoutAudience
-                | basal_core::manifest::ManifestError::ForTargetRequiresAudience
-                | basal_core::manifest::ManifestError::RunBoundExceedsAudienceLimit) => {
-                    DryRunError::InstallRefused(basal_core::InstallError::Manifest(e))
-                }
-                other => DryRunError::Invalid(format!("manifest: {other}")),
-            })?;
+        let parsed = if request.template.is_some() {
+            Manifest::parse(&request.install.manifest)
+        } else {
+            Manifest::parse_ordinary(&request.install.manifest)
+        };
+        let mut manifest = parsed.map_err(|e| match e {
+            e @ (basal_core::manifest::ManifestError::AudienceSinkNamed
+            | basal_core::manifest::ManifestError::AudiencePlaceholderWithoutAudience
+            | basal_core::manifest::ManifestError::ForTargetRequiresAudience
+            | basal_core::manifest::ManifestError::RunBoundExceedsAudienceLimit) => {
+                DryRunError::InstallRefused(basal_core::InstallError::Manifest(e))
+            }
+            other => DryRunError::Invalid(format!("manifest: {other}")),
+        })?;
+        if let Some(template) = request.template {
+            basal_core::templates::effective(&mut manifest, &template.params);
+            basal_core::authorize::resolve_self(&mut manifest, &template.agent_id);
+        }
         let (fires, window) = self.fires(&manifest, request)?;
         Metrics::bump(&self.metrics.dry_runs);
 
@@ -283,6 +332,15 @@ impl DryRunner {
                         }),
                     ));
                 };
+                if request.template.is_some() && spec.at.is_some() {
+                    return Ok((
+                        vec![(
+                            "dry-run:at".into(),
+                            json!({"kind":"schedule", "due":timestamp(request.now_ms)?.to_string(), "dry_run":true}),
+                        )],
+                        json!({"kind":"at", "at":spec.at, "replayed":1, "dry_run":true}),
+                    ));
+                }
                 let window = window.unwrap_or(self.config.default_window);
                 if window > self.config.max_window {
                     return Err(DryRunError::Invalid(format!(
@@ -388,7 +446,41 @@ impl DryRunner {
             None,
             config,
         );
-        let installed = rt.install(request.install).map_err(|e| match e {
+        let install_result = if request.template.is_some() {
+            // Registration already validated the immutable template. Ordinary
+            // installation rejects `at` schedules and grants for paths that do not
+            // exist yet, but both are valid after binding template parameters.
+            // Approve only scratch code: the replay loop supplies each trigger
+            // directly, so it needs neither an instance nor a stored schedule.
+            rt.store()
+                .write(|tx| {
+                    let installed = basal_core::install::record(
+                        tx,
+                        manifest,
+                        request.install,
+                        Vec::new(),
+                        request.now_ms,
+                    )
+                    .map_err(|e| basal_core::CoreError::Invalid(e.to_string()))?;
+                    tx.execute(
+                        "UPDATE flows SET approved_version=?2,owner=?3 WHERE flow_id=?1",
+                        rusqlite::params![
+                            installed.flow_id,
+                            installed.version,
+                            request.install.author
+                        ],
+                    )?;
+                    tx.execute(
+                        "UPDATE installs SET state='approved',approval_ref='dry-run',approved_at=?3,approval_kind='card' WHERE flow_id=?1 AND version=?2",
+                        rusqlite::params![installed.flow_id, installed.version, request.now_ms],
+                    )?;
+                    Ok(installed)
+                })
+                .map_err(basal_core::InstallError::from)
+        } else {
+            rt.install(request.install)
+        };
+        let installed = install_result.map_err(|e| match e {
             e @ (basal_core::InstallError::ForeignAgentTarget { .. }
             | basal_core::InstallError::AudienceRequiresOperator
             | basal_core::InstallError::UnknownWorkspace(_)
@@ -399,13 +491,15 @@ impl DryRunner {
             }) => DryRunError::InstallRefused(e),
             other => DryRunError::Invalid(format!("install into the scratch store: {other}")),
         })?;
-        rt.approve(
-            &installed.flow_id,
-            installed.version,
-            &installed.code_hash,
-            "dry-run",
-        )
-        .map_err(|e| failed(format!("approve in the scratch store: {e}")))?;
+        if request.template.is_none() {
+            rt.approve(
+                &installed.flow_id,
+                installed.version,
+                &installed.code_hash,
+                "dry-run",
+            )
+            .map_err(|e| failed(format!("approve in the scratch store: {e}")))?;
+        }
 
         let mut runs = Vec::new();
         for (trigger_id, payload) in fires {
@@ -432,6 +526,20 @@ impl DryRunner {
                     continue;
                 }
             };
+            if let Some(template) = request.template {
+                // Bind only the disposable run's inputs. Activation substitutes
+                // the original template's grants and applies the recorded path
+                // limits, including protection against later symlink changes.
+                rt.store().write(|tx| {
+                    tx.execute(
+                        "UPDATE runs SET self_input=?2,params_input=?3,grant_guards=?4 WHERE run_id=?1",
+                        rusqlite::params![run_id,
+                            json!({"agent_id":template.agent_id}).to_string(),
+                            template.params.to_string(), serde_json::to_string(&template.guards).map_err(|e|basal_core::CoreError::Corrupt(e.to_string()))?],
+                    )?;
+                    Ok(())
+                }).map_err(failed)?;
+            }
             let mut events = Vec::new();
             let mut ending = None;
             for _ in 0..self.config.attempts_per_fire {
