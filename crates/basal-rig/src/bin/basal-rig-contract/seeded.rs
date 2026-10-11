@@ -90,9 +90,10 @@ fn seed_stopped_generation(
 /// Generation orders core's ensure/remove requests for one package/agent pair.
 /// With basal stopped, set its generation to N = core's generation + 1000.
 /// Basal refuses the next older ensure with generation_stale and current = N.
-/// Core must learn exactly N so its next recovery can ensure at N + 1 rather
-/// than keep sending stale requests. Observe the learned floor and confirmed
-/// recovery through persona.check and basal's row, not a captured wire reply.
+/// Require persona.check to show generation N + 1 with version 1 confirmed,
+/// and basal's instance to agree. Core starts below N and only the stale refusal
+/// supplies N, so this exact recovery proves it learned the refusal's current
+/// generation. This is an inference; no refusal reply or receipt is captured.
 /// Core's store and all production module bytes remain untouched.
 pub(super) async fn stale(
     rig: &Rig,
@@ -140,6 +141,16 @@ pub(super) async fn stale(
         changed.is_ok(),
         json!(changed),
     );
+    let seeded_row = rig.basal.instance(id);
+    let mut expected = before.clone();
+    expected["generation"] = json!(seeded);
+    case.check(
+        "basal stores exactly the distinctive seeded generation while stopped",
+        seeded_row
+            .as_ref()
+            .is_ok_and(|row| row.as_ref() == Some(&expected)),
+        json!({"seeded_generation":seeded,"basal":seeded_row}),
+    );
     let started = ck(&["module", "start", "basal"]);
     if !case.check(
         "restart ckdev-basal after closing the fixture connection",
@@ -161,25 +172,11 @@ pub(super) async fn stale(
         flushed.is_ok(),
         evidence(&flushed),
     );
-    let learned = poll(Duration::from_secs(10), || async {
-        let v = super::package_cases::view(rig, agent).await.ok()?;
-        let i = super::package_cases::instance_view(&v, package)?;
-        (i["generation"] == seeded && i.get("marker") == Some(&Value::Null)).then_some(v)
-    })
-    .await;
-    let after = rig.basal.instance(id).ok().flatten().unwrap_or(Value::Null);
-    case.check(
-        "core learned exactly the distinctive current floor from the live generation_stale refusal",
-        learned.is_some(),
-        json!({"persona_check":learned,"seeded_generation":seeded}),
-    );
-    let mut expected = before.clone();
-    expected["generation"] = json!(seeded);
-    case.check(
-        "the stale ensure left basal's instance and enable switch unchanged",
-        after == expected,
-        json!({"before":before,"after":after}),
-    );
+    // Core's independent recovery timer can advance its stored generation from N
+    // to N + 1 and re-ensure basal's removed instance before either state is read.
+    // Do not require a glimpse of core at N or basal still removed after refusal.
+    // Instead, require the eventual confirmed generation N + 1: only basal's stale
+    // refusal supplies N. The polling bound stops a hang; elapsed time proves nothing.
     let recovered = poll(Duration::from_secs(30), || async {
         let v = super::package_cases::view(rig, agent).await.ok()?;
         let i = super::package_cases::instance_view(&v, package)?;
@@ -187,18 +184,19 @@ pub(super) async fn stale(
     })
     .await;
     case.check(
-        "the next recovery confirms the instance at exactly the learned floor plus one",
+        "core reached exactly seeded+1, which only basal's stale refusal could have taught it (inferred, not captured)",
         recovered.is_some(),
         json!({"persona_check":recovered,"seeded_generation":seeded}),
     );
     let corrected = rig.basal.instance(id);
     case.check(
-        "basal records the corrective ensure without changing the enable switch",
+        "basal ends at seeded+1, enabled and not removed, with its enable switch untouched",
         corrected.as_ref().is_ok_and(|instance| {
             instance.as_ref().is_some_and(|i| {
                 i["generation"] == seeded + 1
                     && i["operation"] == "ensure"
                     && i["removed"] == false
+                    && i["state"] == "enabled"
                     && basal_rig::packages::same_enable_state(&before, i)
             })
         }),

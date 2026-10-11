@@ -277,6 +277,35 @@ cmd_test
             self.assertEqual(args[args.index("--project-root") + 1],
                              str(rig / "home/projects/basal-rig-20260101t000000z"))
 
+    def test_package_selector_reaches_the_live_contract_without_model_credentials(self):
+        with tempfile.TemporaryDirectory() as home:
+            result = self.run_shell('''
+guard_all_paths
+date() { printf '%s\n' 20260101T000000Z; }
+daemon_pid() { printf '%s\n' 123; }
+check_daemon_identity() { :; }
+ensure_project() { printf '%s\n' pj_fixture; }
+write_manifest() { mkdir -p "$RESULTS/$1"; }
+basal_mode() { printf '%s\n' rig-build; }
+require_model_credential() { die "packages must not require model credentials"; }
+mkdir -p "$RIG"
+CONTRACT="$RIG/ckdev-contract"
+printf '#!/bin/sh\nexit 0\n' > "$CONTRACT"
+chmod 755 "$CONTRACT"
+rig_env() { printf '%s\n' "$@" > "$RIG/captured-argv"; }
+cmd_test --packages
+''', home)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            rig = Path(home) / ".local/share/cortexkit/ckdev-flows"
+            args = (rig / "captured-argv").read_text().splitlines()
+            self.assertEqual(args.count("--packages"), 1)
+            self.assertNotIn("--models", args)
+            dry = self.run_shell('DRY=1; cmd_test --packages', home)
+            self.assertEqual(dry.returncode, 0, dry.stderr)
+            self.assertIn("--packages (only setup, packages and cleanup; other groups not run)", dry.stdout)
+            mixed = self.run_shell('DRY=1; cmd_test --packages --models', home)
+            self.assertNotEqual(mixed.returncode, 0)
+
     def test_core_revision_comes_from_the_manifest_and_must_match(self):
         with tempfile.TemporaryDirectory() as home:
             manifest = Path(home) / "manifest.json"

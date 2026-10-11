@@ -22,7 +22,7 @@
 #   script/flows-rig.sh stop     [--dry-run]
 #   script/flows-rig.sh manifest [--dry-run]
 #   script/flows-rig.sh credential --key-file <path> [--dry-run]
-#   script/flows-rig.sh test     [--models] [--dry-run]
+#   script/flows-rig.sh test     [--models | --packages] [--dry-run]
 #
 # --dry-run prints every command the subcommand would run and every file it
 # would write, with the file's content, and changes nothing.
@@ -63,8 +63,10 @@
 #             contract suite (basal-rig-contract) against the real
 #             prefrontal-core, with contract.json and contract.log beside
 #             the manifest. It fails if any check failed.
-#             Without --models, report the model cases as not run by name.
-#             Codemode always runs, using a real core-owned agent scope and a
+#             A full run without --models reports model cases as not run by name.
+#             --packages runs only setup, the package group and its cleanup;
+#             the report marks the other groups as not run, not as a full pass.
+#             Full runs include codemode, using a real core-owned agent scope and a
 #             rig-only agent-run-scopes/v1 probe. It checks identity, catalog,
 #             console output, return value, CPU exhaustion and scope closure.
 #             The ungranted-worker case is reported as not run: registering a
@@ -1428,7 +1430,16 @@ PY
 # the rig again only if this command started it.
 cmd_test() (
   models=0
-  if [ $# -eq 1 ] && [ "$1" = --models ]; then models=1; else [ $# -eq 0 ] || usage; fi
+  packages=0
+  if [ $# -eq 1 ]; then
+    case "$1" in
+      --models) models=1 ;;
+      --packages) packages=1 ;;
+      *) usage ;;
+    esac
+  else
+    [ $# -eq 0 ] || usage
+  fi
   stamp=$(date -u +%Y%m%dT%H%M%SZ)
   dir="$RESULTS/$stamp"
   if [ "$DRY" = 1 ]; then
@@ -1441,7 +1452,9 @@ cmd_test() (
     say "    --project-root $PROJECTS/basal-rig-$(printf '%s' "$stamp" | tr '[:upper:]' '[:lower:]')"
     say "    --results $dir/contract.json"
     say "    --broca-index $BROCA_INDEX"
-    if [ "$models" = 1 ]; then
+    if [ "$packages" = 1 ]; then
+      say "    --packages (only setup, packages and cleanup; other groups not run)"
+    elif [ "$models" = 1 ]; then
       rig_auth list
       say "    --models (after requiring exactly one active OpenAI credential)"
     else
@@ -1483,6 +1496,9 @@ cmd_test() (
       die "the rig credential prerequisite failed"
     fi
     set -- "$@" --models
+  fi
+  if [ "$packages" = 1 ]; then
+    set -- "$@" --packages
   fi
   say "running the contract suite (output: $dir/contract.log)"
   set +e

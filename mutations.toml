@@ -15995,5 +15995,7 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-rig/src/bin/basal-rig-contract/seeded.rs"
-old = 'instance["generation"] == seeded + 1'
-new = 'instance["generation"].as_i64().is_some_and(|generation| generation >= seeded) // NON-VACUITY BREAK'
+old = '''instance["generation"] == seeded + 1
+        && instance["confirmed_version"] == 1'''
+new = '''instance["generation"].as_i64().is_some_and(|generation| generation >= seeded) // NON-VACUITY BREAK
+        && instance["confirmed_version"] == 1'''
