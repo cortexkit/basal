@@ -15944,3 +15944,19 @@ timeout_s = 600
 file = "crates/basal-rig/src/stores.rs"
 old = 'c.query_row("SELECT COUNT(*) FROM run_index", [], |r| r.get(0))'
 new = 'c.query_row("SELECT COUNT(*) FROM run_index WHERE 0", [], |r| r.get(0)) // NON-VACUITY BREAK'
+
+[[control]]
+id = "rig-seeded-recovery-requires-exact-next-generation"
+guards = "seeded stale recovery is confirmed at exactly the learned floor plus one"
+test_file = "crates/basal-rig/src/bin/basal-rig-contract/seeded.rs"
+runner = "cargo"
+package = "basal-rig"
+platforms = ["linux"]
+target = "--bin basal-rig-contract"
+expect_red = ["seeded::tests::bounded_recovery_requires_exact_next_generation_and_confirmation"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-rig/src/bin/basal-rig-contract/seeded.rs"
+old = 'instance["generation"] == seeded + 1'
+new = 'instance["generation"].as_i64().is_some_and(|generation| generation >= seeded) // NON-VACUITY BREAK'

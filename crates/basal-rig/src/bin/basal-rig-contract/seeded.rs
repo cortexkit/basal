@@ -87,10 +87,12 @@ fn seed_stopped_generation(
     tx.commit().map_err(|e| e.to_string())
 }
 
+/// Generation orders core's ensure/remove requests for one package/agent pair.
 /// With basal stopped, set its generation to N = core's generation + 1000.
-/// A subsequent lower-generation ensure is refused with generation_stale and
-/// detail.current = N. Core must persist exactly N as its new generation counter.
-/// Read that counter through persona.check; this is not a capture of the reply.
+/// Basal refuses the next older ensure with generation_stale and current = N.
+/// Core must learn exactly N so its next recovery can ensure at N + 1 rather
+/// than keep sending stale requests. Observe the learned floor and confirmed
+/// recovery through persona.check and basal's row, not a captured wire reply.
 /// Core's store and all production module bytes remain untouched.
 pub(super) async fn stale(
     rig: &Rig,
@@ -162,7 +164,7 @@ pub(super) async fn stale(
     let learned = poll(Duration::from_secs(10), || async {
         let v = super::package_cases::view(rig, agent).await.ok()?;
         let i = super::package_cases::instance_view(&v, package)?;
-        (i["generation"] == seeded && i["marker"].is_null()).then_some(v)
+        (i["generation"] == seeded && i.get("marker") == Some(&Value::Null)).then_some(v)
     })
     .await;
     let after = rig.basal.instance(id).ok().flatten().unwrap_or(Value::Null);
@@ -178,21 +180,41 @@ pub(super) async fn stale(
         after == expected,
         json!({"before":before,"after":after}),
     );
-    tokio::time::sleep(Duration::from_secs(2)).await;
-    let stable = super::package_cases::view(rig, agent).await;
+    let recovered = poll(Duration::from_secs(30), || async {
+        let v = super::package_cases::view(rig, agent).await.ok()?;
+        let i = super::package_cases::instance_view(&v, package)?;
+        confirmed_recovery(&i, seeded).then_some(v)
+    })
+    .await;
     case.check(
-        "core has no retry loop: the floor and cleared marker stay stable",
-        stable.as_ref().is_ok_and(|v| {
-            super::package_cases::instance_view(v, package)
-                .is_some_and(|i| i["generation"] == seeded && i["marker"].is_null())
+        "the next recovery confirms the instance at exactly the learned floor plus one",
+        recovered.is_some(),
+        json!({"persona_check":recovered,"seeded_generation":seeded}),
+    );
+    let corrected = rig.basal.instance(id);
+    case.check(
+        "basal records the corrective ensure without changing the enable switch",
+        corrected.as_ref().is_ok_and(|instance| {
+            instance.as_ref().is_some_and(|i| {
+                i["generation"] == seeded + 1
+                    && i["operation"] == "ensure"
+                    && i["removed"] == false
+                    && basal_rig::packages::same_enable_state(&before, i)
+            })
         }),
-        evidence(&stable),
+        json!(&corrected),
     );
     case.record(
         "after",
-        json!({"persona_check":evidence(&stable),"basal":rig.basal.instance(id)}),
+        json!({"persona_check":recovered,"basal":corrected}),
     );
     case
+}
+
+fn confirmed_recovery(instance: &Value, seeded: i64) -> bool {
+    instance["generation"] == seeded + 1
+        && instance["confirmed_version"] == 1
+        && instance.get("marker") == Some(&Value::Null)
 }
 
 pub(super) fn no_store_handles(path: &std::path::Path) -> Result<(), String> {
@@ -211,4 +233,26 @@ pub(super) fn no_store_handles(path: &std::path::Path) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bounded_recovery_requires_exact_next_generation_and_confirmation() {
+        assert!(confirmed_recovery(
+            &json!({"generation":1003,"confirmed_version":1,"marker":null}),
+            1002
+        ));
+        for wrong in [
+            json!({"generation":1002,"confirmed_version":1,"marker":null}),
+            json!({"generation":1004,"confirmed_version":1,"marker":null}),
+            json!({"generation":1003,"confirmed_version":null,"marker":null}),
+            json!({"generation":1003,"confirmed_version":1,"marker":{}}),
+            json!({"generation":1003,"confirmed_version":1}),
+        ] {
+            assert!(!confirmed_recovery(&wrong, 1002));
+        }
+    }
 }

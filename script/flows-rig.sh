@@ -29,9 +29,9 @@
 #
 # Subcommands:
 #   build     clone each repository at the named revision and build it.
-#             prefrontal defaults to the pinned codemode run-scope build;
-#             cingulate defaults to the pinned
-#             consent/v1 build below, and other repositories default to HEAD. basal is always built from this checkout's
+#             prefrontal defaults to defe4a72a (the codemode run-scope build);
+#             cingulate defaults to c650e9db (the deployed consent/v1 build),
+#             and other repositories default to HEAD. basal is always built from this checkout's
 #             HEAD, without uncommitted changes. The source checkouts are
 #             only read. A build that changes a tracked file fails, except
 #             that --sibling-lock <repo> lets that repository's Cargo.lock
@@ -71,6 +71,9 @@
 #             real worker needs a core task, which this rig does not launch.
 #             It does not test AFT's allow/ask/deny round trip;
 #             that needs AFT itself to declare agent-run-scopes/v1.
+#             Package recovery waits for the stored generation to advance once
+#             and its version to be confirmed. Further-pass call-count checks
+#             are not run: no completed-pass or received-ensure counter exists.
 #             --models requires that credential and agent-owned flows through
 #             core's relay (prefrontal 73c66ff1f or later): minimal call first,
 #             routing/journal, result/usage settlement, classify, token-cap
@@ -143,9 +146,9 @@
 # be bypassed.
 # Core's package cards use cingulate's consent/v1 API; basal's ordinary install
 # cards still use core's legacy elicitation owner API at this revision.
-# Cingulate's default pins the consent API being tested before deployment;
-# after deployment, pass the placed revision explicitly to test the same bytes.
-#   script/flows-rig.sh build --prefrontal-rev 16cd2fa48785af6766bece101a1446f35d85c942 --cingulate-rev bd609a5fbdba12395f3bfe7a97a6bbdbee8b0fbc --sibling-lock claustrum
+# Cingulate's default matches the deployed consent/v1 provider. Explicit
+# revision overrides let a rehearsal test the same bytes a deployment places.
+#   script/flows-rig.sh build --prefrontal-rev defe4a72a3ee4bac8ce81645df801c6907a8ce4c --cingulate-rev c650e9db6e87dbb28fe20dd5fc2815db5deb41e9 --sibling-lock claustrum
 set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
@@ -485,14 +488,14 @@ daemon_pid() {
 # ---------------------------------------------------------------- build
 
 cmd_build() {
-  prefrontal_rev=16cd2fa48785af6766bece101a1446f35d85c942
+  prefrontal_rev=defe4a72a3ee4bac8ce81645df801c6907a8ce4c
   subc_rev=HEAD
   broca_rev=HEAD
   credentials_rev=HEAD
   commons_rev=HEAD
   entorhinal_rev=HEAD
   fusiform_rev=HEAD
-  cingulate_rev=bd609a5fbdba12395f3bfe7a97a6bbdbee8b0fbc
+  cingulate_rev=c650e9db6e87dbb28fe20dd5fc2815db5deb41e9
   sibling_lock=""
   while [ $# -gt 0 ]; do
     case "$1" in

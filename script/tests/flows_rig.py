@@ -34,14 +34,15 @@ cmd_config
         with tempfile.TemporaryDirectory() as home:
             result = self.run_shell('''guard_all_paths
 DRY=1
-repos() { printf 'basal\t%s\nprefrontal\t%s\n' "$HOME" "$HOME"; }
+repos() { printf 'basal\t%s\nprefrontal\t%s\ncingulate\t%s\n' "$HOME" "$HOME" "$HOME"; }
 git() { printf '%040d\n' 0; }
 clone_at() { printf 'clone %s %s\n' "$1" "$3"; }
 cargo_build() { printf 'build %s\n' "$*"; }
 cmd_build
 ''', home)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn("prefrontal: 16cd2fa48785af6766bece101a1446f35d85c942", result.stdout)
+            self.assertIn("prefrontal: defe4a72a3ee4bac8ce81645df801c6907a8ce4c", result.stdout)
+            self.assertIn("cingulate: c650e9db6e87dbb28fe20dd5fc2815db5deb41e9", result.stdout)
             self.assertIn("--bin ck-callosum-stub --bin ckdev-runscope-probe --bin basal-rig-contract", result.stdout)
 
     def test_build_preserves_repository_paths_with_spaces(self):
@@ -300,7 +301,7 @@ cmd_config
             self.assertIn("cingulate\tcingulate\tck-cingulate\tckdev-cingulate", result.stdout)
             self.assertIn("cingulate\tckdev-cingulate", result.stdout)
             self.assertIn(f'"program": "{home}/.local/share/cortexkit/ckdev-flows/bin/ckdev-cingulate"', result.stdout)
-            self.assertIn("cingulate_rev=bd609a5fbdba12395f3bfe7a97a6bbdbee8b0fbc", HELPERS)
+        self.assertIn("cingulate_rev=c650e9db6e87dbb28fe20dd5fc2815db5deb41e9", HELPERS)
 
 
 if __name__ == "__main__":
