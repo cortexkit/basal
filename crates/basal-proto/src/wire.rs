@@ -24,6 +24,7 @@ const TAG_WARNING: u8 = 107;
 
 // Codes 1..=21 are primitives, including the permanently assigned shell code 11.
 const CALL_TOOL: u8 = 22;
+const CALL_OP_FOR: u8 = 23;
 
 // Hints include the large variable fields; small fixed metadata may grow the
 // buffer once. They are capped by Encoder before reserving any memory.
@@ -118,6 +119,11 @@ fn call_kind(enc: &mut Encoder, kind: &CallKind) {
             enc.name("module", module);
             enc.name("op", op);
         }
+        CallKind::OpFor { module, op } => {
+            enc.u8(CALL_OP_FOR);
+            enc.name("module", module);
+            enc.name("op", op);
+        }
         CallKind::Primitive(p) => enc.u8(p.code()),
         CallKind::Tool { name } => {
             enc.u8(CALL_TOOL);
@@ -142,6 +148,10 @@ fn read_call_kind(dec: &mut Decoder<'_>) -> Result<CallKind, DecodeError> {
             name: name(dec, "tool")?,
         }),
         0 => Ok(CallKind::Op {
+            module: name(dec, "module")?,
+            op: name(dec, "op")?,
+        }),
+        CALL_OP_FOR => Ok(CallKind::OpFor {
             module: name(dec, "module")?,
             op: name(dec, "op")?,
         }),

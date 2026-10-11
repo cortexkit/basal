@@ -28,6 +28,11 @@ struct Wire {
     refusals: Mutex<VecDeque<WireError>>,
     open_refusals: Mutex<VecDeque<WireError>>,
     core_capable: Mutex<bool>,
+    target_scopes: Mutex<basal_host::target_scope::TargetScopes>,
+    target_answers: Mutex<VecDeque<Result<Value, WireError>>>,
+    target_asks: Mutex<Vec<Value>>,
+    now: Mutex<i64>,
+    keyed: Mutex<bool>,
 }
 impl Wire {
     fn invoke(&self, route: Option<u64>, module: &str, body: Value) -> Result<Value, WireError> {
@@ -36,6 +41,11 @@ impl Wire {
             .unwrap()
             .push((route, module.into(), body.clone()));
         if let Some(refusal) = self.refusals.lock().unwrap().pop_front() {
+            if matches!(refusal, WireError::ScopeCut(_))
+                && let Some(route) = route
+            {
+                self.routes.lock().unwrap().closed(route, true);
+            }
             return Err(refusal);
         }
         Ok(body
@@ -56,6 +66,37 @@ impl Wire {
     }
 }
 impl Transport for Wire {
+    fn target_flow(
+        &self,
+        request: &CallRequest,
+        call: &basal_host::target_scope::TargetCall,
+    ) -> Result<String, WireError> {
+        let mut cache = self.target_scopes.lock().unwrap();
+        let result = cache.resolve(&request.flow_id, &request.run_id, call, *self.now.lock().unwrap(),
+            |scope| self.routes.lock().unwrap().ended(&scope.route_key()),
+            || self.management("prefrontal-core", "flow.target_scope", json!({"flow_id":request.flow_id,"version":call.version,"agent":call.agent,"expires_at_ms":call.expires_at_ms})),
+        );
+        for key in cache.take_retired() {
+            self.configure_flow(&key, true, None);
+        }
+        let scope = result?;
+        let key = scope.route_key();
+        let targets = self
+            .routes
+            .lock()
+            .unwrap()
+            .targets(&request.flow_id)
+            .unwrap();
+        self.configure_flow(
+            &key,
+            true,
+            Some(RegisteredScope {
+                selector: scope.selector(),
+                targets,
+            }),
+        );
+        Ok(key)
+    }
     fn provider_ready(&self, flow: &str, module: &str, action: &str) -> Result<(), FlowRefusal> {
         self.routes.lock().unwrap().ready(flow, module, action)
     }
@@ -64,13 +105,29 @@ impl Transport for Wire {
     }
     fn catalog(&self) -> Result<Value, WireError> {
         let mut modules = vec![
-            json!({"module_id":"mock","roles":[{"role":"management_surface","operations":[{"name":"send","kind":"mutate"}],"config_schema":{},"observability":[],"identity_scope":[],"concurrency":"serial"}],"control_ops":[]}),
+            json!({"module_id":"mock","roles":[{"role":"management_surface","operations":[{"name":"send","kind":"mutate"},{"name":"post","kind":"mutate"},{"name":"echo","kind":"query"}],"config_schema":{},"observability":[],"identity_scope":[],"concurrency":"serial"}],"control_ops":[]}),
             json!({"module_id":"plexus","roles":[{"role":"management_surface","operations":[{"name":"pr.comment","kind":"mutate"}],"config_schema":{},"observability":[],"identity_scope":[],"concurrency":"serial"}],"control_ops":[]}),
         ];
+        if *self.keyed.lock().unwrap() {
+            modules[0]["roles"][0]["operations"] =
+                json!([{"name":"echo","kind":"query"},{"name":"post","kind":"mutate"}]);
+            modules[0]["roles"].as_array_mut().unwrap().push(json!({"role":"tool_provider","tools":[{"name":"send","execution_mode":"mutating","schema":{}}],"identity_scope":[],"config_schema":{},"observability":[],"concurrency":"serial","emits_push":false,"sub_supervises":false}));
+        }
         modules.push(json!({"module_id":"prefrontal-core", "capabilities":{"provides":if *self.core_capable.lock().unwrap() {vec!["flow-scopes/v1"]} else {vec![]}}, "roles":[{"role":"management_surface","operations":[{"name":"board.read","kind":"query"}],"config_schema":{},"observability":[],"identity_scope":[],"concurrency":"serial"}]}));
         Ok(json!({"generation":1,"modules":modules,"subc_ops":[]}))
     }
     fn management(&self, module: &str, op: &str, params: Value) -> Result<Value, WireError> {
+        if op == "flow.target_scope" {
+            assert_eq!(module, "prefrontal-core");
+            let mut asks = self.target_asks.lock().unwrap();
+            asks.push(params.clone());
+            if let Some(answer) = self.target_answers.lock().unwrap().pop_front() {
+                return answer;
+            }
+            return Ok(
+                json!({"ref":format!("target-{}",asks.len()),"epoch":1,"delegates":true,"expires_at_ms":params["expires_at_ms"].as_i64().unwrap()+600_000}),
+            );
+        }
         if op == "flow.install_status" {
             let mut value = json!({"state":"active","code_hash":*self.hash.lock().unwrap()});
             if let Some(scope) = self.scope.lock().unwrap().as_ref() {
@@ -166,15 +223,58 @@ impl Fixture {
         owned: bool,
         activation_deadline: Duration,
     ) -> Self {
+        Self::with_hooks(
+            tag,
+            script,
+            registered,
+            owned,
+            activation_deadline,
+            Arc::new(NoHooks),
+        )
+    }
+    fn with_hooks(
+        tag: &str,
+        script: &str,
+        registered: bool,
+        owned: bool,
+        activation_deadline: Duration,
+        hooks: Arc<dyn basal_core::hooks::Hooks>,
+    ) -> Self {
+        Self::with_host_options(
+            tag,
+            script,
+            registered,
+            owned,
+            activation_deadline,
+            hooks,
+            false,
+        )
+    }
+    fn with_host_options(
+        tag: &str,
+        script: &str,
+        registered: bool,
+        owned: bool,
+        activation_deadline: Duration,
+        hooks: Arc<dyn basal_core::hooks::Hooks>,
+        keyed: bool,
+    ) -> Self {
         let world = World::new(tag);
         let wire = Arc::new(Wire::default());
+        *wire.keyed.lock().unwrap() = keyed;
         if registered {
             *wire.scope.lock().unwrap() = Some(scope(1));
         }
         let clock = Clock::manual(1_000);
         let catalog = Arc::new(SubcCatalog::new(wire.clone()));
         let host = Arc::new(RoutingHost::new(
-            Arc::new(ModuleOpsHost::new(wire.clone(), catalog)),
+            Arc::new(
+                ModuleOpsHost::new(wire.clone(), catalog).with_idempotent_ops(if keyed {
+                    [("mock".into(), "send".into())].into_iter().collect()
+                } else {
+                    Default::default()
+                }),
+            ),
             Arc::new(CoreHost::new(wire.clone())),
             Arc::new(world.mock.clone()),
         ));
@@ -182,7 +282,7 @@ impl Fixture {
             Arc::new(Store::open(world.store_path(), world.durability).unwrap()),
             host,
             Arc::new(world.catalog.clone()),
-            Arc::new(NoHooks),
+            hooks,
             Some(world.source.clone()),
             Config {
                 activation_deadline,
@@ -221,6 +321,48 @@ impl Fixture {
             .run_id()
             .unwrap()
             .into()
+    }
+    fn restart(self) -> Self {
+        let Self {
+            world,
+            wire,
+            clock,
+            rt,
+        } = self;
+        drop(rt);
+        world.mock.detach();
+        let catalog = Arc::new(SubcCatalog::new(wire.clone()));
+        let keyed = *wire.keyed.lock().unwrap();
+        let host = Arc::new(RoutingHost::new(
+            Arc::new(
+                ModuleOpsHost::new(wire.clone(), catalog).with_idempotent_ops(if keyed {
+                    [("mock".into(), "send".into())].into_iter().collect()
+                } else {
+                    Default::default()
+                }),
+            ),
+            Arc::new(CoreHost::new(wire.clone())),
+            Arc::new(world.mock.clone()),
+        ));
+        let rt = Runtime::new(
+            Arc::new(Store::open(world.store_path(), world.durability).unwrap()),
+            host,
+            Arc::new(world.catalog.clone()),
+            Arc::new(NoHooks),
+            Some(world.source.clone()),
+            Config {
+                install_gate: InstallGate::Core,
+                clock: clock.clone(),
+                auto_resume: false,
+                ..Config::default()
+            },
+        );
+        Self {
+            world,
+            wire,
+            clock,
+            rt,
+        }
     }
     fn activate(&self, run: &str) {
         self.rt.resume(run).unwrap();
@@ -265,7 +407,7 @@ impl Fixture {
             .lock()
             .unwrap()
             .iter()
-            .filter(|(_, _, v)| v["method"] == "send")
+            .filter(|(_, _, v)| v["method"] == "send" || v["name"] == "send")
             .count()
     }
 }
@@ -871,4 +1013,657 @@ fn core_flow_ops_require_a_scope_and_never_change_script_arguments() {
         }))
     ));
     assert_eq!(wire.calls.lock().unwrap().len(), 1);
+}
+
+fn install_target_manifest(f: &Fixture, modify: impl FnOnce(&mut Value)) {
+    f.world.catalog.add_named_agent("agent_alice", "Alice");
+    for i in 0..80 {
+        f.world
+            .catalog
+            .add_named_agent(&format!("agent_{i}"), &format!("Agent{i}"));
+    }
+    let mut manifest = test_manifest();
+    manifest["version"] = json!(2);
+    manifest["audience"] = json!({"kind":"global"});
+    manifest["sinks"] = json!([]);
+    manifest["status"] = json!([]);
+    manifest["claims"] = json!([]);
+    manifest.as_object_mut().unwrap().remove("facts");
+    manifest.as_object_mut().unwrap().remove("llm");
+    manifest["ops"] = json!([
+        {"module":"mock","op":"echo"},
+        {"module":"mock","op":"send","for_target":"delegate"},
+        {"module":"mock","op":"post"}
+    ]);
+    modify(&mut manifest);
+    let script =
+        f.rt.store()
+            .read(|c| {
+                Ok(c.query_row(
+                    "SELECT script FROM installs WHERE flow_id='flow-test' AND version=1",
+                    [],
+                    |r| r.get::<_, String>(0),
+                )?)
+            })
+            .unwrap();
+    let installed =
+        f.rt.install(&InstallRequest {
+            script,
+            manifest: manifest.to_string(),
+            author: "operator".into(),
+            loop_override: false,
+        })
+        .unwrap();
+    f.rt.approve("flow-test", 2, &installed.code_hash, "approval")
+        .unwrap();
+    *f.wire.hash.lock().unwrap() = basal_core::ids::hex(&installed.code_hash);
+}
+
+fn target_fixture(tag: &str, script: &str) -> Fixture {
+    let f = Fixture::new(tag, script, true, false);
+    install_target_manifest(&f, |_| {});
+    f
+}
+
+fn run_result(f: &Fixture, run: &str) -> Value {
+    let row = f.rt.run(run).unwrap();
+    assert_eq!(row.state, RunState::Succeeded, "{row:?}");
+    serde_json::from_str(row.result.unwrap().as_str()).unwrap()
+}
+
+#[test]
+fn for_requires_an_audience_and_never_sends() {
+    let f = Fixture::new(
+        "for-without-audience",
+        "try { await ops.call('mock','send',{}, {for:'ALF'}); } catch(e) { return e.data.code; }",
+        true,
+        false,
+    );
+    let run = f.admit("one");
+    f.activate(&run);
+    assert_eq!(run_result(&f, &run), json!("for_requires_audience"));
+    assert!(f.wire.target_asks.lock().unwrap().is_empty());
+    assert_eq!(f.sends(), 0);
+}
+
+#[test]
+fn targeted_call_opens_target_scope_and_ordinary_call_keeps_flow_scope() {
+    let f = target_fixture(
+        "for-scopes",
+        "const a=await ops.call('mock','echo',{n:1},{for:'Alice'}); const b=await ops.call('mock','send',{n:2}); const c=await ops.call('mock','echo',{n:3},{for:'agent_alice'}); return [a.n,b.n,c.n];",
+    );
+    let run = f.admit("one");
+    f.activate(&run);
+    assert_eq!(run_result(&f, &run), json!([1, 2, 3]));
+    let asks = f.wire.target_asks.lock().unwrap();
+    assert_eq!(asks.len(), 1);
+    assert_eq!(
+        asks[0],
+        json!({"flow_id":"flow-test","version":2,"agent":"agent_alice","expires_at_ms":f.rt.run(&run).unwrap().deadline_at.unwrap()})
+    );
+    let opens = f.wire.opens.lock().unwrap();
+    assert_eq!(opens.len(), 2);
+    assert_eq!(opens[0].scope_ref, "target-1");
+    assert_eq!(opens[1].scope_ref, "flow:flow-test");
+    let journal = f.rt.calls(&run).unwrap();
+    assert!(matches!(journal[0].kind, CallKind::OpFor { .. }));
+    let request: Value =
+        serde_json::from_str(journal[0].request.as_ref().unwrap().as_str()).unwrap();
+    assert_eq!(request["agent"], "agent_alice");
+    assert_eq!(request["args"], json!({"n":1}));
+}
+
+#[test]
+fn target_mutation_requires_its_own_delegating_grant_but_queries_do_not() {
+    let f = target_fixture(
+        "per-op-delegation",
+        "let code; try { await ops.call('mock','post',{}, {for:'Alice'}); } catch(e) { code=e.data.code; } const q=await ops.call('mock','echo',{n:7},{for:'Alice'}); await ops.call('mock','send',{n:8},{for:'Alice'}); return [code,q.n];",
+    );
+    let run = f.admit("one");
+    f.activate(&run);
+    assert_eq!(
+        run_result(&f, &run),
+        json!(["for_target_requires_delegate", 7])
+    );
+    assert_eq!(f.sends(), 1);
+    assert!(
+        !f.wire
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(_, _, v)| v["method"] == "post")
+    );
+    assert_eq!(f.rt.calls(&run).unwrap()[0].attempts, 0);
+    assert!(f.rt.flow_health().unwrap()[0].waiting_reason.is_none());
+}
+
+#[test]
+fn target_core_refusals_are_typed_unsent_without_retry_or_health_penalty() {
+    for code in [
+        "sink_target_not_in_audience",
+        "flow_not_approved",
+        "flow_has_no_audience",
+        "scope_expiry_too_far",
+    ] {
+        let f = target_fixture(
+            code,
+            "try { await ops.call('mock','send',{}, {for:'Alice'}); } catch(e) { return e.data.code; }",
+        );
+        f.wire
+            .target_answers
+            .lock()
+            .unwrap()
+            .push_back(Err(basal_host::transport::refusal(
+                subc_protocol::ErrorBody::new(code, "refused"),
+            )));
+        let run = f.admit("one");
+        f.activate(&run);
+        assert_eq!(run_result(&f, &run), json!(code));
+        assert_eq!(f.sends(), 0);
+        assert_eq!(f.wire.target_asks.lock().unwrap().len(), 1);
+        let row = &f.rt.calls(&run).unwrap()[0];
+        assert_ne!(row.dispatch, basal_core::DispatchState::Deferred);
+        assert_eq!(row.attempts, 1);
+        assert!(f.rt.flow_health().unwrap()[0].waiting_reason.is_none());
+    }
+}
+
+#[test]
+fn provider_delegation_unsupported_is_typed_unsent_without_retry_or_health_penalty() {
+    let f = target_fixture(
+        "provider-delegation",
+        "try { await ops.call('mock','send',{}, {for:'Alice'}); } catch(e) { return e.data.code; }",
+    );
+    f.wire
+        .open_refusals
+        .lock()
+        .unwrap()
+        .push_back(basal_host::transport::refusal(
+            subc_protocol::ErrorBody::new(
+                "flow_delegation_unsupported",
+                "provider has not opted in",
+            ),
+        ));
+    let run = f.admit("one");
+    f.activate(&run);
+    assert_eq!(run_result(&f, &run), json!("flow_delegation_unsupported"));
+    assert_eq!(f.sends(), 0);
+    assert_eq!(f.wire.opens.lock().unwrap().len(), 1);
+    let row = &f.rt.calls(&run).unwrap()[0];
+    assert_eq!(row.attempts, 1);
+    assert_ne!(row.dispatch, basal_core::DispatchState::Deferred);
+    assert!(f.rt.flow_health().unwrap()[0].waiting_reason.is_none());
+    let health: Option<String> =
+        f.rt.store()
+            .read(|c| {
+                Ok(c.query_row(
+                    "SELECT scope_health FROM flows WHERE flow_id='flow-test'",
+                    [],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+    assert!(health.is_none());
+}
+
+#[test]
+fn distinct_target_default_bound_and_manifest_override() {
+    let script = "let count=0; let code=null; for(let i=0;i<65;i++) { try { await ops.call('mock','echo',{}, {for:'agent_'+i}); count++; } catch(e) { code=e.data.code; } } await ops.call('mock','echo',{}, {for:'agent_0'}); return [count,code];";
+    for (tag, limit, expected) in [
+        ("target-default", None, 64),
+        ("target-raised", Some(65), 65),
+        ("target-lowered", Some(1), 1),
+    ] {
+        let f = Fixture::new(tag, script, true, false);
+        install_target_manifest(&f, |m| {
+            if let Some(limit) = limit {
+                m["max_targets"] = json!(limit);
+            }
+        });
+        let run = f.admit("one");
+        f.activate(&run);
+        assert_eq!(
+            run_result(&f, &run),
+            json!([
+                expected,
+                if expected == 65 {
+                    Value::Null
+                } else {
+                    json!("too_many_targets")
+                }
+            ])
+        );
+        assert_eq!(f.wire.target_asks.lock().unwrap().len(), expected);
+    }
+}
+
+#[test]
+fn target_scope_is_shared_across_runs_while_it_covers_both_deadlines() {
+    let f = target_fixture(
+        "shared-target-epoch",
+        "return await ops.call('mock','echo',{n:1},{for:'Alice'});",
+    );
+    let a = f.admit("a");
+    f.activate(&a);
+    run_result(&f, &a);
+    f.clock.advance(1000);
+    let b = f.admit("b");
+    f.activate(&b);
+    run_result(&f, &b);
+    assert!(f.rt.run(&b).unwrap().deadline_at > f.rt.run(&a).unwrap().deadline_at);
+    assert_eq!(f.wire.target_asks.lock().unwrap().len(), 1);
+    assert_eq!(f.wire.opens.lock().unwrap().len(), 1);
+}
+
+fn target_request(run: &str, deadline: i64) -> (CallRequest, basal_host::target_scope::TargetCall) {
+    let call = basal_host::target_scope::TargetCall {
+        agent: "agent_alice".into(),
+        version: 2,
+        expires_at_ms: deadline,
+        args: json!({}),
+        replay: false,
+    };
+    let request = CallRequest {
+        flow_id: "flow-test".into(),
+        run_id: run.into(),
+        position: 0,
+        kind: CallKind::OpFor {
+            module: "mock".into(),
+            op: "echo".into(),
+        },
+        args: JsonText::null(),
+        idempotency_key: format!("key-{run}"),
+        attempt: 1,
+    };
+    (request, call)
+}
+
+fn answer(reference: &str, epoch: u64, expiry: i64) -> Result<Value, WireError> {
+    Ok(json!({"ref":reference,"epoch":epoch,"delegates":false,"expires_at_ms":expiry}))
+}
+
+#[test]
+fn rolling_target_scopes_preserve_each_runs_pinned_ref() {
+    let f = target_fixture("rolling-target-scopes", "return 1;");
+    f.wire.configure_flow("flow-test", false, Some(scope(1)));
+    f.wire
+        .target_answers
+        .lock()
+        .unwrap()
+        .extend([answer("old", 1, 200), answer("new", 1, 400)]);
+    let (a, acall) = target_request("run-a", 100);
+    let (b, bcall) = target_request("run-b", 300);
+    let first = f.wire.target_flow(&a, &acall).unwrap();
+    f.wire
+        .management_for_flow(&first, "mock", "echo", json!({"a":1}))
+        .unwrap();
+    let second = f.wire.target_flow(&b, &bcall).unwrap();
+    f.wire
+        .management_for_flow(&second, "mock", "echo", json!({"b":1}))
+        .unwrap();
+    let pinned = f.wire.target_flow(&a, &acall).unwrap();
+    f.wire
+        .management_for_flow(&pinned, "mock", "echo", json!({"a":2}))
+        .unwrap();
+    assert_eq!(first, "target:old");
+    assert_eq!(second, "target:new");
+    assert_eq!(pinned, first);
+    assert_eq!(f.wire.target_asks.lock().unwrap().len(), 2);
+    let calls = f.wire.calls.lock().unwrap();
+    assert_eq!(
+        calls
+            .iter()
+            .filter_map(|(route, _, _)| *route)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 1]
+    );
+}
+
+#[test]
+fn target_scope_expiry_and_deadline_extension_reask_and_expired_refs_are_dropped() {
+    let f = target_fixture("expired-target-scopes", "return 1;");
+    f.wire.configure_flow("flow-test", false, Some(scope(1)));
+    f.wire.target_answers.lock().unwrap().extend([
+        answer("first", 1, 200),
+        answer("second", 1, 400),
+        answer("third", 1, 800),
+    ]);
+    let (a, acall) = target_request("run-a", 100);
+    assert_eq!(f.wire.target_flow(&a, &acall).unwrap(), "target:first");
+    let (b, bcall) = target_request("run-b", 300);
+    assert_eq!(f.wire.target_flow(&b, &bcall).unwrap(), "target:second");
+    *f.wire.now.lock().unwrap() = 401;
+    let (c, ccall) = target_request("run-c", 500);
+    assert_eq!(f.wire.target_flow(&c, &ccall).unwrap(), "target:third");
+    assert_eq!(f.wire.target_asks.lock().unwrap().len(), 3);
+    let routes = f.wire.routes.lock().unwrap();
+    assert!(routes.targets("target:first").is_none());
+    assert!(routes.targets("target:second").is_none());
+}
+
+#[test]
+fn closed_target_scope_reasks_and_never_reopens_the_ended_ref() {
+    let f = target_fixture("closed-target-scopes", "return 1;");
+    f.wire.configure_flow("flow-test", false, Some(scope(1)));
+    f.wire.target_answers.lock().unwrap().extend([
+        answer("first", 1, 200),
+        answer("first", 1, 200),
+        answer("second", 1, 200),
+    ]);
+    let (a, call) = target_request("run-a", 100);
+    let first = f.wire.target_flow(&a, &call).unwrap();
+    f.wire
+        .management_for_flow(&first, "mock", "echo", json!({}))
+        .unwrap();
+    f.wire.routes.lock().unwrap().closed(1, true);
+    let error = f.wire.target_flow(&a, &call).unwrap_err();
+    assert!(matches!(error,WireError::Refused { code,.. } if code=="scope_ended"));
+    assert_eq!(f.wire.opens.lock().unwrap().len(), 1);
+    let second = f.wire.target_flow(&a, &call).unwrap();
+    f.wire
+        .management_for_flow(&second, "mock", "echo", json!({}))
+        .unwrap();
+    assert_eq!(second, "target:second");
+    assert_eq!(f.wire.target_asks.lock().unwrap().len(), 3);
+    assert_eq!(f.wire.opens.lock().unwrap()[1].scope_ref, "second");
+}
+
+#[test]
+fn changed_target_epoch_drops_old_routes_and_invalidates_old_run_pins() {
+    let f = target_fixture("changed-target-epoch", "return 1;");
+    f.wire.configure_flow("flow-test", false, Some(scope(1)));
+    f.wire
+        .target_answers
+        .lock()
+        .unwrap()
+        .extend([answer("shared", 1, 200), answer("shared", 2, 200)]);
+    let (a, call) = target_request("run-a", 100);
+    let first = f.wire.target_flow(&a, &call).unwrap();
+    f.wire
+        .management_for_flow(&first, "mock", "echo", json!({}))
+        .unwrap();
+    let (b, mut replay) = target_request("run-b", 100);
+    replay.replay = true;
+    let changed = f.wire.target_flow(&b, &replay).unwrap();
+    f.wire
+        .management_for_flow(&changed, "mock", "echo", json!({}))
+        .unwrap();
+    let pinned = f.wire.target_flow(&a, &call).unwrap();
+    f.wire
+        .management_for_flow(&pinned, "mock", "echo", json!({}))
+        .unwrap();
+    assert_eq!(f.wire.target_asks.lock().unwrap().len(), 2);
+    let opens = f.wire.opens.lock().unwrap();
+    assert_eq!(
+        opens.iter().map(|s| s.epoch).collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+    let calls = f.wire.calls.lock().unwrap();
+    assert_eq!(
+        calls
+            .iter()
+            .filter_map(|(route, _, _)| *route)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 2]
+    );
+}
+
+#[test]
+fn replay_reasks_core_and_outside_audience_call_fails_unsent() {
+    let script = "const codes=[]; for(let i=0;i<2;i++) { try { await ops.call('mock','echo',{}, {for:'Alice'}); codes.push(null); } catch(e) { codes.push(e.data.code); } } return codes;";
+    let probe = Arc::new(basal_testkit::harness::Probe::crash_at(
+        basal_testkit::harness::Point::parse("HostAnswered { position: 0 }#1").unwrap(),
+    ));
+    let f = Fixture::with_hooks(
+        "target-replay",
+        script,
+        true,
+        false,
+        ACTIVATION_WAIT,
+        probe.clone(),
+    );
+    install_target_manifest(&f, |_| {});
+    let run = f.admit("one");
+    f.activate(&run);
+    assert!(probe.fired());
+    assert_eq!(f.wire.target_asks.lock().unwrap().len(), 1);
+    let f = f.restart();
+    f.rt.recover().unwrap();
+    assert!(f.rt.calls(&run).unwrap()[0].outcome.is_none());
+    f.wire
+        .target_answers
+        .lock()
+        .unwrap()
+        .extend((0..2).map(|_| {
+            Err(basal_host::transport::refusal(
+                subc_protocol::ErrorBody::new("sink_target_not_in_audience", "audience changed"),
+            ))
+        }));
+    f.activate(&run);
+    assert_eq!(
+        run_result(&f, &run),
+        json!(["sink_target_not_in_audience", "sink_target_not_in_audience"])
+    );
+    assert_eq!(f.wire.target_asks.lock().unwrap().len(), 3);
+    assert_eq!(
+        f.wire
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, _, v)| v["method"] == "echo")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn midcall_target_scope_cut_makes_even_keyed_mutations_outcome_unknown() {
+    let script = "return await ops.call('mock','send',{}, {for:'Alice'});";
+    let f = Fixture::with_host_options(
+        "target-mutation-cut",
+        script,
+        true,
+        false,
+        ACTIVATION_WAIT,
+        Arc::new(NoHooks),
+        true,
+    );
+    install_target_manifest(&f, |_| {});
+    f.wire
+        .refusals
+        .lock()
+        .unwrap()
+        .push_back(WireError::ScopeCut("scope ended during call".into()));
+    let run = f.admit("one");
+    f.activate(&run);
+    assert_eq!(f.rt.run(&run).unwrap().state, RunState::NeedsReconcile);
+    let row = &f.rt.calls(&run).unwrap()[0];
+    assert_eq!(row.class, basal_core::StoredClass::KeyedMutation);
+    assert_eq!(row.dispatch, basal_core::DispatchState::Unknown);
+    assert!(row.scope_cut);
+    assert_eq!(
+        f.rt.unknown_reason(&run, 0).unwrap(),
+        Some(basal_host::UnknownReason::ConnectionLost)
+    );
+    assert_eq!(f.sends(), 1);
+    assert_eq!(f.wire.target_asks.lock().unwrap().len(), 1);
+    f.activate(&run);
+    assert_eq!(f.sends(), 1);
+}
+
+#[test]
+fn midcall_target_scope_cut_retries_a_query_on_a_new_ref() {
+    let f = target_fixture(
+        "target-query-cut",
+        "return await ops.call('mock','echo',{n:7},{for:'Alice'});",
+    );
+    f.wire
+        .refusals
+        .lock()
+        .unwrap()
+        .push_back(WireError::ScopeCut("scope changed during call".into()));
+    let run = f.admit("one");
+    f.activate(&run);
+    assert_eq!(run_result(&f, &run), json!({"n":7}));
+    assert_eq!(f.wire.target_asks.lock().unwrap().len(), 2);
+    assert_eq!(
+        f.wire
+            .opens
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|s| s.scope_ref.as_str())
+            .collect::<Vec<_>>(),
+        vec!["target-1", "target-2"]
+    );
+}
+
+#[test]
+fn delegation_refusals_do_not_penalize_uncaught_runs() {
+    for (op, code) in [
+        ("post", "for_target_requires_delegate"),
+        ("send", "flow_delegation_unsupported"),
+    ] {
+        let script = format!("return await ops.call('mock','{op}',{{}}, {{for:'Alice'}});");
+        let f = target_fixture("delegation-no-health-penalty", &script);
+        if op == "send" {
+            f.wire
+                .open_refusals
+                .lock()
+                .unwrap()
+                .push_back(basal_host::transport::refusal(
+                    subc_protocol::ErrorBody::new(code, "not supported"),
+                ));
+        }
+        let run = f.admit("one");
+        f.activate(&run);
+        assert_eq!(f.rt.run(&run).unwrap().state, RunState::Failed);
+        assert_eq!(f.rt.flow_health().unwrap()[0].consecutive_failures, 0);
+        let outcome = f.rt.calls(&run).unwrap()[0].outcome.clone().unwrap();
+        let value: Value = serde_json::from_str(outcome.value.as_str()).unwrap();
+        assert_eq!(value["code"], code);
+        assert_eq!(f.sends(), 0);
+    }
+}
+
+#[test]
+fn midcall_target_scope_cut_survives_restart_without_resending_keyed_mutation() {
+    let probe = Arc::new(basal_testkit::harness::Probe::crash_at(
+        basal_testkit::harness::Point::parse("HostAnswered { position: 0 }#1").unwrap(),
+    ));
+    let f = Fixture::with_host_options(
+        "target-cut-restart",
+        "return await ops.call('mock','send',{}, {for:'Alice'});",
+        true,
+        false,
+        ACTIVATION_WAIT,
+        probe.clone(),
+        true,
+    );
+    install_target_manifest(&f, |_| {});
+    f.wire
+        .refusals
+        .lock()
+        .unwrap()
+        .push_back(WireError::ScopeCut("scope ended during call".into()));
+    let run = f.admit("one");
+    f.activate(&run);
+    assert!(probe.fired());
+    let f = f.restart();
+    f.rt.recover().unwrap();
+    f.activate(&run);
+    assert_eq!(f.rt.run(&run).unwrap().state, RunState::NeedsReconcile);
+    assert_eq!(f.sends(), 1);
+    assert_eq!(f.wire.target_asks.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn transient_target_audience_unavailability_defers_until_recovery_or_run_deadline() {
+    let f = target_fixture(
+        "target-audience-transient",
+        "return await ops.call('mock','echo',{n:7},{for:'Alice'});",
+    );
+    f.wire
+        .target_answers
+        .lock()
+        .unwrap()
+        .push_back(Err(WireError::Refused {
+            code: "sink_audience_unavailable".into(),
+            message: "registry offline".into(),
+        }));
+    let run = f.admit("one");
+    f.activate(&run);
+    assert_eq!(f.rt.run(&run).unwrap().state, RunState::Suspended);
+    assert_eq!(
+        f.rt.calls(&run).unwrap()[0].dispatch,
+        basal_core::DispatchState::Deferred
+    );
+    assert!(f.wire.opens.lock().unwrap().is_empty());
+    assert_eq!(f.wire.target_asks.lock().unwrap().len(), 1);
+    f.clock.advance(101);
+    f.activate(&run);
+    assert_eq!(run_result(&f, &run), json!({"n":7}));
+    assert_eq!(f.wire.target_asks.lock().unwrap().len(), 2);
+
+    let f = target_fixture(
+        "target-audience-deadline",
+        "return await ops.call('mock','echo',{}, {for:'Alice'});",
+    );
+    f.wire
+        .target_answers
+        .lock()
+        .unwrap()
+        .push_back(Err(WireError::Refused {
+            code: "sink_audience_unavailable".into(),
+            message: "registry offline".into(),
+        }));
+    let run = f.admit("one");
+    f.activate(&run);
+    f.clock.set(f.rt.run(&run).unwrap().deadline_at.unwrap());
+    f.rt.enforce_deadlines().unwrap();
+    assert_eq!(f.rt.run(&run).unwrap().state, RunState::Failed);
+    let refused: String =
+        f.rt.store()
+            .read(|c| {
+                Ok(c.query_row(
+                    "SELECT value FROM mailbox WHERE run_id=?1 AND position=0",
+                    [&run],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+    let value: Value = serde_json::from_str(&refused).unwrap();
+    assert_eq!(value["code"], "sink_audience_unavailable");
+    assert_eq!(f.rt.flow_health().unwrap()[0].consecutive_failures, 0);
+    assert!(f.wire.opens.lock().unwrap().is_empty());
+    assert_eq!(f.wire.target_asks.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn target_scope_principal_refusal_is_a_terminal_carrier_bug() {
+    let f = target_fixture(
+        "target-carrier-bug",
+        "return await ops.call('mock','echo',{}, {for:'Alice'});",
+    );
+    f.wire
+        .target_answers
+        .lock()
+        .unwrap()
+        .push_back(Err(WireError::Refused {
+            code: "flow_target_scope_principal_refused".into(),
+            message: "wrong principal".into(),
+        }));
+    let run = f.admit("one");
+    f.activate(&run);
+    assert_eq!(f.rt.run(&run).unwrap().state, RunState::Failed);
+    let row = &f.rt.calls(&run).unwrap()[0];
+    assert_eq!(row.attempts, 1);
+    assert_ne!(row.dispatch, basal_core::DispatchState::Deferred);
+    let value: Value = serde_json::from_str(row.outcome.as_ref().unwrap().value.as_str()).unwrap();
+    assert_eq!(value["code"], "flow_target_scope_principal_refused");
+    assert_eq!(f.rt.flow_health().unwrap()[0].consecutive_failures, 1);
+    assert!(f.wire.opens.lock().unwrap().is_empty());
+    assert_eq!(f.wire.target_asks.lock().unwrap().len(), 1);
 }

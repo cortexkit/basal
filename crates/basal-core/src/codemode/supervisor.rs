@@ -1479,6 +1479,13 @@ fn map_answer(result: std::result::Result<Value, WireError>) -> Mapped {
                 | AgentGrantAbsent
                 | NoFlowScope
                 | AgentRetired
+                | FlowDelegationUnsupported
+                | SinkTargetNotInAudience
+                | FlowNotApproved
+                | SinkAudienceUnavailable
+                | FlowHasNoAudience
+                | ScopeExpiryTooFar
+                | FlowTargetScopePrincipalRefused
                 | FlowScopeRequired => (Outcome::ToolUnavailable, "tool_unavailable", false),
             };
             let mut mapped = Mapped::rejected(outcome, code, refusal.message());
@@ -1488,7 +1495,7 @@ fn map_answer(result: std::result::Result<Value, WireError>) -> Mapped {
         Err(WireError::NeverSent(message)) => {
             Mapped::rejected(Outcome::ToolUnavailable, "tool_unavailable", &message)
         }
-        Err(WireError::Unknown(message)) => {
+        Err(WireError::Unknown(message) | WireError::ScopeCut(message)) => {
             Mapped::rejected(Outcome::OutcomeUnknown, "connection_lost", &message)
         }
         Err(WireError::TimedOut(message)) => {

@@ -263,7 +263,12 @@ pub(crate) fn typed_scope_rejection(value: &str, readiness_only: bool) -> bool {
         return false;
     }
     match value["code"].as_str() {
-        Some("no_flow_scope" | "target_flow_unsupported") => true,
+        Some(
+            "no_flow_scope"
+            | "target_flow_unsupported"
+            | "flow_delegation_unsupported"
+            | "for_target_requires_delegate",
+        ) => true,
         Some(
             "scope_not_carrier"
             | "scope_ended"
@@ -273,6 +278,7 @@ pub(crate) fn typed_scope_rejection(value: &str, readiness_only: bool) -> bool {
             | "scope_changed"
             | "scope_unsupported"
             | "resource_busy"
+            | "sink_audience_unavailable"
             | "consent_unavailable",
         ) => !readiness_only,
         _ => false,

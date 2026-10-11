@@ -275,3 +275,46 @@ fn audience_changes_are_covered_by_code_hash() {
         Some(Audience::Global {})
     ));
 }
+
+#[test]
+fn delegating_grants_require_audience_and_closed_authority_values() {
+    let mut m = manifest(None);
+    m["ops"] = json!([{"module":"mock","op":"post","for_target":"delegate"}]);
+    assert_eq!(parse(&m), Err(ManifestError::ForTargetRequiresAudience));
+    m = manifest(Some(json!({"kind":"global"})));
+    m["ops"] = json!([{"module":"mock","op":"post","for_target":"delegate"}]);
+    assert_eq!(
+        parse(&m).unwrap().ops[0].for_target,
+        Some(basal_core::manifest::TargetAuthority::Delegate)
+    );
+    m["ops"][0]["for_target"] = json!("read");
+    assert!(parse(&m).is_err());
+    m["ops"] = json!([{"module":"mock","op":"post"},{"module":"mock","op":"post","for_target":"delegate"}]);
+    assert!(matches!(parse(&m), Err(ManifestError::Duplicate { .. })));
+}
+
+#[test]
+fn audience_run_bound_may_not_exceed_twelve_hours() {
+    let mut m = manifest(Some(json!({"kind":"global"})));
+    m["deadline"] = json!("12h");
+    assert!(parse(&m).is_ok());
+    m["deadline"] = json!("43201s");
+    assert_eq!(parse(&m), Err(ManifestError::RunBoundExceedsAudienceLimit));
+    m = manifest(None);
+    m["deadline"] = json!("24h");
+    assert!(parse(&m).is_ok());
+}
+
+#[test]
+fn max_targets_defaults_to_sixty_four_and_accepts_only_one_to_1024() {
+    let mut m = manifest(Some(json!({"kind":"global"})));
+    assert_eq!(parse(&m).unwrap().max_targets, 64);
+    for n in [1, 65, 1024] {
+        m["max_targets"] = json!(n);
+        assert_eq!(parse(&m).unwrap().max_targets, n);
+    }
+    for n in [0, 1025, -1] {
+        m["max_targets"] = json!(n);
+        assert!(parse(&m).is_err());
+    }
+}

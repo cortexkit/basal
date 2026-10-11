@@ -43,6 +43,7 @@ pub mod run_scope;
 pub mod scope_describe;
 pub mod selector;
 pub mod subc_catalog;
+pub mod target_scope;
 pub mod transport;
 
 pub use catalog::{Catalog, EventBody, EventDecl, EventOrigin, MockCatalog, OpDecl, OpKind};
@@ -175,7 +176,7 @@ pub enum Dispatched {
 pub fn op_label(kind: &CallKind) -> String {
     use basal_proto::Primitive;
     match kind {
-        CallKind::Op { module, op } => format!("{module}.{op}"),
+        CallKind::Op { module, op } | CallKind::OpFor { module, op } => format!("{module}.{op}"),
         CallKind::Primitive(p @ (Primitive::SinkDigest | Primitive::SinkStatus)) => {
             format!("{}.{}", subc_catalog::CORE, p.name())
         }
@@ -275,6 +276,7 @@ pub enum Sent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransportError {
     Unavailable { sent: Sent, detail: String },
+    ScopeCut { detail: String },
     Refused(flow_refusal::FlowRefusal),
 }
 
@@ -299,6 +301,7 @@ impl TransportError {
 impl fmt::Display for TransportError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ScopeCut { detail } => write!(f, "scope closed during call: {detail}"),
             Self::Refused(refusal) => write!(
                 f,
                 "{}: {} {}",

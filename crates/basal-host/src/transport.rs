@@ -17,6 +17,8 @@ pub enum WireError {
     /// Sent, and then the route closed or the connection failed before a
     /// reply: its outcome is unknown (`connection_lost`).
     Unknown(String),
+    /// A scope close cut an in-flight request; even keyed mutations must reconcile.
+    ScopeCut(String),
     /// Sent, and no reply came within the call's deadline: its outcome is
     /// unknown (`reply_timeout`).
     TimedOut(String),
@@ -44,7 +46,7 @@ impl WireError {
             | Self::Refused { .. }
             | Self::RefusedDetails { .. }
             | Self::Typed(_) => None,
-            Self::Unknown(_) => Some(UnknownReason::ConnectionLost),
+            Self::Unknown(_) | Self::ScopeCut(_) => Some(UnknownReason::ConnectionLost),
             Self::TimedOut(_) => Some(UnknownReason::ReplyTimeout),
             Self::Unreadable(_) => Some(UnknownReason::ReplyUnreadable),
         }
@@ -53,6 +55,14 @@ impl WireError {
 
 /// Returns decoded provider payloads, not the management response envelope.
 pub trait Transport: Send + Sync {
+    /// Returns a route-table key for a core-owned target scope, never an unscoped fallback.
+    fn target_flow(
+        &self,
+        _request: &crate::CallRequest,
+        _call: &crate::target_scope::TargetCall,
+    ) -> Result<String, WireError> {
+        Err(WireError::NeverSent("target scopes unavailable".into()))
+    }
     fn watch_run_scope(&self, _run: &str, _ended: Arc<RunScopeEnded>) {}
     /// Unlike the compatibility flow-call defaults, this read may never fall
     /// back to an unscoped management call.
@@ -137,7 +147,7 @@ pub struct RunToolOptions {
 /// Maps the client's typed send disposition without guessing from prose.
 pub fn map_error(error: CallError) -> WireError {
     if let Some(body) = error.route_open_refusal() {
-        if body.code == "scope_expired" {
+        if body.code == "scope_expired" || body.code == "flow_delegation_unsupported" {
             return refusal(body.clone());
         }
         return match crate::flow_refusal::FlowRefusal::decode(body) {
@@ -236,6 +246,7 @@ pub struct SubcTransport {
     timeout: Duration,
     routes: Arc<Mutex<crate::flow_scope::ScopedRoutes<subc_client_rs::RouteHandle>>>,
     run_watchers: Arc<Mutex<std::collections::HashMap<String, Arc<RunScopeEnded>>>>,
+    target_scopes: Mutex<crate::target_scope::TargetScopes>,
     open_gates: Mutex<
         std::collections::HashMap<
             crate::flow_scope::RouteKey,
@@ -354,6 +365,18 @@ impl SubcTransport {
                         ..Default::default()
                     },
                 ));
+                if result
+                    .as_ref()
+                    .is_err_and(|e| target_route_ended(flow, e.outcome_cause()))
+                {
+                    // The client can report a route end before the control-push reader
+                    // installs its tombstone. Do not resend a target mutation in that gap.
+                    self.routes
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .closed(handle, true);
+                    return Err(WireError::ScopeCut("target route ended during call".into()));
+                }
                 if let Err(CallError::StaleRouteHandle(_)) = &result {
                     // A stale connection handle says nothing about scope expiry.
                     // Only a daemon scope-close push may leave a tombstone.
@@ -362,9 +385,18 @@ impl SubcTransport {
                         .unwrap_or_else(|p| p.into_inner())
                         .closed(handle, false);
                 }
-                result
-                    .map_err(map_error)
-                    .and_then(|bytes| decode_response(&bytes, management))
+                let mapped = result.map_err(map_error);
+                if mapped.as_ref().is_err_and(|e| e.unknown_reason().is_some())
+                    && flow.starts_with("target:")
+                    && self
+                        .routes
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .ended(flow)
+                {
+                    return Err(WireError::ScopeCut("scope closed during call".into()));
+                }
+                mapped.and_then(|bytes| decode_response(&bytes, management))
             }
             None => Err(WireError::Typed(crate::flow_refusal::FlowRefusal::new(
                 crate::flow_refusal::RefusalReason::NoFlowScope,
@@ -451,6 +483,7 @@ impl SubcTransport {
             routes,
             run_watchers,
             open_gates: Mutex::new(std::collections::HashMap::new()),
+            target_scopes: Mutex::new(crate::target_scope::TargetScopes::default()),
         }))
     }
     fn call(&self, target: RouteTarget, body: Value, management: bool) -> Result<Value, WireError> {
@@ -480,6 +513,10 @@ impl SubcTransport {
             .map_err(map_error)?;
         decode_response(&response, management)
     }
+}
+
+fn target_route_ended(flow: &str, cause: Option<OutcomeUnknownCause>) -> bool {
+    flow.starts_with("target:") && matches!(cause, Some(OutcomeUnknownCause::RouteEnded))
 }
 impl SubcTransport {
     fn model_handle(
@@ -607,6 +644,44 @@ impl SubcTransport {
     }
 }
 impl Transport for SubcTransport {
+    fn target_flow(
+        &self,
+        request: &crate::CallRequest,
+        call: &crate::target_scope::TargetCall,
+    ) -> Result<String, WireError> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| WireError::NeverSent(e.to_string()))?
+            .as_millis();
+        let mut cache = self.target_scopes.lock().unwrap_or_else(|p| p.into_inner());
+        let result = cache.resolve(
+            &request.flow_id, &request.run_id, call, i64::try_from(now).unwrap_or(i64::MAX),
+            |scope| self.routes.lock().unwrap_or_else(|p| p.into_inner()).ended(&scope.route_key()),
+            || self.management(crate::subc_catalog::CORE, "flow.target_scope", json!({"flow_id":request.flow_id,"version":call.version,"agent":call.agent,"expires_at_ms":call.expires_at_ms})),
+        );
+        let retired = cache.take_retired();
+        drop(cache);
+        for key in retired {
+            self.configure_flow(&key, true, None);
+        }
+        let scope = result?;
+        let targets = self
+            .routes
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .targets(&request.flow_id)
+            .ok_or_else(|| WireError::NeverSent("flow scope targets unavailable".into()))?;
+        let key = scope.route_key();
+        self.configure_flow(
+            &key,
+            true,
+            Some(crate::flow_scope::RegisteredScope {
+                selector: scope.selector(),
+                targets,
+            }),
+        );
+        Ok(key)
+    }
     fn grant_would_ask(
         &self,
         flow: &str,
@@ -1113,6 +1188,8 @@ mod tests {
         let records = opens.clone();
         let calls = Arc::new(Mutex::new(Vec::<(u16, Value)>::new()));
         let recorded_calls = calls.clone();
+        let scope_closed = Arc::new(tokio::sync::Notify::new());
+        let close_applied = scope_closed.clone();
         let daemon = runtime.spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             authenticate_server(
@@ -1130,6 +1207,13 @@ mod tests {
                 }
                 let body: Value = serde_json::from_slice(&frame.body).unwrap();
                 recorded_calls.lock().unwrap().push((frame.header.channel,body.clone()));
+                if body["method"] == "cut_scope" {
+                    let push=Frame::build(FrameType::Push,Flags::new(false,Priority::Passive,false),0,0,0,
+                        serde_json::to_vec(&json!({"op":"route.closed","channels":[frame.header.channel],"reason":"scope_ended"})).unwrap()).unwrap();
+                    write_frame(&mut stream,&push).await.unwrap();
+                    scope_closed.notified().await;
+                    break;
+                }
                 let end_scope = body["method"] == "end_scope";
                 if body["op"] == "route.open" && let Some((entered, release)) = pause.take() {
                     entered.send(()).unwrap();
@@ -1192,6 +1276,7 @@ mod tests {
             Some(&file),
             Some(Arc::new(move || {
                 closed.send(()).unwrap();
+                close_applied.notify_one();
             })),
         )
         .unwrap();
@@ -1882,6 +1967,53 @@ mod tests {
             reason_for(Some(OutcomeUnknownCause::RouteEnded)),
             Some(UnknownReason::ConnectionLost)
         );
+    }
+    #[test]
+    fn target_route_end_is_a_scope_cut_even_before_the_control_push() {
+        assert!(target_route_ended(
+            "target:ref",
+            Some(OutcomeUnknownCause::RouteEnded)
+        ));
+        assert!(!target_route_ended(
+            "flow-test",
+            Some(OutcomeUnknownCause::RouteEnded)
+        ));
+        assert!(!target_route_ended(
+            "target:ref",
+            Some(OutcomeUnknownCause::ConnectionFailed)
+        ));
+        assert!(!target_route_ended("target:ref", None));
+    }
+
+    #[test]
+    fn real_target_scope_cut_is_unknown_while_ordinary_flow_keeps_connection_loss() {
+        for (flow, reference, targeted) in [
+            ("flow-a", "ordinary", false),
+            ("target:target-ref", "target-ref", true),
+        ] {
+            with_scoped_transport(|transport, opens, _calls, closed| {
+                let mut scope = registered();
+                scope.selector.scope_ref = reference.into();
+                scope.targets.insert("mock".into());
+                transport.configure_flow(flow, true, Some(scope));
+                let error = transport
+                    .management_for_flow(flow, "mock", "cut_scope", json!({}))
+                    .unwrap_err();
+                if targeted {
+                    assert!(matches!(error, WireError::ScopeCut(_)), "{error:?}");
+                } else {
+                    assert!(matches!(error, WireError::Unknown(_)), "{error:?}");
+                }
+                assert_eq!(
+                    error.unknown_reason(),
+                    Some(crate::UnknownReason::ConnectionLost)
+                );
+                closed.recv_timeout(Duration::from_secs(5)).unwrap();
+                let opens = opens.lock().unwrap();
+                assert_eq!(opens.len(), 1);
+                assert_eq!(opens[0]["scope"]["ref"], reference);
+            });
+        }
     }
 
     #[test]

@@ -485,7 +485,8 @@ fn native_bridge<'js>(ctx: &Ctx<'js>, shared: &Rc<Shared>) -> rquickjs::Result<O
             move |ctx: Ctx<'js>,
                   module: String,
                   op: String,
-                  args: String|
+                  args: String,
+                  targeted: rquickjs::function::Opt<bool>|
                   -> rquickjs::Result<f64> {
                 if module.is_empty()
                     || op.is_empty()
@@ -497,7 +498,12 @@ fn native_bridge<'js>(ctx: &Ctx<'js>, shared: &Rc<Shared>) -> rquickjs::Result<O
                         "module and op names must contain 1 to 128 bytes",
                     ));
                 }
-                match s.issue(CallKind::Op { module, op }, args) {
+                let kind = if targeted.0.unwrap_or(false) {
+                    CallKind::OpFor { module, op }
+                } else {
+                    CallKind::Op { module, op }
+                };
+                match s.issue(kind, args) {
                     Ok(Issued::Async(position)) => Ok(position as f64),
                     _ => Err(halt_exception(&ctx)),
                 }

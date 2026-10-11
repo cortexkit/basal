@@ -22,6 +22,13 @@ pub enum RefusalReason {
     NoFlowScope,
     AgentRetired,
     FlowScopeRequired,
+    FlowDelegationUnsupported,
+    SinkTargetNotInAudience,
+    FlowNotApproved,
+    SinkAudienceUnavailable,
+    FlowHasNoAudience,
+    ScopeExpiryTooFar,
+    FlowTargetScopePrincipalRefused,
 }
 
 impl RefusalReason {
@@ -42,6 +49,13 @@ impl RefusalReason {
             Self::NoFlowScope => "no_flow_scope",
             Self::AgentRetired => "agent_retired",
             Self::FlowScopeRequired => "flow_scope_required",
+            Self::FlowDelegationUnsupported => "flow_delegation_unsupported",
+            Self::SinkTargetNotInAudience => "sink_target_not_in_audience",
+            Self::FlowNotApproved => "flow_not_approved",
+            Self::SinkAudienceUnavailable => "sink_audience_unavailable",
+            Self::FlowHasNoAudience => "flow_has_no_audience",
+            Self::ScopeExpiryTooFar => "scope_expiry_too_far",
+            Self::FlowTargetScopePrincipalRefused => "flow_target_scope_principal_refused",
         }
     }
 }
@@ -56,6 +70,17 @@ pub struct FlowRefusal {
 }
 
 impl FlowRefusal {
+    pub fn terminal(&self) -> bool {
+        matches!(
+            self.reason,
+            RefusalReason::FlowDelegationUnsupported
+                | RefusalReason::SinkTargetNotInAudience
+                | RefusalReason::FlowNotApproved
+                | RefusalReason::FlowHasNoAudience
+                | RefusalReason::ScopeExpiryTooFar
+                | RefusalReason::FlowTargetScopePrincipalRefused
+        )
+    }
     pub fn grant_absent(&self) -> bool {
         matches!(
             self.reason,
@@ -102,6 +127,16 @@ impl FlowRefusal {
             RefusalReason::FlowScopeRequired => {
                 "basal sent a provider call without its required flow scope"
             }
+            RefusalReason::SinkAudienceUnavailable => {
+                "core cannot currently read the install audience"
+            }
+            RefusalReason::FlowHasNoAudience => "the approved flow has no audience",
+            RefusalReason::ScopeExpiryTooFar => {
+                "the requested scope lifetime exceeds the approved run bound"
+            }
+            RefusalReason::FlowTargetScopePrincipalRefused => {
+                "basal used the wrong carrier principal for flow.target_scope"
+            }
             _ => "the flow scope is not currently admitted",
         }
     }
@@ -144,6 +179,7 @@ impl FlowRefusal {
             "agent_grant_absent" => RefusalReason::AgentGrantAbsent,
             "agent_retired" => RefusalReason::AgentRetired,
             "flow_scope_required" => RefusalReason::FlowScopeRequired,
+            "flow_delegation_unsupported" => RefusalReason::FlowDelegationUnsupported,
             _ => return Ok(None),
         };
         let mut refusal = Self::new(reason, "", "");

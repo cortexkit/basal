@@ -54,6 +54,7 @@ pub(crate) fn outcome(result: Result<Value, WireError>) -> Result<Dispatched, Tr
         TransportError::maybe_sent(UnknownReason::ReplyUnreadable, e.to_string())
     };
     match result {
+        Err(WireError::ScopeCut(detail)) => Err(TransportError::ScopeCut { detail }),
         Err(WireError::Typed(refusal)) => Err(TransportError::Refused(refusal)),
         Err(WireError::RefusedDetails {
             code,

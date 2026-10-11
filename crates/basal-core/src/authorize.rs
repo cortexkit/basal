@@ -83,10 +83,12 @@ impl Default for ShellDenylist {
             OpRef {
                 module: "aft".into(),
                 op: "bash".into(),
+                for_target: None,
             },
             OpRef {
                 module: "basal".into(),
                 op: "codemode".into(),
+                for_target: None,
             },
         ])
     }
@@ -197,7 +199,13 @@ pub fn check(
             "profile_violation",
             "catalog tools are not available to flows",
         )),
-        CallKind::Op { module, op } => {
+        CallKind::Op { module, op } | CallKind::OpFor { module, op } => {
+            if matches!(kind, CallKind::OpFor { .. }) && manifest.audience.is_none() {
+                return Err(Refusal::new(
+                    "for_requires_audience",
+                    "target calls require an audience",
+                ));
+            }
             // The shell check comes first, so a shell-capable op is refused
             // the same way whether or not the manifest lists it.
             if let Some(refusal) = shell_or_unknown(denylist, catalog, module, op) {
@@ -207,6 +215,23 @@ pub fn check(
                 return Err(Refusal::denied(format!(
                     "op ({module}, {op}) is not in the flow's manifest"
                 )));
+            }
+            if matches!(kind, CallKind::OpFor { .. })
+                && catalog
+                    .op(module, op)
+                    .is_none_or(|d| d.kind != Some(basal_host::catalog::OpKind::Query))
+                && !manifest.ops.iter().any(|grant| {
+                    grant.module == *module
+                        && grant.op == *op
+                        && grant.for_target == Some(crate::manifest::TargetAuthority::Delegate)
+                })
+            {
+                let mut refusal = Refusal::new(
+                    "for_target_requires_delegate",
+                    "target mutations require this op's delegating grant",
+                );
+                refusal.module = Some(module.clone());
+                return Err(refusal);
             }
             Ok(())
         }

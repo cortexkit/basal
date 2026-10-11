@@ -766,6 +766,7 @@ impl Runtime {
         let run_id = request.run_id.clone();
         let position = request.position;
         let mut retries = 0;
+        let mut scope_cut = false;
         // Why the latest send that may have reached the host ended without
         // an answer; `None` while every failed send provably never left.
         let mut maybe_sent: Option<UnknownReason> =
@@ -785,6 +786,9 @@ impl Runtime {
                 Ok(d) => break Ok(d),
                 Err(TransportError::Refused(refusal)) => {
                     use basal_host::flow_refusal::RefusalReason;
+                    if refusal.reason == RefusalReason::FlowTargetScopePrincipalRefused {
+                        tracing::error!(flow_id=%request.flow_id,code="flow_target_scope_principal_refused","basal called core flow.target_scope on the wrong carrier route");
+                    }
                     if let Some(reason) = maybe_sent {
                         self.shared.store.write(|tx| {
                             journal::record_unknown(tx, &run_id, position, reason)?;
@@ -818,6 +822,10 @@ impl Runtime {
                             }
                             Ok(())
                         })?;
+                    } else if refusal.terminal() {
+                        self.accept(&run_id, position, None, &refusal.outcome(), Source::Host)?;
+                        self.shared.host.refusal_committed(&request, &refusal);
+                        return Ok(());
                     } else if refusal.reason == RefusalReason::FlowScopeRequired {
                         tracing::error!(provider=%refusal.provider,action=%refusal.action,code="flow_scope_required","provider refused a flow call without its required scope");
                         self.accept(&run_id, position, None, &refusal.outcome(), Source::Host)?;
@@ -926,6 +934,23 @@ impl Runtime {
                     self.shared.signal.bump();
                     return Ok(());
                 }
+                Err(TransportError::ScopeCut { detail }) => {
+                    maybe_sent = Some(UnknownReason::ConnectionLost);
+                    if class == StoredClass::Query && retries < self.config.unavailable_retries {
+                        retries += 1;
+                        request.attempt = request.attempt.saturating_add(1);
+                        continue;
+                    }
+                    self.shared.store.write(|tx| {
+                        tx.execute(
+                            "UPDATE journal SET scope_cut=1 WHERE run_id=?1 AND position=?2",
+                            rusqlite::params![run_id, position],
+                        )?;
+                        Ok(())
+                    })?;
+                    scope_cut = true;
+                    break Err(detail);
+                }
                 Err(TransportError::Unavailable { sent, detail }) => {
                     let proven_unsent = sent == Sent::Never;
                     if let Sent::Maybe(reason) = sent {
@@ -961,7 +986,7 @@ impl Runtime {
                 // A call that honours idempotency keys was sent again and
                 // again; it is unknown because its retries ran out. Any
                 // other is sent once, and is unknown for that send's reason.
-                let reason = if class.safe_to_resend() {
+                let reason = if class.safe_to_resend() && !scope_cut {
                     UnknownReason::RetriesExhausted
                 } else {
                     last

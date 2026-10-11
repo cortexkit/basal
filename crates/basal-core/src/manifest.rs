@@ -57,6 +57,9 @@ pub struct Manifest {
     /// Delivery reach, covered by the approved manifest's exact bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audience: Option<Audience>,
+    /// Distinct target agents a run may call for.
+    #[serde(default = "default_max_targets")]
+    pub max_targets: u32,
     #[serde(default)]
     pub sinks: Vec<SinkGrant>,
     /// Agents whose status line the flow may set.
@@ -172,6 +175,18 @@ pub struct Claim {
 pub struct OpRef {
     pub module: String,
     pub op: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub for_target: Option<TargetAuthority>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TargetAuthority {
+    Delegate,
+}
+
+fn default_max_targets() -> u32 {
+    64
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -307,6 +322,8 @@ pub enum ManifestError {
     Schedule(String),
     AudienceSinkNamed,
     AudiencePlaceholderWithoutAudience,
+    ForTargetRequiresAudience,
+    RunBoundExceedsAudienceLimit,
     Invalid {
         field: String,
         reason: String,
@@ -331,6 +348,10 @@ impl std::fmt::Display for ManifestError {
             ),
             Self::Schedule(e) => write!(f, "schedule: {e}"),
             Self::AudienceSinkNamed => write!(f, "audience sinks and status must name $audience"),
+            Self::ForTargetRequiresAudience => write!(f, "for_target requires an audience"),
+            Self::RunBoundExceedsAudienceLimit => {
+                write!(f, "audience run deadlines may not exceed 12h")
+            }
             Self::AudiencePlaceholderWithoutAudience => {
                 write!(
                     f,
@@ -566,8 +587,14 @@ impl Manifest {
         for o in &self.ops {
             check_name("ops.module", &o.module, MAX_NAME_BYTES, id_byte)?;
             check_name("ops.op", &o.op, MAX_NAME_BYTES, op_byte)?;
+            if o.for_target.is_some() && self.audience.is_none() {
+                return Err(ManifestError::ForTargetRequiresAudience);
+            }
         }
-        check_list("ops", self.ops.iter().cloned())?;
+        check_list("ops", self.ops.iter().map(|o| (&o.module, &o.op)))?;
+        if !(1..=1024).contains(&self.max_targets) {
+            return Err(invalid("max_targets", "must be between 1 and 1024"));
+        }
         if let Some(facts) = &self.facts {
             for a in &facts.targets {
                 check_agent("facts.targets", a)?;
@@ -681,6 +708,9 @@ impl Manifest {
                     ));
                 }
             }
+        }
+        if self.audience.is_some() && self.deadline_ms(600_000) > 12 * 60 * 60 * 1000 {
+            return Err(ManifestError::RunBoundExceedsAudienceLimit);
         }
         Ok(())
     }

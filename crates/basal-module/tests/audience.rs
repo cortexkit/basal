@@ -480,3 +480,63 @@ fn audience_recipient_and_core_refusal_reach_script_unchanged() {
     );
     assert_eq!(fake.calls("sink.status")[0]["params"]["agent"], "outside");
 }
+
+#[test]
+fn target_grants_and_audience_run_bounds_are_validated_by_install_and_dry_run() {
+    for (id, code) in [
+        ("delegate-without-audience", "for_target_requires_audience"),
+        ("audience-long-run", "run_bound_exceeds_audience_limit"),
+    ] {
+        let f = fixture(id, Options::default());
+        let mut m = audience_manifest(id, json!({"kind":"global"}));
+        m["trigger"] = json!({"schedule":{"interval":"1h"}});
+        m["ops"] = json!([]);
+        let valid = Manifest::parse(&m.to_string()).unwrap();
+        if code == "for_target_requires_audience" {
+            m.as_object_mut().unwrap().remove("audience");
+            m["sinks"] = json!([]);
+            m["status"] = json!([]);
+            m["ops"] = json!([{"module":"mock","op":"post","for_target":"delegate"}]);
+        } else {
+            m["deadline"] = json!("13h");
+        }
+        let request = InstallRequest {
+            script: "return 1;".into(),
+            manifest: m.to_string(),
+            author: "operator".into(),
+            loop_override: false,
+        };
+        assert_eq!(
+            f.module
+                .handle(
+                    &Caller::Operator,
+                    "flow.install",
+                    json!({"script":request.script,"manifest":request.manifest})
+                )
+                .unwrap_err()
+                .code,
+            code
+        );
+        assert!(f.module.rt.flow(id).unwrap().is_none());
+        // Seed draft bytes directly so dry run must independently validate them.
+        f.module
+            .rt
+            .store()
+            .write(|tx| {
+                basal_core::install::record(tx, &valid, &request, Vec::new(), T0).unwrap();
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            f.module
+                .handle(
+                    &Caller::Operator,
+                    "flow.dry_run",
+                    json!({"flow_id":id,"trigger":{}})
+                )
+                .unwrap_err()
+                .code,
+            code
+        );
+    }
+}

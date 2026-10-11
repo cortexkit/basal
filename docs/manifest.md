@@ -19,6 +19,7 @@ A flow is a script plus a manifest. The manifest says everything the flow may do
 | `purpose` | string | yes | | 1 to 1024 bytes, no control characters except newline. Shown on the card. |
 | `trigger` | object | yes | | Exactly one of `events` and `schedule` (below). |
 | `audience` | `{kind, id?}` | no | none | Approved delivery reach: global, workspace or agent. See below. |
+| `max_targets` | integer | no | `64` | Maximum distinct agents a run may make `for:` module calls for; 1 to 1024. Shown on the card. Repeated calls for the same stable id use one slot. |
 | `sinks` | list of sink grants | no | `[]` | Agents whose digest the flow may write. |
 | `status` | list of agent names | no | `[]` | Agents whose status line the flow may set. |
 | `claims` | list of claims | no | `[]` | Source kinds the flow takes over from core for an agent. |
@@ -30,7 +31,7 @@ A flow is a script plus a manifest. The manifest says everything the flow may do
 | `net` | `{fetch}` list of `{host, methods?}` | no | none | Hosts `net.fetch` may reach over HTTPS on port 443 only, including redirect hops. `methods` defaults to `GET` and `HEAD`; others must be listed. Wildcard and IP-literal hosts are refused. |
 | `placement` | string | no | none | Where the flow runs, such as `"machine:studio"`. 1 to 128 bytes, no control characters. Shown on the card. |
 | `concurrency` | integer | no | `1` | Only `1`: runs of a flow run one at a time, in trigger order. |
-| `deadline` | duration | no | the runtime's default (10 minutes) | The per-run wall-clock deadline, from `"1s"` to `"24h"`. |
+| `deadline` | duration | no | the runtime's default (10 minutes) | The per-run wall-clock deadline, from `"1s"` to `"24h"`; an audience limits it to `"12h"`. |
 
 Names: module ids use `a-z`, `0-9`, `-`, `_`; op names add `A-Z` and `.` (`browser.read_page`; the pair, never the dots, identifies the op); event names and source kinds are one NATS subject token, `a-z`, `0-9`, `_`; agent names use letters, digits, `-` and `_`. Every name is 1 to 128 bytes.
 
@@ -74,6 +75,34 @@ its sink kind, not another kind. Scripts still pass a recipient on each write;
 core checks current audience membership at delivery time and refuses an outside
 recipient with `sink_target_not_in_audience`. Basal passes that code through
 unchanged. An omitted audience keeps all existing static-target behavior.
+
+An audience also permits `ops.call(module, op, args, {for: "agent"})` to use
+that target agent's core-owned daemon scope. Names resolve to stable ids before
+the request is journaled. Without an audience, the option returns
+`for_requires_audience`; without `for`, the call keeps using the flow's own
+scope. A targeted query reads as the agent. A targeted mutation requires that
+op's own `for_target: "delegate"` grant, or returns
+`for_target_requires_delegate` before dispatch, even if another op delegates.
+The distinct-target limit returns `too_many_targets` before sending a new
+target's call. Core checks current approved audience membership when registering
+the scope. Its permanent refusals are `sink_target_not_in_audience`,
+`flow_not_approved`, `flow_has_no_audience` and `scope_expiry_too_far`.
+`sink_audience_unavailable` is transient and defers the call for retry until the
+run's deadline. These refusals retain their codes. A
+`flow_target_scope_principal_refused` refusal fails the call and logs a carrier
+route bug rather than retrying it.
+Replay asks core again, so it cannot reuse authority from an old audience.
+If revalidation fails, catching the refusal does not permit subsequent calls
+to fall back to that run's old cached authority.
+
+Audience manifests with a run deadline above 12 hours are refused at install
+and dry run with `run_bound_exceeds_audience_limit`. Core registers target scopes
+for twice the maximum run duration, which must fit the daemon's 24-hour scope
+limit. It rolls to a new ref when a later run needs more life, leaving the old
+ref alive for runs pinned to it until expiry. Basal reuses a scope only if its
+actual expiry covers the asking run's deadline, and each run pins its first
+scope for each target. A scope close invalidates that ref; if it cuts a call
+already in flight, mutations need reconciliation and only queries may retry.
 
 ### `trigger`
 
@@ -150,6 +179,16 @@ event field. The declaration conversion already accepts the protocol's
 - is a `mutate` op on a module whose events trigger the flow and does not declare `cause_echo`, unless the operator overrides the loop install rule (`InstallRequest::loop_override`). The card then states that loop protection for the flow is rate limiting only.
 
 At run time the denylist and the catalog's shell marker are checked again before each dispatch, so an op marked shell-capable after the flow was approved is still refused.
+
+An op reference may add `"for_target": "delegate"`, for example
+`{ "module": "cerebellum", "op": "browser.click", "for_target": "delegate" }`.
+The only value is `"delegate"`; absence grants a targeted read, not a targeted
+mutation. Delegation is valid only with an audience, or installation returns
+`for_target_requires_audience`. Core shows the marker on the approval card and
+marks target scopes as delegating when any approved op has it. Basal still
+enforces delegation per op. Providers must explicitly support delegation;
+`flow_delegation_unsupported` is a typed, unsent refusal with no retry and no
+flow-health penalty, as is `for_target_requires_delegate`.
 
 ### Facts grant
 

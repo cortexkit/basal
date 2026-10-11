@@ -337,6 +337,9 @@ impl<H: Copy + Eq> ScopedRoutes<H> {
                 .any(|(key, (_, handle, _))| &key.scope == scope && handle.is_none())
         })
     }
+    pub fn targets(&self, flow: &str) -> Option<BTreeSet<String>> {
+        self.flows.get(flow).map(|(scope, _)| scope.targets.clone())
+    }
 }
 
 impl FlowScope {
