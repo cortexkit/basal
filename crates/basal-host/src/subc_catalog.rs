@@ -3,9 +3,32 @@ use crate::transport::{Transport, WireError};
 use crate::{Catalog, EventBody, EventDecl, EventOrigin, OpDecl, OpKind};
 use serde_json::{Value, json};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use subc_protocol::manifest::{
-    EventDeclaration, ExecutionMode, ManagementOperationKind, ProviderRole,
+    CAP_CATALOG_EVENTS_V1, EventDeclaration, ExecutionMode, ManagementOperationKind, ProviderRole,
 };
+
+/// Daemon-wide capabilities from basal's latest registration acknowledgement.
+/// Until an acknowledgement arrives, catalog event fields are not authoritative.
+#[derive(Default)]
+pub struct DaemonCapabilities {
+    catalog_events: AtomicBool,
+}
+
+impl DaemonCapabilities {
+    pub fn supports_catalog_events(&self) -> bool {
+        self.catalog_events.load(Ordering::SeqCst)
+    }
+
+    pub fn observe_hello_ack(&self, ack: &subc_protocol::ModuleHelloAckBody) {
+        self.catalog_events.store(
+            ack.subc_capabilities
+                .iter()
+                .any(|cap| cap == CAP_CATALOG_EVENTS_V1),
+            Ordering::SeqCst,
+        );
+    }
+}
 
 /// Convert the publisher's manifest declarations, not inferred subject names.
 /// Notices contain no event body; the read-only `events_get` tool supplies
@@ -24,11 +47,19 @@ pub fn declared_event(events: &[EventDeclaration], name: &str, version: u32) -> 
         })
 }
 
-/// Adapter pending the daemon catalog release that carries EventDeclaration.
-/// The current catalog has no authoritative event field: fail closed until
-/// that field ships, rather than treating roles or subject names as declarations.
-fn catalog_event_declarations(_entry: &Value) -> Option<Vec<EventDeclaration>> {
-    None
+/// Only explicit declarations count; roles and subject names do not declare events.
+fn catalog_event_declarations(entry: &Value) -> Option<Vec<EventDeclaration>> {
+    entry
+        .get("events")?
+        .as_array()?
+        .iter()
+        .map(|event| {
+            let mut event = event.clone();
+            // Missing filter hints do not change whether the event is declared.
+            event.as_object_mut()?.entry("headers").or_insert(json!([]));
+            serde_json::from_value(event).ok()
+        })
+        .collect()
 }
 
 pub const CORE: &str = "prefrontal-core";
@@ -47,16 +78,22 @@ pub struct CatalogOp {
 pub struct SubcCatalog {
     transport: Arc<dyn Transport>,
     denylist: Vec<(String, String)>,
+    daemon_capabilities: Arc<DaemonCapabilities>,
 }
 impl SubcCatalog {
     pub fn new(transport: Arc<dyn Transport>) -> Self {
         Self {
             transport,
+            daemon_capabilities: Arc::new(DaemonCapabilities::default()),
             denylist: vec![
                 ("aft".into(), "bash".into()),
                 ("basal".into(), "codemode".into()),
             ],
         }
+    }
+    pub fn with_daemon_capabilities(mut self, capabilities: Arc<DaemonCapabilities>) -> Self {
+        self.daemon_capabilities = capabilities;
+        self
     }
     pub fn with_denylist(mut self, denylist: Vec<(String, String)>) -> Self {
         self.denylist = denylist;
@@ -250,6 +287,9 @@ impl Catalog for SubcCatalog {
             .unwrap_or(false)
     }
     fn event(&self, module: &str, name: &str, version: u32) -> Option<EventDecl> {
+        if !self.daemon_capabilities.supports_catalog_events() {
+            return None;
+        }
         let catalog = self.transport.catalog().ok()?;
         let entry = catalog["modules"]
             .as_array()?
@@ -274,6 +314,32 @@ impl Catalog for SubcCatalog {
 #[cfg(test)]
 mod event_tests {
     use super::*;
+
+    #[test]
+    fn catalog_event_mapping_preserves_names_versions_and_filter_headers() {
+        let entry = json!({"events":[
+            {"name":"github_pr_changed","version":1,"headers":["repo","project","pr"]},
+            {"name":"digest_delivered","version":2}
+        ]});
+        let events = catalog_event_declarations(&entry).unwrap();
+        assert_eq!(
+            events,
+            vec![
+                EventDeclaration::new("github_pr_changed", 1).with_headers(vec![
+                    "repo".into(),
+                    "project".into(),
+                    "pr".into()
+                ]),
+                EventDeclaration::new("digest_delivered", 2),
+            ]
+        );
+        assert_eq!(
+            catalog_event_declarations(&json!({"events":[]})),
+            Some(vec![])
+        );
+        assert!(catalog_event_declarations(&json!({})).is_none());
+        assert!(catalog_event_declarations(&json!({"events":[{"name":"broken"}]})).is_none());
+    }
 
     #[test]
     fn catalog_event_lookup_requires_the_declared_name_and_version() {

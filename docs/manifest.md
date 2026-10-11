@@ -168,10 +168,14 @@ health exposes reader connection/backoff and first-batch age, size and elapsed
 time; those measurements let operators distinguish historical catch-up from
 current traffic.
 
-Daemon catalog event propagation is still pending: production lookup fails
-closed until `catalog_event_declarations` is wired to the daemon's released
-event field. The declaration conversion already accepts the protocol's
-`EventDeclaration` shape. No alternative wire field is inferred.
+Production lookup reads each module's declared `events` from the daemon catalog.
+It requires the daemon-wide `catalog-events/v1` capability, supplied in basal's
+registration acknowledgement and refreshed on reconnect (the same list as
+`server.describe`). Before that acknowledgement, or without the capability,
+event installs are refused. Missing or empty event declarations admit no events;
+only an exact declared name and version is accepted at install and dry run.
+Declared filter headers are retained as hints, not authority. No alternative
+wire field is inferred.
 
 ### Sink grant
 

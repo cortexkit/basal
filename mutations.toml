@@ -741,18 +741,18 @@ build_timeout_s = 3600
 timeout_s = 600
 edits = [
   { file = "crates/basal-worker/Cargo.toml", old = "rquickjs.workspace = true\n", new = "rquickjs.workspace = true\nsubc-protocol = \"0.24.1\" # NON-VACUITY BREAK\n" },
-  { file = "Cargo.lock", old = " \"rusqlite\",\n \"serde\",\n \"serde_json\",\n \"sha2\",\n \"subc-protocol\",\n \"tracing\",\n", new = " \"rusqlite\",\n \"serde\",\n \"serde_json\",\n \"sha2\",\n \"subc-protocol 0.30.0\",\n \"tracing\",\n" },
-  { file = "Cargo.lock", old = " \"subc-client-rs\",\n \"subc-protocol\",\n \"subc-transport\",\n \"tokio\",\n \"tracing\",\n \"webpki-roots 1.0.9\",\n", new = " \"subc-client-rs\",\n \"subc-protocol 0.30.0\",\n \"subc-transport\",\n \"tokio\",\n \"tracing\",\n \"webpki-roots 1.0.9\",\n" },
-  { file = "Cargo.lock", old = " \"serde\",\n \"serde_json\",\n \"sha2\",\n \"subc-client-rs\",\n \"subc-os\",\n \"subc-protocol\",\n \"subc-transport\",\n \"tokio\",\n \"tracing\",\n", new = " \"serde\",\n \"serde_json\",\n \"sha2\",\n \"subc-client-rs\",\n \"subc-os\",\n \"subc-protocol 0.30.0\",\n \"subc-transport\",\n \"tokio\",\n \"tracing\",\n" },
-  { file = "Cargo.lock", old = " \"rcgen\",\n \"rusqlite\",\n \"rustls\",\n \"serde_json\",\n \"subc-protocol\",\n", new = " \"rcgen\",\n \"rusqlite\",\n \"rustls\",\n \"serde_json\",\n \"subc-protocol 0.30.0\",\n" },
-  { file = "Cargo.lock", old = " \"rusqlite\",\n \"serde_json\",\n \"sha2\",\n \"subc-client-rs\",\n \"subc-protocol\",\n \"tokio\",\n \"windows-sys 0.61.2\",\n]\n", new = " \"rusqlite\",\n \"serde_json\",\n \"sha2\",\n \"subc-client-rs\",\n \"subc-protocol 0.30.0\",\n \"tokio\",\n \"windows-sys 0.61.2\",\n]\n" },
+  { file = "Cargo.lock", old = " \"rusqlite\",\n \"serde\",\n \"serde_json\",\n \"sha2\",\n \"subc-protocol\",\n \"tracing\",\n", new = " \"rusqlite\",\n \"serde\",\n \"serde_json\",\n \"sha2\",\n \"subc-protocol 0.30.2\",\n \"tracing\",\n" },
+  { file = "Cargo.lock", old = " \"subc-client-rs\",\n \"subc-protocol\",\n \"subc-transport\",\n \"tokio\",\n \"tracing\",\n \"webpki-roots 1.0.9\",\n", new = " \"subc-client-rs\",\n \"subc-protocol 0.30.2\",\n \"subc-transport\",\n \"tokio\",\n \"tracing\",\n \"webpki-roots 1.0.9\",\n" },
+  { file = "Cargo.lock", old = " \"serde\",\n \"serde_json\",\n \"sha2\",\n \"subc-client-rs\",\n \"subc-os\",\n \"subc-protocol\",\n \"subc-transport\",\n \"tokio\",\n \"tracing\",\n", new = " \"serde\",\n \"serde_json\",\n \"sha2\",\n \"subc-client-rs\",\n \"subc-os\",\n \"subc-protocol 0.30.2\",\n \"subc-transport\",\n \"tokio\",\n \"tracing\",\n" },
+  { file = "Cargo.lock", old = " \"rcgen\",\n \"rusqlite\",\n \"rustls\",\n \"serde_json\",\n \"subc-protocol\",\n", new = " \"rcgen\",\n \"rusqlite\",\n \"rustls\",\n \"serde_json\",\n \"subc-protocol 0.30.2\",\n" },
+  { file = "Cargo.lock", old = " \"rusqlite\",\n \"serde_json\",\n \"sha2\",\n \"subc-client-rs\",\n \"subc-protocol\",\n \"tokio\",\n \"windows-sys 0.61.2\",\n]\n", new = " \"rusqlite\",\n \"serde_json\",\n \"sha2\",\n \"subc-client-rs\",\n \"subc-protocol 0.30.2\",\n \"tokio\",\n \"windows-sys 0.61.2\",\n]\n" },
   { file = "Cargo.lock", old = " \"rquickjs\",\n \"seccompiler\",\n \"serde_json\",\n \"windows-sys 0.61.2\",\n]\n\n[[package]]\n", new = " \"rquickjs\",\n \"seccompiler\",\n \"serde_json\",\n \"subc-protocol 0.24.1\",\n \"windows-sys 0.61.2\",\n]\n\n[[package]]\n" },
-  { file = "Cargo.lock", old = " \"serde_json\",\n \"subc-control\",\n \"subc-os\",\n \"subc-protocol\",\n \"subc-transport\",\n \"tokio\",\n \"tokio-util\",\n", new = " \"serde_json\",\n \"subc-control\",\n \"subc-os\",\n \"subc-protocol 0.30.0\",\n \"subc-transport\",\n \"tokio\",\n \"tokio-util\",\n" },
-  { file = "Cargo.lock", old = "dependencies = [\n \"serde\",\n \"serde_json\",\n \"subc-protocol\",\n]\n", new = "dependencies = [\n \"serde\",\n \"serde_json\",\n \"subc-protocol 0.30.0\",\n]\n" },
-  { file = "Cargo.lock", old = "dependencies = [\n \"libc\",\n \"rustix\",\n]\n\n[[package]]\n", new = "dependencies = [\n \"libc\",\n \"rustix\",\n]\n\n[[package]]\nname = \"subc-protocol\"\nversion = \"0.24.1\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"3b0fb1bc9305afe14d1202970b7e361253dba6108525b356a7e10274436bc80d\"\ndependencies = [\n \"serde\",\n \"serde_json\",\n]\n\n[[package]]\n" },
-  { file = "Cargo.lock", old = " \"serde\",\n \"serde_json\",\n \"sha2\",\n \"subc-protocol\",\n \"subtle\",\n \"tokio\",\n]\n", new = " \"serde\",\n \"serde_json\",\n \"sha2\",\n \"subc-protocol 0.30.0\",\n \"subtle\",\n \"tokio\",\n]\n" },
-  { file = "Cargo.lock", old = " \"serde_jcs\",\n \"serde_json\",\n \"sha2\",\n \"subc-protocol\",\n", new = " \"serde_jcs\",\n \"serde_json\",\n \"sha2\",\n \"subc-protocol 0.30.0\",\n" },
-  { file = "Cargo.lock", old = " \"cortexkit-role-tool-provider\",\n \"futures-util\",\n \"serde_json\",\n \"subc-protocol\",\n", new = " \"cortexkit-role-tool-provider\",\n \"futures-util\",\n \"serde_json\",\n \"subc-protocol 0.30.0\",\n" },
+  { file = "Cargo.lock", old = " \"serde_json\",\n \"subc-control\",\n \"subc-os\",\n \"subc-protocol\",\n \"subc-transport\",\n \"tokio\",\n \"tokio-util\",\n", new = " \"serde_json\",\n \"subc-control\",\n \"subc-os\",\n \"subc-protocol 0.30.2\",\n \"subc-transport\",\n \"tokio\",\n \"tokio-util\",\n" },
+  { file = "Cargo.lock", old = "dependencies = [\n \"serde\",\n \"serde_json\",\n \"subc-protocol\",\n]\n", new = "dependencies = [\n \"serde\",\n \"serde_json\",\n \"subc-protocol 0.30.2\",\n]\n" },
+  { file = "Cargo.lock", old = "dependencies = [\n \"libc\",\n \"rustix\",\n \"windows-sys 0.61.2\",\n]\n\n[[package]]\n", new = "dependencies = [\n \"libc\",\n \"rustix\",\n \"windows-sys 0.61.2\",\n]\n\n[[package]]\nname = \"subc-protocol\"\nversion = \"0.24.1\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"3b0fb1bc9305afe14d1202970b7e361253dba6108525b356a7e10274436bc80d\"\ndependencies = [\n \"serde\",\n \"serde_json\",\n]\n\n[[package]]\n" },
+  { file = "Cargo.lock", old = " \"serde\",\n \"serde_json\",\n \"sha2\",\n \"subc-os\",\n \"subc-protocol\",\n \"subtle\",\n \"tokio\",\n]\n", new = " \"serde\",\n \"serde_json\",\n \"sha2\",\n \"subc-os\",\n \"subc-protocol 0.30.2\",\n \"subtle\",\n \"tokio\",\n]\n" },
+  { file = "Cargo.lock", old = " \"serde_jcs\",\n \"serde_json\",\n \"sha2\",\n \"subc-protocol\",\n", new = " \"serde_jcs\",\n \"serde_json\",\n \"sha2\",\n \"subc-protocol 0.30.2\",\n" },
+  { file = "Cargo.lock", old = " \"cortexkit-role-tool-provider\",\n \"futures-util\",\n \"serde_json\",\n \"subc-protocol\",\n", new = " \"cortexkit-role-tool-provider\",\n \"futures-util\",\n \"serde_json\",\n \"subc-protocol 0.30.2\",\n" },
 ]
 
 [[control]]
@@ -5844,7 +5844,7 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/subc_catalog.rs"
-old = "fn event(&self, module: &str, name: &str, version: u32) -> Option<EventDecl> {\n        let catalog = self.transport.catalog().ok()?;\n        let entry = catalog[\"modules\"]\n            .as_array()?\n            .iter()\n            .find(|e| e[\"module_id\"] == module)?;\n        declared_event(&catalog_event_declarations(entry)?, name, version)\n    }"
+old = "fn event(&self, module: &str, name: &str, version: u32) -> Option<EventDecl> {\n        if !self.daemon_capabilities.supports_catalog_events() {\n            return None;\n        }\n        let catalog = self.transport.catalog().ok()?;\n        let entry = catalog[\"modules\"]\n            .as_array()?\n            .iter()\n            .find(|e| e[\"module_id\"] == module)?;\n        declared_event(&catalog_event_declarations(entry)?, name, version)\n    }"
 new = "fn event(&self, _: &str, _: &str, _: u32) -> Option<EventDecl> { Some(EventDecl { origin: crate::EventOrigin::Internal, body: crate::EventBody::Inline }) }"
 
 [[control]]
@@ -18478,3 +18478,35 @@ only = true
 file = "crates/basal-module/src/ops.rs"
 old = "if params_present {"
 new = "if false && params_present { // NON-VACUITY BREAK"
+
+[[control]]
+id = "catalog-events-capability-gate-bypassed"
+guards = "install and dry-run event declarations require the acknowledged daemon capability"
+test_file = "crates/basal-module/tests/catalog_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test catalog_events"
+expect_red = ["catalog_events_require_an_acknowledged_daemon_capability"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/subc_catalog.rs"
+old = "if !self.daemon_capabilities.supports_catalog_events() {"
+new = "if false && !self.daemon_capabilities.supports_catalog_events() { // NON-VACUITY BREAK"
+
+[[control]]
+id = "catalog-event-mapping-fabricated"
+guards = "catalog declarations preserve the publisher's event names, versions and filter headers"
+test_file = "crates/basal-host/src/subc_catalog.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["subc_catalog::event_tests::catalog_event_mapping_preserves_names_versions_and_filter_headers"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/subc_catalog.rs"
+old = "serde_json::from_value(event).ok()"
+new = "Some(EventDeclaration::new(\"fabricated_event\", 99)) // NON-VACUITY BREAK"
