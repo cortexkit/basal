@@ -17,7 +17,8 @@
 //! The operator is the daemon-attested `reserved:callosum`; a local caller
 //! is an unscoped `direct` key-holder, which any local process can be (see
 //! [`crate::caller`]). A local caller may ask to install because the install
-//! card, which only the operator decides, is what authorizes an install.
+//! decision is made by core's install policy or by the operator's consent card,
+//! never by the local caller.
 //! Everything else the operator alone may do refuses it with
 //! `operator_attestation_required`, so it can tell that it reached an
 //! operator action without the daemon's attestation.
@@ -35,7 +36,7 @@ use std::time::Duration;
 use basal_core::cards::CardState;
 use basal_core::manifest::{Manifest, ManifestError, duration_ms};
 use basal_core::{Actor, CoreError, InstallError, InstallRequest, Resolution};
-use basal_host::{ConsentError, HostOutcome, InstallCard};
+use basal_host::{ConsentError, HostOutcome, InstallCard, InstallOutcome};
 use basal_proto::{JsonText, Settlement};
 use rusqlite::OptionalExtension;
 use serde::Deserialize;
@@ -434,7 +435,7 @@ impl Module {
             .map_err(|e| self.core_error(e))?
             .into_iter()
             .find(|c| c.version == installed.version);
-        let record = match existing {
+        let mut record = match existing {
             Some(card) => card,
             None => {
                 let now = self.rt.config().clock.now_ms();
@@ -505,43 +506,92 @@ impl Module {
                 version: record.version,
                 fields: raised_fields,
             });
-            if let Err(e) = raised {
-                let code = match &e {
-                    ConsentError::Unavailable(_) => "consent_unavailable",
-                    ConsentError::Refused(_) => "consent_refused",
-                    // Core answered and refused the author, so this is not a
-                    // lost reply: the agent's route is under a scope core
-                    // does not hold as a live agent session. Retrying
-                    // needs a route under a live scope.
-                    ConsentError::AuthorScope { code, .. } => {
+            match raised {
+                Ok(InstallOutcome::CardRaised) => {
+                    self.rt
+                        .confirm_install_card(&record.flow_id, record.version)
+                        .map_err(|e| self.core_error(e))?;
+                }
+                Ok(InstallOutcome::ApprovedByPolicy { rule, code_hash }) => {
+                    if !self
+                        .rt
+                        .confirm_policy_install(
+                            &record.flow_id,
+                            record.version,
+                            &record.code_hash,
+                            &code_hash,
+                            &rule,
+                        )
+                        .map_err(|e| self.core_error(e))?
+                    {
                         return Err(OpError::new(
-                            code,
-                            format!(
-                                "version {} of {} is installed and its card {} recorded, but core refused the card's author: {e}; install again from a live agent session",
-                                record.version, record.flow_id, record.card_id
-                            ),
+                            "install_policy_unconfirmed",
+                            "core's policy approval could not be confirmed; the version remains pending (see flow.health)",
                         ));
                     }
-                };
-                return Err(OpError::new(
-                    code,
-                    format!(
-                        "version {} of {} is installed and its card {} recorded, but the card could not be raised: {e}; install again to retry",
-                        record.version, record.flow_id, record.card_id
-                    ),
-                ));
+                    record = self
+                        .rt
+                        .card(&record.card_id)
+                        .map_err(|e| self.core_error(e))?
+                        .ok_or_else(|| {
+                            OpError::new(
+                                "store_error",
+                                "the install request vanished after approval",
+                            )
+                        })?;
+                }
+                Err(e) => {
+                    self.rt
+                        .record_install_check_error(&record.flow_id, record.version, &e.to_string())
+                        .map_err(|e| self.core_error(e))?;
+                    let code = match &e {
+                        ConsentError::Unavailable(_) => "consent_unavailable",
+                        ConsentError::Refused(_) => "consent_refused",
+                        // Core replied that the author is not authorized for
+                        // this install. This is not a lost reply: retry from
+                        // an agent session whose scope core recognizes as live.
+                        ConsentError::AuthorScope { code, .. } => {
+                            return Err(OpError::new(
+                                code,
+                                format!(
+                                    "version {} of {} is installed and its card {} recorded, but core refused the card's author: {e}; install again from a live agent session",
+                                    record.version, record.flow_id, record.card_id
+                                ),
+                            ));
+                        }
+                    };
+                    return Err(OpError::new(
+                        code,
+                        format!(
+                            "version {} of {} is installed and its card {} recorded, but the card could not be raised: {e}; install again to retry",
+                            record.version, record.flow_id, record.card_id
+                        ),
+                    ));
+                }
             }
         }
-        Ok(json!({
+        let approval = self
+            .rt
+            .store()
+            .read(|c| {
+                basal_core::install_policy::approval(c, &record.flow_id, Some(record.version))
+            })
+            .map_err(|e| self.core_error(e))?;
+        let policy = approval.as_ref().is_some_and(|a| a["kind"] == "policy");
+        let mut reply = json!({
             "flow_id": record.flow_id,
             "version": record.version,
             "code_hash": code_hash_hex(&record.code_hash),
-            "card_id": record.card_id,
+            "card_id": if policy { Value::Null } else { json!(record.card_id) },
             "state": record.state.as_str(),
             "new": installed.new,
             "warnings": fields.get("warnings").cloned().unwrap_or(Value::Null),
             "dry_run": fields.get("dry_run_summary").cloned().unwrap_or(Value::Null),
-        }))
+        });
+        if policy {
+            reply["approval"] = json!(approval);
+        }
+        Ok(reply)
     }
 
     // ---- flow.dry_run --------------------------------------------------
@@ -725,7 +775,7 @@ impl Module {
             let mut stmt = c.prepare(
                 "SELECT f.flow_id, f.approved_version, f.state='enabled',
                     f.disabled_by, f.disabled_reason, f.disabled_at,
-                    (SELECT MAX(version) FROM install_cards WHERE flow_id=f.flow_id AND state='pending'),
+                    (SELECT MAX(i.version) FROM installs i WHERE i.flow_id=f.flow_id AND i.state='validated' AND NOT EXISTS (SELECT 1 FROM install_cards c WHERE c.flow_id=i.flow_id AND c.version=i.version AND c.state<>'pending')),
                     r.run_id, r.state, COALESCE(r.ended_at,r.admitted_at),
                     EXISTS(SELECT 1 FROM runs WHERE flow_id=f.flow_id AND state='needs_reconcile'), f.agent_retirement
                  FROM flows f LEFT JOIN runs r ON r.run_id=(
@@ -762,7 +812,11 @@ impl Module {
                 let flow_id = row["flow_id"].as_str().expect("flow id from store");
                 let losses = basal_core::grant_loss::losses(c, Some(flow_id))?
                     .into_iter().filter(|g| matches!(g.state.as_str(), "polling" | "stopped")).collect::<Vec<_>>();
+                let approval = basal_core::install_policy::approval(c, flow_id, row["approved_version"].as_u64().map(|v| v as u32))?;
+                let install_checks = basal_core::install_policy::check_errors(c, flow_id)?;
                 row["grant_losses"] = json!(losses);
+                row["approval"] = json!(approval);
+                row["install_checks"] = json!(install_checks);
                 if let Some(body) = row["agent_retirement"].as_str() {
                     row["agent_retirement"] = serde_json::from_str(body)
                         .map_err(|e| CoreError::Corrupt(e.to_string()))?;
@@ -871,6 +925,8 @@ impl Module {
                 "needs_reconcile_runs": f.needs_reconcile,
                 "owner": f.owner,
                 "approved_version": f.approved_version,
+                "approval": f.approval,
+                "install_checks": f.install_checks,
                 "disabled_by": f.disabled_by,
                 // Who disabled the flow, by kind (operator, the owning
                 // agent, or auto for the runtime's own saturation

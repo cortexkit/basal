@@ -139,7 +139,7 @@ impl Catalog for EmptyCatalog {
 pub struct UnconfiguredConsent;
 
 impl Consent for UnconfiguredConsent {
-    fn raise(&self, _card: &InstallCard) -> Result<(), ConsentError> {
+    fn raise(&self, _card: &InstallCard) -> Result<basal_host::InstallOutcome, ConsentError> {
         Err(ConsentError::Unavailable(
             "no consent adapter is configured in this build of ck-basal".to_owned(),
         ))

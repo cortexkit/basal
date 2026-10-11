@@ -4,7 +4,9 @@
 use crate::core_consent::{CoreConsent, decision_request, error};
 use crate::subc_catalog::CORE;
 use crate::transport::Transport;
-use crate::{Consent, ConsentError, DecisionCard, DecisionPath, DecisionSink, InstallCard};
+use crate::{
+    Consent, ConsentError, DecisionCard, DecisionPath, DecisionSink, InstallCard, InstallOutcome,
+};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -34,7 +36,7 @@ impl CingulateConsent {
 }
 
 impl Consent for CingulateConsent {
-    fn raise(&self, card: &InstallCard) -> Result<(), ConsentError> {
+    fn raise(&self, card: &InstallCard) -> Result<InstallOutcome, ConsentError> {
         self.core.raise(card)
     }
 

@@ -183,6 +183,13 @@ fn matches_shape(value: &Value, shape: &Value, nullable: bool) {
                 "integer" => value.as_i64().is_some(),
                 "string" => value.is_string(),
                 "boolean" => value.is_boolean(),
+                "approval" => match value["kind"].as_str() {
+                    Some("card" | "unknown") => value.as_object().is_some_and(|a| a.len() == 1),
+                    Some("policy") =>
+                        value.as_object().is_some_and(|a| a.len() == 2)
+                            && value["rule"].as_str().is_some_and(|rule| !rule.is_empty()),
+                    _ => false,
+                },
                 "null" => value.is_null(),
                 literal => value.as_str() == Some(literal),
             }),

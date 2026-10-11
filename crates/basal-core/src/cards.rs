@@ -19,7 +19,8 @@ use crate::schedule::SchedulerConfig;
 /// Where a card stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CardState {
-    /// Raised; no decision yet.
+    /// Install request saved locally; no approval or rejection yet. The request
+    /// is not a confirmed consent card until core replies `card_raised`.
     Pending,
     /// Approved: the version it shows is the flow's approved version (or was,
     /// until a newer one was approved).

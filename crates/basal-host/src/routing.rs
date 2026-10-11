@@ -343,4 +343,12 @@ impl Host for RoutingHost {
     ) -> Result<crate::InstallStatus, TransportError> {
         self.core.install_status(flow_id, version)
     }
+
+    fn install_status_with_approval(
+        &self,
+        flow_id: &str,
+        version: u32,
+    ) -> Result<(crate::InstallStatus, Option<crate::InstallApproval>), TransportError> {
+        self.core.install_status_with_approval(flow_id, version)
+    }
 }
