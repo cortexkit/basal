@@ -364,11 +364,7 @@ impl Harness for Subject {
             }
             replies.lock().unwrap().clear();
         });
-        tokio::time::timeout(Duration::from_secs(180), prepared)
-            .await
-            .unwrap()
-            .unwrap();
-        Ok(Live {
+        let live = Live {
             wire: Arc::new(Wire {
                 writer: tokio::sync::Mutex::new(write),
                 pending,
@@ -378,7 +374,31 @@ impl Harness for Subject {
             core,
             provider,
             reader,
+        };
+        tokio::time::timeout(Duration::from_secs(180), async {
+            prepared.await.unwrap();
+            // Host setup finishes before the handler publishes its ready phase.
+            // Wait for protocol readiness before allowing any tool routes.
+            loop {
+                let (corr, mut reply) = live
+                    .wire
+                    .send(
+                        0,
+                        serde_json::to_value(ModuleControlRequest::HealthCheck {}).unwrap(),
+                    )
+                    .await;
+                let health = reply.recv().await.unwrap();
+                live.wire.pending.lock().unwrap().remove(&(0, corr));
+                assert_eq!(health.header.ty, FrameType::Response, "{health:?}");
+                let body: Value = serde_json::from_slice(&health.body).unwrap();
+                if body["status"] == "ok" {
+                    break;
+                }
+            }
         })
+        .await
+        .unwrap();
+        Ok(live)
     }
     async fn route(&self, handle: &Live, stamp: &RouteStamp) -> Result<Route, HarnessError> {
         let channel = handle.wire.channel.fetch_add(1, Ordering::SeqCst);
