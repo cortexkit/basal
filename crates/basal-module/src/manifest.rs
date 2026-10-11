@@ -148,6 +148,7 @@ pub fn manifest() -> ModuleManifest {
         .capabilities(Some(subc_protocol::manifest::CapabilityDeclarations {
             provides: vec![
                 cortexkit_role_tool_provider::PROVIDES.into(),
+                cortexkit_role_tool_provider::CALL_MODES_CAPABILITY.into(),
                 "flow-install-policy/v1".into(),
             ],
             requires: vec![],

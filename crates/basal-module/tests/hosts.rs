@@ -303,18 +303,16 @@ fn catalog_install_refuses_missing_ops_and_events_and_marks_mutations() {
 fn agent_on_scope(agent: &str, scope_ref: &str) -> Caller {
     use subc_protocol::Principal;
     use subc_protocol::scope::{ScopeAttributes, ScopeKind, ScopeStamp};
-    let stamp = ScopeStamp {
-        owner: Principal::Reserved {
+    let stamp = ScopeStamp::new(
+        Principal::Reserved {
             module_id: basal_module::caller::CORE_MODULE.into(),
         },
-        scope_ref: scope_ref.into(),
-        scope_epoch: 1,
-        kind: ScopeKind::Head,
-        parent: None,
-        parent_state: None,
-        attributes: ScopeAttributes::new().with_agent_id(Some(agent.into())),
-        owner_authorized: true,
-    };
+        scope_ref,
+        1,
+        ScopeKind::Head,
+    )
+    .with_attributes(ScopeAttributes::new().with_agent_id(Some(agent.into())))
+    .with_owner_authorized(true);
     basal_module::caller::from_route(Some(&Principal::Direct), Some(&stamp))
 }
 

@@ -19,9 +19,9 @@ use basal_module::serve::BasalHandler;
 use cortexkit_role_harness::{
     Harness, HarnessError, KillPoint, KillReport, PointDeclaration, RouteStamp, Trigger,
 };
-use cortexkit_role_tool_provider::scope::ScopeIdentity;
+use cortexkit_role_tool_provider::{CallMode, scope::ScopeIdentity};
 use cortexkit_role_tool_provider_conformance::{
-    CallSpec, Capability, Exchange, ObservedFrame, RouteFailure, ScopedPrincipals,
+    CallModeProbe, CallSpec, Capability, Exchange, ObservedFrame, RouteFailure, ScopedPrincipals,
     ToolProviderSubject, ToolRoute,
 };
 use serde_json::{Value, json};
@@ -426,34 +426,7 @@ impl Harness for Subject {
         Ok(live)
     }
     async fn route(&self, handle: &Live, stamp: &RouteStamp) -> Result<Route, HarnessError> {
-        let channel = handle.wire.channel.fetch_add(1, Ordering::SeqCst);
-        let scope = stamp.scope.as_ref().map(|scope| serde_json::from_value(json!({
-            "owner":principal(&scope.owner),"ref":scope.scope_ref,"scope_epoch":scope.scope_epoch,"kind":"head",
-            "attributes":{"agent_id":"agent"},"owner_authorized":true})).unwrap());
-        let bind = ModuleControlRequest::RouteBind {
-            route_channel: channel,
-            epoch: 1,
-            target: RouteTarget::ToolProvider {
-                module_id: "basal".into(),
-            },
-            identity: BindIdentity::new("/work", "test", "session"),
-            principal: Some(principal(&stamp.principal)),
-            consumer_capabilities: None,
-            role_versions: None,
-            admission_facts: None,
-            scope,
-        };
-        let (corr, mut reply) = handle
-            .wire
-            .send(0, serde_json::to_value(bind).unwrap())
-            .await;
-        let response = reply.recv().await.unwrap();
-        handle.wire.pending.lock().unwrap().remove(&(0, corr));
-        assert_eq!(response.header.ty, FrameType::Response, "{response:?}");
-        Ok(Route {
-            wire: handle.wire.clone(),
-            channel,
-        })
+        self.bind_route(handle, stamp, None, None).await
     }
     async fn kill_at(
         &self,
@@ -469,6 +442,46 @@ impl Harness for Subject {
         self.spawn(state_root).await
     }
 }
+
+impl Subject {
+    async fn bind_route(
+        &self,
+        handle: &Live,
+        stamp: &RouteStamp,
+        mode: Option<CallMode>,
+        attributes: Option<Value>,
+    ) -> Result<Route, HarnessError> {
+        let channel = handle.wire.channel.fetch_add(1, Ordering::SeqCst);
+        let scope = stamp.scope.as_ref().map(|scope| serde_json::from_value(json!({
+            "owner":principal(&scope.owner),"ref":scope.scope_ref,"scope_epoch":scope.scope_epoch,"kind":"head",
+            "attributes":attributes.unwrap_or_else(|| json!({"agent_id":"agent"})),"owner_authorized":true})).unwrap());
+        let bind = ModuleControlRequest::RouteBind {
+            route_channel: channel,
+            epoch: 1,
+            target: RouteTarget::ToolProvider {
+                module_id: "basal".into(),
+            },
+            identity: BindIdentity::new("/work", "test", "session"),
+            principal: Some(principal(&stamp.principal)),
+            consumer_capabilities: None,
+            role_versions: None,
+            admission_facts: None,
+            scope,
+            call_mode: mode,
+        };
+        let (corr, mut reply) = handle
+            .wire
+            .send(0, serde_json::to_value(bind).unwrap())
+            .await;
+        let response = reply.recv().await.unwrap();
+        handle.wire.pending.lock().unwrap().remove(&(0, corr));
+        assert_eq!(response.header.ty, FrameType::Response, "{response:?}");
+        Ok(Route {
+            wire: handle.wire.clone(),
+            channel,
+        })
+    }
+}
 #[async_trait]
 impl ToolProviderSubject for Subject {
     fn capabilities(&self) -> BTreeSet<Capability> {
@@ -479,6 +492,7 @@ impl ToolProviderSubject for Subject {
             Capability::HeldCalls,
             Capability::Cancellation,
             Capability::LateResults,
+            Capability::CallModes,
         ]
         .into_iter()
         .collect()
@@ -494,6 +508,26 @@ impl ToolProviderSubject for Subject {
     }
     fn quick_call(&self) -> CallSpec {
         ("codemode".into(), json!({"code":"return 42;"}))
+    }
+    fn call_mode_probe(&self) -> Option<CallModeProbe> {
+        Some(CallModeProbe {
+            call: self.quick_call(),
+            unlisted_mode: CallMode::Codemode,
+        })
+    }
+    async fn route_with_mode(
+        &self,
+        handle: &Live,
+        stamp: &RouteStamp,
+        mode: &CallMode,
+    ) -> Result<Route, HarnessError> {
+        let attributes = match mode {
+            CallMode::Codemode => Some(json!({"agent_id":"agent","run_id":"parent-run"})),
+            CallMode::Flow => Some(json!({"agent_id":"agent","flow_id":"flow"})),
+            CallMode::Classic | CallMode::Unknown(_) => None,
+        };
+        self.bind_route(handle, stamp, Some(mode.clone()), attributes)
+            .await
     }
     fn slow_call(&self) -> Option<CallSpec> {
         Some(("codemode".into(), json!({"code":"while (true) {}"})))
@@ -538,6 +572,9 @@ async fn basal_tool_provider_conforms_for_declared_capabilities() {
         .unwrap();
     use cortexkit_role_tool_provider_conformance::{CaseOutcome, SuiteVerdict};
     println!("{}", report.render());
+    assert!(report.cases.iter().any(|case| {
+        case.case == "call_mode_matches_catalog" && matches!(case.outcome, CaseOutcome::Passed)
+    }));
     assert!(
         matches!(
             report.verdict,
@@ -555,6 +592,7 @@ async fn basal_tool_provider_conforms_for_declared_capabilities() {
     assert_eq!(
         skipped,
         [
+            "tool_result_content_v1_valid",
             "system_text_digests_match_text",
             "system_text_preflight_digest_stable",
             "catalog_disabled_tool_absent",
@@ -789,6 +827,154 @@ async fn real_route_malformed_key_types_and_withdraw_null_key_name_the_field() {
         );
     }
     drop((route, live));
+    subject.join_stopped().await;
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+fn assert_mode_refusal(exchange: &Exchange, mode: &str) {
+    match cortexkit_role_tool_provider_conformance::single_terminal(exchange).unwrap() {
+        ObservedFrame::Error(error) => {
+            assert_eq!(error.code, "call_mode_unsupported", "{error:?}");
+            assert_eq!(error.detail, Some(json!({"tool":"codemode","mode":mode})));
+            let message = &error.message;
+            assert!(
+                message.contains("codemode") && message.contains(mode),
+                "{error:?}"
+            );
+        }
+        other => panic!("expected mode refusal, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unserved_modes_are_refused_from_the_bind_not_the_body() {
+    let root = common::scratch("unserved-mode");
+    let subject = Subject::default();
+    let live = subject.spawn(&root).await.unwrap();
+    for (mode, spelling) in [(CallMode::Flow, "flow"), (CallMode::Codemode, "codemode")] {
+        let route = subject
+            .route_with_mode(&live, &subject.plain_stamp(), &mode)
+            .await
+            .unwrap();
+        let exchange = route
+            .request(
+                json!({"name":"codemode","arguments":{"code":"return 42;"},"call_mode":"classic"}),
+            )
+            .await
+            .unwrap();
+        assert_mode_refusal(&exchange, spelling);
+    }
+    drop(live);
+    subject.join_stopped().await;
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unknown_bind_mode_is_refused_for_tools_and_role_operations() {
+    let root = common::scratch("unknown-mode");
+    let subject = Subject::default();
+    let live = subject.spawn(&root).await.unwrap();
+    let route = subject
+        .route_with_mode(
+            &live,
+            &subject.plain_stamp(),
+            &CallMode::Unknown("future".into()),
+        )
+        .await
+        .unwrap();
+    let exchange = route
+        .request(json!({"name":"codemode","arguments":{"code":"return 42;"}}))
+        .await
+        .unwrap();
+    assert_mode_refusal(&exchange, "future");
+    let exchange = route
+        .request(json!({"name":"tool.catalog","arguments":{}}))
+        .await
+        .unwrap();
+    match cortexkit_role_tool_provider_conformance::single_terminal(&exchange).unwrap() {
+        ObservedFrame::Error(error) => {
+            assert_eq!(error.code, "call_mode_unsupported");
+            assert_eq!(
+                error.detail,
+                Some(json!({"tool":"tool.catalog","mode":"future"}))
+            );
+        }
+        other => panic!("unknown mode reached a role operation: {other:?}"),
+    }
+    drop(live);
+    subject.join_stopped().await;
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn every_public_tool_declares_its_served_modes() {
+    use cortexkit_role_tool_provider::catalog::{CatalogAnswer, check_modes, serves_call_mode};
+    let answer: CatalogAnswer =
+        serde_json::from_value(basal_module::tool::catalog(json!({})).unwrap()).unwrap();
+    assert_eq!(
+        answer
+            .tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>(),
+        ["codemode"]
+    );
+    for tool in &answer.tools {
+        assert_eq!(check_modes(tool), Ok(()));
+        // The tool-provider crate encodes a Classic-only list with no `modes` field.
+        assert_eq!(
+            tool.modes.as_deref().unwrap_or(&[CallMode::Classic]),
+            &[CallMode::Classic]
+        );
+        assert!(serves_call_mode(tool, &CallMode::Classic));
+        assert!(!serves_call_mode(tool, &CallMode::Codemode));
+        assert!(!serves_call_mode(tool, &CallMode::Flow));
+    }
+}
+
+#[test]
+fn declares_call_modes_capability() {
+    let manifest = serde_json::to_value(basal_module::manifest::manifest()).unwrap();
+    assert!(
+        manifest["capabilities"]["provides"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|cap| cap == "call-modes/v1")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn legacy_daemon_binds_derive_modes_and_missing_run_expiry_still_runs() {
+    let root = common::scratch("legacy-modes");
+    let subject = Subject::default();
+    let live = subject.spawn(&root).await.unwrap();
+    for (attributes, spelling) in [
+        (
+            json!({"agent_id":"agent","run_id":"parent-run"}),
+            "codemode",
+        ),
+        (json!({"agent_id":"agent","flow_id":"flow"}), "flow"),
+    ] {
+        let route = subject
+            .bind_route(&live, &subject.plain_stamp(), None, Some(attributes))
+            .await
+            .unwrap();
+        let exchange = route
+            .request(json!({"name":"codemode","arguments":{"code":"return 42;"}}))
+            .await
+            .unwrap();
+        assert_mode_refusal(&exchange, spelling);
+    }
+    let classic = subject.route(&live, &subject.plain_stamp()).await.unwrap();
+    let result = response(
+        &classic,
+        json!({"name":"codemode","arguments":{"code":"return 42;"}}),
+    )
+    .await;
+    assert_eq!(result["status"], "completed", "{result}");
+    assert_eq!(result["value"], 42, "{result}");
+    drop(live);
     subject.join_stopped().await;
     std::fs::remove_dir_all(root).unwrap();
 }

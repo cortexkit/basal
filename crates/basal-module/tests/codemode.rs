@@ -190,7 +190,7 @@ fn rig(tag: &str, missing_worker: bool) -> Rig {
     Rig { fixture, core }
 }
 fn context() -> Context {
-    Context { bind_identity: subc_protocol::BindIdentity::new("/agent/workspace","agent-harness","agent-session"),principal:Principal::Reserved { module_id:"broca".into() },scope:Some(serde_json::from_value::<ScopeStamp>(json!({
+    Context { call_mode: subc_client_rs::CallMode::Classic, bind_identity: subc_protocol::BindIdentity::new("/agent/workspace","agent-harness","agent-session"),principal:Principal::Reserved { module_id:"broca".into() },scope:Some(serde_json::from_value::<ScopeStamp>(json!({
         "owner":{"kind":"reserved","module_id":"prefrontal-core"},"ref":"agent-scope","scope_epoch":7,"kind":"head",
         "attributes":{"agent_id":"agent"},"owner_authorized":true})).unwrap()) }
 }
