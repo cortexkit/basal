@@ -1974,7 +1974,7 @@ async fn suite(
         "agent".into(),
         json!({ "name": agent.name, "agent_id": agent.id, "session": agent.session }),
     );
-    cases.extend(codemode_cases::run(&rig, &agent, &tag).await);
+    cases.extend(codemode_cases::run(&rig, &agent, args, &tag).await);
 
     let sinks_flow = flows::sinks(&format!("rig-sinks-{tag}"), &agent.name, "NoSuchAgent");
     let scope_flow = flows::writer(

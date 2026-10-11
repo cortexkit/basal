@@ -15928,3 +15928,19 @@ timeout_s = 600
 file = "crates/basal-rig/src/bin/ckdev-runscope-probe.rs"
 old = 'if scope.attributes.flow_id.is_some() {'
 new = 'if false { // NON-VACUITY BREAK'
+
+[[control]]
+id = "rig-no-model-proof-counts-real-runs"
+guards = "no-model rig evidence observes newly started Broca runs"
+test_file = "crates/basal-rig/tests/stores.rs"
+runner = "cargo"
+package = "basal-rig"
+platforms = ["linux"]
+target = "--test stores"
+expect_red = ["broca_run_count_observes_real_insertions_and_store_errors"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-rig/src/stores.rs"
+old = 'c.query_row("SELECT COUNT(*) FROM run_index", [], |r| r.get(0))'
+new = 'c.query_row("SELECT COUNT(*) FROM run_index WHERE 0", [], |r| r.get(0)) // NON-VACUITY BREAK'

@@ -5,6 +5,12 @@ OpenCode agent's core-owned scope. It obtains the selector from
 `session.scope_identity`; it never fabricates a scope or daemon stamp.
 The prefrontal repository supplies the real core scope owner; its default pin
 is `16cd2fa48785af6766bece101a1446f35d85c942`, which serves the run-scope API.
+Core refuses codemode with `codemode_unavailable: initiation` until global
+and project onboarding are complete. The rig uses `init.save_global` and
+`init.hire_head_with_handoff`, settles the handoff, and checks the `head` phase.
+The selected model name is handoff metadata only; no model is called. A before/
+after read of Broca's real run index proves onboarding and codemode started no
+model run.
 
 The probe is signed with a development identifier and registered only in the
 isolated rig daemon's config, never production packaging. Advertising
@@ -21,20 +27,25 @@ post-close call proves that ended scopes cannot dispatch to the probe.
 ## Offline verification
 
 - Rust/Cargo 1.99.0: formatting, package clippy with `-D warnings`, and all
-  44 basal-rig tests passed. Linux verification used `rusqlite/bundled` because
+  45 basal-rig tests passed. Linux verification used `rusqlite/bundled` because
   the remote host has no system SQLite linker library; no dependency pin changed.
 - Basal's `refused_open_preserves_core_code_and_detail_without_worker` passed,
   including unchanged propagation of core's `not_granted` refusal.
 - Python 3.14.4: all 56 script tests passed; development naming and path
-  dependency fences passed. Mutation partitioning checked 950 rows.
+  dependency fences passed. Mutation partitioning checked 951 rows.
 - ShellCheck 0.11.0: the rig script and its sourced signing policy passed.
   ShellCheck was unavailable on the remote host, so this check ran locally.
 - ckdev-mutate 0.9.8 checked that each mutation's replacement text matches the
   current source and that the named failing tests exist under their exact names.
+  The final catalogue check ran locally: listing the new SQLite store test on
+  the remote host hit its missing system SQLite library.
 - Each of six stamp-check mutations failed exactly its named probe test,
   with the other six tests green: `requires_run_id`, `requires_agent_id`,
   `requires_core_owner`, `requires_authorized_owner`, `refuses_delegation`,
   `refuses_flow_scope`. Restored probe tests passed. Rows select Linux only.
+- Neutralizing the no-model counter failed only
+  `broca_run_count_observes_real_insertions_and_store_errors`; the other 14
+  store tests stayed green, and all 15 passed after restoration.
 - Sidekick reviewed comments in all ten implementation files; flagged wording
   was clarified. No raw rig logs are committed.
 - Native release builds passed for the probe, contract runner, basal module

@@ -24,6 +24,25 @@ impl Drop for Scratch {
 }
 
 #[test]
+fn broca_run_count_observes_real_insertions_and_store_errors() {
+    let scratch = Scratch::new();
+    let c = Connection::open(&scratch.0).unwrap();
+    let store = BrocaStore {
+        path: scratch.0.clone(),
+    };
+    assert!(store.run_count().is_err());
+    c.execute("CREATE TABLE run_index(run_id TEXT)", [])
+        .unwrap();
+    assert_eq!(store.run_count().unwrap(), 0);
+    c.execute("INSERT INTO run_index VALUES ('previous')", [])
+        .unwrap();
+    assert_eq!(store.run_count().unwrap(), 1);
+    c.execute("INSERT INTO run_index VALUES ('new')", [])
+        .unwrap();
+    assert_eq!(store.run_count().unwrap(), 2);
+}
+
+#[test]
 fn codemode_evidence_reads_actual_keyed_run_and_owner_scope() {
     let scratch = Scratch::new();
     let c = Connection::open(&scratch.0).unwrap();

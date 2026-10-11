@@ -363,6 +363,14 @@ pub struct BrocaStore {
 }
 
 impl BrocaStore {
+    /// Count the real runner index before and after no-model rig cases. Keep
+    /// historical runs in the count so any newly started run changes it.
+    pub fn run_count(&self) -> Result<i64, String> {
+        let c = open(&self.path)?;
+        c.query_row("SELECT COUNT(*) FROM run_index", [], |r| r.get(0))
+            .map_err(|e| e.to_string())
+    }
+
     /// A refused scoped open must not even create the session's materialized row.
     pub fn meta_count(&self, route: &Value) -> Result<i64, String> {
         let c = open(&self.path)?;
