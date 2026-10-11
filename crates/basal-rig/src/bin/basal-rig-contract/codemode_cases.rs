@@ -160,3 +160,17 @@ pub(super) async fn run(rig: &Rig, agent: &Agent, tag: &str) -> Vec<Case> {
     );
     vec![success, cpu, ungranted]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_call_uses_the_protocol_tool_request_not_a_management_envelope() {
+        let call: subc_protocol::tool_call::ToolCallRequest =
+            serde_json::from_value(request("return 42;", "rig-key")).unwrap();
+        assert_eq!(call.name, "codemode");
+        assert_eq!(call.arguments, json!({"code":"return 42;"}));
+        assert_eq!(call.call_key.as_deref(), Some("rig-key"));
+    }
+}

@@ -66,8 +66,10 @@
 #             Without --models, report the model cases as not run by name.
 #             Codemode always runs, using a real core-owned agent scope and a
 #             rig-only agent-run-scopes/v1 probe. It checks identity, catalog,
-#             console output, return value, grant refusal, CPU exhaustion and
-#             scope closure. It does not test AFT's allow/ask/deny round trip;
+#             console output, return value, CPU exhaustion and scope closure.
+#             The ungranted-worker case is reported as not run: registering a
+#             real worker needs a core task, which this rig does not launch.
+#             It does not test AFT's allow/ask/deny round trip;
 #             that needs AFT itself to declare agent-run-scopes/v1.
 #             --models requires that credential and agent-owned flows through
 #             core's relay (prefrontal 73c66ff1f or later): minimal call first,
