@@ -108,7 +108,7 @@ and only queries may retry.
 
 ### `trigger`
 
-- `{ "events": [ { "module": "plexus", "name": "github_pr_changed", "version": 1 }, ... ] }`: at least one event. Each entry has exactly `module`, `name` and `version`. Install refuses an event or version the catalog does not declare, an event whose `resolve_op` is not a query, or a resolver absent from `ops`. For Plexus notices grant `{ "module": "plexus", "op": "events_get" }`, its separate read-only body tool. The broader `events` tool can change subscriptions, so it is not a safe body resolver. Matching currently uses only the module, name and version; header filter fields are not supported and are refused as unknown fields.
+- `{ "events": [ { "module": "plexus", "name": "github_pr_changed", "version": 1 }, ... ] }`: at least one event. Each entry has exactly `module`, `name` and `version`. Install refuses an event or version the catalog does not declare, an event whose `resolve_op` is not a query, or a resolver absent from `ops`. For Plexus notices grant `{ "module": "plexus", "op": "events_get" }`, its separate read-only body tool. The broader `events` tool can change subscriptions, so it is not a safe body resolver. Matching uses the module, name and version, plus the flow-targeting rule below; script-defined header filter fields are not supported and are refused as unknown fields.
 - `{ "schedule": { ... } }`: the scheduler's `ScheduleSpec` (`crates/basal-core/src/schedule/spec.rs`), decoded with unknown fields refused and compiled by `schedule::validate` when the manifest is checked. Exactly one of `cron` and `interval`:
 
   | Field | Type | Default | Limits and meaning |
@@ -131,6 +131,15 @@ backlog draining. Older matching deliveries are acknowledged without a run or
 receipt and increment the flow's cumulative `skipped_before_install` health
 counter; an acknowledgment lost after commit can count a delivery again.
 There is no catch-up opt-in yet.
+
+Flow-targeted events are admitted only to the flow named by the notice's
+`flow_id` header. Currently the known flow-targeted contract is
+`prefrontal-core`'s `digest_delivered` event, declared in `trigger.events`
+with version `1` and an `ops` grant for `prefrontal-core.events_get`.
+Other flows declaring that event are no-match; a missing or empty `flow_id`
+header is malformed. Both are acknowledged without a run for those flows.
+After fetching the body, basal also requires its `flow_id` to equal the run's
+flow, including on replay, or fails the run with `event_body_mismatch`.
 
 A `(flow_id, subject, event_key)` is admitted once, including after redelivery
 or restart. Basal commits the fan-out before acknowledging the notice; an
@@ -165,6 +174,7 @@ event field. The declaration conversion already accepts the protocol's
 |---|---|---|---|---|
 | `agent` | agent name or `$audience` | yes | | A known static agent without an audience; exactly `$audience` with one. |
 | `digest_max` | `"silent"`, `"piggyback"` or `"wake"` | yes | | The most intrusive action approved for the sink. An omitted action uses this cap, in both live dispatch and dry runs. Basal refuses static writes above the cap; audience writes go to core for delivery admission. |
+| `status_group` | string matching `[A-Z]{1,4}` | no | absent | Groups undelivered tagged digest items in the agent's status segment, for example `GH NI3 NRPR13`. Part of the hashed manifest shown on the approval card; checked at install and dry run. Only this grant permits per-write `status_tag`. |
 | `break_through` | boolean | no | `false` | Shown on the card as requested. Only the operator grants it, through policy. |
 
 ### Claim

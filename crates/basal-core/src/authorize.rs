@@ -268,6 +268,32 @@ pub fn check(
             }
             Primitive::SinkDigest => {
                 let agent = agent_arg(args, *p)?;
+                if let Some(tag) = args.get("options").and_then(|o| o.get("status_tag")) {
+                    if !tag
+                        .as_str()
+                        .is_some_and(crate::manifest::valid_status_label)
+                    {
+                        return Err(Refusal::new(
+                            "status_tag_invalid",
+                            "status_tag must match [A-Z]{1,4}",
+                        ));
+                    }
+                    let target = if manifest.audience.is_some() {
+                        crate::manifest::AUDIENCE_TARGET
+                    } else {
+                        agent
+                    };
+                    if !manifest
+                        .sinks
+                        .iter()
+                        .any(|s| s.agent == target && s.status_group.is_some())
+                    {
+                        return Err(Refusal::new(
+                            "status_tag_without_group",
+                            "a status_tag requires the sink grant's status_group",
+                        ));
+                    }
+                }
                 if manifest.audience.is_some() {
                     return if manifest.sinks.is_empty() {
                         Err(Refusal::denied("the manifest grants no digest sink"))

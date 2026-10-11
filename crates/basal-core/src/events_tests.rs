@@ -643,3 +643,72 @@ fn queued_history_before_approval_is_refused_without_a_run() {
             .unwrap();
     assert_eq!(runs, 0);
 }
+
+#[test]
+fn flow_targeted_notice_missing_header_is_refused_without_flows() {
+    let f = Fixture::new(60);
+    let mut notice = notice(0);
+    notice.subject = "ck.account.event.prefrontal-core.digest_delivered.v1".into();
+    let error = f.rt.admit_events(&[notice]).unwrap_err();
+    assert!(error.to_string().contains("flow_id"), "{error}");
+}
+
+#[test]
+fn journaled_flow_targeted_body_is_checked_against_run() {
+    let f = Fixture::new(60);
+    f.catalog.set_flow_capable("prefrontal-core", true);
+    f.catalog.set_event(
+        "prefrontal-core",
+        "digest_delivered",
+        1,
+        basal_host::EventDecl {
+            origin: basal_host::EventOrigin::External,
+            body: basal_host::EventBody::Resolved {
+                resolve_op: basal_host::catalog::EVENT_BODY_OP.into(),
+            },
+        },
+    );
+    f.catalog.set_op(
+        "prefrontal-core",
+        basal_host::catalog::EVENT_BODY_OP,
+        OpDecl {
+            kind: Some(OpKind::Query),
+            cause_echo: false,
+            shell_capable: false,
+        },
+    );
+    let request = InstallRequest {
+        script: "return trigger.event.body.flow_id;".into(), author: "operator".into(), loop_override: false,
+        manifest: json!({"id":"flow","version":1,"purpose":"Replay delivered events",
+            "trigger":{"events":[{"module":"prefrontal-core","name":"digest_delivered","version":1}]},
+            "ops":[{"module":"prefrontal-core","op":basal_host::catalog::EVENT_BODY_OP}]}).to_string(),
+    };
+    let installed = f.rt.install(&request).unwrap();
+    f.rt.approve("flow", 1, &installed.code_hash, "test")
+        .unwrap();
+    let mut notice = notice(0);
+    notice.subject = "ck.account.event.prefrontal-core.digest_delivered.v1".into();
+    notice.headers.insert("flow_id".into(), "flow".into());
+    f.rt.admit_events(&[notice]).unwrap();
+    let (id, _) = f.rt.startable().unwrap().remove(0);
+    let run = f.rt.run(&id).unwrap();
+    let manifest = Manifest::parse(&request.manifest).unwrap();
+    for flow in ["other", "flow"] {
+        let body = json!({"flow_id":flow}).to_string().into_bytes();
+        f.rt.store().write(|tx| {
+            tx.execute("INSERT INTO event_body_journal(run_id,attempt,body) VALUES (?1,1,?2) ON CONFLICT(run_id) DO UPDATE SET body=excluded.body", params![id, body])?;
+            Ok(())
+        }).unwrap();
+        match f.rt.event_preamble(&run, &manifest).unwrap() {
+            Preamble::Failed { kind, .. } if flow == "other" => {
+                assert_eq!(kind, "event_body_mismatch")
+            }
+            Preamble::Ready(_) if flow == "flow" => {}
+            _ => panic!("unexpected preamble for {flow}"),
+        }
+    }
+    assert!(
+        f.source.calls.lock().unwrap().is_empty(),
+        "saved bodies require no live fetch"
+    );
+}

@@ -284,7 +284,7 @@ pub fn decode(message: &jetstream::Message) -> Result<Notice, String> {
         headers: labels,
         published_at_ms,
     };
-    notice.identity().map_err(|e| e.to_string())?;
+    notice.target_flow().map_err(|e| e.to_string())?;
     Ok(notice)
 }
 

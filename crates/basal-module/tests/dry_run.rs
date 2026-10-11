@@ -25,6 +25,41 @@ fn calls(run: &Value) -> Vec<Value> {
 }
 
 #[test]
+fn status_group_is_validated_at_install_and_dry_run() {
+    use basal_module::dryrun::{DryRunRequest, DryTrigger, Mode};
+    let f = fixture("status-group-validation", Options::default());
+    for group in ["", "ABCDE", "gh", "G1", "É"] {
+        let mut manifest = schedule_manifest("flow-group", json!({"interval":"1h"}));
+        manifest["sinks"][0]["status_group"] = json!(group);
+        let manifest = manifest.to_string();
+        let error = f
+            .module
+            .handle(
+                &Caller::Operator,
+                "flow.install",
+                json!({"script":"return 1;","manifest":manifest}),
+            )
+            .unwrap_err();
+        assert!(error.message.contains("sinks.status_group"), "{error:?}");
+        let error = f
+            .module
+            .dry
+            .run(&DryRunRequest {
+                script: "return 1;".into(),
+                manifest,
+                author: "operator".into(),
+                loop_override: false,
+                mode: Mode::Capture,
+                trigger: DryTrigger::Synthetic(json!({})),
+                now_ms: common::T0,
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("sinks.status_group"), "{error}");
+    }
+    assert_eq!(f.mock.total_sends(), 0);
+}
+
+#[test]
 fn capture_mode_executes_no_host_call_and_replays_the_schedule_window() {
     let f = fixture("dry-capture", Options::default());
     let script = "const r = await ops.call('mock', 'echo', { due: trigger.due }).catch((e) => e.data.code);\n\

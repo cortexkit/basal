@@ -144,6 +144,9 @@ impl DigestAction {
 pub struct SinkGrant {
     pub agent: String,
     pub digest_max: DigestAction,
+    /// Groups undelivered tagged items in the agent's status segment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_group: Option<String>,
     /// Shown on the card as requested; only the operator grants it, through
     /// policy.
     #[serde(default)]
@@ -436,6 +439,10 @@ fn agent_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-')
 }
 
+pub(crate) fn valid_status_label(value: &str) -> bool {
+    (1..=4).contains(&value.len()) && value.bytes().all(|b| b.is_ascii_uppercase())
+}
+
 fn check_list<T: Ord + Clone + std::fmt::Debug>(
     field: &str,
     items: impl Iterator<Item = T>,
@@ -565,6 +572,11 @@ impl Manifest {
         };
         for s in &self.sinks {
             check_sink("sinks.agent", &s.agent)?;
+            if let Some(group) = &s.status_group
+                && !valid_status_label(group)
+            {
+                return Err(invalid("sinks.status_group", "must match [A-Z]{1,4}"));
+            }
         }
         check_list("sinks", self.sinks.iter().map(|s| s.agent.clone()))?;
         for a in &self.status {
@@ -823,6 +835,33 @@ impl Manifest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn status_group_is_one_to_four_uppercase_ascii_letters() {
+        let mut value = serde_json::json!({
+            "id":"counts", "version":1, "purpose":"Report counts",
+            "trigger":{"schedule":{"interval":"1h"}},
+            "sinks":[{"agent":"SYNAPSE","digest_max":"silent"}]
+        });
+        assert!(Manifest::parse(&value.to_string()).is_ok());
+        for group in ["A", "GH", "ABCD"] {
+            value["sinks"][0]["status_group"] = group.into();
+            let manifest = Manifest::parse(&value.to_string()).unwrap();
+            assert_eq!(manifest.sinks[0].status_group.as_deref(), Some(group));
+            assert_eq!(
+                serde_json::to_value(manifest).unwrap()["sinks"][0]["status_group"],
+                group
+            );
+        }
+        for group in ["", "ABCDE", "gh", "Gh", "G1", "G_", "É", " GH", "GH\n"] {
+            value["sinks"][0]["status_group"] = group.into();
+            assert!(
+                matches!(Manifest::parse(&value.to_string()),
+                Err(ManifestError::Invalid { field, .. }) if field == "sinks.status_group"),
+                "{group:?}"
+            );
+        }
+    }
 
     #[test]
     fn multibyte_durations_are_refused_without_panicking() {
