@@ -15826,3 +15826,137 @@ expect_red = ["script.tests.stage_card.StageCardChecks.test_protocol_change_sele
 only = false
 timeout_s = 600
 build_timeout_s = 1800
+
+# Rig-only probe: agent and run identity come from the daemon's bound-route
+# stamp, never values the caller supplies in tool arguments.
+[[control]]
+id = "rig-probe-run-id-required"
+guards = "probe rejects an agent scope without a run id"
+test_file = "crates/basal-rig/src/bin/ckdev-runscope-probe.rs"
+runner = "cargo"
+package = "basal-rig"
+platforms = ["linux"]
+target = "--bin ckdev-runscope-probe"
+expect_red = ["tests::requires_run_id"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-rig/src/bin/ckdev-runscope-probe.rs"
+old = '''.run_id
+        .as_deref()
+        .ok_or("run_scope_required")?;'''
+new = '''.run_id
+        .as_deref()
+        .unwrap_or("NON-VACUITY BREAK");'''
+
+[[control]]
+id = "rig-probe-agent-id-required"
+guards = "probe rejects a run scope without an agent id"
+test_file = "crates/basal-rig/src/bin/ckdev-runscope-probe.rs"
+runner = "cargo"
+package = "basal-rig"
+platforms = ["linux"]
+target = "--bin ckdev-runscope-probe"
+expect_red = ["tests::requires_agent_id"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-rig/src/bin/ckdev-runscope-probe.rs"
+old = '.ok_or("scope_mismatch")?;'
+new = '.unwrap_or("NON-VACUITY BREAK");'
+
+[[control]]
+id = "rig-probe-core-owner-required"
+guards = "probe rejects a run scope owned by another module"
+test_file = "crates/basal-rig/src/bin/ckdev-runscope-probe.rs"
+runner = "cargo"
+package = "basal-rig"
+platforms = ["linux"]
+target = "--bin ckdev-runscope-probe"
+expect_red = ["tests::requires_core_owner"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-rig/src/bin/ckdev-runscope-probe.rs"
+old = 'if !core_owner {'
+new = 'if false { // NON-VACUITY BREAK'
+
+[[control]]
+id = "rig-probe-authorized-owner-required"
+guards = "probe rejects an unauthorized scope owner"
+test_file = "crates/basal-rig/src/bin/ckdev-runscope-probe.rs"
+runner = "cargo"
+package = "basal-rig"
+platforms = ["linux"]
+target = "--bin ckdev-runscope-probe"
+expect_red = ["tests::requires_authorized_owner"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-rig/src/bin/ckdev-runscope-probe.rs"
+old = 'if !scope.owner_authorized {'
+new = 'if false { // NON-VACUITY BREAK'
+
+[[control]]
+id = "rig-probe-delegation-refused"
+guards = "probe rejects delegated agent authority on a run scope"
+test_file = "crates/basal-rig/src/bin/ckdev-runscope-probe.rs"
+runner = "cargo"
+package = "basal-rig"
+platforms = ["linux"]
+target = "--bin ckdev-runscope-probe"
+expect_red = ["tests::refuses_delegation"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-rig/src/bin/ckdev-runscope-probe.rs"
+old = 'if scope.attributes.delegates {'
+new = 'if false { // NON-VACUITY BREAK'
+
+[[control]]
+id = "rig-probe-flow-scope-refused"
+guards = "probe rejects flow identity instead of run identity"
+test_file = "crates/basal-rig/src/bin/ckdev-runscope-probe.rs"
+runner = "cargo"
+package = "basal-rig"
+platforms = ["linux"]
+target = "--bin ckdev-runscope-probe"
+expect_red = ["tests::refuses_flow_scope"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-rig/src/bin/ckdev-runscope-probe.rs"
+old = 'if scope.attributes.flow_id.is_some() {'
+new = 'if false { // NON-VACUITY BREAK'
+
+[[control]]
+id = "rig-no-model-proof-counts-real-runs"
+guards = "no-model rig evidence observes newly started Broca runs"
+test_file = "crates/basal-rig/tests/stores.rs"
+runner = "cargo"
+package = "basal-rig"
+platforms = ["linux"]
+target = "--test stores"
+expect_red = ["broca_run_count_observes_real_insertions_and_store_errors"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-rig/src/stores.rs"
+old = 'c.query_row("SELECT COUNT(*) FROM run_index", [], |r| r.get(0))'
+new = 'c.query_row("SELECT COUNT(*) FROM run_index WHERE 0", [], |r| r.get(0)) // NON-VACUITY BREAK'
+
+[[control]]
+id = "rig-seeded-recovery-requires-exact-next-generation"
+guards = "seeded stale recovery is confirmed at exactly the learned floor plus one"
+test_file = "crates/basal-rig/src/bin/basal-rig-contract/seeded.rs"
+runner = "cargo"
+package = "basal-rig"
+platforms = ["linux"]
+target = "--bin basal-rig-contract"
+expect_red = ["seeded::tests::bounded_recovery_requires_exact_next_generation_and_confirmation"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-rig/src/bin/basal-rig-contract/seeded.rs"
+old = 'instance["generation"] == seeded + 1'
+new = 'instance["generation"].as_i64().is_some_and(|generation| generation >= seeded) // NON-VACUITY BREAK'

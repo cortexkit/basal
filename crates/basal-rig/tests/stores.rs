@@ -24,6 +24,69 @@ impl Drop for Scratch {
 }
 
 #[test]
+fn broca_run_count_observes_real_insertions_and_store_errors() {
+    let scratch = Scratch::new();
+    let c = Connection::open(&scratch.0).unwrap();
+    let store = BrocaStore {
+        path: scratch.0.clone(),
+    };
+    assert!(store.run_count().is_err());
+    c.execute("CREATE TABLE run_index(run_id TEXT)", [])
+        .unwrap();
+    assert_eq!(store.run_count().unwrap(), 0);
+    c.execute("INSERT INTO run_index VALUES ('previous')", [])
+        .unwrap();
+    assert_eq!(store.run_count().unwrap(), 1);
+    c.execute("INSERT INTO run_index VALUES ('new')", [])
+        .unwrap();
+    assert_eq!(store.run_count().unwrap(), 2);
+}
+
+#[test]
+fn codemode_evidence_reads_actual_keyed_run_and_owner_scope() {
+    let scratch = Scratch::new();
+    let c = Connection::open(&scratch.0).unwrap();
+    c.execute_batch("CREATE TABLE codemode_runs(run_id TEXT,agent_id TEXT,status TEXT);
+        CREATE TABLE codemode_tool_calls(run_id TEXT,call_key TEXT);
+        CREATE TABLE codemode_run_scope(run_id TEXT,agent_id TEXT,scope_ref TEXT,scope_epoch INTEGER,catalog_json TEXT,lifecycle TEXT,end_settled INTEGER);
+        INSERT INTO codemode_runs VALUES ('actual-run','agent-1','completed'),('other','agent-2','running');
+        INSERT INTO codemode_tool_calls VALUES ('actual-run','key-1'),('other','key-2');
+        INSERT INTO codemode_run_scope VALUES ('actual-run','agent-1','opaque-scope',9,'[{\"tool\":\"probe_echo\",\"module\":\"ckdev-runscope-probe\",\"op\":\"probe_echo\"}]','terminal',1);").unwrap();
+    let basal = BasalStore {
+        path: scratch.0.clone(),
+    };
+    let core = CoreStore {
+        path: scratch.0.clone(),
+    };
+    assert_eq!(basal.codemode_call("missing").unwrap(), None);
+    assert_eq!(
+        basal.codemode_call("key-1").unwrap().unwrap(),
+        json!({"run_id":"actual-run","agent_id":"agent-1","status":"completed"})
+    );
+    let scope = core.codemode_scope("actual-run").unwrap().unwrap();
+    assert_eq!(scope["agent_id"], "agent-1");
+    assert_eq!(
+        scope["selector"],
+        json!({"owner":{"kind":"reserved","module_id":"prefrontal-core"},"ref":"opaque-scope","scope_epoch":9})
+    );
+    assert_eq!(scope["catalog"][0]["tool"], "probe_echo");
+    let selector: subc_protocol::scope::ScopeSelector =
+        serde_json::from_value(scope["selector"].clone()).unwrap();
+    assert_eq!(selector.scope_epoch, Some(9));
+    assert_eq!(scope["lifecycle"], "terminal");
+    assert_eq!(scope["end_settled"], true);
+    assert_eq!(core.codemode_scope("other").unwrap(), None);
+    c.execute(
+        "UPDATE codemode_run_scope SET lifecycle='running',end_settled=0",
+        [],
+    )
+    .unwrap();
+    let changed = core.codemode_scope("actual-run").unwrap().unwrap();
+    assert_eq!(changed["lifecycle"], "running");
+    assert_eq!(changed["end_settled"], false);
+}
+
+#[test]
 fn journal_evidence_rejects_negative_positions() {
     let scratch = Scratch::new();
     let c = Connection::open(&scratch.0).unwrap();

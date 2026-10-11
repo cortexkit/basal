@@ -1,6 +1,6 @@
 //! Management calls over the rig's daemon.
 //!
-//! Every call is a management request `{method, params}` on a route the
+//! Management calls send `{method, params}` on a route the
 //! daemon opens and stamps. The caller is whoever the daemon says opened the
 //! route: this process is a plain local client, so its routes are `direct`;
 //! calls relayed through the callosum stub arrive as `reserved:callosum`.
@@ -8,7 +8,9 @@
 //! The suite acts as its test agent the way a head does in production: it
 //! calls core's `flow.relay` on a route bound with the head's harness and
 //! session, and core sends the call on to basal on a route the daemon stamps
-//! with the head's scope. The suite never opens a scoped route itself.
+//! with the head's scope. Codemode instead uses core's `session.scope_identity`
+//! query and opens a tool route under that returned agent selector, as the
+//! OpenCode host does. The suite never registers scopes or constructs stamps.
 
 use std::path::Path;
 use std::time::Duration;
@@ -164,6 +166,45 @@ impl Client {
         decode(reply)
     }
 
+    /// Call a tool using the scope selector core returned for a host session.
+    /// The daemon allows a plain local client (`Direct`) to open agent-scoped
+    /// routes. It refuses that client on run-scoped routes, which only basal
+    /// may carry; a closed run must be refused before that carrier check.
+    pub async fn tool_scoped(
+        &self,
+        module: &str,
+        identity: &BindIdentity,
+        selector: Value,
+        request: Value,
+    ) -> Reply {
+        let selector = serde_json::from_value(selector).map_err(|e| Refusal {
+            code: "invalid_selector".into(),
+            message: e.to_string(),
+        })?;
+        let route = self
+            .consumer
+            .open_route_scoped(
+                RouteTarget::ToolProvider {
+                    module_id: module.into(),
+                },
+                identity.clone(),
+                selector,
+                self.relay_options(),
+            )
+            .await
+            .map_err(refusal)?;
+        let reply = self
+            .consumer
+            .request(
+                &route,
+                serde_json::to_vec(&request).unwrap(),
+                self.relay_options(),
+            )
+            .await;
+        let _ = self.consumer.close_handle(&route, Default::default()).await;
+        decode_tool(reply)
+    }
+
     /// One `flow` tool call as a head makes it: core's `flow.relay` on a
     /// route bound with `head`, the head's own harness and session. Core
     /// takes the caller from that bind identity, so no caller goes in the
@@ -261,12 +302,18 @@ fn refusal(error: CallError) -> Refusal {
     }
 }
 
-fn decode(reply: Result<Vec<u8>, CallError>) -> Reply {
+// ToolProvider replies are the provider's JSON itself; only management replies
+// use a result/error envelope. Tool refusals arrive as daemon Error frames.
+fn decode_tool(reply: Result<Vec<u8>, CallError>) -> Reply {
     let bytes = reply.map_err(refusal)?;
-    let value: Value = serde_json::from_slice(&bytes).map_err(|e| Refusal {
+    serde_json::from_slice(&bytes).map_err(|e| Refusal {
         code: "undecodable_reply".into(),
         message: format!("{e}: {}", String::from_utf8_lossy(&bytes)),
-    })?;
+    })
+}
+
+fn decode(reply: Result<Vec<u8>, CallError>) -> Reply {
+    let value = decode_tool(reply)?;
     if let Some(error) = value.get("error") {
         return Err(Refusal {
             code: error["code"].as_str().unwrap_or("unknown").to_owned(),
@@ -279,5 +326,27 @@ fn decode(reply: Result<Vec<u8>, CallError>) -> Reply {
             code: "no_result_envelope".into(),
             message: value.to_string(),
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_replies_are_bare_json_not_management_envelopes() {
+        let result = json!({"status":"completed","value":{"answer":42},"error":"ordinary data"});
+        assert_eq!(
+            decode_tool(Ok(serde_json::to_vec(&result).unwrap())),
+            Ok(result)
+        );
+    }
+
+    #[test]
+    fn tool_refusals_preserve_the_cpu_budget_code() {
+        let error =
+            subc_protocol::ErrorBody::new("budget_exhausted:js_cpu", "run budget exhausted");
+        let refusal = decode_tool(Err(CallError::Module(error))).unwrap_err();
+        assert_eq!(refusal.code, "budget_exhausted:js_cpu");
     }
 }

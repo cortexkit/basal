@@ -13,6 +13,38 @@ HELPERS = SCRIPT.read_text().split("# ------------------------------------------
 
 
 class RigChecks(unittest.TestCase):
+    def test_run_scope_probe_is_built_signed_and_configured_only_on_the_rig(self):
+        with tempfile.TemporaryDirectory() as home:
+            result = self.run_shell('''guard_all_paths
+DRY=1
+binaries
+modules
+place_one runscope-probe /built/ckdev-runscope-probe "$BIN/ckdev-runscope-probe"
+cmd_config
+''', home)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("runscope-probe\tbasal\tckdev-runscope-probe\tckdev-runscope-probe", result.stdout)
+            self.assertIn("ckdev-runscope-probe\tckdev-runscope-probe", result.stdout)
+            self.assertIn('"ckdev-runscope-probe": {', result.stdout)
+            self.assertIn('/bin/ckdev-runscope-probe"', result.stdout)
+            self.assertIn("sign_hardened", result.stdout)
+            self.assertIn("ckdev-runscope-probe   (script/signing.sh)", result.stdout)
+
+    def test_build_defaults_to_pinned_run_scope_core_and_builds_probe(self):
+        with tempfile.TemporaryDirectory() as home:
+            result = self.run_shell('''guard_all_paths
+DRY=1
+repos() { printf 'basal\t%s\nprefrontal\t%s\ncingulate\t%s\n' "$HOME" "$HOME" "$HOME"; }
+git() { printf '%040d\n' 0; }
+clone_at() { printf 'clone %s %s\n' "$1" "$3"; }
+cargo_build() { printf 'build %s\n' "$*"; }
+cmd_build
+''', home)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("prefrontal: defe4a72a3ee4bac8ce81645df801c6907a8ce4c", result.stdout)
+            self.assertIn("cingulate: c650e9db6e87dbb28fe20dd5fc2815db5deb41e9", result.stdout)
+            self.assertIn("--bin ck-callosum-stub --bin ckdev-runscope-probe --bin basal-rig-contract", result.stdout)
+
     def test_build_preserves_repository_paths_with_spaces(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp).resolve()
@@ -269,7 +301,7 @@ cmd_config
             self.assertIn("cingulate\tcingulate\tck-cingulate\tckdev-cingulate", result.stdout)
             self.assertIn("cingulate\tckdev-cingulate", result.stdout)
             self.assertIn(f'"program": "{home}/.local/share/cortexkit/ckdev-flows/bin/ckdev-cingulate"', result.stdout)
-            self.assertIn("cingulate_rev=bd609a5fbdba12395f3bfe7a97a6bbdbee8b0fbc", HELPERS)
+        self.assertIn("cingulate_rev=c650e9db6e87dbb28fe20dd5fc2815db5deb41e9", HELPERS)
 
 
 if __name__ == "__main__":

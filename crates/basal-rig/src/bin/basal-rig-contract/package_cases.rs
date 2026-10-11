@@ -439,6 +439,11 @@ async fn finish_lifecycle(
         .await,
     );
 
+    cases.push(Case::skipped(
+        "packages: further recovery passes make no more ensure calls",
+        "The live rig observes the learned floor and its next confirmed recovery, but has no completed-pass observable or basal received-ensure counter to prove two further passes are call-free. Core tests bounded stale-generation behavior in flow_reconcile::tests::stale_generation_above_marker_drops_it_without_immediate_corrective_call; no timing sleep or generation-as-count proxy is used.",
+    ));
+
     let mut revoke =
         Case::new("packages: version revocation halts scheduled runs without changing enablement");
     let before_runs = rows(

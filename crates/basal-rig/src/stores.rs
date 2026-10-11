@@ -37,6 +37,19 @@ pub struct Receipt {
 }
 
 impl CoreStore {
+    /// Read the run scope core stored for this run instead of trusting basal's
+    /// reply to prove that core closed the scope.
+    pub fn codemode_scope(&self, run_id: &str) -> Result<Option<Value>, String> {
+        let c = open(&self.path)?;
+        let row = c.query_row("SELECT agent_id,scope_ref,scope_epoch,catalog_json,lifecycle,end_settled FROM codemode_run_scope WHERE run_id=?1", [run_id], |r| Ok((
+            r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, u64>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?, r.get::<_, bool>(5)?
+        ))).optional().map_err(|e| e.to_string())?;
+        row.map(|(agent,reference,epoch,catalog,lifecycle,settled)| {
+            let catalog: Value = serde_json::from_str(&catalog).map_err(|e| e.to_string())?;
+            Ok(json!({"agent_id":agent,"selector":{"owner":{"kind":"reserved","module_id":"prefrontal-core"},"ref":reference,"scope_epoch":epoch},"catalog":catalog,"lifecycle":lifecycle,"end_settled":settled}))
+        }).transpose()
+    }
+
     /// Core records the daemon-attested requester on each card. This proves the
     /// ckdev-basal process was admitted as reserved:basal, not as a local caller.
     pub fn legacy_requester(&self, flow_id: &str) -> Result<Option<String>, String> {
@@ -168,6 +181,15 @@ pub struct Call {
 }
 
 impl BasalStore {
+    /// Find the run basal recorded for the invoking call key. Reading this id
+    /// avoids deriving the expected probe identity with basal's own algorithm.
+    pub fn codemode_call(&self, call_key: &str) -> Result<Option<Value>, String> {
+        let c = open(&self.path)?;
+        c.query_row("SELECT r.run_id,r.agent_id,r.status FROM codemode_runs r JOIN codemode_tool_calls t ON t.run_id=r.run_id WHERE t.call_key=?1", [call_key], |r| Ok(json!({
+            "run_id":r.get::<_, String>(0)?, "agent_id":r.get::<_, String>(1)?, "status":r.get::<_, String>(2)?
+        }))).optional().map_err(|e| e.to_string())
+    }
+
     /// Join generations on the flow's stored package and owner: the counter is
     /// per package/agent, not version. Keep removal separate from enabled state
     /// so removing an instance cannot be mistaken for disabling it.
@@ -341,6 +363,14 @@ pub struct BrocaStore {
 }
 
 impl BrocaStore {
+    /// Count the real runner index before and after no-model rig cases. Keep
+    /// historical runs in the count so any newly started run changes it.
+    pub fn run_count(&self) -> Result<i64, String> {
+        let c = open(&self.path)?;
+        c.query_row("SELECT COUNT(*) FROM run_index", [], |r| r.get(0))
+            .map_err(|e| e.to_string())
+    }
+
     /// A refused scoped open must not even create the session's materialized row.
     pub fn meta_count(&self, route: &Value) -> Result<i64, String> {
         let c = open(&self.path)?;
