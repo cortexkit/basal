@@ -65,6 +65,7 @@ pub mod runtime;
 pub mod schedule;
 pub mod schema;
 pub mod store;
+pub mod templates;
 pub mod tokens;
 
 pub use admission::{Admission, TriggerSpec};

@@ -203,6 +203,7 @@ pub fn validate(
     denylist: &ShellDenylist,
     loop_override: bool,
 ) -> std::result::Result<Vec<Warning>, InstallError> {
+    manifest.check_ordinary().map_err(InstallError::Manifest)?;
     if manifest.agents().iter().any(|(_, agent)| *agent == "$self") {
         return Err(InstallError::SelfRequiresPackage);
     }
@@ -326,12 +327,35 @@ pub(crate) fn validate_inner(
         }
     }
     for (field, root) in manifest.roots() {
+        if crate::templates::is_placeholder(root) {
+            continue;
+        }
         let exists = basal_host::builtins::expand_home(root).is_some_and(|p| p.exists());
         if !exists {
             return Err(InstallError::MissingRoot {
                 field,
                 root: root.to_owned(),
             });
+        }
+    }
+    if manifest.params.is_some() {
+        for (name, declaration) in
+            crate::templates::declarations(manifest).map_err(InstallError::Manifest)?
+        {
+            if let crate::templates::Parameter::Path { under }
+            | crate::templates::Parameter::Repo { under } = declaration
+            {
+                for root in under {
+                    if !basal_host::builtins::expand_home(&root).is_some_and(|path| path.exists()) {
+                        return Err(InstallError::Manifest(
+                            crate::manifest::ManifestError::TemplateBoundInvalid {
+                                field: format!("params.{name}.under"),
+                                reason: "root must exist at registration".into(),
+                            },
+                        ));
+                    }
+                }
+            }
         }
     }
     Ok(warnings)
@@ -972,7 +996,8 @@ impl Runtime {
                 cap,
             });
         }
-        let manifest = Manifest::parse(&request.manifest).map_err(InstallError::Manifest)?;
+        let manifest =
+            Manifest::parse_ordinary(&request.manifest).map_err(InstallError::Manifest)?;
         let warnings = validate(
             &manifest,
             &request.author,

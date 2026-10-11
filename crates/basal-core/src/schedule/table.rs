@@ -237,6 +237,11 @@ fn approve_inner(
         .map_err(|e| CoreError::Invalid(format!("schedule spec: {e}")))?;
     let anchor = anchor_at(now)?;
     let next_due_after = |after: Timestamp| -> Result<Option<i64>> {
+        if let super::When::At { at } = &compiled.when
+            && *at == after
+        {
+            return Ok(Some(to_ms(*at)));
+        }
         Ok(compiled
             .next_due_after(anchor, after)
             .map_err(|e| due_error(&flow.flow_id, e))?

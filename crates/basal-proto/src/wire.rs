@@ -24,7 +24,7 @@ const TAG_REFUSED: u8 = 105;
 const TAG_CONSOLE: u8 = 106;
 const TAG_WARNING: u8 = 107;
 
-// Codes 1..=21 are primitives, including the permanently assigned shell code 11.
+// Codes 1..=21 and 24 are primitives; 22 and 23 retain their existing call kinds.
 const CALL_TOOL: u8 = 22;
 const CALL_OP_FOR: u8 = 23;
 
@@ -37,6 +37,7 @@ pub(crate) fn parent_hint(message: &ParentMessage) -> usize {
                 .len()
                 .saturating_add(req.trigger.len())
                 .saturating_add(req.self_input.len())
+                .saturating_add(req.params_input.len())
                 .saturating_add(128),
             |size, call| {
                 size.saturating_add(64 + 2 * MAX_NAME_BYTES)
@@ -568,6 +569,7 @@ pub(crate) fn encode_parent(enc: &mut Encoder, m: &ParentMessage) {
                 recorded_call(enc, call);
             }
             enc.str(req.self_input.as_str());
+            enc.str(req.params_input.as_str());
             enc.count(req.tools.len());
             for name in &req.tools {
                 enc.name("tool", name);
@@ -610,6 +612,7 @@ pub(crate) fn decode_parent(dec: &mut Decoder<'_>) -> Result<ParentMessage, Deco
                 prefix.push(read_recorded_call(dec)?);
             }
             let self_input = value(dec, "self")?;
+            let params_input = value(dec, "params")?;
             let n = dec.count("tools", MAX_LIST_ENTRIES, 5)?;
             let mut tools = Vec::new();
             for _ in 0..n {
@@ -630,6 +633,7 @@ pub(crate) fn decode_parent(dec: &mut Decoder<'_>) -> Result<ParentMessage, Deco
                 script,
                 trigger,
                 self_input,
+                params_input,
                 budgets,
                 prefix,
             })))

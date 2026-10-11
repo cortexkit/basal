@@ -131,6 +131,18 @@ impl Module {
             return OpError::new("store_failure", text);
         }
         match e {
+            InstallError::Manifest(ManifestError::ParamsRequirePackage { ref field }) => {
+                OpError::new("params_require_package", e.to_string())
+                    .with_detail(Some(json!({"field":field})))
+            }
+            InstallError::Manifest(ManifestError::TemplatePlaceholderInvalid { ref field }) => {
+                OpError::new("template_placeholder_invalid", e.to_string())
+                    .with_detail(Some(json!({"field":field})))
+            }
+            InstallError::Manifest(ManifestError::TemplateBoundInvalid { ref field, .. }) => {
+                OpError::new("template_bound_invalid", e.to_string())
+                    .with_detail(Some(json!({"field":field})))
+            }
             InstallError::Manifest(ManifestError::ForTargetRequiresAudience) => {
                 OpError::new("for_target_requires_audience", e.to_string())
             }
@@ -201,6 +213,8 @@ impl Module {
             | "package.get"
             | "flow.instance.ensure"
             | "flow.instance.remove" => self.op_package(caller, method, params),
+            "flow.instantiate" => self.op_instantiate(caller, params),
+            "flow.instance.end" => self.op_end_instance(caller, params),
             "flow.install" => self.op_install(caller, params),
             "flow.install_decided" => self.op_install_decided(caller, params),
             "flow.dry_run" => self.op_dry_run(caller, params),
@@ -249,6 +263,74 @@ impl Module {
     }
 
     // ---- packages and instances ---------------------------------------
+
+    fn template_error(&self, error: basal_core::templates::TemplateError) -> OpError {
+        match error {
+            basal_core::templates::TemplateError::Store(error) => self.core_error(error),
+            basal_core::templates::TemplateError::Refused(error) => {
+                OpError::new(error.code, error.code)
+                    .with_detail((!error.detail.is_null()).then_some(error.detail))
+            }
+        }
+    }
+
+    fn op_instantiate(&self, caller: &Caller, params: Value) -> OpResult {
+        if !matches!(caller, Caller::Operator | Caller::Agent { .. }) {
+            return Err(OpError::not_permitted("flow.instantiate", caller));
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Params {
+            template: String,
+            version: u32,
+            params: Value,
+            expires_in: String,
+            #[serde(default)]
+            agent_id: Option<String>,
+        }
+        let p: Params = serde_json::from_value(params).map_err(invalid_params)?;
+        let agent = match caller {
+            Caller::Operator => p
+                .agent_id
+                .as_deref()
+                .ok_or_else(|| invalid_params("operator must name agent_id"))?,
+            Caller::Agent { agent_id, .. } if p.agent_id.is_none() => agent_id,
+            _ => return Err(OpError::not_permitted("flow.instantiate", caller)),
+        };
+        self.rt
+            .instantiate(&p.template, p.version, agent, &p.params, &p.expires_in)
+            .map_err(|e| self.template_error(e))
+    }
+
+    fn op_end_instance(&self, caller: &Caller, params: Value) -> OpResult {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Params {
+            flow_id: String,
+        }
+        let p: Params = serde_json::from_value(params).map_err(invalid_params)?;
+        match caller {
+            Caller::Operator => {}
+            Caller::Agent { agent_id, .. } if self.owns(agent_id, &p.flow_id)? => {}
+            _ => {
+                return Err(OpError::new(
+                    "not_permitted",
+                    "only the owner or operator may end a template instance",
+                ));
+            }
+        }
+        if self
+            .rt
+            .flow(&p.flow_id)
+            .map_err(|e| self.core_error(e))?
+            .is_none()
+        {
+            return Err(OpError::new("not_found", format!("no flow {}", p.flow_id)));
+        }
+        self.rt
+            .end_instance(&p.flow_id)
+            .map_err(|e| self.template_error(e))
+    }
 
     fn op_package(&self, caller: &Caller, method: &str, params: Value) -> OpResult {
         let permitted = *caller == Caller::Core
@@ -333,7 +415,10 @@ impl Module {
             loop_override: bool,
         }
         let p: Params = serde_json::from_value(params).map_err(invalid_params)?;
-        let manifest = Manifest::parse(&p.manifest).map_err(|e| match e {
+        let manifest = Manifest::parse_ordinary(&p.manifest).map_err(|e| match e {
+            ManifestError::ParamsRequirePackage { .. } => {
+                self.install_error(InstallError::Manifest(e))
+            }
             e @ (ManifestError::AudienceSinkNamed
             | ManifestError::AudiencePlaceholderWithoutAudience
             | ManifestError::ForTargetRequiresAudience
@@ -679,6 +764,15 @@ impl Module {
                 ));
             }
         }
+        let is_template = self.rt.store().read(|conn| {
+            Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM template_instances WHERE flow_id=?1) OR EXISTS(SELECT 1 FROM package_versions WHERE package=?1 AND (?2 IS NULL OR version=?2) AND json_type(manifest,'$.params')='object')", rusqlite::params![p.flow_id,p.version], |row|row.get::<_,bool>(0))?)
+        }).map_err(|e|self.core_error(e))?;
+        if is_template {
+            return Err(OpError::new(
+                "template_values_required",
+                "template dry runs require an explicit parameter-aware contract",
+            ));
+        }
         let version = self.pick_version(&p.flow_id, p.version)?;
         let trigger = match p.trigger {
             Some(payload) => DryTrigger::Synthetic(payload),
@@ -858,10 +952,17 @@ impl Module {
                 let approval = basal_core::install_policy::approval(c, flow_id, row["approved_version"].as_u64().map(|v| v as u32))?;
                 let install_checks = basal_core::install_policy::check_errors(c, flow_id)?;
                 let install_cards = basal_core::cards::for_flow(c, flow_id)?.iter().map(|card| json!({"version":card.version,"attempt":card.attempt,"state":card.state.as_str()})).collect::<Vec<_>>();
+                let instance = c.query_row("SELECT f.package,f.approved_version,t.params,t.expires_at FROM template_instances t JOIN flows f USING(flow_id) WHERE flow_id=?1", [flow_id], |r| Ok((r.get::<_,String>(0)?,r.get::<_,u32>(1)?,r.get::<_,String>(2)?,r.get::<_,i64>(3)?))).optional()?;
                 row["grant_losses"] = json!(losses);
                 row["approval"] = json!(approval);
                 row["install_checks"] = json!(install_checks);
                 row["install_cards"] = json!(install_cards);
+                if let Some((template,version,params,expires_at)) = instance {
+                    row["template"] = json!(template);
+                    row["version"] = json!(version);
+                    row["params"] = serde_json::from_str(&params).map_err(|e|CoreError::Corrupt(e.to_string()))?;
+                    row["expires_at"] = json!(expires_at);
+                }
                 if let Some(body) = row["agent_retirement"].as_str() {
                     row["agent_retirement"] = serde_json::from_str(body)
                         .map_err(|e| CoreError::Corrupt(e.to_string()))?;

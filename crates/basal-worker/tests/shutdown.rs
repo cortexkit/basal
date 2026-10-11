@@ -35,6 +35,7 @@ fn shutdown_ends_sync_and_async_activations_without_refusal() {
             script: script.into(),
             trigger: JsonText::null(),
             self_input: JsonText::null(),
+            params_input: JsonText::null(),
             budgets: Budgets::default(),
             prefix: vec![],
         };
@@ -96,6 +97,7 @@ fn encoder_rejects_fields_that_its_decoder_would_refuse() {
         script: "x".repeat(basal_proto::MAX_SCRIPT_BYTES + 1),
         trigger: JsonText::null(),
         self_input: JsonText::null(),
+        params_input: JsonText::null(),
         budgets: Budgets::default(),
         prefix: vec![],
     };

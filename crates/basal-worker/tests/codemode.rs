@@ -23,6 +23,7 @@ fn request(script: &str) -> ActivationRequest {
         script: script.into(),
         trigger: JsonText::null(),
         self_input: JsonText::null(),
+        params_input: JsonText::null(),
         budgets: Budgets {
             js_time_micros: 10_000_000,
             memory_bytes: 64 * 1024 * 1024,

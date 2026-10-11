@@ -153,7 +153,9 @@ fn gate(
     if draining(tx)? {
         return Ok(Err(Admission::Draining));
     }
-    if crate::packages::removed(tx, &spec.flow_id)? {
+    if crate::packages::removed(tx, &spec.flow_id)?
+        || crate::templates::expired(tx, &spec.flow_id, ctx.now_ms)?
+    {
         return Ok(Err(Admission::NotApproved));
     }
     match install::flow(tx, &spec.flow_id)? {
@@ -222,6 +224,7 @@ fn insert_run(
         "UPDATE runs SET self_input=(SELECT json_object('agent_id',owner) FROM flows WHERE flow_id=?2 AND package IS NOT NULL) WHERE run_id=?1",
         params![run_id, spec.flow_id],
     )?;
+    tx.execute("UPDATE runs SET params_input=(SELECT params FROM template_instances WHERE flow_id=?2),grant_guards=(SELECT grant_guards FROM template_instances WHERE flow_id=?2),template_incarnation=(SELECT incarnation FROM template_instances WHERE flow_id=?2),end_instance=CASE WHEN EXISTS(SELECT 1 FROM template_instances WHERE flow_id=?2) AND json_type(manifest,'$.trigger.schedule.at')='text' THEN 1 ELSE 0 END WHERE run_id=?1", params![run_id,spec.flow_id])?;
     tx.execute(
         "INSERT INTO trigger_inbox (flow_id, trigger_id, attempt, run_id, admitted_at) \
          VALUES (?1, ?2, ?3, ?4, ?5)",

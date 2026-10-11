@@ -17,6 +17,16 @@ pub const MODULE_ID: &str = "basal";
 /// Every op basal serves, with whether it changes anything and what it does.
 pub const OPERATIONS: &[(&str, ManagementOperationKind, &str)] = &[
     (
+        "flow.instantiate",
+        ManagementOperationKind::Mutate,
+        "Create or extend a bounded template instance for the caller; operator may name its agent.",
+    ),
+    (
+        "flow.instance.end",
+        ManagementOperationKind::Mutate,
+        "End a template instance, keeping history; owner or operator only.",
+    ),
+    (
         "package.register",
         ManagementOperationKind::Mutate,
         "Register immutable package bytes; operator or core only.",

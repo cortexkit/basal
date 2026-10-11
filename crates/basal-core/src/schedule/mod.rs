@@ -167,6 +167,8 @@ impl Scheduler {
     /// first, so they keep their place ahead of newer ones. Ticking again
     /// with the same `now` admits nothing new.
     pub fn tick_at(&self, now: Timestamp) -> Result<TickReport> {
+        self.store
+            .write(|tx| crate::templates::expire_schedules(tx, now.as_millisecond()))?;
         let mut report = TickReport::default();
         // While admission drains, planning still runs: fires are decided
         // when they fall due (so they count as on time) and wait in the

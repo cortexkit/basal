@@ -238,6 +238,11 @@ impl Runtime {
                 return Ok(reply);
             }
             let p = get(tx, package, version)?.ok_or_else(|| refused("package_unknown"))?;
+            let manifest =
+                Manifest::parse(&p.manifest).map_err(|e| CoreError::Corrupt(e.to_string()))?;
+            if manifest.params.is_some() {
+                return Err(refused("package_has_params"));
+            }
             if !known_agent {
                 return Err(refused("agent_unknown"));
             }

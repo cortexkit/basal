@@ -1,0 +1,112 @@
+[
+  {
+    "template": "watch",
+    "agent_id": "agent_47120287c700722b",
+    "params": {},
+    "supplied_params": {},
+    "canonical_params": "{}",
+    "hash": "78b36aaf3802c776cf8b031067948ff18274ead8cab20a5e2dc6fd4510f0a351",
+    "flow_id": "watch_78b36aaf3802c776"
+  },
+  {
+    "template": "watch",
+    "agent_id": "agent_47120287c700722b",
+    "params": {
+      "path": "/work/notes/todo",
+      "interval": "15m"
+    },
+    "supplied_params": {
+      "path": "/work/notes/todo",
+      "interval": "15m"
+    },
+    "canonical_params": "{\"interval\":\"15m\",\"path\":\"/work/notes/todo\"}",
+    "hash": "bab31709f57dda03fb636e5215d6a41c95d94fee521aa0bc8aa42ec3e6411ca7",
+    "flow_id": "watch_bab31709f57dda03"
+  },
+  {
+    "template": "watch",
+    "agent_id": "agent_d1e7002e2c9b9f43",
+    "params": {
+      "path": "/work/notes/todo",
+      "interval": "15m"
+    },
+    "supplied_params": {
+      "path": "/work/notes/todo",
+      "interval": "15m"
+    },
+    "canonical_params": "{\"interval\":\"15m\",\"path\":\"/work/notes/todo\"}",
+    "hash": "d5475a5580c9b252c3b2713ff063ccd314f5f0c5f8adc2475b947f6d3d19e5ad",
+    "flow_id": "watch_d5475a5580c9b252"
+  },
+  {
+    "template": "reminder",
+    "agent_id": "agent_47120287c700722b",
+    "params": {
+      "at": "2026-11-01T09:00:00Z",
+      "note": "Grüße, 東京: \"watch\" \\ here",
+      "count": -2
+    },
+    "supplied_params": {
+      "at": "2026-11-01T09:00:00Z",
+      "note": "Grüße, 東京: \"watch\" \\ here",
+      "count": -2
+    },
+    "canonical_params": "{\"at\":\"2026-11-01T09:00:00Z\",\"count\":-2,\"note\":\"Grüße, 東京: \\\"watch\\\" \\\\ here\"}",
+    "hash": "2913921e1684add63ce573cde250e1a8c4419a79db3de03e44dd214a8f8f8847",
+    "flow_id": "reminder_2913921e1684add6"
+  },
+  {
+    "template": "watch",
+    "agent_id": "agent_47120287c700722b",
+    "params": {
+      "path": "/work/notes/todo",
+      "interval": "900s"
+    },
+    "supplied_params": {
+      "path": "/work/notes/todo",
+      "interval": "900s"
+    },
+    "canonical_params": "{\"interval\":\"900s\",\"path\":\"/work/notes/todo\"}",
+    "hash": "9ab76103d538a9e122dcdf6d9374d34ea56ea347598ef7e2f3f7c05f83f84fa4",
+    "flow_id": "watch_9ab76103d538a9e1"
+  },
+  {
+    "template": "reminder",
+    "agent_id": "agent_47120287c700722b",
+    "params": {
+      "at": "2026-11-01T09:00:00Z"
+    },
+    "supplied_params": {
+      "at": "2026-11-01T09:00:00Z"
+    },
+    "canonical_params": "{\"at\":\"2026-11-01T09:00:00Z\"}",
+    "hash": "b9cc7d043c1af88959babef573443e74d19dc13ea15779837a26fa73625911aa",
+    "flow_id": "reminder_b9cc7d043c1af889"
+  },
+  {
+    "template": "reminder",
+    "agent_id": "agent_47120287c700722b",
+    "params": {
+      "at": "2026-11-01T09:00:00Z"
+    },
+    "supplied_params": {
+      "at": "2026-11-01T09:00:00.000+00:00"
+    },
+    "canonical_params": "{\"at\":\"2026-11-01T09:00:00Z\"}",
+    "hash": "b9cc7d043c1af88959babef573443e74d19dc13ea15779837a26fa73625911aa",
+    "flow_id": "reminder_b9cc7d043c1af889"
+  },
+  {
+    "template": "reminder",
+    "agent_id": "agent_47120287c700722b",
+    "params": {
+      "at": "2026-11-01T09:00:00.100Z"
+    },
+    "supplied_params": {
+      "at": "2026-11-01T09:00:00.1Z"
+    },
+    "canonical_params": "{\"at\":\"2026-11-01T09:00:00.100Z\"}",
+    "hash": "04349f100bd190af55a5743079403ceb991d6963b62016261ebb046917473d23",
+    "flow_id": "reminder_04349f100bd190af"
+  }
+]

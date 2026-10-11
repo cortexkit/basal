@@ -621,6 +621,7 @@ impl Driver {
             script: self.run.program.clone(),
             trigger: JsonText::null(),
             self_input: JsonText::null(),
+            params_input: JsonText::null(),
             budgets: Budgets {
                 js_time_micros: 10_000_000,
                 memory_bytes: CODEMODE_HEAP_BYTES,

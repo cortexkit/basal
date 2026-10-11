@@ -1,12 +1,26 @@
 # Agent-facing basal operations
 
-Core's scoped relay exposes these five operations: `flow.install`, `flow.dry_run`, `flow.disable`, `flow.enable` and `flow.list`. Caller identity comes from the daemon's route stamp, never request parameters. `flow.health` is not relayed: core uses it to decide whether a flow's claim to replace a source remains healthy, and the operator uses its runtime-wide figures.
+Core's scoped relay exposes `flow.install`, `flow.dry_run`, `flow.disable`, `flow.enable`, `flow.list`, `flow.instantiate` and `flow.instance.end`. Caller identity comes from the daemon's route stamp, never request parameters. `flow.health` is not relayed: core uses it to decide whether a flow's claim to replace a source remains healthy, and the operator uses its runtime-wide figures.
 
 The daemon delivers agent-facing `codemode` calls directly to basal; prefrontal-core does not forward them. See [codemode](#codemode).
 
 Package management is not agent-relayed: `package.register` is available to the attested operator and core; `package.get`, `flow.instance.ensure`, and `flow.instance.remove` are core-only. The attested operator is a caller on a route the daemon stamps as the reserved `callosum` module, the operator's own module. A plain local caller is a process holding the daemon's direct connection key, on a route with no scope, which the daemon cannot vouch for. A plain local caller refused any of these receives `operator_attestation_required`, consistently with the other management operations; other unauthorized callers receive `not_permitted`. See [package manifests](packages.md).
 
 Shapes below use type names, `|` for alternatives, and a one-element array to describe each array item. `?` on a request key means optional. Reply keys are always present unless a key is marked optional with `?`. `object` and `any` describe open JSON values.
+
+## flow.instantiate
+
+Creates or extends a bounded [template instance](templates.md), without raising an approval card. Caller identity is the daemon-stamped agent; the operator may instead name `agent_id`. The approved `version` is required and filled in by the relay for agents.
+
+`flow.instantiate` parameters:
+```json
+{"template":"string","version":"integer","params":"object","expires_in":"string","agent_id?":"string"}
+```
+Agents must not supply `agent_id`. Replies contain `flow_id`, `template`, `version`, `agent_id`, canonical `params`, `expires_at` (Unix milliseconds) and `new`. Same-value calls reuse the id, move its version and extend but never shorten expiry. [Templates](templates.md#refusals) specifies bounds, limits and refusal details.
+
+## flow.instance.end
+
+Owner or operator only, for template instances. Params `{"flow_id":"string"}`. Reply `{"flow_id":"string","ended":"boolean"}`; `ended` is false on a repeat. Ending prevents all further admission and scheduling, but keeps state and history. Creating the same valid values later reopens that id. Non-template flows return `package_not_template`; an unknown id returns `not_found` to the operator. Other callers receive `not_permitted`.
 
 ## flow.install
 
@@ -30,7 +44,7 @@ A confirmed policy install returns `state: approved`, a null `card_id`, and `app
 
 At startup basal checks every undecided card and pending policy request once, including locally saved requests whose replies were lost. An active matching hash completes approval; `declined` and `expired` settle the card without approving the version. Core's optional `approval: {kind: card|policy, rule?}` status field supplies the provenance (a policy kind requires its rule). If it is absent, basal records `kind: unknown` and logs the missing provenance rather than guessing. Recovery is startup-only: idle basal never polls install status or install answers.
 
-A manifest containing `$self` in any agent field is refused with `self_requires_package`: `$self` is available only in [package manifests](packages.md).
+A manifest carrying `params` or `template` is refused with `params_require_package`, naming the field. Those fields belong to [templates](templates.md), registered as packages, rather than ordinary installs. A manifest containing `$self` in any agent field is refused with `self_requires_package`: `$self` is available only in [package manifests](packages.md).
 
 An agent-owned flow may name only its author in `sinks[].agent`, `status[]`, `claims[].agent` and `facts.targets[]`, even if the operator installs it in that agent's name. Manifest agents resolve through the catalog from display names or stable ids; each must resolve to the author's stable `agent_id`. A foreign target is refused with code `foreign_agent_target` and a message naming the field, target agent and author; no version or card is recorded or raised. Global flows (`author: operator`) and local installs may name any known agent. Ids ending in `_` and exactly 16 lowercase hex characters are refused with `flow_id_reserved` before recording or raising anything, because that namespace is reserved for package instances.
 
@@ -51,6 +65,8 @@ Params:
 {"flow_id":"string","version?":"integer|null","mode?":"capture|live|null","trigger?":"any","window?":"string|null"}
 ```
 Absent mode means capture. Absent version selects the approved version, otherwise the newest installed version. Absent trigger replays schedule fires over the time window ending now; `window` is its duration, such as `6h`. Capture is available to the operator and owning agent; live only to the operator. Local callers are refused.
+
+A dry run naming a registered template version or template instance returns `template_values_required`: parameter-aware dry runs are not implemented, and basal never invents sample values. An ordinary flow's stored manifest carrying `params` or `template` returns `params_require_package`, naming the field.
 
 Dry run validates the stored manifest under its author with the same self-only rule and `foreign_agent_target` refusal as install, including versions recorded before the rule was enforced.
 
@@ -149,6 +165,8 @@ Reply (machine-checked by `list_contract`):
 {"as_of":"integer","flows":[{"flow_id":"string","state":"enabled|disabled|unapproved","approved_version":"integer|null","approval":"approval|null","install_checks":[{"version":"integer","error":"string"}],"install_cards":[{"version":"integer","attempt":"integer|null","state":"pending|approved|declined|expired|rejected|stale"}],"pending_version":"integer|null","disabled":{"by":"operator|owner|auto|core","reason":"string","at":"integer"},"last_run":{"run_id":"string","state":"string","ended_at":"integer"},"needs_reconcile":"boolean","grant_losses":[{"flow_id":"string","provider":"string","grant":"string","grant_label":"string","echoable":"boolean","run_id":"string","version":"integer","revision":"integer","state":"polling|stopped","failures":"integer","next_poll_at_ms":"integer","lost_at_ms":"integer"}],"agent_retirement":{"agent_id":"string|null","agent_reference":"string|null","provider":"string","action":"string","at_ms":"integer"}}]}
 ```
 `disabled` and `last_run` may each be null, but their keys must be present. All times are Unix epoch milliseconds. `pending_version` is the newest undecided installed version (with a card or awaiting policy confirmation), or null; `approved_version` is null until approval. `state` uses the same approval-first computation as `flow.health`. `last_run` is the most recent finished run, not an in-flight run. `needs_reconcile` is true if any run awaits reconciliation. The disable's actor kind, reason and time are the recorded disable, or null after enabling. `by` is `operator`, `owner` (the owning agent), `auto` (the runtime's loop protection) or `core`. A `core` disable may mean core revoked the version, holds no install of that version, or approved a different code hash for it; it may also mean `grant_lost` or `agent_retired`. Losing core's approval also clears the approved version, so the flow lists as `unapproved`; approval of a newer version clears that stop, but does not override an operator or owner stop.
+
+Template instance entries additionally contain `template`, `version`, canonical `params` and `expires_at` in Unix milliseconds. Persona and ordinary entries omit those keys. Expired and ended instances remain visible to their owner and the operator. The enable state is independent of ending and expiry; enabling cannot reopen an ended or expired instance.
 
 `install_cards` is always an array of `{version, attempt, state}` records, including declined and expired requests; an attempt is null when no core card key was received. Both `flow.list` and `flow.health` also report `approval` for the current approved version: null when none is approved, `{kind: card}`, `{kind: policy, rule: string}`, or `{kind: unknown}` for approval whose provenance core did not supply. `install_checks` is always an array of `{version: integer, error: string}` records for pending versions whose last confirmation failed; a successful card raise or approval clears that version's error.
 

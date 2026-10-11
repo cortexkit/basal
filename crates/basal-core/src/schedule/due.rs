@@ -231,6 +231,7 @@ impl CompiledSchedule {
         after: Timestamp,
     ) -> Result<Option<Timestamp>, DueError> {
         match &self.when {
+            When::At { at } => Ok((*at > after).then_some(*at)),
             When::Cron { cron, tz, .. } => cron_next_after(cron, tz, after),
             When::Interval { every_secs } => interval_next_after(*every_secs, anchor, after),
         }
@@ -256,6 +257,18 @@ impl CompiledSchedule {
         let keep = keep.max(1);
         let count_limit = count_limit.max(1);
         match &self.when {
+            When::At { at } => {
+                if first != *at {
+                    return Err(DueError("one-shot due time differs from at".into()));
+                }
+                Ok(DueScan {
+                    count: 1,
+                    count_is_lower_bound: false,
+                    first,
+                    newest: vec![*at],
+                    next: None,
+                })
+            }
             When::Interval { every_secs } => {
                 let every = interval_ms(*every_secs)?;
                 let first_ms = i128::from(first.as_millisecond());

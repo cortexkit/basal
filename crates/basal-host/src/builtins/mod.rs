@@ -131,9 +131,9 @@ pub const MAX_TEXT_RESULT_BYTES: usize =
 /// parent's check to the host. For the `fs` built-ins `roots` holds the
 /// roots of the call's kind (read roots for reads, write roots for
 /// `fs.write`); for git it holds the approved repositories; for
-/// `net.fetch`, `hosts` holds every approved host with its methods. Paths
-/// are absolute with `~` already expanded, not yet resolved: the host
-/// resolves them again each time it acts.
+/// `net.fetch`, `hosts` holds every approved host with its methods. Ordinary
+/// paths are absolute with `~` expanded and resolve again at access. Template
+/// parameter roots also carry their recorded canonical boundaries.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Grant {
@@ -141,6 +141,99 @@ pub struct Grant {
     pub roots: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hosts: Vec<HostRule>,
+    /// Recorded `under` bounds for paths supplied by template parameters. Each
+    /// access rechecks those paths against the instance's creation-time bounds.
+    /// Ordinary static roots, including approved symlink roots, are unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub template_roots: Vec<TemplateRoot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TemplateRoot {
+    pub param: String,
+    pub root: String,
+    pub under: Vec<String>,
+    pub existed: bool,
+}
+
+impl Grant {
+    /// Return `exists: false` for a missing target covered by a template path
+    /// grant, after checking its resolved path and recorded bounds. Reads,
+    /// writes and ordinary stat grants retain their existing resolution.
+    fn missing_stat(&self, path: &str) -> Option<Value> {
+        let target = resolved_path(path)?;
+        let absolute = expand_home(path)?;
+        for guard in &self.template_roots {
+            if !self.roots.contains(&guard.root) {
+                continue;
+            }
+            let Some(root) = resolved_path(&guard.root) else {
+                continue;
+            };
+            if !target.starts_with(&root)
+                || !guard.under.iter().any(|under| root.starts_with(under))
+                || (guard.existed && root != std::path::Path::new(&guard.root))
+            {
+                continue;
+            }
+            if std::fs::symlink_metadata(&absolute)
+                .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+            {
+                return Some(json!({"exists":false}));
+            }
+        }
+        None
+    }
+
+    pub fn checked_roots(&self) -> Result<Vec<String>, Denial> {
+        let mut roots = self.roots.clone();
+        for guard in &self.template_roots {
+            if !roots.contains(&guard.root) {
+                continue;
+            }
+            let valid = resolved_path(&guard.root).is_some_and(|resolved| {
+                guard.under.iter().any(|root| resolved.starts_with(root))
+                    && (!guard.existed || resolved == std::path::Path::new(&guard.root))
+            });
+            if !valid && let Some(index) = roots.iter().position(|root| root == &guard.root) {
+                roots.remove(index);
+            }
+        }
+        if !self.roots.is_empty() && roots.is_empty() {
+            return Err(Denial::denied(
+                "path is outside the manifest's roots or missing",
+            ));
+        }
+        Ok(roots)
+    }
+}
+
+/// Resolve symlinks component by component, including the deepest existing
+/// ancestor of a future path. A dangling symlink is not a future directory.
+pub fn resolved_path(text: &str) -> Option<PathBuf> {
+    use std::path::Component;
+    let path = expand_home(text)?;
+    let mut resolved = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => continue,
+            Component::ParentDir => {
+                resolved.pop();
+            }
+            other => {
+                resolved.push(other.as_os_str());
+                match std::fs::canonicalize(&resolved) {
+                    Ok(real) => resolved = real,
+                    Err(e)
+                        if e.kind() == std::io::ErrorKind::NotFound
+                            && std::fs::symlink_metadata(&resolved).is_err() => {}
+                    Err(_) => return None,
+                }
+            }
+        }
+    }
+    resolved.is_absolute().then_some(resolved)
 }
 
 /// Whether `kind` is a file, git or network built-in.
@@ -300,14 +393,14 @@ pub fn parse(primitive: Primitive, args: &Value) -> Result<Call, Denial> {
 /// `net.fetch`, the URL, its host and the method. The parent runs this
 /// before it journals a call, and the host runs it again before it acts.
 pub fn authorize(call: &Call, grant: &Grant) -> Result<(), Denial> {
+    let roots = grant.checked_roots()?;
     match call {
+        Call::FsStat { path } if grant.missing_stat(path).is_some() => Ok(()),
         Call::FsRead { path, .. } | Call::FsList { path } | Call::FsStat { path } => {
-            fs::resolve(path, &grant.roots, fs::Purpose::Read).map(|_| ())
+            fs::resolve(path, &roots, fs::Purpose::Read).map(|_| ())
         }
-        Call::FsWrite { path, .. } => {
-            fs::resolve(path, &grant.roots, fs::Purpose::Write).map(|_| ())
-        }
-        Call::Git { repo, .. } => git::repo(repo, &grant.roots).map(|_| ()),
+        Call::FsWrite { path, .. } => fs::resolve(path, &roots, fs::Purpose::Write).map(|_| ()),
+        Call::Git { repo, .. } => git::repo(repo, &roots).map(|_| ()),
         Call::NetFetch(request) => {
             let url = net::parse_url(&request.url)?;
             net::allowed_url(&grant.hosts, &url, &request.method)
@@ -361,16 +454,22 @@ impl BuiltinHost {
         call_key: Option<&str>,
     ) -> Result<Value, Failure> {
         let args = envelope.get("args").unwrap_or(&Value::Null);
-        let grant: Grant =
+        let mut grant: Grant =
             serde_json::from_value(envelope.get("grant").cloned().unwrap_or(Value::Null))
                 .map_err(|e| Denial::invalid(format!("the call's grant does not decode: {e}")))?;
         let call = parse(primitive, args)?;
+        grant.roots = grant.checked_roots()?;
         // Each implementation checks its grant at the descriptor or connection
         // it acts on; resolving it here as well doubles filesystem traversal.
         match call {
             Call::FsRead { path, max_bytes } => Ok(fs::read(&path, &grant.roots, max_bytes)?),
             Call::FsList { path } => Ok(fs::list(&path, &grant.roots)?),
-            Call::FsStat { path } => Ok(fs::stat(&path, &grant.roots)?),
+            Call::FsStat { path } => {
+                if let Some(missing) = grant.missing_stat(&path) {
+                    return Ok(missing);
+                }
+                Ok(fs::stat(&path, &grant.roots)?)
+            }
             Call::FsWrite { path, text } => Ok(match call_key {
                 Some(key) => {
                     let ledger = self.temps.read().unwrap_or_else(|p| p.into_inner()).clone();

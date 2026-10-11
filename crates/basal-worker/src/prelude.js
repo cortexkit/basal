@@ -13,7 +13,7 @@
 // JSON.parse captured here. They are never evaluated as source: evaluating a
 // payload like {"__proto__": {...}} as an object literal would set the
 // prototype of the resulting object.
-(function (native, codemode, triggerText, selfText) {
+(function (native, codemode, triggerText, selfText, paramsText) {
   'use strict';
 
   const issueOp = native.issueOp;
@@ -25,7 +25,7 @@
   const NOW = 1, RANDOM = 2, FACTS = 3, CLASSIFY = 4, LLM = 5, SINK_DIGEST = 6,
     SINK_STATUS = 7, KV_GET = 8, KV_SET = 9, KV_DELETE = 10, SH = 11, FS_READ = 12,
     FS_LIST = 13, FS_STAT = 14, FS_WRITE = 15, GIT_LOG = 16, GIT_REV_PARSE = 17,
-    GIT_DESCRIBE_TAGS = 18, GIT_SHOW = 19, GIT_DIFF = 20, NET_FETCH = 21;
+    GIT_DESCRIBE_TAGS = 18, GIT_SHOW = 19, GIT_DIFF = 20, NET_FETCH = 21, INSTANCE_END = 24;
 
   const G = globalThis;
   const ObjectDefineProperty = Object.defineProperty;
@@ -364,6 +364,12 @@
     random() {
       return new PromiseCtor((resolve) => resolve(callSync(RANDOM)));
     },
+    instance: {
+      end(...args) {
+        if (args.length !== 0) { throw new TypeErrorCtor('instance.end takes no arguments'); }
+        return callPrimitive(INSTANCE_END, {});
+      },
+    },
     // A label for a group of calls. Steps are not part of the journal key:
     // concurrent callbacks have no reliable "current step".
     step(name, fn) {
@@ -383,6 +389,9 @@
   }
   ObjectDefineProperty(G, 'self', {
     value: JSONParse(selfText), writable: false, enumerable: false, configurable: false,
+  });
+  ObjectDefineProperty(G, 'params', {
+    value: JSONParse(paramsText), writable: false, enumerable: false, configurable: false,
   });
   ObjectDefineProperty(G, 'trigger', {
     value: JSONParse(triggerText), writable: false, enumerable: false, configurable: false,

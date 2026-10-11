@@ -55,6 +55,7 @@ mod tests {
             script: "return 1".into(),
             trigger: text("{\"a\":1}"),
             self_input: text("{\"agent_id\":\"agent_test\"}"),
+            params_input: text("{\"note\":\"watch this\"}"),
             budgets: Budgets::default(),
             prefix: vec![
                 RecordedCall {
@@ -82,7 +83,7 @@ mod tests {
 
     #[test]
     fn codemode_wire_codes_preserve_shell_and_round_trip_tool_json() {
-        assert_eq!(PROTOCOL_VERSION, 8);
+        assert_eq!(PROTOCOL_VERSION, 9);
         // Checked at run time, not in a const block, so lowering the ceiling
         // fails this test instead of the build, and the mutation control for
         // the ceiling sees a red test.
@@ -106,7 +107,11 @@ mod tests {
             let frame = encode_worker_frame(&message).unwrap();
             assert_eq!(frame[13], code);
             if code == 22 {
-                assert!(Primitive::ALL.iter().all(|p| p.code() < code));
+                assert!(
+                    Primitive::ALL
+                        .iter()
+                        .all(|p| p.code() != code && p.code() != 23)
+                );
             }
             assert_eq!(read_worker_message(&mut frame.as_slice()).unwrap(), message);
         }
@@ -316,8 +321,8 @@ mod tests {
     }
 
     fn confinement_payload(suffix: &[u8]) -> Vec<u8> {
-        // A version-8 Welcome with an empty engine name and two zero hashes.
-        let mut payload = vec![101, 0, 0, 0, 8, 0, 0, 0, 0];
+        // A version-9 Welcome with an empty engine name and two zero hashes.
+        let mut payload = vec![101, 0, 0, 0, 9, 0, 0, 0, 0];
         payload.extend_from_slice(&[0; 64]);
         payload.extend_from_slice(suffix);
         payload

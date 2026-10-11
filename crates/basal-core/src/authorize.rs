@@ -238,6 +238,16 @@ pub fn check(
         CallKind::Primitive(p) => match p {
             Primitive::Now | Primitive::Random => Ok(()),
             Primitive::KvGet | Primitive::KvSet | Primitive::KvDelete => Ok(()),
+            Primitive::InstanceEnd => {
+                if manifest.params.is_some() {
+                    Ok(())
+                } else {
+                    Err(Refusal::new(
+                        "not_a_template_instance",
+                        "only template instances may end themselves",
+                    ))
+                }
+            }
             Primitive::Sh => Err(Refusal::denied("sh is not available to flows")),
             Primitive::Facts => {
                 let agent = agent_arg(args, *p)?;

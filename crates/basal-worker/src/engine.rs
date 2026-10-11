@@ -1002,6 +1002,7 @@ impl Activation {
                         false,
                         request.trigger.as_str(),
                         request.self_input.as_str(),
+                        request.params_input.as_str(),
                     ))?
                 };
                 let deliver: Function = hooks.get("deliver")?;

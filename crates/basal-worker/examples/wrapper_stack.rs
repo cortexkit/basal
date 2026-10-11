@@ -17,6 +17,7 @@ fn request(work: &str, stack: u64) -> ActivationRequest {
         script: format!("return 1\n}}); {work} (async function () {{ return 1;"),
         trigger: JsonText::null(),
         self_input: JsonText::null(),
+        params_input: JsonText::null(),
         budgets: Budgets {
             stack_bytes: stack,
             ..Default::default()
