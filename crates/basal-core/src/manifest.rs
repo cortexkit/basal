@@ -54,6 +54,9 @@ pub struct Manifest {
     pub version: u32,
     pub purpose: String,
     pub trigger: Trigger,
+    /// Delivery reach, covered by the approved manifest's exact bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audience: Option<Audience>,
     #[serde(default)]
     pub sinks: Vec<SinkGrant>,
     /// Agents whose status line the flow may set.
@@ -141,6 +144,18 @@ pub struct SinkGrant {
     #[serde(default)]
     pub break_through: bool,
 }
+
+/// Core checks membership in this reach when it delivers a sink write.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Audience {
+    Global {},
+    Workspace { id: String },
+    Agent { id: String },
+}
+
+/// A targetless sink declaration, valid only with an audience.
+pub const AUDIENCE_TARGET: &str = "$audience";
 
 /// A source kind the flow takes over from core for an agent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -290,6 +305,8 @@ pub enum ManifestError {
         schedule: bool,
     },
     Schedule(String),
+    AudienceSinkNamed,
+    AudiencePlaceholderWithoutAudience,
     Invalid {
         field: String,
         reason: String,
@@ -313,6 +330,13 @@ impl std::fmt::Display for ManifestError {
                 "a trigger needs exactly one of events and schedule (events: {events}, schedule: {schedule})"
             ),
             Self::Schedule(e) => write!(f, "schedule: {e}"),
+            Self::AudienceSinkNamed => write!(f, "audience sinks and status must name $audience"),
+            Self::AudiencePlaceholderWithoutAudience => {
+                write!(
+                    f,
+                    "$audience requires an audience and is only a sink target"
+                )
+            }
             Self::Invalid { field, reason } => write!(f, "{field}: {reason}"),
             Self::Duplicate { field, value } => write!(f, "{field}: {value} is listed twice"),
         }
@@ -409,6 +433,9 @@ fn check_list<T: Ord + Clone + std::fmt::Debug>(
 }
 
 fn check_agent(field: &'static str, agent: &str) -> Result<(), ManifestError> {
+    if agent == AUDIENCE_TARGET {
+        return Err(ManifestError::AudiencePlaceholderWithoutAudience);
+    }
     if agent == "$self" {
         return Ok(());
     }
@@ -487,12 +514,38 @@ impl Manifest {
                 });
             }
         }
+        if let Some(audience) = &self.audience {
+            match audience {
+                Audience::Global {} => {}
+                Audience::Agent { id } => check_agent("audience.id", id)?,
+                Audience::Workspace { id } => {
+                    if id.trim().is_empty() || id.len() > 512 {
+                        return Err(invalid(
+                            "audience.id",
+                            "workspace id must be nonblank and at most 512 bytes",
+                        ));
+                    }
+                }
+            }
+        }
+        let check_sink = |field, agent: &str| {
+            if self.audience.is_some() {
+                if agent != AUDIENCE_TARGET {
+                    return Err(ManifestError::AudienceSinkNamed);
+                }
+                Ok(())
+            } else if agent == AUDIENCE_TARGET {
+                Err(ManifestError::AudiencePlaceholderWithoutAudience)
+            } else {
+                check_agent(field, agent)
+            }
+        };
         for s in &self.sinks {
-            check_agent("sinks.agent", &s.agent)?;
+            check_sink("sinks.agent", &s.agent)?;
         }
         check_list("sinks", self.sinks.iter().map(|s| s.agent.clone()))?;
         for a in &self.status {
-            check_agent("status", a)?;
+            check_sink("status", a)?;
         }
         check_list("status", self.status.iter().cloned())?;
         for c in &self.claims {
@@ -640,7 +693,7 @@ impl Manifest {
     pub fn digest_cap(&self, agent: &str) -> Option<DigestAction> {
         self.sinks
             .iter()
-            .find(|s| s.agent == agent)
+            .find(|s| s.agent == agent || (self.audience.is_some() && s.agent == AUDIENCE_TARGET))
             .map(|s| s.digest_max)
     }
 
@@ -712,8 +765,21 @@ impl Manifest {
     /// Every agent the manifest names, with the field naming it.
     pub fn agents(&self) -> Vec<(&'static str, &str)> {
         let mut out: Vec<(&'static str, &str)> = Vec::new();
-        out.extend(self.sinks.iter().map(|s| ("sinks", s.agent.as_str())));
-        out.extend(self.status.iter().map(|a| ("status", a.as_str())));
+        if let Some(Audience::Agent { id }) = &self.audience {
+            out.push(("audience.id", id));
+        }
+        out.extend(
+            self.sinks
+                .iter()
+                .filter(|s| s.agent != AUDIENCE_TARGET)
+                .map(|s| ("sinks", s.agent.as_str())),
+        );
+        out.extend(
+            self.status
+                .iter()
+                .filter(|a| a.as_str() != AUDIENCE_TARGET)
+                .map(|a| ("status", a.as_str())),
+        );
         out.extend(self.claims.iter().map(|c| ("claims", c.agent.as_str())));
         if let Some(f) = &self.facts {
             out.extend(f.targets.iter().map(|a| ("facts.targets", a.as_str())));

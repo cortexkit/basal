@@ -58,6 +58,40 @@ The summary is the dry-run trace, including calls and sink writes. Its journal u
 ```
 A schedule's `covered` may be null when no fires are replayed. `partial` marks traces affected by simulated calls: capture rejects external reads and mutations rather than executing them, so subsequent script branches may differ from a live run. It does not imply live effects.
 
+## flow.audience
+
+This management query is not agent-relayed. Only daemon-attested reserved
+module principals on unscoped routes (for example prefrontal-core, plexus, or
+callosum) may call it. Agents, scoped module routes, direct local callers and
+unverified routes receive `not_permitted`. A request cannot claim a module
+identity in its parameters.
+
+Params:
+```json
+{"flow_id":"string"}
+```
+
+Reply (machine-checked by `audience::audience_reply_matches_documented_shape`):
+```json
+{"audience":"audience shape below|null"}
+```
+The audience shapes are:
+```json
+{"kind":"global"}
+```
+```json
+{"kind":"workspace","id":"string"}
+```
+```json
+{"kind":"agent","id":"string"}
+```
+
+The audience comes from the currently approved version's exact manifest, not a
+newer pending install. No audience means `null`; callers then apply the default
+static sink rules. Unknown flows and known flows without an approved version
+both receive `flow_not_approved` with the same message, so the query cannot
+distinguish them. The query does not resolve or rewrite a stored audience id.
+
 ## flow.disable
 
 Params:

@@ -15073,3 +15073,288 @@ timeout_s = 600
 file = "crates/basal-module/src/events.rs"
 old = "        published_at_ms,"
 new = '        published_at_ms: get("published_at_ms").ok().and_then(|v| v.parse().ok()).unwrap_or(published_at_ms), // NON-VACUITY BREAK'
+
+# Install audiences and module-only approved reach reads.
+[[control]]
+id = "audience-shape-allows-unknown-fields"
+guards = "audience shape refuses unknown fields including id on global"
+test_file = "crates/basal-core/tests/audience.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--test audience"
+expect_red = ["audience_field_shape_is_closed"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/manifest.rs"
+old = '#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]'
+new = '#[serde(tag = "kind", rename_all = "snake_case")] // NON-VACUITY BREAK'
+
+[[control]]
+id = "audience-sinks-allow-named-targets"
+guards = "audience sink declarations cannot mix static named targets"
+test_file = "crates/basal-core/tests/audience.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--test audience"
+expect_red = ["audience_sink_targets_cannot_mix_with_named_targets"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/manifest.rs"
+old = 'if agent != AUDIENCE_TARGET {'
+new = 'if false && agent != AUDIENCE_TARGET { // NON-VACUITY BREAK'
+
+[[control]]
+id = "audience-placeholder-without-reach"
+guards = "the audience placeholder requires an audience"
+test_file = "crates/basal-core/tests/audience.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--test audience"
+expect_red = ["audience_placeholder_requires_audience_and_only_names_sinks"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/manifest.rs"
+old = '''} else if agent == AUDIENCE_TARGET {
+                Err(ManifestError::AudiencePlaceholderWithoutAudience)'''
+new = '''} else if agent == AUDIENCE_TARGET {
+                Ok(()) // NON-VACUITY BREAK'''
+
+[[control]]
+id = "audience-agent-authors-can-request-broad-reach"
+guards = "broad audience requires operator or local authorship"
+test_file = "crates/basal-core/tests/audience.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--test audience"
+expect_red = ["broad_audience_requires_operator_authorship"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/install.rs"
+old = '''fn agent_may_request_broad_audience() -> bool {
+    false
+}'''
+new = '''fn agent_may_request_broad_audience() -> bool {
+    true // NON-VACUITY BREAK
+}'''
+
+[[control]]
+id = "audience-agent-target-escapes-author"
+guards = "agent audience resolves to the same stable agent as its author"
+test_file = "crates/basal-core/tests/audience.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--test audience"
+expect_red = ["agent_audience_resolves_to_same_stable_author"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/install.rs"
+old = 'if target_id != author {'
+new = 'if target_id != author && field != "audience.id" { // NON-VACUITY BREAK'
+
+[[control]]
+id = "audience-agent-id-skips-registry"
+guards = "agent audience participates in catalog identity resolution"
+test_file = "crates/basal-core/tests/audience.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--test audience"
+expect_red = ["agent_audience_resolves_to_same_stable_author"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/manifest.rs"
+old = 'out.push(("audience.id", id));'
+new = 'let _ = id; // NON-VACUITY BREAK'
+
+[[control]]
+id = "audience-workspace-missing-is-accepted"
+guards = "workspace audience must exist in Entorhinal"
+test_file = "crates/basal-core/tests/audience.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--test audience"
+expect_red = ["workspace_audience_must_exist"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/install.rs"
+old = 'Ok(false) => return Err(InstallError::UnknownWorkspace(id.clone())),'
+new = 'Ok(false) => {} // NON-VACUITY BREAK'
+
+[[control]]
+id = "audience-workspace-unreadable-is-accepted"
+guards = "unreadable workspace registry refuses install and dry run"
+test_file = "crates/basal-module/tests/audience.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test audience"
+expect_red = ["unreadable_registries_refuse_install_and_dry_run"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/install.rs"
+old = 'Err(e) => return Err(InstallError::WorkspaceRegistryUnavailable(format!("{e:?}"))),'
+new = 'Err(e) => { let _ = e; } // NON-VACUITY BREAK'
+
+[[control]]
+id = "audience-digest-does-not-require-declaration"
+guards = "audience delivery still requires a declared digest sink"
+test_file = "crates/basal-core/tests/audience.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--test audience"
+expect_red = ["audience_writes_check_declared_sink_kind_not_recipient"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/authorize.rs"
+old = 'return if manifest.sinks.is_empty() {'
+new = 'return if false && manifest.sinks.is_empty() { // NON-VACUITY BREAK'
+
+[[control]]
+id = "audience-status-does-not-require-declaration"
+guards = "audience delivery still requires a declared status sink"
+test_file = "crates/basal-core/tests/audience.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--test audience"
+expect_red = ["audience_writes_check_declared_sink_kind_not_recipient"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/authorize.rs"
+old = 'return if manifest.status.is_empty() {'
+new = 'return if false && manifest.status.is_empty() { // NON-VACUITY BREAK'
+
+[[control]]
+id = "audience-static-recipient-rule-is-lost"
+guards = "without an audience digest writes retain their static target rule"
+test_file = "crates/basal-core/tests/audience.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--test audience"
+expect_red = ["static_writes_still_require_static_targets_and_caps"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/manifest.rs"
+old = '.find(|s| s.agent == agent || (self.audience.is_some() && s.agent == AUDIENCE_TARGET))'
+new = '.find(|s| s.agent == agent || s.agent != agent) // NON-VACUITY BREAK'
+
+[[control]]
+id = "audience-workspace-compares-display-name"
+guards = "workspace membership resolves the exact workspace id not its display name"
+test_file = "crates/basal-host/tests/audience.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--test audience"
+expect_red = ["workspace_registry_uses_entorhinal_management_query_and_exact_id"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/subc_catalog.rs"
+old = 'found |= workspace_id == id;'
+new = 'found |= workspace_id == id || workspace["name"] == id; // NON-VACUITY BREAK'
+
+[[control]]
+id = "audience-read-allows-unverified-callers"
+guards = "flow.audience is reserved for verified unscoped module routes"
+test_file = "crates/basal-module/tests/audience.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test audience"
+expect_red = ["audience_op_requires_verified_unscoped_module_route"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/ops.rs"
+old = '''if !matches!(
+            caller,
+            Caller::Core | Caller::Operator | Caller::Module { .. }
+        ) {'''
+new = '''if false && !matches!(
+            caller,
+            Caller::Core | Caller::Operator | Caller::Module { .. }
+        ) { // NON-VACUITY BREAK'''
+
+[[control]]
+id = "audience-read-leaks-unapproved-flow-id"
+guards = "unknown and unapproved audience reads have indistinguishable refusals"
+test_file = "crates/basal-module/tests/audience.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test audience"
+expect_red = ["audience_op_unknown_and_unapproved_have_same_refusal"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/ops.rs"
+old = '"no approved flow audience",'
+new = 'format!("no approved flow audience: {}", p.flow_id), // NON-VACUITY BREAK'
+
+[[control]]
+id = "audience-read-uses-pending-version"
+guards = "audience reads use the approved manifest rather than a newer pending install"
+test_file = "crates/basal-module/tests/audience.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test audience"
+expect_red = ["audience_op_reads_approved_version_not_pending"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/ops.rs"
+old = '''"SELECT i.manifest FROM flows f JOIN installs i ON i.flow_id=f.flow_id AND i.version=f.approved_version WHERE f.flow_id=?1 AND i.state='approved'",'''
+new = '"SELECT i.manifest FROM flows f JOIN installs i ON i.flow_id=f.flow_id WHERE f.flow_id=?1 ORDER BY i.version DESC LIMIT 1", // NON-VACUITY BREAK'
+
+[[control]]
+id = "audience-core-refusal-code-is-replaced"
+guards = "core audience refusal codes reach scripts unchanged"
+test_file = "crates/basal-host/tests/audience.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--test audience"
+expect_red = ["core_audience_refusal_and_recipient_are_preserved"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_host.rs"
+old = 'JsonText::new(json!({"code":code,"message":message}).to_string())'
+new = 'JsonText::new(json!({"code":if code == "sink_target_not_in_audience" { "not_permitted" } else { &code },"message":message}).to_string()) // NON-VACUITY BREAK'
+
+[[control]]
+id = "audience-unreadable-agent-registry-is-accepted"
+guards = "agent audience fails closed when agent.list is unreadable"
+test_file = "crates/basal-module/tests/audience.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test audience"
+expect_red = ["unreadable_registries_refuse_install_and_dry_run"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/install.rs"
+old = '} else if !catalog.agent_known(agent) {'
+new = '} else if !catalog.agent_known(agent) && field != "audience.id" { // NON-VACUITY BREAK'

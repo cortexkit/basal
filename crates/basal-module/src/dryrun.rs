@@ -225,8 +225,13 @@ impl DryRunner {
             trigger,
             now_ms,
         };
-        let manifest = Manifest::parse(&request.install.manifest)
-            .map_err(|e| DryRunError::Invalid(format!("manifest: {e}")))?;
+        let manifest = Manifest::parse(&request.install.manifest).map_err(|e| match e {
+            e @ (basal_core::manifest::ManifestError::AudienceSinkNamed
+            | basal_core::manifest::ManifestError::AudiencePlaceholderWithoutAudience) => {
+                DryRunError::InstallRefused(basal_core::InstallError::Manifest(e))
+            }
+            other => DryRunError::Invalid(format!("manifest: {other}")),
+        })?;
         let (fires, window) = self.fires(&manifest, request)?;
         Metrics::bump(&self.metrics.dry_runs);
 
@@ -381,9 +386,14 @@ impl DryRunner {
             config,
         );
         let installed = rt.install(request.install).map_err(|e| match e {
-            e @ basal_core::InstallError::ForeignAgentTarget { .. } => {
-                DryRunError::InstallRefused(e)
-            }
+            e @ (basal_core::InstallError::ForeignAgentTarget { .. }
+            | basal_core::InstallError::AudienceRequiresOperator
+            | basal_core::InstallError::UnknownWorkspace(_)
+            | basal_core::InstallError::WorkspaceRegistryUnavailable(_)
+            | basal_core::InstallError::UnknownAgent {
+                field: "audience.id",
+                ..
+            }) => DryRunError::InstallRefused(e),
             other => DryRunError::Invalid(format!("install into the scratch store: {other}")),
         })?;
         rt.approve(
