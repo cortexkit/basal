@@ -1,0 +1,170 @@
+{
+  "base_sha": "7a1b06d0eb33aba9b07daee835de520e81bf3f33",
+  "platform": "linux",
+  "vcpus": 8,
+  "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+  "python": "Python 3.14.4",
+  "load": {
+    "test_threads": 64,
+    "cpu_workers": 8,
+    "cpu_job": "Repeated hashlib.sha256 of bytes followed by repetition of the digest; multiprocessing fork workers, terminated and joined after the loop.",
+    "runner": "evidence/intermittent-tests/load.py",
+    "compile": "cargo test -p basal-core -p basal-module --locked --no-run",
+    "conformance_command": "python3 evidence/intermittent-tests/load.py target/debug/deps/tool_provider_conformance-59855b9161b29bd8 --tests 6 --iterations 50 --label <phase>-conformance",
+    "models_command": "python3 evidence/intermittent-tests/load.py target/debug/deps/basal_core-14b2dff38bee7820 --filter codemode::supervisor::tests::models:: --tests 17 --iterations 200 --jobs 4 --label <phase>-models",
+    "initial_runner": "The baseline loops used inline Python with the same subprocess commands and CPU job. The committed runner also validates the listing and executed test count so an incorrect filter cannot pass silently."
+  },
+  "root_causes": [
+    {
+      "test": "real_route_late_cursor_ack_and_custodian_only_serving",
+      "file": "crates/basal-module/tests/tool_provider_conformance.rs",
+      "cause": "The harness waited for with_ready_hosts, but serve::start invokes that callback before starting the event reader/engine and publishing Phase::Ready. Routes could bind in the meantime and tool requests received module_warming. HELLO_ACK and the callback are not protocol readiness barriers.",
+      "source": "crates/basal-module/src/serve.rs: start and tool_request",
+      "fix": "After the host-setup callback, wait for a control-channel HealthCheck response with status ok before returning Live. The original 180-second timeout covers both setup and protocol readiness. No sleep, request retry, deadline increase, or product-code change."
+    },
+    {
+      "test": "codemode::supervisor::tests::models::model_call_budget_rejects_call_21_without_ending_run",
+      "file": "crates/basal-core/src/codemode/model_tests.rs",
+      "cause": "FakeBroca exposes a key during send, before the host releases its per-call dispatch lock. The host also polls at dispatch_committed. The fixture could mark the fake completed while that initial poll held the lock after reading an active result; its one completion poll skipped the locked call. FakeBroca has no streaming wakeup to schedule another poll, so Fixture::delivery timed out. Waiting for key visibility, handle persistence, or watch installation would not guarantee the initial poll released its lock.",
+      "source": "crates/basal-host/src/broca/mod.rs: dispatch_model, poll, dispatch_committed; crates/basal-host/src/broca/fake.rs: send, set; crates/basal-core/src/codemode/supervisor.rs: dispatch_model",
+      "fix": "A test-only delegating Host sends the call position through a channel after BrocaHost::dispatch_committed returns. finish_usage receives that position before marking the fake run finished and doing its completion poll. The existing 10-second timeout and budget assertions are unchanged."
+    }
+  ],
+  "runs": [
+    {
+      "phase": "baseline",
+      "target": "tool_provider_conformance",
+      "tests_per_run": 6,
+      "parallel_binaries": 1,
+      "iterations": 50,
+      "passed": 39,
+      "failed": 11,
+      "named_test_failed_attempts": [15, 22, 41]
+    },
+    {
+      "phase": "baseline-models-sequential",
+      "target": "codemode::supervisor::tests::models::",
+      "tests_per_run": 17,
+      "parallel_binaries": 1,
+      "iterations": 100,
+      "passed": 98,
+      "failed": 2,
+      "note": "Same Fixture::delivery timeout in model_calls_use_distinct_run_scoped_sessions and classify_reuses_flow_instruction_validation_and_call_table."
+    },
+    {
+      "phase": "baseline-model-budget-isolated",
+      "target": "codemode::supervisor::tests::models::model_call_budget_rejects_call_21_without_ending_run",
+      "tests_per_run": 1,
+      "parallel_binaries": 8,
+      "cpu_workers": 16,
+      "iterations": 100,
+      "passed": 100,
+      "failed": 0
+    },
+    {
+      "phase": "baseline",
+      "target": "codemode::supervisor::tests::models::",
+      "tests_per_run": 17,
+      "parallel_binaries": 4,
+      "iterations": 200,
+      "passed": 197,
+      "failed": 3,
+      "named_test_failed_attempts": [183],
+      "other_failed_tests": [
+        "codemode::supervisor::tests::models::classify_reuses_flow_instruction_validation_and_call_table",
+        "codemode::supervisor::tests::models::model_token_budget_reserves_before_send_and_is_catchable"
+      ]
+    },
+    {
+      "phase": "fixed",
+      "target": "tool_provider_conformance",
+      "tests_per_run": 6,
+      "parallel_binaries": 1,
+      "iterations": 50,
+      "passed": 50,
+      "failed": 0
+    },
+    {
+      "phase": "fixed",
+      "target": "codemode::supervisor::tests::models::",
+      "tests_per_run": 17,
+      "parallel_binaries": 4,
+      "iterations": 200,
+      "passed": 200,
+      "failed": 0
+    },
+    {
+      "phase": "fixed-budget-count-validation",
+      "target": "codemode::supervisor::tests::models::model_call_budget_rejects_call_21_without_ending_run",
+      "tests_per_run": 1,
+      "parallel_binaries": 4,
+      "iterations": 50,
+      "passed": 50,
+      "failed": 0
+    },
+    {
+      "phase": "fix-reverted",
+      "target": "tool_provider_conformance",
+      "tests_per_run": 6,
+      "parallel_binaries": 1,
+      "iterations": 50,
+      "passed": 41,
+      "failed": 9,
+      "named_test_failed_attempts": [11, 29],
+      "note": "Seven failed runs exited 101; two aborted after the held-action test did not reach a core open and its cleanup hit a poisoned mutex. No such failure occurred with the readiness barrier."
+    },
+    {
+      "phase": "fix-reverted",
+      "target": "codemode::supervisor::tests::models::",
+      "tests_per_run": 17,
+      "parallel_binaries": 4,
+      "iterations": 200,
+      "passed": 197,
+      "failed": 3,
+      "named_test_failed_attempts": [75],
+      "other_failed_tests": ["codemode::supervisor::tests::models::classify_reuses_flow_instruction_validation_and_call_table"]
+    }
+  ],
+  "failure_excerpts": [
+    {
+      "phase": "baseline",
+      "attempt": 22,
+      "output": "thread 'real_route_late_cursor_ack_and_custodian_only_serving' (2568) panicked at crates/basal-module/tests/tool_provider_conformance.rs:534:18:\nexpected response, got Error(ErrorBody { code: \"module_warming\", message: \"basal is opening its store\", detail: None })\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\ntest real_route_late_cursor_ack_and_custodian_only_serving ... FAILED\n\nfailures:\n\nfailures:\n    real_route_late_cursor_ack_and_custodian_only_serving\n\ntest result: FAILED. 5 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.96s"
+    },
+    {
+      "phase": "baseline",
+      "attempt": 183,
+      "output": "thread 'codemode::supervisor::tests::models::model_call_budget_rejects_call_21_without_ending_run' (16331) panicked at crates/basal-core/src/codemode/supervisor_tests.rs:451:79:\ncalled `Result::unwrap()` on an `Err` value: Timeout\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\ntest codemode::supervisor::tests::models::model_call_budget_rejects_call_21_without_ending_run ... FAILED\n\nfailures:\n\nfailures:\n    codemode::supervisor::tests::models::model_call_budget_rejects_call_21_without_ending_run\n\ntest result: FAILED. 16 passed; 1 failed; 0 ignored; 0 measured; 230 filtered out; finished in 10.62s"
+    },
+    {
+      "phase": "fix-reverted",
+      "attempt": 11,
+      "output": "thread 'real_route_late_cursor_ack_and_custodian_only_serving' (1781) panicked at crates/basal-module/tests/tool_provider_conformance.rs:537:18:\nexpected response, got Error(ErrorBody { code: \"module_warming\", message: \"basal is opening its store\", detail: None })\ntest real_route_late_cursor_ack_and_custodian_only_serving ... FAILED\n\nfailures:\n\nfailures:\n    real_route_late_cursor_ack_and_custodian_only_serving\n    real_route_late_retention_and_direct_call_owner_custody\n\ntest result: FAILED. 4 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.49s"
+    },
+    {
+      "phase": "fix-reverted",
+      "attempt": 75,
+      "output": "thread 'codemode::supervisor::tests::models::model_call_budget_rejects_call_21_without_ending_run' (13208) panicked at crates/basal-core/src/codemode/supervisor_tests.rs:451:79:\ncalled `Result::unwrap()` on an `Err` value: Timeout\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\ntest codemode::supervisor::tests::models::model_call_budget_rejects_call_21_without_ending_run ... FAILED\n\nfailures:\n\nfailures:\n    codemode::supervisor::tests::models::model_call_budget_rejects_call_21_without_ending_run\n\ntest result: FAILED. 16 passed; 1 failed; 0 ignored; 0 measured; 230 filtered out; finished in 10.91s"
+    }
+  ],
+  "reversion_safety": {
+    "before": "git add the two test files and load.py; git diff --stat: empty",
+    "during": "Both synchronization fixes removed with NON-VACUITY BREAK markers; model_tests.rs | 62 +++++-----------------; tool_provider_conformance.rs | 19 +------; 2 files changed, 13 insertions(+), 68 deletions(-)",
+    "restore": "git checkout -- crates/basal-core/src/codemode/model_tests.rs crates/basal-module/tests/tool_provider_conformance.rs && touch crates/basal-core/src/codemode/model_tests.rs crates/basal-module/tests/tool_provider_conformance.rs",
+    "after": "git diff --stat: empty"
+  },
+  "gates": {
+    "linux": "cargo test -p basal-core -p basal-module --locked: 491 passed, 0 failed, 0 ignored, 42 test-summary records",
+    "macos": "cargo test -j 4 -p basal-core -p basal-module --locked: 487 passed, 0 failed, 1 pre-existing ignored test, 42 test-summary records",
+    "fmt": "cargo fmt --all --check: passed; rustfmt 1.10.0-stable (b940084d7e 2026-09-28)",
+    "clippy": "cargo clippy --workspace --all-targets --locked -- -D warnings and the same command with --features basal-module/rig-kill-hook: passed; clippy 0.1.99 (b940084d7e 2026-09-28), all seven workspace crates",
+    "mutations": "ckdev-mutate check: Catalogue anchors and exact test names verified; installed ckdev-mutate 0.9.8; 898 controls"
+  },
+  "notes": [
+    "tool_provider_conformance.rs exists and is tracked at the supplied base; no missing-path compatibility shim was necessary.",
+    "An initial CPU-loop launch failed before executing tests because Python 3.14 defaults to forkserver for multiprocessing. The working runner explicitly uses fork.",
+    "An early inline stress loop used codemode::model_tests:: and selected zero tests. Its apparent 50 passes are discarded and not counted as evidence. Corrected loops listed all 17 tests and validated their executed count.",
+    "Both changes are test-fixture synchronization only. Product code, test assertions, deadlines, and the mutation catalogue are unchanged; no product guard requiring a new catalogue row was added.",
+    "Sidekick flagged the model-fixture synchronization comment as unclear; it was rewritten to name dispatch_committed, the locked-call skip, and the missing fake stream wakeup."
+  ]
+}

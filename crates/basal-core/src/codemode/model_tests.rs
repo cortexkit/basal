@@ -1,11 +1,13 @@
 use super::*;
 use crate::broca::BrocaStore;
 use crate::codemode::models;
-use basal_host::TokenUsage;
 use basal_host::broca::{
     BrocaHost, Route, StateStore, Transport as BrocaTransport, fake::FakeBroca, wire::*,
 };
 use basal_host::selector::{ModelSelector, RoutingSelector};
+use basal_host::{
+    CallClass, CallRequest, CompletionSink, Dispatched, Host, TokenUsage, TransportError,
+};
 
 #[derive(Default)]
 struct Routing {
@@ -76,12 +78,50 @@ impl BrocaTransport for ObservedBroca {
         self.fake.status(route, params)
     }
 }
+struct CommittedBroca {
+    host: Arc<BrocaHost>,
+    committed: mpsc::Sender<u64>,
+}
+impl Host for CommittedBroca {
+    fn attach_codemode(&self, sink: Arc<dyn CompletionSink>) {
+        self.host.attach_codemode(sink);
+    }
+    fn configure_flow(
+        &self,
+        flow_id: &str,
+        agent_owned: bool,
+        scope: Option<basal_host::flow_scope::RegisteredScope>,
+    ) {
+        self.host.configure_flow(flow_id, agent_owned, scope);
+    }
+    fn classify(&self, kind: &CallKind) -> CallClass {
+        self.host.classify(kind)
+    }
+    fn dispatch(&self, request: &CallRequest) -> std::result::Result<Dispatched, TransportError> {
+        self.host.dispatch(request)
+    }
+    fn dispatch_committed(&self, request: &CallRequest) {
+        self.host.dispatch_committed(request);
+        self.committed.send(request.position).unwrap();
+    }
+    fn now_ms(&self) -> f64 {
+        self.host.now_ms()
+    }
+    fn random(&self) -> f64 {
+        self.host.random()
+    }
+    fn attach(&self, sink: Arc<dyn CompletionSink>) {
+        self.host.attach(sink);
+    }
+}
+
 struct ModelFixture {
     f: Fixture,
     wire: Arc<ObservedBroca>,
     routing: Arc<Routing>,
     selector: Arc<dyn ModelSelector>,
     broca: Arc<BrocaHost>,
+    committed: mpsc::Receiver<u64>,
 }
 impl ModelFixture {
     fn new() -> Self {
@@ -100,9 +140,14 @@ impl ModelFixture {
             "basal".into(),
             selector.clone(),
         ));
-        f.supervisor
-            .clone()
-            .with_models(broca.clone(), selector.clone());
+        let (committed, commits) = mpsc::channel();
+        f.supervisor.clone().with_models(
+            Arc::new(CommittedBroca {
+                host: broca.clone(),
+                committed,
+            }),
+            selector.clone(),
+        );
         let catalog = models::catalog();
         f.start(
             &[
@@ -132,6 +177,7 @@ impl ModelFixture {
             routing,
             selector,
             broca,
+            committed: commits,
         }
     }
     fn request(&self, position: u64, name: &str, input: Value) -> HostCall {
@@ -198,11 +244,10 @@ impl ModelFixture {
     }
     fn finish_usage(&self, position: u64, text: &str, usage: Usage) -> Delivery {
         let key = store::call_key("r", position);
-        let until = Instant::now() + TIMEOUT;
-        while !self.wire.fake.keys().contains(&key) {
-            assert!(Instant::now() < until);
-            thread::yield_now();
-        }
+        // Wait for dispatch_committed to finish its initial poll before completing
+        // the fake run. A concurrent completion poll skips a locked call, and the
+        // fake transport sends no stream wakeup to schedule another poll.
+        assert_eq!(self.committed.recv_timeout(TIMEOUT).unwrap(), position);
         self.wire
             .fake
             .finish(&key, text, RunFinishReason::Completed, Some(usage))
