@@ -8,7 +8,7 @@
 //! ```text
 //! basal-rig-contract --core-store <file> --basal-store <file>
 //!     --machine-id <file> --kill-file <file> --unscoped-file <file> --results <file>
-//!     --project-id <pj-…> --broca-index <file> [--no-kill-hook] [--models]
+//!     --project-id <pj-…> --broca-index <file> [--no-kill-hook] [--models | --packages]
 //!     --project-root <rig project directory>
 //! ```
 //!
@@ -16,6 +16,8 @@
 //! (`flows-rig.sh place --from-stage`), which is built without the rig kill
 //! switches: the crash and unscoped-send cases cannot run there, so each is reported as not run,
 //! by name and with the reason, and never counted as passed.
+//! `--packages` runs only setup, packages and cleanup, with the other groups
+//! reported as not run. Its results never claim a complete suite pass.
 //!
 //! The rig runs core's projects registry as production does, against the
 //! rig's entorhinal, so the test agent is a head of the project
@@ -88,12 +90,14 @@ struct Args {
     /// ck-basal has no kill switch, so the crash case is not run.
     no_kill_hook: bool,
     models: bool,
+    packages: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut values = std::collections::HashMap::new();
     let mut no_kill_hook = false;
     let mut models = false;
+    let mut packages = false;
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
         if flag == "--no-kill-hook" {
@@ -104,8 +108,15 @@ fn parse_args() -> Result<Args, String> {
             models = true;
             continue;
         }
+        if flag == "--packages" {
+            packages = true;
+            continue;
+        }
         let value = it.next().ok_or_else(|| format!("{flag} needs a value"))?;
         values.insert(flag, PathBuf::from(value));
+    }
+    if models && packages {
+        return Err("--models and --packages are mutually exclusive".into());
     }
     let mut take = |flag: &str| {
         values
@@ -127,6 +138,7 @@ fn parse_args() -> Result<Args, String> {
         project_root: take("--project-root")?,
         no_kill_hook,
         models,
+        packages,
     };
     match values.keys().next() {
         Some(unknown) => Err(format!("unknown argument {unknown}")),
@@ -1974,6 +1986,30 @@ async fn suite(
         "agent".into(),
         json!({ "name": agent.name, "agent_id": agent.id, "session": agent.session }),
     );
+    summary.insert(
+        "selection".into(),
+        json!(if args.packages { "packages" } else { "all" }),
+    );
+    if args.packages {
+        cases.push(Case::skipped(
+            "non-package groups: codemode, installs, sinks, relay, crash, models and ownership",
+            "--packages selects only setup, the package group and its cleanup; this is not a full-suite run.",
+        ));
+        cases.push(package_cases::registration(&rig, &tag).await);
+        cases.extend(package_cases::lifecycle(&rig, &agent, args, &tag).await);
+        cases.push(
+            cleanup_flows(
+                &rig,
+                &[basal_rig::packages::instance_id(
+                    &format!("rig-package-{tag}"),
+                    &agent.id,
+                )],
+            )
+            .await,
+        );
+        rig.client.close().await;
+        return Ok(());
+    }
     cases.extend(codemode_cases::run(&rig, &agent, args, &tag).await);
 
     let sinks_flow = flows::sinks(&format!("rig-sinks-{tag}"), &agent.name, "NoSuchAgent");
@@ -2074,7 +2110,6 @@ async fn suite(
     cases.push(package_cases::registration(&rig, &tag).await);
     cases.extend(package_cases::lifecycle(&rig, &agent, args, &tag).await);
 
-    let mut cleanup = Case::new("cleanup");
     let mut cleanup_ids = vec![
         sinks_flow.id.clone(),
         scope_flow.id.clone(),
@@ -2087,34 +2122,7 @@ async fn suite(
     for kind in ["first", "classify", "cap", "crash", "unscoped"] {
         cleanup_ids.push(format!("rig-model-{kind}-{tag}"));
     }
-    for flow_id in cleanup_ids {
-        let instance = rig.basal.instance(&flow_id);
-        cleanup.check(
-            &format!("read {flow_id} removal state"),
-            instance.is_ok(),
-            json!(&instance),
-        );
-        let removed = instance
-            .ok()
-            .flatten()
-            .is_some_and(|i| i["removed"] == true);
-        if rig.basal.flow_enabled(&flow_id) == Ok(Some(true)) && !removed {
-            let disabled = rig.disable(&flow_id).await;
-            cleanup.check(
-                &format!("disable {flow_id}"),
-                disabled.is_ok(),
-                evidence(&disabled),
-            );
-        }
-        let enabled = rig.basal.flow_enabled(&flow_id);
-        cleanup.check(
-            &format!("{flow_id} is left disabled, removed or was never installed"),
-            enabled
-                .as_ref()
-                .is_ok_and(|enabled| *enabled != Some(true) || removed),
-            json!(enabled),
-        );
-    }
+    let mut cleanup = cleanup_flows(&rig, &cleanup_ids).await;
     // The revoked flow is scheduled every minute, and the later cases took
     // minutes; the disable that came with the revoke stopped its schedule,
     // so its one cancelled run is still its only run.
@@ -2136,6 +2144,39 @@ async fn suite(
     cases.push(cleanup);
     rig.client.close().await;
     model_result
+}
+
+async fn cleanup_flows(rig: &Rig, flow_ids: &[String]) -> Case {
+    let mut cleanup = Case::new("cleanup");
+    for flow_id in flow_ids {
+        let instance = rig.basal.instance(flow_id);
+        cleanup.check(
+            &format!("read {flow_id} removal state"),
+            instance.is_ok(),
+            json!(&instance),
+        );
+        let removed = instance
+            .ok()
+            .flatten()
+            .is_some_and(|i| i["removed"] == true);
+        if rig.basal.flow_enabled(flow_id) == Ok(Some(true)) && !removed {
+            let disabled = rig.disable(flow_id).await;
+            cleanup.check(
+                &format!("disable {flow_id}"),
+                disabled.is_ok(),
+                evidence(&disabled),
+            );
+        }
+        let enabled = rig.basal.flow_enabled(flow_id);
+        cleanup.check(
+            &format!("{flow_id} is left disabled, removed or was never installed"),
+            enabled
+                .as_ref()
+                .is_ok_and(|enabled| *enabled != Some(true) || removed),
+            json!(enabled),
+        );
+    }
+    cleanup
 }
 
 fn main() -> std::process::ExitCode {
