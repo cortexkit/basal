@@ -28,7 +28,7 @@ post-close call proves that ended scopes cannot dispatch to the probe.
 ## Live result
 
 The final run tested the basal module and worker executables built at
-`db9406d92a483b67a24265f62e3306ee8738cc20`, prefrontal-core and cingulate at the pins above,
+`6599efeac3c81dc5efbcaddf6df6b7bbf10ea440`, prefrontal-core and cingulate at the pins above,
 and subc daemon 0.33.7: running programs, not unit-test mocks. Build, signed placement,
 configuration and cleanup ran after the deployment rehearsal released the rig.
 All **23 codemode checks passed** (6 onboarding, 11 successful-program, 6 CPU):
@@ -48,6 +48,14 @@ All **23 codemode checks passed** (6 onboarding, 11 successful-program, 6 CPU):
   the daemon's **`scope_not_live`** before another probe call can dispatch.
 - Exhaust the infinite loop's JavaScript CPU budget, requiring both terminal
   status and error code **`budget_exhausted:js_cpu`**.
+
+The final full no-model suite passed **255/255 executed checks**, including
+the package approval/card/pin/flush case (**12/12**) and seeded recovery
+(**9/9**). Core first learned floor **1002** with a null marker; the next
+observed recovery confirmed generation **1003**, version **1**. Basal's own row
+recorded generation **1003**, operation `ensure`, state `enabled`, removed
+`false`, with the enable switch unchanged. All eleven explicitly not-run cases
+are coverage gaps, not passes; the report's `complete` flag is therefore false.
 
 The package approval/card/pin/flush case passed **12/12** at both core
 `16cd2fa48` and `defe4a72a`, with cingulate `c650e9db`.
