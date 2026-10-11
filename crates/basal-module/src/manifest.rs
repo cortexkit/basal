@@ -4,8 +4,9 @@
 use serde_json::json;
 use subc_protocol::PROTOCOL_VERSION;
 use subc_protocol::manifest::{
-    BuildGitShaSource, Concurrency, GitTreeState, ManagementOperation, ManagementOperationKind,
-    ManifestProvenance, ModuleManifest, ProviderRole, build_provenance_from_source,
+    BuildGitShaSource, Concurrency, EventDeclaration, GitTreeState, ManagementOperation,
+    ManagementOperationKind, ManifestProvenance, ModuleManifest, ProviderRole,
+    build_provenance_from_source,
 };
 
 /// The id the daemon serves basal under. subc stamps a reserved module's
@@ -16,6 +17,16 @@ pub const MODULE_ID: &str = "basal";
 
 /// Every op basal serves, with whether it changes anything and what it does.
 pub const OPERATIONS: &[(&str, ManagementOperationKind, &str)] = &[
+    (
+        "flow.instance.live",
+        ManagementOperationKind::Query,
+        "Snapshot every unended template instance; prefrontal-core only.",
+    ),
+    (
+        "events_get",
+        ManagementOperationKind::Query,
+        "Retrieve lifecycle body bytes by event key and name; prefrontal-core only.",
+    ),
     (
         "flow.instantiate",
         ManagementOperationKind::Mutate,
@@ -145,6 +156,18 @@ pub fn manifest() -> ModuleManifest {
         // basal declares no self-signals: its effects are its flows', and
         // those are reported through flow.health.
         .self_signals(None)
+        .events(Some(
+            basal_core::template_events::EVENTS
+                .iter()
+                .map(|name| {
+                    EventDeclaration::new(*name, 1).with_headers(vec![
+                        "flow_id".into(),
+                        "agent".into(),
+                        "seq".into(),
+                    ])
+                })
+                .collect(),
+        ))
         .provenance(Some(build_provenance()))
         .build()
 }

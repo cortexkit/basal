@@ -215,6 +215,8 @@ impl Module {
             | "flow.instance.remove" => self.op_package(caller, method, params),
             "flow.instantiate" => self.op_instantiate(caller, params),
             "flow.instance.end" => self.op_end_instance(caller, params),
+            "flow.instance.live" => self.op_live_instances(caller, params),
+            "events_get" => self.op_events_get(caller, params),
             "flow.install" => self.op_install(caller, params),
             "flow.install_decided" => self.op_install_decided(caller, params),
             "flow.dry_run" => self.op_dry_run(caller, params),
@@ -263,6 +265,49 @@ impl Module {
     }
 
     // ---- packages and instances ---------------------------------------
+
+    fn op_live_instances(&self, caller: &Caller, params: Value) -> OpResult {
+        if *caller != Caller::Core {
+            return Err(OpError::new(
+                "not_permitted",
+                "only prefrontal-core may list live instances",
+            ));
+        }
+        if !params.as_object().is_some_and(|p| p.is_empty()) {
+            return Err(invalid_params("flow.instance.live takes an empty object"));
+        }
+        self.rt.live_instances().map_err(|e| self.core_error(e))
+    }
+
+    fn op_events_get(&self, caller: &Caller, params: Value) -> OpResult {
+        let invisible = || OpError::new("event_not_visible", "event not visible");
+        if *caller != Caller::Core {
+            return Err(invisible());
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Params {
+            event_key: String,
+            event_name: String,
+        }
+        let p: Params = serde_json::from_value(params).map_err(invalid_params)?;
+        let reply = self
+            .rt
+            .template_event_body(&p.event_key)
+            .map_err(|e| self.core_error(e))?
+            .ok_or_else(invisible)?;
+        let expected = reply["event_name"].as_str().expect("stored event name");
+        if expected != p.event_name {
+            return Err(OpError::new(
+                "event_name_mismatch",
+                format!(
+                    "event_name mismatch: expected {expected}, got {}",
+                    p.event_name
+                ),
+            ));
+        }
+        Ok(reply)
+    }
 
     fn template_error(&self, error: basal_core::templates::TemplateError) -> OpError {
         match error {

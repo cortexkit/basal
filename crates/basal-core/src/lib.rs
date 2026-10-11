@@ -65,6 +65,7 @@ pub mod runtime;
 pub mod schedule;
 pub mod schema;
 pub mod store;
+pub mod template_events;
 pub mod templates;
 pub mod tokens;
 

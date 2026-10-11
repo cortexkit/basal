@@ -508,3 +508,45 @@ fn admission_boundaries_are_not_manifest_input_fields() {
     m["template_grants"] = json!({"14":[]});
     assert!(matches!(parse(&m), Err(ManifestError::Decode(_))));
 }
+
+#[test]
+fn lifecycle_migration_preserves_existing_instances_and_adds_outbox() {
+    use basal_core::schema::MIGRATIONS;
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+    for migration in MIGRATIONS.iter().filter(|m| m.version < 27) {
+        conn.execute_batch(migration.statements).unwrap();
+    }
+    conn.execute_batch("INSERT INTO flows(flow_id,owner,package,approved_version,created_at) VALUES ('watch_1234567890abcdef','owner','watch',1,0); INSERT INTO template_instances(flow_id,params,grant_guards,expires_at,incarnation) VALUES ('watch_1234567890abcdef','{\"note\":\"kept\"}','[]',1000,3);").unwrap();
+    conn.execute_batch(
+        MIGRATIONS
+            .iter()
+            .find(|m| m.version == 27)
+            .unwrap()
+            .statements,
+    )
+    .unwrap();
+    let row: (String, i64, i64, i64, bool) = conn
+        .query_row(
+            "SELECT params,expires_at,incarnation,seq,expiry_notified FROM template_instances",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .unwrap();
+    assert_eq!(row, ("{\"note\":\"kept\"}".into(), 1000, 3, 0, false));
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM template_event_outbox", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert!(
+        conn.prepare("PRAGMA foreign_key_check")
+            .unwrap()
+            .query([])
+            .unwrap()
+            .next()
+            .unwrap()
+            .is_none()
+    );
+}

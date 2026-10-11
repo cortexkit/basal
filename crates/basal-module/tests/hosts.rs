@@ -129,6 +129,7 @@ fn every_core_refusal_retains_its_code() {
             vec![
                 "sink_principal_refused",
                 "sink_flow_not_installed",
+                "sink_instance_expired",
                 "sink_target_not_granted",
                 "sink_action_over_cap",
                 "sink_item_invalid",

@@ -331,7 +331,27 @@ ALTER TABLE installs ADD COLUMN revoked_reason TEXT;
         version: 26,
         statements: TEMPLATES,
     },
+    Migration {
+        version: 27,
+        statements: TEMPLATE_EVENTS,
+    },
 ];
+
+const TEMPLATE_EVENTS: &str = r#"
+ALTER TABLE template_instances ADD COLUMN seq INTEGER NOT NULL DEFAULT 0 CHECK (seq >= 0);
+ALTER TABLE template_instances ADD COLUMN expiry_notified INTEGER NOT NULL DEFAULT 0 CHECK (expiry_notified IN (0,1));
+CREATE TABLE template_event_outbox (
+    flow_id TEXT NOT NULL REFERENCES template_instances(flow_id),
+    seq INTEGER NOT NULL CHECK (seq > 0),
+    event_name TEXT NOT NULL CHECK (event_name IN ('flow_instance_created','flow_instance_extended','flow_instance_ended','flow_instance_expired')),
+    body TEXT NOT NULL CHECK (json_valid(body)),
+    published_at INTEGER,
+    retry_at INTEGER NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (flow_id, seq)
+);
+CREATE INDEX template_event_pending ON template_event_outbox(retry_at) WHERE published_at IS NULL;
+"#;
 
 // An install card is identified by the flow, version and core's attempt number.
 // Old local requests never received that number. Keep their approval history,

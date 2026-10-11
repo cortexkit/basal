@@ -18125,3 +18125,199 @@ only = true
 file = "crates/basal-core/src/admission.rs"
 old = "json_type(manifest,'$.trigger.schedule.at')='text'"
 new = "json_type(manifest,'$.trigger.schedule.at') IS NOT NULL /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "template-lifecycle-atomic-outbox"
+guards = "outbox insertion failure rolls back the instance change"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["lifecycle_change_rolls_back_if_outbox_insert_fails"]
+only = false
+file = "crates/basal-core/src/template_events.rs"
+old = '''tx.execute("INSERT INTO template_event_outbox(flow_id,seq,event_name,body,retry_at) VALUES (?1,?2,?3,?4,?5)", params![flow_id, body["seq"].as_i64(), event, body.to_string(), now])?;'''
+new = '''let _ = tx.execute("INSERT INTO template_event_outbox(flow_id,seq,event_name,body,retry_at) VALUES (?1,?2,?3,?4,?5)", params![flow_id, body["seq"].as_i64(), event, body.to_string(), now]); // NON-VACUITY BREAK'''
+
+[[control]]
+id = "template-lifecycle-sequence"
+guards = "sequence strictly increases across all lifecycle event kinds"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["lifecycle_sequence_changes_only_for_committed_changes_across_kinds"]
+only = false
+file = "crates/basal-core/src/template_events.rs"
+old = "UPDATE template_instances SET seq=seq+1 WHERE flow_id=?1"
+new = "UPDATE template_instances SET seq=1 WHERE flow_id=?1 /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "template-lifecycle-message-id"
+guards = "message ids are flow_id colon seq"
+test_file = "crates/basal-module/tests/module_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test module_events"
+expect_red = ["lifecycle::committed_outbox_survives_crash_before_publish"]
+only = false
+file = "crates/basal-core/src/template_events.rs"
+old = '''format!("{}:{}", self.flow_id, self.seq)'''
+new = '''format!("{}-{}", self.flow_id, self.seq) /* NON-VACUITY BREAK */'''
+
+[[control]]
+id = "template-lifecycle-expired-params"
+guards = "expired events carry canonical watch parameters"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["expiry_wakes_without_schedule_at_deadline_and_carries_canonical_params"]
+only = false
+file = "crates/basal-core/src/template_events.rs"
+old = '''if event == "flow_instance_expired" {'''
+new = '''if event == "never" { // NON-VACUITY BREAK'''
+
+[[control]]
+id = "template-lifecycle-expiry-deadline"
+guards = "expired fires at the deadline, not after it"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["expiry_wakes_without_schedule_at_deadline_and_carries_canonical_params"]
+only = false
+file = "crates/basal-core/src/templates.rs"
+old = "t.expires_at<=?1 AND t.expiry_notified=0"
+new = "t.expires_at<?1 AND t.expiry_notified=0 /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "template-lifecycle-ended-outbox"
+guards = "self-end and one-shot terminal transitions publish ended"
+test_file = "crates/basal-module/tests/module_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test module_events"
+expect_red = ["lifecycle::self_end_and_one_shot_publish_ended"]
+only = false
+file = "crates/basal-core/src/templates.rs"
+old = '''crate::template_events::enqueue(tx, flow_id, "flow_instance_ended", now)?;'''
+new = '''// NON-VACUITY BREAK: omit the ended outbox row.'''
+
+[[control]]
+id = "template-lifecycle-expiry-wake"
+guards = "idle engine wakes at expiry even without a schedule"
+test_file = "crates/basal-module/src/engine_tests.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["engine::lifecycle_tests::idle_engine_wakes_at_unscheduled_instance_expiry"]
+only = false
+file = "crates/basal-core/src/maintenance.rs"
+old = "Ok([schedule, deadline, retry, codemode, grant, expiry]"
+new = "let _ = expiry; Ok([schedule, deadline, retry, codemode, grant] /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "template-lifecycle-duplicate-receipt"
+guards = "duplicate receipts settle the durable pending event"
+test_file = "crates/basal-module/tests/module_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test module_events"
+expect_red = ["lifecycle::duplicate_publish_receipt_settles_outbox_after_ack_crash"]
+only = false
+file = "crates/basal-module/src/events.rs"
+old = "Ok(receipt) => {"
+new = '''Ok(receipt) => { if receipt.duplicate() { return Err("duplicate refused".into()); } // NON-VACUITY BREAK'''
+
+[[control]]
+id = "template-lifecycle-unavailable-retry"
+guards = "bus failures keep events unpublished for retry"
+test_file = "crates/basal-module/tests/module_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test module_events"
+expect_red = ["lifecycle::unavailable_bus_retries_with_durable_backoff_and_loses_nothing"]
+only = false
+file = "crates/basal-module/src/events.rs"
+old = "rt.template_event_retry(&event).map_err(|e| e.to_string())?;"
+new = "rt.template_event_published(&event).map_err(|e| e.to_string())?; // NON-VACUITY BREAK"
+
+[[control]]
+id = "template-lifecycle-live-auth"
+guards = "only prefrontal-core may take the live snapshot"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["live_snapshot_is_core_only_and_keeps_expired_not_ended_instances"]
+only = false
+file = "crates/basal-module/src/ops.rs"
+old = "fn op_live_instances(&self, caller: &Caller, params: Value) -> OpResult {\n        if *caller != Caller::Core {"
+new = "fn op_live_instances(&self, caller: &Caller, params: Value) -> OpResult {\n        if false && *caller != Caller::Core { // NON-VACUITY BREAK"
+
+[[control]]
+id = "template-lifecycle-live-ended"
+guards = "ended instances are absent from the live snapshot"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["live_snapshot_is_core_only_and_keeps_expired_not_ended_instances"]
+only = false
+file = "crates/basal-core/src/template_events.rs"
+old = "WHERE f.removed=0 ORDER BY t.flow_id"
+new = "WHERE 1=1 ORDER BY t.flow_id /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "template-lifecycle-body-auth"
+guards = "unknown keys and non-core callers cannot probe private event bodies"
+test_file = "crates/basal-module/tests/module_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test module_events"
+expect_red = ["lifecycle::body_lookup_hides_unknown_keys_and_non_core_callers_identically"]
+only = false
+file = "crates/basal-module/src/ops.rs"
+old = "if *caller != Caller::Core {\n            return Err(invisible());"
+new = "if false && *caller != Caller::Core { // NON-VACUITY BREAK\n            return Err(invisible());"
+
+[[control]]
+id = "template-lifecycle-body-retention"
+guards = "unpublished bodies survive retention until acknowledged"
+test_file = "crates/basal-module/tests/module_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test module_events"
+expect_red = ["lifecycle::body_retention_starts_at_ack_and_never_prunes_unpublished_rows"]
+only = false
+file = "crates/basal-core/src/template_events.rs"
+old = "WHERE published_at IS NOT NULL AND published_at<?1"
+new = "WHERE published_at IS NULL OR published_at<?1 /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "template-lifecycle-body-name-mismatch"
+guards = "core receives a typed refusal when the stored event name differs"
+test_file = "crates/basal-module/tests/module_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test module_events"
+expect_red = ["lifecycle::core_body_lookup_reports_stored_event_name_mismatch"]
+only = false
+file = "crates/basal-module/src/ops.rs"
+old = "if expected != p.event_name {"
+new = "if false && expected != p.event_name { // NON-VACUITY BREAK"

@@ -16,7 +16,7 @@ use basal_host::transport::Transport;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use cortexkit_bus_naming::AccountNames;
 use cortexkit_bus_nats::{ConnectConfig, NatsConnection};
-use cortexkit_bus_trait::ContentDigest;
+use cortexkit_bus_trait::{ContentDigest, Stream};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -344,6 +344,50 @@ pub async fn commit_batch(
     Ok(report)
 }
 
+/// Publish only immutable, committed outbox rows. Either a fresh receipt or a
+/// duplicate acknowledges the same body; errors keep the row for durable retry.
+pub async fn publish_outbox(
+    rt: &Runtime,
+    connection: &NatsConnection,
+    account: &str,
+) -> Result<usize, String> {
+    let names = AccountNames::derive(account).map_err(|e| e.to_string())?;
+    let stream = connection.stream(&names.streams().event);
+    let pending = rt
+        .pending_template_events(BATCH)
+        .map_err(|e| e.to_string())?;
+    let mut published = 0;
+    for event in pending {
+        let subject = format!("ck.{account}.event.basal.{}.v1", event.event_name);
+        let headers = BTreeMap::from([
+            ("flow_id".into(), event.flow_id.clone()),
+            ("agent".into(), event.agent_id.clone()),
+            ("seq".into(), event.seq.to_string()),
+        ]);
+        let receipt = stream
+            .publish(
+                &subject,
+                &event.event_key(),
+                ContentDigest::of_bytes(event.body.as_bytes()),
+                headers,
+            )
+            .await;
+        match receipt {
+            Ok(receipt) => {
+                tracing::debug!(target: "events", event_key=%event.event_key(), duplicate=receipt.duplicate(), "lifecycle event acknowledged");
+                rt.template_event_published(&event)
+                    .map_err(|e| e.to_string())?;
+                published += 1;
+            }
+            Err(error) => {
+                rt.template_event_retry(&event).map_err(|e| e.to_string())?;
+                return Err(error.to_string());
+            }
+        }
+    }
+    Ok(published)
+}
+
 async fn reader_loop(
     rt: Runtime,
     transport: Arc<dyn Transport>,
@@ -367,6 +411,7 @@ async fn reader_loop(
             while !stop.load(Ordering::Acquire) {
                 if now_ms() / 1000 >= credential.exp.saturating_sub(60) { break; }
                 if connection.client().connection_state() != async_nats::connection::State::Connected { return Err("event bus disconnected".into()); }
+                publish_outbox(&rt, &connection, &credential.acct).await?;
                 let start = Instant::now();
                 let messages = pull(&consumer).await?;
                 if messages.is_empty() { continue; }
