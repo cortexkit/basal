@@ -27,7 +27,7 @@ post-close call proves that ended scopes cannot dispatch to the probe.
 ## Offline verification
 
 - Rust/Cargo 1.99.0: formatting, package clippy with `-D warnings`, and all
-  47 basal-rig tests passed. Linux verification used `rusqlite/bundled` because
+  48 basal-rig tests passed. Linux verification used `rusqlite/bundled` because
   the remote host has no system SQLite linker library; no dependency pin changed.
 - Basal's `refused_open_preserves_core_code_and_detail_without_worker` passed,
   including unchanged propagation of core's `not_granted` refusal.

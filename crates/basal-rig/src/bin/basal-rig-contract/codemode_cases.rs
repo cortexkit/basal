@@ -9,6 +9,12 @@ fn request(code: &str, key: &str) -> Value {
     json!({"name":"codemode","call_key":key,"arguments":{"code":code}})
 }
 
+fn cpu_exhausted(reply: &Reply) -> bool {
+    reply.as_ref().is_ok_and(|v| {
+        v["status"] == "budget_exhausted:js_cpu" && v["error"]["code"] == "budget_exhausted:js_cpu"
+    })
+}
+
 async fn onboard(rig: &Rig, agent: &Agent, args: &Args, case: &mut Case) -> bool {
     let project = args.project_root.to_string_lossy();
     let params = json!({"profileID":"default","projectKey":project});
@@ -239,7 +245,7 @@ pub(super) async fn run(rig: &Rig, agent: &Agent, args: &Args, tag: &str) -> Vec
     cpu.record("tool_reply", evidence(&reply));
     cpu.check(
         "an infinite loop ends with the JavaScript CPU budget refusal",
-        code(&reply) == Some("budget_exhausted:js_cpu"),
+        cpu_exhausted(&reply),
         evidence(&reply),
     );
     closed(rig, agent, &key, &mut cpu).await;
@@ -262,6 +268,21 @@ pub(super) async fn run(rig: &Rig, agent: &Agent, args: &Args, tag: &str) -> Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cpu_budget_requires_matching_terminal_status_and_error() {
+        assert!(cpu_exhausted(&Ok(
+            json!({"status":"budget_exhausted:js_cpu","error":{"code":"budget_exhausted:js_cpu"}})
+        )));
+        for wrong in [
+            json!({"status":"completed","error":{"code":"budget_exhausted:js_cpu"}}),
+            json!({"status":"budget_exhausted:memory","error":{"code":"budget_exhausted:memory"}}),
+            json!({"status":"budget_exhausted:js_cpu"}),
+            json!({"status":"budget_exhausted:js_cpu","error":{"code":"budget_exhausted:wall"}}),
+        ] {
+            assert!(!cpu_exhausted(&Ok(wrong)));
+        }
+    }
 
     #[test]
     fn live_call_uses_the_protocol_tool_request_not_a_management_envelope() {
