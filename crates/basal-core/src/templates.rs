@@ -439,6 +439,44 @@ pub fn validate_values(manifest: &Manifest, values: &Value, now: i64) -> Result<
     Ok(Value::Object(validated))
 }
 
+/// Records path boundaries for validated values, shared by instances and previews.
+pub fn grant_guards(
+    manifest: &Manifest,
+    values: &Value,
+) -> Vec<basal_host::builtins::TemplateRoot> {
+    let granted: BTreeSet<_> = manifest
+        .roots()
+        .into_iter()
+        .filter_map(|(_, root)| root.strip_prefix("$params.").map(str::to_owned))
+        .collect();
+    declarations(manifest)
+        .expect("validated declarations")
+        .into_iter()
+        .filter_map(|(name, decl)| {
+            if !granted.contains(&name) {
+                return None;
+            }
+            let under = match decl {
+                Parameter::Path { under } | Parameter::Repo { under } => under,
+                _ => return None,
+            };
+            let root = values[&name].as_str().expect("validated path").to_owned();
+            let under = under
+                .iter()
+                .filter_map(|r| basal_host::builtins::expand_home(r))
+                .filter_map(|r| std::fs::canonicalize(r).ok())
+                .filter_map(|r| r.to_str().map(str::to_owned))
+                .collect();
+            Some(basal_host::builtins::TemplateRoot {
+                param: name,
+                existed: std::path::Path::new(&root).exists(),
+                root,
+                under,
+            })
+        })
+        .collect()
+}
+
 /// Substitutes only validated grant and timing slots, never arbitrary manifest
 /// text. The stored manifest and its hash remain the exact approved bytes.
 pub fn effective(manifest: &mut Manifest, values: &Value) {
@@ -537,37 +575,7 @@ impl crate::Runtime {
             .checked_add(lifetime)
             .ok_or_else(|| refused("invalid_params", json!({"field":"expires_in"})))?;
         let id = instance_id(template, agent, &values);
-        let granted: BTreeSet<_> = manifest
-            .roots()
-            .into_iter()
-            .filter_map(|(_, root)| root.strip_prefix("$params.").map(str::to_owned))
-            .collect();
-        let guards: Vec<_> = declarations(&manifest)
-            .expect("validated declarations")
-            .into_iter()
-            .filter_map(|(name, decl)| {
-                if !granted.contains(&name) {
-                    return None;
-                }
-                let under = match decl {
-                    Parameter::Path { under } | Parameter::Repo { under } => under,
-                    _ => return None,
-                };
-                let root = values[&name].as_str().expect("validated path").to_owned();
-                let under = under
-                    .iter()
-                    .filter_map(|r| basal_host::builtins::expand_home(r))
-                    .filter_map(|r| std::fs::canonicalize(r).ok())
-                    .filter_map(|r| r.to_str().map(str::to_owned))
-                    .collect();
-                Some(basal_host::builtins::TemplateRoot {
-                    param: name,
-                    existed: std::path::Path::new(&root).exists(),
-                    root,
-                    under,
-                })
-            })
-            .collect();
+        let guards = grant_guards(&manifest, &values);
         let grant_guards = serde_json::to_string(&guards).expect("guards serialize");
         let mut effective_manifest = manifest;
         effective(&mut effective_manifest, &values);

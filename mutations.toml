@@ -18321,3 +18321,160 @@ only = false
 file = "crates/basal-module/src/ops.rs"
 old = "if expected != p.event_name {"
 new = "if false && expected != p.event_name { // NON-VACUITY BREAK"
+
+[[control]]
+id = "template-dry-run-effective-grants"
+guards = "preview activation receives canonical params and only their effective grants"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["template_dry_run_uses_canonical_values_effective_grants_and_capture"]
+only = true
+file = "crates/basal-module/src/dryrun.rs"
+old = "UPDATE runs SET self_input=?2,params_input=?3,grant_guards=?4 WHERE run_id=?1"
+new = "UPDATE runs SET self_input=?2,params_input='null',grant_guards=?4 WHERE run_id=?1 /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "template-dry-run-missing-param"
+guards = "missing preview values surface the instantiate refusal"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["template_dry_run_param_missing_matches_instantiate"]
+only = true
+file = "crates/basal-core/src/templates.rs"
+old = 'parameter_refusal("param_missing", name, bound)'
+new = 'parameter_refusal("invalid_params", name, bound) /* NON-VACUITY BREAK */'
+
+[[control]]
+id = "template-dry-run-unknown-param"
+guards = "undeclared preview values surface the instantiate refusal"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["template_dry_run_param_unknown_matches_instantiate"]
+only = true
+file = "crates/basal-core/src/templates.rs"
+old = 'parameter_refusal("param_unknown", name, Value::Null)'
+new = 'parameter_refusal("invalid_params", name, Value::Null) /* NON-VACUITY BREAK */'
+
+[[control]]
+id = "template-dry-run-bounds"
+guards = "preview values obey exact integer and UTC millisecond timestamp bounds"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["template_dry_run_bounds_preserve_integer_and_timestamp_rules"]
+only = true
+file = "crates/basal-core/src/templates.rs"
+old = """        };
+        if !fits {"""
+new = """        };
+        if false && !fits { // NON-VACUITY BREAK"""
+
+[[control]]
+id = "template-dry-run-no-instance-or-quota"
+guards = "previews never create instances or consume quota, even when quota is full"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["template_dry_run_creates_no_rows_and_uses_no_quota"]
+only = true
+file = "crates/basal-module/src/ops.rs"
+old = "let guards = basal_core::templates::grant_guards(&manifest, &values);"
+new = """let guards = basal_core::templates::grant_guards(&manifest, &values);
+                    self.rt.instantiate(&manifest.id, manifest.version, agent_id, &values, "1h").expect("NON-VACUITY BREAK");"""
+
+[[control]]
+id = "template-dry-run-at-immediate"
+guards = "future one-shot previews run once immediately rather than replaying zero fires"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["template_dry_run_at_fires_once_immediately_with_canonical_timestamp"]
+only = true
+file = "crates/basal-module/src/dryrun.rs"
+old = "if request.template.is_some() && spec.at.is_some() {"
+new = "if false && request.template.is_some() && spec.at.is_some() { // NON-VACUITY BREAK"
+
+[[control]]
+id = "template-dry-run-instance-bound-values"
+guards = "instance previews use stored values rather than absent request params"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["instance_dry_run_uses_bound_values_owner_grants_and_approved_version"]
+only = true
+file = "crates/basal-module/src/ops.rs"
+old = "serde_json::from_str(values).map_err(invalid_params)?,"
+new = "p.params.clone(), // NON-VACUITY BREAK"
+
+[[control]]
+id = "template-dry-run-instance-fixed-values"
+guards = "instance previews refuse supplied params, including null and unchanged values"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["instance_dry_run_refuses_params_including_null"]
+only = true
+file = "crates/basal-module/src/ops.rs"
+old = "if instance.is_some() && params_present {"
+new = "if false && instance.is_some() && params_present { // NON-VACUITY BREAK"
+
+[[control]]
+id = "template-dry-run-values-required"
+guards = "template previews never guess values when params are absent"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["package_template_exclusion_and_ordinary_install_dry_run_refusals"]
+only = true
+file = "crates/basal-module/src/ops.rs"
+old = "if instance.is_none() && !params_present {"
+new = "if false && instance.is_none() && !params_present { // NON-VACUITY BREAK"
+
+[[control]]
+id = "template-dry-run-capture-only"
+guards = "template and instance previews reject requested live authority"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["template_dry_run_requires_agent_and_capture_instance_requires_owner_or_operator"]
+only = true
+file = "crates/basal-module/src/ops.rs"
+old = "if mode != Mode::Capture {"
+new = "if false && mode != Mode::Capture { // NON-VACUITY BREAK"
+
+[[control]]
+id = "template-dry-run-ordinary-params-refusal"
+guards = "ordinary-flow dry runs reject request params rather than ignoring them"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["template_dry_run_requires_agent_and_capture_instance_requires_owner_or_operator"]
+only = true
+file = "crates/basal-module/src/ops.rs"
+old = "if params_present {"
+new = "if false && params_present { // NON-VACUITY BREAK"

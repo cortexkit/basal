@@ -349,20 +349,17 @@ fn package_template_exclusion_and_ordinary_install_dry_run_refusals() {
         create(&f, OWNER, json!({}), 2, "1h").unwrap_err().code,
         "package_not_template"
     );
-    let created = create(&f, OWNER, json!({"note":"a"}), 1, "1h").unwrap();
-    for name in ["watch", id(&created)] {
-        assert_eq!(
-            f.module
-                .handle(
-                    &Caller::Operator,
-                    "flow.dry_run",
-                    json!({"flow_id":name,"version":1})
-                )
-                .unwrap_err()
-                .code,
-            "template_values_required"
-        );
-    }
+    assert_eq!(
+        f.module
+            .handle(
+                &Caller::Operator,
+                "flow.dry_run",
+                json!({"flow_id":"watch","version":1})
+            )
+            .unwrap_err()
+            .code,
+        "template_values_required"
+    );
 }
 
 #[test]
@@ -1294,4 +1291,378 @@ fn overdue_expiry_is_recorded_before_renewal_or_end_without_scheduler_tick() {
             .count()
             == 3
     );
+}
+
+fn dry(f: &Fixture, caller: &Caller, request: Value) -> Result<Value, basal_module::ops::OpError> {
+    f.module.handle(caller, "flow.dry_run", request)
+}
+
+#[test]
+fn template_dry_run_uses_canonical_values_effective_grants_and_capture() {
+    let f = setup("template-dry-effective", true);
+    let target = f.dir.join("target");
+    std::fs::write(&target, "watched").unwrap();
+    std::fs::write(f.dir.join("neighbor"), "private").unwrap();
+    let root = std::fs::canonicalize(&f.dir).unwrap();
+    let mut m = manifest();
+    m["params"]["path"] = json!({"type":"path","under":[root]});
+    m["fs"] = json!({"read":["$params.path"]});
+    register(
+        &f,
+        &m,
+        "const read = await fs.read(params.path).catch(e => e.data.code); let refusal; try { await fs.read(params.path.slice(0, -6) + 'neighbor'); } catch (e) { refusal = e.data.code; } const captured = await sink.digest(self.agent_id, {title: params.note}).catch(e => e.data.code); return {self, params, read, refusal, captured};",
+    );
+    let reply = dry(&f, &agent(OTHER), json!({"flow_id":"watch","params":{"note":"Grüße","path":f.dir.join("./target")},"trigger":{}})).unwrap();
+    assert_eq!(reply["version"], 1);
+    assert_eq!(reply["summary"]["mode"], "capture");
+    let run = &reply["summary"]["runs"][0];
+    assert_eq!(run["state"], "succeeded", "{reply:#}");
+    assert_eq!(
+        run["result"],
+        json!({"self":{"agent_id":OTHER},"params":{"note":"Grüße","path":root.join("target")},"read":"captured","refusal":"denied","captured":"captured"})
+    );
+    assert_eq!(f.mock.total_sends(), 0);
+    assert!(f.consent.undelivered().is_empty());
+    assert_eq!(
+        f.module.rt.get_package("watch", 1).unwrap()["manifest"],
+        m.to_string()
+    );
+}
+
+#[test]
+fn template_dry_run_param_missing_matches_instantiate() {
+    let f = setup("template-dry-missing", false);
+    register(&f, &manifest(), "return 1;");
+    let error = dry(&f, &agent(OWNER), json!({"flow_id":"watch","params":{}})).unwrap_err();
+    assert_eq!(error.code, "param_missing");
+    assert_eq!(
+        error.detail,
+        create(&f, OWNER, json!({}), 1, "1h").unwrap_err().detail
+    );
+}
+
+#[test]
+fn template_dry_run_param_unknown_matches_instantiate() {
+    let f = setup("template-dry-unknown", false);
+    register(&f, &manifest(), "return 1;");
+    let values = json!({"note":"a", "unknown":1});
+    let error = dry(
+        &f,
+        &agent(OWNER),
+        json!({"flow_id":"watch","params":values}),
+    )
+    .unwrap_err();
+    assert_eq!(error.code, "param_unknown");
+    assert_eq!(
+        error.detail,
+        create(&f, OWNER, values, 1, "1h").unwrap_err().detail
+    );
+}
+
+#[test]
+fn template_dry_run_bounds_preserve_integer_and_timestamp_rules() {
+    let f = setup("template-dry-bounds", false);
+    let mut m = manifest();
+    m["params"] =
+        json!({"at":{"type":"timestamp","max_ahead":"1h"}, "n":{"type":"integer","min":1,"max":2}});
+    register(&f, &m, "return params;");
+    for values in [
+        json!({"at":"2026-05-01T00:00:00Z","n":1.0}),
+        json!({"at":"2026-05-01T00:00:00Z","n":3}),
+        json!({"at":"2026-04-30T23:59:59Z","n":1}),
+        json!({"at":"2026-05-01T01:00:01Z","n":1}),
+        json!({"at":"2026-05-01T00:00:00.000000001Z","n":1}),
+    ] {
+        let error = dry(
+            &f,
+            &agent(OWNER),
+            json!({"flow_id":"watch","params":values}),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "param_out_of_bounds", "{values}");
+        let instantiated = create(&f, OWNER, values, 1, "1h").unwrap_err();
+        assert_eq!(error.detail, instantiated.detail);
+    }
+    assert_eq!(
+        dry(&f, &agent(OWNER), json!({"flow_id":"watch","params":null}))
+            .unwrap_err()
+            .code,
+        "invalid_params"
+    );
+}
+
+#[test]
+fn template_dry_run_creates_no_rows_and_uses_no_quota() {
+    let f = setup("template-dry-quota", true);
+    let mut m = manifest();
+    m["template"] = json!({"max_per_agent":1,"max_live":1,"max_lifetime":"1d"});
+    register(&f, &m, "return params.note;");
+    let snapshot = || {
+        f.module.rt.store().read(|c| {
+        Ok(c.query_row("SELECT (SELECT count(*) FROM flows),(SELECT count(*) FROM template_instances),(SELECT count(*) FROM runs),(SELECT count(*) FROM schedules),(SELECT count(*) FROM template_event_outbox)", [], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?)))?)
+    }).unwrap()
+    };
+    let before = snapshot();
+    let request = json!({"flow_id":"watch","params":{"note":"preview"},"trigger":{}});
+    let reply = dry(&f, &agent(OWNER), request.clone()).unwrap();
+    assert_eq!(reply["summary"]["runs"][0]["result"], "preview");
+    assert_eq!(snapshot(), before);
+    create(&f, OWNER, json!({"note":"real"}), 1, "1h").unwrap();
+    assert_eq!(
+        create(&f, OWNER, json!({"note":"another"}), 1, "1h")
+            .unwrap_err()
+            .code,
+        "instance_limit_reached"
+    );
+    let full = snapshot();
+    assert_eq!(
+        dry(&f, &agent(OWNER), request).unwrap()["summary"]["runs"][0]["result"],
+        "preview"
+    );
+    assert_eq!(snapshot(), full);
+    assert_eq!(
+        dry(
+            &f,
+            &agent(OTHER),
+            json!({"flow_id":"watch","params":{"note":"other"},"trigger":{}})
+        )
+        .unwrap()["summary"]["runs"][0]["result"],
+        "other"
+    );
+    assert_eq!(snapshot(), full);
+}
+
+#[test]
+fn template_dry_run_at_fires_once_immediately_with_canonical_timestamp() {
+    let f = setup("template-dry-at", true);
+    let mut m = manifest();
+    m["params"] = json!({"at":{"type":"timestamp","max_ahead":"1d"}});
+    m["trigger"] = json!({"schedule":{"at":"$params.at"}});
+    register(&f, &m, "return {params, trigger, now: Date.now()};");
+    let reply = dry(
+        &f,
+        &agent(OWNER),
+        json!({"flow_id":"watch","params":{"at":"2026-05-01T01:00:00.000+00:00"},"window":"1h"}),
+    )
+    .unwrap();
+    let runs = reply["summary"]["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 1, "{reply:#}");
+    assert_eq!(runs[0]["state"], "succeeded", "{reply:#}");
+    assert_eq!(runs[0]["result"]["params"]["at"], "2026-05-01T01:00:00Z");
+    assert_eq!(runs[0]["trigger"]["due"], "2026-05-01T00:00:00Z");
+    assert_eq!(runs[0]["trigger"]["dry_run"], true);
+    assert_eq!(runs[0]["result"]["now"], f.clock.now_ms());
+    assert_eq!(f.clock.now_ms(), 1_777_593_600_000);
+    let instance = create(&f, OWNER, json!({"at":"2026-05-01T01:00:00Z"}), 1, "1d").unwrap();
+    f.clock.advance(7_200_000);
+    let replay = dry(
+        &f,
+        &Caller::Operator,
+        json!({"flow_id":id(&instance),"window":"1h"}),
+    )
+    .unwrap();
+    assert_eq!(replay["summary"]["runs"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        replay["summary"]["runs"][0]["result"]["params"],
+        instance["params"]
+    );
+    assert_eq!(
+        replay["summary"]["runs"][0]["result"]["now"],
+        f.clock.now_ms()
+    );
+    assert_eq!(replay["summary"]["runs"][0]["trigger"]["dry_run"], true);
+    assert!(
+        !f.module
+            .rt
+            .store()
+            .read(|c| Ok(c.query_row(
+                "SELECT removed FROM flows WHERE flow_id=?1",
+                [id(&instance)],
+                |r| r.get::<_, bool>(0)
+            )?))
+            .unwrap()
+    );
+}
+
+#[test]
+fn instance_dry_run_uses_bound_values_owner_grants_and_approved_version() {
+    let f = setup("instance-dry-bound", true);
+    let target = f.dir.join("target");
+    std::fs::write(&target, "bound").unwrap();
+    let root = std::fs::canonicalize(&f.dir).unwrap();
+    let mut m = manifest();
+    m["params"]["path"] = json!({"type":"path","under":[root]});
+    m["fs"] = json!({"read":["$params.path"]});
+    register(
+        &f,
+        &m,
+        "return {self, params, read: await fs.read(params.path).catch(e => e.data.code)};",
+    );
+    let instance = create(&f, OWNER, json!({"note":"bound","path":target}), 1, "1h").unwrap();
+    m["version"] = json!(2);
+    register(&f, &m, "return 'newest';");
+    for caller in [agent(OWNER), Caller::Operator] {
+        let reply = dry(&f, &caller, json!({"flow_id":id(&instance),"trigger":{}})).unwrap();
+        assert_eq!(reply["version"], 1);
+        assert_eq!(
+            reply["summary"]["runs"][0]["result"],
+            json!({"self":{"agent_id":OWNER},"params":instance["params"],"read":"captured"}),
+            "{reply:#}"
+        );
+    }
+    assert_eq!(
+        dry(
+            &f,
+            &agent(OWNER),
+            json!({"flow_id":"watch","params":instance["params"],"trigger":{}})
+        )
+        .unwrap()["version"],
+        2
+    );
+    assert_eq!(
+        dry(
+            &f,
+            &agent(OWNER),
+            json!({"flow_id":id(&instance),"version":2,"trigger":{}})
+        )
+        .unwrap()["summary"]["runs"][0]["result"],
+        "newest"
+    );
+    assert_eq!(
+        f.module
+            .rt
+            .flow(id(&instance))
+            .unwrap()
+            .unwrap()
+            .approved_version,
+        Some(1)
+    );
+}
+
+#[test]
+fn instance_dry_run_refuses_params_including_null() {
+    let f = setup("instance-dry-params", false);
+    register(&f, &manifest(), "return params;");
+    let instance = create(&f, OWNER, json!({"note":"fixed"}), 1, "1h").unwrap();
+    for values in [
+        json!({"note":"fixed"}),
+        json!({"note":"replacement"}),
+        Value::Null,
+    ] {
+        assert_eq!(
+            dry(
+                &f,
+                &agent(OWNER),
+                json!({"flow_id":id(&instance),"params":values})
+            )
+            .unwrap_err()
+            .code,
+            "params_not_allowed"
+        );
+    }
+}
+
+#[test]
+fn template_dry_run_requires_agent_and_capture_instance_requires_owner_or_operator() {
+    let f = setup("template-dry-authority", false);
+    register(&f, &manifest(), "return params;");
+    let instance = create(&f, OWNER, json!({"note":"fixed"}), 1, "1h").unwrap();
+    assert_eq!(
+        dry(
+            &f,
+            &Caller::Operator,
+            json!({"flow_id":"watch","params":{"note":"a"}})
+        )
+        .unwrap_err()
+        .code,
+        "not_permitted"
+    );
+    assert_eq!(
+        dry(&f, &agent(OTHER), json!({"flow_id":id(&instance)}))
+            .unwrap_err()
+            .code,
+        "not_permitted"
+    );
+    for (name, caller, params) in [
+        ("watch", agent(OWNER), json!({"note":"a"})),
+        (id(&instance), Caller::Operator, Value::Null),
+    ] {
+        let mut request = json!({"flow_id":name,"mode":"live"});
+        if name == "watch" {
+            request["params"] = params;
+        }
+        assert_eq!(dry(&f, &caller, request).unwrap_err().code, "not_permitted");
+    }
+    let mut ordinary = events_manifest("ordinary");
+    ordinary["sinks"][0]["agent"] = json!(OWNER);
+    f.module
+        .handle(
+            &agent(OWNER),
+            "flow.install",
+            json!({"script":"return 1;","manifest":ordinary.to_string()}),
+        )
+        .unwrap();
+    for values in [json!({}), Value::Null] {
+        assert_eq!(
+            dry(
+                &f,
+                &Caller::Operator,
+                json!({"flow_id":"ordinary","params":values})
+            )
+            .unwrap_err()
+            .code,
+            "params_require_package"
+        );
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn template_dry_run_path_and_repo_canonicalization_and_bounds_match_instances() {
+    use std::os::unix::fs::symlink;
+    let f = setup("template-dry-path-repo", true);
+    let inside = f.dir.join("inside");
+    let outside = f.dir.join("outside");
+    std::fs::create_dir(&inside).unwrap();
+    std::fs::create_dir(&outside).unwrap();
+    let repo = inside.join("repo");
+    std::fs::create_dir_all(repo.join(".git/objects")).unwrap();
+    std::fs::create_dir_all(repo.join(".git/refs")).unwrap();
+    std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    symlink(&repo, inside.join("alias")).unwrap();
+    symlink(&outside, inside.join("escape")).unwrap();
+    let mut m = manifest();
+    m["params"] =
+        json!({"repo":{"type":"repo","under":[inside]},"path":{"type":"path","under":[inside]}});
+    m["git"] = json!({"read":["$params.repo"]});
+    m["fs"] = json!({"read":["$params.path"]});
+    register(&f, &m, "return params;");
+    let values = json!({"repo":inside.join("alias"),"path":inside.join("alias/future")});
+    let reply = dry(
+        &f,
+        &agent(OWNER),
+        json!({"flow_id":"watch","params":values,"trigger":{}}),
+    )
+    .unwrap();
+    let canonical = std::fs::canonicalize(repo).unwrap();
+    assert_eq!(
+        reply["summary"]["runs"][0]["result"],
+        json!({"repo":canonical,"path":canonical.join("future")})
+    );
+    for values in [
+        json!({"repo":inside,"path":canonical}),
+        json!({"repo":canonical,"path":inside.join("escape/future")}),
+    ] {
+        let error = dry(
+            &f,
+            &agent(OWNER),
+            json!({"flow_id":"watch","params":values}),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "param_out_of_bounds");
+        assert_eq!(
+            error.detail,
+            create(&f, OWNER, values, 1, "1h").unwrap_err().detail
+        );
+    }
 }

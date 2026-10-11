@@ -778,6 +778,8 @@ impl Module {
             version: Option<u32>,
             #[serde(default)]
             mode: Option<String>,
+            #[serde(default)]
+            params: Value,
             /// A synthetic trigger payload; without it a schedule flow
             /// replays its window.
             #[serde(default)]
@@ -786,15 +788,113 @@ impl Module {
             #[serde(default)]
             window: Option<String>,
         }
+        let params_present = params.get("params").is_some();
         let p: Params = serde_json::from_value(params).map_err(invalid_params)?;
         let mode = match p.mode.as_deref() {
             None | Some("capture") => Mode::Capture,
             Some("live") => Mode::Live,
             Some(other) => return Err(invalid_params(format!("unknown mode {other:?}"))),
         };
-        // Authorization: capture for the operator and the flow's owner; live
-        // for the operator only, because it runs ops with basal's authority.
+        let instance = self.rt.store().read(|conn| {
+            Ok(conn.query_row(
+                "SELECT f.package,f.owner,f.approved_version,t.params,t.grant_guards FROM template_instances t JOIN flows f USING(flow_id) WHERE flow_id=?1",
+                [&p.flow_id],
+                |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,u32>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?)),
+            ).optional()?)
+        }).map_err(|e|self.core_error(e))?;
+        if instance.is_some() && params_present {
+            return Err(OpError::new(
+                "params_not_allowed",
+                "an instance's parameters are fixed",
+            ));
+        }
+        let package = instance
+            .as_ref()
+            .map_or(p.flow_id.as_str(), |i| i.0.as_str());
+        let package_version = self.rt.store().read(|conn| {
+            let version = p.version.or_else(||instance.as_ref().map(|i|i.2));
+            Ok(conn.query_row(
+                "SELECT version,script,manifest FROM package_versions WHERE package=?1 AND (?2 IS NULL OR version=?2) ORDER BY version DESC LIMIT 1",
+                rusqlite::params![package,version],
+                |r| Ok((r.get::<_,u32>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?)),
+            ).optional()?)
+        }).map_err(|e|self.core_error(e))?;
+        let template_manifest = package_version
+            .as_ref()
+            .map(|(_, _, text)| {
+                basal_core::Manifest::parse(text)
+                    .map_err(|e| OpError::new("internal", e.to_string()))
+            })
+            .transpose()?
+            .filter(|m| m.params.is_some());
+        let template = if let Some(manifest) = template_manifest {
+            if instance.is_none() && !params_present {
+                return Err(OpError::new(
+                    "template_values_required",
+                    "template dry runs require params",
+                ));
+            }
+            if mode != Mode::Capture {
+                return Err(OpError::not_permitted(
+                    "template flow.dry_run in live mode",
+                    caller,
+                ));
+            }
+            let (agent_id, values, guards) = match &instance {
+                Some((_, owner, _, values, guards)) => {
+                    if !matches!(caller, Caller::Operator)
+                        && !matches!(caller,Caller::Agent {agent_id,..} if agent_id==owner)
+                    {
+                        return Err(OpError::not_permitted("flow.dry_run", caller));
+                    }
+                    (
+                        owner.clone(),
+                        serde_json::from_str(values).map_err(invalid_params)?,
+                        serde_json::from_str(guards).map_err(invalid_params)?,
+                    )
+                }
+                None => {
+                    let Caller::Agent { agent_id, .. } = caller else {
+                        return Err(OpError::not_permitted("template flow.dry_run", caller));
+                    };
+                    if self.rt.catalog().agent_id(agent_id).as_deref() != Some(agent_id) {
+                        return Err(OpError::new("agent_unknown", "caller is not a known agent"));
+                    }
+                    let values = basal_core::templates::validate_values(
+                        &manifest,
+                        &p.params,
+                        self.rt.config().clock.now_ms(),
+                    )
+                    .map_err(|e| self.template_error(e.into()))?;
+                    let guards = basal_core::templates::grant_guards(&manifest, &values);
+                    (agent_id.clone(), values, guards)
+                }
+            };
+            Some(crate::dryrun::TemplateDryRun {
+                manifest: package_version
+                    .as_ref()
+                    .expect("selected template")
+                    .2
+                    .clone(),
+                params: values,
+                guards,
+                agent_id,
+            })
+        } else {
+            if params_present {
+                return Err(OpError::new(
+                    "params_require_package",
+                    "ordinary dry runs cannot carry params",
+                )
+                .with_detail(Some(json!({"field":"params"}))));
+            }
+            None
+        };
+        // Template callers were checked above. For ordinary flows, capture is
+        // for the operator and owner; live is operator-only because it runs ops
+        // with basal's authority.
         match (caller, mode) {
+            _ if template.is_some() => {}
             (Caller::Operator, _) => {}
             (
                 Caller::Agent {
@@ -809,16 +909,18 @@ impl Module {
                 ));
             }
         }
-        let is_template = self.rt.store().read(|conn| {
-            Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM template_instances WHERE flow_id=?1) OR EXISTS(SELECT 1 FROM package_versions WHERE package=?1 AND (?2 IS NULL OR version=?2) AND json_type(manifest,'$.params')='object')", rusqlite::params![p.flow_id,p.version], |row|row.get::<_,bool>(0))?)
-        }).map_err(|e|self.core_error(e))?;
-        if is_template {
-            return Err(OpError::new(
-                "template_values_required",
-                "template dry runs require an explicit parameter-aware contract",
-            ));
-        }
-        let version = self.pick_version(&p.flow_id, p.version)?;
+        let version = if let Some(template) = &template {
+            let (version, script, manifest) = package_version.expect("selected template");
+            InstalledVersion {
+                version,
+                script,
+                manifest,
+                author: template.agent_id.clone(),
+                loop_override: false,
+            }
+        } else {
+            self.pick_version(&p.flow_id, p.version)?
+        };
         let trigger = match p.trigger {
             Some(payload) => DryTrigger::Synthetic(payload),
             None => DryTrigger::Schedule {
@@ -834,22 +936,24 @@ impl Module {
                     .transpose()?,
             },
         };
-        let summary = self
-            .dry
-            .run(&DryRunRequest {
-                script: version.script,
-                manifest: version.manifest,
-                author: version.author,
-                loop_override: version.loop_override,
-                mode,
-                trigger,
-                now_ms: self.rt.config().clock.now_ms(),
-            })
-            .map_err(|e| match e {
-                DryRunError::InstallRefused(e) => self.install_error(e),
-                DryRunError::Invalid(m) => invalid_params(m),
-                DryRunError::Failed(m) => OpError::new("dry_run_failed", m),
-            })?;
+        let request = DryRunRequest {
+            script: version.script,
+            manifest: version.manifest,
+            author: version.author,
+            loop_override: version.loop_override,
+            mode,
+            trigger,
+            now_ms: self.rt.config().clock.now_ms(),
+        };
+        let summary = match &template {
+            Some(template) => self.dry.run_template(&request, template),
+            None => self.dry.run(&request),
+        }
+        .map_err(|e| match e {
+            DryRunError::InstallRefused(e) => self.install_error(e),
+            DryRunError::Invalid(m) => invalid_params(m),
+            DryRunError::Failed(m) => OpError::new("dry_run_failed", m),
+        })?;
         Ok(json!({ "flow_id": p.flow_id, "version": version.version, "summary": summary }))
     }
 

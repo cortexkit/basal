@@ -62,11 +62,17 @@ The activation gate still accepts only a matching `active` hash. `pending`, `dec
 
 Params:
 ```json
-{"flow_id":"string","version?":"integer|null","mode?":"capture|live|null","trigger?":"any","window?":"string|null"}
+{"flow_id":"string","version?":"integer|null","params?":"object","mode?":"capture|live|null","trigger?":"any","window?":"string|null"}
 ```
 Absent mode means capture. Absent version selects the approved version, otherwise the newest installed version. Absent trigger replays schedule fires over the time window ending now; `window` is its duration, such as `6h`. Capture is available to the operator and owning agent; live only to the operator. Local callers are refused.
 
-A dry run naming a registered template version or template instance returns `template_values_required`: parameter-aware dry runs are not implemented, and basal never invents sample values. An ordinary flow's stored manifest carrying `params` or `template` returns `params_require_package`, naming the field.
+A registered template accepts `params`, validated and canonicalized exactly as `flow.instantiate` (`param_missing`, `param_unknown`, `param_out_of_bounds`, with the same detail). Omitting values returns `template_values_required`. Only an agent may dry-run a template package: activation `self` is its route-stamped identity and activation `params` contains the canonical values. Operators have no agent identity and cannot use this package-template request; no `agent_id` override is accepted. The template name defaults to the newest registered version.
+
+A template instance may be dry-run by its owning agent or the operator, without `params`. It uses its bound values and recorded grant boundaries, with `self` bound to its owner and version defaulting to its approved version. Supplying `params` on an instance, including `null` or unchanged values, returns `params_not_allowed`. Both template and instance dry runs are capture-only; `mode: "live"` returns `not_permitted`. No instance is created and no instance quota is checked or consumed.
+
+The effective manifest substitutes grant and timing placeholders before replaying the supplied `window` or synthetic `trigger`. With no synthetic trigger, a one-shot `at` template or instance runs once immediately, with `trigger.dry_run: true` and `trigger.due` set to now, rather than waiting for the timestamp. Supplied timestamps still must satisfy the instantiate rules; an existing instance's already-bound timestamp is not revalidated against now.
+
+An ordinary-flow request carrying `params` returns `params_require_package`, with `{"field":"params"}`. The ordinary dry runner also refuses stored manifests carrying `params` or `template` with `params_require_package`, naming the field.
 
 Dry run validates the stored manifest under its author with the same self-only rule and `foreign_agent_target` refusal as install, including versions recorded before the rule was enforced.
 
@@ -88,7 +94,7 @@ The summary is the dry-run trace, including calls and sink writes. Its journal u
 ```json
 {"kind":"schedule","requested":{"from":"string","to":"string"},"covered":{"from":"string","to":"string"},"due_times_in_window":"integer","due_times_is_lower_bound":"boolean","replayed":"integer","capped":"boolean"}
 ```
-A schedule's `covered` may be null when no fires are replayed. `partial` marks traces affected by simulated calls: capture rejects external reads and mutations rather than executing them, so subsequent script branches may differ from a live run. It does not imply live effects.
+A one-shot template replay has window shape `{"kind":"at","at":"string","replayed":1,"dry_run":true}`. A schedule's `covered` may be null when no fires are replayed. `partial` marks traces affected by simulated calls: capture rejects external reads and mutations rather than executing them, so subsequent script branches may differ from a live run. It does not imply live effects.
 
 ## flow.audience
 
