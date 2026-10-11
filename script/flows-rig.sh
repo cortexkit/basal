@@ -5,12 +5,12 @@
 # ~/.local/share/cortexkit/ckdev-flows/ and its own ckdev-* binaries, every
 # one built here from a named revision. It runs the credentials vault,
 # Fusiform, Broca, entorhinal, cingulate, prefrontal-core, prefrontal-routing, ck-basal and a
-# rig-only callosum stub that answers consent cards as the operator. It never
+# rig-only callosum stub and run-scope probe. It never
 # reads, writes or starts anything belonging to the production daemon or to
 # another rig.
 #
 # Usage:
-#   script/flows-rig.sh build --prefrontal-rev <rev> [--subc-rev <rev>]
+#   script/flows-rig.sh build [--prefrontal-rev <rev>] [--subc-rev <rev>]
 #                             [--broca-rev <rev>] [--credentials-rev <rev>]
 #                             [--commons-rev <rev>] [--entorhinal-rev <rev>]
 #                             [--fusiform-rev <rev>] [--cingulate-rev <rev>]
@@ -29,7 +29,8 @@
 #
 # Subcommands:
 #   build     clone each repository at the named revision and build it.
-#             --prefrontal-rev is required; cingulate defaults to the pinned
+#             prefrontal defaults to the pinned codemode run-scope build;
+#             cingulate defaults to the pinned
 #             consent/v1 build below, and other repositories default to HEAD. basal is always built from this checkout's
 #             HEAD, without uncommitted changes. The source checkouts are
 #             only read. A build that changes a tracked file fails, except
@@ -63,6 +64,11 @@
 #             prefrontal-core, with contract.json and contract.log beside
 #             the manifest. It fails if any check failed.
 #             Without --models, report the model cases as not run by name.
+#             Codemode always runs, using a real core-owned agent scope and a
+#             rig-only agent-run-scopes/v1 probe. It checks identity, catalog,
+#             console output, return value, grant refusal, CPU exhaustion and
+#             scope closure. It does not test AFT's allow/ask/deny round trip;
+#             that needs AFT itself to declare agent-run-scopes/v1.
 #             --models requires that credential and agent-owned flows through
 #             core's relay (prefrontal 73c66ff1f or later): minimal call first,
 #             routing/journal, result/usage settlement, classify, token-cap
@@ -137,7 +143,7 @@
 # cards still use core's legacy elicitation owner API at this revision.
 # Cingulate's default pins the consent API being tested before deployment;
 # after deployment, pass the placed revision explicitly to test the same bytes.
-#   script/flows-rig.sh build --prefrontal-rev 058842e562de42be3af8aac44392151d3141c8fe --cingulate-rev bd609a5fbdba12395f3bfe7a97a6bbdbee8b0fbc --sibling-lock claustrum
+#   script/flows-rig.sh build --prefrontal-rev 16cd2fa48785af6766bece101a1446f35d85c942 --cingulate-rev bd609a5fbdba12395f3bfe7a97a6bbdbee8b0fbc --sibling-lock claustrum
 set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
@@ -440,6 +446,7 @@ prefrontal-routing	prefrontal	ck-prefrontal-routing	ckdev-prefrontal-routing
 basal	basal	ck-basal	ckdev-basal
 basal-worker	basal	ck-basal-worker	ckdev-basal-worker
 callosum	basal	ck-callosum-stub	ckdev-callosum
+runscope-probe	basal	ckdev-runscope-probe	ckdev-runscope-probe
 EOF
 }
 
@@ -455,6 +462,7 @@ prefrontal-core	ckdev-prefrontal-core
 prefrontal-routing	ckdev-prefrontal-routing
 basal	ckdev-basal
 callosum	ckdev-callosum
+ckdev-runscope-probe	ckdev-runscope-probe
 EOF
 }
 
@@ -475,7 +483,7 @@ daemon_pid() {
 # ---------------------------------------------------------------- build
 
 cmd_build() {
-  prefrontal_rev=""
+  prefrontal_rev=16cd2fa48785af6766bece101a1446f35d85c942
   subc_rev=HEAD
   broca_rev=HEAD
   credentials_rev=HEAD
@@ -498,10 +506,8 @@ cmd_build() {
       *) usage ;;
     esac
   done
-  # prefrontal has no default: every rig result must name the core and
-  # routing it tested, and a silent HEAD would name whatever happened to be
-  # checked out.
-  [ -n "$prefrontal_rev" ] || die "build needs --prefrontal-rev <rev>; it has no default"
+  # Pin core's codemode run-scope API instead of following a moving HEAD.
+  # Record overrides in the manifest so results identify the revision tested.
   if [ -n "$(git -C "$ROOT" status --porcelain --untracked-files=no)" ]; then
     say "note: $ROOT has uncommitted changes; the rig builds its HEAD commit only"
   fi
@@ -555,7 +561,7 @@ EOF_REPOS
   basal_env="CK_BUILD_GIT_SHA=$basal_sha CK_BUILD_GIT_DIRTY=false"
   cargo_build basal "$basal_env" -p basal-module --features rig-kill-hook --bin ck-basal
   cargo_build basal "$basal_env" -p basal-worker --bin ck-basal-worker
-  cargo_build basal "" -p basal-rig --bin ck-callosum-stub --bin basal-rig-contract
+  cargo_build basal "" -p basal-rig --bin ck-callosum-stub --bin ckdev-runscope-probe --bin basal-rig-contract
 
   # A build that rewrote a tracked file (a Cargo.lock refreshed against a
   # sibling at another revision) did not build exactly the named commit.
@@ -896,6 +902,13 @@ cmd_config() (
       "env": {},
       "enabled": true,
       "reserved": true
+    },
+    // Rig only: advertises agent-run-scopes/v1 and echoes daemon-stamped identity.
+    "ckdev-runscope-probe": {
+      "program": "$BIN/ckdev-runscope-probe",
+      "args": [],
+      "env": {},
+      "enabled": true
     }
   }
 }

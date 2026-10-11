@@ -44,6 +44,8 @@ use basal_rig::stores::{
 use serde_json::{Map, Value, json};
 use subc_protocol::BindIdentity;
 
+#[path = "basal-rig-contract/codemode_cases.rs"]
+mod codemode_cases;
 #[path = "basal-rig-contract/ownership.rs"]
 mod ownership;
 #[path = "basal-rig-contract/package_cases.rs"]
@@ -1972,6 +1974,7 @@ async fn suite(
         "agent".into(),
         json!({ "name": agent.name, "agent_id": agent.id, "session": agent.session }),
     );
+    cases.extend(codemode_cases::run(&rig, &agent, &tag).await);
 
     let sinks_flow = flows::sinks(&format!("rig-sinks-{tag}"), &agent.name, "NoSuchAgent");
     let scope_flow = flows::writer(

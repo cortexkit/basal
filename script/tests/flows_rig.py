@@ -13,6 +13,37 @@ HELPERS = SCRIPT.read_text().split("# ------------------------------------------
 
 
 class RigChecks(unittest.TestCase):
+    def test_run_scope_probe_is_built_signed_and_configured_only_on_the_rig(self):
+        with tempfile.TemporaryDirectory() as home:
+            result = self.run_shell('''guard_all_paths
+DRY=1
+binaries
+modules
+place_one runscope-probe /built/ckdev-runscope-probe "$BIN/ckdev-runscope-probe"
+cmd_config
+''', home)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("runscope-probe\tbasal\tckdev-runscope-probe\tckdev-runscope-probe", result.stdout)
+            self.assertIn("ckdev-runscope-probe\tckdev-runscope-probe", result.stdout)
+            self.assertIn('"ckdev-runscope-probe": {', result.stdout)
+            self.assertIn('/bin/ckdev-runscope-probe"', result.stdout)
+            self.assertIn("sign_hardened", result.stdout)
+            self.assertIn("ckdev-runscope-probe   (script/signing.sh)", result.stdout)
+
+    def test_build_defaults_to_pinned_run_scope_core_and_builds_probe(self):
+        with tempfile.TemporaryDirectory() as home:
+            result = self.run_shell('''guard_all_paths
+DRY=1
+repos() { printf 'basal\t%s\nprefrontal\t%s\n' "$HOME" "$HOME"; }
+git() { printf '%040d\n' 0; }
+clone_at() { printf 'clone %s %s\n' "$1" "$3"; }
+cargo_build() { printf 'build %s\n' "$*"; }
+cmd_build
+''', home)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("prefrontal: 16cd2fa48785af6766bece101a1446f35d85c942", result.stdout)
+            self.assertIn("--bin ck-callosum-stub --bin ckdev-runscope-probe --bin basal-rig-contract", result.stdout)
+
     def test_build_preserves_repository_paths_with_spaces(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp).resolve()

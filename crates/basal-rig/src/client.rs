@@ -1,6 +1,6 @@
 //! Management calls over the rig's daemon.
 //!
-//! Every call is a management request `{method, params}` on a route the
+//! Management calls send `{method, params}` on a route the
 //! daemon opens and stamps. The caller is whoever the daemon says opened the
 //! route: this process is a plain local client, so its routes are `direct`;
 //! calls relayed through the callosum stub arrive as `reserved:callosum`.
@@ -8,7 +8,9 @@
 //! The suite acts as its test agent the way a head does in production: it
 //! calls core's `flow.relay` on a route bound with the head's harness and
 //! session, and core sends the call on to basal on a route the daemon stamps
-//! with the head's scope. The suite never opens a scoped route itself.
+//! with the head's scope. Codemode instead uses core's `session.scope_identity`
+//! query and opens a tool route under that returned agent selector, as the
+//! OpenCode host does. The suite never registers scopes or constructs stamps.
 
 use std::path::Path;
 use std::time::Duration;
@@ -161,6 +163,45 @@ impl Client {
                 self.options(),
             )
             .await;
+        decode(reply)
+    }
+
+    /// Call a tool using the scope selector core returned for a host session.
+    /// The daemon allows a plain local client (`Direct`) to open agent-scoped
+    /// routes. It refuses that client on run-scoped routes, which only basal
+    /// may carry; a closed run must be refused before that carrier check.
+    pub async fn tool_scoped(
+        &self,
+        module: &str,
+        identity: &BindIdentity,
+        selector: Value,
+        request: Value,
+    ) -> Reply {
+        let selector = serde_json::from_value(selector).map_err(|e| Refusal {
+            code: "invalid_selector".into(),
+            message: e.to_string(),
+        })?;
+        let route = self
+            .consumer
+            .open_route_scoped(
+                RouteTarget::ToolProvider {
+                    module_id: module.into(),
+                },
+                identity.clone(),
+                selector,
+                self.relay_options(),
+            )
+            .await
+            .map_err(refusal)?;
+        let reply = self
+            .consumer
+            .request(
+                &route,
+                serde_json::to_vec(&request).unwrap(),
+                self.relay_options(),
+            )
+            .await;
+        let _ = self.consumer.close_handle(&route, Default::default()).await;
         decode(reply)
     }
 
