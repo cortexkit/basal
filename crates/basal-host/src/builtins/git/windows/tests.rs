@@ -670,16 +670,31 @@ fn repository(tree: &Tree) -> PathBuf {
     );
     repo
 }
-fn plain_git(repo: &Path) -> Command {
+fn plain_git(repo: &Path) -> HardenedCommand {
+    let isolation = Isolation::new().expect("owned empty global configuration");
     let mut command = Command::new(
         resolve_git().expect("native git.exe is required for Windows confinement tests"),
     );
+    // Positive controls omit the hardened arguments, not fixture isolation.
+    // A real empty file works across Git builds; NUL is a device, not a config.
+    command.env_clear();
+    for key in ["PATH", "HOME", "SystemRoot", "USERPROFILE"] {
+        if let Some(value) = std::env::var_os(key) {
+            command.env(key, value);
+        }
+    }
     command
         .arg("-C")
         .arg(repo)
         .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", "NUL");
-    command
+        .env(
+            "GIT_CONFIG_GLOBAL",
+            isolation.directory.join("global.config"),
+        );
+    HardenedCommand {
+        command,
+        _isolation: isolation,
+    }
 }
 fn setup_git(repo: &Path, args: &[&str]) {
     let output = plain_git(repo).args(args).output().unwrap();

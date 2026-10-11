@@ -74,7 +74,7 @@ jobs:
         if: matrix.platform != 'linux-arm64'
         id: mutate-cache
         with:
-          path: ~/.cargo/bin/ckdev-mutate
+          path: ~/.cargo/bin/ckdev-mutate${{ runner.os == 'Windows' && '.exe' || '' }}
           key: ${{ runner.os }}-${{ runner.arch }}-ckdev-mutate-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-${{ env.CK_MUTATE_REV }}
       - name: Install pinned mutation runner
         if: matrix.platform != 'linux-arm64' && steps.mutate-cache.outputs.cache-hit != 'true'
@@ -177,9 +177,12 @@ jobs:
   mutations-pr:
     if: github.event_name == 'pull_request'
     needs: checks
+    defaults:
+      run:
+        shell: bash
     # Replays the mutation controls whose files this pull request changes.
     # Every catalogue row is marked for exactly one OS, so running the replay
-    # on both hosts covers every changed control without running any twice.
+    # on all three platforms covers every changed control without running any twice.
     strategy:
       fail-fast: false
       matrix:
@@ -188,11 +191,17 @@ jobs:
             os: ubuntu-latest
           - platform: macos
             os: macos-latest
+          - platform: windows
+            os: windows-2022
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        if: matrix.platform == 'windows'
+        with:
+          python-version: '3.12'
       - name: Install stable Rust
         run: |
           rustup toolchain install stable --profile minimal
@@ -216,7 +225,7 @@ jobs:
       - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         id: mutate-cache
         with:
-          path: ~/.cargo/bin/ckdev-mutate
+          path: ~/.cargo/bin/ckdev-mutate${{ runner.os == 'Windows' && '.exe' || '' }}
           key: ${{ runner.os }}-${{ runner.arch }}-ckdev-mutate-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-${{ env.CK_MUTATE_REV }}
       - name: Install pinned mutation runner
         if: steps.mutate-cache.outputs.cache-hit != 'true'
@@ -226,10 +235,18 @@ jobs:
           mkdir -p target/mutations
           rm -f target/mutations/diff.json
           env -u BASAL_WORKER_BIN -u BASAL_CUT_EXHAUSTIVE ckdev-mutate run --diff origin/main --report target/mutations/diff.json
+      - name: Capture exact Windows mutation application and restoration witnesses
+        if: matrix.platform == 'windows'
+        run: python script/witness-mutations.py --platform windows --output "$RUNNER_TEMP/windows-mutation-evidence"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always() && matrix.platform == 'windows'
+        with:
+          name: windows-mutation-evidence-pr
+          path: ${{ runner.temp }}/windows-mutation-evidence
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
-          name: mutations-pr-${{ matrix.platform }}
+          name: ${{ matrix.platform == 'windows' && 'mutations-windows-1' || format('mutations-pr-{0}', matrix.platform) }}
           path: target/mutations/diff.json
 
   # On a push to main: the full catalogue, each row against its own target.
@@ -237,6 +254,9 @@ jobs:
   mutations-main:
     if: always() && ((github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.checks.result == 'success') || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && needs.checks.result == 'success'))
     needs: checks
+    defaults:
+      run:
+        shell: bash
     # Scheduled breadth runs deliberately skip the redundant checks job.
     # A push still requires checks to succeed before replaying mutations.
     # always() lets the scheduled run proceed past that skipped dependency.
@@ -245,11 +265,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Each catalogue row is one mutation control. The 125 rows marked for
-        # Linux use two shards, about 63 each. The 431 marked for macOS use five,
-        # about 86 each: five is the most macOS jobs this GitHub account runs at
-        # once. Each host shards the sorted catalogue on its own, and rows marked
-        # for the other OS are reported SKIPPED_PLATFORM without being built.
+        # Each catalogue row is one mutation control. Linux and Windows use
+        # two shards each; macOS uses five, the most macOS jobs this account
+        # runs at once. Each host shards the sorted catalogue on its own;
+        # rows marked for the other platforms are skipped without being built.
         include:
           - { platform: linux, os: ubuntu-latest, shard: 1, shards: 2 }
           - { platform: linux, os: ubuntu-latest, shard: 2, shards: 2 }
@@ -258,8 +277,14 @@ jobs:
           - { platform: macos, os: macos-latest, shard: 3, shards: 5 }
           - { platform: macos, os: macos-latest, shard: 4, shards: 5 }
           - { platform: macos, os: macos-latest, shard: 5, shards: 5 }
+          - { platform: windows, os: windows-2022, shard: 1, shards: 2 }
+          - { platform: windows, os: windows-2022, shard: 2, shards: 2 }
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        if: matrix.platform == 'windows'
+        with:
+          python-version: '3.12'
       - name: Install stable Rust
         run: |
           rustup toolchain install stable --profile minimal
@@ -280,7 +305,7 @@ jobs:
       - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         id: mutate-cache
         with:
-          path: ~/.cargo/bin/ckdev-mutate
+          path: ~/.cargo/bin/ckdev-mutate${{ runner.os == 'Windows' && '.exe' || '' }}
           key: ${{ runner.os }}-${{ runner.arch }}-ckdev-mutate-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-${{ env.CK_MUTATE_REV }}
       - name: Install pinned mutation runner
         if: steps.mutate-cache.outputs.cache-hit != 'true'
@@ -292,13 +317,21 @@ jobs:
           env -u BASAL_WORKER_BIN -u BASAL_CUT_EXHAUSTIVE ckdev-mutate run --all --shard ${{ matrix.shard }}/${{ matrix.shards }} ${BROAD:+--broad} --report target/mutations/all.json
         env:
           BROAD: ${{ github.event_name != 'push' && 'true' || '' }}
+      - name: Capture exact Windows mutation application and restoration witnesses
+        if: matrix.platform == 'windows'
+        run: python script/witness-mutations.py --platform windows --shard ${{ matrix.shard }}/${{ matrix.shards }} --output "$RUNNER_TEMP/windows-mutation-evidence"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always() && matrix.platform == 'windows'
+        with:
+          name: windows-mutation-evidence-${{ matrix.shard }}
+          path: ${{ runner.temp }}/windows-mutation-evidence
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: mutations-${{ matrix.platform }}-${{ matrix.shard }}
           path: target/mutations/all.json
 
-  # Reads every shard's replay report (target/mutations/all.json) after both
+  # Reads every shard's replay report (target/mutations/all.json) after all
   # hosts finish, and requires exactly one successful replay of each
   # catalogue row across all of them. A row skipped everywhere, missing from
   # every report or replayed twice fails here, even if each shard passed.
@@ -348,14 +381,10 @@ jobs:
           cargo +1.88.0 check --workspace --all-targets --locked
           cargo +1.88.0 check --workspace --all-targets --locked --features basal-module/rig-kill-hook
 
-  # Windows build baseline. basal does not build on Windows yet, and the causes
-  # are measured here rather than guessed. The job runs the workspace check and
-  # tests on windows-latest and records what fails without failing the
-  # workflow: every build and test step continues on error, the job itself
-  # continues on error, and no other job depends on it. When a step fails, a
-  # second run collects the complete list (`--keep-going` for the check,
-  # `--no-fail-fast` for the tests), since the plain commands stop at the
-  # first failure. Every log is uploaded as the windows-baseline-logs artifact.
+  # Each Windows image leaves a different set of loader and thread-pool handles
+  # in the worker, so both must exercise the startup allowlist. Native suites
+  # also exercise the launcher, worker probes and filesystem/Git guards before
+  # the workspace gate. Logs are retained even when a gate fails.
   windows-baseline:
     if: github.event_name != 'schedule'
     strategy:
@@ -363,7 +392,6 @@ jobs:
       matrix:
         os: [windows-latest, windows-2022]
     runs-on: ${{ matrix.os }}
-    continue-on-error: true
     timeout-minutes: 120
     defaults:
       run:
@@ -390,6 +418,12 @@ jobs:
             ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-windows-baseline-${{ matrix.os }}-
       - name: Prepare the log directory
         run: mkdir -p "$RUNNER_TEMP/windows-baseline"
+      - name: Verify the pinned mutation runner on Windows
+        if: matrix.os == 'windows-2022'
+        run: |
+          cargo install --locked --git https://github.com/cortexkit/commons --rev "$CK_MUTATE_REV" cortexkit-mutate 2>&1 | tee "$RUNNER_TEMP/windows-baseline/install-mutate.log"
+          ckdev-mutate --version 2>&1 | tee "$RUNNER_TEMP/windows-baseline/mutate-version.log"
+          ckdev-mutate check 2>&1 | tee "$RUNNER_TEMP/windows-baseline/mutate-check.log"
       # The Windows launcher's own tests start real confined children, so
       # they can only run here. The deviations feature adds the test-only
       # launch variants, one per confinement check. They run first and print
@@ -397,7 +431,6 @@ jobs:
       # workspace steps below fail.
       - name: Test the Windows launcher with its test variants
         id: test-launch
-        continue-on-error: true
         timeout-minutes: 20
         run: |
           cargo test -p basal-launch --locked -- --show-output 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-launch-production.log"
@@ -410,7 +443,6 @@ jobs:
       # cannot break from outside.
       - name: Test the worker on its own
         id: test-worker
-        continue-on-error: true
         timeout-minutes: 30
         run: cargo test -p basal-worker --locked --no-fail-fast -- --show-output 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-worker.log"
       # The creators and counts of production startup handles are measured
@@ -418,12 +450,10 @@ jobs:
       # live handle table with the fixed per-image count limits; the image test
       # rejects DLL imports absent from the worker's windows-imports.txt file.
       - name: Witness the startup-handle and import-inventory mutants
-        continue-on-error: true
         timeout-minutes: 10
         run: python crates/basal-worker/tests/windows_mutation_witness.py "$RUNNER_TEMP/windows-baseline"
       - name: Test the worker with its test variants
         id: test-worker-deviations
-        continue-on-error: true
         timeout-minutes: 30
         run: cargo test -p basal-worker --features deviations --locked --no-fail-fast -- --show-output 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-worker-deviations.log"
       # The module's tests: workers started, supervised and killed through
@@ -434,7 +464,6 @@ jobs:
       # are basal-core's.
       - name: Test the module and the core
         id: test-module
-        continue-on-error: true
         timeout-minutes: 40
         run: cargo test -p basal-module -p basal-core --locked --no-fail-fast -- --show-output 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-module.log"
       # Every Windows spawn takes one process-wide lock while its child's
@@ -443,56 +472,47 @@ jobs:
       # stdin, stdout or stderr.
       - name: Test the shared spawn lock across the launcher and git
         id: test-spawn-lock
-        continue-on-error: true
         timeout-minutes: 20
         run: cargo test -p basal-host --lib --locked -- spawn_lock_tests --show-output 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-spawn-lock.log"
       - name: Test the shared test kit on its own
         id: test-testkit
-        continue-on-error: true
         timeout-minutes: 30
         run: cargo test -p basal-testkit --locked --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-testkit.log"
       - name: Test the integration rig on its own
         id: test-rig
-        continue-on-error: true
         timeout-minutes: 30
         run: cargo test -p basal-rig --locked --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-rig.log"
       - name: Check every workspace target
         id: check
-        continue-on-error: true
         timeout-minutes: 40
         run: cargo check --workspace --all-targets --locked 2>&1 | tee "$RUNNER_TEMP/windows-baseline/check.log"
       - name: Check every workspace target, continuing past failed crates
-        if: steps.check.outcome == 'failure'
-        continue-on-error: true
+        if: failure() && steps.check.outcome == 'failure'
         timeout-minutes: 40
         run: cargo check --workspace --all-targets --locked --keep-going 2>&1 | tee "$RUNNER_TEMP/windows-baseline/check-keep-going.log"
       - name: Test the workspace
         id: test
-        continue-on-error: true
         timeout-minutes: 40
         run: cargo test --workspace --locked 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test.log"
       - name: Test the workspace, continuing past failed tests
-        if: steps.test.outcome == 'failure'
-        continue-on-error: true
+        if: failure() && steps.test.outcome == 'failure'
         timeout-minutes: 40
         run: cargo test --workspace --locked --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-no-fail-fast.log"
-      # The workspace test can't build until every crate compiles on Windows,
-      # so basal-host's own tests run separately to report its built-ins now.
+      # Separate host suites retain filesystem and Git failure logs so a failing
+      # built-in can be diagnosed without searching the full workspace log.
       - name: Test basal-host on its own
         id: test-host
-        continue-on-error: true
         timeout-minutes: 30
         run: cargo test -p basal-host --lib --locked --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-host.log"
       - name: Test the host integration regressions on their own
         id: test-host-regressions
-        continue-on-error: true
         timeout-minutes: 20
         run: cargo test -p basal-host --test builtin_host_regressions --locked --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-host-regressions.log"
-      - name: Summarize the baseline
+      - name: Summarize the Windows gates
         if: always()
         run: |
           {
-            echo "## Windows baseline ($(rustc --version))"
+            echo "## Windows gates ($(rustc --version))"
             echo
             echo "- cargo check --workspace --all-targets --locked: ${{ steps.check.outcome }}"
             echo "- cargo test --workspace --locked: ${{ steps.test.outcome }}"

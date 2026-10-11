@@ -259,7 +259,23 @@ fn accepts_welcome(welcome: &Welcome, landlock: LandlockPolicy) -> bool {
             no_thread_token,
             mitigations,
             handle_table,
-        } => cfg!(windows) && lpac && untrusted && no_thread_token && mitigations && handle_table,
+        } => {
+            #[cfg(windows)]
+            {
+                crate::windows::accepts_report(
+                    lpac,
+                    untrusted,
+                    no_thread_token,
+                    mitigations,
+                    handle_table,
+                )
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = (lpac, untrusted, no_thread_token, mitigations, handle_table);
+                false
+            }
+        }
         Confinement::None => false,
     }
 }
