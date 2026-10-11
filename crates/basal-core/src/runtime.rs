@@ -1031,7 +1031,12 @@ impl Runtime {
         if kind.is_synchronous() {
             return StoredClass::Sync;
         }
-        if crate::kv::is_kv(kind) {
+        if crate::kv::is_kv(kind)
+            || matches!(
+                kind,
+                basal_proto::CallKind::Primitive(basal_proto::Primitive::InstanceEnd)
+            )
+        {
             return StoredClass::Local;
         }
         // A built-in's class is basal's own rule, not the host's, and for

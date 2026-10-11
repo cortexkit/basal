@@ -54,6 +54,24 @@ pub struct Manifest {
     pub version: u32,
     pub purpose: String,
     pub trigger: Trigger,
+    /// Bounded values supplied by a template instance's creator.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::templates::decode_params"
+    )]
+    pub params: Option<std::collections::BTreeMap<String, serde_json::Value>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::templates::decode_template"
+    )]
+    pub template: Option<serde_json::Value>,
+    /// Admission-time path boundaries, attached only to an effective instance
+    /// manifest. They are not caller-supplied manifest fields or hashed bytes.
+    #[serde(skip)]
+    pub(crate) template_grants:
+        std::collections::BTreeMap<u8, Vec<basal_host::builtins::TemplateRoot>>,
     /// Who the flow may deliver to and act for: every agent, one workspace's
     /// agents, or one agent. It lives in the manifest so the approval covers it,
     /// and widening it needs a new version and a new approval.
@@ -280,7 +298,7 @@ pub const MAX_ROOT_BYTES: usize = 4096;
 /// A root as written in a manifest: absolute, or under `~`, with no `.` or
 /// `..` component and no control character. Whether it exists is checked at
 /// install.
-fn check_root(field: &str, root: &str) -> Result<(), ManifestError> {
+pub(crate) fn check_root(field: &str, root: &str) -> Result<(), ManifestError> {
     if root.is_empty() || root.len() > MAX_ROOT_BYTES {
         return Err(invalid(
             field,
@@ -354,6 +372,16 @@ pub enum ManifestError {
         schedule: bool,
     },
     Schedule(String),
+    ParamsRequirePackage {
+        field: String,
+    },
+    TemplatePlaceholderInvalid {
+        field: String,
+    },
+    TemplateBoundInvalid {
+        field: String,
+        reason: String,
+    },
     AudienceSinkNamed,
     AudiencePlaceholderWithoutAudience,
     ForTargetRequiresAudience,
@@ -381,6 +409,13 @@ impl std::fmt::Display for ManifestError {
                 "a trigger needs exactly one of events and schedule (events: {events}, schedule: {schedule})"
             ),
             Self::Schedule(e) => write!(f, "schedule: {e}"),
+            Self::ParamsRequirePackage { field } => {
+                write!(f, "{field} is available only in package manifests")
+            }
+            Self::TemplatePlaceholderInvalid { field } => {
+                write!(f, "invalid template placeholder in {field}")
+            }
+            Self::TemplateBoundInvalid { field, reason } => write!(f, "{field}: {reason}"),
             Self::AudienceSinkNamed => write!(f, "audience sinks and status must name $audience"),
             Self::ForTargetRequiresAudience => write!(f, "for_target requires an audience"),
             Self::RunBoundExceedsAudienceLimit => {
@@ -509,6 +544,44 @@ impl Manifest {
         Ok(manifest)
     }
 
+    /// Refuse package-only fields before checking their shape, so malformed
+    /// parameter declarations cannot enter the ordinary install path either.
+    pub fn parse_ordinary(text: &str) -> Result<Self, ManifestError> {
+        if text.len() > MAX_MANIFEST_BYTES {
+            return Err(ManifestError::TooLarge {
+                bytes: text.len(),
+                cap: MAX_MANIFEST_BYTES,
+            });
+        }
+        let value: serde_json::Value =
+            serde_json::from_str(text).map_err(|error| ManifestError::Decode(error.to_string()))?;
+        for field in ["params", "template"] {
+            if value.get(field).is_some() {
+                return Err(ManifestError::ParamsRequirePackage {
+                    field: field.into(),
+                });
+            }
+        }
+        let manifest = Self::decode(text)?;
+        manifest.check_ordinary()?;
+        manifest.check()?;
+        Ok(manifest)
+    }
+
+    pub(crate) fn check_ordinary(&self) -> Result<(), ManifestError> {
+        if self.params.is_some() || self.template.is_some() {
+            return Err(ManifestError::ParamsRequirePackage {
+                field: if self.params.is_some() {
+                    "params"
+                } else {
+                    "template"
+                }
+                .into(),
+            });
+        }
+        Ok(())
+    }
+
     /// Decodes a manifest's exact bytes without checking it. Package
     /// registration decodes first so it can refuse an over-long package id
     /// with its own code before `check` applies the general flow-id limit.
@@ -524,6 +597,7 @@ impl Manifest {
 
     /// Everything that can be checked without the catalog.
     pub fn check(&self) -> Result<(), ManifestError> {
+        crate::templates::check(self)?;
         if self.format != MANIFEST_FORMAT {
             return Err(ManifestError::UnsupportedFormat(self.format));
         }
@@ -563,7 +637,7 @@ impl Manifest {
                 )?;
             }
             (None, Some(schedule)) => {
-                crate::schedule::validate(schedule)
+                crate::schedule::validate(&crate::templates::validation_schedule(self, schedule)?)
                     .map_err(|e| ManifestError::Schedule(e.to_string()))?;
             }
             (events, schedule) => {
@@ -679,23 +753,31 @@ impl Manifest {
         }
         if let Some(fs) = &self.fs {
             for r in &fs.read {
-                check_root("fs.read", r)?;
+                if !crate::templates::is_placeholder(r) {
+                    check_root("fs.read", r)?;
+                }
             }
             check_list("fs.read", fs.read.iter().cloned())?;
             for r in &fs.write {
-                check_root("fs.write", r)?;
+                if !crate::templates::is_placeholder(r) {
+                    check_root("fs.write", r)?;
+                }
             }
             check_list("fs.write", fs.write.iter().cloned())?;
         }
         if let Some(git) = &self.git {
             for r in &git.read {
-                check_root("git.read", r)?;
+                if !crate::templates::is_placeholder(r) {
+                    check_root("git.read", r)?;
+                }
             }
             check_list("git.read", git.read.iter().cloned())?;
         }
         if let Some(net) = &self.net {
             for f in &net.fetch {
-                if let Some(problem) = basal_host::builtins::net::host_problem(&f.host) {
+                if !crate::templates::is_placeholder(&f.host)
+                    && let Some(problem) = basal_host::builtins::net::host_problem(&f.host)
+                {
                     return Err(invalid(
                         "net.fetch.host",
                         format!("{:?}: {problem}", f.host),
@@ -782,6 +864,11 @@ impl Manifest {
             (!r.is_empty()).then(|| basal_host::builtins::Grant {
                 roots: r.to_vec(),
                 hosts: Vec::new(),
+                template_roots: self
+                    .template_grants
+                    .get(&primitive.code())
+                    .cloned()
+                    .unwrap_or_default(),
             })
         };
         match primitive {
@@ -801,6 +888,7 @@ impl Manifest {
                             methods: f.effective_methods(),
                         })
                         .collect(),
+                    template_roots: Vec::new(),
                 })
             }
             _ => None,

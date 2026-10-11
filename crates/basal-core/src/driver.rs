@@ -395,6 +395,14 @@ impl Activation<'_> {
                 if let Some(agent) = self.input["agent_id"].as_str() {
                     authorize::resolve_self(&mut manifest, agent);
                 }
+                if manifest.params.is_some() {
+                    let params = serde_json::from_str(self.run.params_input.as_str())
+                        .map_err(|e| CoreError::Corrupt(e.to_string()))?;
+                    let guards: Vec<basal_host::builtins::TemplateRoot> =
+                        serde_json::from_str(self.run.grant_guards.as_str())
+                            .map_err(|e| CoreError::Corrupt(e.to_string()))?;
+                    crate::templates::effective_instance(&mut manifest, &params, &guards);
+                }
                 self.manifest = Some(manifest);
             }
             Err(e) => {
@@ -439,6 +447,7 @@ impl Activation<'_> {
             script: self.run.script.clone(),
             trigger,
             self_input: self.run.self_input.clone(),
+            params_input: self.run.params_input.clone(),
             budgets: self.rt.config.budgets,
             prefix,
         };
@@ -602,7 +611,12 @@ impl Activation<'_> {
                     let flow_id = self.run.flow_id.clone();
                     let limits = self.rt.config.kv;
                     self.rt.store().write(|tx| {
-                        let outcome = kv::apply(tx, &flow_id, &row.kind, &row.args, &limits)?;
+                        let outcome =
+                            if matches!(row.kind, CallKind::Primitive(Primitive::InstanceEnd)) {
+                                crate::templates::request_end(tx, &run_id, &row.args)?
+                            } else {
+                                kv::apply(tx, &flow_id, &row.kind, &row.args, &limits)?
+                            };
                         journal::accept_outcome(
                             tx,
                             &run_id,
@@ -806,7 +820,12 @@ impl Activation<'_> {
                     journal::insert_call(tx, &self.lease, &flow_id, &new)?;
                     // The effect, its audit row and its outcome commit with
                     // the journal row: all of them or none.
-                    let outcome = kv::apply(tx, &flow_id, &call.kind, &call.args, &limits)?;
+                    let outcome =
+                        if matches!(call.kind, CallKind::Primitive(Primitive::InstanceEnd)) {
+                            crate::templates::request_end(tx, &self.lease.run_id, &call.args)?
+                        } else {
+                            kv::apply(tx, &flow_id, &call.kind, &call.args, &limits)?
+                        };
                     audit::record(
                         tx,
                         &flow_id,

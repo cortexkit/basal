@@ -2,7 +2,8 @@
 //! validation.
 //!
 //! The wire shape is [`ScheduleSpec`]: exactly one of `cron` (with an
-//! optional `tz`) or `interval`, a `missed` policy, and for `each` an
+//! optional `tz`), `interval`, or a template's one-shot `at`. Recurring
+//! schedules also declare a `missed` policy and, for `each`, an
 //! optional `each_cap`. Unknown fields are refused, so a misspelt field
 //! fails at install instead of silently meaning its default.
 //!
@@ -89,6 +90,9 @@ pub struct ScheduleSpec {
     /// the period, in real time, whatever the zone does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interval: Option<String>,
+    /// One absolute UTC fire, resolved from a template's timestamp parameter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<String>,
     #[serde(default)]
     pub missed: Missed,
     /// The cap for `missed: "each"`; [`DEFAULT_EACH_CAP`] when absent.
@@ -117,6 +121,9 @@ impl MissedPolicy {
 /// When a validated schedule is due.
 #[derive(Debug, Clone)]
 pub enum When {
+    At {
+        at: jiff::Timestamp,
+    },
     Cron {
         /// The pattern as written.
         pattern: String,
@@ -294,6 +301,20 @@ fn interval_secs(text: &str) -> Result<u64, SpecError> {
 /// Checks a spec and compiles it. This is the only way to get a
 /// [`CompiledSchedule`].
 pub fn validate(spec: &ScheduleSpec) -> Result<CompiledSchedule, SpecError> {
+    if let Some(at) = &spec.at {
+        if spec.cron.is_some() || spec.interval.is_some() {
+            return Err(SpecError::BothTimings);
+        }
+        if spec.tz.is_some() || spec.each_cap.is_some() || spec.missed != Missed::Once {
+            return Err(SpecError::Shape("at permits only missed: once".into()));
+        }
+        let at = crate::templates::timestamp(at)
+            .ok_or_else(|| SpecError::Shape("at must be RFC 3339 UTC".into()))?;
+        return Ok(CompiledSchedule {
+            when: When::At { at },
+            missed: MissedPolicy::Once,
+        });
+    }
     let when = match (&spec.cron, &spec.interval) {
         (None, None) => return Err(SpecError::NoTiming),
         (Some(_), Some(_)) => return Err(SpecError::BothTimings),

@@ -109,6 +109,7 @@ fn production_spawner_requires_landlock_completes_activation_and_shuts_down() {
             script: "return 4;".into(),
             trigger: JsonText::null(),
             self_input: JsonText::null(),
+            params_input: JsonText::null(),
             budgets: Budgets::default(),
             prefix: vec![],
         })))

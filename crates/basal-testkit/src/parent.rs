@@ -242,6 +242,7 @@ impl TestParent {
             script: script.to_owned(),
             trigger: self.trigger.clone(),
             self_input: JsonText::null(),
+            params_input: JsonText::null(),
             budgets: self.budgets,
             prefix,
         };

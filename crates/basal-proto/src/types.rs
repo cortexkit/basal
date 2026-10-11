@@ -165,10 +165,11 @@ pub enum Primitive {
     GitShow,
     GitDiff,
     NetFetch,
+    InstanceEnd,
 }
 
 impl Primitive {
-    pub const ALL: [Primitive; 21] = [
+    pub const ALL: [Primitive; 22] = [
         Self::Now,
         Self::Random,
         Self::Facts,
@@ -190,6 +191,7 @@ impl Primitive {
         Self::GitShow,
         Self::GitDiff,
         Self::NetFetch,
+        Self::InstanceEnd,
     ];
 
     /// The wire code. Zero is reserved for module ops in [`CallKind`].
@@ -216,6 +218,7 @@ impl Primitive {
             Self::GitShow => 19,
             Self::GitDiff => 20,
             Self::NetFetch => 21,
+            Self::InstanceEnd => 24,
         }
     }
 
@@ -247,6 +250,7 @@ impl Primitive {
             Self::GitShow => "git.show",
             Self::GitDiff => "git.diff",
             Self::NetFetch => "net.fetch",
+            Self::InstanceEnd => "instance.end",
         }
     }
 
@@ -395,6 +399,8 @@ pub struct ActivationRequest {
     pub trigger: JsonText,
     /// Admission-time instance identity, exposed as `self`; null for plain flows.
     pub self_input: JsonText,
+    /// Admission-time template values; null outside template instances.
+    pub params_input: JsonText,
     pub budgets: Budgets,
     /// The run's recorded calls, positions `0..n` in order.
     pub prefix: Vec<RecordedCall>,

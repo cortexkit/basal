@@ -148,4 +148,4 @@ The call marks the instance removed. No new run of a removed instance is admitte
 
 ## flow.instantiate
 
-Agents will also create instances, of packages that declare bounded parameters, with `flow.instantiate`, which isn't specified yet. One agent may run several instances of such a package with different parameters, so their identity also covers the bound parameters, and the instance flow id above applies only to persona instances.
+The agent-facing [`flow.instantiate`](templates.md#flowinstantiate) creates instances of packages with bounded parameters. One agent may run several instances with different values, so template instance ids additionally cover the canonical values, using a distinct domain tag. The persona instance formula above applies only to packages without `params`; `flow.instance.ensure` refuses templates with `package_has_params`.

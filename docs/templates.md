@@ -9,7 +9,7 @@ Typical templates:
 - a pull request or issue changes state;
 - a time is reached.
 
-A template is a flow package ([packages.md](packages.md)) whose manifest declares parameters. Everything packages already do still holds: an immutable registry, one approval per version, `$self` for the agent, and instances that are flows with their own state. This document adds parameters, the bounds that check them, the operations agents and core call, and the events basal publishes about instances.
+A template is a flow package ([packages.md](packages.md)) whose manifest declares parameters. Everything packages already do still holds: an immutable registry, one approval per version, `$self` for the agent, and instances that are flows with their own state. This document adds parameters, the bounds that check them, the operations agents and core call, and the planned lifecycle synchronization contract.
 
 ## Parameters in the manifest
 
@@ -18,20 +18,20 @@ A template manifest adds a `params` object, mapping a parameter name to its decl
 | `type` | Value | Bounds |
 |---|---|---|
 | `path` | an absolute path, after `~` expansion | `under`: a list of roots. The value must resolve inside one of them. |
-| `repo` | an absolute path to a git repository | `under`: a list of roots, as for `path`. |
+| `repo` | an absolute path with a Git repository layout | `under`: a list of roots, as for `path`. Creation recognizes ordinary, bare and worktree layouts without running Git; Git itself validates the repository on every read. A malformed layout inside the bounds can therefore be created, but its reads fail with the git built-in's normal error. Layout pointer files inspected at creation are capped at 1 MiB to bound validation memory. |
 | `url` | an `https` URL | `hosts`: allowed hosts. The URL's host must be one of them. No wildcards and no IP literals, as for `net.fetch`. |
 | `duration` | a duration string, such as `"15m"` | `min` and `max`. |
-| `integer` | an integer | `min` and `max`. |
-| `string` | a string | `max_bytes`, from 1 to 1024. No control characters. |
+| `integer` | an integer in JavaScript's exact range, `-(2^53-1)` to `2^53-1` | `min` and `max`, both in that range. |
+| `string` | a string | `max_bytes`, from 1 to 4096. No control characters. |
 | `enum` | one of the listed strings | `values`: 1 to 32 strings. |
-| `timestamp` | RFC 3339 in UTC, such as `"2026-11-01T09:00:00Z"` | `max_ahead`: how far in the future it may be. |
+| `timestamp` | RFC 3339 in UTC, with at most three fractional digits, such as `"2026-11-01T09:00:00Z"` | `max_ahead`: how far in the future it may be. Non-UTC offsets and finer precision are refused. Valid values normalize to UTC `Z`, with exactly `.mmm` when milliseconds are nonzero and no fraction otherwise. |
 
 The manifest also gains a `template` object, required whenever `params` is present:
 - `max_per_agent`: 1 to 100. The most live instances of this template one agent may have.
 - `max_live` (optional): 1 to 10,000. The most live instances of this template across all agents.
 - `max_lifetime`: a duration. Every instance expires, and none may outlive this.
 
-A `duration` parameter's `min` must be at least basal's minimum schedule interval; a template whose `min` is lower is refused at registration with `template_bound_invalid`.
+A `duration` parameter's `min` must be at least basal's minimum schedule interval (60 seconds), including a script-only duration. A template whose `min` is lower is refused at registration with `template_bound_invalid`. A duration used as `trigger.schedule.interval` must also have `max` at most `365d`, the scheduler's ceiling. A script-only duration may have a larger positive maximum. Minimums must not exceed maximums; path/repo roots must be absolute after `~` expansion and exist at registration; host, root and enum lists contain distinct entries. Host and root lists are nonempty, with at most 64 entries.
 
 ### Parameters only narrow
 
@@ -47,7 +47,7 @@ A parameter may appear in a grant only where it narrows what the template's own 
 
 At registration, basal checks every placeholder: it names a declared parameter; that parameter's type fits the position; a `path` or `repo` placeholder sits in a grant list, and its `under` roots meet that list's rules (absolute, existing at registration); and a `url` parameter's `hosts` meet `net.fetch`'s host rules. Anything else is refused with `template_placeholder_invalid`, naming the field. Grants without placeholders apply to every instance as written.
 
-**Paths are canonical.** A `path` or `repo` value is canonicalized, with symlinks resolved, before the `under` check, and the instance's effective grant is the resolved path; otherwise a symlink under a root could point outside it. If the path doesn't exist yet, basal resolves its deepest existing ancestor and checks that. The file and git built-ins also check containment at every access, so a symlink created later can't escape either. Parameters not used in any grant (`string`, `integer`, `enum`, or a `url` or `path` the script only reads) are passed to the script and limit nothing.
+**Paths are canonical.** A `path` or `repo` value is canonicalized, with symlinks resolved, before the `under` check, and the instance's effective grant is the resolved path; otherwise a symlink under a root could point outside it. If the path doesn't exist yet, basal resolves its deepest existing ancestor and checks that. At creation, the parameter's `under` roots are also canonicalized and recorded with the instance. On every file or git access, a parameter-derived grant is resolved again and must remain inside those recorded bounds. If the path existed at creation, it must also still resolve to the creation-time path. Replacing the root or an ancestor with a symlink therefore cannot move authority outside the approved bounds. Ordinary static grants keep their existing behavior. A template's `fs.stat` on a missing parameter-derived target returns `{"exists": false}` after checking the resolved deepest existing ancestor and the recorded boundaries. Once the target appears, normal stat metadata is returned. A missing target behind an ancestor moved outside the bounds is refused, not reported absent. Reads and writes keep their existing behavior, including missing-root refusals. Parameters not used in any grant (`string`, `integer`, `enum`, or a `url` or `path` the script only reads) are passed to the script and limit nothing.
 
 The code hash covers the manifest's exact bytes, placeholders and bounds included, so one approval covers exactly the bounds the approval card shows.
 
@@ -57,7 +57,7 @@ Core renders the card from the manifest bytes the code hash covers, as for every
 
 ### One-shot schedules
 
-`trigger.schedule.at` takes one timestamp and fires once, at that time. A template may use it only through a `timestamp` parameter. After the run for that fire ends, whatever its outcome, the instance ends: no more fires, as if its owner had ended it. A timestamp already in the past when the instance is created is refused with `param_out_of_bounds`; it never fires immediately.
+`trigger.schedule.at` takes one timestamp and fires once, at that time (or once after downtime). A template may use it only through a `timestamp` parameter. Its schedule permits only default or explicit `missed: "once"`: `tz`, `each_cap`, `missed: "skip"` and `missed: "each"` are refused at registration with `template_placeholder_invalid`, naming the field. After the run for that fire ends, whatever its outcome, the instance ends: no more fires, as if its owner had ended it. A timestamp already in the past is refused with `param_out_of_bounds` on every `flow.instantiate`, including a same-value repeat or reopen. Watching again after that time needs a new future timestamp, and therefore a new id. Sub-millisecond timestamps are refused rather than rounded.
 
 ## Instances
 
@@ -69,7 +69,7 @@ h = BLAKE3("basal-template-instance-v1\0" || u64_le(len template) || template
            || u64_le(len agent_id) || agent_id || u64_le(len P) || P)
 ```
 
-`P` is the canonical JSON of the parameter values: object keys sorted by their UTF-8 bytes, no whitespace, strings escaped as JSON escapes them, integers without a fraction, and durations and timestamps exactly as given after validation. The domain tag differs from persona instances, so the two kinds of id can't collide, and `flow.install` refuses ids of this shape.
+`P` is the canonical JSON of the validated parameter values: object keys sorted by their UTF-8 bytes, no whitespace, strings escaped as JSON escapes them, integers without a fraction, and durations exactly as given. Paths and repositories use resolved absolute paths; timestamps use the normalized UTC spelling above. Thus `09:00:00Z` and `09:00:00.000+00:00` on the same date represent the same value and id; `15m` and `900s` remain different duration values. The domain tag differs from persona instances, so the two kinds of id can't collide, and `flow.install` refuses ids of this shape.
 
 An instance:
 - **runs as its creator:** every `$self` is the creator's `agent_id`;
@@ -105,9 +105,19 @@ Reply:
 
 ### `flow.instance.end`
 
-Request `{"flow_id": "string"}`, from the owning agent or the operator. Ending is permanent for that id: no more runs and no schedule. The instance is kept for history. Creating the same values again later reopens the same id with a new expiry. Anyone else is refused with `not_permitted`.
+Request `{"flow_id": "string"}`, from the owning agent or the operator. Reply `{"flow_id": "string", "ended": true}`; a repeat returns `ended: false`. Ending is permanent for that id: no more runs and no schedule. The instance is kept for history. Creating the same valid values again later reopens the same id with an expiry that never shortens its previous expiry. Anyone else is refused with `not_permitted`. An existing ordinary flow or persona instance returns `package_not_template`; persona instances belong to the persona reconciler. An unknown id returns `not_found` to the operator, consistently with `flow.disable`; nonowners are refused before looking up template metadata.
 
-### `flow.instance.live`
+### Script self-ending: `instance.end()`
+
+A template run may call `await instance.end()` with no arguments. It returns `true` and records the request as a local journaled host call. The current run continues, and its instance ends when that run finishes, whether it succeeds, fails or is cancelled. Replay after a crash preserves the request without duplicating the effect. Only the calling run's own instance can end; ordinary flows and persona instances receive `not_a_template_instance`. A run from a previous, ended incarnation cannot end the instance if its owner has since reopened it. This supports event watches that report a condition once and then stop.
+
+### Dry runs
+
+A dry run naming a registered template version or a template instance returns `template_values_required`. No sample values are guessed. Ordinary `flow.install` and ordinary-flow dry runs carrying `params` or `template` return `params_require_package`, naming the field. Parameter-aware template dry runs with explicit supplied values are not available yet.
+
+### `flow.instance.live` (planned)
+
+Lifecycle events and this snapshot operation are not implemented yet. The following sections specify their future synchronization contract; creation, ending and expiry already enforce the rules above without publishing events.
 
 Caller: prefrontal-core only; anyone else is refused with `not_permitted`. Request `{}`. Reply:
 
@@ -134,9 +144,15 @@ It lists every template instance that hasn't ended, including expired ones that 
 | `template_placeholder_invalid` | at registration: a placeholder is in a position or of a type this document doesn't allow | names the field |
 | `template_bound_invalid` | at registration: a bound breaks its rules | names the field |
 | `package_has_params` | `flow.instance.ensure` names a template | |
-| `not_permitted` | ending another agent's instance, or calling `flow.instance.live` as anyone but core | |
+| `params_require_package` | ordinary install or ordinary-flow dry run carries `params` or `template` | `{"field": "params" \| "template"}` |
+| `template_values_required` | dry run names a registered template or template instance | |
+| `not_a_template_instance` | a non-template run calls `instance.end()` | |
+| `not_found` | the operator ends an unknown flow id | |
+| `not_permitted` | unauthorized caller or ending another agent's instance | |
 
-## Lifecycle events
+`bound` is the full declaration (including `type`) for a missing or invalid declared value, and `null` for an unknown name. Bounds and unknown names are checked in one UTF-8 name order. A live instance for quota purposes is neither ended nor expired; a disable or revocation does not free its slot.
+
+## Lifecycle events (planned)
 
 An instance can end or expire without any reply passing through the component that tracks it: an operator ends it, or its expiry passes. So basal publishes a module event of module `basal` on each change, and declares all four in its daemon manifest:
 
@@ -162,4 +178,13 @@ The events don't enforce expiry; they confirm it:
 
 ## Test vectors
 
-Instance id vectors and captured request, reply and event bytes are pinned under `test-vectors/templates/` once the implementation lands; other components copy them byte for byte.
+Instance id vectors are pinned in [`test-vectors/templates/instance-ids.json`](../test-vectors/templates/instance-ids.json), including canonical parameter JSON and full BLAKE3 hashes. [`generate.py`](../test-vectors/templates/generate.py) independently reproduces them with Python and the `blake3` package. `basal-core` tests every vector byte-for-byte. Lengths in the id formula count UTF-8 bytes, not characters.
+
+| Template | Agent | Canonical `P` | Instance flow id |
+|---|---|---|---|
+| `watch` | `agent_47120287c700722b` | `{}` | `watch_78b36aaf3802c776` |
+| `watch` | `agent_47120287c700722b` | `{"interval":"15m","path":"/work/notes/todo"}` | `watch_bab31709f57dda03` |
+| `watch` | `agent_d1e7002e2c9b9f43` | `{"interval":"15m","path":"/work/notes/todo"}` | `watch_d5475a5580c9b252` |
+| `watch` | `agent_47120287c700722b` | `{"interval":"900s","path":"/work/notes/todo"}` | `watch_9ab76103d538a9e1` |
+
+The JSON corpus also pins quotes, backslashes and non-ASCII UTF-8 text, and equivalent UTC timestamp spellings. Event byte vectors will accompany the lifecycle implementation.

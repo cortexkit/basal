@@ -225,15 +225,16 @@ impl DryRunner {
             trigger,
             now_ms,
         };
-        let manifest = Manifest::parse(&request.install.manifest).map_err(|e| match e {
-            e @ (basal_core::manifest::ManifestError::AudienceSinkNamed
-            | basal_core::manifest::ManifestError::AudiencePlaceholderWithoutAudience
-            | basal_core::manifest::ManifestError::ForTargetRequiresAudience
-            | basal_core::manifest::ManifestError::RunBoundExceedsAudienceLimit) => {
-                DryRunError::InstallRefused(basal_core::InstallError::Manifest(e))
-            }
-            other => DryRunError::Invalid(format!("manifest: {other}")),
-        })?;
+        let manifest =
+            Manifest::parse_ordinary(&request.install.manifest).map_err(|e| match e {
+                e @ (basal_core::manifest::ManifestError::AudienceSinkNamed
+                | basal_core::manifest::ManifestError::AudiencePlaceholderWithoutAudience
+                | basal_core::manifest::ManifestError::ForTargetRequiresAudience
+                | basal_core::manifest::ManifestError::RunBoundExceedsAudienceLimit) => {
+                    DryRunError::InstallRefused(basal_core::InstallError::Manifest(e))
+                }
+                other => DryRunError::Invalid(format!("manifest: {other}")),
+            })?;
         let (fires, window) = self.fires(&manifest, request)?;
         Metrics::bump(&self.metrics.dry_runs);
 

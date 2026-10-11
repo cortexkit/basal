@@ -316,6 +316,8 @@ pub struct Run {
     pub attempt: u32,
     pub trigger: JsonText,
     pub self_input: JsonText,
+    pub params_input: JsonText,
+    pub grant_guards: JsonText,
     pub script: String,
     pub manifest: String,
     pub code_hash: [u8; 32],
@@ -344,7 +346,7 @@ pub struct Run {
 
 pub const RUN_COLUMNS: &str = "run_id, flow_id, trigger_id, attempt, trigger, script, manifest, \
     code_hash, fingerprint, state, owner, generation, readiness, awaited, result, error_kind, \
-    error_detail, broken, admitted_at, ended_at, flow_version, admit_seq, deadline_ms, deadline_at, self_input";
+    error_detail, broken, admitted_at, ended_at, flow_version, admit_seq, deadline_ms, deadline_at, self_input, params_input, grant_guards";
 
 impl Run {
     pub fn from_row(row: &Row<'_>) -> rusqlite::Result<Result<Self>> {
@@ -373,6 +375,8 @@ impl Run {
         let deadline_ms: Option<i64> = row.get(22)?;
         let deadline_at: Option<i64> = row.get(23)?;
         let self_input: Option<String> = row.get(24)?;
+        let params_input: Option<String> = row.get(25)?;
+        let grant_guards: Option<String> = row.get(26)?;
         Ok((|| {
             let awaited = match awaited {
                 None => Vec::new(),
@@ -387,6 +391,11 @@ impl Run {
                     .map_err(|_| CoreError::Corrupt(format!("attempt {attempt}")))?,
                 trigger: json(trigger, "trigger")?,
                 self_input: json(self_input.unwrap_or_else(|| "null".into()), "self input")?,
+                params_input: json(
+                    params_input.unwrap_or_else(|| "null".into()),
+                    "params input",
+                )?,
+                grant_guards: json(grant_guards.unwrap_or_else(|| "[]".into()), "grant guards")?,
                 script,
                 manifest,
                 code_hash: digest(code_hash)?,

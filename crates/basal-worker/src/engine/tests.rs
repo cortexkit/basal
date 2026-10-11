@@ -65,6 +65,7 @@ fn request(profile: Profile, script: &str) -> ActivationRequest {
         script: script.into(),
         trigger: JsonText::null(),
         self_input: JsonText::null(),
+        params_input: JsonText::null(),
         budgets: Budgets::default(),
         prefix: Vec::new(),
     }
@@ -230,6 +231,7 @@ fn prelude_primitive_calls_match_the_rust_wire_codes() {
         await git.revParse('r', 'HEAD'); await git.describeTags('r', {});
         await git.show('r', 'HEAD', 'p'); await git.diff('r', 'a', 'b', {});
         await net.fetch('https://example.com', {});
+        await instance.end();
         return null;
     "#;
     let result = run_activation(&request(Profile::Flow, script), link.clone());
@@ -258,6 +260,7 @@ fn prelude_primitive_calls_match_the_rust_wire_codes() {
         Primitive::GitShow,
         Primitive::GitDiff,
         Primitive::NetFetch,
+        Primitive::InstanceEnd,
     ];
     assert_eq!(
         link.borrow()

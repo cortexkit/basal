@@ -174,6 +174,10 @@ impl MockHost {
                     Settlement::Fulfilled,
                     text(&json!({"stdout": "mock shell", "exit": 0})),
                 ),
+                Primitive::InstanceEnd => ready(
+                    Settlement::Rejected,
+                    text(&json!({"code":"not_a_template_instance"})),
+                ),
                 Primitive::Now | Primitive::Random => ready(
                     Settlement::Rejected,
                     text(&json!({"message": "synchronous call issued asynchronously"})),

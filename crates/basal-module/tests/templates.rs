@@ -1,0 +1,1082 @@
+mod common;
+
+use basal_core::{Admission, RunState};
+use basal_module::caller::Caller;
+use basal_proto::JsonText;
+use common::{Fixture, Options, agent, events_manifest, fixture};
+use serde_json::{Value, json};
+
+const OWNER: &str = "agent_47120287c700722b";
+const OTHER: &str = "agent_d1e7002e2c9b9f43";
+fn setup(tag: &str, worker: bool) -> Fixture {
+    let f = fixture(
+        tag,
+        if worker {
+            Options::with_worker()
+        } else {
+            Options::default()
+        },
+    );
+    f.catalog.add_named_agent(OWNER, "Owner");
+    f.catalog.add_named_agent(OTHER, "Other");
+    f
+}
+fn manifest() -> Value {
+    let mut m = events_manifest("watch");
+    m["sinks"][0]["agent"] = json!("$self");
+    m["params"] = json!({"note":{"type":"string","max_bytes":4096}});
+    m["template"] = json!({"max_per_agent":2,"max_live":3,"max_lifetime":"1d"});
+    m
+}
+fn register(f: &Fixture, m: &Value, script: &str) -> Value {
+    f.module
+        .handle(
+            &Caller::Operator,
+            "package.register",
+            json!({"script":script,"manifest":m.to_string()}),
+        )
+        .unwrap()
+}
+fn create(
+    f: &Fixture,
+    owner: &str,
+    values: Value,
+    version: u32,
+    lifetime: &str,
+) -> Result<Value, basal_module::ops::OpError> {
+    f.module.handle(
+        &agent(owner),
+        "flow.instantiate",
+        json!({"template":"watch","version":version,"params":values,"expires_in":lifetime}),
+    )
+}
+fn id(reply: &Value) -> &str {
+    reply["flow_id"].as_str().unwrap()
+}
+fn admitted(f: &Fixture, id: &str, key: &str) -> String {
+    f.module
+        .rt
+        .admit_trigger(id, key, JsonText::null())
+        .unwrap()
+        .run_id()
+        .unwrap()
+        .to_owned()
+}
+fn no_admission(f: &Fixture, id: &str, key: &str) {
+    assert_eq!(
+        f.module
+            .rt
+            .admit_trigger(id, key, JsonText::null())
+            .unwrap(),
+        Admission::NotApproved
+    );
+}
+
+#[test]
+fn instantiate_caller_version_and_reply_are_stamped_without_cards() {
+    let f = setup("template-caller", false);
+    let m = manifest();
+    let registered = register(&f, &m, "return 1;");
+    for caller in [Caller::Core, Caller::Local, Caller::Other("unknown".into())] {
+        let e = f
+            .module
+            .handle(
+                &caller,
+                "flow.instantiate",
+                json!({"template":"watch","version":1,"params":{"note":"a"},"expires_in":"1h"}),
+            )
+            .unwrap_err();
+        assert_eq!(
+            e.code,
+            if caller == Caller::Local {
+                "operator_attestation_required"
+            } else {
+                "not_permitted"
+            }
+        );
+    }
+    assert_eq!(
+        f.module
+            .handle(
+                &agent(OWNER),
+                "flow.instantiate",
+                json!({"template":"watch","params":{"note":"a"},"expires_in":"1h"})
+            )
+            .unwrap_err()
+            .code,
+        "invalid_params"
+    );
+    assert_eq!(f.module.handle(&agent(OWNER),"flow.instantiate",json!({"template":"watch","version":1,"agent_id":OTHER,"params":{"note":"a"},"expires_in":"1h"})).unwrap_err().code,"not_permitted");
+    assert_eq!(
+        create(&f, OWNER, json!({"note":"a"}), 99, "1h")
+            .unwrap_err()
+            .code,
+        "package_unknown"
+    );
+    let created=f.module.handle(&Caller::Operator,"flow.instantiate",json!({"template":"watch","version":1,"agent_id":OTHER,"params":{"note":"a"},"expires_in":"1h"})).unwrap();
+    assert_eq!(created["agent_id"], OTHER);
+    assert_eq!(created["template"], "watch");
+    assert_eq!(created["version"], 1);
+    assert_eq!(created["params"], json!({"note":"a"}));
+    assert_eq!(created["new"], true);
+    assert_eq!(created["expires_at"], f.clock.now_ms() + 3_600_000);
+    assert!(f.consent.undelivered().is_empty());
+    assert!(f.module.rt.cards(id(&created)).unwrap().is_empty());
+    let stored = f.module.rt.get_package("watch", 1).unwrap();
+    assert_eq!(stored["manifest"], m.to_string());
+    assert_eq!(stored["code_hash"], registered["code_hash"]);
+}
+
+#[test]
+fn package_template_exclusion_and_ordinary_install_dry_run_refusals() {
+    let f = setup("template-exclusion", false);
+    let m = manifest();
+    register(&f, &m, "return 1;");
+    assert_eq!(
+        f.module
+            .handle(
+                &Caller::Core,
+                "flow.instance.ensure",
+                json!({"package":"watch","version":1,"agent_id":OWNER,"generation":1})
+            )
+            .unwrap_err()
+            .code,
+        "package_has_params"
+    );
+    for field in ["params", "template"] {
+        let mut ordinary = events_manifest("ordinary");
+        ordinary[field] = m[field].clone();
+        assert_eq!(
+            f.module
+                .handle(
+                    &Caller::Operator,
+                    "flow.install",
+                    json!({"script":"return 1;","manifest":ordinary.to_string()})
+                )
+                .unwrap_err()
+                .code,
+            "params_require_package"
+        );
+        let request = basal_core::InstallRequest {
+            script: "return 1;".into(),
+            manifest: ordinary.to_string(),
+            author: "operator".into(),
+            loop_override: false,
+        };
+        assert!(matches!(
+            f.module.rt.install(&request),
+            Err(basal_core::InstallError::Manifest(
+                basal_core::ManifestError::ParamsRequirePackage { .. }
+            ))
+        ));
+        ordinary[field] = Value::Null;
+        assert_eq!(
+            f.module
+                .handle(
+                    &Caller::Operator,
+                    "flow.install",
+                    json!({"script":"return 1;","manifest":ordinary.to_string()})
+                )
+                .unwrap_err()
+                .code,
+            "params_require_package"
+        );
+    }
+    let mut persona = m.clone();
+    persona.as_object_mut().unwrap().remove("params");
+    persona.as_object_mut().unwrap().remove("template");
+    persona["version"] = json!(2);
+    register(&f, &persona, "return 1;");
+    assert_eq!(
+        create(&f, OWNER, json!({}), 2, "1h").unwrap_err().code,
+        "package_not_template"
+    );
+    let created = create(&f, OWNER, json!({"note":"a"}), 1, "1h").unwrap();
+    for name in ["watch", id(&created)] {
+        assert_eq!(
+            f.module
+                .handle(
+                    &Caller::Operator,
+                    "flow.dry_run",
+                    json!({"flow_id":name,"version":1})
+                )
+                .unwrap_err()
+                .code,
+            "template_values_required"
+        );
+    }
+}
+
+#[test]
+fn idempotent_creation_moves_version_extends_never_shortens_and_keeps_state() {
+    let f = setup("template-idempotency", false);
+    let m = manifest();
+    register(&f, &m, "return 1;");
+    let first = create(&f, OWNER, json!({"note":"a"}), 1, "1h").unwrap();
+    f.module
+        .rt
+        .store()
+        .write(|tx| {
+            tx.execute(
+                "INSERT INTO kv(flow_id,key,value,bytes,revision) VALUES (?1,'key','7',4,1)",
+                [id(&first)],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    f.module
+        .handle(&agent(OWNER), "flow.disable", json!({"flow_id":id(&first)}))
+        .unwrap();
+    let short = create(&f, OWNER, json!({"note":"a"}), 1, "1m").unwrap();
+    assert_eq!(short["new"], false);
+    assert_eq!(short["expires_at"], first["expires_at"]);
+    let mut next = m.clone();
+    next["version"] = json!(2);
+    register(&f, &next, "return 2;");
+    let moved = create(&f, OWNER, json!({"note":"a"}), 2, "2h").unwrap();
+    assert_eq!(moved["flow_id"], first["flow_id"]);
+    assert_eq!(moved["expires_at"], f.clock.now_ms() + 7_200_000);
+    assert_eq!(moved["new"], false);
+    assert_eq!(
+        f.module
+            .rt
+            .flow(id(&moved))
+            .unwrap()
+            .unwrap()
+            .approved_version,
+        Some(2)
+    );
+    assert!(!f.module.rt.flow(id(&moved)).unwrap().unwrap().enabled);
+    f.module
+        .rt
+        .store()
+        .read(|conn| {
+            assert_eq!(
+                conn.query_row("SELECT value FROM kv WHERE flow_id=?1", [id(&moved)], |r| r
+                    .get::<_, String>(0))?,
+                "7"
+            );
+            Ok(())
+        })
+        .unwrap();
+    let mut bounded = next;
+    bounded["version"] = json!(3);
+    bounded["params"]["note"] = json!({"type":"enum","values":["b"]});
+    register(&f, &bounded, "return 3;");
+    assert_eq!(
+        create(&f, OWNER, json!({"note":"a"}), 3, "3h")
+            .unwrap_err()
+            .code,
+        "param_out_of_bounds"
+    );
+    assert_eq!(
+        create(&f, OWNER, json!({"note":"a"}), 2, "1m").unwrap()["expires_at"],
+        moved["expires_at"]
+    );
+    f.module
+        .handle(&agent(OWNER), "flow.enable", json!({"flow_id":id(&moved)}))
+        .unwrap();
+    assert!(f.module.rt.flow(id(&moved)).unwrap().unwrap().enabled);
+}
+
+#[test]
+fn lifetime_limit_refuses_without_creating() {
+    let f = setup("template-lifetime", false);
+    register(&f, &manifest(), "return 1;");
+    assert_eq!(
+        create(&f, OWNER, json!({"note":"a"}), 1, "2d")
+            .unwrap_err()
+            .code,
+        "lifetime_too_long"
+    );
+    assert_eq!(
+        create(&f, OWNER, json!({"note":"a"}), 1, "0s")
+            .unwrap_err()
+            .code,
+        "invalid_params"
+    );
+    assert_eq!(
+        f.module
+            .handle(&Caller::Operator, "flow.list", json!({}))
+            .unwrap()["flows"],
+        json!([])
+    );
+    assert!(create(&f, OWNER, json!({"note":"a"}), 1, "1d").is_ok());
+}
+
+#[test]
+fn instance_limits_cover_agent_and_template_and_exclude_ended_expired() {
+    let f = setup("template-limits", false);
+    register(&f, &manifest(), "return 1;");
+    let a = create(&f, OWNER, json!({"note":"a"}), 1, "1h").unwrap();
+    let b = create(&f, OWNER, json!({"note":"b"}), 1, "1h").unwrap();
+    let e = create(&f, OWNER, json!({"note":"c"}), 1, "1h").unwrap_err();
+    assert_eq!(e.code, "instance_limit_reached");
+    assert_eq!(e.detail, Some(json!({"limit":2,"scope":"agent"})));
+    assert_eq!(
+        create(&f, OWNER, json!({"note":"a"}), 1, "2h").unwrap()["new"],
+        false
+    );
+    create(&f, OTHER, json!({"note":"a"}), 1, "1h").unwrap();
+    let e = create(&f, OTHER, json!({"note":"b"}), 1, "1h").unwrap_err();
+    assert_eq!(e.code, "instance_limit_reached");
+    assert_eq!(e.detail, Some(json!({"limit":3,"scope":"template"})));
+    f.module
+        .handle(
+            &agent(OWNER),
+            "flow.instance.end",
+            json!({"flow_id":id(&b)}),
+        )
+        .unwrap();
+    create(&f, OTHER, json!({"note":"b"}), 1, "1h").unwrap();
+    f.clock.advance(3_600_000);
+    create(&f, OTHER, json!({"note":"c"}), 1, "1h").unwrap();
+    assert!(create(&f, OWNER, json!({"note":"a"}), 1, "1h").is_ok());
+    assert_eq!(
+        f.module.rt.flow(id(&a)).unwrap().unwrap().approved_version,
+        Some(1)
+    );
+}
+
+#[test]
+fn end_is_owner_scoped_repeatable_kept_and_reopened_by_same_values() {
+    let f = setup("template-end", false);
+    register(&f, &manifest(), "return 1;");
+    let created = create(&f, OWNER, json!({"note":"a"}), 1, "1h").unwrap();
+    for caller in [agent(OTHER), Caller::Core, Caller::Local] {
+        assert_eq!(
+            f.module
+                .handle(
+                    &caller,
+                    "flow.instance.end",
+                    json!({"flow_id":id(&created)})
+                )
+                .unwrap_err()
+                .code,
+            "not_permitted"
+        );
+    }
+    let request = json!({"flow_id":id(&created)});
+    assert_eq!(
+        f.module
+            .handle(&agent(OWNER), "flow.instance.end", request.clone())
+            .unwrap(),
+        json!({"flow_id":id(&created),"ended":true})
+    );
+    assert_eq!(
+        f.module
+            .handle(&Caller::Operator, "flow.instance.end", request)
+            .unwrap()["ended"],
+        false
+    );
+    no_admission(&f, id(&created), "after-end");
+    f.module
+        .handle(
+            &Caller::Operator,
+            "flow.enable",
+            json!({"flow_id":id(&created)}),
+        )
+        .unwrap();
+    no_admission(&f, id(&created), "after-enable");
+    assert!(f.module.rt.flow(id(&created)).unwrap().is_some());
+    assert_eq!(
+        create(&f, OWNER, json!({"note":"a"}), 1, "2h").unwrap()["new"],
+        false
+    );
+    admitted(&f, id(&created), "reopened");
+    assert_eq!(
+        f.module
+            .handle(
+                &Caller::Operator,
+                "flow.instance.end",
+                json!({"flow_id":"absent"})
+            )
+            .unwrap_err()
+            .code,
+        "not_found"
+    );
+    let mut persona = manifest();
+    persona["id"] = json!("persona");
+    persona.as_object_mut().unwrap().remove("params");
+    persona.as_object_mut().unwrap().remove("template");
+    register(&f, &persona, "return 1;");
+    let ensured = f
+        .module
+        .handle(
+            &Caller::Core,
+            "flow.instance.ensure",
+            json!({"package":"persona","version":1,"agent_id":OWNER,"generation":1}),
+        )
+        .unwrap();
+    assert_eq!(
+        f.module
+            .handle(
+                &Caller::Operator,
+                "flow.instance.end",
+                json!({"flow_id":ensured["flow_id"]})
+            )
+            .unwrap_err()
+            .code,
+        "package_not_template"
+    );
+}
+
+#[test]
+fn expiry_blocks_admission_at_deadline_and_stops_kept_schedule() {
+    let f = setup("template-expiry", false);
+    let mut m = manifest();
+    m["trigger"] = json!({"schedule":{"interval":"1m"}});
+    register(&f, &m, "return 1;");
+    let created = create(&f, OWNER, json!({"note":"a"}), 1, "1m").unwrap();
+    let before = admitted(&f, id(&created), "before-expiry");
+    f.module.rt.cancel(&before, "operator").unwrap();
+    f.clock.advance(60_000);
+    no_admission(&f, id(&created), "at-expiry");
+    assert!(
+        f.module
+            .rt
+            .scheduler()
+            .unwrap()
+            .tick()
+            .unwrap()
+            .new_runs()
+            .is_empty()
+    );
+    assert_eq!(
+        f.module
+            .rt
+            .scheduler()
+            .unwrap()
+            .schedule(id(&created))
+            .unwrap()
+            .unwrap()
+            .state,
+        basal_core::schedule::ScheduleState::Disabled
+    );
+    assert!(f.module.rt.flow(id(&created)).unwrap().is_some());
+    let reopened = create(&f, OWNER, json!({"note":"a"}), 1, "1h").unwrap();
+    assert_eq!(reopened["new"], false);
+    admitted(&f, id(&created), "after-extension");
+}
+
+#[test]
+fn list_exposes_template_values_version_expiry_and_remains_owner_scoped() {
+    let f = setup("template-list", false);
+    register(&f, &manifest(), "return 1;");
+    let created = create(&f, OWNER, json!({"note":"a"}), 1, "1h").unwrap();
+    let list = f
+        .module
+        .handle(&agent(OWNER), "flow.list", json!({}))
+        .unwrap();
+    let row = &list["flows"][0];
+    for field in ["flow_id", "template", "version", "params", "expires_at"] {
+        assert_eq!(row[field], created[field], "{field}");
+    }
+    assert_eq!(
+        f.module
+            .handle(&agent(OTHER), "flow.list", json!({}))
+            .unwrap()["flows"],
+        json!([])
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn path_and_repo_values_resolve_symlinks_and_future_ancestors_before_bounds() {
+    use std::os::unix::fs::symlink;
+    let f = setup("template-paths", false);
+    let inside = f.dir.join("inside");
+    let outside = f.dir.join("outside");
+    std::fs::create_dir(&inside).unwrap();
+    std::fs::create_dir(&outside).unwrap();
+    symlink(&outside, inside.join("escape")).unwrap();
+    let real = inside.join("real");
+    std::fs::create_dir(&real).unwrap();
+    symlink(&real, inside.join("alias")).unwrap();
+    let mut m = manifest();
+    m["params"] = json!({"path":{"type":"path","under":[inside]}});
+    m["fs"] = json!({"read":["$params.path"]});
+    register(&f, &m, "return 1;");
+    for path in [
+        inside.join("escape"),
+        inside.join("escape/not/yet"),
+        outside.clone(),
+    ] {
+        assert_eq!(
+            create(&f, OWNER, json!({"path":path}), 1, "1h")
+                .unwrap_err()
+                .code,
+            "param_out_of_bounds"
+        );
+    }
+    let canonical = std::fs::canonicalize(&real).unwrap().join("not/yet");
+    let alias = create(
+        &f,
+        OWNER,
+        json!({"path":inside.join("alias/not/yet")}),
+        1,
+        "1h",
+    )
+    .unwrap();
+    assert_eq!(alias["params"]["path"], canonical.to_str().unwrap());
+    assert_eq!(
+        create(&f, OWNER, json!({"path":canonical}), 1, "1h").unwrap()["flow_id"],
+        alias["flow_id"]
+    );
+    let repo = inside.join("repo");
+    assert!(
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .arg(&repo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    symlink(&repo, inside.join("repo-alias")).unwrap();
+    let mut next = m;
+    next["version"] = json!(2);
+    next["params"] = json!({"repo":{"type":"repo","under":[inside]}});
+    next.as_object_mut().unwrap().remove("fs");
+    next["git"] = json!({"read":["$params.repo"]});
+    register(&f, &next, "return 1;");
+    let created = create(
+        &f,
+        OTHER,
+        json!({"repo":inside.join("repo-alias")}),
+        2,
+        "1h",
+    )
+    .unwrap();
+    assert_eq!(
+        created["params"]["repo"],
+        std::fs::canonicalize(repo).unwrap().to_str().unwrap()
+    );
+    for path in [outside, real, inside.join("missing")] {
+        assert_eq!(
+            create(&f, OTHER, json!({"repo":path}), 2, "1h")
+                .unwrap_err()
+                .code,
+            "param_out_of_bounds"
+        );
+    }
+}
+
+#[test]
+fn parameter_roots_must_exist_at_registration() {
+    let f = setup("template-root-exists", false);
+    let mut m = manifest();
+    m["params"] = json!({"path":{"type":"path","under":[f.dir.join("absent")]}});
+    m["fs"] = json!({"read":["$params.path"]});
+    let e = f
+        .module
+        .handle(
+            &Caller::Operator,
+            "package.register",
+            json!({"script":"return 1;","manifest":m.to_string()}),
+        )
+        .unwrap_err();
+    assert_eq!(e.code, "template_bound_invalid");
+    assert_eq!(e.detail.unwrap()["field"], "params.path.under");
+}
+
+#[test]
+#[cfg(unix)]
+fn late_parameter_root_symlink_escape_is_refused_by_the_host() {
+    late_symlink_case(false, false, false);
+}
+#[test]
+#[cfg(unix)]
+fn late_parameter_ancestor_symlink_escape_is_refused_by_the_host() {
+    late_symlink_case(true, false, false);
+}
+#[test]
+#[cfg(unix)]
+fn future_parameter_path_cannot_escape_through_a_later_symlink() {
+    late_symlink_case(true, true, false);
+}
+#[cfg(unix)]
+fn late_symlink_case(ancestor: bool, future: bool, within: bool) {
+    use basal_host::builtins::{BuiltinHost, Failure, Grant, codes, envelope};
+    use std::os::unix::fs::symlink;
+    let f = setup("template-late-symlink", false);
+    let inside = f.dir.join("inside");
+    let outside = if within {
+        inside.join("other")
+    } else {
+        f.dir.join("outside")
+    };
+    std::fs::create_dir(&inside).unwrap();
+    std::fs::create_dir(&outside).unwrap();
+    let parent = inside.join("parent");
+    std::fs::create_dir(&parent).unwrap();
+    let target = parent.join("file");
+    if !future {
+        std::fs::write(&target, "approved").unwrap();
+    }
+    std::fs::write(outside.join("file"), "secret").unwrap();
+    let mut m = manifest();
+    m["params"] = json!({"path":{"type":"path","under":[inside]}});
+    m["fs"] = json!({"read":["$params.path"]});
+    register(&f, &m, "return 1;");
+    let instance = create(&f, OWNER, json!({"path":target}), 1, "1h").unwrap();
+    let run = admitted(&f, id(&instance), "snapshot");
+    let run = f.module.rt.run(&run).unwrap();
+    let grant = Grant {
+        roots: vec![instance["params"]["path"].as_str().unwrap().into()],
+        hosts: vec![],
+        template_roots: serde_json::from_str(run.grant_guards.as_str()).unwrap(),
+    };
+    if ancestor {
+        std::fs::rename(&parent, inside.join("saved-parent")).unwrap();
+        symlink(&outside, &parent).unwrap();
+    } else {
+        std::fs::remove_file(&target).unwrap();
+        symlink(outside.join("file"), &target).unwrap();
+    }
+    let request = envelope(&json!({"path":target}), &grant);
+    match BuiltinHost::default().run(basal_proto::Primitive::FsRead, &request) {
+        Err(Failure::Refused(denial)) => assert_eq!(denial.code, codes::DENIED),
+        other => panic!("escaped template authority: {other:?}"),
+    }
+}
+
+#[test]
+fn activation_uses_effective_grants_and_journaled_self_and_params() {
+    let f = setup("template-effective-run", true);
+    let target = f.dir.join("target");
+    std::fs::write(&target, "watched").unwrap();
+    std::fs::write(f.dir.join("neighbor"), "private").unwrap();
+    let root = std::fs::canonicalize(&f.dir).unwrap();
+    let mut m = manifest();
+    m["params"]["path"] = json!({"type":"path","under":[root]});
+    m["fs"] = json!({"read":["$params.path"]});
+    register(
+        &f,
+        &m,
+        "const read = await fs.read(params.path); let refusal; try { await fs.read(params.path.slice(0, -6) + 'neighbor'); } catch (e) { refusal = e.data.code; } return { self, params, text: read.text, refusal };",
+    );
+    let created = create(&f, OWNER, json!({"note":"Grüße","path":target}), 1, "1h").unwrap();
+    let run = admitted(&f, id(&created), "input");
+    f.module.engine.run_until_idle(50).unwrap();
+    let stored = f.module.rt.run(&run).unwrap();
+    assert_eq!(stored.state, RunState::Succeeded, "{stored:?}");
+    let result: Value = serde_json::from_str(stored.result.as_deref().unwrap()).unwrap();
+    assert_eq!(result["self"], json!({"agent_id":OWNER}));
+    assert_eq!(result["params"], created["params"]);
+    assert_eq!(result["text"], "watched");
+    assert_eq!(result["refusal"], "denied");
+    let guards: Value = serde_json::from_str(stored.grant_guards.as_str()).unwrap();
+    assert_eq!(guards[0]["root"], created["params"]["path"]);
+    assert_eq!(guards[0]["under"], json!([root]));
+    assert_eq!(
+        serde_json::from_str::<Value>(stored.params_input.as_str()).unwrap(),
+        created["params"]
+    );
+    assert_eq!(
+        basal_core::ids::hex(&stored.code_hash),
+        f.module.rt.get_package("watch", 1).unwrap()["code_hash"]
+    );
+}
+
+#[test]
+fn one_shot_fires_once_after_downtime_and_ends_on_success_failure_or_cancel() {
+    for (tag, script, cancel) in [
+        ("success", "return params.at;", false),
+        ("failure", "throw new Error('failed');", false),
+        ("cancel", "return 1;", true),
+    ] {
+        let f = setup(&format!("template-at-{tag}"), !cancel);
+        let mut m = manifest();
+        m["params"] = json!({"at":{"type":"timestamp","max_ahead":"1d"}});
+        m["trigger"] = json!({"schedule":{"at":"$params.at"}});
+        register(&f, &m, script);
+        let at = jiff::Timestamp::from_millisecond(f.clock.now_ms() + 60_000)
+            .unwrap()
+            .to_string();
+        let instance = create(&f, OWNER, json!({"at":at}), 1, "1h").unwrap();
+        assert!(
+            f.module
+                .rt
+                .scheduler()
+                .unwrap()
+                .tick()
+                .unwrap()
+                .new_runs()
+                .is_empty()
+        );
+        f.clock.advance(120_000);
+        let tick = f.module.rt.scheduler().unwrap().tick().unwrap();
+        assert_eq!(tick.new_runs().len(), 1);
+        let run = tick.new_runs()[0].to_owned();
+        if cancel {
+            f.module.rt.cancel(&run, "operator").unwrap();
+        } else {
+            f.module.engine.run_until_idle(50).unwrap();
+        }
+        let state = f.module.rt.run(&run).unwrap().state;
+        assert_eq!(
+            state,
+            if cancel {
+                RunState::Cancelled
+            } else if tag == "failure" {
+                RunState::Failed
+            } else {
+                RunState::Succeeded
+            }
+        );
+        no_admission(&f, id(&instance), "after-fire");
+        assert!(
+            f.module
+                .rt
+                .scheduler()
+                .unwrap()
+                .tick()
+                .unwrap()
+                .new_runs()
+                .is_empty()
+        );
+        assert_eq!(
+            f.module
+                .rt
+                .scheduler()
+                .unwrap()
+                .schedule(id(&instance))
+                .unwrap()
+                .unwrap()
+                .state,
+            basal_core::schedule::ScheduleState::Disabled
+        );
+        assert_eq!(
+            create(&f, OWNER, json!({"at":at}), 1, "1h")
+                .unwrap_err()
+                .code,
+            "param_out_of_bounds"
+        );
+    }
+}
+
+#[test]
+fn past_or_too_distant_timestamp_is_refused_at_every_creation() {
+    let f = setup("template-at-bounds", false);
+    let mut m = manifest();
+    m["params"] = json!({"at":{"type":"timestamp","max_ahead":"1h"}});
+    m["trigger"] = json!({"schedule":{"at":"$params.at"}});
+    register(&f, &m, "return 1;");
+    for delta in [-1, 3_600_001] {
+        let at = jiff::Timestamp::from_millisecond(f.clock.now_ms() + delta)
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            create(&f, OWNER, json!({"at":at}), 1, "1h")
+                .unwrap_err()
+                .code,
+            "param_out_of_bounds"
+        );
+    }
+    let at = jiff::Timestamp::from_millisecond(f.clock.now_ms())
+        .unwrap()
+        .to_string();
+    let instance = create(&f, OWNER, json!({"at":at}), 1, "1h").unwrap();
+    assert_eq!(
+        f.module
+            .rt
+            .scheduler()
+            .unwrap()
+            .tick()
+            .unwrap()
+            .new_runs()
+            .len(),
+        1
+    );
+    assert!(f.module.rt.flow(id(&instance)).unwrap().is_some());
+}
+
+#[test]
+fn a_template_run_ends_only_itself_after_finishing_even_when_it_fails() {
+    for fails in [false, true] {
+        let f = setup("template-self-end", true);
+        let script = if fails {
+            "await instance.end(); throw new Error('after end');"
+        } else {
+            "await instance.end(); return await kv.set('finished', true);"
+        };
+        register(&f, &manifest(), script);
+        let a = create(&f, OWNER, json!({"note":"a"}), 1, "1h").unwrap();
+        let b = create(&f, OTHER, json!({"note":"b"}), 1, "1h").unwrap();
+        let run = admitted(&f, id(&a), "self-end");
+        f.module.engine.run_until_idle(50).unwrap();
+        let stored = f.module.rt.run(&run).unwrap();
+        assert_eq!(
+            stored.state,
+            if fails {
+                RunState::Failed
+            } else {
+                RunState::Succeeded
+            },
+            "{stored:?}"
+        );
+        no_admission(&f, id(&a), "ended");
+        admitted(&f, id(&b), "still-live");
+        assert_eq!(
+            f.module
+                .rt
+                .calls(&run)
+                .unwrap()
+                .iter()
+                .filter(|row| row.kind
+                    == basal_proto::CallKind::Primitive(basal_proto::Primitive::InstanceEnd))
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn self_end_outside_a_template_instance_is_a_journaled_refusal() {
+    let f = setup("template-self-end-refusal", true);
+    let script = "try { await instance.end(); } catch (e) { return e.data.code; } throw new Error('accepted');";
+    let flow =
+        common::install_approved(&f, &Caller::Operator, script, &events_manifest("ordinary"));
+    let run = admitted(&f, &flow, "outside");
+    f.module.engine.run_until_idle(50).unwrap();
+    let stored = f.module.rt.run(&run).unwrap();
+    assert_eq!(stored.state, RunState::Succeeded, "{stored:?}");
+    assert_eq!(
+        f.module.rt.run(&run).unwrap().result.as_deref(),
+        Some("\"not_a_template_instance\"")
+    );
+    assert!(f.module.rt.flow(&flow).unwrap().unwrap().enabled);
+}
+
+#[test]
+#[cfg(unix)]
+fn existing_parameter_root_cannot_be_retargeted_within_its_bound() {
+    late_symlink_case(false, false, true);
+}
+
+#[test]
+#[cfg(unix)]
+fn late_repo_root_symlink_escape_is_refused_and_static_grants_still_apply() {
+    use basal_host::builtins::{BuiltinHost, Failure, Grant, codes, envelope};
+    use std::os::unix::fs::symlink;
+    let f = setup("template-late-repo", false);
+    let inside = f.dir.join("inside");
+    let outside = f.dir.join("outside");
+    std::fs::create_dir(&inside).unwrap();
+    let repo = inside.join("repo");
+    for path in [&repo, &outside] {
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "-q"])
+                .arg(path)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let mut m = manifest();
+    m["params"] = json!({"repo":{"type":"repo","under":[inside]}});
+    m["git"] = json!({"read":["$params.repo"]});
+    register(&f, &m, "return 1;");
+    let instance = create(&f, OWNER, json!({"repo":repo}), 1, "1h").unwrap();
+    let run = admitted(&f, id(&instance), "guards");
+    let run = f.module.rt.run(&run).unwrap();
+    let grant = Grant {
+        roots: vec![instance["params"]["repo"].as_str().unwrap().into()],
+        hosts: vec![],
+        template_roots: serde_json::from_str(run.grant_guards.as_str()).unwrap(),
+    };
+    std::fs::rename(&repo, inside.join("saved")).unwrap();
+    symlink(&outside, &repo).unwrap();
+    let args = json!({"repo":repo,"ref":"HEAD"});
+    match BuiltinHost::default().run(
+        basal_proto::Primitive::GitRevParse,
+        &envelope(&args, &grant),
+    ) {
+        Err(Failure::Refused(denial)) => assert_eq!(denial.code, codes::DENIED),
+        other => panic!("repo escaped: {other:?}"),
+    }
+    let mut static_grant = grant;
+    static_grant.roots.push(
+        std::fs::canonicalize(&outside)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .into(),
+    );
+    assert_eq!(
+        static_grant.checked_roots().unwrap().len(),
+        1,
+        "a rejected parameter root does not cancel a separate static grant"
+    );
+    std::fs::write(outside.join("static-note"), "explicit grant").unwrap();
+    assert_eq!(
+        BuiltinHost::default()
+            .run(
+                basal_proto::Primitive::FsRead,
+                &envelope(&json!({"path":outside.join("static-note")}), &static_grant)
+            )
+            .unwrap()["text"],
+        "explicit grant"
+    );
+}
+
+#[test]
+fn template_stat_of_a_missing_target_reports_absence_then_appearance() {
+    let f = setup("template-future-stat", true);
+    let target = f.dir.join("future/nested/file");
+    let mut m = manifest();
+    m["params"] = json!({"path":{"type":"path","under":[f.dir]}});
+    m["fs"] = json!({"read":["$params.path"]});
+    register(&f, &m, "return await fs.stat(params.path);");
+    let instance = create(&f, OWNER, json!({"path":target}), 1, "1h").unwrap();
+    let first = admitted(&f, id(&instance), "missing");
+    f.module.engine.run_until_idle(50).unwrap();
+    let run = f.module.rt.run(&first).unwrap();
+    assert_eq!(run.state, RunState::Succeeded, "{run:?}");
+    assert_eq!(
+        serde_json::from_str::<Value>(run.result.as_deref().unwrap()).unwrap(),
+        json!({"exists":false})
+    );
+    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+    std::fs::write(&target, "appeared").unwrap();
+    let second = admitted(&f, id(&instance), "appeared");
+    f.module.engine.run_until_idle(50).unwrap();
+    let run = f.module.rt.run(&second).unwrap();
+    assert_eq!(run.state, RunState::Succeeded, "{run:?}");
+    assert_eq!(
+        serde_json::from_str::<Value>(run.result.as_deref().unwrap()).unwrap()["exists"],
+        true
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn missing_stat_with_an_escaped_ancestor_is_refused_not_reported_absent() {
+    use basal_host::builtins::{BuiltinHost, Failure, Grant, codes, envelope};
+    use std::os::unix::fs::symlink;
+    let f = setup("template-missing-stat-escape", false);
+    let inside = f.dir.join("inside");
+    let outside = f.dir.join("outside");
+    std::fs::create_dir(&inside).unwrap();
+    std::fs::create_dir(&outside).unwrap();
+    let target = inside.join("future/file");
+    let mut m = manifest();
+    m["params"] = json!({"path":{"type":"path","under":[inside]}});
+    m["fs"] = json!({"read":["$params.path"]});
+    register(&f, &m, "return 1;");
+    let instance = create(&f, OWNER, json!({"path":target}), 1, "1h").unwrap();
+    let run = admitted(&f, id(&instance), "stat");
+    let run = f.module.rt.run(&run).unwrap();
+    let grant = Grant {
+        roots: vec![instance["params"]["path"].as_str().unwrap().into()],
+        hosts: vec![],
+        template_roots: serde_json::from_str(run.grant_guards.as_str()).unwrap(),
+    };
+    let host = BuiltinHost::default();
+    let request = envelope(&json!({"path":target}), &grant);
+    assert_eq!(
+        host.run(basal_proto::Primitive::FsStat, &request).unwrap(),
+        json!({"exists":false})
+    );
+    let mut ordinary = grant.clone();
+    ordinary.template_roots.clear();
+    assert!(matches!(
+        host.run(
+            basal_proto::Primitive::FsStat,
+            &envelope(&json!({"path":target}), &ordinary)
+        ),
+        Err(Failure::Refused(_))
+    ));
+    symlink(&outside, inside.join("future")).unwrap();
+    match host.run(basal_proto::Primitive::FsStat, &request) {
+        Err(Failure::Refused(denial)) => assert_eq!(denial.code, codes::DENIED),
+        other => panic!("escaped missing stat: {other:?}"),
+    }
+}
+
+#[test]
+fn repo_creation_checks_layout_and_git_reads_validate_its_contents() {
+    use basal_host::builtins::{BuiltinHost, Failure, Grant, codes, envelope};
+    let f = setup("template-repo-layout", false);
+    let repo = f.dir.join("repo");
+    std::fs::create_dir_all(repo.join(".git/objects")).unwrap();
+    std::fs::create_dir_all(repo.join(".git/refs")).unwrap();
+    std::fs::write(repo.join(".git/HEAD"), "not a valid git HEAD").unwrap();
+    let mut m = manifest();
+    m["params"] = json!({"repo":{"type":"repo","under":[f.dir]}});
+    m["git"] = json!({"read":["$params.repo"]});
+    register(&f, &m, "return 1;");
+    let instance = create(&f, OWNER, json!({"repo":repo}), 1, "1h").unwrap();
+    let run = admitted(&f, id(&instance), "layout");
+    let run = f.module.rt.run(&run).unwrap();
+    let grant = Grant {
+        roots: vec![instance["params"]["repo"].as_str().unwrap().into()],
+        hosts: vec![],
+        template_roots: serde_json::from_str(run.grant_guards.as_str()).unwrap(),
+    };
+    match BuiltinHost::default().run(
+        basal_proto::Primitive::GitRevParse,
+        &envelope(&json!({"repo":repo,"ref":"HEAD"}), &grant),
+    ) {
+        Err(Failure::Refused(denial)) => assert_ne!(
+            denial.code,
+            codes::DENIED,
+            "the repository layout was authorized; Git refused its contents"
+        ),
+        other => panic!("malformed repository read: {other:?}"),
+    }
+}
+
+#[test]
+fn repository_layout_pointer_reads_are_bounded_during_creation() {
+    let f = setup("template-repo-pointer-cap", false);
+    let real = f.dir.join("real");
+    assert!(
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .arg(&real)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let candidate = f.dir.join("candidate");
+    std::fs::create_dir(&candidate).unwrap();
+    let pointer = format!("gitdir: {}\n", real.join(".git").display());
+    std::fs::write(candidate.join(".git"), &pointer).unwrap();
+    let mut m = manifest();
+    m["params"] = json!({"repo":{"type":"repo","under":[f.dir]}});
+    m["git"] = json!({"read":["$params.repo"]});
+    register(&f, &m, "return 1;");
+    assert!(create(&f, OWNER, json!({"repo":candidate}), 1, "1h").is_ok());
+    std::fs::write(
+        candidate.join(".git"),
+        format!("{pointer}{}", " ".repeat(1024 * 1024)),
+    )
+    .unwrap();
+    assert_eq!(
+        create(&f, OWNER, json!({"repo":candidate}), 1, "1h")
+            .unwrap_err()
+            .code,
+        "param_out_of_bounds"
+    );
+}
+
+#[test]
+fn null_optional_at_does_not_end_a_recurring_instance() {
+    let f = setup("template-null-at", true);
+    let mut m = manifest();
+    m["trigger"] = json!({"schedule":{"interval":"1m","at":null}});
+    register(&f, &m, "return true;");
+    let instance = create(&f, OWNER, json!({"note":"recurring"}), 1, "1h").unwrap();
+    let run = admitted(&f, id(&instance), "first");
+    f.module.engine.run_until_idle(50).unwrap();
+    assert_eq!(f.module.rt.run(&run).unwrap().state, RunState::Succeeded);
+    assert!(matches!(
+        f.module
+            .rt
+            .admit_trigger(id(&instance), "second", JsonText::null())
+            .unwrap(),
+        Admission::Admitted { .. }
+    ));
+}

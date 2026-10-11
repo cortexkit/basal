@@ -327,6 +327,10 @@ ALTER TABLE installs ADD COLUMN revoked_reason TEXT;
         version: 25,
         statements: INSTALL_REQUEST,
     },
+    Migration {
+        version: 26,
+        statements: TEMPLATES,
+    },
 ];
 
 // An install card is identified by the flow, version and core's attempt number.
@@ -354,6 +358,20 @@ INSERT INTO install_cards_new SELECT *, NULL FROM install_cards;
 DROP TABLE install_cards;
 ALTER TABLE install_cards_new RENAME TO install_cards;
 ALTER TABLE installs DROP COLUMN card_confirmed;
+"#;
+
+const TEMPLATES: &str = r#"
+CREATE TABLE template_instances (
+    flow_id TEXT PRIMARY KEY REFERENCES flows(flow_id),
+    params TEXT NOT NULL CHECK (json_valid(params)),
+    grant_guards TEXT NOT NULL CHECK (json_valid(grant_guards)),
+    expires_at INTEGER NOT NULL,
+    incarnation INTEGER NOT NULL DEFAULT 1 CHECK (incarnation > 0)
+);
+ALTER TABLE runs ADD COLUMN params_input TEXT CHECK (params_input IS NULL OR json_valid(params_input));
+ALTER TABLE runs ADD COLUMN grant_guards TEXT CHECK (grant_guards IS NULL OR json_valid(grant_guards));
+ALTER TABLE runs ADD COLUMN template_incarnation INTEGER;
+ALTER TABLE runs ADD COLUMN end_instance INTEGER NOT NULL DEFAULT 0 CHECK (end_instance IN (0,1));
 "#;
 
 // Before policy installs existed every local card represented the consent

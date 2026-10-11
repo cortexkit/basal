@@ -202,6 +202,7 @@ pub fn expire(
              WHERE run_id = ?1 AND state IN ('pending', 'running', 'suspended')",
             params![run_id, "the run passed its wall-clock deadline", now_ms()],
         )?;
+        crate::templates::finish_run(tx, run_id)?;
     }
     Ok(expired)
 }
@@ -395,6 +396,7 @@ pub fn exit(tx: &Transaction, lease: &Lease, exit: &Exit) -> Result<RunState> {
     }
     if state.is_terminal() {
         crate::journal::expire_deferred(tx, &lease.run_id)?;
+        crate::templates::finish_run(tx, &lease.run_id)?;
     }
     Ok(state)
 }
@@ -509,6 +511,7 @@ pub fn cancel(tx: &Transaction, run_id: &str, detail: &str) -> Result<()> {
         });
     }
     crate::journal::expire_deferred(tx, run_id)?;
+    crate::templates::finish_run(tx, run_id)?;
     Ok(())
 }
 
@@ -528,6 +531,7 @@ pub(crate) fn fail_external(
     )?;
     if changed > 0 {
         crate::journal::expire_deferred(tx, run_id)?;
+        crate::templates::finish_run(tx, run_id)?;
     }
     Ok(())
 }

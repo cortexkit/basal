@@ -29,6 +29,8 @@ A flow is a script plus a manifest. The manifest says everything the flow may do
 | `fs` | `{read?, write?}` lists of roots | no | none | Directories the file built-ins may read under (`fs.read`, `fs.list`, `fs.stat`) or write under (`fs.write`). Each root is absolute after `~` expansion and must exist at install. See `docs/builtins.md`. |
 | `git` | `{read}` list of repositories | no | none | Repositories the git built-ins may read. Each is absolute after `~` expansion and must exist at install. |
 | `net` | `{fetch}` list of `{host, methods?}` | no | none | Hosts `net.fetch` may reach over HTTPS on port 443 only, including redirect hops. `methods` defaults to `GET` and `HEAD`; others must be listed. Wildcard and IP-literal hosts are refused. |
+| `params` | object of bounded parameter declarations | packages only | absent | Declares a [template](templates.md): at most 16 typed parameters with required bounds. Whole-string placeholders may only narrow the documented grants and timing slots. |
+| `template` | `{max_per_agent, max_live?, max_lifetime}` | with `params` | absent | Instance quotas and mandatory expiry ceiling; part of the approved exact bytes. Ordinary install and dry run refuse either field with `params_require_package`. |
 | `placement` | string | no | none | Where the flow runs, such as `"machine:studio"`. 1 to 128 bytes, no control characters. Shown on the card. |
 | `concurrency` | integer | no | `1` | Only `1`: runs of a flow run one at a time, in trigger order. |
 | `deadline` | duration | no | the runtime's default (10 minutes) | The per-run wall-clock deadline, from `"1s"` to `"24h"`; an audience limits it to `"12h"`. |
@@ -109,7 +111,10 @@ and only queries may retry.
 ### `trigger`
 
 - `{ "events": [ { "module": "plexus", "name": "github_pr_changed", "version": 1 }, ... ] }`: at least one event. Each entry has exactly `module`, `name` and `version`. Install refuses an event or version the catalog does not declare, an event whose `resolve_op` is not a query, or a resolver absent from `ops`. For Plexus notices grant `{ "module": "plexus", "op": "events_get" }`, its separate read-only body tool. The broader `events` tool can change subscriptions, so it is not a safe body resolver. Matching uses the module, name and version, plus the flow-targeting rule below; script-defined header filter fields are not supported and are refused as unknown fields.
-- `{ "schedule": { ... } }`: the scheduler's `ScheduleSpec` (`crates/basal-core/src/schedule/spec.rs`), decoded with unknown fields refused and compiled by `schedule::validate` when the manifest is checked. Exactly one of `cron` and `interval`:
+- `{ "schedule": { ... } }`: the scheduler's `ScheduleSpec` (`crates/basal-core/src/schedule/spec.rs`), decoded with unknown fields refused and compiled by `schedule::validate` when the manifest is checked. Exactly one of `cron`, `interval`, or a template-only `at`:
+
+  A template's `at` is the whole-string placeholder `"$params.<name>"` for a `timestamp` parameter. It fires once, including one catch-up after downtime, and ends the instance after that run regardless of outcome. Only default or explicit `missed: "once"` is permitted; `tz`, `each_cap`, `skip` and `each` are refused with `template_placeholder_invalid`, naming the field. A literal timestamp is not permitted in the registered manifest. [Templates](templates.md#one-shot-schedules) specifies creation-time timestamp validation and normalization.
+
 
   | Field | Type | Default | Limits and meaning |
   |---|---|---|---|

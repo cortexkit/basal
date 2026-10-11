@@ -160,6 +160,7 @@ fn an_activation_completes_under_the_full_confinement() {
         script: script.into(),
         trigger: JsonText::null(),
         self_input: JsonText::null(),
+        params_input: JsonText::null(),
         budgets: Budgets::default(),
         prefix: vec![],
     };
