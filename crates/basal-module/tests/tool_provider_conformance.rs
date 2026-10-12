@@ -509,6 +509,16 @@ impl ToolProviderSubject for Subject {
     fn quick_call(&self) -> CallSpec {
         ("codemode".into(), json!({"code":"return 42;"}))
     }
+    fn content_v1_calls(&self) -> Vec<CallSpec> {
+        vec![
+            self.quick_call(),
+            (
+                "codemode".into(),
+                json!({"code":"throw new Error('probe failure');"}),
+            ),
+            ("codemode".into(), json!({"code":"while (true) {}"})),
+        ]
+    }
     fn call_mode_probe(&self) -> Option<CallModeProbe> {
         Some(CallModeProbe {
             call: self.quick_call(),
@@ -592,7 +602,6 @@ async fn basal_tool_provider_conforms_for_declared_capabilities() {
     assert_eq!(
         skipped,
         [
-            "tool_result_content_v1_valid",
             "system_text_digests_match_text",
             "system_text_preflight_digest_stable",
             "catalog_disabled_tool_absent",
@@ -620,8 +629,11 @@ async fn complete(route: &Route, key: &str) -> Value {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
     loop {
         let result = response(route,json!({"name":"codemode","arguments":{"code":"console.log('kept'); return 42;"},"call_key":key})).await;
-        if result["status"] != "running" {
-            assert_eq!(result["status"], "completed", "{result}");
+        if result["structuredContent"]["status"] != "running" {
+            assert_eq!(
+                result["structuredContent"]["status"], "completed",
+                "{result}"
+            );
             return result;
         }
         assert!(tokio::time::Instant::now() < deadline, "run never settled");
@@ -972,8 +984,11 @@ async fn legacy_daemon_binds_derive_modes_and_missing_run_expiry_still_runs() {
         json!({"name":"codemode","arguments":{"code":"return 42;"}}),
     )
     .await;
-    assert_eq!(result["status"], "completed", "{result}");
-    assert_eq!(result["value"], 42, "{result}");
+    assert_eq!(
+        result["structuredContent"]["status"], "completed",
+        "{result}"
+    );
+    assert_eq!(result["structuredContent"]["value"], 42, "{result}");
     drop(live);
     subject.join_stopped().await;
     std::fs::remove_dir_all(root).unwrap();

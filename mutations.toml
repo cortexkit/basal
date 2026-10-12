@@ -18699,3 +18699,150 @@ expect_red = ["codemode::admission::deadline_tests::tool_scope_open_checks_the_a
 only = false
 build_timeout_s = 3600
 timeout_s = 600
+
+[[control]]
+id = "git-held-directory-not-path-linux"
+guards = "git executes in its verified held directory despite an ancestor symlink swap"
+file = "crates/basal-host/src/builtins/git.rs"
+old = '.arg(".")'
+new = '.arg(&repo.path) // NON-VACUITY BREAK'
+test_file = "crates/basal-host/src/builtins/git/tests.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--lib"
+select = "expected"
+expect_red = ["builtins::git::tests::repository::ancestor_swap_after_verified_open_never_reads_the_replacement"]
+only = false
+platforms = ["linux"]
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "git-gitdir-containment-linux"
+guards = "gitdir files cannot redirect git reads outside approved git roots"
+file = "crates/basal-host/src/builtins/git.rs"
+old = 'check_indirection(&pinned, repos)?;'
+new = '// NON-VACUITY BREAK: skip repository indirection containment'
+test_file = "crates/basal-host/src/builtins/git/tests.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--lib"
+select = "expected"
+expect_red = ["builtins::git::tests::repository::gitdir_outside_approved_roots_is_refused"]
+only = false
+platforms = ["linux"]
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "git-alternates-containment-linux"
+guards = "object alternates cannot redirect git reads outside approved git roots"
+file = "crates/basal-host/src/builtins/git.rs"
+old = 'check_alternates(objects, roots, &canonical_roots, &mut HashSet::new())'
+new = 'let _ = objects; Ok(()) // NON-VACUITY BREAK'
+test_file = "crates/basal-host/src/builtins/git/tests.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--lib"
+select = "expected"
+expect_red = ["builtins::git::tests::repository::alternates_outside_approved_roots_are_refused"]
+only = false
+platforms = ["linux"]
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "git-recursive-alternates-containment-linux"
+guards = "recursive alternate object stores cannot escape approved git roots"
+file = "crates/basal-host/src/builtins/git.rs"
+old = 'check_alternates(alternate, roots, canonical_roots, visited)?;'
+new = 'let _ = alternate; // NON-VACUITY BREAK'
+test_file = "crates/basal-host/src/builtins/git/tests.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--lib"
+select = "expected"
+expect_red = ["builtins::git::tests::repository::recursive_alternates_cannot_escape_approved_roots"]
+only = false
+platforms = ["linux"]
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "git-commondir-containment-linux"
+guards = "worktree common metadata cannot redirect git reads outside approved git roots"
+file = "crates/basal-host/src/builtins/git.rs"
+old = 'check_indirection(&pinned, repos)?;'
+new = '// NON-VACUITY BREAK: skip repository indirection containment'
+test_file = "crates/basal-host/src/builtins/git/tests.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--lib"
+select = "expected"
+expect_red = ["builtins::git::tests::repository::commondir_outside_approved_roots_is_refused"]
+only = false
+platforms = ["linux"]
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "git-macos-verified-directory-containment"
+guards = "macOS F_GETPATH containment refuses a repository redirected before the checked open"
+file = "crates/basal-host/src/builtins/fs.rs"
+old = """
+#[cfg(target_os = "macos")]
+fn verify(fd: RawFd, name: Option<&OsStr>, roots: &[PathBuf]) -> Result<(), Denial> {
+    verify_path(
+        fd_path(fd).map_err(|e| Denial::new(codes::IO, e.to_string()))?,
+        name,
+        roots,
+    )
+}"""
+new = """
+#[cfg(target_os = "macos")]
+fn verify(fd: RawFd, name: Option<&OsStr>, roots: &[PathBuf]) -> Result<(), Denial> {
+    let _ = (fd, name, roots); Ok(()) // NON-VACUITY BREAK: bypass F_GETPATH containment
+}"""
+edits = []
+test_file = "crates/basal-host/src/builtins/git/tests.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--lib"
+select = "expected"
+expect_red = ["builtins::git::tests::repository::ancestor_swap_before_macos_verified_open_is_refused"]
+only = false
+platforms = ["macos"]
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "codemode-content-result-size-unbounded"
+guards = "content results stay under 3 MiB without changing the outcome of a run"
+test_file = "crates/basal-module/src/codemode_result_tests.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::result_tests::content_size_cap_marks_omissions_without_changing_success_or_failure"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/codemode.rs"
+old = 'while serialized_size(&reply) >= MAX_RESULT_BYTES {'
+new = 'while false && serialized_size(&reply) >= MAX_RESULT_BYTES { // NON-VACUITY BREAK'
+
+[[control]]
+id = "codemode-content-result-error-unmarked"
+guards = "terminal content errors carry the existing error code and isError flag"
+test_file = "crates/basal-module/src/codemode_result_tests.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::result_tests::content_errors_preserve_the_run_outcome_and_code"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/codemode.rs"
+old = 'reply = reply.with_error(code);'
+new = 'let _ = code; // NON-VACUITY BREAK'

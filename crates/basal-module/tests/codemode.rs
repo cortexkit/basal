@@ -214,8 +214,11 @@ fn core_scope_shapes_and_stamp_mismatch_prevent_worker_start() {
         rig.fixture.module.codemode_pool.handouts().is_empty(),
         "a mismatched stamp started a worker"
     );
-    assert_eq!(result["status"], "failed");
-    assert_eq!(result["error"]["code"], "scope_mismatch");
+    assert_eq!(result["structuredContent"]["status"], "failed");
+    assert_eq!(
+        result["structuredContent"]["error"]["code"],
+        "scope_mismatch"
+    );
     let open = rig.core.opens.lock().unwrap()[0].clone();
     assert_eq!(
         open,
@@ -255,10 +258,13 @@ fn refused_open_preserves_core_code_and_detail_without_worker() {
             rig.fixture.module.codemode_pool.handouts().is_empty(),
             "a refused open started a worker"
         );
-        assert_eq!(result["status"], code);
-        assert_eq!(result["error"]["code"], code);
-        assert_eq!(result["error"]["message"], "core refusal");
-        assert_eq!(result.get("detail"), detail.as_ref());
+        assert_eq!(result["structuredContent"]["status"], code);
+        assert_eq!(result["structuredContent"]["error"]["code"], code);
+        assert_eq!(
+            result["structuredContent"]["error"]["message"],
+            "core refusal"
+        );
+        assert_eq!(result["structuredContent"].get("detail"), detail.as_ref());
         assert!(rig.core.closes.lock().unwrap().is_empty());
         assert_eq!(rig.core.state.lock().unwrap().0, 0);
     }
@@ -280,8 +286,8 @@ fn retried_key_attaches_to_running_run_and_finished_result() {
     assert_eq!(rig.core.state.lock().unwrap().0, 1);
     rig.core.release();
     let result = call(&rig, "retry", "return 999;", Duration::from_secs(10));
-    assert_eq!(result["status"], "completed");
-    assert_eq!(result["value"], json!({"n":1}));
+    assert_eq!(result["structuredContent"]["status"], "completed");
+    assert_eq!(result["structuredContent"]["value"], json!({"n":1}));
     assert_eq!(
         call(&rig, "retry", "return 999;", Duration::from_secs(1)),
         result
@@ -306,10 +312,10 @@ fn keyless_calls_run_twice_have_no_withdrawal_or_late_result_and_warn() {
                 Duration::ZERO,
             )
             .unwrap();
-        assert_eq!(result["status"], "completed");
-        assert_eq!(result["keyless"], true);
+        assert_eq!(result["structuredContent"]["status"], "completed");
+        assert_eq!(result["structuredContent"]["keyless"], true);
         assert!(
-            result["text"]
+            result["content"][0]["text"]
                 .as_str()
                 .unwrap()
                 .contains("had no key and can't be recovered")
@@ -390,12 +396,15 @@ fn daemon_schema_not_program_arguments_governs_dispatch_and_result_renders() {
         "console.log('partial'); try { await tools.echo({n:'wrong'}); } catch (e) { console.log(e.code); } return {answer:42};",
         Duration::from_secs(10),
     );
-    assert_eq!(result["status"], "completed");
-    assert!(result.get("description").is_none());
-    assert_eq!(result["value"], json!({"answer":42}));
-    assert_eq!(result["calls"][0]["code"], "invalid_input");
+    assert_eq!(result["structuredContent"]["status"], "completed");
+    assert!(result["structuredContent"].get("description").is_none());
+    assert_eq!(result["structuredContent"]["value"], json!({"answer":42}));
+    assert_eq!(
+        result["structuredContent"]["calls"][0]["code"],
+        "invalid_input"
+    );
     assert_eq!(rig.core.state.lock().unwrap().0, 0);
-    let text = result["text"].as_str().unwrap();
+    let text = result["content"][0]["text"].as_str().unwrap();
     for section in [
         "completed",
         "person wait",
@@ -440,12 +449,12 @@ fn codemode_workers_are_separate_from_flow_pool_and_never_shared() {
     rig.core.release();
     for key in ["one", "two"] {
         assert_eq!(
-            call(&rig, key, "", Duration::from_secs(10))["status"],
+            call(&rig, key, "", Duration::from_secs(10))["structuredContent"]["status"],
             "completed"
         );
     }
     assert_eq!(
-        call(&rig, "three", "return 3;", Duration::from_secs(10))["value"],
+        call(&rig, "three", "return 3;", Duration::from_secs(10))["structuredContent"]["value"],
         3
     );
     let workers = rig.fixture.module.codemode_pool.handouts();
@@ -506,7 +515,7 @@ fn codemode_linux_worker_address_space_equals_protocol_limit() {
     assert_eq!(limits.rlim_max, basal_proto::CODEMODE_ADDRESS_SPACE_BYTES);
     rig.core.release();
     assert_eq!(
-        call(&rig, "limit", "", Duration::from_secs(10))["status"],
+        call(&rig, "limit", "", Duration::from_secs(10))["structuredContent"]["status"],
         "completed"
     );
 }
@@ -530,7 +539,14 @@ fn codemode_engine_budgets_still_apply_end_to_end() {
     ] {
         let rig = rig("codemode-budgets", false);
         let result = call(&rig, "budget", code, Duration::from_secs(180));
-        assert_eq!(result["status"], status, "{result}");
+        assert_eq!(result["structuredContent"]["status"], status, "{result}");
+        if let Some(budget) = status.strip_prefix("budget_exhausted:") {
+            assert_eq!(result["isError"], true);
+            assert_eq!(result["errorCode"], "budget_exhausted");
+            assert_eq!(result["structuredContent"]["budget"], budget);
+        } else {
+            assert!(result.get("isError").is_none());
+        }
     }
 }
 
@@ -627,10 +643,10 @@ fn unhandled_rejections_warn_but_handled_rejections_and_logs_do_not() {
     let result = rig.fixture.module.handle_tool(&context(),ToolCallRequest::new("codemode",json!({
         "code":"Promise.reject('unobserved'); Promise.reject('handled').catch(() => {}); console.log('not a warning'); return 1;",
         "limits":{"output_bytes":1}})).with_call_key("unhandled"),Duration::from_secs(10)).unwrap();
-    assert_eq!(result["status"], "completed");
-    assert_eq!(result["value"], 1);
-    assert_eq!(result["output"], "");
-    let warnings = result["warnings"].as_array().unwrap();
+    assert_eq!(result["structuredContent"]["status"], "completed");
+    assert_eq!(result["structuredContent"]["value"], 1);
+    assert_eq!(result["structuredContent"]["output"], "");
+    let warnings = result["structuredContent"]["warnings"].as_array().unwrap();
     let rejections: Vec<_> = warnings
         .iter()
         .filter(|warning| warning["code"] == "unhandled_rejection")
@@ -638,7 +654,7 @@ fn unhandled_rejections_warn_but_handled_rejections_and_logs_do_not() {
     assert_eq!(rejections.len(), 1);
     assert_eq!(rejections[0]["message"], "unobserved");
     assert!(
-        result["text"]
+        result["content"][0]["text"]
             .as_str()
             .unwrap()
             .contains("Warning: unobserved")
@@ -650,6 +666,7 @@ fn catalog_generation_tracks_content_and_schema_pins_refuse_changes() {
     use cortexkit_role_tool_provider::call::SchemaPin;
     let full = basal_module::tool::catalog(json!({"params":{}})).unwrap();
     let digest = basal_module::tool::catalog(json!({"params":{},"digest_only":true})).unwrap();
+    assert_eq!(full["tools"][0]["result_format"], "content/v1");
     assert_eq!(full["catalog_digest"], digest["catalog_digest"]);
     let excluded = basal_module::tool::catalog(json!({"params":{"exclude":["codemode"]}})).unwrap();
     assert_eq!(excluded["tools"], json!([]));
@@ -709,7 +726,7 @@ fn forwarded_bind_identity_is_configuration_not_agent_authority() {
             Duration::from_secs(10),
         )
         .unwrap();
-    assert_eq!(result["status"], "completed");
+    assert_eq!(result["structuredContent"]["status"], "completed");
     assert_eq!(rig.core.identities.lock().unwrap().as_slice(), [expected]);
     assert_eq!(rig.core.opens.lock().unwrap()[0]["agent_id"], "agent");
     *rig.core.mismatch.lock().unwrap() = true;
@@ -723,6 +740,9 @@ fn forwarded_bind_identity_is_configuration_not_agent_authority() {
             Duration::from_secs(10),
         )
         .unwrap();
-    assert_eq!(result["error"]["code"], "scope_mismatch");
+    assert_eq!(
+        result["structuredContent"]["error"]["code"],
+        "scope_mismatch"
+    );
     assert_eq!(rig.core.identities.lock().unwrap().len(), 1);
 }

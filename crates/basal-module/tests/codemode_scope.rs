@@ -184,7 +184,7 @@ fn codemode_handler_attests_via_real_sdk_and_replaces_the_describe_connection() 
                 }))).await.unwrap();
                 let response = read_frame(&mut stream).await.unwrap().unwrap();
                 assert_eq!(response.header.ty, FrameType::Response, "{}", String::from_utf8_lossy(&response.body));
-                assert_eq!(serde_json::from_slice::<Value>(&response.body).unwrap()["status"], "completed");
+                assert_eq!(serde_json::from_slice::<Value>(&response.body).unwrap()["structuredContent"]["status"], "completed");
                 write_frame(&mut stream, &Frame::build(FrameType::Goodbye, Flags::new(false, Priority::Passive, false), 0, 0, 0, Vec::new()).unwrap()).await.unwrap();
                 }).await.expect("daemon protocol stalled waiting for the SDK handler");
             });

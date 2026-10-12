@@ -187,8 +187,8 @@ fn resolve_real(path: &str, roots: &[PathBuf], purpose: Purpose) -> Result<Targe
 }
 
 /// Where the kernel says an open descriptor's file is.
-#[cfg(all(unix, not(target_os = "linux")))]
-fn fd_path(fd: RawFd) -> std::io::Result<PathBuf> {
+#[cfg(unix)]
+pub(super) fn fd_path(fd: RawFd) -> std::io::Result<PathBuf> {
     #[cfg(target_os = "macos")]
     {
         let mut buf = vec![0u8; libc::PATH_MAX as usize + 1];
@@ -209,11 +209,27 @@ fn fd_path(fd: RawFd) -> std::io::Result<PathBuf> {
     }
 }
 
-/// Requires the file behind `fd` (or, with `name`, the entry `name` in the
-/// directory behind `fd`) to lie under one of `roots`.
-#[cfg(all(unix, not(target_os = "linux")))]
+/// Checks the kernel's F_GETPATH result against the approved roots.
+#[cfg(target_os = "macos")]
 fn verify(fd: RawFd, name: Option<&OsStr>, roots: &[PathBuf]) -> Result<(), Denial> {
-    let mut real = fd_path(fd).map_err(|e| Denial::new(codes::IO, e.to_string()))?;
+    verify_path(
+        fd_path(fd).map_err(|e| Denial::new(codes::IO, e.to_string()))?,
+        name,
+        roots,
+    )
+}
+
+#[cfg(all(unix, not(target_os = "linux"), not(target_os = "macos")))]
+fn verify(fd: RawFd, name: Option<&OsStr>, roots: &[PathBuf]) -> Result<(), Denial> {
+    verify_path(
+        fd_path(fd).map_err(|e| Denial::new(codes::IO, e.to_string()))?,
+        name,
+        roots,
+    )
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn verify_path(mut real: PathBuf, name: Option<&OsStr>, roots: &[PathBuf]) -> Result<(), Denial> {
     if let Some(name) = name {
         real.push(name);
     }
@@ -242,6 +258,8 @@ fn open_checked_real(resolved: &Path, roots: &[PathBuf], directory: bool) -> Res
     if directory {
         flags |= libc::O_DIRECTORY;
     }
+    #[cfg(all(test, target_os = "macos"))]
+    super::git::before_verified_open();
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(flags)

@@ -18,10 +18,18 @@ mod tests;
 #[cfg(windows)]
 pub mod windows;
 
+#[cfg(unix)]
+use std::collections::HashSet;
+#[cfg(unix)]
+use std::ffi::CString;
+#[cfg(unix)]
+use std::fs::File;
 #[cfg(not(windows))]
 use std::io::Read;
 #[cfg(not(windows))]
 use std::os::fd::AsRawFd;
+#[cfg(unix)]
+use std::os::fd::FromRawFd;
 #[cfg(not(windows))]
 use std::os::unix::process::CommandExt;
 #[cfg(not(windows))]
@@ -31,6 +39,8 @@ use std::path::{Component, Path};
 use std::process::Command;
 #[cfg(not(windows))]
 use std::process::{Child, ExitStatus, Stdio};
+#[cfg(unix)]
+use std::sync::Arc;
 #[cfg(not(windows))]
 use std::sync::mpsc::{self, Sender};
 #[cfg(not(windows))]
@@ -222,11 +232,25 @@ pub fn parse(primitive: Primitive, args: &Value) -> Result<Op, Denial> {
     }
 }
 
-/// The repository's real path, which must be one of the approved
-/// repositories (each resolved the same way). A subdirectory of an approved
-/// repository is not itself approved.
+/// A verified repository directory held open through child creation.
+#[cfg(unix)]
+pub struct Repository {
+    path: PathBuf,
+    directory: Arc<File>,
+}
+
+#[cfg(windows)]
+type Repository = super::fs::windows::PinnedDirectory;
+
+#[cfg(all(test, target_os = "macos"))]
+pub(super) fn before_verified_open() {
+    tests::before_open();
+}
+
+/// Opens a repository whose real path is one of the approved repositories
+/// (each resolved the same way). A subdirectory is not itself approved.
 #[cfg(not(windows))]
-pub fn repo(repo: &str, repos: &[String]) -> Result<PathBuf, Denial> {
+pub fn repo(repo: &str, repos: &[String]) -> Result<Repository, Denial> {
     let path = expand_home(repo)
         .ok_or_else(|| Denial::invalid(format!("{repo:?} is not an absolute path")))?;
     let refused = || Denial::denied("repository is outside the manifest's repositories or missing");
@@ -236,7 +260,230 @@ pub fn repo(repo: &str, repos: &[String]) -> Result<PathBuf, Denial> {
         .filter_map(|r| expand_home(r))
         .filter_map(|r| std::fs::canonicalize(r).ok())
         .any(|r| r == real);
-    if approved { Ok(real) } else { Err(refused()) }
+    if !approved {
+        return Err(refused());
+    }
+    let real_str = real.to_str().ok_or_else(refused)?;
+    let super::fs::Target::Existing(resolved) =
+        super::fs::resolve(real_str, repos, super::fs::Purpose::Read)?
+    else {
+        return Err(refused());
+    };
+    if AsRef::<Path>::as_ref(&resolved) != real {
+        return Err(refused());
+    }
+    let directory = super::fs::open_checked(&resolved, repos, true)?;
+    let pinned = Repository {
+        path: real,
+        directory: Arc::new(directory),
+    };
+    // Indirection targets are checked at call start, not frozen. A local
+    // process can redirect mutable metadata between this check and Git's read;
+    // flow code cannot, and paths inside approved roots are already readable.
+    check_indirection(&pinned, repos)?;
+    Ok(pinned)
+}
+
+#[cfg(unix)]
+fn outside_root() -> Denial {
+    Denial::denied("path is outside the manifest's roots or missing")
+}
+
+/// Inspect `.git`, `commondir` and alternates through open repository, metadata
+/// and object-directory descriptors. Git can redirect metadata and object reads
+/// independently of its working directory, so pinning that directory is not
+/// enough to check the scope of these reads.
+#[cfg(unix)]
+fn check_indirection(repo: &Repository, roots: &[String]) -> Result<(), Denial> {
+    let canonical_roots: Vec<PathBuf> = roots
+        .iter()
+        .filter_map(|root| expand_home(root))
+        .filter_map(|root| std::fs::canonicalize(root).ok())
+        .collect();
+    let git_entry = checked_entry(&repo.directory, ".git", &canonical_roots)?;
+    let git_dir = match git_entry {
+        Some(file) if file.metadata().map_err(|_| outside_root())?.is_file() => {
+            let base =
+                super::fs::fd_path(repo.directory.as_raw_fd()).map_err(|_| outside_root())?;
+            let text = indirection_text(file)?;
+            let target = text
+                .strip_prefix("gitdir: ")
+                .ok_or_else(outside_root)?
+                .trim_end_matches(['\n', '\r']);
+            if target.is_empty() {
+                return Err(outside_root());
+            }
+            open_inside(&base.join(target), roots, &canonical_roots)?
+        }
+        Some(file) => file,
+        None => repo.directory.try_clone().map_err(|_| outside_root())?,
+    };
+    let common = match checked_entry(&git_dir, "commondir", &canonical_roots)? {
+        Some(file) => {
+            let base = super::fs::fd_path(git_dir.as_raw_fd()).map_err(|_| outside_root())?;
+            open_inside(
+                &base.join(indirection_text(file)?.trim_end_matches(['\n', '\r'])),
+                roots,
+                &canonical_roots,
+            )?
+        }
+        None => git_dir,
+    };
+    let objects = checked_entry(&common, "objects", &canonical_roots)?
+        .ok_or_else(|| Denial::new(codes::GIT, "repository has no object directory"))?;
+    check_alternates(objects, roots, &canonical_roots, &mut HashSet::new())
+}
+
+#[cfg(unix)]
+fn checked_entry(dir: &File, name: &str, roots: &[PathBuf]) -> Result<Option<File>, Denial> {
+    let name = CString::new(name).map_err(|_| outside_root())?;
+    // SAFETY: dir is held and name is NUL-terminated. Metadata symlinks may be
+    // followed only because the resulting descriptor is checked below.
+    let raw = unsafe {
+        libc::openat(
+            dir.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NONBLOCK,
+        )
+    };
+    if raw == -1 {
+        let error = std::io::Error::last_os_error();
+        return if error.kind() == std::io::ErrorKind::NotFound {
+            Ok(None)
+        } else {
+            Err(outside_root())
+        };
+    }
+    // SAFETY: openat returned a new descriptor owned by this call.
+    let file = unsafe { File::from_raw_fd(raw) };
+    let path = super::fs::fd_path(file.as_raw_fd()).map_err(|_| outside_root())?;
+    if !super::fs::inside(&path, roots) {
+        return Err(outside_root());
+    }
+    Ok(Some(file))
+}
+
+#[cfg(unix)]
+fn open_inside(path: &Path, roots: &[String], canonical_roots: &[PathBuf]) -> Result<File, Denial> {
+    let real = std::fs::canonicalize(path).map_err(|_| outside_root())?;
+    if !super::fs::inside(&real, canonical_roots) {
+        return Err(outside_root());
+    }
+    let super::fs::Target::Existing(resolved) = super::fs::resolve(
+        real.to_str().ok_or_else(outside_root)?,
+        roots,
+        super::fs::Purpose::Read,
+    )?
+    else {
+        return Err(outside_root());
+    };
+    let file = super::fs::open_checked(&resolved, roots, true)?;
+    let actual = super::fs::fd_path(file.as_raw_fd()).map_err(|_| outside_root())?;
+    if actual != real || !super::fs::inside(&actual, canonical_roots) {
+        return Err(outside_root());
+    }
+    Ok(file)
+}
+
+#[cfg(unix)]
+fn indirection_text(file: File) -> Result<String, Denial> {
+    const LIMIT: u64 = 64 * 1024;
+    if !file.metadata().map_err(|_| outside_root())?.is_file() {
+        return Err(outside_root());
+    }
+    let mut bytes = Vec::new();
+    file.take(LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| outside_root())?;
+    if bytes.len() as u64 > LIMIT || bytes.contains(&0) {
+        return Err(outside_root());
+    }
+    String::from_utf8(bytes).map_err(|_| outside_root())
+}
+
+#[cfg(unix)]
+fn check_alternates(
+    objects: File,
+    roots: &[String],
+    canonical_roots: &[PathBuf],
+    visited: &mut HashSet<PathBuf>,
+) -> Result<(), Denial> {
+    let base = super::fs::fd_path(objects.as_raw_fd()).map_err(|_| outside_root())?;
+    if !visited.insert(base.clone()) {
+        return Ok(());
+    }
+    // Limit the number of recursively referenced object directories so a small
+    // alternates file cannot cause an unbounded metadata walk.
+    if visited.len() > 128 {
+        return Err(outside_root());
+    }
+    let Some(info) = checked_entry(&objects, "info", canonical_roots)? else {
+        return Ok(());
+    };
+    let Some(alternates) = checked_entry(&info, "alternates", canonical_roots)? else {
+        return Ok(());
+    };
+    for line in indirection_text(alternates)?
+        .split('\n')
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+    {
+        let target = alternate_path(line);
+        let alternate = open_inside(&base.join(target), roots, canonical_roots)?;
+        check_alternates(alternate, roots, canonical_roots, visited)?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn alternate_path(line: &str) -> PathBuf {
+    if line.starts_with('"')
+        && let Some(path) = unquote_alternate(line.as_bytes())
+    {
+        use std::os::unix::ffi::OsStringExt;
+        return PathBuf::from(std::ffi::OsString::from_vec(path));
+    }
+    // Git treats an invalid C-style quote as part of the literal pathname.
+    PathBuf::from(line)
+}
+
+#[cfg(unix)]
+fn unquote_alternate(line: &[u8]) -> Option<Vec<u8>> {
+    let mut path = Vec::new();
+    let mut i = 1;
+    while i < line.len() {
+        let byte = line[i];
+        i += 1;
+        match byte {
+            b'"' => return (i == line.len()).then_some(path),
+            b'\\' => {
+                let escaped = *line.get(i)?;
+                i += 1;
+                let byte = match escaped {
+                    b'a' => 7,
+                    b'b' => 8,
+                    b't' => b'\t',
+                    b'n' => b'\n',
+                    b'v' => 11,
+                    b'f' => 12,
+                    b'r' => b'\r',
+                    b'\\' | b'"' => escaped,
+                    b'0'..=b'3' => {
+                        let second = *line.get(i)?;
+                        let third = *line.get(i + 1)?;
+                        if !(b'0'..=b'7').contains(&second) || !(b'0'..=b'7').contains(&third) {
+                            return None;
+                        }
+                        i += 2;
+                        (escaped - b'0') * 64 + (second - b'0') * 8 + third - b'0'
+                    }
+                    _ => return None,
+                };
+                path.push(byte);
+            }
+            _ => path.push(byte),
+        }
+    }
+    None
 }
 
 #[cfg(windows)]
@@ -262,8 +509,8 @@ pub(crate) fn repo(
     Err(refused())
 }
 
-/// The only way the built-ins run git: a `git -C <repo>` command that can
-/// read the repository and run nothing else.
+/// The only way the built-ins run git: a `git -C .` command in the held
+/// repository directory that can read the repository and run nothing else.
 ///
 /// - The environment is cleared except `PATH` and `HOME`, so no `GIT_DIR`,
 ///   `GIT_CONFIG_*`, `GIT_EXTERNAL_DIFF` or editor setting comes in from
@@ -286,7 +533,7 @@ pub(crate) fn repo(
 /// Repositories must belong to the service uid. Global `safe.directory`
 /// exceptions are deliberately ignored, rather than trusting foreign config.
 #[cfg(not(windows))]
-pub fn hardened_command(repo: &Path) -> Command {
+pub fn hardened_command(repo: &Repository) -> Command {
     let mut command = Command::new("git");
     command.env_clear();
     for var in ["PATH", "HOME"] {
@@ -300,12 +547,12 @@ pub fn hardened_command(repo: &Path) -> Command {
         .env("LC_ALL", "C")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_NO_LAZY_FETCH", "1");
-    if let Some(parent) = repo.parent() {
+    if let Some(parent) = repo.path.parent() {
         command.env("GIT_CEILING_DIRECTORIES", parent);
     }
     command
         .arg("-C")
-        .arg(repo)
+        .arg(".")
         .args([
             "--no-optional-locks",
             "--no-pager",
@@ -324,6 +571,18 @@ pub fn hardened_command(repo: &Path) -> Command {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    let directory = Arc::clone(&repo.directory);
+    // SAFETY: the closure owns the directory descriptor through spawn and only
+    // calls async-signal-safe fchdir in the child. CLOEXEC closes it at exec;
+    // changing the child's cwd never changes the parent's cwd.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::fchdir(directory.as_raw_fd()) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
     command
 }
 
@@ -571,7 +830,7 @@ fn drain_pipe<R: Read + AsRawFd>(
     }
 }
 
-fn git(repo: &Path, args: &[&str]) -> Result<Ran, Denial> {
+fn git(repo: &Repository, args: &[&str]) -> Result<Ran, Denial> {
     #[cfg(not(windows))]
     let mut command = hardened_command(repo);
     #[cfg(windows)]
@@ -633,6 +892,8 @@ fn show_failure(ran: &Ran) -> Denial {
 /// Runs one git read in an approved repository.
 pub fn run(repo_arg: &str, repos: &[String], op: &Op) -> Result<Value, Denial> {
     let dir = repo(repo_arg, repos)?;
+    #[cfg(all(test, unix))]
+    tests::before_exec();
     match op {
         Op::Log {
             reference,
