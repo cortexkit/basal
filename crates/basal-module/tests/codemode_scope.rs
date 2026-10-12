@@ -128,6 +128,9 @@ fn codemode_handler_attests_via_real_sdk_and_replaces_the_describe_connection() 
             let path = store_path.clone();
             let run_opens = opens.clone();
             let daemon = tokio::spawn(async move {
+                // A panicked handler may leave the socket open without replying.
+                // Bound the daemon protocol too, not only the serving future.
+                tokio::time::timeout(Duration::from_secs(60), async move {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 authenticate_server(&mut stream, &info.key, &info.daemon_id, "codemode-sdk-test", Duration::from_secs(5)).await.unwrap();
                 let hello = read_frame(&mut stream).await.unwrap().unwrap();
@@ -183,8 +186,12 @@ fn codemode_handler_attests_via_real_sdk_and_replaces_the_describe_connection() 
                 assert_eq!(response.header.ty, FrameType::Response, "{}", String::from_utf8_lossy(&response.body));
                 assert_eq!(serde_json::from_slice::<Value>(&response.body).unwrap()["structuredContent"]["status"], "completed");
                 write_frame(&mut stream, &Frame::build(FrameType::Goodbye, Flags::new(false, Priority::Passive, false), 0, 0, 0, Vec::new()).unwrap()).await.unwrap();
+                }).await.expect("daemon protocol stalled waiting for the SDK handler");
             });
-            let (handle, serving) = subc_client_rs::serve_with_handle(&file, basal_module::manifest::manifest(), handler.clone()).await.unwrap();
+            let (handle, serving) = tokio::time::timeout(
+                Duration::from_secs(60),
+                subc_client_rs::serve_with_handle(&file, basal_module::manifest::manifest(), handler.clone()),
+            ).await.expect("SDK connection setup stalled").unwrap();
             connection.attach(handle, runtime.handle().clone());
             tokio::time::timeout(Duration::from_secs(15), serving).await.unwrap().unwrap();
             daemon.await.unwrap();
