@@ -40,7 +40,6 @@ impl DevBinaries {
             .collect::<io::Result<Vec<_>>>()?;
         sources.sort_by(|left, right| left.1.cmp(&right.1));
 
-        let source_directory = sources[0].0.clone();
         let mut digest = blake3::Hasher::new();
         // Sorting filenames gives a module-and-worker pair a stable byte order.
         // Related artifacts can live in separate Cargo output directories.
@@ -57,8 +56,7 @@ impl DevBinaries {
         }
         let digest = digest.finalize();
         let digest_name = digest.to_hex().to_string()[..16].to_owned();
-        // Old digests accumulate under target/ for reuse until cargo clean removes them.
-        let directory = source_directory.join("ckdev-exec").join(digest_name);
+        let directory = exec_root().join(digest_name);
         fs::create_dir_all(&directory)?;
 
         let placed = Self { directory };
@@ -80,6 +78,20 @@ impl DevBinaries {
         };
         Ok(self.directory.join(name))
     }
+}
+
+/// Where copies are placed: the system temporary directory, never Cargo's
+/// target directory. A target directory may sit on a removable volume. Tests
+/// run the real module, which launches each worker as macOS's "responsible
+/// process" for itself (detached from the parent's privacy permissions, as in
+/// production). A worker copy executed from a removable volume would then be
+/// asking for removable-volume access on its own behalf, so macOS raises a
+/// privacy prompt for every new build, and the volume's directory listings
+/// stall until it's answered. The temporary directory is on the internal
+/// disk. Old digests stay there for reuse until the system clears its
+/// temporary files.
+fn exec_root() -> PathBuf {
+    std::env::temp_dir().join("ckdev-exec")
 }
 
 fn publish_executable(source: &Path, destination: &Path) -> io::Result<()> {
