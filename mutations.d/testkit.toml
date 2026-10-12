@@ -135,3 +135,44 @@ only = true
 platforms = ["linux"]
 timeout_s = 600
 build_timeout_s = 3600
+
+[[control]]
+id = "ckdev-named-binary-runs-from-its-build-folder"
+guards = "Every executable is copied out of its build folder, even one already named ckdev-, so nothing runs from a removable target volume"
+file = "crates/basal-testkit/src/binaries.rs"
+old = """
+    let binary = binary.as_ref();
+    static COPIES"""
+new = """
+    let binary = binary.as_ref();
+    if !binary.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.starts_with("ck-")) {
+        return binary.to_path_buf(); // NON-VACUITY BREAK
+    }
+    static COPIES"""
+edits = []
+test_file = "crates/basal-testkit/src/binaries.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--lib"
+expect_red = ["binaries::tests::copies_never_run_from_their_build_folder_whatever_the_name"]
+only = true
+platforms = ["linux"]
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "macos-copies-use-the-var-folders-temp-dir"
+guards = "On macOS executable copies live in a private, user-owned folder under /tmp, where a fresh copy starts at once"
+file = "crates/basal-testkit/src/binaries.rs"
+old = """let root = PathBuf::from(format!("/tmp/basal-exec-{uid}"));"""
+new = """let root = std::env::temp_dir().join(format!("basal-exec-{uid}")); // NON-VACUITY BREAK"""
+edits = []
+test_file = "crates/basal-testkit/src/binaries.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--lib"
+expect_red = ["binaries::tests::macos_copies_live_in_a_private_folder_under_tmp"]
+only = true
+platforms = ["macos"]
+timeout_s = 600
+build_timeout_s = 3600

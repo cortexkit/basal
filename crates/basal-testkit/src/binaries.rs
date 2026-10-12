@@ -56,7 +56,7 @@ impl DevBinaries {
         }
         let digest = digest.finalize();
         let digest_name = digest.to_hex().to_string()[..16].to_owned();
-        let directory = exec_root().join(digest_name);
+        let directory = exec_root()?.join(digest_name);
         fs::create_dir_all(&directory)?;
 
         let placed = Self { directory };
@@ -80,18 +80,47 @@ impl DevBinaries {
     }
 }
 
-/// Where copies are placed: the system temporary directory, never Cargo's
-/// target directory. A target directory may sit on a removable volume. Tests
-/// run the real module, which launches each worker as macOS's "responsible
-/// process" for itself (detached from the parent's privacy permissions, as in
-/// production). A worker copy executed from a removable volume would then be
-/// asking for removable-volume access on its own behalf, so macOS raises a
-/// privacy prompt for every new build, and the volume's directory listings
-/// stall until it's answered. The temporary directory is on the internal
-/// disk. Old digests stay there for reuse until the system clears its
-/// temporary files.
-fn exec_root() -> PathBuf {
-    std::env::temp_dir().join("ckdev-exec")
+/// Where copies are placed: a private folder on the internal disk, never
+/// Cargo's target directory. A target directory may sit on a removable volume.
+/// Tests run the real module, which launches each worker as macOS's
+/// "responsible process" for itself (detached from the parent's privacy
+/// permissions, as in production). A worker copy executed from a removable
+/// volume would then be asking for removable-volume access on its own behalf,
+/// so macOS raises a privacy prompt for every new build, and the volume's
+/// directory listings stall until it's answered.
+///
+/// On macOS the folder is `/tmp/basal-exec-<uid>`, not the per-user temporary
+/// directory under /var/folders: macOS can hold a freshly copied executable
+/// there for 30 seconds or more while it assesses it, and under /tmp it starts
+/// at once. Because /tmp is shared, the folder must belong to this user and be
+/// private, or no copy is placed. Old digests stay for reuse until the system
+/// clears its temporary files.
+#[cfg(target_os = "macos")]
+fn exec_root() -> io::Result<PathBuf> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+
+    // SAFETY: getuid has no preconditions and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    let root = PathBuf::from(format!("/tmp/basal-exec-{uid}"));
+    match fs::DirBuilder::new().mode(0o700).create(&root) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error),
+    }
+    // symlink_metadata, so a link planted at this path is refused rather than followed.
+    let metadata = fs::symlink_metadata(&root)?;
+    if !metadata.is_dir() || metadata.uid() != uid || metadata.permissions().mode() & 0o077 != 0 {
+        return Err(io::Error::other(format!(
+            "{} must be a directory owned by this user with mode 0700",
+            root.display()
+        )));
+    }
+    Ok(root)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn exec_root() -> io::Result<PathBuf> {
+    Ok(std::env::temp_dir().join("ckdev-exec"))
 }
 
 fn publish_executable(source: &Path, destination: &Path) -> io::Result<()> {
@@ -205,18 +234,14 @@ fn rename_without_replacing(source: &Path, destination: &Path) -> io::Result<()>
     fs::rename(source, destination)
 }
 
-/// A process-lifetime scratch executable for callers whose API returns a path.
-/// Already-development executables need no new copy. Cache by source path so
-/// repeated worker launches do not create a scratch directory per activation.
+/// A scratch copy of an executable, kept for the lifetime of the test process,
+/// for callers whose API takes a path. Every executable is copied, even one
+/// already named `ckdev-`: it may still be in a build folder on a removable
+/// volume (see [`exec_root`]). Copies are cached by source path, so repeated
+/// worker launches reuse one copy instead of creating a scratch directory each
+/// time.
 pub fn dev_binary(binary: impl AsRef<Path>) -> PathBuf {
     let binary = binary.as_ref();
-    if !binary
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.starts_with("ck-"))
-    {
-        return binary.to_path_buf();
-    }
     static COPIES: OnceLock<Mutex<HashMap<PathBuf, DevBinaries>>> = OnceLock::new();
     let mut copies = COPIES.get_or_init(Mutex::default).lock().unwrap();
     let placed = copies.entry(binary.to_path_buf()).or_insert_with(|| {
@@ -316,6 +341,35 @@ mod tests {
                 0o755
             );
         }
+    }
+
+    #[test]
+    fn copies_never_run_from_their_build_folder_whatever_the_name() {
+        let source = SourceFiles::new();
+        for name in ["ck-basal-worker", "ckdev-basal-worker", "plain-helper"] {
+            let binary = source.executable(name, name.as_bytes());
+            let placed = dev_binary(&binary);
+            assert!(
+                !placed.starts_with(&source.0),
+                "{name} must be copied out of its build folder, got {}",
+                placed.display()
+            );
+            assert_eq!(fs::read(&placed).unwrap(), name.as_bytes());
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_copies_live_in_a_private_folder_under_tmp() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let root = exec_root().unwrap();
+        assert!(root.starts_with("/tmp"), "{}", root.display());
+        let metadata = fs::symlink_metadata(&root).unwrap();
+        assert!(metadata.is_dir());
+        // SAFETY: getuid has no preconditions and cannot fail.
+        assert_eq!(metadata.uid(), unsafe { libc::getuid() });
+        assert_eq!(metadata.permissions().mode() & 0o077, 0);
     }
 
     #[test]
