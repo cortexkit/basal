@@ -299,7 +299,8 @@ fn a_repository_config_cannot_make_a_built_in_run_a_program() {
     }
     // The same command factory with a command that reads the work tree,
     // the kind `core.fsmonitor` exists for.
-    let mut command = hardened_command(&repo.dir);
+    let pinned = git::repo(&repo.path(), &repo.repos()).expect("pin repository");
+    let mut command = hardened_command(&pinned);
     command.args(["status", "--porcelain"]);
     let ran = run_command(command).expect("ran");
     assert!(ran.success, "{}", ran.stderr);

@@ -85,6 +85,10 @@ What happens when basal can't use the answer depends on whether the server may a
 
 ### Git
 
+On macOS and Linux, basal opens and verifies the approved repository directory through the filesystem built-in's checked-open helper, then holds it through execution. The child uses `fchdir` on that descriptor before executing `git -C .`; it never looks up the repository's pathname again. Replacing an ancestor with a symlink after the verified open therefore cannot select a different repository. Approved roots follow the filesystem built-in's symlink semantics: a symlinked root resolves to its target. Windows retains its handle-pinned runner.
+
+Before a Unix git read, basal checks `.git` indirection (`gitdir:`), linked-worktree `commondir`, and recursive object `alternates`. Their canonical targets must be inside an approved git root, which may be a separately approved repository; otherwise the call receives `denied`. Relative targets are resolved from their Git-defined base directories, including C-style quoted alternate paths. These indirection targets are checked when the call starts, but are not frozen: a local process that can change repository metadata or redirect an absolute target's ancestor can change them between the check and git's read. Flow code cannot do that, and paths inside approved roots are already in its authorized read scope. The held repository descriptor does not provide snapshot isolation for metadata or objects.
+
 basal runs the `git` program rather than an in-process reader such as gix. git gives exactly git's own answers for revision syntax, `describe`, pathspecs and diffs, and the parent gains no large dependency tree. The cost is that a repository's own `.git/config` can make git run a program, and whoever controls that file is not necessarily the operator who approved the flow. So every git command runs:
 
 - with the environment cleared except `PATH` and `HOME`, plus `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_TERMINAL_PROMPT=0` and `GIT_NO_LAZY_FETCH=1`, and with a null stdin;

@@ -71,6 +71,44 @@ class MutationCoverageChecks(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "Windows-only module"):
                         partition([row])
 
+    def test_macos_native_allowlist_accepts_only_complete_macos_functions(self):
+        native = '#[cfg(target_os = "macos")]\nfn verify() { if true { check(); } }'
+        for file in ("crates/basal-host/src/builtins/git.rs", "crates/basal-host/src/builtins/fs.rs"):
+            with self.subTest(file=file):
+                row = {"id": "mac-native", "package": "basal-host", "platforms": ["macos"],
+                       "file": file, "old": native}
+                self.assertEqual(partition([row]), {"linux": set(), "macos": {"mac-native"}, "windows": set()})
+                for old in ('check();', '#[cfg(unix)]\nfn verify() { check(); }',
+                            native + '\nfn shared() {}', native[:-1]):
+                    row["old"] = old
+                    with self.assertRaisesRegex(ValueError, "belong on Linux"):
+                        partition([row])
+
+    def test_macos_native_allowlist_rejects_other_files_and_shared_extra_edits(self):
+        native = '#[cfg(target_os = "macos")]\nfn verify() { check(); }'
+        for file in ("crates/basal-host/src/lib.rs", "crates/basal-host/src/builtins/net.rs"):
+            row = {"id": "other", "package": "basal-host", "platforms": ["macos"], "file": file, "old": native}
+            with self.assertRaisesRegex(ValueError, "belong on Linux"):
+                partition([row])
+        row = {"id": "multi", "package": "basal-host", "platforms": ["macos"],
+               "file": "crates/basal-host/src/builtins/fs.rs", "old": native,
+               "edits": [{"file": "crates/basal-host/src/builtins/git.rs", "old": "check();"}]}
+        with self.assertRaisesRegex(ValueError, "belong on Linux"):
+            partition([row])
+
+    def test_literal_braces_cannot_hide_a_shared_function_after_a_macos_function(self):
+        row = {"id": "braces", "package": "basal-host", "platforms": ["macos"],
+               "file": "crates/basal-host/src/builtins/fs.rs",
+               "old": '#[cfg(target_os = "macos")]\nfn verify() { let text = "{}"; }'}
+        self.assertEqual(partition([row])["macos"], {"braces"})
+        for body in ('fn verify() { let text = "{"; } fn shared() { let text = "}"; }',
+                     'fn verify() { // {\n check(); } fn shared() { // }\n check(); }',
+                     'fn verify() { let text = r#"{"#; }',
+                     'fn verify() { /* { */ check(); }'):
+            row["old"] = '#[cfg(target_os = "macos")]\n' + body
+            with self.assertRaisesRegex(ValueError, "belong on Linux"):
+                partition([row])
+
     def test_artifact_names_accept_windows_shards_but_not_pr_or_unknown_hosts(self):
         for name in ("mutations-linux-1", "mutations-macos-5", "mutations-windows-1", "mutations-windows-12"):
             self.assertIsNotNone(ARTIFACT_PATTERN.fullmatch(name), name)
