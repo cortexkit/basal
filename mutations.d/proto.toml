@@ -1,0 +1,178 @@
+# basal-proto: the wire codec, frame limits and shared protocol types.
+
+[[control]]
+id = "frame-size-not-checked-before-reading-the-payload"
+guards = "frame size not checked before reading the payload"
+test_file = "crates/basal-worker/tests/ipc.rs"
+runner = "cargo"
+package = "basal-worker"
+platforms = ["macos"]
+target = "--test ipc"
+expect_red = ["oversized_frame_is_refused_and_the_worker_exits_cleanly"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-proto/src/frame.rs"
+old = "let len = u32::from_be_bytes(header) as usize;\n    if len > MAX_FRAME_BYTES {"
+new = "let len = u32::from_be_bytes(header) as usize;\n    if false && len > MAX_FRAME_BYTES {"
+
+[[control]]
+id = "protocol-list-count-ignores-element-wire-size"
+guards = "protocol list count ignores element wire size"
+file = "crates/basal-proto/src/codec.rs"
+old = "let needed = len.saturating_mul(minimum_bytes);"
+new = "let needed = len; let _ = minimum_bytes; // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-proto/src/codec.rs"
+runner = "cargo"
+package = "basal-proto"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codec::tests::list_counts_require_the_complete_minimum_wire_size"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "protocol-encoder-allows-empty-names"
+guards = "protocol encoder allows empty names"
+file = "crates/basal-proto/src/codec.rs"
+old = "if value.is_empty() {"
+new = "if false && value.is_empty() { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-worker/tests/shutdown.rs"
+runner = "cargo"
+package = "basal-worker"
+platforms = ["macos"]
+target = "--test shutdown"
+expect_red = ["encoder_rejects_fields_that_its_decoder_would_refuse"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+# Codemode wire and worker-profile guards. These basal-proto library and
+# basal-worker codemode tests exercise platform-independent behavior. Mutation
+# proofs run once on Linux; workspace gates run the tests on all three supported OSes.
+[[control]]
+id = "codemode-protocol-version"
+hub = "Both the protocol version assertion and the fixed Welcome wire fixture pin version 9"
+hub_targets = ["basal_proto"]
+guards = "the worker wire requires protocol version 9 to carry admission-time template params"
+test_file = "crates/basal-proto/src/lib.rs"
+runner = "cargo"
+package = "basal-proto"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["tests::codemode_wire_codes_preserve_shell_and_round_trip_tool_json"]
+only = true
+file = "crates/basal-proto/src/limits.rs"
+old = "pub const PROTOCOL_VERSION: u32 = 9;"
+new = "pub const PROTOCOL_VERSION: u32 = 8; // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-address-space-headroom"
+guards = "codemode process ceiling exceeds the heap cap"
+test_file = "crates/basal-proto/src/lib.rs"
+runner = "cargo"
+package = "basal-proto"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["tests::codemode_wire_codes_preserve_shell_and_round_trip_tool_json"]
+only = false
+file = "crates/basal-proto/src/limits.rs"
+old = "pub const CODEMODE_ADDRESS_SPACE_BYTES: u64 = 512 * 1024 * 1024;"
+new = "pub const CODEMODE_ADDRESS_SPACE_BYTES: u64 = 64 * 1024 * 1024; // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-tool-wire-code"
+hub = "Shell code 11 remains decodable, asserted by the codemode wire test and the generic worker-message roundtrip"
+hub_targets = ["basal_proto"]
+guards = "tool code is above primitives and never reuses shell code 11"
+test_file = "crates/basal-proto/src/lib.rs"
+runner = "cargo"
+package = "basal-proto"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["tests::codemode_wire_codes_preserve_shell_and_round_trip_tool_json"]
+only = false
+file = "crates/basal-proto/src/wire.rs"
+old = "const CALL_TOOL: u8 = 22;"
+new = "const CALL_TOOL: u8 = 11; // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-activation-tools-wire"
+hub = "Catalog names survive activation encoding, asserted by the codemode and generic parent-message roundtrips"
+hub_targets = ["basal_proto"]
+guards = "activation carries the catalog tool names"
+test_file = "crates/basal-proto/src/lib.rs"
+runner = "cargo"
+package = "basal-proto"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["tests::codemode_activation_tools_round_trip_and_names_are_bounded"]
+only = false
+file = "crates/basal-proto/src/wire.rs"
+old = "enc.count(req.tools.len());"
+new = "enc.count(0); // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-welcome-hash-wire"
+hub = "The codemode Welcome hash survives encoding, asserted by the codemode and generic worker-message roundtrips"
+hub_targets = ["basal_proto"]
+guards = "welcome reports the codemode hash independently of the flow hash"
+test_file = "crates/basal-proto/src/lib.rs"
+runner = "cargo"
+package = "basal-proto"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["tests::codemode_welcome_reports_two_distinct_prelude_hashes"]
+only = false
+file = "crates/basal-proto/src/wire.rs"
+old = "enc.fixed(&w.codemode_prelude_hash.0);"
+new = "enc.fixed(&w.prelude_hash.0); // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-console-wire-tag"
+guards = "console uses a unique worker-to-parent tag"
+test_file = "crates/basal-proto/src/lib.rs"
+runner = "cargo"
+package = "basal-proto"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["tests::codemode_console_has_a_unique_worker_tag_and_round_trips"]
+only = false
+file = "crates/basal-proto/src/wire.rs"
+old = "const TAG_CONSOLE: u8 = 106;"
+new = "const TAG_CONSOLE: u8 = 105; // NON-VACUITY BREAK"
+
+[[control]]
+id = "target-call-distinct-wire-kind"
+guards = "Worker target calls cannot decode as ordinary module calls"
+test_file = "crates/basal-proto/src/lib.rs"
+runner = "cargo"
+package = "basal-proto"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["tests::target_module_calls_have_a_distinct_wire_kind_and_round_trip"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-proto/src/wire.rs"
+old = "enc.u8(CALL_OP_FOR);"
+new = "enc.u8(0); // NON-VACUITY BREAK"
+
+[[control]]
+id = "windows-confinement-wire-tag"
+guards = "The Windows report uses protocol tag 3 independently of its decoder"
+test_file = "crates/basal-proto/src/lib.rs"
+runner = "cargo"
+package = "basal-proto"
+platforms = ["windows"]
+target = "--lib"
+expect_red = ["tests::confinement_wire_tags_and_linux_fields_are_stable"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-proto/src/wire/windows.rs"
+old = "enc.u8(TAG);"
+new = "enc.u8(99); // NON-VACUITY BREAK"

@@ -1,0 +1,137 @@
+# basal-testkit: shared test harnesses and fixtures.
+
+# A test-fixture control: the pool test harness must stop waiting at its own
+# deadline and reap the workers it started, so a stalled pool test fails by
+# name instead of hanging the suite.
+
+[[control]]
+id = "pool-fixture-wait-has-no-deadline"
+guards = "a stalled pool fixture fails within its own deadline and reaps its workers"
+test_file = "crates/basal-module/tests/pool.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test pool"
+expect_red = ["a_wait_deadline_stops_and_reaps_its_workers"]
+only = false
+build_timeout_s = 3600
+# The broad runner covers the whole package; the guard keeps its own short deadline.
+timeout_s = 600
+file = "crates/basal-testkit/src/harness.rs"
+old = "if Instant::now() >= deadline {"
+new = "if false && Instant::now() >= deadline { // NON-VACUITY BREAK"
+
+[[control]]
+id = "dispatch-driver-wait-loses-its-short-deadline"
+guards = "a deliberately stalled activation driver reaches its short wait deadline and returns its worker for reaping"
+file = "crates/basal-testkit/tests/dispatch_slots.rs"
+old = "const STALLED_DRIVER_WAIT: Duration = Duration::from_secs(3);"
+new = "const STALLED_DRIVER_WAIT: Duration = Duration::from_secs(60); // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-testkit/tests/dispatch_slots.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test dispatch_slots"
+expect_red = ["a_stuck_driver_wait_deadline_releases_and_reaps_its_worker"]
+only = true
+# The broad runner covers the whole package; the guard keeps its own short deadline.
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "flow-scope-fixture-keeps-the-production-activation-deadline"
+guards = "a deliberately stalled scope activation reaches its short deadline and reaps its worker"
+file = "crates/basal-testkit/tests/flow_scopes.rs"
+old = "const STALLED_ACTIVATION_WAIT: Duration = Duration::from_secs(3);"
+new = "const STALLED_ACTIVATION_WAIT: Duration = Duration::from_secs(60); // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test flow_scopes"
+expect_red = ["a_stalled_scope_activation_deadline_reaps_its_worker"]
+only = true
+# The broad runner covers the whole package; the guard keeps its own short deadline.
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "ownership-driver-wait-loses-its-short-deadline"
+guards = "a deliberately stalled ownership driver reaches its short wait deadline and returns its worker for reaping"
+file = "crates/basal-testkit/tests/journal_ownership.rs"
+old = "const STALLED_OWNER_DRIVER_WAIT: Duration = Duration::from_secs(3);"
+new = "const STALLED_OWNER_DRIVER_WAIT: Duration = Duration::from_secs(60); // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-testkit/tests/journal_ownership.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test journal_ownership"
+expect_red = ["a_stuck_ownership_driver_wait_deadline_releases_and_reaps_its_worker"]
+only = true
+# The broad runner covers the whole package; the guard keeps its own short deadline.
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "fixture-git-helper-clears-inherited-environment"
+guards = "fixture git commands ignore injected caller git configuration"
+file = "crates/basal-testkit/src/git.rs"
+old = "command.env_clear();"
+new = "// command.env_clear(); // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-testkit/src/git.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--lib"
+expect_red = ["git::tests::fixture_git_commands_ignore_injected_global_hooks"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "content-addressed-copy-is-not-rewritten"
+guards = "An existing executable copy is reused without changing its modification time"
+file = "crates/basal-testkit/src/binaries.rs"
+old = """
+if destination.is_file() {
+        return Ok(());
+    }"""
+new = """
+if destination.is_file() {
+        fs::remove_file(destination)?; // NON-VACUITY BREAK
+    }"""
+edits = []
+test_file = "crates/basal-testkit/src/binaries.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--lib"
+expect_red = ["binaries::tests::pre_existing_complete_copy_is_reused_without_rewriting"]
+only = true
+platforms = ["linux"]
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "content-addressed-directory-uses-path-not-bytes"
+guards = "Changed executable bytes select a different content-addressed directory"
+file = "crates/basal-testkit/src/binaries.rs"
+old = "let digest_name = digest.to_hex().to_string()[..16].to_owned();"
+new = """
+let digest_name = blake3::hash(sources[0].2.as_os_str().as_encoded_bytes())
+            .to_hex()
+            .to_string()[..16]
+            .to_owned(); // NON-VACUITY BREAK"""
+edits = []
+test_file = "crates/basal-testkit/src/binaries.rs"
+runner = "cargo"
+package = "basal-testkit"
+target = "--lib"
+expect_red = ["binaries::tests::changed_binary_bytes_use_a_different_directory"]
+only = true
+platforms = ["linux"]
+timeout_s = 600
+build_timeout_s = 3600

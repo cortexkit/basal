@@ -1,0 +1,336 @@
+# script/: staging, signing, the flows rig and the repository fences.
+
+[[control]]
+id = "rig-routing-pin-accepts-a-catalog-without-luna"
+guards = "the routing pin refuses a served catalog without openai/gpt-6-luna"
+file = "script/flows-rig.sh"
+old = 'if "openai/gpt-6-luna" not in models:'
+new = "if False:"
+edits = []
+test_file = "script/tests/flows_rig.py"
+runner = "command"
+platforms = ["linux"]
+command = ["python3", "-m", "unittest", "{test}"]
+test_count_pattern = "Ran {count} test"
+expect_red = ["script.tests.flows_rig.RigChecks.test_pin_uses_served_providers_and_refuses_missing_luna"]
+only = false
+timeout_s = 120
+build_timeout_s = 1800
+
+[[control]]
+id = "rig-credential-check-accepts-extra-credentials"
+guards = "the rig vault must hold exactly one active apikey:openai credential"
+file = "script/flows-rig.sh"
+old = "if len(rows) != 1 or"
+new = "if len(rows) < 1 or"
+edits = []
+test_file = "script/tests/flows_rig.py"
+runner = "command"
+platforms = ["linux"]
+command = ["python3", "-m", "unittest", "{test}"]
+test_count_pattern = "Ran {count} test"
+expect_red = ["script.tests.flows_rig.RigChecks.test_credential_inventory_requires_one_active_openai_binding"]
+only = false
+timeout_s = 120
+build_timeout_s = 1800
+
+[[control]]
+id = "rig-grant-plan-tolerates-unexpected-grants"
+guards = "the rig vault may hold no grants beyond Broca's read and routing's list"
+file = "script/flows-rig.sh"
+old = "if not existing <= allowed:"
+new = "if False:"
+edits = []
+test_file = "script/tests/flows_rig.py"
+runner = "command"
+platforms = ["linux"]
+command = ["python3", "-m", "unittest", "{test}"]
+test_count_pattern = "Ran {count} test"
+expect_red = ["script.tests.flows_rig.RigChecks.test_grant_plan_is_exact_and_idempotent"]
+only = false
+timeout_s = 120
+build_timeout_s = 1800
+
+[[control]]
+id = "rig-auth-omits-the-explicit-key-path"
+guards = "every rig auth command names the rig's own master-key file"
+file = "script/flows-rig.sh"
+old = '--data-dir "$VAULT_DIR" --key-path "$VAULT_KEY" --subc "$CONN"'
+new = '--data-dir "$VAULT_DIR" --subc "$CONN"'
+edits = []
+test_file = "script/tests/flows_rig.py"
+runner = "command"
+platforms = ["linux"]
+command = ["python3", "-m", "unittest", "{test}"]
+test_count_pattern = "Ran {count} test"
+expect_red = ["script.tests.flows_rig.RigChecks.test_auth_dry_runs_name_all_three_rig_paths_without_reading_payload"]
+only = false
+timeout_s = 120
+build_timeout_s = 1800
+
+[[control]]
+id = "rig-auth-path-check-ignores-final-symlinks"
+guards = "auth paths are resolved through a final symlink before the inside-the-rig check"
+file = "script/flows-rig.sh"
+old = "if not os.path.realpath(path).startswith(root):"
+new = "if not os.path.abspath(path).startswith(root):"
+edits = []
+test_file = "script/tests/flows_rig.py"
+runner = "command"
+platforms = ["linux"]
+command = ["python3", "-m", "unittest", "{test}"]
+test_count_pattern = "Ran {count} test"
+expect_red = ["script.tests.flows_rig.RigChecks.test_auth_refuses_a_final_key_symlink_outside_the_rig"]
+only = false
+timeout_s = 120
+build_timeout_s = 1800
+
+[[control]]
+id = "stage-schema-rise-condition"
+guards = "the update requests a store backup exactly when its schema rises"
+file = "script/stage.sh"
+old = '  if [ "$BUILD_SCHEMA" -gt "$LIVE_SCHEMA" ]; then'
+new = '  if [ "$BUILD_SCHEMA" -ge "$LIVE_SCHEMA" ]; then # NON-VACUITY BREAK'
+edits = []
+test_file = "script/tests/stage_card.py"
+runner = "command"
+platforms = ["linux"]
+command = ["python3", "-m", "unittest", "{test}"]
+test_count_pattern = "Ran {count} test"
+expect_red = ["script.tests.stage_card.StageCardChecks.test_migrates_exactly_when_schema_rises"]
+only = false
+timeout_s = 120
+build_timeout_s = 1800
+
+[[control]]
+id = "stage-worker-first-order"
+guards = "the new worker is placed before the parent restart"
+file = "script/stage.sh"
+old = '''
+1. Worker first, without restarting the parent:
+   \`place-module.sh --module basal --staged $(shell_quote "$STAGE_DIR/ck-basal-worker") --marker $(shell_quote "$WORKER_MARKER") --control $(shell_quote "$WORKER_CONTROL") --dest ~/.local/share/cortexkit/bin/ck-basal-worker --no-restart\`
+2. Then ck-basal, with the default update restart:
+   \`place-module.sh --module basal --staged $(shell_quote "$STAGE_DIR/ck-basal") --marker $(shell_quote "$BASAL_MARKER") --control $(shell_quote "$BASAL_CONTROL")$MIGRATES_ARG\`'''
+new = '''
+1. Parent first: NON-VACUITY BREAK
+   \`place-module.sh --module basal --staged $(shell_quote "$STAGE_DIR/ck-basal") --marker $(shell_quote "$BASAL_MARKER") --control $(shell_quote "$BASAL_CONTROL")$MIGRATES_ARG\`
+2. Worker last:
+   \`place-module.sh --module basal --staged $(shell_quote "$STAGE_DIR/ck-basal-worker") --marker $(shell_quote "$WORKER_MARKER") --control $(shell_quote "$WORKER_CONTROL") --dest ~/.local/share/cortexkit/bin/ck-basal-worker --no-restart\`'''
+edits = []
+test_file = "script/tests/stage_card.py"
+runner = "command"
+platforms = ["linux"]
+command = ["python3", "-m", "unittest", "{test}"]
+test_count_pattern = "Ran {count} test"
+expect_red = ["script.tests.stage_card.StageCardChecks.test_worker_first_without_restart_then_parent_restart"]
+only = false
+timeout_s = 120
+build_timeout_s = 1800
+
+[[control]]
+id = "stage-marker-refusal"
+guards = "invalid staged or live markers refuse the update card"
+file = "script/stage.sh"
+old = '    [ "$staged_marker" -ge 1 ] && [ "$live_marker" -eq 0 ] \'
+new = '''
+    # NON-VACUITY BREAK
+    [ "$staged_marker" -ge 0 ] && [ "$live_marker" -ge 0 ] \'''
+edits = []
+test_file = "script/tests/stage_card.py"
+runner = "command"
+platforms = ["linux"]
+command = ["python3", "-m", "unittest", "{test}"]
+test_count_pattern = "Ran {count} test"
+expect_red = ["script.tests.stage_card.StageCardChecks.test_marker_refusal_writes_no_card"]
+only = false
+timeout_s = 120
+build_timeout_s = 1800
+
+[[control]]
+id = "stage-push-event-ci-filter"
+guards = "the card reports the push CI run rather than a newer scheduled audit"
+file = "script/stage.sh"
+old = '  gh run list --repo cortexkit/basal --workflow CI --commit "$SHA" --event push --limit 1 \'
+new = '''
+  # NON-VACUITY BREAK
+  gh run list --repo cortexkit/basal --workflow CI --commit "$SHA" --limit 1 \'''
+edits = []
+test_file = "script/tests/stage_card.py"
+runner = "command"
+platforms = ["linux"]
+command = ["python3", "-m", "unittest", "{test}"]
+test_count_pattern = "Ran {count} test"
+expect_red = ["script.tests.stage_card.StageCardChecks.test_push_event_ci_run_not_newer_nightly"]
+only = false
+timeout_s = 120
+build_timeout_s = 1800
+
+[[control]]
+id = "cargo-path-dependency-outside-workspace-is-accepted"
+guards = "Cargo path dependencies outside the workspace are refused"
+file = "script/check-path-deps.py"
+old = "if manifest_path != root and root not in manifest_path.parents:"
+new = "if False and manifest_path != root and root not in manifest_path.parents: # NON-VACUITY BREAK"
+edits = []
+test_file = "script/tests/check_path_deps.py"
+runner = "command"
+platforms = ["linux"]
+command = ["python3", "-m", "unittest", "{test}"]
+test_count_pattern = "Ran {count} test"
+expect_red = ["script.tests.check_path_deps.PathDependencyChecks.test_outside_path_dependency_is_refused_and_named"]
+only = false
+timeout_s = 120
+build_timeout_s = 1800
+
+[[control]]
+id = "stage-strings-inspection-fails-open"
+guards = "failed strings inspection is never evidence that a production binary lacks the kill hook"
+file = "script/stage.sh"
+old = 'hook_table=$(strings "$TARGET/release/ck-basal") || die "cannot inspect the built ck-basal; nothing staged"'
+new = 'hook_table=$(strings "$TARGET/release/ck-basal" || true) # NON-VACUITY BREAK'
+edits = []
+test_file = "script/tests/stage_card.py"
+runner = "command"
+platforms = ["linux"]
+command = ["python3", "-c", 'import subprocess,sys; print("mutation diff stat:\n" + subprocess.run(["git","diff","--stat"], capture_output=True,text=True,check=True).stdout, flush=True); sys.exit(subprocess.run(["python3","-m","unittest",sys.argv[1]]).returncode)', "{test}"]
+test_count_pattern = "Ran {count} test"
+expect_red = ["script.tests.stage_card.StageBinaryChecks.test_binary_inspection_fails_closed"]
+only = false
+timeout_s = 120
+build_timeout_s = 1800
+
+[[control]]
+id = "stage-symbol-inspection-fails-open"
+guards = "failed nm inspection is never evidence that a production binary has no debug map"
+file = "script/stage.sh"
+old = 'symbols=$(nm -a "$TARGET/release/$bin")'
+new = 'symbols=$(nm -a "$TARGET/release/$bin" || true) # NON-VACUITY BREAK'
+edits = []
+test_file = "script/tests/stage_card.py"
+runner = "command"
+platforms = ["linux"]
+command = ["python3", "-c", 'import subprocess,sys; print("mutation diff stat:\n" + subprocess.run(["git","diff","--stat"], capture_output=True,text=True,check=True).stdout, flush=True); sys.exit(subprocess.run(["python3","-m","unittest",sys.argv[1]]).returncode)', "{test}"]
+test_count_pattern = "Ran {count} test"
+expect_red = ["script.tests.stage_card.StageBinaryChecks.test_binary_inspection_fails_closed"]
+only = false
+timeout_s = 120
+build_timeout_s = 1800
+
+[[control]]
+id = "rig-dangling-symlinks-escape-the-root"
+guards = "a dangling final symlink is resolved before allowing writes under the rig root"
+file = "script/flows-rig.sh"
+old = "print(Path(sys.argv[1]).resolve())"
+new = "print(Path(sys.argv[1]).absolute()) # NON-VACUITY BREAK"
+edits = []
+test_file = "script/tests/flows_rig.py"
+runner = "command"
+platforms = ["linux"]
+command = ["python3", "-c", 'import subprocess,sys; print("mutation diff stat:\n" + subprocess.run(["git","diff","--stat"], capture_output=True,text=True,check=True).stdout, flush=True); sys.exit(subprocess.run(["python3","-m","unittest",sys.argv[1]]).returncode)', "{test}"]
+test_count_pattern = "Ran {count} test"
+expect_red = ["script.tests.flows_rig.RigChecks.test_dangling_symlink_cannot_redirect_a_rig_write"]
+only = false
+timeout_s = 120
+build_timeout_s = 1800
+
+[[control]]
+id = "worker-network-probe-accepts-only-sandbox-denials"
+guards = "The worker verification gate accepts only a sandbox denial, not a refused connection"
+file = "script/sign-worker.sh"
+old = "return error_number in (1, 13)"
+new = "return error_number != 0 # NON-VACUITY BREAK"
+edits = []
+test_file = "script/tests/sign_worker.py"
+runner = "command"
+platforms = ["linux"]
+command = ["python3", "-m", "unittest", "{test}"]
+test_count_pattern = "Ran {count} test"
+expect_red = ["script.tests.sign_worker.SignWorkerVerifyChecks.test_connection_refused_fails_gate"]
+only = false
+timeout_s = 120
+build_timeout_s = 1800
+
+[[control]]
+id = "rig-contract-project-root-is-not-the-registered-project"
+guards = "The live contract receives the same isolated root registered in entorhinal"
+file = "script/flows-rig.sh"
+old = '--project-root "$project_root" \'
+new = '--project-root "${RIG_HOME:?NON-VACUITY BREAK}" \'
+edits = []
+test_file = "script/tests/flows_rig.py"
+runner = "command"
+platforms = ["linux"]
+command = ["python3", "-m", "unittest", "{test}"]
+test_count_pattern = "Ran {count} test"
+expect_red = ["script.tests.flows_rig.RigChecks.test_live_contract_receives_the_registered_isolated_project_root"]
+only = false
+timeout_s = 120
+build_timeout_s = 1800
+
+[[control]]
+id = "rig-core-manifest-revision-mismatch-is-accepted"
+guards = "The placed core's manifest revision must equal the named rig build"
+file = "script/flows-rig.sh"
+old = "if actual != expected:"
+new = "if False: # NON-VACUITY BREAK"
+edits = []
+test_file = "script/tests/flows_rig.py"
+runner = "command"
+platforms = ["linux"]
+command = ["python3", "-m", "unittest", "{test}"]
+test_count_pattern = "Ran {count} test"
+expect_red = ["script.tests.flows_rig.RigChecks.test_core_revision_comes_from_the_manifest_and_must_match"]
+only = false
+timeout_s = 120
+build_timeout_s = 1800
+
+[[control]]
+id = "rig-cingulate-config-starts-the-wrong-binary"
+guards = "Package consent uses the real ckdev-cingulate executable in the isolated rig"
+file = "script/flows-rig.sh"
+old = '"program": "$BIN/ckdev-cingulate",'
+new = '"program": "$BIN/ckdev-basal", // NON-VACUITY BREAK'
+edits = []
+test_file = "script/tests/flows_rig.py"
+runner = "command"
+platforms = ["linux"]
+command = ["python3", "-m", "unittest", "{test}"]
+test_count_pattern = "Ran {count} test"
+expect_red = ["script.tests.flows_rig.RigChecks.test_real_cingulate_is_pinned_placed_and_configured_in_the_isolated_rig"]
+only = false
+timeout_s = 120
+build_timeout_s = 1800
+
+[[control]]
+id = "stage-worker-protocol-change-stops-basal"
+guards = "A changed worker protocol requires stop-the-world placement rather than an incompatible rolling pair"
+file = "script/stage.sh"
+old = "    STOP_THE_WORLD=1"
+new = "    STOP_THE_WORLD=0 # NON-VACUITY BREAK"
+edits = []
+test_file = "script/tests/stage_card.py"
+runner = "command"
+platforms = ["linux"]
+command = ["python3", "-m", "unittest", "{test}"]
+test_count_pattern = "Ran {count} test"
+expect_red = ["script.tests.stage_card.StageCardChecks.test_protocol_change_selects_stop_the_world"]
+only = false
+timeout_s = 600
+build_timeout_s = 1800
+
+[[control]]
+id = "rig-report-accepts-unmarked-zero-check-case"
+guards = "The script rejects a nominally passing contract report containing an unmarked zero-check case"
+file = "script/flows-rig.sh"
+old = "if empty:"
+new = "if False: # NON-VACUITY BREAK: accept an unmarked empty case"
+edits = []
+test_file = "script/tests/flows_rig.py"
+runner = "command"
+platforms = ["linux"]
+command = ["python3", "-m", "unittest", "{test}"]
+test_count_pattern = "Ran {count} test"
+expect_red = ["script.tests.flows_rig.RigChecks.test_report_rejects_zero_checks_unless_explicitly_not_run"]
+only = false
+timeout_s = 120
+build_timeout_s = 1800

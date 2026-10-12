@@ -1,0 +1,330 @@
+# basal-launch: the Windows launcher's token, profile and process setup.
+
+# Before resume the parent checks the suspended child's job and tokens.
+# Process creation fixes its mitigation bits; all spawns share one lock while
+# their child's standard handles are inheritable.
+
+[[control]]
+id = "windows-parent-skips-job-limits-mismatch"
+guards = "windows parent skips job limits mismatch"
+test_file = "crates/basal-launch/tests/windows_launch.rs"
+runner = "cargo"
+package = "basal-launch"
+platforms = ["windows"]
+target = "--test windows_launch"
+features = ["deviations"]
+expect_red = ["deviations::a_job_with_other_limits_is_refused_as_job_limits_mismatch"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-launch/src/windows/launch.rs"
+old = "if limits != required {"
+new = "if false && limits != required { // NON-VACUITY BREAK"
+
+[[control]]
+id = "windows-parent-skips-not-in-owned-job"
+guards = "windows parent skips not in owned job"
+test_file = "crates/basal-launch/tests/windows_launch.rs"
+runner = "cargo"
+package = "basal-launch"
+platforms = ["windows"]
+target = "--test windows_launch"
+features = ["deviations"]
+expect_red = ["deviations::a_child_outside_the_owned_job_is_refused_as_not_in_owned_job"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-launch/src/windows/launch.rs"
+old = "if !member {"
+new = "if false && !member { // NON-VACUITY BREAK"
+
+[[control]]
+id = "windows-parent-skips-birth-token-mismatch"
+guards = "windows parent skips birth token mismatch"
+test_file = "crates/basal-launch/tests/windows_launch.rs"
+runner = "cargo"
+package = "basal-launch"
+platforms = ["windows"]
+target = "--test windows_launch"
+features = ["deviations"]
+expect_red = ["deviations::a_primary_with_privileges_is_refused_as_birth_token_mismatch"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-launch/src/windows/launch.rs"
+old = "token::check_birth(&birth, expected)\n        .map_err(|error| LaunchError::refused(Refusal::BirthTokenMismatch, error))?;"
+new = "let _ = token::check_birth(&birth, expected); // NON-VACUITY BREAK"
+
+[[control]]
+id = "windows-parent-skips-initial-token-open"
+guards = "windows parent skips initial token open"
+test_file = "crates/basal-launch/tests/windows_launch.rs"
+runner = "cargo"
+package = "basal-launch"
+platforms = ["windows"]
+target = "--test windows_launch"
+features = ["deviations"]
+expect_red = ["deviations::a_missing_start_up_token_is_refused_as_initial_token_open"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-launch/src/windows/launch.rs"
+old = "let assigned = thread_token(child.thread.as_raw_handle())\n        .and_then(|token| token::read_facts(token.as_raw_handle()))\n        .map_err(|error| LaunchError::refused(Refusal::InitialTokenOpen, error))?;\n    token::check_initial(&assigned, &expected.package)\n        .map_err(|error| LaunchError::refused(Refusal::InitialTokenOpen, error))?;"
+new = "let _ = child; // NON-VACUITY BREAK"
+
+[[control]]
+id = "windows-creation-drops-strict-handle-checks"
+guards = "windows creation drops strict handle checks"
+test_file = "crates/basal-launch/src/windows/launch.rs"
+runner = "cargo"
+package = "basal-launch"
+platforms = ["windows"]
+target = "--lib"
+expect_red = ["windows::launch::tests::the_mitigation_policy_is_the_eight_always_on_bits"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-launch/src/windows/launch.rs"
+old = "pub const MITIGATION_STRICT_HANDLE_CHECKS: u64 = 1 << 24;"
+new = "pub const MITIGATION_STRICT_HANDLE_CHECKS: u64 = 0; // NON-VACUITY BREAK"
+
+[[control]]
+id = "windows-creation-drops-win32k-system-call-disable"
+guards = "windows creation drops win32k system call disable"
+test_file = "crates/basal-launch/src/windows/launch.rs"
+runner = "cargo"
+package = "basal-launch"
+platforms = ["windows"]
+target = "--lib"
+expect_red = ["windows::launch::tests::the_mitigation_policy_is_the_eight_always_on_bits"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-launch/src/windows/launch.rs"
+old = "pub const MITIGATION_WIN32K_SYSTEM_CALL_DISABLE: u64 = 1 << 28;"
+new = "pub const MITIGATION_WIN32K_SYSTEM_CALL_DISABLE: u64 = 0; // NON-VACUITY BREAK"
+
+[[control]]
+id = "windows-creation-drops-extension-point-disable"
+guards = "windows creation drops extension point disable"
+test_file = "crates/basal-launch/src/windows/launch.rs"
+runner = "cargo"
+package = "basal-launch"
+platforms = ["windows"]
+target = "--lib"
+expect_red = ["windows::launch::tests::the_mitigation_policy_is_the_eight_always_on_bits"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-launch/src/windows/launch.rs"
+old = "pub const MITIGATION_EXTENSION_POINT_DISABLE: u64 = 1 << 32;"
+new = "pub const MITIGATION_EXTENSION_POINT_DISABLE: u64 = 0; // NON-VACUITY BREAK"
+
+[[control]]
+id = "windows-creation-drops-prohibit-dynamic-code"
+guards = "windows creation drops prohibit dynamic code"
+test_file = "crates/basal-launch/src/windows/launch.rs"
+runner = "cargo"
+package = "basal-launch"
+platforms = ["windows"]
+target = "--lib"
+expect_red = ["windows::launch::tests::the_mitigation_policy_is_the_eight_always_on_bits"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-launch/src/windows/launch.rs"
+old = "pub const MITIGATION_PROHIBIT_DYNAMIC_CODE: u64 = 1 << 36;"
+new = "pub const MITIGATION_PROHIBIT_DYNAMIC_CODE: u64 = 0; // NON-VACUITY BREAK"
+
+[[control]]
+id = "windows-creation-drops-microsoft-signed-only"
+guards = "windows creation drops microsoft signed only"
+test_file = "crates/basal-launch/src/windows/launch.rs"
+runner = "cargo"
+package = "basal-launch"
+platforms = ["windows"]
+target = "--lib"
+expect_red = ["windows::launch::tests::the_mitigation_policy_is_the_eight_always_on_bits"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-launch/src/windows/launch.rs"
+old = "pub const MITIGATION_MICROSOFT_SIGNED_ONLY: u64 = 1 << 44;"
+new = "pub const MITIGATION_MICROSOFT_SIGNED_ONLY: u64 = 0; // NON-VACUITY BREAK"
+
+[[control]]
+id = "windows-creation-drops-no-remote-images"
+guards = "windows creation drops no remote images"
+test_file = "crates/basal-launch/src/windows/launch.rs"
+runner = "cargo"
+package = "basal-launch"
+platforms = ["windows"]
+target = "--lib"
+expect_red = ["windows::launch::tests::the_mitigation_policy_is_the_eight_always_on_bits"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-launch/src/windows/launch.rs"
+old = "pub const MITIGATION_NO_REMOTE_IMAGES: u64 = 1 << 52;"
+new = "pub const MITIGATION_NO_REMOTE_IMAGES: u64 = 0; // NON-VACUITY BREAK"
+
+[[control]]
+id = "windows-creation-drops-no-low-label-images"
+guards = "windows creation drops no low label images"
+test_file = "crates/basal-launch/src/windows/launch.rs"
+runner = "cargo"
+package = "basal-launch"
+platforms = ["windows"]
+target = "--lib"
+expect_red = ["windows::launch::tests::the_mitigation_policy_is_the_eight_always_on_bits"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-launch/src/windows/launch.rs"
+old = "pub const MITIGATION_NO_LOW_LABEL_IMAGES: u64 = 1 << 56;"
+new = "pub const MITIGATION_NO_LOW_LABEL_IMAGES: u64 = 0; // NON-VACUITY BREAK"
+
+[[control]]
+id = "windows-creation-drops-prefer-system32-images"
+guards = "windows creation drops prefer system32 images"
+test_file = "crates/basal-launch/src/windows/launch.rs"
+runner = "cargo"
+package = "basal-launch"
+platforms = ["windows"]
+target = "--lib"
+expect_red = ["windows::launch::tests::the_mitigation_policy_is_the_eight_always_on_bits"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-launch/src/windows/launch.rs"
+old = "pub const MITIGATION_PREFER_SYSTEM32_IMAGES: u64 = 1 << 60;"
+new = "pub const MITIGATION_PREFER_SYSTEM32_IMAGES: u64 = 0; // NON-VACUITY BREAK"
+
+[[control]]
+id = "windows-plain-spawn-releases-lock-before-creation"
+guards = "windows plain spawn releases lock before creation"
+test_file = "crates/basal-launch/src/windows/plain/tests.rs"
+runner = "cargo"
+package = "basal-launch"
+platforms = ["windows"]
+target = "--lib"
+expect_red = ["windows::plain::tests::the_child_is_created_suspended_under_the_lock_inheriting_only_its_stdio"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-launch/src/windows/plain.rs"
+old = "    let mut info: PROCESS_INFORMATION = unsafe { zeroed() };\n    check(\n        unsafe {\n            CreateProcessW(\n                application.as_ptr(),\n                command_line.as_mut_ptr(),\n                null(),\n                null(),\n                1,\n                CREATION_FLAGS,\n                environment.as_ptr().cast::<c_void>(),\n                cwd.as_ref().map_or(null(), |cwd| cwd.as_ptr()),\n                &startup.StartupInfo,\n                &mut info,\n            )\n        },\n        \"CreateProcessW\",\n    )?;\n    let created = Created {\n        process: unsafe { OwnedHandle::from_raw_handle(info.hProcess) },\n        thread: unsafe { OwnedHandle::from_raw_handle(info.hThread) },\n    };\n    #[cfg(test)]\n    tests::observe(&created, &inherited);\n    // The child holds its own copies now. Closing the parent's before the\n    // lock is released ends the window in which another spawn could copy\n    // them, and lets the pipes report end of file when the child exits.\n    drop(attributes);\n    let [stdin, stdout, stderr] = [stdin, stdout, stderr].map(Stdio::close_child);\n    drop(spawn_lock);"
+new = "    drop(spawn_lock); // NON-VACUITY BREAK\n    let mut info: PROCESS_INFORMATION = unsafe { zeroed() };\n    check(\n        unsafe {\n            CreateProcessW(\n                application.as_ptr(),\n                command_line.as_mut_ptr(),\n                null(),\n                null(),\n                1,\n                CREATION_FLAGS,\n                environment.as_ptr().cast::<c_void>(),\n                cwd.as_ref().map_or(null(), |cwd| cwd.as_ptr()),\n                &startup.StartupInfo,\n                &mut info,\n            )\n        },\n        \"CreateProcessW\",\n    )?;\n    let created = Created {\n        process: unsafe { OwnedHandle::from_raw_handle(info.hProcess) },\n        thread: unsafe { OwnedHandle::from_raw_handle(info.hThread) },\n    };\n    #[cfg(test)]\n    tests::observe(&created, &inherited);\n    // The child holds its own copies now. Closing the parent's before the\n    // lock is released ends the window in which another spawn could copy\n    // them, and lets the pipes report end of file when the child exits.\n    drop(attributes);\n    let [stdin, stdout, stderr] = [stdin, stdout, stderr].map(Stdio::close_child);\n"
+
+[[control]]
+id = "windows-plain-spawn-drops-handle-list"
+guards = "windows plain spawn drops handle list"
+test_file = "crates/basal-launch/src/windows/plain/tests.rs"
+runner = "cargo"
+package = "basal-launch"
+platforms = ["windows"]
+target = "--lib"
+expect_red = ["windows::plain::tests::the_child_is_created_suspended_under_the_lock_inheriting_only_its_stdio"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-launch/src/windows/plain.rs"
+old = "attributes.add(PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &inherited)?;"
+new = "// NON-VACUITY BREAK: no inherited-handle list"
+
+[[control]]
+id = "windows-plain-spawn-drops-job-list"
+guards = "windows plain spawn drops job list"
+test_file = "crates/basal-launch/src/windows/plain/tests.rs"
+runner = "cargo"
+package = "basal-launch"
+platforms = ["windows"]
+target = "--lib"
+expect_red = ["windows::plain::tests::the_child_is_in_a_fresh_kill_on_close_job_without_breakaway"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-launch/src/windows/plain.rs"
+old = "attributes.add(PROC_THREAD_ATTRIBUTE_JOB_LIST, &jobs)?;"
+new = "// NON-VACUITY BREAK: no creation job list"
+
+[[control]]
+id = "windows-launcher-context-names-are-predictable"
+guards = "windows launcher context names are predictable"
+test_file = "crates/basal-launch/src/windows/context.rs"
+runner = "cargo"
+package = "basal-launch"
+platforms = ["windows"]
+target = "--lib"
+expect_red = ["windows::context::tests::context_names_are_random_and_never_repeat"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-launch/src/windows/context.rs"
+old = "Ok(format!(\"cortexkit_basal_{hex}\"))"
+new = "static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);\n    Ok(format!(\"cortexkit_basal_{}_{}\", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))) // NON-VACUITY BREAK"
+
+[[control]]
+id = "windows-parent-loses-profile-unavailable-reason"
+guards = "An unavailable AppContainer profile has its named parent refusal before any launch"
+test_file = "crates/basal-launch/src/windows/mod.rs"
+runner = "cargo"
+package = "basal-launch"
+platforms = ["windows"]
+target = "--lib"
+expect_red = ["windows::tests::an_unusable_profile_is_refused_by_name"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-launch/src/windows/profile.rs"
+old = "LaunchError::refused(Refusal::AppContainerProfileUnavailable, detail)"
+new = "LaunchError::Failed(detail) // NON-VACUITY BREAK"
+
+[[control]]
+id = "windows-profile-root-uses-userprofile-environment"
+guards = "Profile root expansion uses the process token rather than a caller-controlled environment variable"
+test_file = "crates/basal-launch/src/windows/profile.rs"
+runner = "cargo"
+package = "basal-launch"
+platforms = ["windows"]
+target = "--lib"
+expect_red = ["windows::profile::tests::the_process_token_profile_ignores_userprofile_environment"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-launch/src/windows/profile.rs"
+old = "pub fn process_profile_directory() -> Result<String> {"
+new = "pub fn process_profile_directory() -> Result<String> {\n    return std::env::var(\"USERPROFILE\").map_err(|error| error.to_string()); // NON-VACUITY BREAK"
+
+[[control]]
+id = "windows-confined-spawn-releases-lock-before-creation"
+guards = "The full launcher holds the shared spawn lock until its inheritable pipe ends close"
+test_file = "crates/basal-launch/tests/windows_launch.rs"
+runner = "cargo"
+package = "basal-launch"
+platforms = ["windows"]
+target = "--test windows_launch"
+features = ["deviations"]
+expect_red = ["deviations::a_confined_child_is_created_under_the_shared_spawn_lock"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-launch/src/windows/launch.rs"
+old = "    let spawned = match deviation.shape() {\n        Shape::Confined => spawn_confined(\n            options,\n            commit_bytes,\n            &package,\n            parent_token.as_raw_handle(),\n            &context,\n            &inherited,\n            &mut command,\n        )?,\n        #[cfg(feature = \"deviations\")]\n        Shape::LpacOnly | Shape::Plain => spawn_control(\n            options,\n            &package,\n            &context,\n            &inherited,\n            &mut command,\n            deviation.shape() == Shape::LpacOnly,\n        )?,\n    };\n\n    // The child has inherited its own copies of its three pipe ends; the\n    // parent's copies would keep the pipes open after the child exits.\n    drop((child_stdin, child_stdout, child_stderr));\n    drop(spawn_lock);"
+new = "    drop(spawn_lock); // NON-VACUITY BREAK\n    let spawned = match deviation.shape() {\n        Shape::Confined => spawn_confined(\n            options,\n            commit_bytes,\n            &package,\n            parent_token.as_raw_handle(),\n            &context,\n            &inherited,\n            &mut command,\n        )?,\n        #[cfg(feature = \"deviations\")]\n        Shape::LpacOnly | Shape::Plain => spawn_control(\n            options,\n            &package,\n            &context,\n            &inherited,\n            &mut command,\n            deviation.shape() == Shape::LpacOnly,\n        )?,\n    };\n\n    // The child has inherited its own copies of its three pipe ends; the\n    // parent's copies would keep the pipes open after the child exits.\n    drop((child_stdin, child_stdout, child_stderr));\n"
+
+[[control]]
+id = "windows-creation-drops-child-process-policy"
+guards = "The worker attests the child-process creation restriction before any activation"
+test_file = "crates/basal-worker/tests/windows_startup.rs"
+runner = "cargo"
+package = "basal-worker"
+platforms = ["windows"]
+target = "--test windows_startup"
+expect_red = ["an_activation_completes_under_the_full_confinement"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-launch/src/windows/launch.rs"
+old = "attributes.add(PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY, &child_policy)?;"
+new = "// NON-VACUITY BREAK: no child-process creation policy"

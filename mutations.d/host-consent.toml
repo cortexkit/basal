@@ -1,0 +1,695 @@
+# basal-host consent: core's consent cards and the consent providers.
+
+[[control]]
+id = "policy-card-raised-no-longer-decodes"
+guards = "core's explicit card_raised reply needs no elicitation id and binds its attempt"
+test_file = "crates/basal-module/tests/install_policy.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test install_policy"
+expect_red = ["card_raised_without_elicitation_id_is_keyed_on_the_triple"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = 'Some(Value::String(outcome)) if outcome == "card_raised" => {'
+new = 'Some(Value::String(outcome)) if outcome == "card_raised_disabled" => { // NON-VACUITY BREAK'
+
+[[control]]
+id = "policy-unknown-outcome-accepted"
+guards = "unknown install outcomes are errors, not cards or approvals"
+test_file = "crates/basal-module/tests/install_policy.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test install_policy"
+expect_red = ["unknown_install_outcome_is_an_error_even_with_a_valid_hash_or_card_id"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = '_ => Err(ConsentError::Unavailable("unknown install outcome".into())),'
+new = '_ => Ok(InstallOutcome::CardRaised { flow_id: "policy-flow".into(), version: 1, attempt: 1 }), // NON-VACUITY BREAK'
+
+[[control]]
+id = "the-consent-host-accepts-the-retired-agent-author-core-no-longer-takes"
+guards = "the consent host accepts the retired agent author core no longer takes"
+test_file = "crates/basal-module/tests/hosts.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test hosts"
+expect_red = ["card_author_is_scope_operator_or_local_and_nothing_else"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = "if key == \"scope\" && !scope_ref.is_empty() => {"
+new = "if (key == \"scope\" || key == \"agent\") && !scope_ref.is_empty() => {"
+
+[[control]]
+id = "the-consent-host-sends-an-author-that-is-not-one-of-core-s-three-forms"
+guards = "the consent host sends an author that is not one of core's three forms"
+test_file = "crates/basal-module/tests/hosts.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test hosts"
+expect_red = ["card_author_is_scope_operator_or_local_and_nothing_else"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = "        _ => Err(refused()),"
+new = "        _ => Ok(AuthorKind::Operator),"
+
+[[control]]
+id = "core-s-refusal-of-the-author-scope-is-treated-as-an-ordinary-consent-refusal"
+guards = "core's refusal of the author scope is treated as an ordinary consent refusal"
+test_file = "crates/basal-module/tests/hosts.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test hosts"
+expect_red = ["core_refusing_the_author_scope_is_a_clear_install_error"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = "if code == SCOPE_UNKNOWN || code == SCOPE_ENDED =>"
+new = "if false && (code == SCOPE_UNKNOWN || code == SCOPE_ENDED) =>"
+
+[[control]]
+id = "the-flow-install-request-sends-an-empty-placement-when-the-manifest-states-none"
+guards = "the flow_install request sends an empty placement when the manifest states none"
+test_file = "crates/basal-module/tests/install_gate.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test install_gate"
+expect_red = ["placement_is_sent_only_when_the_manifest_states_one"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+# A valid invented placement breaks omission without making core reject the card.
+old = "let placement = f[\"placement\"].as_str().filter(|p| !p.is_empty());"
+new = "let placement = Some(f[\"placement\"].as_str().filter(|p| !p.is_empty()).unwrap_or(\"not stated\")); // NON-VACUITY BREAK"
+
+[[control]]
+id = "decision-cards-every-raise-goes-out-under-a-fresh-dedup-key-so-a-changed-card-is-a-second-card"
+hub = "A decision intent keeps its durable dedup key when its body changes or a raise is retried; both consent paths require that identity to update one card and settle its journaled intent"
+hub_targets = ["consent_paths", "decisions"]
+guards = "decision cards: every raise goes out under a fresh dedup key, so a changed card is a second card"
+test_file = "crates/basal-module/tests/decisions.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test decisions"
+expect_red = ["a_changed_decision_updates_its_card_and_another_unknown_call_gets_its_own"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = "request[\"dedup_key\"] = json!(key);"
+new = "request[\"dedup_key\"] = json!(format!(\"{key}:{}\", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)));"
+
+[[control]]
+id = "decision-cards-every-raise-goes-out-under-a-fresh-dedup-key-so-a-re-raise-after-a-crash-is-a-second-card"
+hub = "A decision intent is re-raised under its durable dedup key after a crash or lost reply; both consent paths require that identity to retain one card and settle its journaled intent"
+hub_targets = ["consent_paths", "decisions"]
+guards = "decision cards: every raise goes out under a fresh dedup key, so a re-raise after a crash is a second card"
+test_file = "crates/basal-module/tests/decisions.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test decisions"
+expect_red = ["a_crash_between_the_intent_and_core_accepting_still_shows_exactly_one_card"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = "request[\"dedup_key\"] = json!(key);"
+new = "request[\"dedup_key\"] = json!(format!(\"{key}:{}\", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)));"
+
+[[control]]
+id = "decision-cards-a-page-is-acknowledged-although-applying-its-answer-failed"
+guards = "decision cards: a page is acknowledged although applying its answer failed"
+test_file = "crates/basal-module/tests/decisions.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test decisions"
+expect_red = ["a_crash_between_receiving_an_answer_and_applying_it_applies_it_exactly_once"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = "if let Err(e) = sink.answer_on(path, &answer) {"
+new = "if let Some(e) = sink.answer_on(path, &answer).err().filter(|_| false) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "decision-cards-action-options-carry-an-effect-core-does-not-take"
+guards = "decision cards: action options carry an effect core does not take"
+test_file = "crates/basal-module/tests/decisions.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test decisions"
+expect_red = ["a_run_in_needs_reconcile_raises_one_card_per_unknown_call_to_the_operator_only"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = "pub const DECISION_ACTION_EFFECT: &str = \"choose\";"
+new = "pub const DECISION_ACTION_EFFECT: &str = \"grant\";"
+
+[[control]]
+id = "decision-cards-the-default-is-an-action-rather-than-the-declining-option"
+hub = "Decision requests name the declining option as their default, not an executable action; both pinned requester corpora and the core-validating settlement fixtures enforce that request contract"
+hub_targets = ["consent_paths", "decisions"]
+guards = "decision cards: the default is an action rather than the declining option"
+test_file = "crates/basal-module/tests/decisions.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test decisions"
+expect_red = ["the_request_builder_reproduces_core_vectors_byte_for_byte"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = "\"default\":default,"
+new = "\"default\":card.options[0].id,"
+
+[[control]]
+id = "decision-cards-basal-sends-an-op-core-s-body-check-refuses"
+guards = "decision cards: basal sends an op core's body check refuses"
+test_file = "crates/basal-module/tests/decisions.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test decisions"
+expect_red = ["decision_requests_follow_core_rules_and_the_fake_core_refuses_any_other"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = "op.len() <= 128 && op.split('.').count() >= 2 && op.split('.').all(segment_ok);"
+new = "true || op.split('.').all(segment_ok);"
+
+[[control]]
+id = "decision-cards-the-request-carries-a-field-core-s-vectors-do-not"
+hub = "Decision request envelopes are byte-compatible with core's closed vectors and contain no extra scope field; both requester corpora and the reconcile request witness enforce that envelope"
+hub_targets = ["consent_paths", "decisions"]
+guards = "decision cards: the request carries a field core's vectors do not"
+test_file = "crates/basal-module/tests/decisions.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test decisions"
+expect_red = ["the_request_builder_reproduces_core_vectors_byte_for_byte"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = "\"scope\":{\"flow_id\":card.flow_id},"
+new = "\"scope\":{\"flow_id\":card.flow_id,\"version\":card.version},"
+
+[[control]]
+id = "decision-cards-the-body-leaves-out-the-unknown-reason"
+hub = "A reconcile request body includes its journaled unknown reason; both pinned requester corpora and core-validating decision fixtures enforce the same closed v2 body contract"
+hub_targets = ["consent_paths", "decisions"]
+guards = "decision cards: the body leaves out the unknown reason"
+test_file = "crates/basal-module/tests/decisions.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test decisions"
+expect_red = ["the_request_builder_reproduces_core_vectors_byte_for_byte"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = "            body[\"unknown_reason\"] = json!(unknown_reason.as_str());\n"
+new = "            let _ = unknown_reason;\n"
+
+[[control]]
+id = "decision-cards-an-expiry-naming-an-option-is-applied-as-that-option"
+guards = "decision cards: an expiry naming an option is applied as that option"
+test_file = "crates/basal-module/tests/decisions.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test decisions"
+expect_red = ["an_expiry_is_the_decline_whatever_choice_it_names"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = "(Some(\"expired\"), _) => None,"
+new = "(Some(\"expired\"), choice) => choice.map(str::to_owned),"
+
+[[control]]
+id = "hosts-consent-provider-refusal-treated-as-outage"
+guards = "hosts: consent provider refusal treated as outage"
+test_file = "crates/basal-module/tests/hosts.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test hosts"
+expect_red = ["consent_refusal_codes_and_unknown_transport_are_typed"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = "ConsentError::Refused(format!(\"{code}: {message}\"))"
+new = "ConsentError::Unavailable(format!(\"{code}: {message}\"))"
+
+[[control]]
+id = "hosts-expiry-tombstone-identity-is-not-retrieved"
+guards = "hosts: expiry tombstone identity is not retrieved"
+test_file = "crates/basal-module/tests/hosts.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test hosts"
+expect_red = ["expired_answer_tombstones_read_the_owned_record_before_ack"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = "record.get(\"flow_install\").is_none()"
+new = "false"
+
+[[control]]
+id = "hosts-consent-hash-changed"
+guards = "hosts: consent hash changed"
+test_file = "crates/basal-module/tests/hosts.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test hosts"
+expect_red = ["consent_hash_matches_shared_vectors_and_full_c2_envelope"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = "\"args_digest\":hash"
+new = "\"args_digest\":\"wrong\""
+
+[[control]]
+id = "hosts-exact-manifest-bytes-trimmed"
+guards = "hosts: exact manifest bytes trimmed"
+test_file = "crates/basal-module/tests/hosts.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test hosts"
+expect_red = ["install_card_is_byte_exact_and_scope_comes_from_the_route_stamp"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = "\"manifest_json\":manifest"
+new = "\"manifest_json\":manifest.trim()"
+
+[[control]]
+id = "hosts-the-consent-request-sends-a-session-ref-with-a-scope-author"
+guards = "hosts: the consent request sends a session_ref with a scope author"
+test_file = "crates/basal-module/tests/hosts.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test hosts"
+expect_red = ["install_card_is_byte_exact_and_scope_comes_from_the_route_stamp"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+edits = [
+  { file = "crates/basal-host/src/core_consent.rs", old = "let result = json!({\"kind\":\"flow_install\"", new = "let mut result = json!({\"kind\":\"flow_install\"" },
+  { file = "crates/basal-host/src/core_consent.rs", old = "    Ok(result)\n}", new = "    result[\"session_ref\"] = f.get(\"session_ref\").cloned().unwrap_or(json!(\"ses-from-the-bind\"));\n    Ok(result)\n}" },
+]
+
+[[control]]
+id = "hosts-answer-acknowledged-despite-failed-decision-commit"
+guards = "hosts: answer acknowledged despite failed decision commit"
+test_file = "crates/basal-module/tests/hosts.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test hosts"
+expect_red = ["decisions_ack_only_after_sink_commit_and_survive_restart"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = "if let Err(e) = sink.answer_on(path, &answer) {"
+new = "if let Err(e) = sink.answer_on(path, &answer).or(Ok::<(), crate::SinkError>(())) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "poison-consent-answer-blocks-valid-decisions"
+guards = "Malformed consent answers are retained without blocking independent valid records in the page"
+file = "crates/basal-host/src/core_consent.rs"
+old = '''tracing::warn!(elicitation_id = ?record.get("elicitation_id"), %error, "consent answer was not applied; retaining page for retry");
+            problem.get_or_insert(error);'''
+new = '''tracing::warn!(elicitation_id = ?record.get("elicitation_id"), %error, "consent answer was not applied; retaining page for retry");
+            return Err(error); // NON-VACUITY BREAK'''
+edits = []
+test_file = "crates/basal-host/tests/host_boundary_regressions.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--test host_boundary_regressions"
+expect_red = ["bad_answer_does_not_block_later_valid_decisions_or_acknowledge_the_bad_one"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "consent-polls-without-owned-open-cards"
+guards = "Steady-state idle consent makes zero answer or acknowledgement RPCs"
+file = "crates/basal-host/src/core_consent.rs"
+old = "Ok(state.retry_page.load(Ordering::Acquire)"
+new = "Ok(true || state.retry_page.load(Ordering::Acquire) /* NON-VACUITY BREAK: poll while idle */"
+edits = []
+test_file = "crates/basal-host/src/core_consent_tests.rs"
+runner = "cargo"
+package = "basal-host"
+target = "--lib"
+select = "expected"
+expect_red = ["core_consent::polling_tests::idle_consent_makes_zero_rpcs"]
+only = false
+platforms = ["linux"]
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "grant-card-body-omits-version"
+guards = "grant_lost uses its exact closed body with no version field"
+file = "crates/basal-host/src/core_consent.rs"
+old = "if card.decision() != DecisionKind::GrantLost {"
+new = "if true { // NON-VACUITY BREAK"
+test_file = "crates/basal-host/src/core_consent_tests.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["core_consent::polling_tests::grant_lost_request_has_closed_body_and_choice_ids"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+# Routing probes drive engine passes and feed reads instead of polling timers;
+# they need no script execution. Portable schema and adapter probes use Linux.
+[[control]]
+id = "consent-requester-vectors"
+hub = "Both requester corpora pin the same validated v2 decision envelope"
+hub_targets = ["decisions"]
+guards = "all three consent requester requests remain byte-pinned"
+test_file = "crates/basal-module/tests/consent_paths.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test consent_paths"
+expect_red = ["requester_vectors_are_pinned_and_all_three_requests_match_bytes"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = '''"on_expiry":"deny",
+        "material_damage":false,"late_execution":"notify_only",'''
+new = '''"on_expiry":"deny",
+        "material_damage":false,"late_execution":"execute", /* NON-VACUITY BREAK */'''
+
+[[control]]
+id = "consent-catalog-choice"
+guards = "advertised consent capability selects its provider"
+test_file = "crates/basal-module/tests/consent_paths.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test consent_paths"
+expect_red = ["new_cards_choose_only_an_advertised_consent_capability"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/cingulate_consent.rs"
+old = 'return Ok(DecisionPath::Consent(provider.to_owned()));'
+new = 'let _ = provider; return Ok(DecisionPath::Legacy); // NON-VACUITY BREAK'
+
+[[control]]
+id = "consent-drain-both-paths"
+guards = "both legacy and consent answers are applied during overlap"
+test_file = "crates/basal-module/tests/consent_paths.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test consent_paths"
+expect_red = ["answers_on_both_paths_apply_once_and_ack_their_own_owner"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = 'DecisionPath::Legacy => poll_page(state),'
+new = 'DecisionPath::Legacy => Ok(()), // NON-VACUITY BREAK'
+
+[[control]]
+id = "consent-ack-own-path"
+guards = "consent settlements are acknowledged only on their owning provider"
+test_file = "crates/basal-module/tests/consent_paths.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test consent_paths"
+expect_red = ["answers_on_both_paths_apply_once_and_ack_their_own_owner"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = '.management(provider, "consent.ack", json!({"cursor":cursor}))'
+new = '.management(CORE, "consent.ack", json!({"cursor":cursor})) /* NON-VACUITY BREAK */'
+
+[[control]]
+id = "consent-read-unlisted-provider"
+guards = "rollback retains reads for cards on an unlisted consent provider"
+test_file = "crates/basal-module/tests/consent_paths.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test consent_paths"
+expect_red = ["provider_disappearance_falls_back_but_keeps_reading_old_answers"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = 'let result = match &path {'
+new = '''if matches!(&path, DecisionPath::Consent(_)) && state.transport.catalog().map_err(error)?["modules"].as_array().is_some_and(|m| m.is_empty()) { continue; } // NON-VACUITY BREAK
+        let result = match &path {'''
+
+[[control]]
+id = "consent-follow-page-cursor"
+guards = "partial consent pages follow continuations before the final high water"
+test_file = "crates/basal-module/tests/consent_paths.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test consent_paths"
+expect_red = ["paged_cursor_is_durable_and_empty_withdrawal_pages_are_acked"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = 'if continuation.is_none() {'
+new = 'if { let _ = continuation; true } { // NON-VACUITY BREAK'
+
+[[control]]
+id = "consent-retain-poison-page"
+guards = "a malformed settlement prevents cursor persistence and cumulative ack"
+test_file = "crates/basal-module/tests/consent_paths.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test consent_paths"
+expect_red = ["poison_page_is_not_acked_and_other_path_still_progresses"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = '''if let Some(error) = problem {
+            return Err(error);
+        }
+        sink.save_answer_cursor(path, cursor).map_err(sink_error)?;'''
+new = '''let _ = problem; // NON-VACUITY BREAK
+        sink.save_answer_cursor(path, cursor).map_err(sink_error)?;'''
+
+[[control]]
+id = "consent-retention-tombstone"
+guards = "a retention tombstone closes only the matching owned card without action"
+test_file = "crates/basal-module/tests/consent_paths.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test consent_paths"
+expect_red = ["retention_tombstone_closes_only_its_owned_card_without_action"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = '''return sink
+                .expire_on(path, field(record, "elicitation_id")?)
+                .map_err(sink_error);'''
+new = 'return Ok(()); // NON-VACUITY BREAK'
+
+[[control]]
+id = "consent-v2-body-validation"
+hub = "Both consent endpoints use the same strict requester-owned v2 body validator"
+hub_targets = ["decisions"]
+guards = "an opaque consent body still obeys core v2 validity"
+test_file = "crates/basal-module/tests/consent_paths.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test consent_paths"
+expect_red = ["consent_endpoint_cannot_weaken_v2_body_validation"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = 'if let Some(problem) = body_problem(card) {'
+new = 'if let Some(problem) = None::<&str> { // NON-VACUITY BREAK'
+
+[[control]]
+id = "consent-retry-final-ack-after-restart"
+guards = "a failed final consent ack survives the last card closing and restart"
+test_file = "crates/basal-module/tests/consent_paths.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test consent_paths"
+expect_red = ["failed_final_ack_is_retried_from_the_durable_cursor_after_restart"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = 'if self.state.catalog_decisions {'
+new = 'if false { // NON-VACUITY BREAK'
+
+[[control]]
+id = "consent-ack-empty-final-page"
+guards = "empty final pages advance and acknowledge the global settlement cursor"
+test_file = "crates/basal-module/tests/consent_paths.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test consent_paths"
+expect_red = ["paged_cursor_is_durable_and_empty_withdrawal_pages_are_acked"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = 'sink.save_answer_cursor(path, cursor).map_err(sink_error)?;'
+new = 'if records.is_empty() { return Ok(()); } /* NON-VACUITY BREAK */ sink.save_answer_cursor(path, cursor).map_err(sink_error)?;'
+
+[[control]]
+id = "consent-wake-after-lost-reply"
+guards = "a lost decision request reply cannot leave durable open cards unpolled"
+test_file = "crates/basal-host/src/cingulate_consent_tests.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["cingulate_consent::tests::a_lost_request_reply_still_wakes_the_owned_answer_inventory"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/cingulate_consent.rs"
+old = 'self.core.raised();'
+new = 'let _ = &self.core; // NON-VACUITY BREAK'
+
+[[control]]
+id = "consent-legacy-adapter-no-reraise"
+guards = "a legacy-only adapter cannot re-raise a card owned by a consent provider"
+test_file = "crates/basal-host/src/cingulate_consent_tests.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["cingulate_consent::tests::a_legacy_only_adapter_cannot_move_an_owned_consent_card"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/consent.rs"
+old = '''return Err(ConsentError::Unavailable(
+                "this adapter cannot raise on the recorded consent path".into(),
+            ));'''
+new = 'return self.raise_decision(card); // NON-VACUITY BREAK'
+
+[[control]]
+id = "consent-legacy-adapter-no-withdraw"
+guards = "a legacy-only adapter cannot withdraw a card owned by a consent provider"
+test_file = "crates/basal-host/src/cingulate_consent_tests.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["cingulate_consent::tests::a_legacy_only_adapter_cannot_move_an_owned_consent_card"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/consent.rs"
+old = '''return Err(ConsentError::Unavailable(
+                "this adapter cannot withdraw on the recorded consent path".into(),
+            ));'''
+new = 'return self.withdraw_decision(elicitation_id); // NON-VACUITY BREAK'
+
+# Core owns install cards; these controls replay the request and hint contract.
+[[control]]
+id = "install-request-not-dedicated"
+guards = "install cards enter through core's dedicated request, never generic elicitation or cingulate"
+file = "crates/basal-host/src/core_consent.rs"
+old = '.management(CORE, "flow.install_request", request(card)?)'
+new = '.management(CORE, "elicitation.request", request(card)?) /* NON-VACUITY BREAK */'
+test_file = "crates/basal-module/tests/install_policy.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test install_policy"
+expect_red = ["install_cards_only_use_core_install_request_and_never_wake_answer_polling"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "install-feed-applies-retired-install-answer"
+guards = "install answers can no longer drive approvals through the decision feed"
+file = "crates/basal-host/src/core_consent.rs"
+old = '''if record.get("flow_install").is_some() {
+        return Ok(());
+    }'''
+new = '''if record.get("flow_install").is_some() {
+        return sink.decide(&crate::DecisionEvent { card_id: "retired".into(), decision: crate::CardDecision::Approve, decided_by: "retired".into() }).map_err(sink_error); // NON-VACUITY BREAK
+    }'''
+test_file = "crates/basal-module/tests/hosts.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test hosts"
+expect_red = ["install_answers_are_ignored_in_the_decision_feed"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600

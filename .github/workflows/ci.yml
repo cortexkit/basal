@@ -25,7 +25,9 @@ concurrency:
 env:
   CARGO_TERM_COLOR: never
   PYTHONDONTWRITEBYTECODE: 1
-  CK_MUTATE_REV: 0c99c7e16d8ae22b6e114136b6b7b68be6f1394e
+  # ckdev-mutate 0.12.0. It reads the catalogue from mutations.d/, one file per
+  # crate or area, and every replay, shard and report covers all of its files.
+  CK_MUTATE_REV: be120e9254c4972191b39b2e6814987918206afc
 
 jobs:
   checks:
@@ -166,6 +168,7 @@ jobs:
           python3 --version
           python3 .github/workflows/check_mutation_coverage.py
           python3 -m unittest discover -s .github/workflows -p 'test_*.py' -v
+          python3 -m unittest script.tests.mutation_catalogue script.tests.witness_mutations -v
       # `ckdev-mutate check` validates every catalogue row's anchors and test
       # names. Listing test names compiles the test binaries but runs no test,
       # so no worker starts. Rows marked for the other OS are skipped, so each

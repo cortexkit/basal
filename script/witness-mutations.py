@@ -10,7 +10,10 @@ import json
 from pathlib import Path
 import shlex
 import subprocess
-import tomllib
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import mutation_catalogue  # noqa: E402  (needs the script directory on the path)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -82,6 +85,15 @@ def witness(row, output):
     return proof
 
 
+def select(rows, platform, only):
+    """Pick this platform's rows, sorted by id; every requested id must be among them."""
+    selected = sorted((row for row in rows if row["platforms"] == [platform]
+                       and (not only or row["id"] in only)), key=lambda row: row["id"])
+    if not selected or set(only) - {row["id"] for row in selected}:
+        raise SystemExit("no controls selected or an unknown control requested")
+    return selected
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--platform", required=True, choices=["linux", "macos", "windows"])
@@ -93,19 +105,20 @@ def main():
     if not 1 <= shard <= total:
         parser.error("shard must be in 1..total")
     args.output.mkdir(parents=True, exist_ok=True)
-    rows = tomllib.loads((ROOT / "mutations.toml").read_text())["control"]
-    selected = sorted((row for row in rows if row["platforms"] == [args.platform]
-                       and (not args.only or row["id"] in args.only)), key=lambda row: row["id"])
-    if not selected or set(args.only) - {row["id"] for row in selected}:
-        raise SystemExit("no controls selected or an unknown control requested")
+    rows, sources = mutation_catalogue.load(ROOT)
+    selected = select(rows, args.platform, args.only)
     proofs = []
     for index, row in enumerate(selected):
         if index % total != shard - 1:
             continue
-        proofs.append(witness(row, args.output))
+        try:
+            proofs.append(witness(row, args.output))
+        except SystemExit as error:
+            # Name the catalogue file and line, so the failing row can be found.
+            raise SystemExit(f"{error} (defined at {sources[row['id']]})") from None
         (args.output / "mutation-evidence.json").write_text(json.dumps(proofs, indent=2))
         if proofs[-1]["outcome"] != "reddened":
-            raise SystemExit(f"{row['id']}: exact named oracle did not redden")
+            raise SystemExit(f"{row['id']}: exact named oracle did not redden (defined at {sources[row['id']]})")
     print(f"Mutation witnesses: {len(proofs)} exact named failures, all sources restored", flush=True)
 
 

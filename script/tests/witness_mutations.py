@@ -81,5 +81,47 @@ class MutationWitnessChecks(unittest.TestCase):
         self.assertEqual(self.source.read_text(), "guard();\nguard();\n")
 
 
+    def write_catalogue(self):
+        fragments = self.root / "mutations.d"
+        fragments.mkdir()
+        (fragments / "host.toml").write_text(
+            '# host rows\n\n[[control]]\nid = "guard"\nplatforms = ["windows"]\n'
+            '\n[[control]]\nid = "linux-only"\nplatforms = ["linux"]\n')
+        (fragments / "worker.toml").write_text('[[control]]\nid = "other"\nplatforms = ["windows"]\n')
+
+    def run_main(self, *args):
+        with mock.patch.object(WITNESS.sys, "argv", ["witness-mutations.py", *args]):
+            WITNESS.main()
+
+    def test_rows_are_read_from_every_catalogue_fragment(self):
+        self.write_catalogue()
+        seen = []
+        def record(row, output):
+            seen.append(row["id"])
+            return {"outcome": "reddened"}
+        with mock.patch.object(WITNESS, "witness", side_effect=record):
+            self.run_main("--platform", "windows", "--output", str(self.output))
+        self.assertEqual(seen, ["guard", "other"])
+
+    def test_a_failing_row_names_the_fragment_and_line_defining_it(self):
+        self.write_catalogue()
+        with mock.patch.object(WITNESS, "witness", side_effect=SystemExit("guard: expected exactly one anchor")):
+            with self.assertRaisesRegex(SystemExit, r"^guard: expected exactly one anchor "
+                                                    r"\(defined at mutations.d/host.toml:4\)$"):
+                self.run_main("--platform", "windows", "--only", "guard", "--output", str(self.output))
+
+    def test_an_unreddened_row_names_its_fragment(self):
+        self.write_catalogue()
+        with mock.patch.object(WITNESS, "witness", return_value={"outcome": "undefended"}):
+            with self.assertRaisesRegex(SystemExit, r"other: exact named oracle did not redden "
+                                                    r"\(defined at mutations.d/worker.toml:2\)"):
+                self.run_main("--platform", "windows", "--only", "other", "--output", str(self.output))
+
+    def test_an_id_on_another_platform_is_an_unknown_request(self):
+        self.write_catalogue()
+        with self.assertRaisesRegex(SystemExit, "unknown control requested"):
+            self.run_main("--platform", "windows", "--only", "linux-only", "--output", str(self.output))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

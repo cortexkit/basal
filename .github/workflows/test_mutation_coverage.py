@@ -2,9 +2,15 @@
  exactly one CI host, with portable packages on Linux or Windows-only modules on Windows,
 and the shards' replay reports contain one successful replay of every row."""
 
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
 import unittest
 
-from check_mutation_coverage import ARTIFACT_PATTERN, PLATFORMS, partition, verify_reports
+from check_mutation_coverage import ARTIFACT_PATTERN, PLATFORMS, mutation_catalogue, partition, verify_reports
+
+SCRIPT = Path(__file__).resolve().parent / "check_mutation_coverage.py"
 
 
 class MutationCoverageChecks(unittest.TestCase):
@@ -148,6 +154,58 @@ class MutationCoverageChecks(unittest.TestCase):
         self.reports[1][1][1]["outcome"] = "SURVIVED"
         with self.assertRaisesRegex(ValueError, "unsuccessful replay"):
             verify_reports(partition(self.rows), self.reports)
+
+    def sources(self):
+        return {"portable": mutation_catalogue.Source("mutations.d/host.toml", 3),
+                "worker": mutation_catalogue.Source("mutations.d/worker.toml", 12),
+                "native": mutation_catalogue.Source("mutations.d/host-builtins.toml", 7)}
+
+    def test_partition_errors_name_the_file_defining_the_row(self):
+        self.rows[1]["platforms"] = ["linux", "macos"]
+        with self.assertRaisesRegex(ValueError, r"^worker \(mutations.d/worker.toml:12\): expected exactly one"):
+            partition(self.rows, self.sources())
+        self.rows[1]["platforms"] = ["macos"]
+        self.rows[0]["platforms"] = ["macos"]
+        with self.assertRaisesRegex(ValueError, r"^portable \(mutations.d/host.toml:3\): basal-host proofs"):
+            partition(self.rows, self.sources())
+
+    def test_report_errors_name_the_catalogue_file(self):
+        self.reports[1][1][1]["outcome"] = "SURVIVED"
+        with self.assertRaisesRegex(ValueError, r"^worker \(mutations.d/worker.toml:12\): unsuccessful replay"):
+            verify_reports(partition(self.rows), self.reports, self.sources())
+
+    def test_report_errors_fall_back_to_the_reports_own_source(self):
+        # A row the catalogue no longer defines can only be located by the
+        # source the runner wrote into its report.
+        self.reports[0][1].append({"id": "stale", "outcome": "CAUGHT",
+                                   "source": {"file": "mutations.d/old.toml", "line": 9}})
+        with self.assertRaisesRegex(ValueError, r"^stale \(mutations.d/old.toml:9\): replayed on the wrong platform"):
+            verify_reports(partition(self.rows), self.reports, self.sources())
+
+    def test_a_missing_report_row_is_named_with_its_file(self):
+        del self.reports[2][1][0]
+        with self.assertRaisesRegex(ValueError, r"windows: reports must contain every catalogue ID exactly once; "
+                                                r"missing: portable \(mutations.d/host.toml:3\)"):
+            verify_reports(partition(self.rows), self.reports, self.sources())
+
+    def test_the_command_reads_a_catalogue_directory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fragments = Path(temporary) / "mutations.d"
+            fragments.mkdir()
+            (fragments / "host.toml").write_text('[[control]]\nid = "portable"\npackage = "basal-host"\n'
+                                                 'platforms = ["linux"]\n')
+            (fragments / "worker.toml").write_text('[[control]]\nid = "worker"\npackage = "basal-worker"\n'
+                                                   'platforms = ["macos"]\n')
+            result = subprocess.run([sys.executable, str(SCRIPT), "--catalogue", str(fragments)],
+                                    text=True, capture_output=True, check=True)
+            self.assertIn("linux=1, macos=1, windows=0, total=2", result.stdout)
+            (fragments / "copy.toml").write_text('[[control]]\nid = "worker"\nplatforms = ["linux"]\n')
+            result = subprocess.run([sys.executable, str(SCRIPT), "--catalogue", str(fragments)],
+                                    text=True, capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("duplicate catalogue ID worker: defined at", result.stderr)
+            self.assertIn("copy.toml:2", result.stderr)
+            self.assertIn("worker.toml:2", result.stderr)
 
 
 if __name__ == "__main__":

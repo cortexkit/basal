@@ -1,0 +1,1458 @@
+# basal-core runtime: the driver, dispatch, the install gate, admission and rate limits.
+
+[[control]]
+id = "calls-of-one-run-dispatched-serially-on-the-activation-s-thread"
+hub = "Calls dispatch concurrently off the activation thread, so a blocked or panicking host cannot take over that thread and prevent other calls, deadline enforcement, ownership loss or temporary-write crash recovery from progressing"
+hub_targets = ["dispatch_slots", "flow_scopes", "fs_write_temps", "journal_ownership"]
+guards = "calls of one run dispatched serially on the activation's thread"
+test_file = "crates/basal-testkit/tests/journal_races.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test journal_races"
+expect_red = ["calls_of_one_run_are_dispatched_concurrently"]
+only = false
+build_timeout_s = 3600
+# Serial dispatch also stalls gated drivers. Their bounded joins leave room for
+# healthy scheduling delays, and the broad replay pays those waits under load.
+timeout_s = 3600
+file = "crates/basal-core/src/runtime.rs"
+old = "let handle = thread::spawn(f);"
+new = "f(); // NON-VACUITY BREAK\n        let handle = thread::spawn(|| {});"
+
+[[control]]
+id = "recovery-applies-a-committed-local-effect-again"
+hub = "A local effect whose outcome is already waiting in the mailbox is never applied again on recovery, asserted by KV and crash recovery tests"
+hub_targets = ["dispatch_kv", "journal_cut", "journal_kill"]
+guards = "recovery applies a committed local effect again"
+test_file = "crates/basal-testkit/tests/journal_races.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test journal_races"
+expect_red = ["local_effect_behind_unresolved_call_applies_once"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "if waiting.contains(&row.position) || self.rt.is_inflight(&run_id, row.position) {"
+# Ignore a waiting outcome only for local effects, not for remote completions.
+new = "if (waiting.contains(&row.position) && row.class != StoredClass::Local) || self.rt.is_inflight(&run_id, row.position) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "a-synchronous-call-journaled-without-its-value-is-not-answered-again"
+guards = "a synchronous call journaled without its value is not answered again"
+test_file = "crates/basal-testkit/tests/journal_races.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test journal_races"
+expect_red = ["sync_call_journaled_without_value_is_answered_again"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "if row.class != StoredClass::Sync || row.outcome.is_some() {"
+new = "if true || row.class != StoredClass::Sync || row.outcome.is_some() {"
+
+[[control]]
+id = "clock-reads-not-kept-monotonic-within-a-run"
+guards = "clock reads not kept monotonic within a run"
+test_file = "crates/basal-testkit/tests/journal_races.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test journal_races"
+expect_red = ["clock_stays_monotonic_across_activations"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+edits = [
+  { file = "crates/basal-core/src/driver.rs", old = "(Some(c), Some(last)) => Some(c.max(last)),", new = "(Some(c), Some(_)) => Some(c)," },
+]
+
+[[control]]
+id = "recovery-resends-a-call-this-process-is-still-dispatching"
+guards = "recovery resends a call this process is still dispatching"
+test_file = "crates/basal-testkit/tests/journal_ownership.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test journal_ownership"
+expect_red = ["owner_loss_after_call_commit_dispatches_once"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "if waiting.contains(&row.position) || self.rt.is_inflight(&run_id, row.position) {"
+new = "if waiting.contains(&row.position) {"
+
+[[control]]
+id = "a-call-is-dispatched-before-its-row-commits"
+guards = "a call is dispatched before its row commits"
+test_file = "crates/basal-testkit/tests/journal_ownership.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test journal_ownership"
+expect_red = ["storage_failure_before_commit_dispatches_nothing"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+# Dispatch only on a failed commit: successful calls must not be sent twice.
+old = "                    self.on_host_call(call)?"
+new = "                    let flow = self.on_host_call(call.clone());\n                    if flow.is_err() && self.rt.store().read(|_| Ok(())).is_err()\n                        && matches!(self.rt.class_of(&call.kind, serde_json::from_str::<serde_json::Value>(call.args.as_str()).ok().as_ref()), StoredClass::Query | StoredClass::KeyedMutation | StoredClass::Mutation)\n                        && let Ok(prepared) = self.prepare(&call) { // NON-VACUITY BREAK\n                        let flow_id = self.run.flow_id.clone();\n                        let run_id = self.lease.run_id.clone();\n                        let _ = self.rt.shared.host.dispatch(&basal_host::CallRequest { flow_id: flow_id.clone(), run_id: run_id.clone(), position: call.position, kind: call.kind, args: prepared.request.unwrap_or(call.args), idempotency_key: crate::ids::idempotency_key(&flow_id, &run_id, call.position), attempt: 1 });\n                    }\n                    flow?"
+
+[[control]]
+id = "recovery-resends-a-mutation-that-ignores-idempotency-keys"
+hub = "Recovery reconciles an unknown unkeyed mutation instead of resending it, asserted by the journal and built-in dispatch recovery tests"
+hub_targets = ["builtins_dispatch"]
+guards = "recovery resends a mutation that ignores idempotency keys"
+test_file = "crates/basal-testkit/tests/journal_unknown.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test journal_unknown"
+expect_red = ["unknown_unkeyed_mutation_needs_reconcile"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "(class, _) if class.safe_to_resend() => resend.push(row.clone()),"
+new = "(_, _) => resend.push(row.clone()),"
+
+[[control]]
+id = "a-resend-mints-a-new-idempotency-key"
+hub = "Every resend preserves the committed call key across cuts, reconciliation, scope deferral and temporary-file completion, so the original keyed effect and its cleanup are not duplicated"
+hub_targets = ["flow_scope_recovery", "fs_write_temps", "journal_cut", "journal_kill", "journal_unknown"]
+guards = "a resend mints a new idempotency key"
+test_file = "crates/basal-testkit/tests/journal_unknown.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test journal_unknown"
+expect_red = ["unknown_keyed_mutation_is_reissued_with_the_same_key"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/runtime.rs"
+old = "idempotency_key: row.idempotency_key.clone(),"
+new = "idempotency_key: format!(\"{}-resent\", row.idempotency_key),"
+
+[[control]]
+id = "unavailable-retried-for-every-mutation"
+guards = "Unavailable retried for every mutation"
+test_file = "crates/basal-testkit/tests/journal_unknown.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test journal_unknown"
+expect_red = ["unavailable_is_retried_only_when_safe"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/runtime.rs"
+old = "let may_retry = class.safe_to_resend() || proven_unsent;"
+new = "let may_retry = true || class.safe_to_resend() || proven_unsent;"
+
+[[control]]
+id = "a-call-reconciled-as-not-applied-is-not-sent-again"
+guards = "a call reconciled as not applied is not sent again"
+test_file = "crates/basal-testkit/tests/journal_unknown.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test journal_unknown"
+expect_red = ["reconcile_not_applied_reissues_with_the_same_key"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "(_, DispatchState::NotApplied) => resend.push(row.clone()),"
+new = "(_, DispatchState::NotApplied) => unknown.push(row.position),"
+
+[[control]]
+id = "divergence-reported-as-a-script-error"
+guards = "divergence reported as a script error"
+test_file = "crates/basal-testkit/tests/journal_identity.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test journal_identity"
+expect_red = ["divergence_fails_the_run_as_nondeterminism"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "self.fail(\"nondeterminism\", format!(\"{n:?}\"), true)"
+new = "self.fail(\"script\", format!(\"{n:?}\"), true)"
+
+[[control]]
+id = "code-hash-not-checked-before-replay"
+guards = "code hash not checked before replay"
+test_file = "crates/basal-testkit/tests/journal_identity.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test journal_identity"
+expect_red = ["code_hash_mismatch_is_engine_mismatch_without_replay"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "if code_hash(&self.run.script, &self.run.manifest) != self.run.code_hash {"
+new = "if false && code_hash(&self.run.script, &self.run.manifest) != self.run.code_hash {"
+
+[[control]]
+id = "runtime-fingerprint-not-checked-before-replay"
+guards = "runtime fingerprint not checked before replay"
+test_file = "crates/basal-testkit/tests/journal_identity.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test journal_identity"
+expect_red = ["fingerprint_mismatch_is_engine_mismatch_without_replay"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "Some(recorded) if *recorded != current => {"
+new = "Some(recorded) if false && *recorded != current => {"
+
+[[control]]
+id = "admission-does-not-consult-tombstones"
+guards = "admission does not consult tombstones"
+test_file = "crates/basal-testkit/tests/journal_admin.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test journal_admin"
+expect_red = ["admission_deduplicates_and_tombstones_refuse_after_pruning"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/admission.rs"
+old = "if let Some(run_id) = tomb {"
+new = "if let Some(run_id) = tomb.filter(|_| false) {"
+
+[[control]]
+id = "admission-does-not-deduplicate"
+hub = "Redelivering an admitted trigger returns its existing run without consuming another rate slot or repeating effects after a parent kill"
+hub_targets = ["dispatch_limits", "journal_kill"]
+guards = "admission does not deduplicate"
+test_file = "crates/basal-testkit/tests/journal_admin.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test journal_admin"
+expect_red = ["admission_deduplicates_and_tombstones_refuse_after_pruning"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/admission.rs"
+old = "if let Some(run_id) = existing {"
+new = "if let Some(run_id) = existing.filter(|_| false) {"
+
+[[control]]
+id = "recovery-does-not-resend-queries-cut-harness"
+hub = "Recovery resends unresolved queries so runs finish after cuts or parent kills, asserted by the crash and built-in recovery targets"
+hub_targets = ["builtins_dispatch", "journal_kill"]
+guards = "recovery does not resend queries (cut harness)"
+test_file = "crates/basal-testkit/tests/journal_cut.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test journal_cut"
+expect_red = ["every_cut_recovers_to_the_uncut_state"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "(class, _) if class.safe_to_resend() => resend.push(row.clone()),"
+new = "(StoredClass::KeyedMutation, _) => resend.push(row.clone()),"
+
+[[control]]
+id = "recovery-does-not-resend-queries-cuts-in-recovery-suffixes"
+hub = "Recovery resends unresolved queries after cuts or parent kills, including scoped queries that must reach a new readiness check before returning their outcome"
+hub_targets = ["builtins_dispatch", "flow_scopes", "journal_cut", "journal_kill"]
+guards = "recovery does not resend queries (cuts in recovery suffixes)"
+test_file = "crates/basal-testkit/tests/journal_cut.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test journal_cut"
+expect_red = ["cuts_in_recovery_generated_suffixes_recover_too"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "(class, _) if class.safe_to_resend() => resend.push(row.clone()),"
+new = "(StoredClass::KeyedMutation, _) => resend.push(row.clone()),"
+
+[[control]]
+id = "recovery-does-not-resend-keyed-mutations-parent-kill-9"
+hub = "Recovery resends unresolved keyed mutations under their original key and request, including built-in writes, KV, models and temporary-file recovery, instead of requiring reconciliation"
+hub_targets = ["builtins_dispatch", "dispatch_kv", "dispatch_tokens", "fs_write_temps", "journal_cut", "journal_unknown"]
+guards = "recovery does not resend keyed mutations (parent kill -9)"
+test_file = "crates/basal-testkit/tests/journal_kill.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test journal_kill"
+expect_red = ["killing_the_parent_at_every_boundary_recovers_to_the_uncut_state"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "(class, _) if class.safe_to_resend() => resend.push(row.clone()),"
+new = "(StoredClass::Query, _) => resend.push(row.clone()),"
+
+[[control]]
+id = "a-broken-worker-fails-the-run-instead-of-replaying-it-on-another-worker-kill-9"
+guards = "a broken worker fails the run instead of replaying it on another (worker kill -9)"
+test_file = "crates/basal-testkit/tests/journal_kill.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test journal_kill"
+expect_red = ["killing_the_worker_at_every_boundary_recovers_to_the_uncut_state"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "if self.run.broken + 1 >= self.rt.config.max_broken_activations {"
+new = "if true || self.run.broken + 1 >= self.rt.config.max_broken_activations {"
+
+[[control]]
+id = "install-gate-an-activation-does-not-ask-core-first"
+hub = "Every resumed activation revalidates the frozen install version's core status, scope selector and current package membership before running"
+hub_targets = ["flow_scope_recovery", "flow_scopes", "package_instances"]
+guards = "install gate: an activation does not ask core first"
+test_file = "crates/basal-testkit/tests/install_gate.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test install_gate"
+expect_red = ["a_resume_after_suspension_is_gated"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+# Leave first-activation scope setup intact and bypass only the resumed-run gate.
+old = "if let Gate::Closed(end) = self.rt.check_install(&self.lease, &self.run)? {"
+new = "if self.lease.generation == 1 && let Gate::Closed(end) = self.rt.check_install(&self.lease, &self.run)? { // NON-VACUITY BREAK"
+
+[[control]]
+id = "install-gate-core-s-code-hash-is-not-compared-with-the-run-s"
+guards = "install gate: core's code hash is not compared with the run's"
+test_file = "crates/basal-testkit/tests/install_gate.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test install_gate"
+expect_red = ["active_with_another_code_hash_is_revoked"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/gate.rs"
+old = "Ok(InstallStatus::Active { code_hash, scope }) if code_hash == run_hash => {"
+new = "Ok(InstallStatus::Active { code_hash: _, scope }) => {"
+
+[[control]]
+id = "install-gate-a-revoked-version-activates"
+guards = "install gate: a revoked version activates"
+test_file = "crates/basal-testkit/tests/install_gate.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test install_gate"
+expect_red = ["revoked_cancels_the_run_and_disables_the_flow"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/gate.rs"
+old = "Ok(InstallStatus::Revoked { .. }) => ("
+new = "Ok(InstallStatus::Revoked { .. }) => return Ok(Gate::Open),\n            _ if false => ("
+
+[[control]]
+id = "install-gate-a-version-core-does-not-know-activates"
+hub = "A version core reports as unknown never activates and is revoked, asserted by install-gate tests and the package instance revocation test"
+hub_targets = ["package_instances"]
+guards = "install gate: a version core does not know activates"
+test_file = "crates/basal-testkit/tests/install_gate.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test install_gate"
+expect_red = ["unknown_cancels_the_run_and_disables_the_flow"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/gate.rs"
+old = "Ok(InstallStatus::Unknown) => ("
+new = "Ok(InstallStatus::Unknown) => return Ok(Gate::Open),\n            _ if false => ("
+
+[[control]]
+id = "install-gate-no-answer-from-core-fails-open"
+guards = "install gate: no answer from core fails open"
+test_file = "crates/basal-testkit/tests/install_gate.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test install_gate"
+expect_red = ["unreachable_core_defers_the_run_with_a_doubling_backoff"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/gate.rs"
+old = "            Err(e) => {\n                return self.defer("
+new = "            Err(e) => {\n                if !e.to_string().is_empty() {\n                    return Ok(Gate::Open);\n                }\n                return self.defer("
+
+[[control]]
+id = "install-gate-a-run-with-no-answer-is-offered-and-asked-about-again-at-once"
+guards = "install gate: a run with no answer is offered and asked about again at once"
+test_file = "crates/basal-testkit/tests/install_gate.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test install_gate"
+expect_red = ["unreachable_core_defers_the_run_with_a_doubling_backoff"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+edits = [
+  { file = "crates/basal-core/src/runtime.rs", old = "runs.retain(|(run_id, _)| self.gate_wait(run_id).is_none());", new = "runs.retain(|_| true);" },
+  { file = "crates/basal-core/src/driver.rs", old = "if let Some(retry_in) = self.gate_wait(run_id) {", new = "if let Some(retry_in) = self.gate_wait(run_id).filter(|_| false) {" },
+]
+
+[[control]]
+id = "install-gate-the-backoff-does-not-grow-while-core-stays-unreachable"
+guards = "install gate: the backoff does not grow while core stays unreachable"
+test_file = "crates/basal-testkit/tests/install_gate.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test install_gate"
+expect_red = ["unreachable_core_defers_the_run_with_a_doubling_backoff"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/gate.rs"
+old = ".saturating_mul(1u32 << (failures - 1).min(16))"
+new = ".saturating_mul(1)"
+
+[[control]]
+id = "install-gate-a-version-basal-holds-as-revoked-is-asked-about-again"
+guards = "install gate: a version basal holds as revoked is asked about again"
+test_file = "crates/basal-testkit/tests/install_gate.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test install_gate"
+expect_red = ["other_runs_of_a_revoked_version_are_cancelled_without_asking"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/gate.rs"
+old = ".read(|c| install::revocation(c, flow_id, version))?"
+new = ".read(|c| install::revocation(c, flow_id, version).map(|_| None::<String>))?"
+
+[[control]]
+id = "unknown-reasons-a-keyed-call-out-of-retries-is-recorded-with-its-last-send-s-reason"
+guards = "unknown reasons: a keyed call out of retries is recorded with its last send's reason"
+test_file = "crates/basal-testkit/tests/journal_unknown.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test journal_unknown"
+expect_red = ["a_keyed_call_ambiguous_through_its_retries_is_unknown_as_retries_exhausted"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/runtime.rs"
+old = "                    UnknownReason::RetriesExhausted\n                } else {\n                    last\n"
+new = "                    last\n                } else {\n                    last\n"
+
+[[control]]
+id = "unknown-reasons-a-call-found-sent-after-a-restart-is-recorded-as-a-lost-connection"
+guards = "unknown reasons: a call found sent after a restart is recorded as a lost connection"
+test_file = "crates/basal-testkit/tests/journal_unknown.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test journal_unknown"
+expect_red = ["unknown_unkeyed_mutation_needs_reconcile"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "journal::record_unknown(tx, &run_id, *p, UnknownReason::BasalRestarted)?;"
+new = "journal::record_unknown(tx, &run_id, *p, UnknownReason::ConnectionLost)?;"
+
+[[control]]
+id = "admission-does-not-require-the-approved-version-s-exact-code"
+guards = "admission does not require the approved version's exact code"
+test_file = "crates/basal-testkit/tests/dispatch_manifest.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test dispatch_manifest"
+expect_red = ["new_version_applies_to_newly_admitted_triggers_only"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/admission.rs"
+old = "if approved.code_hash != code_hash(&spec.script, &spec.manifest) {"
+new = "if false && approved.code_hash != code_hash(&spec.script, &spec.manifest) {"
+
+[[control]]
+id = "the-dispatcher-does-not-refuse-sh-from-the-worker"
+guards = "the dispatcher does not refuse sh from the worker"
+test_file = "crates/basal-testkit/tests/dispatch_authorization.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test dispatch_authorization"
+expect_red = ["a_compromised_worker_cannot_issue_sh"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "if call.kind.is_shell() {"
+new = "if false && call.kind.is_shell() {"
+
+[[control]]
+id = "audit-row-written-outside-the-transaction-that-journals-the-call-cut-harness"
+hub = "The audit row commits atomically with the call intent so neither cuts nor parent kills leave an unaudited issued call"
+hub_targets = ["dispatch_kv", "journal_kill"]
+guards = "audit row written outside the transaction that journals the call (cut harness)"
+test_file = "crates/basal-testkit/tests/journal_cut.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test journal_cut"
+expect_red = ["every_cut_recovers_to_the_uncut_state"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+edits = [
+  { file = "crates/basal-core/src/driver.rs", old = "        audit::record(\n            tx,\n            flow_id,\n            &self.lease.run_id,\n            call.position,\n            &call.kind,\n            &ArgsDigest::of(&call.args),\n            audit::ALLOWED,\n            now_ms,\n        )?;\n        Ok(Some(inserted))", new = "        Ok(Some(inserted))" },
+  { file = "crates/basal-core/src/driver.rs", old = "                self.at(Boundary::CallCommitted {\n                    position: call.position,\n                })?;\n", new = "                self.at(Boundary::CallCommitted {\n                    position: call.position,\n                })?;\n                self.rt.store().write(|tx| audit::record(tx, &flow_id, &run_id, call.position, &call.kind, &ArgsDigest::of(&call.args), audit::ALLOWED, audited_at))?;\n" },
+]
+
+[[control]]
+id = "a-re-issued-model-call-sends-the-script-s-bytes-not-the-journaled-request"
+hub = "A reissued call sends the frozen journaled request bytes, including model clamps, target-scope envelopes and built-in temporary-write envelopes, rather than the script's unclamped arguments"
+hub_targets = ["builtins_dispatch", "flow_scopes", "fs_write_temps", "journal_cut", "journal_kill"]
+guards = "a re-issued model call sends the script's bytes, not the journaled request"
+test_file = "crates/basal-testkit/tests/dispatch_tokens.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test dispatch_tokens"
+expect_red = ["reissue_after_a_cut_sends_identical_bytes_under_the_same_send_id"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/runtime.rs"
+old = "args: row.dispatch_args(),"
+new = "args: row.args.clone(),"
+
+[[control]]
+id = "recovery-applies-a-committed-kv-write-again"
+hub = "A local effect whose outcome is already waiting in the mailbox is never applied again on recovery, asserted by KV and crash recovery tests"
+hub_targets = ["journal_cut", "journal_kill", "journal_races"]
+guards = "recovery applies a committed kv write again"
+test_file = "crates/basal-testkit/tests/dispatch_kv.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test dispatch_kv"
+expect_red = ["kv_write_is_applied_once_across_every_cut"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "if waiting.contains(&row.position) || self.rt.is_inflight(&run_id, row.position) {"
+# Ignore a waiting outcome only for local effects, not for remote completions.
+new = "if (waiting.contains(&row.position) && row.class != StoredClass::Local) || self.rt.is_inflight(&run_id, row.position) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "run-deadline-never-enforced-activation-and-expiry"
+hub = "The run deadline frees its slot whether active, suspended or waiting for provider readiness, asserted by slot and flow-scope tests"
+hub_targets = ["flow_scopes"]
+guards = "run deadline never enforced (activation and expiry)"
+test_file = "crates/basal-testkit/tests/dispatch_slots.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test dispatch_slots"
+expect_red = ["deadline_fails_a_stuck_run_and_frees_the_slot"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+edits = [
+  { file = "crates/basal-core/src/driver.rs", old = ".is_some_and(|d| self.rt.config.clock.now_ms() >= d)", new = ".is_some_and(|_| false)" },
+  { file = "crates/basal-core/src/runs.rs", old = "deadline_at IS NOT NULL AND deadline_at <= ?1 \\", new = "deadline_at IS NOT NULL AND deadline_at <= ?1 AND 0 \\" },
+]
+
+[[control]]
+id = "admission-ignores-the-run-rate-limit"
+hub = "Admission refuses a run past its flow's rate limit, including scheduled fires, asserted by rate-window and schedule integration tests"
+hub_targets = ["schedule_flows"]
+guards = "admission ignores the run rate limit"
+test_file = "crates/basal-testkit/tests/dispatch_limits.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test dispatch_limits"
+expect_red = ["run_rate_limit_and_auto_disable_after_k_saturated_windows"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/admission.rs"
+old = "        return Ok(Err(Admission::RateLimited));"
+new = "        let _ = Admission::RateLimited;"
+
+[[control]]
+id = "sustained-saturation-never-disables-the-flow"
+guards = "sustained saturation never disables the flow"
+test_file = "crates/basal-testkit/tests/dispatch_limits.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test dispatch_limits"
+expect_red = ["run_rate_limit_and_auto_disable_after_k_saturated_windows"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/rate.rs"
+old = "if streak < k {"
+new = "if true || streak < k {"
+
+[[control]]
+id = "saturated-windows-counted-without-being-consecutive"
+guards = "saturated windows counted without being consecutive"
+test_file = "crates/basal-testkit/tests/dispatch_limits.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test dispatch_limits"
+expect_red = ["saturated_windows_that_are_not_consecutive_do_not_disable"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/rate.rs"
+old = "AND saturated = 1 AND window_start BETWEEN ?3 AND ?4\","
+new = "AND saturated = 1 AND window_start <= ?4\","
+
+[[control]]
+id = "admission-ignores-a-disabled-flow"
+guards = "admission ignores a disabled flow"
+test_file = "crates/basal-testkit/tests/dispatch_limits.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test dispatch_limits"
+expect_red = ["run_rate_limit_and_auto_disable_after_k_saturated_windows"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/admission.rs"
+old = "Some(flow) if !flow.enabled => return Ok(Err(Admission::Disabled)),"
+new = "Some(flow) if false && !flow.enabled => return Ok(Err(Admission::Disabled)),"
+
+[[control]]
+id = "dispatch-budget-not-checked"
+guards = "dispatch budget not checked"
+test_file = "crates/basal-testkit/tests/dispatch_limits.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test dispatch_limits"
+expect_red = ["dispatch_budget_refuses_beyond_the_window"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "if let Take::Refused { .. } = rate::check(tx, flow_id, rate::Kind::Dispatch, now_ms, &rate)?"
+new = "if let Take::Refused { .. } = Take::Allowed"
+
+[[control]]
+id = "a-disabled-flow-s-resumed-run-still-dispatches"
+guards = "a disabled flow's resumed run still dispatches"
+test_file = "crates/basal-testkit/tests/dispatch_limits.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test dispatch_limits"
+expect_red = ["disable_fences_a_resumed_run_while_in_flight_calls_settle"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "        let rate = self.rt.config.rate;\n        if install::is_disabled(tx, flow_id)? {"
+new = "        let rate = self.rt.config.rate;\n        if false && install::is_disabled(tx, flow_id)? {"
+
+[[control]]
+id = "per-run-host-call-limit-not-checked"
+guards = "per-run host-call limit not checked"
+test_file = "crates/basal-testkit/tests/dispatch_limits.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test dispatch_limits"
+expect_red = ["per_run_call_limit_fails_the_run"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "if calls >= limits.max_calls {"
+new = "if false && calls >= limits.max_calls {"
+
+[[control]]
+id = "per-run-journal-byte-limit-not-checked"
+guards = "per-run journal byte limit not checked"
+test_file = "crates/basal-testkit/tests/dispatch_limits.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test dispatch_limits"
+expect_red = ["per_run_journal_bytes_limit_fails_the_run"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "if bytes.saturating_add(incoming) > limits.max_journal_bytes {"
+new = "if false && bytes.saturating_add(incoming) > limits.max_journal_bytes {"
+
+[[control]]
+id = "argument-byte-cap-not-checked-before-parsing"
+guards = "argument byte cap not checked before parsing"
+test_file = "crates/basal-testkit/tests/dispatch_limits.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test dispatch_limits"
+expect_red = ["argument_over_the_cap_is_refused_before_it_is_parsed"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "if call.args.len() > cap {"
+new = "if false && call.args.len() > cap {"
+
+[[control]]
+id = "result-byte-cap-not-checked"
+guards = "result byte cap not checked"
+test_file = "crates/basal-testkit/tests/dispatch_limits.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test dispatch_limits"
+expect_red = ["result_over_the_cap_is_recorded_as_a_rejection"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/runtime.rs"
+old = "(bytes > cap).then(|| {"
+new = "(false && bytes > cap).then(|| {"
+
+[[control]]
+id = "health-reports-no-oldest-pending-run"
+hub = "Health includes the oldest pending run's age when one exists, asserted by ops and strict health-contract tests"
+hub_targets = ["health_contract"]
+guards = "health reports no oldest pending run"
+test_file = "crates/basal-module/tests/ops.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test ops"
+expect_red = ["health_reports_flows_runs_and_the_module"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/ops.rs"
+old = "oldest_pending_ms: oldest(\"pending\")?,"
+new = "oldest_pending_ms: oldest(\"pending\")?.filter(|_| false),"
+
+[[control]]
+id = "health-does-not-count-failed-runs-as-consecutive-failures"
+hub = "Health counts failed runs in consecutive_failures, asserted by ops health and the independently decoded health contract"
+hub_targets = ["health_contract"]
+guards = "health does not count failed runs as consecutive failures"
+test_file = "crates/basal-module/tests/ops.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test ops"
+expect_red = ["health_reports_flows_runs_and_the_module"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/ops.rs"
+old = "\"failed\" | \"engine_mismatch\" => consecutive_failures += 1,"
+new = "\"engine_mismatch\" => consecutive_failures += 1,"
+
+[[control]]
+id = "decision-cards-an-auto-disable-writes-no-re-enable-card-intent"
+guards = "decision cards: an auto-disable writes no re-enable card intent"
+test_file = "crates/basal-module/tests/decisions.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test decisions"
+expect_red = ["an_auto_disabled_flow_raises_one_reenable_card_and_each_option_applies"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/rate.rs"
+old = "crate::decisions::record_auto_disable(tx, flow_id, &rule, now_ms)?;"
+new = "let _ = (&rule, now_ms);"
+
+[[control]]
+id = "decision-cards-a-run-limit-auto-disable-is-recorded-as-a-dispatch-limit-one"
+guards = "decision cards: a run-limit auto-disable is recorded as a dispatch-limit one"
+test_file = "crates/basal-module/tests/decisions.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test decisions"
+expect_red = ["an_auto_disabled_flow_raises_one_reenable_card_and_each_option_applies"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/rate.rs"
+old = "Kind::Run => basal_host::DisabledReason::RunLimitSaturated,"
+new = "Kind::Run => basal_host::DisabledReason::DispatchLimitSaturated,"
+
+[[control]]
+id = "decision-cards-the-re-enable-card-records-the-other-limit-than-the-one-that-tripped"
+guards = "decision cards: the re-enable card records the other limit than the one that tripped"
+test_file = "crates/basal-module/tests/decisions.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test decisions"
+expect_red = ["an_auto_disabled_flow_raises_one_reenable_card_and_each_option_applies"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/rate.rs"
+old = "            limit: max,\n"
+new = "            limit: limits.max_dispatches,\n"
+
+[[control]]
+id = "selector-selection-checkpoint-moved-after-intent"
+guards = "selector: selection checkpoint moved after intent"
+test_file = "crates/basal-module/tests/hosts.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test hosts"
+expect_red = ["selections_freeze_at_intent_commit_and_only_uncommitted_calls_reselect"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+edits = [
+  { file = "crates/basal-core/src/driver.rs", old = "        if matches!(\n            call.kind,\n            CallKind::Primitive(Primitive::Llm | Primitive::Classify)\n        ) {\n            self.at(Boundary::ModelSelected {\n                position: call.position,\n            })?;\n        }\n        let new = NewCall {", new = "        let new = NewCall {" },
+  { file = "crates/basal-core/src/driver.rs", old = "                self.at(Boundary::CallCommitted {\n                    position: call.position,\n                })?;", new = "                self.at(Boundary::CallCommitted {\n                    position: call.position,\n                })?; if matches!(call.kind, CallKind::Primitive(Primitive::Llm | Primitive::Classify)) { self.at(Boundary::ModelSelected {position:call.position})?; }" },
+]
+
+[[control]]
+id = "integration-omitted-digest-sends-silent"
+hub = "An omitted digest action uses the recipient's approved cap, including piggyback, rather than unconditional silent; ordinary and audience sink dispatch assert that action"
+hub_targets = ["audience", "hosts"]
+guards = "integration: omitted digest sends silent"
+test_file = "crates/basal-module/tests/hosts.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test hosts"
+expect_red = ["omitted_digest_action_uses_each_recipient_approved_cap"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "serde_json::to_value(cap)"
+new = "serde_json::to_value(\"silent\")"
+
+[[control]]
+id = "selector-script-model-guard-omitted-before-routing"
+guards = "selector: script model guard omitted before routing"
+test_file = "crates/basal-module/tests/hosts.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test hosts"
+expect_red = ["script_model_or_provider_is_rejected_before_selection_even_if_it_matches"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "(args.get(\"model\").is_some() || args.get(\"provider\").is_some())"
+new = "false"
+
+[[control]]
+id = "selector-unreachable-retry-bound-omitted"
+guards = "selector: unreachable retry bound omitted"
+test_file = "crates/basal-module/tests/hosts.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test hosts"
+expect_red = ["unreachable_selector_retries_boundedly_then_journals_route_unavailable"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "retries >= self.rt.config.unavailable_retries"
+new = "retries >= u32::MAX"
+
+[[control]]
+id = "selector-provider-refusal-code-lost-in-journal"
+guards = "selector: provider refusal code lost in journal"
+test_file = "crates/basal-module/tests/hosts.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test hosts"
+expect_red = ["selector_refusals_are_journaled_with_each_code_and_never_send_broca"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "return Err(Refusal::new(code, detail));"
+new = "return Err(Refusal::new(\"route_unavailable\", detail));"
+
+[[control]]
+id = "selector-reissue-changes-selected-runner"
+guards = "selector: reissue changes selected runner"
+test_file = "crates/basal-module/tests/hosts.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test hosts"
+expect_red = ["selections_freeze_at_intent_commit_and_only_uncommitted_calls_reselect"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/runtime.rs"
+old = "args: row.dispatch_args(),"
+new = "args: { let mut v: serde_json::Value = serde_json::from_str(row.dispatch_args().as_str()).map_err(|_| ()).unwrap_or(serde_json::Value::Null); v[\"selection\"][\"runner\"][\"model\"] = serde_json::json!(\"wrong\"); JsonText::new(v.to_string()).unwrap_or_else(|_| JsonText::null()) },"
+
+[[control]]
+id = "hosts-journaled-class-not-passed-to-transport-host"
+guards = "hosts: journaled class not passed to transport host"
+test_file = "crates/basal-module/tests/hosts.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test hosts"
+expect_red = ["catalog_changes_cannot_execute_mutations_under_a_query_retry_policy"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/runtime.rs"
+old = ".dispatch_classified(&request, expected_class)"
+new = ".dispatch(&request)"
+
+[[control]]
+id = "hosts-reissue-ignores-journaled-envelope"
+hub = "Resends use the frozen journaled envelope rather than script arguments, asserted by sink, model-selection and end-to-end recovery tests"
+hub_targets = ["e2e"]
+guards = "hosts: reissue ignores journaled envelope"
+test_file = "crates/basal-module/tests/hosts.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test hosts"
+expect_red = ["journaled_sink_intent_is_byte_identical_after_a_cut"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/runtime.rs"
+old = "args: row.dispatch_args(),"
+new = "args: row.args.clone(),"
+
+[[control]]
+id = "flow-consent-is-automatically-retried"
+guards = "consent_unavailable awaits an explicit operator grant"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test flow_scopes"
+expect_red = ["consent_unavailable_waits_for_explicit_grant_and_names_provider_action"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/runtime.rs"
+old = "let retry = if refusal.reason == RefusalReason::ConsentUnavailable {"
+new = "let retry = if false && refusal.reason == RefusalReason::ConsentUnavailable { // NON-VACUITY BREAK"
+
+[[control]]
+id = "flow-deferred-call-resends-early"
+guards = "cold-store recovery respects retry_not_before"
+test_file = "crates/basal-testkit/tests/flow_scope_recovery.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test flow_scope_recovery"
+expect_red = ["reopening_store_never_resends_early_and_keeps_position_and_call_key"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "if retry <= self.rt.config.clock.now_ms() {"
+new = "if true || retry <= self.rt.config.clock.now_ms() { // NON-VACUITY BREAK"
+
+[[control]]
+id = "flow-deferred-resend-changes-call-key"
+hub = "Scope-deferred and crash-recovered resends preserve the committed call key through reconciliation and temporary-file completion, so the original keyed effect and its cleanup are not duplicated"
+hub_targets = ["fs_write_temps", "journal_cut", "journal_kill", "journal_unknown"]
+guards = "resend retains the original journal position and call key"
+test_file = "crates/basal-testkit/tests/flow_scope_recovery.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test flow_scope_recovery"
+expect_red = ["reopening_store_never_resends_early_and_keeps_position_and_call_key"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/runtime.rs"
+old = "idempotency_key: row.idempotency_key.clone(),"
+new = "idempotency_key: format!(\"{}-changed\", row.idempotency_key), // NON-VACUITY BREAK"
+
+[[control]]
+id = "flow-busy-wait-exceeds-run-deadline"
+guards = "resource_busy wait is capped by the absolute existing deadline"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test flow_scopes"
+expect_red = ["resource_busy_hint_is_capped_by_existing_run_deadline"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/runtime.rs"
+old = "deadline.map_or(retry, |d| retry.min(d))"
+new = "deadline.map_or(retry, |_| retry) // NON-VACUITY BREAK"
+
+[[control]]
+id = "instance-removal-cancellation-recheck"
+guards = "a stale removal observation must be rechecked in the cancellation transaction"
+file = "crates/basal-core/src/gate.rs"
+old = "if !crate::packages::removed(tx, flow_id)? {"
+new = "if false && !crate::packages::removed(tx, flow_id)? { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-core/src/gate.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["gate::removal_tests::removed_cancellation_rechecks_mark_in_its_write_transaction"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "ambiguous-send-is-not-a-scope-refusal"
+guards = "An ambiguous mutation send stays unknown when its resend is scope-refused"
+file = "crates/basal-core/src/runtime.rs"
+old = "if let Some(reason) = maybe_sent {"
+new = "if let Some(reason) = maybe_sent.filter(|_| refusal.reason != RefusalReason::FlowScopeRequired) { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-core/src/runtime_regressions.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["runtime::regressions::scope_refusal_after_an_ambiguous_send_stays_unknown"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "claim-flushes-refusal-intents"
+guards = "claim expiry acknowledges the deferred snapshot after commit"
+file = "crates/basal-core/src/driver.rs"
+old = """
+Ok(Err(end)) => {
+                self.flush_refusals()?;"""
+new = "Ok(Err(end)) => { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-core/src/runtime_regressions.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["runtime::regressions::claim_expiry_acknowledges_the_deferred_snapshot_after_commit"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "domain-error-retires-claim"
+guards = "a non storage driver error exits the claim and frees the slot"
+file = "crates/basal-core/src/driver.rs"
+old = """
+Err(e)
+                if !matches!("""
+new = """
+Err(e)
+                if false && !matches!( // NON-VACUITY BREAK"""
+edits = []
+test_file = "crates/basal-core/src/runtime_regressions.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["runtime::regressions::a_non_storage_driver_error_exits_the_claim_and_frees_the_slot"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "wait-timeout-is-not-success"
+guards = "wait for reports unsatisfied predicates as timeouts"
+file = "crates/basal-core/src/runtime.rs"
+old = """
+return Err(CoreError::Timeout {
+                    run_id: run_id.to_owned(),
+                    state,
+                });"""
+new = "return Ok(state); // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-core/src/runtime_regressions.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["runtime::regressions::wait_for_reports_unsatisfied_predicates_as_timeouts"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "spawn-reaps-completed-handles"
+guards = "completed thread handles are reaped during normal spawning"
+file = "crates/basal-core/src/runtime.rs"
+old = "threads.retain(|h| !h.is_finished());"
+new = "// NON-VACUITY BREAK: threads.retain(|h| !h.is_finished());"
+edits = []
+test_file = "crates/basal-core/src/runtime_regressions.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["runtime::regressions::completed_thread_handles_are_reaped_during_normal_spawning"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "admission-does-not-wake-the-idle-engine"
+guards = "A newly admitted trigger wakes the sleeping engine without its ten-minute fallback"
+file = "crates/basal-core/src/runtime.rs"
+old = """
+admission::admit_current(tx, &store_id, flow_id, trigger_id, trigger, &ctx)
+        })?;
+        self.shared.signal.bump();"""
+new = """
+admission::admit_current(tx, &store_id, flow_id, trigger_id, trigger, &ctx)
+        })?;
+        // NON-VACUITY BREAK: admission no longer signals the engine."""
+edits = []
+test_file = "crates/basal-module/src/engine_tests.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--lib"
+expect_red = ["engine::lifecycle_tests::admission_wakes_the_sleeping_engine"]
+only = true
+platforms = ["macos"]
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "linux-budget-exhausted-worker-is-reused"
+guards = "a worker that reported an exhausted CPU, memory or stack budget is handed out again"
+test_file = "crates/basal-module/tests/pool.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test pool"
+expect_red = ["js_time_exhaustion_retires_the_worker_before_the_next_handout", "memory_exhaustion_retires_the_worker_before_the_next_handout", "stack_exhaustion_retires_the_worker_before_the_next_handout"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "self.fail(\"budget_exhausted\", format!(\"{kind:?}\"), false)"
+new = "self.fail(\"budget_exhausted\", format!(\"{kind:?}\"), true) // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-flow-driver-tool-fence"
+guards = "a compromised flow worker cannot issue a Tool call"
+test_file = "crates/basal-testkit/tests/dispatch_authorization.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test dispatch_authorization"
+expect_red = ["a_compromised_worker_cannot_issue_tool"]
+only = false
+file = "crates/basal-core/src/driver.rs"
+old = "if matches!(call.kind, CallKind::Tool { .. }) {"
+new = "if false { // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-flow-driver-console-fence"
+guards = "a compromised flow worker cannot send codemode console output"
+test_file = "crates/basal-testkit/tests/dispatch_authorization.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test dispatch_authorization"
+expect_red = ["a_compromised_worker_cannot_send_console"]
+only = false
+file = "crates/basal-core/src/driver.rs"
+old = "return self.fail(\n                        \"profile_violation\",\n                        \"console output is not available to flows\".into(),\n                        false,\n                    );"
+new = "continue; // NON-VACUITY BREAK"
+
+[[control]]
+id = "grant-card-retirement-keeps-prior-uncertainty"
+guards = "retirement cannot relabel an earlier possibly-sent mutation as rejected"
+file = "crates/basal-core/src/runtime.rs"
+old = "if let Some(reason) = maybe_sent {"
+new = "if let Some(reason) = maybe_sent.filter(|_| refusal.reason != basal_host::flow_refusal::RefusalReason::AgentRetired) { // NON-VACUITY BREAK"
+test_file = "crates/basal-core/src/grant_loss_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["runtime::grant_loss_tests::retirement_after_unknown_preserves_reconcile_then_not_applied_fails_once"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "event-deferred-run-starts-early"
+guards = "unavailable event bodies respect durable retry backoff"
+test_file = "crates/basal-core/src/events_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["events::tests::unavailable_body_is_deferred_with_backoff_until_deadline"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/runtime.rs"
+old = "runs.retain(|(run_id, _)| !waiting.contains(run_id));"
+new = "runs.retain(|(run_id, _)| true || !waiting.contains(run_id)); // NON-VACUITY BREAK"
+
+[[control]]
+id = "event-verified-trigger-not-forwarded"
+guards = "the real worker receives the verified event body before running the script"
+test_file = "crates/basal-module/tests/event_preamble.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test event_preamble"
+expect_red = ["worker_preamble_supplies_verified_json_and_synthetic_capture_calls_nothing_live"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "crate::events::Preamble::Ready(trigger) => trigger,"
+new = "crate::events::Preamble::Ready(_trigger) => self.run.trigger.clone(), // NON-VACUITY BREAK"
+
+[[control]]
+id = "target-replay-revalidates-audience"
+guards = "Replayed target calls reask core even when an old scope remains cached"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test flow_scopes"
+expect_red = ["replay_reasks_core_and_outside_audience_call_fails_unsent"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "envelope[\"replay\"] = Value::Bool(true);"
+new = "envelope[\"replay\"] = Value::Bool(false); // NON-VACUITY BREAK"
+
+[[control]]
+id = "target-provider-delegation-refusal-is-terminal"
+guards = "Unsupported provider delegation is unsent and never deferred for retry"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test flow_scopes"
+expect_red = ["provider_delegation_unsupported_is_typed_unsent_without_retry_or_health_penalty"]
+# Terminal scope and delegation refusals must not enter the transient retry path or become run health failures.
+# Collateral: delegation_refusals_do_not_penalize_uncaught_runs,
+# replay_reasks_core_and_outside_audience_call_fails_unsent,
+# target_core_refusals_are_typed_unsent_without_retry_or_health_penalty, and
+# target_scope_principal_refusal_is_a_terminal_carrier_bug.
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/runtime.rs"
+old = "} else if refusal.terminal() {"
+new = "} else if false && refusal.terminal() { // NON-VACUITY BREAK"
+
+[[control]]
+id = "target-bound-honors-manifest-override"
+guards = "Target budgets use max_targets rather than a fixed 64-target fence"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test flow_scopes"
+expect_red = ["distinct_target_default_bound_and_manifest_override"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "if !targets.contains(&agent) && targets.len() >= manifest.max_targets as usize {"
+new = "if !targets.contains(&agent) && targets.len() >= 64 { // NON-VACUITY BREAK"
+
+[[control]]
+id = "target-cut-mutation-cannot-retry"
+guards = "Even keyed target mutations reconcile after a scope cuts the in-flight call"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test flow_scopes"
+expect_red = ["midcall_target_scope_cut_makes_even_keyed_mutations_outcome_unknown"]
+# A target mutation cut after send has an unknown outcome, so even an idempotency key cannot permit resend.
+# Collateral: midcall_target_scope_cut_survives_restart_without_resending_keyed_mutation.
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/runtime.rs"
+old = "if class == StoredClass::Query && retries < self.config.unavailable_retries {"
+new = "if class.safe_to_resend() && retries < self.config.unavailable_retries { // NON-VACUITY BREAK"
+
+[[control]]
+id = "target-cut-policy-survives-recovery"
+guards = "Recovery cannot resend a keyed mutation whose in-flight target scope was cut"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test flow_scopes"
+expect_red = ["midcall_target_scope_cut_survives_restart_without_resending_keyed_mutation"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "(class, _) if row.scope_cut && class != StoredClass::Query => {"
+new = "(class, _) if false && row.scope_cut && class != StoredClass::Query => { // NON-VACUITY BREAK"
+
+[[control]]
+id = "target-distinct-target-bound-enforced"
+guards = "The default target budget stops the 65th distinct target but not repeats"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test flow_scopes"
+expect_red = ["distinct_target_default_bound_and_manifest_override"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "if !targets.contains(&agent) && targets.len() >= manifest.max_targets as usize {"
+new = "if false && !targets.contains(&agent) && targets.len() >= manifest.max_targets as usize { // NON-VACUITY BREAK"
+
+[[control]]
+id = "target-delegation-health-exemption"
+guards = "An uncaught target delegation refusal does not count as a flow failure"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test flow_scopes"
+expect_red = ["delegation_refusals_do_not_penalize_uncaught_runs"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/ops.rs"
+old = "| \"for_target_requires_delegate\","
+new = "| \"NON-VACUITY BREAK\","
+
+[[control]]
+id = "install-unapproved-state-opens-activation-gate"
+guards = "pending, declined and expired install statuses cancel activation just like unknown"
+file = "crates/basal-core/src/gate.rs"
+old = '''Ok(
+                InstallStatus::Pending { .. }
+                | InstallStatus::Declined { .. }
+                | InstallStatus::Expired { .. },
+            ) => ('''
+new = '''Ok(
+                InstallStatus::Pending { .. }
+                | InstallStatus::Declined { .. }
+                | InstallStatus::Expired { .. },
+            ) => return Ok(Gate::Open), // NON-VACUITY BREAK
+            _ if false => ('''
+test_file = "crates/basal-module/tests/install_gate.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test install_gate"
+expect_red = ["unapproved_core_states_close_the_activation_gate_like_unknown"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "template-params-activation"
+guards = "scripts receive admission-time parameter values on activation"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["activation_uses_effective_grants_and_journaled_self_and_params"]
+only = true
+file = "crates/basal-core/src/driver.rs"
+old = "params_input: self.run.params_input.clone(),"
+new = "params_input: JsonText::null(), // NON-VACUITY BREAK"
+
+[[control]]
+id = "template-null-at-not-one-shot"
+guards = "a null optional at does not turn an interval instance into a one-shot"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["null_optional_at_does_not_end_a_recurring_instance"]
+only = true
+file = "crates/basal-core/src/admission.rs"
+old = "json_type(manifest,'$.trigger.schedule.at')='text'"
+new = "json_type(manifest,'$.trigger.schedule.at') IS NOT NULL /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "template-dry-run-self-end-not-captured"
+guards = "template dry-run self-ending calls are captured without applying instance lifecycle effects"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["template_dry_run_captures_self_end_with_values_and_bound_instance"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/runtime.rs"
+old = "!self.config.capture_instance_end"
+new = "true /* NON-VACUITY BREAK */"
