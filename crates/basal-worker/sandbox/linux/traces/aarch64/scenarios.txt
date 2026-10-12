@@ -1,5 +1,5 @@
-   Compiling basal-testkit v0.1.0 (/home/runner/work/basal/basal/crates/basal-testkit)
-   Compiling basal-worker v0.1.0 (/home/runner/work/basal/basal/crates/basal-worker)
+   Compiling basal-testkit v0.1.0 (crates/basal-testkit)
+   Compiling basal-worker v0.1.0 (crates/basal-worker)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 11.33s
      Running tests/budgets.rs (target/debug/deps/budgets-9273e49dceb485d4)
 

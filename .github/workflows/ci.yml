@@ -150,6 +150,11 @@ jobs:
         run: |
           python3 script/check-ckdev-names.py
           python3 -m unittest script.tests.check_ckdev_names -v
+      - name: Check tracked local paths
+        if: matrix.platform == 'linux'
+        run: |
+          python3 script/check-local-paths.py
+          python3 -m unittest script.tests.check_local_paths -v
       - name: Check offline placement cards
         if: matrix.platform == 'linux'
         run: |

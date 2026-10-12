@@ -1,5 +1,5 @@
-   Compiling basal-testkit v0.1.0 (/Users/ufukaltinok/.local/share/cortexkit/alfonso/worktrees/adddb770875f5a2d/bg_dispatch_808a7da40e90b9d99edbefa5/crates/basal-testkit)
-   Compiling basal-worker v0.1.0 (/Users/ufukaltinok/.local/share/cortexkit/alfonso/worktrees/adddb770875f5a2d/bg_dispatch_808a7da40e90b9d99edbefa5/crates/basal-worker)
+   Compiling basal-testkit v0.1.0 (crates/basal-testkit)
+   Compiling basal-worker v0.1.0 (crates/basal-worker)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 1.47s
      Running tests/budgets.rs (target/debug/deps/budgets-afcf82625d114032)
 

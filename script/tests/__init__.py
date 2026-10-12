@@ -7,6 +7,7 @@ def load_tests(loader, tests, pattern):
     return loader.loadTestsFromNames([
         "script.tests.check_path_deps",
         "script.tests.check_ckdev_names",
+        "script.tests.check_local_paths",
         "script.tests.flows_rig",
         "script.tests.sign_worker",
         "script.tests.stage_card",
