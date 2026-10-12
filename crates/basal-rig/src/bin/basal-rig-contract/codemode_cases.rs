@@ -11,7 +11,8 @@ fn request(code: &str, key: &str) -> Value {
 
 fn cpu_exhausted(reply: &Reply) -> bool {
     reply.as_ref().is_ok_and(|v| {
-        v["status"] == "budget_exhausted:js_cpu" && v["error"]["code"] == "budget_exhausted:js_cpu"
+        v["structuredContent"]["status"] == "budget_exhausted:js_cpu"
+            && v["structuredContent"]["error"]["code"] == "budget_exhausted:js_cpu"
     })
 }
 
@@ -192,15 +193,16 @@ pub(super) async fn run(rig: &Rig, agent: &Agent, args: &Args, tag: &str) -> Vec
     success.record("tool_reply", evidence(&reply));
     success.check(
         "the program completed and returned 42",
-        reply
-            .as_ref()
-            .is_ok_and(|v| v["status"] == "completed" && v["value"]["answer"] == 42),
+        reply.as_ref().is_ok_and(|v| {
+            v["structuredContent"]["status"] == "completed"
+                && v["structuredContent"]["value"]["answer"] == 42
+        }),
         evidence(&reply),
     );
     success.check(
         "console.log output is captured",
         reply.as_ref().is_ok_and(|v| {
-            v["output"]
+            v["structuredContent"]["output"]
                 .as_str()
                 .is_some_and(|s| s.contains("rig console"))
         }),
@@ -224,7 +226,7 @@ pub(super) async fn run(rig: &Rig, agent: &Agent, args: &Args, tag: &str) -> Vec
         success.check(
             "the probe received the actual agent_id and run_id in its daemon stamp",
             reply.as_ref().is_ok_and(|v| {
-                v["value"]["echoed"]
+                v["structuredContent"]["value"]["echoed"]
                     == json!({"text":"rig echo","agent_id":agent.id,"run_id":ended["run_id"]})
             }),
             evidence(&reply),
@@ -272,13 +274,13 @@ mod tests {
     #[test]
     fn cpu_budget_requires_matching_terminal_status_and_error() {
         assert!(cpu_exhausted(&Ok(
-            json!({"status":"budget_exhausted:js_cpu","error":{"code":"budget_exhausted:js_cpu"}})
+            json!({"structuredContent":{"status":"budget_exhausted:js_cpu","error":{"code":"budget_exhausted:js_cpu"}}})
         )));
         for wrong in [
-            json!({"status":"completed","error":{"code":"budget_exhausted:js_cpu"}}),
-            json!({"status":"budget_exhausted:memory","error":{"code":"budget_exhausted:memory"}}),
-            json!({"status":"budget_exhausted:js_cpu"}),
-            json!({"status":"budget_exhausted:js_cpu","error":{"code":"budget_exhausted:wall"}}),
+            json!({"structuredContent":{"status":"completed","error":{"code":"budget_exhausted:js_cpu"}}}),
+            json!({"structuredContent":{"status":"budget_exhausted:memory","error":{"code":"budget_exhausted:memory"}}}),
+            json!({"structuredContent":{"status":"budget_exhausted:js_cpu"}}),
+            json!({"structuredContent":{"status":"budget_exhausted:js_cpu","error":{"code":"budget_exhausted:wall"}}}),
         ] {
             assert!(!cpu_exhausted(&Ok(wrong)));
         }
