@@ -169,7 +169,7 @@ impl WorkDirectory {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir(&path).unwrap();
-        Self(std::fs::canonicalize(path).unwrap())
+        Self(common::canonical(&path))
     }
 }
 impl Drop for WorkDirectory {

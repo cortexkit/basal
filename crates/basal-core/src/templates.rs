@@ -387,8 +387,7 @@ pub fn validate_values(manifest: &Manifest, values: &Value, now: i64) -> Result<
                 value.as_str().and_then(resolved_path).is_some_and(|real| {
                     let inside = under
                         .iter()
-                        .filter_map(|root| basal_host::builtins::expand_home(root))
-                        .filter_map(|root| std::fs::canonicalize(root).ok())
+                        .filter_map(|root| basal_host::builtins::canonical_root(root))
                         .any(|root| real.starts_with(root));
                     if let Some(text) = real.to_str() {
                         canonical = Value::String(text.into());
@@ -463,8 +462,7 @@ pub fn grant_guards(
             let root = values[&name].as_str().expect("validated path").to_owned();
             let under = under
                 .iter()
-                .filter_map(|r| basal_host::builtins::expand_home(r))
-                .filter_map(|r| std::fs::canonicalize(r).ok())
+                .filter_map(|r| basal_host::builtins::canonical_root(r))
                 .filter_map(|r| r.to_str().map(str::to_owned))
                 .collect();
             Some(basal_host::builtins::TemplateRoot {

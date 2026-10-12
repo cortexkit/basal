@@ -63,7 +63,7 @@ runner = "cargo"
 package = "basal-proto"
 platforms = ["linux"]
 target = "--lib"
-expect_red = ["tests::codemode_wire_codes_preserve_shell_and_round_trip_tool_json"]
+expect_red = ["tests::codemode_wire_codes_preserve_shell_and_round_trip_tool_json", "tests::confinement_wire_tags_and_linux_fields_are_stable"]
 only = true
 file = "crates/basal-proto/src/limits.rs"
 old = "pub const PROTOCOL_VERSION: u32 = 9;"

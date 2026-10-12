@@ -211,6 +211,8 @@ impl Grant {
 
 /// Resolve symlinks component by component, including the deepest existing
 /// ancestor of a future path. A dangling symlink is not a future directory.
+/// The result is spelled as the `fs` and `git` built-ins accept a root
+/// ([`plain_spelling`]).
 pub fn resolved_path(text: &str) -> Option<PathBuf> {
     use std::path::Component;
     let path = expand_home(text)?;
@@ -218,6 +220,10 @@ pub fn resolved_path(text: &str) -> Option<PathBuf> {
     for component in path.components() {
         match component {
             Component::CurDir => continue,
+            // A Windows drive (`C:`) on its own names that drive's current
+            // directory, so it is resolved together with the root that
+            // follows it in an absolute path.
+            Component::Prefix(prefix) => resolved.push(prefix.as_os_str()),
             Component::ParentDir => {
                 resolved.pop();
             }
@@ -233,7 +239,35 @@ pub fn resolved_path(text: &str) -> Option<PathBuf> {
             }
         }
     }
-    resolved.is_absolute().then_some(resolved)
+    if !resolved.is_absolute() {
+        return None;
+    }
+    plain_spelling(resolved)
+}
+
+/// An existing root with `~` expanded and every symlink resolved, spelled as
+/// the `fs` and `git` built-ins accept a root ([`plain_spelling`]). `None`
+/// when it is not absolute or cannot be resolved.
+pub fn canonical_root(text: &str) -> Option<PathBuf> {
+    plain_spelling(std::fs::canonicalize(expand_home(text)?).ok()?)
+}
+
+/// A resolved path as the built-ins spell it. On Windows,
+/// `std::fs::canonicalize` returns an extended-length `\\?\X:\...` path,
+/// which the Windows `fs` and `git` built-ins refuse; this drops that
+/// prefix and accepts only a drive path whose spelling the Windows `fs`
+/// built-in accepts. Elsewhere the path is returned unchanged.
+#[cfg(not(windows))]
+fn plain_spelling(path: PathBuf) -> Option<PathBuf> {
+    Some(path)
+}
+
+#[cfg(windows)]
+fn plain_spelling(path: PathBuf) -> Option<PathBuf> {
+    let text = path.to_str()?;
+    let plain = text.strip_prefix(r"\\?\").unwrap_or(text);
+    fs::windows::validate_raw_spelling(plain).ok()?;
+    Some(PathBuf::from(plain))
 }
 
 /// Whether `kind` is a file, git or network built-in.
@@ -286,7 +320,18 @@ pub fn envelope(args: &Value, grant: &Grant) -> Value {
 
 /// Expands a leading `~` to `$HOME`. Returns `None` for a path that is not
 /// absolute after expansion, or when `$HOME` is unset or relative.
+///
+/// On Windows `~` is the profile folder of the process token, the folder
+/// the Windows `fs` built-in expands a `~` root to, never an environment
+/// variable; `None` when that profile is unavailable or the expanded path
+/// is not a drive path the `fs` built-in accepts.
 pub fn expand_home(text: &str) -> Option<PathBuf> {
+    #[cfg(windows)]
+    if text == "~" || text.starts_with("~/") {
+        return fs::windows::expand_root(text)
+            .ok()
+            .map(|path| PathBuf::from(path.into_owned()));
+    }
     let home = || {
         std::env::var_os("HOME")
             .map(PathBuf::from)

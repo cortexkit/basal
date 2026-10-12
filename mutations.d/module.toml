@@ -2295,7 +2295,7 @@ runner = "cargo"
 package = "basal-module"
 platforms = ["linux"]
 target = "--test templates"
-expect_red = ["template_dry_run_uses_canonical_values_effective_grants_and_capture"]
+expect_red = ["template_dry_run_uses_canonical_values_effective_grants_and_capture", "instance_dry_run_uses_bound_values_owner_grants_and_approved_version", "template_dry_run_at_fires_once_immediately_with_canonical_timestamp", "template_dry_run_creates_no_rows_and_uses_no_quota", "template_dry_run_path_and_repo_canonicalization_and_bounds_match_instances"]
 only = true
 file = "crates/basal-module/src/dryrun.rs"
 old = "UPDATE runs SET self_input=?2,params_input=?3,grant_guards=?4 WHERE run_id=?1"
@@ -2309,7 +2309,7 @@ runner = "cargo"
 package = "basal-module"
 platforms = ["linux"]
 target = "--test templates"
-expect_red = ["template_dry_run_creates_no_rows_and_uses_no_quota"]
+expect_red = ["template_dry_run_creates_no_rows_and_uses_no_quota", "instance_dry_run_uses_bound_values_owner_grants_and_approved_version", "template_dry_run_captures_self_end_with_values_and_bound_instance"]
 only = true
 file = "crates/basal-module/src/ops.rs"
 old = "let guards = basal_core::templates::grant_guards(&manifest, &values);"
@@ -2338,7 +2338,7 @@ runner = "cargo"
 package = "basal-module"
 platforms = ["linux"]
 target = "--test templates"
-expect_red = ["instance_dry_run_uses_bound_values_owner_grants_and_approved_version"]
+expect_red = ["instance_dry_run_uses_bound_values_owner_grants_and_approved_version", "template_dry_run_at_fires_once_immediately_with_canonical_timestamp"]
 only = true
 file = "crates/basal-module/src/ops.rs"
 old = "serde_json::from_str(values).map_err(invalid_params)?,"
