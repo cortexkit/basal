@@ -1,4 +1,5 @@
-"""The catalogue loader reads both forms as ckdev-mutate does and names each row's file."""
+"""The catalogue loader reads a single mutations.toml or a mutations.d/ directory of
+fragments as ckdev-mutate does, and records the file and line each row came from."""
 from pathlib import Path
 import subprocess
 import sys
