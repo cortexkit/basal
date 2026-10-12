@@ -18686,3 +18686,35 @@ expect_red = ["codemode::admission::deadline_tests::tool_scope_open_checks_the_a
 only = false
 build_timeout_s = 3600
 timeout_s = 600
+
+[[control]]
+id = "codemode-content-result-size-unbounded"
+guards = "content results stay under 3 MiB without changing the outcome of a run"
+test_file = "crates/basal-module/src/codemode_result_tests.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::result_tests::content_size_cap_marks_omissions_without_changing_success_or_failure"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/codemode.rs"
+old = 'while serialized_size(&reply) >= MAX_RESULT_BYTES {'
+new = 'while false && serialized_size(&reply) >= MAX_RESULT_BYTES { // NON-VACUITY BREAK'
+
+[[control]]
+id = "codemode-content-result-error-unmarked"
+guards = "terminal content errors carry the existing error code and isError flag"
+test_file = "crates/basal-module/src/codemode_result_tests.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::result_tests::content_errors_preserve_the_run_outcome_and_code"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/codemode.rs"
+old = 'reply = reply.with_error(code);'
+new = 'let _ = code; // NON-VACUITY BREAK'

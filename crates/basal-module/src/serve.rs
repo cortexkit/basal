@@ -253,17 +253,20 @@ impl BasalHandler {
         tokio::select! {
             outcome = waiting => match outcome {
                 Ok(Ok(Some(result))) => tool_response(result),
-                Ok(Ok(None)) if keyed => tool_response(json!({"status":"running","run_id":id,
-                    "text":"running: the final result will be retained in late_results."})),
+                Ok(Ok(None)) if keyed => tool_response(crate::codemode::running(&id)),
                 Ok(Ok(None)) => tool_error(subc_protocol::ErrorBody::new("outcome_unknown","keyless codemode reply was lost")),
                 Ok(Err(error)) => tool_error(error),
                 Err(error) => tool_error(subc_protocol::ErrorBody::new("internal",error.to_string())),
             },
             _ = ctx.cancelled() => {
                 let codemode = module.codemode.clone();
-                let outcome = tokio::task::spawn_blocking(move || codemode.cancel(&id)).await;
+                let outcome = tokio::task::spawn_blocking(move || {
+                    codemode.cancel(&id)?;
+                    codemode.wait(&id, Duration::ZERO)
+                }).await;
                 match outcome {
-                    Ok(Ok(())) => tool_error(subc_protocol::ErrorBody::new("cancelled","codemode cancelled")),
+                    Ok(Ok(Some(result))) => tool_response(result),
+                    Ok(Ok(None)) => tool_error(subc_protocol::ErrorBody::new("cancelled","codemode cancelled")),
                     Ok(Err(error)) => tool_error(error),
                     Err(error) => tool_error(subc_protocol::ErrorBody::new("internal",error.to_string())),
                 }

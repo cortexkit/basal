@@ -31,6 +31,7 @@ pub fn catalog_tool() -> CatalogTool {
         schema,
     );
     tool.description = Some(DESCRIPTION.into());
+    tool.result_format = Some(cortexkit_role_tool_provider::result::ResultFormat::ContentV1);
     tool.reply =
         Some(serde_json::from_value(json!({"max_ms":2_520_000})).expect("static reply deadline"));
     let tool = tool.with_modes(vec![CallMode::Classic]);

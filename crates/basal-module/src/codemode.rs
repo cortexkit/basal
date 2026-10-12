@@ -223,7 +223,7 @@ impl Codemode {
             .supervisor
             .wait(id, timeout)
             .map_err(storage)?
-            .map(render);
+            .map(|result| render(id, result));
         if result.is_some() {
             self.publish()?;
         }
@@ -300,14 +300,14 @@ impl Codemode {
                     && settled["status"] != "cancelled"
                     && settled["status"] != "running"
                 {
-                    json!({"answer":"completed","result":render(settled),"result_retained":true})
+                    json!({"answer":"completed","result":render(&id, settled),"result_retained":true})
                 } else if started {
                     json!({"answer":"already_started","outcome":"unknown"})
                 } else {
                     json!({"answer":"withdrawn"})
                 }
             } else {
-                json!({"answer":"completed","result":render(result),"result_retained":true})
+                json!({"answer":"completed","result":render(&id, result),"result_retained":true})
             }
         } else {
             json!({"answer":"completed","outcome":"unknown","result_retained":false})
@@ -417,7 +417,7 @@ pub fn run_id(agent: &str, key: &str) -> String {
     hash.finalize().to_hex().to_string()
 }
 
-fn render(mut result: Value) -> Value {
+fn render_text(result: &mut Value) -> String {
     let status = result["status"]
         .as_str()
         .unwrap_or("failed")
@@ -472,8 +472,147 @@ fn render(mut result: Value) -> Value {
         ));
     }
     result["warnings"] = warnings.into();
-    result["text"] = text.into();
-    result
+    text
+}
+
+fn render(id: &str, mut result: Value) -> Value {
+    let text = render_text(&mut result);
+    result["run_id"] = id.into();
+    result["termination_reason"] = result["status"].clone();
+    let code = result["error"]["code"]
+        .as_str()
+        .map(str::to_owned)
+        .or_else(|| {
+            let status = result["status"].as_str()?;
+            (status != "completed" && status != "running").then(|| status.to_owned())
+        });
+    let mut reply = cortexkit_role_tool_provider::result::ToolResult::new(vec![
+        cortexkit_role_tool_provider::result::ContentPart::text(text),
+    ]);
+    if let Some(code) = code {
+        let code = if let Some(budget) = code.strip_prefix("budget_exhausted:") {
+            result["budget"] = budget.into();
+            "budget_exhausted".to_owned()
+        } else {
+            code
+        };
+        reply = reply.with_error(code);
+    }
+    reply.structured_content = result.as_object().cloned();
+    bounded_result(reply)
+}
+
+pub(crate) fn running(id: &str) -> Value {
+    bounded_result(
+        cortexkit_role_tool_provider::result::ToolResult::new(vec![
+            cortexkit_role_tool_provider::result::ContentPart::text(
+                "running: the final result will be retained in late_results.",
+            ),
+        ])
+        .with_structured_content(
+            json!({"status":"running","run_id":id})
+                .as_object()
+                .unwrap()
+                .clone(),
+        ),
+    )
+}
+
+fn serialized_size(value: &impl serde::Serialize) -> usize {
+    serde_json::to_vec(value).expect("JSON result").len()
+}
+
+const TEXT_TRUNCATED: &str = "\n[Model text truncated for the 3 MiB result limit.]\n";
+const STRUCTURED_OMITTED: &str = "\nStructured fields were omitted for size.\n";
+
+fn bound_text(text: &mut String) {
+    use cortexkit_role_tool_provider::result::MAX_RESULT_BYTES;
+    // Leave room for identity, outcome, budget counters and omission markers.
+    // Count escaped JSON bytes: control characters can expand sixfold.
+    let limit = MAX_RESULT_BYTES - 4096;
+    if serialized_size(text) < limit {
+        return;
+    }
+    let mut low = 0;
+    let mut high = text.len();
+    while low < high {
+        let middle = low + (high - low).div_ceil(2);
+        let mut end = middle;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        let candidate = format!("{}{TEXT_TRUNCATED}", &text[..end]);
+        if serialized_size(&candidate) < limit {
+            low = middle;
+        } else {
+            high = middle - 1;
+        }
+    }
+    while !text.is_char_boundary(low) {
+        low -= 1;
+    }
+    text.truncate(low);
+    text.push_str(TEXT_TRUNCATED);
+}
+
+fn bounded_result(mut reply: cortexkit_role_tool_provider::result::ToolResult) -> Value {
+    use cortexkit_role_tool_provider::result::{ContentPart, MAX_RESULT_BYTES, validate};
+    let ContentPart::Text { text } = &mut reply.content[0] else {
+        unreachable!("codemode emits one text part");
+    };
+    bound_text(text);
+    let mut omitted = std::collections::BTreeSet::new();
+    while serialized_size(&reply) >= MAX_RESULT_BYTES {
+        let fields = reply.structured_content.as_mut().expect("codemode fields");
+        // Keep outcome, identity, error code and budget accounting intact. A
+        // successful run may have made writes; size must never turn it into an
+        // error that encourages the caller to retry those writes.
+        let largest = fields
+            .iter()
+            .filter(|(key, _)| {
+                !matches!(
+                    key.as_str(),
+                    "run_id"
+                        | "status"
+                        | "termination_reason"
+                        | "budget"
+                        | "duration_ms"
+                        | "person_wait_ms"
+                        | "call_count"
+                        | "keyless"
+                        | "error"
+                ) && !omitted.contains(key.as_str())
+            })
+            .map(|(key, value)| (key.clone(), serialized_size(value)))
+            .chain(
+                fields
+                    .get("error")
+                    .and_then(Value::as_object)
+                    .into_iter()
+                    .flatten()
+                    .filter(|(key, _)| key.as_str() != "code")
+                    .map(|(key, value)| (format!("error.{key}"), serialized_size(value)))
+                    .filter(|(key, _)| !omitted.contains(key)),
+            )
+            .max_by_key(|(_, bytes)| *bytes)
+            .expect("oversized results have a reducible field");
+        let (key, bytes) = largest;
+        let marker = json!({"omitted":true,"original_bytes":bytes});
+        if let Some(member) = key.strip_prefix("error.") {
+            fields.get_mut("error").unwrap()[member] = marker;
+        } else {
+            fields.insert(key.clone(), marker);
+        }
+        if omitted.is_empty() {
+            let ContentPart::Text { text } = &mut reply.content[0] else {
+                unreachable!()
+            };
+            text.push_str(STRUCTURED_OMITTED);
+        }
+        omitted.insert(key);
+    }
+    validate(&reply).expect("bounded codemode content/v1 result");
+    serde_json::to_value(reply).expect("JSON result")
 }
 
 fn publish_result(store: &Store, id: &str, result: Value) -> Result<(), ErrorBody> {
@@ -506,7 +645,7 @@ fn publish_result(store: &Store, id: &str, result: Value) -> Result<(), ErrorBod
             event_id.clone(),
             settled_at.max(0) as u64,
         )
-        .with_result(render(result.clone()));
+        .with_result(render(id, result.clone()));
         store.write(|tx| {
             tx.execute("INSERT OR IGNORE INTO codemode_late_results(custodian,entry,event_id,settled_at) VALUES (?1,?2,?3,?4)",
                 rusqlite::params![custodian,serde_json::to_string(&entry).unwrap(),event_id,settled_at])?;
@@ -525,6 +664,10 @@ fn maintain_late(store: &Store, clock: &Clock) -> Result<(), ErrorBody> {
         Ok(())
     }).map_err(storage)
 }
+
+#[cfg(test)]
+#[path = "codemode_result_tests.rs"]
+mod result_tests;
 
 #[cfg(test)]
 mod tests {
