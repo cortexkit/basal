@@ -425,24 +425,34 @@ fn flow_enable_evidence_reads_basals_state_column() {
 }
 
 #[test]
-fn legacy_card_requester_reads_the_attested_principal_for_this_flow() {
+fn install_intent_reads_only_the_exact_flow_version_attempt_and_hash() {
     let scratch = Scratch::new();
     let c = Connection::open(&scratch.0).unwrap();
-    c.execute_batch("CREATE TABLE elicitation_records(requester_principal TEXT,record_json TEXT);
-        INSERT INTO elicitation_records VALUES ('reserved:basal','{\"request\":{\"flow_install\":{\"flow_id\":\"flow\"}}}');
-        INSERT INTO elicitation_records VALUES ('reserved:ckdev-basal','{\"request\":{\"flow_install\":{\"flow_id\":\"other\"}}}');").unwrap();
+    c.execute_batch("CREATE TABLE flow_install_intent(flow_id TEXT,version INTEGER,attempt INTEGER,code_hash TEXT,provider TEXT,request_json TEXT,state TEXT,elicitation_id TEXT);
+        INSERT INTO flow_install_intent VALUES ('flow',1,2,'hash','cingulate','{\"flow_install\":{\"manifest_json\":\"exact bytes\"}}','sent','el_exact');
+        INSERT INTO flow_install_intent VALUES ('other',1,2,'hash','cingulate','{}','sent','el_other');
+        INSERT INTO flow_install_intent VALUES ('flow',2,2,'hash','cingulate','{}','sent','el_version');
+        INSERT INTO flow_install_intent VALUES ('flow',1,3,'hash','cingulate','{}','sent','el_attempt');
+        INSERT INTO flow_install_intent VALUES ('flow',1,2,'changed','cingulate','{}','sent','el_hash');").unwrap();
     let store = CoreStore {
         path: scratch.0.clone(),
     };
+    let intent = store.install_intent("flow", 1, 2, "hash").unwrap().unwrap();
+    assert_eq!(intent["elicitation_id"], "el_exact");
+    assert_eq!(intent["flow_id"], "flow");
+    assert_eq!(intent["version"], 1);
+    assert_eq!(intent["attempt"], 2);
+    assert_eq!(intent["code_hash"], "hash");
     assert_eq!(
-        store.legacy_requester("flow").unwrap(),
-        Some("reserved:basal".into())
+        intent["request"]["flow_install"]["manifest_json"],
+        "exact bytes"
     );
-    assert_eq!(
-        store.legacy_requester("other").unwrap(),
-        Some("reserved:ckdev-basal".into())
-    );
-    assert_eq!(store.legacy_requester("absent").unwrap(), None);
+    assert_eq!(intent["provider"], "cingulate");
+    assert_eq!(intent["state"], "sent");
+    assert_eq!(store.install_intent("absent", 1, 2, "hash").unwrap(), None);
+    assert_eq!(store.install_intent("flow", 1, 4, "hash").unwrap(), None);
+    c.execute_batch("UPDATE flow_install_intent SET request_json='invalid json' WHERE elicitation_id='el_exact';").unwrap();
+    assert!(store.install_intent("flow", 1, 2, "hash").is_err());
 }
 
 #[test]

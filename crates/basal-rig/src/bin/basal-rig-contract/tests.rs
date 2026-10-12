@@ -1,6 +1,59 @@
 use super::*;
 
 #[test]
+fn install_card_matching_uses_the_exact_intent_not_the_latest_pending_card() {
+    let intent = json!({"flow_id":"flow","version":1,"attempt":2,"code_hash":"hash","elicitation_id":"el_exact"});
+    let card = json!({"elicitationId":"el_exact","kind":"flow_install","flowInstall":{"flow_id":"flow","version":1,"code_hash":"hash"}});
+    assert!(install_card_matches(&card, &intent));
+    // The surface omits attempt. A different ID can be another attempt with
+    // otherwise identical visible fields, so matching only the body is unsafe.
+    let mut other_attempt = card.clone();
+    other_attempt["elicitationId"] = json!("el_newer_attempt");
+    assert!(!install_card_matches(&other_attempt, &intent));
+    for (field, wrong) in [
+        ("flow_id", json!("other")),
+        ("version", json!(2)),
+        ("code_hash", json!("changed")),
+    ] {
+        let mut wrong_card = card.clone();
+        wrong_card["flowInstall"][field] = wrong;
+        assert!(!install_card_matches(&wrong_card, &intent), "{field}");
+    }
+    let mut wrong_kind = card.clone();
+    wrong_kind["kind"] = json!("package");
+    assert!(!install_card_matches(&wrong_kind, &intent));
+    for field in [
+        "flow_id",
+        "version",
+        "attempt",
+        "code_hash",
+        "elicitation_id",
+    ] {
+        let mut missing = intent.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        assert!(!install_card_matches(&card, &missing), "{field}");
+    }
+}
+
+#[test]
+fn report_builder_fails_unmarked_zero_check_cases() {
+    let mut empty = Case::new("empty");
+    empty.finish();
+    assert_eq!(empty.checks.len(), 1);
+    assert_eq!(empty.to_json()["passed"], false);
+    assert_eq!(empty.checks[0]["passed"], false);
+    let mut skipped = Case::skipped("skipped", "no prerequisite result");
+    skipped.finish();
+    assert!(skipped.checks.is_empty());
+    assert_eq!(skipped.to_json()["passed"], Value::Null);
+    let mut checked = Case::new("checked");
+    checked.check("real check", true, Value::Null);
+    checked.finish();
+    assert_eq!(checked.checks.len(), 1);
+    assert_eq!(checked.to_json()["passed"], true);
+}
+
+#[test]
 fn runtime_owner_evidence_requires_both_exact_core_refusals() {
     let refused = json!({"refused":{"data":{"code":"sink_target_not_owner"}}});
     let good = json!({"digest":refused,"status":refused});

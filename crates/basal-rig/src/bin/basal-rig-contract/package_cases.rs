@@ -184,13 +184,7 @@ pub(super) async fn lifecycle(rig: &Rig, agent: &Agent, args: &Args, tag: &str) 
         rig.basal.instance(&id) == Ok(None),
         json!(rig.basal.instance(&id)),
     );
-    let answer = rig
-        .client
-        .operator(
-            "consent.answer",
-            json!({"elicitationId":card_id(&card),"choiceId":"allow"}),
-        )
-        .await;
+    let answer = rig.answer(&card, "allow").await;
     setup.check(
         "the attested phone answerer approves the full package card through cingulate",
         answer
@@ -357,38 +351,11 @@ async fn wait_instance(rig: &Rig, agent: &Agent, package: &str, removed: bool) -
     .await
 }
 
-/// Listing is bounded and excludes source bodies; only get supplies the full card.
 async fn package_card(rig: &Rig, package: &str) -> Option<(Value, Value, usize)> {
-    let mut params = json!({});
-    let mut seen = std::collections::HashSet::new();
-    for page in 1..=100 {
-        let listed = rig
-            .client
-            .operator("consent.list_pending", params)
-            .await
-            .ok()?;
-        if serde_json::to_vec(&listed).ok()?.len() > 3 * 1024 * 1024 {
-            return None;
-        }
-        if let Some(summary) = listed["records"].as_array()?.iter().find(|c| {
-            c["kind"] == "package"
-                && c["package"]["package"] == package
-                && c["package"]["version"] == 1
-        }) {
-            let full = rig
-                .client
-                .operator("consent.get", json!({"elicitationId":card_id(summary)}))
-                .await
-                .ok()?;
-            return Some((summary.clone(), full, page));
-        }
-        let next = listed.get("continuation")?.clone();
-        if !seen.insert(next.to_string()) {
-            return None;
-        }
-        params = json!({"continuation":next});
-    }
-    None
+    consent_card(rig, |c| {
+        c["kind"] == "package" && c["package"]["package"] == package && c["package"]["version"] == 1
+    })
+    .await
 }
 
 async fn finish_lifecycle(

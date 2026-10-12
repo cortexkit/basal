@@ -50,12 +50,24 @@ impl CoreStore {
         }).transpose()
     }
 
-    /// Core records the daemon-attested requester on each card. This proves the
-    /// ckdev-basal process was admitted as reserved:basal, not as a local caller.
-    pub fn legacy_requester(&self, flow_id: &str) -> Result<Option<String>, String> {
+    /// Read core's install intent for the flow/version/attempt/hash returned by
+    /// basal. Its consent-card ID identifies that request even if other attempts
+    /// have pending cards for the same flow version.
+    pub fn install_intent(
+        &self,
+        flow_id: &str,
+        version: i64,
+        attempt: i64,
+        code_hash: &str,
+    ) -> Result<Option<Value>, String> {
         let c = open(&self.path)?;
-        c.query_row("SELECT requester_principal FROM elicitation_records WHERE json_extract(record_json,'$.request.flow_install.flow_id')=?1 ORDER BY rowid DESC LIMIT 1", [flow_id], |r| r.get(0))
-            .optional().map_err(|e| e.to_string())
+        let row = c.query_row("SELECT provider,request_json,state,elicitation_id FROM flow_install_intent WHERE flow_id=?1 AND version=?2 AND attempt=?3 AND code_hash=?4", params![flow_id,version,attempt,code_hash], |r| Ok((
+            r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,Option<String>>(3)?
+        ))).optional().map_err(|e| e.to_string())?;
+        row.map(|(provider,request,state,id)| {
+            let request: Value = serde_json::from_str(&request).map_err(|e| e.to_string())?;
+            Ok(json!({"flow_id":flow_id,"version":version,"attempt":attempt,"code_hash":code_hash,"provider":provider,"request":request,"state":state,"elicitation_id":id}))
+        }).transpose()
     }
 
     /// Core persists the rendered package request before sending it to consent.
