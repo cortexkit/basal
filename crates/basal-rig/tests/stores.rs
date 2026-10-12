@@ -480,3 +480,61 @@ fn instance_evidence_keeps_removal_separate_from_enablement_and_generation() {
     assert_eq!(row["state"], "disabled");
     assert_eq!(store.instance("absent").unwrap(), None);
 }
+
+#[test]
+fn card_decision_observations_are_keyed_to_the_exact_attempt_and_committed_row() {
+    let scratch = Scratch::new();
+    let c = Connection::open(&scratch.0).unwrap();
+    c.execute_batch("CREATE TABLE flow_install_intent(flow_id TEXT,version INTEGER,attempt INTEGER,state TEXT,code_hash TEXT);
+        CREATE TABLE flow_install(flow_id TEXT,version INTEGER,code_hash TEXT,approved_at_ms INTEGER,revoked_at_ms INTEGER,approved_by TEXT,author_agent_id TEXT);
+        CREATE TABLE flow_install_decision_hint(flow_id TEXT,version INTEGER,attempt INTEGER,terminal_state TEXT,created_at INTEGER,delivered_at INTEGER);
+        INSERT INTO flow_install_intent VALUES ('flow',1,2,'sent','hash');
+        INSERT INTO flow_install_decision_hint VALUES ('flow',1,1,'executed',5,6);
+        CREATE TABLE install_cards(flow_id TEXT,version INTEGER,attempt INTEGER,state TEXT,decided_at INTEGER);
+        CREATE TABLE flows(flow_id TEXT,state TEXT,approved_version INTEGER);
+        CREATE TABLE installs(flow_id TEXT,version INTEGER,approved_at INTEGER);
+        INSERT INTO install_cards VALUES ('flow',1,2,'pending',NULL);
+        INSERT INTO flows VALUES ('flow','unapproved',NULL);
+        INSERT INTO installs VALUES ('flow',1,NULL);").unwrap();
+    let core = CoreStore {
+        path: scratch.0.clone(),
+    };
+    let basal = BasalStore {
+        path: scratch.0.clone(),
+    };
+    assert_eq!(core.install_decision("flow", 1, 1).unwrap(), None);
+    assert_eq!(basal.install_decision("flow", 1, 1).unwrap(), None);
+    let pending = core.install_decision("flow", 1, 2).unwrap().unwrap();
+    assert_eq!(pending["state"], "sent");
+    assert!(pending["installed_hash"].is_null());
+    assert!(pending["hint_delivered_at_ms"].is_null());
+    assert_eq!(
+        basal.install_decision("flow", 1, 2).unwrap().unwrap()["state"],
+        "pending"
+    );
+    c.execute_batch(
+        "INSERT INTO flow_install VALUES ('flow',1,'hash',10,NULL,'card','agent');
+        UPDATE flow_install_intent SET state='executed';
+        INSERT INTO flow_install_decision_hint VALUES ('flow',1,2,'executed',10,11);
+        UPDATE install_cards SET state='approved',decided_at=11;
+        UPDATE flows SET state='enabled',approved_version=1;
+        UPDATE installs SET approved_at=11;",
+    )
+    .unwrap();
+    let approved = core.install_decision("flow", 1, 2).unwrap().unwrap();
+    assert_eq!(approved["installed_hash"], "hash");
+    assert_eq!(approved["approved_at_ms"], 10);
+    assert_eq!(approved["hint_delivered_at_ms"], 11);
+    let accepted = basal.install_decision("flow", 1, 2).unwrap().unwrap();
+    assert_eq!(accepted["approved_version"], 1);
+    assert_eq!(accepted["decided_at_ms"], 11);
+    assert_eq!(accepted["flow_state"], "enabled");
+    let policy = core.policy_install("flow", 1).unwrap().unwrap();
+    assert_eq!(policy["approved_by"], "card");
+    assert_eq!(policy["card_intents"], 1);
+    assert_eq!(policy["card_hints"], 2);
+    c.execute("UPDATE flow_install SET revoked_at_ms=12", [])
+        .unwrap();
+    assert!(core.install_decision("flow", 1, 2).unwrap().unwrap()["installed_hash"].is_null());
+    assert_eq!(core.policy_install("flow", 1).unwrap(), None);
+}

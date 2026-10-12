@@ -18,6 +18,38 @@ timeout_s = 600
 build_timeout_s = 3600
 
 [[control]]
+id = "rig-card-settlement-requires-committed-row"
+guards = "A consent answer acknowledgement cannot authorize dependent operations before core persists the matching install row"
+file = "crates/basal-rig/src/bin/basal-rig-contract.rs"
+old = 'core["installed_hash"] == hash'
+new = 'true /* NON-VACUITY BREAK: ignore the committed install hash */'
+test_file = "crates/basal-rig/src/bin/basal-rig-contract/tests.rs"
+runner = "cargo"
+package = "basal-rig"
+platforms = ["linux"]
+target = "--bin basal-rig-contract"
+expect_red = ["tests::card_settlement_requires_core_row_delivered_hint_and_basal_decision"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "rig-policy-proof-requires-no-card-intent"
+guards = "Policy approval evidence must not accept an install that also raised a consent card"
+file = "crates/basal-rig/src/bin/basal-rig-contract/policy_cases.rs"
+old = 'persisted["card_intents"] == 0'
+new = 'true /* NON-VACUITY BREAK: ignore the consent intent */'
+test_file = "crates/basal-rig/src/bin/basal-rig-contract/policy_cases.rs"
+runner = "cargo"
+package = "basal-rig"
+platforms = ["linux"]
+target = "--bin basal-rig-contract"
+expect_red = ["policy_cases::tests::policy_evidence_requires_matching_hash_provenance_and_no_card"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
 id = "rig-model-selection-missing-decision-identity"
 guards = "A Luna selection must carry a nonempty routing decision id"
 file = "crates/basal-rig/src/models.rs"

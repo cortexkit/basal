@@ -2028,4 +2028,53 @@ mod tests {
     fn no_cause_is_a_lost_connection() {
         assert_eq!(reason_for(None), Some(UnknownReason::ConnectionLost));
     }
+
+    #[test]
+    fn workspace_registry_reads_the_real_decoded_management_payload() {
+        struct RegistryReply(Vec<u8>);
+        impl Transport for RegistryReply {
+            fn catalog(&self) -> Result<Value, WireError> {
+                Ok(
+                    serde_json::json!({"modules":[{"module_id":"entorhinal","roles":[{
+                        "role":"management_surface","operations":[{"name":"enumerate","kind":"query"}],
+                        "config_schema":{},"observability":[],"identity_scope":[],"concurrency":"serial"
+                    }]}]}),
+                )
+            }
+            fn management(
+                &self,
+                module: &str,
+                op: &str,
+                params: Value,
+            ) -> Result<Value, WireError> {
+                assert_eq!((module, op), ("entorhinal", "enumerate"));
+                assert_eq!(params, serde_json::json!({"workspaceId":"team"}));
+                // Use the production decoder so a fake cannot retain the wire
+                // envelope that SubcTransport removes before catalog reads it.
+                decode_response(&self.0, true)
+            }
+            fn tool(&self, _: &str, _: &str, _: Value, _: &str) -> Result<Value, WireError> {
+                panic!("workspace lookup must use management")
+            }
+        }
+        for (raw, known) in [
+            (
+                r#"{"result":{"workspaces":[{"workspaceId":"team"}],"projects":[],"generation":1,"incarnation":"isolated"}}"#,
+                true,
+            ),
+            (
+                r#"{"result":{"workspaces":[{"workspaceId":"other","name":"team"}],"projects":[],"generation":2}}"#,
+                false,
+            ),
+            (
+                r#"{"result":{"workspaces":[],"projects":[],"generation":3}}"#,
+                false,
+            ),
+        ] {
+            let catalog = crate::subc_catalog::SubcCatalog::new(std::sync::Arc::new(
+                RegistryReply(raw.as_bytes().to_vec()),
+            ));
+            assert_eq!(catalog.known_workspace("team").unwrap(), known);
+        }
+    }
 }

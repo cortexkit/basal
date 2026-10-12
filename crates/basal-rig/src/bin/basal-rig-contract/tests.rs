@@ -1,6 +1,73 @@
 use super::*;
 
 #[test]
+fn card_settlement_requires_core_row_delivered_hint_and_basal_decision() {
+    let core = json!({"state":"executed","code_hash":"hash","installed_hash":"hash","approved_at_ms":10,
+        "hint_state":"executed","hint_delivered_at_ms":11});
+    let basal =
+        json!({"state":"approved","decided_at_ms":11,"approved_version":1,"flow_state":"enabled"});
+    assert!(card_decision_settled(
+        "approve", "hash", 1, false, &core, &basal
+    ));
+    for (field, value) in [
+        ("state", json!("sent")),
+        ("code_hash", json!("other")),
+        ("installed_hash", Value::Null),
+        ("approved_at_ms", Value::Null),
+        ("hint_state", json!("declined")),
+        ("hint_delivered_at_ms", Value::Null),
+    ] {
+        let mut bad = core.clone();
+        bad[field] = value;
+        assert!(
+            !card_decision_settled("approve", "hash", 1, false, &bad, &basal),
+            "core {field}"
+        );
+    }
+    for (field, value) in [
+        ("state", json!("pending")),
+        ("decided_at_ms", Value::Null),
+        ("approved_version", json!(2)),
+        ("flow_state", json!("unapproved")),
+    ] {
+        let mut bad = basal.clone();
+        bad[field] = value;
+        assert!(
+            !card_decision_settled("approve", "hash", 1, false, &core, &bad),
+            "basal {field}"
+        );
+    }
+    let mut paused = basal.clone();
+    paused["flow_state"] = json!("disabled");
+    assert!(card_decision_settled(
+        "approve", "hash", 1, true, &core, &paused
+    ));
+    assert!(!card_decision_settled(
+        "approve", "hash", 1, false, &core, &paused
+    ));
+    let declined_core = json!({"state":"declined","code_hash":"hash","installed_hash":null,"hint_state":"declined","hint_delivered_at_ms":12});
+    let declined_basal = json!({"state":"declined","decided_at_ms":12,"approved_version":null,"flow_state":"enabled"});
+    assert!(card_decision_settled(
+        "decline",
+        "hash",
+        1,
+        false,
+        &declined_core,
+        &declined_basal
+    ));
+    let mut rejected = declined_basal.clone();
+    rejected["state"] = json!("rejected");
+    assert!(!card_decision_settled(
+        "decline",
+        "hash",
+        1,
+        false,
+        &declined_core,
+        &rejected
+    ));
+}
+
+#[test]
 fn install_card_matching_uses_the_exact_intent_not_the_latest_pending_card() {
     let intent = json!({"flow_id":"flow","version":1,"attempt":2,"code_hash":"hash","elicitation_id":"el_exact"});
     let card = json!({"elicitationId":"el_exact","kind":"flow_install","flowInstall":{"flow_id":"flow","version":1,"code_hash":"hash"}});
