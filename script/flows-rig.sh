@@ -146,8 +146,8 @@
 # routes. The scope checks require Broca's flow_scope_required enforcement;
 # every refusal is checked, never assumed. Any scope_owner_mismatch must not
 # be bypassed.
-# Core's package cards use cingulate's consent/v1 API; basal's ordinary install
-# cards still use core's legacy elicitation owner API at this revision.
+# Flow install and package cards use cingulate's consent/v1 API. Flow cards
+# are matched to core's durable install intent before the operator answers.
 # Cingulate's default matches the deployed consent/v1 provider. Explicit
 # revision overrides let a rehearsal test the same bytes a deployment places.
 #   script/flows-rig.sh build --prefrontal-rev defe4a72a3ee4bac8ce81645df801c6907a8ce4c --cingulate-rev c650e9db6e87dbb28fe20dd5fc2815db5deb41e9 --sibling-lock claustrum
@@ -1509,6 +1509,7 @@ cmd_test() (
   status=$?
   set -e
   cat "$dir/contract.log"
+  check_contract_report "$dir/contract.json" || status=1
   rm -f "$KILL_FILE" "$UNSCOPED_FILE"
   if [ "$started" = 1 ]; then
     cmd_stop
@@ -1516,6 +1517,22 @@ cmd_test() (
   [ "$status" = 0 ] || die "the contract suite failed (exit $status); results in $dir"
   say "the contract suite passed; results in $dir"
 )
+
+# Check the report itself, not just the runner's exit status: an empty case
+# cannot establish a pass, and must explain why it was not run.
+check_contract_report() {
+  python3 - "$1" <<'PY'
+import json, sys
+report = json.load(open(sys.argv[1]))
+empty = [case["case"] for case in report["cases"]
+         if not case["checks"] and not case.get("not_run")]
+if empty:
+    sys.exit("zero checks without NOT RUN: " + "; ".join(empty))
+if report["passed"] is not True:
+    sys.exit("contract report did not pass")
+print(f"Contract report: {len(report['cases'])} cases checked for unmarked zero-check cases")
+PY
+}
 
 # ensure_project <stamp>: create the run's project in the rig's entorhinal,
 # so a fresh rig needs no manual step. The suite registers a new head agent

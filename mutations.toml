@@ -12573,18 +12573,18 @@ timeout_s = 600
 build_timeout_s = 3600
 
 [[control]]
-id = "rig-legacy-requester-reader-uses-another-flow"
-guards = "The ckdev executable retains reserved basal identity in this flow's core card"
+id = "rig-install-intent-reader-uses-another-flow"
+guards = "Install card evidence reads the exact flow, version, attempt and code hash from core"
 file = "crates/basal-rig/src/stores.rs"
-old = "json_extract(record_json,'$.request.flow_install.flow_id')=?1 ORDER BY rowid DESC LIMIT 1"
-new = "json_extract(record_json,'$.request.flow_install.flow_id')!=?1 ORDER BY rowid DESC LIMIT 1 /* NON-VACUITY BREAK */"
+old = "FROM flow_install_intent WHERE flow_id=?1 AND version=?2 AND attempt=?3 AND code_hash=?4"
+new = "FROM flow_install_intent WHERE flow_id!=?1 AND version=?2 AND attempt=?3 AND code_hash=?4 /* NON-VACUITY BREAK */"
 edits = []
 test_file = "crates/basal-rig/tests/stores.rs"
 runner = "cargo"
 package = "basal-rig"
 platforms = ["macos"]
 target = "--test stores"
-expect_red = ["legacy_card_requester_reads_the_attested_principal_for_this_flow"]
+expect_red = ["install_intent_reads_only_the_exact_flow_version_attempt_and_hash"]
 only = true
 timeout_s = 600
 build_timeout_s = 3600
@@ -18846,3 +18846,54 @@ timeout_s = 600
 file = "crates/basal-module/src/codemode.rs"
 old = 'reply = reply.with_error(code);'
 new = 'let _ = code; // NON-VACUITY BREAK'
+
+[[control]]
+id = "rig-install-card-matches-another-attempt"
+guards = "A flow card must have the ID core persisted for the exact install attempt, not just matching visible fields"
+file = "crates/basal-rig/src/bin/basal-rig-contract.rs"
+old = "id.is_some_and(|id| card_id(card) == id)"
+new = "id.is_some() /* NON-VACUITY BREAK: accept another attempt's card */"
+edits = []
+test_file = "crates/basal-rig/src/bin/basal-rig-contract/tests.rs"
+runner = "cargo"
+package = "basal-rig"
+platforms = ["macos"]
+target = "--bin basal-rig-contract"
+expect_red = ["tests::install_card_matching_uses_the_exact_intent_not_the_latest_pending_card"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "rig-report-builder-omits-zero-check-failure"
+guards = "The report builder records a failed check for an empty case unless explicitly not run"
+file = "crates/basal-rig/src/bin/basal-rig-contract.rs"
+old = "if self.checks.is_empty() && self.not_run.is_none() {"
+new = "if false { /* NON-VACUITY BREAK: silently omit empty cases */"
+edits = []
+test_file = "crates/basal-rig/src/bin/basal-rig-contract/tests.rs"
+runner = "cargo"
+package = "basal-rig"
+platforms = ["macos"]
+target = "--bin basal-rig-contract"
+expect_red = ["tests::report_builder_fails_unmarked_zero_check_cases"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "rig-report-accepts-unmarked-zero-check-case"
+guards = "The script rejects a nominally passing contract report containing an unmarked zero-check case"
+file = "script/flows-rig.sh"
+old = "if empty:"
+new = "if False: # NON-VACUITY BREAK: accept an unmarked empty case"
+edits = []
+test_file = "script/tests/flows_rig.py"
+runner = "command"
+platforms = ["linux"]
+command = ["python3", "-m", "unittest", "{test}"]
+test_count_pattern = "Ran {count} test"
+expect_red = ["script.tests.flows_rig.RigChecks.test_report_rejects_zero_checks_unless_explicitly_not_run"]
+only = false
+timeout_s = 120
+build_timeout_s = 1800

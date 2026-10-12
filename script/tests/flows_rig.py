@@ -13,6 +13,24 @@ HELPERS = SCRIPT.read_text().split("# ------------------------------------------
 
 
 class RigChecks(unittest.TestCase):
+    def test_report_rejects_zero_checks_unless_explicitly_not_run(self):
+        with tempfile.TemporaryDirectory() as home:
+            report_path = Path(home) / "contract.json"
+            def check(case):
+                report_path.write_text(json.dumps({"passed": True, "cases": [case]}))
+                return self.run_shell('check_contract_report "$HOME/contract.json"', home)
+
+            empty = {"case": "facts: agent.facts through core", "checks": [], "passed": True}
+            result = check(empty)
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("zero checks without NOT RUN: facts: agent.facts through core", result.stderr)
+            result = check({**empty, "not_run": ""})
+            self.assertNotEqual(result.returncode, 0)
+            result = check({**empty, "not_run": "The prerequisite flow did not run.", "passed": None})
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            result = check({**empty, "checks": [{"passed": True}]})
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_run_scope_probe_is_built_signed_and_configured_only_on_the_rig(self):
         with tempfile.TemporaryDirectory() as home:
             result = self.run_shell('''guard_all_paths
@@ -268,7 +286,10 @@ mkdir -p "$RIG"
 CONTRACT="$RIG/ckdev-contract"
 printf '#!/bin/sh\nexit 0\n' > "$CONTRACT"
 chmod 755 "$CONTRACT"
-rig_env() { printf '%s\n' "$@" > "$RIG/captured-argv"; }
+rig_env() {
+  printf '%s\n' "$@" > "$RIG/captured-argv"
+  printf '%s\n' '{"passed":true,"cases":[{"case":"fixture","checks":[{"passed":true}]}]}' > "$dir/contract.json"
+}
 cmd_test
 ''', home)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -292,7 +313,10 @@ mkdir -p "$RIG"
 CONTRACT="$RIG/ckdev-contract"
 printf '#!/bin/sh\nexit 0\n' > "$CONTRACT"
 chmod 755 "$CONTRACT"
-rig_env() { printf '%s\n' "$@" > "$RIG/captured-argv"; }
+rig_env() {
+  printf '%s\n' "$@" > "$RIG/captured-argv"
+  printf '%s\n' '{"passed":true,"cases":[{"case":"fixture","checks":[{"passed":true}]}]}' > "$dir/contract.json"
+}
 cmd_test --packages
 ''', home)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

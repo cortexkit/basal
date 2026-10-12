@@ -206,6 +206,16 @@ impl Case {
         self.evidence.insert(key.into(), value);
     }
 
+    fn finish(&mut self) {
+        if self.checks.is_empty() && self.not_run.is_none() {
+            self.check(
+                "case ran checks or explicitly records NOT RUN",
+                false,
+                json!(self.name),
+            );
+        }
+    }
+
     fn passed(&self) -> bool {
         !self.checks.is_empty() && self.checks.iter().all(|c| c["passed"] == true)
     }
@@ -316,29 +326,11 @@ impl Rig {
         (listed, entry)
     }
 
-    /// Ordinary flow install cards live in core's elicitation API; package cards
-    /// instead live in the consent/v1 provider. Query the ordinary card's store.
-    async fn card(&self, flow: &Flow) -> Option<Value> {
-        poll(Duration::from_secs(20), || async {
-            let listed = self
-                .client
-                .operator("elicitation.list_pending", json!({}))
-                .await
-                .ok()?;
-            listed["records"].as_array()?.iter().find_map(|record| {
-                let install = &record["flowInstall"];
-                (install["flow_id"] == flow.id.as_str() && install["version"] == flow.version)
-                    .then(|| record.clone())
-            })
-        })
-        .await
-    }
-
     async fn answer(&self, card: &Value, choice: &str) -> Reply {
         let id = card_id(card);
         self.client
             .operator(
-                "elicitation.answer",
+                "consent.answer",
                 json!({ "elicitationId": id, "choiceId": choice }),
             )
             .await
@@ -409,6 +401,64 @@ fn card_id(card: &Value) -> String {
     find_str(card, "elicitationId")
         .or_else(|| find_str(card, "elicitation_id"))
         .unwrap_or_default()
+}
+
+/// Operator cards omit the install attempt number. Core stores a consent-card
+/// ID for each flow/version/attempt/code-hash intent, so compare that ID as well
+/// as the card's visible flow/version/hash to avoid answering another attempt.
+fn install_card_matches(card: &Value, intent: &Value) -> bool {
+    let id = intent["elicitation_id"]
+        .as_str()
+        .filter(|id| !id.is_empty());
+    id.is_some_and(|id| card_id(card) == id)
+        && intent["attempt"]
+            .as_i64()
+            .is_some_and(|attempt| attempt > 0)
+        && intent["flow_id"].as_str().is_some_and(|id| !id.is_empty())
+        && intent["version"]
+            .as_i64()
+            .is_some_and(|version| version > 0)
+        && intent["code_hash"]
+            .as_str()
+            .is_some_and(|hash| !hash.is_empty())
+        && card["kind"] == "flow_install"
+        && card["flowInstall"]["flow_id"] == intent["flow_id"]
+        && card["flowInstall"]["version"] == intent["version"]
+        && card["flowInstall"]["code_hash"] == intent["code_hash"]
+}
+
+/// Listing is bounded and excludes source bodies; only get supplies the full card.
+async fn consent_card(
+    rig: &Rig,
+    matches: impl Fn(&Value) -> bool,
+) -> Option<(Value, Value, usize)> {
+    let mut params = json!({});
+    let mut seen = std::collections::HashSet::new();
+    for page in 1..=100 {
+        let listed = rig
+            .client
+            .operator("consent.list_pending", params)
+            .await
+            .ok()?;
+        if serde_json::to_vec(&listed).ok()?.len() > 3 * 1024 * 1024 {
+            return None;
+        }
+        if let Some(summary) = listed["records"].as_array()?.iter().find(|c| matches(c)) {
+            let full = rig
+                .client
+                .operator("consent.get", json!({"elicitationId":card_id(summary)}))
+                .await
+                .ok()?;
+            return (card_id(&full) == card_id(summary) && matches(&full))
+                .then(|| (summary.clone(), full, page));
+        }
+        let next = listed.get("continuation")?.clone();
+        if !seen.insert(next.to_string()) {
+            return None;
+        }
+        params = json!({"continuation":next});
+    }
+    None
 }
 
 /// The value of the card fact labelled `label`.
@@ -712,23 +762,63 @@ async fn install_with_pause(
         }
     };
     case.record("install_reply", evidence(&installed));
-    case.check(
+    if !case.check(
         "basal accepts the install and holds it pending consent",
         installed.as_ref().is_ok_and(|r| r["state"] == "pending"),
         evidence(&installed),
-    );
-    let card = rig.card(flow).await;
+    ) {
+        return None;
+    }
+    let reply = installed.as_ref().ok()?;
+    if !case.check(
+        "basal's pending reply identifies this flow version, attempt and code hash",
+        reply["flow_id"] == flow.id
+            && reply["version"] == flow.version
+            && reply["attempt"].as_i64().is_some_and(|a| a > 0)
+            && reply["code_hash"].as_str().is_some_and(|h| !h.is_empty()),
+        reply.clone(),
+    ) {
+        return None;
+    }
+    let attempt = reply["attempt"].as_i64()?;
+    let hash = reply["code_hash"].as_str()?;
+    let intent = rig
+        .core
+        .install_intent(&flow.id, flow.version, attempt, hash);
+    case.record("install_intent", json!(&intent));
+    if !case.check(
+        "core persisted this exact flow, version, attempt and code hash for cingulate",
+        intent.as_ref().is_ok_and(|i| {
+            i.as_ref().is_some_and(|i| {
+                i["provider"] == "cingulate"
+                    && i["request"]["flow_install"]["script"] == flow.script
+                    && i["request"]["flow_install"]["manifest_json"] == flow.manifest
+            })
+        }),
+        json!(&intent),
+    ) {
+        return None;
+    }
+    let intent = intent.ok().flatten()?;
+    let card = poll(Duration::from_secs(20), || {
+        consent_card(rig, |c| install_card_matches(c, &intent))
+    })
+    .await;
     let Some(card) = card else {
-        case.check("core raised a flow_install card", false, Value::Null);
+        case.check(
+            "cingulate lists and serves the exact install intent's flow_install card",
+            false,
+            json!(intent),
+        );
         return None;
     };
-    case.record("card", card.clone());
-    let requester = rig.core.legacy_requester(&flow.id);
+    let (summary, card, pages) = card;
     case.check(
-        "core attested the ckdev-basal requester as reserved:basal, not its filename",
-        requester == Ok(Some("reserved:basal".into())),
-        json!(requester),
+        "cingulate lists and serves the exact install intent's flow_install card",
+        true,
+        json!({"summary":summary,"pages":pages}),
     );
+    case.record("card", card.clone());
     check_rendered(case, &card, flow);
     let pending = rig.health(&flow.id).await;
     case.check(
@@ -762,8 +852,10 @@ async fn install_with_pause(
     let answered = rig.answer(&card, &choice_id).await;
     case.record("answer_reply", evidence(&answered));
     case.check(
-        &format!("the operator's '{choice}' is accepted by core's legacy card API"),
-        answered.as_ref().is_ok_and(|r| r["ok"] == true),
+        &format!("the operator's '{choice}' is accepted by cingulate's consent API"),
+        answered
+            .as_ref()
+            .is_ok_and(|r| r["ok"] == true && r["elicitation"]["state"] == "answered"),
         evidence(&answered),
     );
     Some(card)
@@ -964,7 +1056,13 @@ async fn sinks_and_facts(rig: &Rig, flow: &Flow, agent: &Agent, since: i64) -> V
             false,
             json!(rig.basal.runs(&flow.id).ok().map(|r| r.len())),
         );
-        return vec![sinks, facts];
+        return vec![
+            sinks,
+            Case::skipped(
+                "facts: agent.facts through core",
+                "The prerequisite sinks flow did not run; no agent.facts result exists to check.",
+            ),
+        ];
     };
     // Stop further runs so the counts below are of a settled set.
     sinks.record("disable", evidence(&rig.disable(&flow.id).await));
@@ -2207,6 +2305,9 @@ fn main() -> std::process::ExitCode {
     let mut cases = Vec::new();
     let mut summary = Map::new();
     let outcome = runtime.block_on(suite(&args, &mut cases, &mut summary));
+    for case in &mut cases {
+        case.finish();
+    }
     if let Err(e) = &outcome {
         println!("ABORTED: {e}");
     }

@@ -1,5 +1,7 @@
 //! `ck-callosum-stub`: a stand-in for the operator's callosum, for basal's
 //! isolated ckdev-flows rig only (`script/flows-rig.sh`).
+//! It forwards the test suite's requests with the authority of the user's
+//! approval surface, without needing a real phone connected to the rig.
 //!
 //! Approval cards ask the operator to grant a flow's or package's capabilities.
 //! The isolated daemon has no user's phone, so this module answers those cards
@@ -14,11 +16,9 @@
 //! The rig's contract suite calls these management ops on it, and the stub
 //! makes each call on its own route, so the target sees the operator:
 //!
-//! - `consent.list_pending` → cingulate `consent.list_pending` `{}`
+//! - `consent.list_pending` → cingulate `consent.list_pending` (including continuation)
 //! - `consent.get` `{elicitationId}` → cingulate `consent.get`
 //! - `consent.answer` `{elicitationId, choiceId}` → cingulate `consent.answer`
-//! - `elicitation.list_pending`, `elicitation.get`, `elicitation.answer`
-//!   → core's legacy card API, still used by basal's install owner
 //! - `flow.revoke` `{flow_id, version?}` → core `flow.revoke`
 //! - `basal.call` `{method, params}` → that basal op
 //!
@@ -49,21 +49,6 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 /// The stub's management operations: public name, operation kind, and
 /// manifest description.
 const OPERATIONS: &[(&str, ManagementOperationKind, &str)] = &[
-    (
-        "elicitation.list_pending",
-        ManagementOperationKind::Query,
-        "List basal's legacy install cards in core.",
-    ),
-    (
-        "elicitation.get",
-        ManagementOperationKind::Query,
-        "Read one legacy core card.",
-    ),
-    (
-        "elicitation.answer",
-        ManagementOperationKind::Mutate,
-        "Answer one legacy core card as the operator.",
-    ),
     (
         "consent.list_pending",
         ManagementOperationKind::Query,
@@ -212,17 +197,10 @@ impl ModuleHandler for Stub {
         let method = request["method"].as_str().unwrap_or("");
         let params = request.get("params").cloned().unwrap_or(Value::Null);
         match method {
-            "elicitation.list_pending" => {
-                self.relay(CORE, "elicitation.list_pending_for_user", json!({}))
-                    .await
-            }
-            "elicitation.get" | "elicitation.answer" => self.relay(CORE, method, params).await,
-            "consent.list_pending" => {
-                self.relay(CINGULATE, "consent.list_pending", json!({}))
-                    .await
-            }
             // The operator surface uses camelCase card and choice IDs.
-            "consent.get" | "consent.answer" => self.relay(CINGULATE, method, params).await,
+            "consent.list_pending" | "consent.get" | "consent.answer" => {
+                self.relay(CINGULATE, method, params).await
+            }
             "flow.revoke" => self.relay(CORE, method, params).await,
             "basal.call" => match params["method"].as_str() {
                 Some(op) => {
