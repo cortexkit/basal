@@ -17,7 +17,7 @@ plants an inheritable file and asks the worker to write through that handle.
 `tests/windows_mutation_witness.py` stages the live file, requires an empty
 working diff, applies the replacement, records a non-empty diff and the named
 red test, restores with Git checkout and touches the file, records an empty
-diff, then requires the restored test to pass. It never changes `mutations.toml`.
+diff, then requires the restored test to pass. It never changes the `mutations.d/` catalogue.
 The output directory is supplied by the caller and must be outside Cargo's
 regenerable build directories.
 

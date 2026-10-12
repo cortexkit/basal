@@ -1,5 +1,9 @@
 """Require one replay platform per proof and exactly one successful replay per ID.
 
+The catalogue is read by script/mutation_catalogue.py, the same loader the
+other catalogue tools use, so a single file or a mutations.d/ directory both
+work, and every error names the file and line that defines the row.
+
 Uses Python 3.11+ for the standard-library TOML parser.
 """
 
@@ -8,7 +12,11 @@ from collections import Counter
 import json
 from pathlib import Path
 import re
-import tomllib
+import sys
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "script"))
+import mutation_catalogue  # noqa: E402  (needs the script directory on the path)
 
 
 PLATFORMS = ("linux", "macos", "windows")
@@ -65,15 +73,22 @@ def macos_native_row(row):
     return True
 
 
-def partition(rows):
+def label(identity, sources):
+    """Name a row by its id and, when known, the file and line defining it."""
+    source = (sources or {}).get(identity)
+    return f"{identity} ({source})" if source else identity
+
+
+def partition(rows, sources=None):
     """Fail closed when a proof has no CI host, two hosts, or an unsafe host."""
     selected = {platform: set() for platform in PLATFORMS}
     seen = set()
     for row in rows:
+        name = label(row["id"], sources)
         platforms = row.get("platforms", PLATFORMS)
         hosts = set(platforms) & set(PLATFORMS)
         if len(platforms) != 1 or len(hosts) != 1:
-            raise ValueError(f"{row['id']}: expected exactly one CI platform, got {sorted(hosts)}")
+            raise ValueError(f"{name}: expected exactly one CI platform, got {sorted(hosts)}")
         host = hosts.pop()
         package = row.get("package")
         file = Path(row.get("file", ""))
@@ -82,15 +97,26 @@ def partition(rows):
             host == "windows" and windows_module
             or host == "macos" and macos_native_row(row)
         ):
-            raise ValueError(f"{row['id']}: {package} proofs belong on Linux unless targeting a Windows-only module on Windows")
+            raise ValueError(f"{name}: {package} proofs belong on Linux unless targeting a Windows-only module on Windows")
         if row["id"] in seen:
-            raise ValueError(f"duplicate catalogue ID: {row['id']}")
+            raise ValueError(f"duplicate catalogue ID: {name}")
         seen.add(row["id"])
         selected[host].add(row["id"])
     return selected
 
 
-def verify_reports(selected, reports):
+def report_label(row, sources):
+    """Name a reported row by the catalogue's source, else the report's own."""
+    if row["id"] in (sources or {}):
+        return label(row["id"], sources)
+    source = row.get("source")
+    if isinstance(source, dict) and source.get("file"):
+        line = source.get("line")
+        return f"{row['id']} ({source['file']}{f':{line}' if line else ''})"
+    return row["id"]
+
+
+def verify_reports(selected, reports, sources=None):
     """Compare actual runner reports, not a second calculation of shard assignment."""
     expected = set.union(*selected.values())
     executed = {platform: Counter() for platform in PLATFORMS}
@@ -98,33 +124,52 @@ def verify_reports(selected, reports):
     for platform, rows in reports:
         for row in rows:
             identity = row["id"]
+            name = report_label(row, sources)
             reported[platform][identity] += 1
             if row["outcome"] == "SKIPPED_PLATFORM":
                 if identity in selected[platform]:
-                    raise ValueError(f"{identity}: unexpectedly skipped on {platform}")
+                    raise ValueError(f"{name}: unexpectedly skipped on {platform}")
                 continue
             if identity not in selected[platform]:
-                raise ValueError(f"{identity}: replayed on the wrong platform: {platform}")
+                raise ValueError(f"{name}: replayed on the wrong platform: {platform}")
             if row["outcome"] not in SUCCESS:
-                raise ValueError(f"{identity}: unsuccessful replay: {row['outcome']}")
+                raise ValueError(f"{name}: unsuccessful replay: {row['outcome']}")
             executed[platform][identity] += 1
     for platform in PLATFORMS:
         # Each host shards the entire catalogue; the runner reports the other
         # hosts' rows as skips. Checking every view also detects a missing shard.
-        if reported[platform] != Counter({identity: 1 for identity in expected}):
-            raise ValueError(f"{platform}: reports must contain every catalogue ID exactly once")
-        if executed[platform] != Counter({identity: 1 for identity in selected[platform]}):
-            raise ValueError(f"{platform}: each selected ID must be replayed exactly once")
+        wanted = Counter({identity: 1 for identity in expected})
+        if reported[platform] != wanted:
+            raise ValueError(f"{platform}: reports must contain every catalogue ID exactly once; "
+                             + mismatch(reported[platform], wanted, sources))
+        wanted = Counter({identity: 1 for identity in selected[platform]})
+        if executed[platform] != wanted:
+            raise ValueError(f"{platform}: each selected ID must be replayed exactly once; "
+                             + mismatch(executed[platform], wanted, sources))
     return {platform: sum(counts.values()) for platform, counts in executed.items()}
+
+
+def mismatch(actual, wanted, sources, limit=5):
+    """Describe a few missing or repeated IDs, naming the files defining them."""
+    missing = sorted(identity for identity in wanted if actual[identity] < wanted[identity])
+    extra = sorted(identity for identity in actual if actual[identity] > wanted[identity])
+    parts = []
+    for title, identities in (("missing", missing), ("unexpected or repeated", extra)):
+        if identities:
+            shown = ", ".join(label(identity, sources) for identity in identities[:limit])
+            more = f" and {len(identities) - limit} more" if len(identities) > limit else ""
+            parts.append(f"{title}: {shown}{more}")
+    return "; ".join(parts)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--catalogue", type=Path, default=Path("mutations.toml"))
+    parser.add_argument("--catalogue", type=Path,
+                        help="catalogue file or directory (default: mutations.d/ or mutations.toml at the root)")
     parser.add_argument("--reports", type=Path)
     args = parser.parse_args()
-    with args.catalogue.open("rb") as catalogue:
-        selected = partition(tomllib.load(catalogue)["control"])
+    rows, sources = mutation_catalogue.load(ROOT, args.catalogue)
+    selected = partition(rows, sources)
     counts = {platform: len(ids) for platform, ids in selected.items()}
     if args.reports:
         reports = []
@@ -133,7 +178,7 @@ def main():
             if not match:
                 raise ValueError(f"unrecognized mutation artifact: {path.parent.name}")
             reports.append((match[1], json.loads(path.read_text())))
-        counts = verify_reports(selected, reports)
+        counts = verify_reports(selected, reports, sources)
     print(f"Mutation coverage: linux={counts['linux']}, macos={counts['macos']}, windows={counts['windows']}, "
           f"total={sum(counts.values())} catalogue rows; exactly one platform per row")
 

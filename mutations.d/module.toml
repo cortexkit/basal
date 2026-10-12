@@ -1,0 +1,2529 @@
+# basal-module: the module process, its ops, worker pool and tool provider.
+
+[[control]]
+id = "policy-capability-not-declared"
+guards = "core policy installs require basal's capability declaration"
+test_file = "crates/basal-module/tests/install_policy.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test install_policy"
+expect_red = ["declares_flow_install_policy_capability"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/manifest.rs"
+old = '"flow-install-policy/v1".into(),'
+new = '"flow-install-policy-disabled/v1".into(), // NON-VACUITY BREAK'
+
+[[control]]
+id = "policy-startup-recovery-skipped"
+guards = "startup recovers approvals whose install replies were lost"
+test_file = "crates/basal-module/tests/install_policy.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test install_policy"
+expect_red = ["startup_checks_every_undecided_card_and_pending_policy_once"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/module.rs"
+old = '''rt.recover_cardless_installs()
+            .map_err(|e| format!("recovering pending installs: {e}"))?;'''
+new = '// NON-VACUITY BREAK: startup confirmation omitted'
+
+[[control]]
+id = "policy-idle-recovery-polls"
+guards = "idle basal never polls install status, including pending policy installs"
+test_file = "crates/basal-module/tests/install_policy.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test install_policy"
+expect_red = ["idle_policy_install_has_zero_status_calls_after_confirmation"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/engine.rs"
+old = 'inner.rt.poll_lost_grants().map_err(fatal)?;'
+new = '''inner.rt.recover_cardless_installs().map_err(fatal)?; // NON-VACUITY BREAK
+        inner.rt.poll_lost_grants().map_err(fatal)?;'''
+
+
+[[control]]
+id = "pool-startup-boundary-precedes-nonce-consumption"
+guards = "pool startup boundary precedes nonce consumption"
+test_file = "crates/basal-module/tests/startup_order.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test startup_order"
+expect_red = ["serve_connects_before_constructing_worker_pool"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/main.rs"
+old = "let transport =\n        match basal_host::transport::SubcTransport::connect"
+new = "let pool = PoolConfig::beside_current_exe(); drop(pool); // NON-VACUITY BREAK\n    let transport =\n        match basal_host::transport::SubcTransport::connect"
+
+[[control]]
+id = "flow-list-agent-sees-another-agent-s-flow"
+guards = "flow.list agent sees another agent's flow"
+test_file = "crates/basal-module/tests/list_contract.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test list_contract"
+expect_red = ["list_agent_cannot_see_another_agents_flow"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/ops.rs"
+old = "Caller::Agent { agent_id, .. } => Some(agent_id.as_str()),"
+new = "Caller::Agent { .. } => None,"
+
+[[control]]
+id = "flow-list-local-caller-sees-an-agent-s-flow"
+guards = "flow.list local caller sees an agent's flow"
+test_file = "crates/basal-module/tests/list_contract.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test list_contract"
+expect_red = ["list_local_cannot_see_an_agents_flow"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/ops.rs"
+old = "Caller::Local => Some(LOCAL_AUTHOR),"
+new = "Caller::Local => None,"
+
+[[control]]
+id = "flow-list-invisible-requested-id-appears"
+guards = "flow.list invisible requested id appears"
+test_file = "crates/basal-module/tests/list_contract.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test list_contract"
+expect_red = ["list_invisible_requested_ids_are_absent"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/ops.rs"
+old = "AND (?2 IS NULL OR f.owner=?2 OR (f.owner IS NULL"
+new = "AND (?1 IS NOT NULL OR ?2 IS NULL OR f.owner=?2 OR (f.owner IS NULL /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "flow-list-state-diverges-from-flow-health"
+hub = "Flow list preserves the same approved/enabled state as health, including unapproved and core-revoked flows, asserted by list and gate tests"
+hub_targets = ["install_gate"]
+guards = "flow.list state diverges from flow.health"
+test_file = "crates/basal-module/tests/list_contract.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test list_contract"
+expect_red = ["list_reply_decodes_against_documented_shape_and_health_state"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/ops.rs"
+old = "\"state\": flow_state(approved, r.get(2)?),"
+new = "\"state\": \"enabled\", // NON-VACUITY BREAK"
+
+[[control]]
+id = "the-manifest-declares-a-capability-subc-protocol-s-grammar-refuses"
+hub = "The emitted module manifest is valid under the manifest grammar; both the capability validator and the revision test's typed manifest decoder require that validity"
+hub_targets = ["manifest_gate"]
+guards = "the manifest declares a capability subc-protocol's grammar refuses"
+test_file = "crates/basal-module/tests/manifest_gate.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test manifest_gate"
+expect_red = ["the_built_binary_prints_a_manifest_subc_protocol_accepts"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/manifest.rs"
+old = 'cortexkit_role_tool_provider::PROVIDES.into(),'
+new = 'cortexkit_role_tool_provider::PROVIDES.into(), "Not A Capability".into(), // NON-VACUITY BREAK'
+
+[[control]]
+id = "the-manifest-leaves-out-an-op-the-module-serves"
+guards = "the manifest leaves out an op the module serves"
+test_file = "crates/basal-module/tests/manifest_gate.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test manifest_gate"
+expect_red = ["the_built_binary_prints_a_manifest_subc_protocol_accepts"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/manifest.rs"
+old = "operations: OPERATIONS\n                    .iter()"
+new = "operations: OPERATIONS\n                    .iter()\n                    .skip(1) // NON-VACUITY BREAK"
+
+[[control]]
+id = "an-agent-id-in-a-scope-nobody-vouched-for-is-taken-as-the-caller"
+hub = "An agent identity requires a core-owned, owner-authorized route stamp, asserted by the caller unit and binding tests"
+hub_targets = ["caller_binding"]
+guards = "an agent id in a scope nobody vouched for is taken as the caller"
+test_file = "crates/basal-module/src/caller.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--lib"
+expect_red = ["caller::tests::identity_comes_only_from_the_stamp"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/caller.rs"
+old = "core_owned && scope.owner_authorized"
+new = "core_owned"
+
+[[control]]
+id = "the-scope-stamp-on-a-route-s-bind-is-dropped"
+hub = "The daemon's attested scope stamp survives route binding and supplies the agent identity and scope used by model flows and codemode admission through the SDK and tool-provider routes"
+hub_targets = ["e2e", "codemode_scope", "tool_provider_conformance"]
+guards = "the scope stamp on a route's bind is dropped"
+test_file = "crates/basal-module/tests/caller_binding.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test caller_binding"
+expect_red = ["an_owner_authorized_core_scope_names_the_agent_and_its_scope"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/serve.rs"
+old = "scope: request.scope.clone(),"
+new = "scope: None,"
+
+[[control]]
+id = "flow-id-in-a-bind-scope-changes-agent-identity"
+guards = "flow id in a bind scope changes agent identity"
+test_file = "crates/basal-module/tests/caller_binding.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test caller_binding"
+expect_red = ["a_flow_id_in_the_bind_stamp_decodes_without_changing_agent_identity"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/caller.rs"
+old = "(Some(agent), true) if !agent.is_empty() => Caller::Agent {"
+new = "(Some(agent), true) if !agent.is_empty() && scope.attributes.flow_id.is_none() => Caller::Agent {"
+
+[[control]]
+id = "a-scope-owned-by-any-module-names-its-agent"
+hub = "Only a scope owned by core can attest an agent identity, asserted by the caller unit and binding tests"
+hub_targets = ["basal_module"]
+guards = "a scope owned by any module names its agent"
+test_file = "crates/basal-module/tests/caller_binding.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test caller_binding"
+expect_red = ["a_scope_owned_by_another_module_names_no_agent"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/caller.rs"
+old = "Principal::Reserved { module_id } if module_id == CORE_MODULE\n        );"
+new = "Principal::Reserved { .. }\n        );"
+
+[[control]]
+id = "an-agent-id-in-a-core-scope-the-daemon-does-not-vouch-for-names-the-agent"
+hub = "An agent identity requires owner authorization on its core scope, asserted by the caller unit and binding tests"
+hub_targets = ["basal_module"]
+guards = "an agent id in a core scope the daemon does not vouch for names the agent"
+test_file = "crates/basal-module/tests/caller_binding.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test caller_binding"
+expect_red = ["a_scope_without_owner_authorization_names_no_agent"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/caller.rs"
+old = "core_owned && scope.owner_authorized"
+new = "core_owned"
+
+[[control]]
+id = "an-unscoped-route-that-is-neither-direct-nor-core-s-is-taken-as-the-operator"
+hub = "An unscoped route without the operator's attested identity is not the operator; caller binding, identity classification and audience authorization reject authority fabricated from an unrelated or unverified principal"
+hub_targets = ["audience", "basal_module"]
+guards = "an unscoped route that is neither direct nor core's is taken as the operator"
+test_file = "crates/basal-module/tests/caller_binding.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test caller_binding"
+expect_red = ["a_route_without_a_scope_is_never_an_agent"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/caller.rs"
+old = "other => Caller::Other(principal_label(other)),"
+new = "_ => Caller::Operator,"
+
+[[control]]
+id = "a-route-that-has-gone-keeps-the-caller-it-was-bound-with"
+guards = "a route that has gone keeps the caller it was bound with"
+test_file = "crates/basal-module/tests/caller_binding.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test caller_binding"
+expect_red = ["a_route_without_a_scope_is_never_an_agent"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/serve.rs"
+old = "lock(&self.stamps).remove(&(handle.channel, handle.epoch));"
+new = "let _ = handle;"
+
+[[control]]
+id = "a-vouched-agent-may-run-a-capture-dry-run-of-a-flow-it-does-not-own"
+hub = "An agent may capture-dry-run only a flow it owns, asserted by route binding and the authorization matrix"
+hub_targets = ["ops"]
+guards = "a vouched agent may run a capture dry run of a flow it does not own"
+test_file = "crates/basal-module/tests/caller_binding.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test caller_binding"
+expect_red = ["an_agent_cannot_act_on_a_flow_it_does_not_own"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/ops.rs"
+old = "(\n                Caller::Agent {\n                    agent_id: agent, ..\n                },\n                Mode::Capture,\n            ) if self.owns(agent, &p.flow_id)? => {}"
+new = "(Caller::Agent { .. }, Mode::Capture) => {}"
+
+[[control]]
+id = "a-vouched-agent-may-enable-a-flow-it-does-not-own-the-module-s-ownership-check-and-the-core-s-both-removed"
+hub = "An agent may enable only a flow it owns; both ownership checks protect the binding and authorization-matrix tests"
+hub_targets = ["ops"]
+guards = "a vouched agent may enable a flow it does not own (the module's ownership check and the core's both removed)"
+test_file = "crates/basal-module/tests/caller_binding.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test caller_binding"
+expect_red = ["an_agent_cannot_act_on_a_flow_it_does_not_own"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+edits = [
+  { file = "crates/basal-module/src/ops.rs", old = "Caller::Agent {\n                agent_id: agent, ..\n            } if self.owns(agent, &p.flow_id)? => Actor::Agent(agent.to_owned()),", new = "Caller::Agent { agent_id: agent, .. } => Actor::Agent(agent.to_owned())," },
+  { file = "crates/basal-core/src/install.rs", old = "            if record.owner.as_deref() != Some(agent.as_str()) {", new = "            if false && record.owner.as_deref() != Some(agent.as_str()) {" },
+]
+
+[[control]]
+id = "an-unscoped-direct-key-holder-is-the-operator"
+hub = "A direct key holder is local, not an attested operator, asserted by caller classification, binding and authorization tests"
+hub_targets = ["basal_module", "caller_binding"]
+guards = "an unscoped direct key-holder is the operator"
+test_file = "crates/basal-module/tests/ops.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test ops"
+expect_red = ["authorization_matrix"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/caller.rs"
+old = "Some(Principal::Direct) => Caller::Local,"
+new = "Some(Principal::Direct) => Caller::Operator,"
+
+[[control]]
+id = "any-reserved-module-is-the-operator-not-only-the-attested-callosum"
+hub = "Only the attested callosum module is the operator; other reserved modules remain unrelated callers at every authorization boundary"
+hub_targets = ["basal_module", "caller_binding"]
+guards = "any reserved module is the operator, not only the attested callosum"
+test_file = "crates/basal-module/tests/ops.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test ops"
+expect_red = ["authorization_matrix"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/caller.rs"
+old = "Some(Principal::Reserved { module_id }) if module_id == OPERATOR_MODULE => Caller::Operator,"
+new = "Some(Principal::Reserved { .. }) => Caller::Operator,"
+
+[[control]]
+id = "a-local-caller-refused-an-operator-action-is-told-not-permitted-not-operator-attestation-required"
+hub = "A local caller refused an operator-only action, including package and instance operations, receives operator_attestation_required, asserted by binding, authorization, lifecycle and package tests"
+hub_targets = ["caller_binding", "module_lifecycle", "packages"]
+guards = "a local caller refused an operator action is told not_permitted, not operator_attestation_required"
+test_file = "crates/basal-module/tests/ops.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test ops"
+expect_red = ["authorization_matrix"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/ops.rs"
+old = "if *caller == Caller::Local {"
+new = "if false {"
+
+[[control]]
+id = "a-local-caller-may-replace-a-flow-someone-else-wrote"
+guards = "a local caller may replace a flow someone else wrote"
+test_file = "crates/basal-module/tests/ops.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test ops"
+expect_red = ["a_local_caller_installs_only_its_own_flows_with_a_digest_sink"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/ops.rs"
+old = "if owners.iter().any(|o| o != LOCAL_AUTHOR) {"
+new = "if false {"
+
+[[control]]
+id = "a-local-caller-may-install-in-another-author-s-name"
+guards = "a local caller may install in another author's name"
+test_file = "crates/basal-module/tests/ops.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test ops"
+expect_red = ["a_local_caller_installs_only_its_own_flows_with_a_digest_sink"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/ops.rs"
+old = "if p.author.as_ref().is_some_and(|a| a != LOCAL_AUTHOR) {"
+new = "if false {"
+
+[[control]]
+id = "a-local-caller-may-override-the-loop-install-rule"
+guards = "a local caller may override the loop install rule"
+test_file = "crates/basal-module/tests/ops.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test ops"
+expect_red = ["a_local_caller_installs_only_its_own_flows_with_a_digest_sink"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/ops.rs"
+old = "if p.loop_override {\n                    return Err(OpError::operator_attestation_required("
+new = "if false {\n                    return Err(OpError::operator_attestation_required("
+
+[[control]]
+id = "a-local-caller-s-flow-without-a-digest-sink-is-installed-and-its-card-raised"
+hub = "A local install requires a digest sink before any card is raised, asserted by local-install and card-author tests"
+hub_targets = ["hosts"]
+guards = "a local caller's flow without a digest sink is installed and its card raised"
+test_file = "crates/basal-module/tests/ops.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test ops"
+expect_red = ["a_local_caller_installs_only_its_own_flows_with_a_digest_sink"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/ops.rs"
+old = "if manifest.sinks.is_empty() {"
+new = "if false {"
+
+[[control]]
+id = "a-local-caller-s-card-names-the-operator-as-its-author"
+hub = "A local install card identifies its author as local, never operator, asserted by local-install and card-author tests"
+hub_targets = ["hosts"]
+guards = "a local caller's card names the operator as its author"
+test_file = "crates/basal-module/tests/ops.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test ops"
+expect_red = ["a_local_caller_installs_only_its_own_flows_with_a_digest_sink"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/ops.rs"
+old = "Caller::Local => Ok(json!({ \"local\": true })),"
+new = "Caller::Local => Ok(json!({ \"operator\": true })),"
+
+[[control]]
+id = "an-agent-s-scope-ref-is-taken-from-its-agent-id-instead-of-the-route-s-stamp"
+hub = "The agent's scope reference comes unchanged from the route stamp rather than the agent ID, asserted by caller and install-card tests"
+hub_targets = ["basal_module", "hosts"]
+guards = "an agent's scope_ref is taken from its agent id instead of the route's stamp"
+test_file = "crates/basal-module/tests/caller_binding.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test caller_binding"
+expect_red = ["an_owner_authorized_core_scope_names_the_agent_and_its_scope"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/caller.rs"
+old = "scope_ref: scope.scope_ref.clone(),"
+new = "scope_ref: agent.clone(),"
+
+[[control]]
+id = "an-agent-s-card-author-names-its-agent-id-instead-of-the-scope-ref-it-was-stamped-with"
+hub = "An agent's install card author names its attested scope reference, not the agent ID, asserted by card encoding and binding tests"
+hub_targets = ["caller_binding"]
+guards = "an agent's card author names its agent id instead of the scope_ref it was stamped with"
+test_file = "crates/basal-module/tests/hosts.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test hosts"
+expect_red = ["install_card_is_byte_exact_and_scope_comes_from_the_route_stamp"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/ops.rs"
+old = "Caller::Agent { scope_ref, .. } => Ok(json!({ \"scope\": scope_ref })),"
+new = "Caller::Agent { agent_id, .. } => Ok(json!({ \"scope\": agent_id })),"
+
+[[control]]
+id = "a-pending-card-is-raised-again-in-the-name-of-whoever-first-installed-it"
+guards = "a pending card is raised again in the name of whoever first installed it"
+test_file = "crates/basal-module/tests/hosts.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test hosts"
+expect_red = ["core_refusing_the_author_scope_is_a_clear_install_error"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/ops.rs"
+old = "raised_fields[\"wire_author\"] = card_author(caller)?;"
+new = "let _ = card_author(caller)?;"
+
+[[control]]
+id = "an-idle-worker-bound-to-any-flow-is-reused-for-another"
+guards = "an idle worker bound to any flow is reused for another"
+test_file = "crates/basal-module/tests/pool.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test pool"
+expect_red = ["a_worker_is_never_reused_across_flows"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/pool.rs"
+old = "let reuse = state.bound.get_mut(flow).and_then(Vec::pop);"
+new = "let reuse = state.bound.values_mut().find_map(Vec::pop);"
+
+[[control]]
+id = "a-killed-worker-goes-back-to-its-flow-s-idle-list-and-is-handed-out-again"
+guards = "a killed worker goes back to its flow's idle list and is handed out again"
+test_file = "crates/basal-module/tests/pool.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test pool"
+expect_red = ["a_killed_worker_is_replaced_and_the_run_continues"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+edits = [
+  { file = "crates/basal-module/src/pool.rs", old = "let keep = match (&lease.binding, lease.killed || crashed) {", new = "let keep = match (&lease.binding, false) {" },
+  { file = "crates/basal-module/src/pool.rs", old = "if let Some(mut idle) = reuse {\n                    if idle.process.has_exited() {", new = "if let Some(mut idle) = reuse {\n                    if false && idle.process.has_exited() {" },
+]
+
+[[control]]
+id = "a-killed-worker-is-not-owed-a-replacement"
+guards = "a killed worker is not owed a replacement"
+test_file = "crates/basal-module/tests/pool.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test pool"
+expect_red = ["a_killed_worker_is_replaced_and_the_run_continues"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/pool.rs"
+old = "Metrics::bump(&self.shared.metrics.workers_killed);\n                    self.shared.lost(&mut state, true);"
+new = "Metrics::bump(&self.shared.metrics.workers_killed);\n                    self.shared.lost(&mut state, false);"
+
+[[control]]
+id = "warm-spares-are-never-handed-out"
+guards = "warm spares are never handed out"
+test_file = "crates/basal-module/tests/pool.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test pool"
+expect_red = ["an_activation_uses_a_warm_spare"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/pool.rs"
+old = "if let Some((id, mut process)) = state.spares.pop_front() {"
+new = "if let Some((id, mut process)) = None::<(u64, WorkerProcess)> {"
+
+[[control]]
+id = "a-worker-is-never-retired-for-its-activation-count"
+guards = "a worker is never retired for its activation count"
+test_file = "crates/basal-module/tests/pool.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test pool"
+expect_red = ["a_bound_worker_is_retired_after_its_activation_count_and_its_idle_period"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/pool.rs"
+old = "if activations >= self.shared.config.max_activations => None,"
+new = "if activations >= u32::MAX => None,"
+
+[[control]]
+id = "a-bound-worker-is-never-retired-for-idling"
+hub = "A worker idle past its idle period is retired, asserted by the pool retirement test and the engine lifecycle retirement wake test"
+hub_targets = ["basal_module"]
+guards = "a bound worker is never retired for idling"
+test_file = "crates/basal-module/tests/pool.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test pool"
+expect_red = ["a_bound_worker_is_retired_after_its_activation_count_and_its_idle_period"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/pool.rs"
+old = "} else if now.saturating_sub(idle.idle_since_ms) >= idle_ms {"
+new = "} else if idle_ms < 0 && now.saturating_sub(idle.idle_since_ms) >= idle_ms {"
+
+[[control]]
+id = "the-run-is-claimed-before-its-worker-is-spawned-and-greeted"
+guards = "the run is claimed before its worker is spawned and greeted"
+test_file = "crates/basal-module/tests/pool.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test pool"
+expect_red = ["the_run_deadline_starts_after_the_worker_answers_its_handshake"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/engine.rs"
+# Start only the deadline early; keep pooling, flow binding and retirement intact.
+old = "        let mut lease = match self.inner.pool.acquire(Binding::Flow(flow_id.to_owned())) {"
+new = "        self.inner.rt.store().write(|tx| { // NON-VACUITY BREAK\n            tx.execute(\"UPDATE runs SET deadline_at = ?2 + deadline_ms WHERE run_id = ?1 AND deadline_at IS NULL AND deadline_ms IS NOT NULL\", rusqlite::params![run_id, self.inner.rt.config().clock.now_ms()])?;\n            Ok(())\n        }).expect(\"set premature deadline\");\n        let mut lease = match self.inner.pool.acquire(Binding::Flow(flow_id.to_owned())) {"
+
+[[control]]
+id = "activations-are-not-bounded"
+guards = "activations are not bounded"
+test_file = "crates/basal-module/tests/engine.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test engine"
+expect_red = ["activations_are_bounded_across_flows"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/engine.rs"
+old = "if active.runs.len() >= inner.config.max_concurrent_activations {"
+new = "if active.runs.len() >= usize::MAX {"
+
+[[control]]
+id = "a-storage-error-does-not-raise-the-fatal-latch-in-process"
+hub = "The fatal latch records the first fatal error, a storage failure or a panicked activation, so the engine stops and the process exits for recovery; decision, host, end-to-end and engine lifecycle tests assert this too"
+hub_targets = ["basal_module", "decisions", "e2e", "hosts"]
+guards = "a storage error does not raise the fatal latch (in process)"
+test_file = "crates/basal-module/tests/engine.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test engine"
+expect_red = ["a_storage_error_stops_the_engine_and_raises_the_fatal_latch"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/fatal.rs"
+old = "        if slot.is_none() {\n            *slot = Some(why);"
+new = "        if false {\n            *slot = Some(why);"
+
+[[control]]
+id = "a-storage-error-does-not-end-the-process"
+hub = "The fatal latch records the first fatal error, a storage failure or a panicked activation, so the engine stops and the process exits for recovery; decision, host and engine lifecycle tests assert this too"
+hub_targets = ["basal_module", "decisions", "engine", "hosts"]
+guards = "a storage error does not end the process"
+test_file = "crates/basal-module/tests/e2e.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test e2e"
+expect_red = ["a_store_error_ends_the_process_non_zero_and_the_restart_recovers"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/fatal.rs"
+old = "        if slot.is_none() {\n            *slot = Some(why);"
+new = "        if false {\n            *slot = Some(why);"
+
+[[control]]
+id = "the-module-starts-without-recovering-runs-left-running"
+hub = "Module startup recovers runs left running so journaled decisions, sink intents and model selections can resume after a cut"
+hub_targets = ["decisions", "hosts"]
+guards = "the module starts without recovering runs left running"
+test_file = "crates/basal-module/tests/e2e.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test e2e"
+expect_red = ["a_schedule_flow_survives_a_catch_up_a_worker_kill_and_a_module_kill_with_each_write_once"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/module.rs"
+old = "let recovered = store\n            .write(basal_core::runs::requeue_orphans)\n            .map_err(|e| format!(\"recovering runs: {e}\"))?;"
+new = "let recovered: Vec<String> = Vec::new();"
+
+[[control]]
+id = "a-card-s-approval-is-applied-as-a-rejection"
+hub = "An approved install card approves its version and admits its flow; flow-running fixtures install through approval, so applying that approval as rejection leaves no approved audience, owner or admissible run"
+hub_targets = ["audience", "caller_binding", "dry_run", "e2e", "engine", "health_contract", "idle_wake", "list_contract", "module_lifecycle", "ops", "pool", "templates"]
+guards = "a card's approval is applied as a rejection"
+test_file = "crates/basal-module/tests/ops.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test ops"
+expect_red = ["install_raises_one_card_per_version_and_its_decision_approves_or_rejects"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/module.rs"
+old = "CardDecision::Approve => Decision::Approve,"
+new = "CardDecision::Approve => Decision::Reject,"
+
+[[control]]
+id = "capture-mode-sends-calls-to-the-host"
+hub = "Capture dry runs execute no host effects, including install previews; decision, host and end-to-end tests assert no extra effects from those previews"
+hub_targets = ["decisions", "e2e", "hosts"]
+guards = "capture mode sends calls to the host"
+test_file = "crates/basal-module/tests/dry_run.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test dry_run"
+expect_red = ["capture_mode_executes_no_host_call_and_replays_the_schedule_window"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/dryrun.rs"
+old = "if !self.runs_live(request) {"
+new = "if false {"
+
+[[control]]
+id = "a-delivered-captured-rejection-does-not-taint-what-follows"
+guards = "a delivered captured rejection does not taint what follows"
+test_file = "crates/basal-module/tests/dry_run.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test dry_run"
+expect_red = ["a_captured_call_the_script_uses_marks_the_trace_partial"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/dryrun.rs"
+old = "Event::Delivered(p) if captured.contains(p) => tainted = true,"
+new = "Event::Delivered(p) if captured.contains(p) && false => tainted = true,"
+
+[[control]]
+id = "live-mode-runs-ops-that-are-not-marked-query"
+guards = "live mode runs ops that are not marked query"
+test_file = "crates/basal-module/tests/dry_run.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test dry_run"
+expect_red = ["live_mode_runs_only_query_ops_and_only_for_the_operator"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/dryrun.rs"
+old = ".is_some_and(|d| d.kind == Some(OpKind::Query) && !d.shell_capable)"
+new = ".is_some() /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "an-owning-agent-may-ask-for-a-live-dry-run"
+hub = "Only the operator can request a live dry run, asserted by the dry-run target and authorization matrix"
+hub_targets = ["ops"]
+guards = "an owning agent may ask for a live dry run"
+test_file = "crates/basal-module/tests/dry_run.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test dry_run"
+expect_red = ["live_mode_runs_only_query_ops_and_only_for_the_operator"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/ops.rs"
+old = "(\n                Caller::Agent {\n                    agent_id: agent, ..\n                },\n                Mode::Capture,\n            ) if self.owns(agent, &p.flow_id)? => {}"
+new = "(Caller::Agent { agent_id: agent, .. }, _) if self.owns(agent, &p.flow_id)? => {}"
+
+[[control]]
+id = "dry-runs-share-one-scratch-store-that-is-never-removed"
+guards = "dry runs share one scratch store that is never removed"
+test_file = "crates/basal-module/tests/dry_run.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test dry_run"
+expect_red = ["each_dry_run_has_its_own_scratch_store_and_the_real_kv_and_runs_are_untouched"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+edits = [
+  { file = "crates/basal-module/src/dryrun.rs", old = "\"dry-{}-{}-{n}\",\n            std::process::id(),\n            request.now_ms\n        ));", new = "\"dry-shared{}\",\n            n * 0\n        ));" },
+  { file = "crates/basal-module/src/dryrun.rs", old = "let _ = std::fs::remove_dir_all(&dir);", new = "let _ = &dir;" },
+]
+
+[[control]]
+id = "any-agent-may-run-a-capture-dry-run-of-another-s-flow"
+hub = "An agent may capture-dry-run only a flow it owns, asserted by the authorization matrix and route binding tests"
+hub_targets = ["caller_binding"]
+guards = "any agent may run a capture dry run of another's flow"
+test_file = "crates/basal-module/tests/ops.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test ops"
+expect_red = ["authorization_matrix"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/ops.rs"
+old = "(\n                Caller::Agent {\n                    agent_id: agent, ..\n                },\n                Mode::Capture,\n            ) if self.owns(agent, &p.flow_id)? => {}"
+new = "(Caller::Agent { .. }, Mode::Capture) => {}"
+
+[[control]]
+id = "agents-may-read-flow-health"
+guards = "agents may read flow.health"
+test_file = "crates/basal-module/tests/ops.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test ops"
+expect_red = ["authorization_matrix"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/ops.rs"
+old = "if !matches!(caller, Caller::Operator | Caller::Core) {"
+new = "if !matches!(caller, Caller::Operator | Caller::Core | Caller::Agent { .. }) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "anyone-may-reconcile"
+guards = "anyone may reconcile"
+test_file = "crates/basal-module/tests/ops.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test ops"
+expect_red = ["authorization_matrix"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/ops.rs"
+old = "        if *caller != Caller::Operator {\n            return Err(OpError::not_permitted(\"flow.reconcile\", caller));"
+new = "        if false {\n            return Err(OpError::not_permitted(\"flow.reconcile\", caller));"
+
+[[control]]
+id = "anyone-may-drain"
+guards = "anyone may drain"
+test_file = "crates/basal-module/tests/ops.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test ops"
+expect_red = ["authorization_matrix"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/ops.rs"
+old = "        if *caller != Caller::Operator {\n            return Err(OpError::not_permitted(\"flow.drain\", caller));"
+new = "        if false {\n            return Err(OpError::not_permitted(\"flow.drain\", caller));"
+
+[[control]]
+id = "any-agent-may-enable-any-flow-the-module-s-ownership-check-and-the-core-s-both-removed"
+hub = "An agent may enable only a flow it owns; both ownership checks protect the authorization-matrix and binding tests"
+hub_targets = ["caller_binding"]
+guards = "any agent may enable any flow (the module's ownership check and the core's both removed)"
+test_file = "crates/basal-module/tests/ops.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test ops"
+expect_red = ["authorization_matrix"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+edits = [
+  { file = "crates/basal-module/src/ops.rs", old = "Caller::Agent {\n                agent_id: agent, ..\n            } if self.owns(agent, &p.flow_id)? => Actor::Agent(agent.to_owned()),", new = "Caller::Agent { agent_id: agent, .. } => Actor::Agent(agent.to_owned())," },
+  { file = "crates/basal-core/src/install.rs", old = "            if record.owner.as_deref() != Some(agent.as_str()) {", new = "            if false && record.owner.as_deref() != Some(agent.as_str()) {" },
+]
+
+[[control]]
+id = "health-has-no-as-of"
+guards = "health has no as_of"
+test_file = "crates/basal-module/tests/health_contract.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test health_contract"
+expect_red = ["flow_health_decodes_as_core_decodes_it"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/ops.rs"
+old = "\"as_of\": as_of,\n            \"worker_confinement\": self.pool.worker_confinement(),"
+new = "\"as_of_ms\": now,\n            \"worker_confinement\": self.pool.worker_confinement(),"
+
+[[control]]
+id = "health-ignores-flow-ids"
+guards = "health ignores flow_ids"
+test_file = "crates/basal-module/tests/health_contract.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test health_contract"
+expect_red = ["flow_health_decodes_as_core_decodes_it"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/ops.rs"
+old = ".is_none_or(|ids| ids.iter().any(|id| id == flow_id))"
+new = ".is_none_or(|ids| ids.is_empty() || flow_id.is_empty())"
+
+[[control]]
+id = "health-s-last-run-has-no-outcome"
+hub = "Health's last-run object names its outcome using the documented field, asserted by strict decoding and ops health tests"
+hub_targets = ["ops"]
+guards = "health's last run has no outcome"
+test_file = "crates/basal-module/tests/health_contract.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test health_contract"
+expect_red = ["flow_health_decodes_as_core_decodes_it"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/ops.rs"
+old = "\"outcome\": r.state,"
+new = "\"state\": r.state,"
+
+[[control]]
+id = "health-s-last-run-time-is-epoch-milliseconds-not-rfc-3339"
+guards = "health's last run time is epoch milliseconds, not RFC 3339"
+test_file = "crates/basal-module/tests/health_contract.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test health_contract"
+expect_red = ["flow_health_decodes_as_core_decodes_it"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/ops.rs"
+old = "\"at\": rfc3339(r.ended_at)?,"
+new = "\"at\": r.ended_at,"
+
+[[control]]
+id = "health-s-overdue-age-is-null-when-nothing-is-overdue"
+guards = "health's overdue age is null when nothing is overdue"
+test_file = "crates/basal-module/tests/health_contract.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test health_contract"
+expect_red = ["flow_health_decodes_as_core_decodes_it"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/ops.rs"
+old = "\"oldest_overdue_age_ms\": f.oldest_overdue_ms.unwrap_or(0),"
+new = "\"oldest_overdue_age_ms\": f.oldest_overdue_ms,"
+
+[[control]]
+id = "health-s-needs-reconcile-is-a-list-of-runs-not-a-boolean"
+hub = "Health's needs_reconcile field is a boolean, asserted by strict health decoding and the ops reconciliation test"
+hub_targets = ["ops"]
+guards = "health's needs_reconcile is a list of runs, not a boolean"
+test_file = "crates/basal-module/tests/health_contract.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test health_contract"
+expect_red = ["flow_health_decodes_as_core_decodes_it"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/ops.rs"
+old = "\"needs_reconcile\": !f.needs_reconcile.is_empty(),"
+new = "\"needs_reconcile\": f.needs_reconcile.clone(),"
+
+[[control]]
+id = "health-s-overflowed-is-left-out"
+guards = "health's overflowed is left out"
+test_file = "crates/basal-module/tests/health_contract.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test health_contract"
+expect_red = ["flow_health_decodes_as_core_decodes_it"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/ops.rs"
+old = "\"overflowed\": f.event_overflow > 0,"
+new = "\"overflow\": f.event_overflow > 0,"
+
+[[control]]
+id = "health-s-auto-disabled-is-null-when-false"
+hub = "Health's auto_disabled field is always a boolean, including false, asserted by strict decoding and ops health tests"
+hub_targets = ["ops"]
+guards = "health's auto_disabled is null when false"
+test_file = "crates/basal-module/tests/health_contract.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test health_contract"
+expect_red = ["flow_health_decodes_as_core_decodes_it"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/ops.rs"
+old = "\"auto_disabled\": f.auto_disabled,"
+new = "\"auto_disabled\": f.auto_disabled.then_some(true),"
+
+[[control]]
+id = "health-s-state-is-outside-the-contract-s-enum"
+hub = "An approved enabled flow is reported as enabled, never active, across strict health decoding, ops, list and install-gate tests"
+hub_targets = ["install_gate", "list_contract", "ops"]
+guards = "health's state is outside the contract's enum"
+test_file = "crates/basal-module/tests/health_contract.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test health_contract"
+expect_red = ["flow_health_decodes_as_core_decodes_it"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/ops.rs"
+old = "(Some(_), true) => \"enabled\","
+new = "(Some(_), true) => \"active\","
+
+[[control]]
+id = "health-reports-a-flow-nobody-approved-by-its-enabled-switch"
+hub = "A flow with no approved version is unapproved regardless of its enabled switch, asserted by health, list and revocation tests"
+hub_targets = ["health_contract", "install_gate", "list_contract"]
+guards = "health reports a flow nobody approved by its enabled switch"
+test_file = "crates/basal-module/tests/ops.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test ops"
+expect_red = ["health_lists_a_flow_with_no_approved_version_as_unapproved"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/ops.rs"
+old = "(None, _) => \"unapproved\","
+new = "(None, _) => if enabled { \"enabled\" } else { \"disabled\" },"
+
+[[control]]
+id = "health-does-not-say-who-disabled-a-flow"
+hub = "Health and list normalize a disable's author to its documented operator/owner/auto/core category, asserted by ops, lifecycle and strict health decoding"
+hub_targets = ["health_contract", "module_lifecycle"]
+guards = "health does not say who disabled a flow"
+test_file = "crates/basal-module/tests/ops.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test ops"
+expect_red = ["health_reports_flows_runs_and_the_module"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/ops.rs"
+old = "\"by\": disabled_kind(by),"
+new = "\"by\": by,"
+
+[[control]]
+id = "an-agent-may-install-a-flow-in-another-author-s-name"
+guards = "an agent may install a flow in another author's name"
+test_file = "crates/basal-module/tests/ops.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test ops"
+expect_red = ["install_refuses_what_an_agent_may_not_do"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/ops.rs"
+old = "if p.author.as_ref().is_some_and(|a| a != agent) {"
+new = "if p.author.as_ref().is_some_and(|a| a == \"nobody\" && a != agent) {"
+
+[[control]]
+id = "the-unconfigured-host-s-refusal-is-not-proven-unsent"
+guards = "the unconfigured host's refusal is not proven unsent"
+test_file = "crates/basal-module/tests/engine.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test engine"
+expect_red = ["the_unconfigured_host_refuses_every_dispatch_as_never_sent"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/unconfigured.rs"
+old = "sent: Sent::Never,"
+new = "sent: Sent::Maybe(basal_host::UnknownReason::ConnectionLost),"
+
+[[control]]
+id = "flow-list-reports-a-disable-by-core-as-the-owner-s"
+hub = "List and health preserve core as the disable author after revocation; list-contract and install-gate failures both assert that a core disable is reported as core"
+hub_targets = ["install_gate"]
+guards = "flow.list reports a disable by core as the owner's"
+test_file = "crates/basal-module/tests/list_contract.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test list_contract"
+expect_red = ["list_reply_decodes_against_documented_shape_and_health_state"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/ops.rs"
+old = "} else if by == basal_core::install::CORE_ACTOR {"
+new = "} else if false && by == basal_core::install::CORE_ACTOR { // NON-VACUITY BREAK"
+
+[[control]]
+id = "decision-cards-a-card-whose-raise-failed-is-recorded-as-raised-so-the-intent-is-lost"
+hub = "A failed raise leaves the durable decision intent unacknowledged for retry; both consent paths must recover that intent after a lost initial or replacement reply"
+hub_targets = ["consent_paths"]
+guards = "decision cards: a card whose raise failed is recorded as raised, so the intent is lost"
+test_file = "crates/basal-module/tests/decisions.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test decisions"
+expect_red = ["a_crash_between_the_intent_and_core_accepting_still_shows_exactly_one_card"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/engine.rs"
+old = "                Err(e) => {\n                    tracing::warn!(target: \"consent\", key = %record.dedup_key"
+new = "                Err(e) => {\n                    inner.rt.decision_raised(record.seq, record.revision, \"lost\")?;\n                    tracing::warn!(target: \"consent\", key = %record.dedup_key"
+
+[[control]]
+id = "integration-model-store-initialization-omitted"
+hub = "The module binds its durable model-call store before host recovery or dispatch; model-journal, restart and eager-attachment tests all require that initialized store"
+hub_targets = ["e2e", "module_lifecycle"]
+guards = "integration: model store initialization omitted"
+test_file = "crates/basal-module/tests/hosts.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test hosts"
+expect_red = ["routing_host_model_selection_and_digest_sink_share_the_journal_store"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/module.rs"
+old = "initialize(store.clone())?;"
+new = "let _ = initialize;"
+
+[[control]]
+id = "integration-dry-run-defaults-digest-to-wake"
+guards = "integration: dry run defaults digest to wake"
+test_file = "crates/basal-module/tests/dry_run.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test dry_run"
+expect_red = ["omitted_digest_action_in_dry_runs_is_the_recipient_digest_max"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/dryrun.rs"
+old = "None => manifest.digest_cap(agent),"
+new = "None => Some(DigestAction::Wake),"
+
+[[control]]
+id = "dry-run-live-mode-runs-built-ins-that-are-not-queries"
+guards = "dry run: live mode runs built-ins that are not queries"
+test_file = "crates/basal-module/tests/dry_run.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test dry_run"
+expect_red = ["dry_runs_capture_every_built_in_and_live_runs_only_reads_in_scope"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/dryrun.rs"
+old = "                    == Some(CallClass::Query)"
+new = "                    != None // NON-VACUITY BREAK"
+
+[[control]]
+id = "rig-crash-checkpoint-discards-clamped-request"
+guards = "Crash-boundary evidence captures the selected request before host dispatch"
+file = "crates/basal-module/src/rig_kill.rs"
+old = "SELECT COALESCE(request, args), dispatch, attempts, settlement FROM journal WHERE run_id = ?1 AND position = ?2"
+new = "SELECT args, dispatch, attempts, settlement FROM journal WHERE run_id = ?1 AND position = ?2 -- NON-VACUITY BREAK: discard clamped request evidence"
+edits = []
+test_file = "crates/basal-module/src/rig_kill.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--lib"
+expect_red = ["rig_kill::tests::crash_evidence_records_the_unsent_journal_not_a_later_outcome"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "rig-unscoped-hook-fires-for-unarmed-flow"
+guards = "only the flow named by the arming file can send unscoped once"
+file = "crates/basal-module/src/rig_kill.rs"
+old = "armed.flow_id.is_empty() || flow_id != Some(armed.flow_id.as_str())"
+new = "armed.flow_id.is_empty() || flow_id.is_none() /* NON-VACUITY BREAK */"
+edits = []
+test_file = "crates/basal-module/src/rig_kill.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--lib"
+expect_red = ["rig_kill::tests::unscoped_send_fires_only_for_the_armed_flow_once"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "install-reserved-package-instance-id"
+guards = "plain installs cannot squat on package instance flow ids"
+file = "crates/basal-module/src/ops.rs"
+old = "if manifest.id.rsplit_once('_').is_some_and(|(_, suffix)| {"
+new = "if false && manifest.id.rsplit_once('_').is_some_and(|(_, suffix)| { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-module/tests/agent_targets.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test agent_targets"
+expect_red = ["plain_install_cannot_occupy_package_instance_ids"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "package-core-only-callers"
+hub = "Package and instance operations refuse every caller but core, and the operator only for registration, including the local caller, asserted by package and module lifecycle tests"
+hub_targets = ["module_lifecycle"]
+guards = "package get and instance management admit only unscoped core"
+file = "crates/basal-module/src/ops.rs"
+old = "if !permitted {"
+new = "if false && !permitted { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-module/tests/packages.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test packages"
+expect_red = ["package_callers_are_core_only_except_operator_registration"]
+# Replayed on this row's own target, the named test is the only red test.
+# `ckdev-mutate run --broad` replays every test target in the package, and
+# there the mutant also reds the hub targets' tests of the same property.
+# `only = true` would reject those, so the row reviews them as a hub instead.
+only = false
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "production-worker-inherits-parent-privacy-identity"
+hub = "Production workers disclaim the module's privacy identity, asserted by the live responsible-process probe and production trampoline configuration"
+hub_targets = ["privacy_launch"]
+guards = "production workers must be their own macOS responsible processes, not borrow the module privacy grants"
+file = "crates/basal-module/src/pool.rs"
+old = "let launch = WorkerLaunch::Disclaimed {\n            trampoline: exe.clone(),\n        };"
+new = "let launch = WorkerLaunch::Plain; // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-module/tests/e2e.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test e2e"
+expect_red = ["privacy::production_worker_is_its_own_responsible_process"]
+only = false
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "worker-file-name-follows-parent"
+hub = "The module finds its worker as the sibling named after its own executable, asserted by the name mapping unit test and the production launch from development file names"
+hub_targets = ["e2e"]
+guards = "sibling worker lookup follows the parent executable file name without changing the production path"
+file = "crates/basal-module/src/pool.rs"
+old = 'name.push("-worker");'
+new = 'name = std::ffi::OsString::from("ck-basal-worker"); // NON-VACUITY BREAK'
+edits = []
+test_file = "crates/basal-module/src/pool.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--lib"
+expect_red = ["pool::names::worker_file_name_follows_parent_in_production_and_development"]
+# Replayed on this row's own target, the named test is the only red test.
+# `ckdev-mutate run --broad` replays every test target in the package, and
+# there the mutant also reds the hub targets' tests of the same property.
+# `only = true` would reject those, so the row reviews them as a hub instead.
+only = false
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "module-worker-frames-unbounded"
+guards = "worker frames back-pressure their stdout reader instead of growing parent memory"
+file = "crates/basal-module/src/process.rs"
+old = "mpsc::sync_channel(2)"
+new = "mpsc::channel() // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-module/src/process.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--lib"
+expect_red = ["process::buffer_tests::incoming_frames_have_bounded_capacity"]
+only = false
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "module-panic-retains-activation-slot"
+guards = "unwinding an activation releases both its run and flow reservations"
+file = "crates/basal-module/src/engine.rs"
+old = """
+active.runs.remove(self.run_id);
+        active.flows.remove(self.flow_id);"""
+new = """
+// NON-VACUITY BREAK: retain reservations when unwinding.
+        if !thread::panicking() {
+            active.runs.remove(self.run_id);
+            active.flows.remove(self.flow_id);
+        }"""
+edits = []
+test_file = "crates/basal-module/src/engine_tests.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--lib"
+expect_red = ["engine::lifecycle_tests::panicking_activation_releases_run_and_flow_slots"]
+only = false
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "module-drop-panics-while-unwinding"
+guards = "a stalled module shutdown dropped during unwinding logs and returns instead of aborting the process with a second panic"
+file = "crates/basal-module/src/module.rs"
+old = "Err(std::sync::mpsc::RecvTimeoutError::Timeout) if unwinding => {"
+new = "Err(std::sync::mpsc::RecvTimeoutError::Timeout) if false => { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-module/src/engine_tests.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--lib"
+expect_red = ["engine::lifecycle_tests::a_stalled_module_drop_while_unwinding_does_not_abort_the_process"]
+only = false
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "module-drop-swallows-a-stalled-shutdown"
+guards = "a stalled module shutdown dropped outside unwinding still panics"
+file = "crates/basal-module/src/module.rs"
+old = "Err(std::sync::mpsc::RecvTimeoutError::Timeout) if unwinding => {"
+new = "Err(std::sync::mpsc::RecvTimeoutError::Timeout) if true => { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-module/src/engine_tests.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--lib"
+expect_red = ["engine::lifecycle_tests::a_stalled_module_drop_panics_when_not_unwinding"]
+only = false
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "module-kill-signals-reaped-worker-pid"
+guards = "a reaped worker pid is never signalled after its lease is gone"
+file = "crates/basal-module/src/process.rs"
+old = "if !matches!(child.try_wait(), Ok(None)) {"
+new = "if false && !matches!(child.try_wait(), Ok(None)) { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-module/src/process.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--lib"
+expect_red = ["process::buffer_tests::a_reaped_worker_handle_never_signals_a_recycled_pid"]
+only = false
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "module-invalid-descriptor-does-not-exit"
+guards = "invalid store descriptors terminate the module for supervised restart"
+file = "crates/basal-module/src/serve.rs"
+old = """
+// by serving more requests. Let supervision retry startup.
+                std::process::exit(crate::fatal::EXIT_STORE_FAILURE);"""
+new = """
+// by serving more requests. Let supervision retry startup.
+                // NON-VACUITY BREAK: keep serving after descriptor refusal."""
+edits = []
+test_file = "crates/basal-module/tests/startup_descriptor.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test startup_descriptor"
+expect_red = ["invalid_store_descriptor_exits_for_supervised_restart"]
+only = false
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "module-replay-count-masks-store-failure"
+guards = "reading the replay count cannot turn a storage failure into zero calls"
+file = "crates/basal-module/src/engine.rs"
+old = "let replayed = match journal_rows(&inner.rt, &run_id) {"
+new = "let replayed = match Ok::<u64, CoreError>(journal_rows(&inner.rt, &run_id).unwrap_or(0)) { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-module/src/engine_tests.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--lib"
+expect_red = ["engine::lifecycle_tests::journal_count_failure_is_fatal_not_zero_replayed_calls"]
+only = false
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "module-owner-disable-leaks-raw-actor-kind"
+hub = "An owner's disable is reported as the documented owner kind, never the raw actor, asserted by lifecycle and list contract tests"
+hub_targets = ["list_contract"]
+guards = "health and list encode owner disables with the same closed owner kind"
+file = "crates/basal-module/src/ops.rs"
+old = """
+} else {
+        "owner"
+    }"""
+new = """
+} else {
+        by // NON-VACUITY BREAK
+    }"""
+edits = []
+test_file = "crates/basal-module/tests/module_lifecycle.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test module_lifecycle"
+expect_red = ["health_uses_the_same_owner_disable_kind_as_list"]
+only = false
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "module-start-binds-before-preparation"
+guards = "failed module preparation never binds or retains the writer lease"
+file = "crates/basal-module/src/module.rs"
+old = """
+std::fs::create_dir_all(&config.dry_run.scratch_root).map_err(|e| {
+            format!(
+                "creating the dry-run directory {}: {e}",
+                config.dry_run.scratch_root.display()
+            )
+        })?;
+        initialize(store.clone())?;"""
+new = """
+initialize(store.clone())?; // NON-VACUITY BREAK
+        std::fs::create_dir_all(&config.dry_run.scratch_root).map_err(|e| {
+            format!(
+                "creating the dry-run directory {}: {e}",
+                config.dry_run.scratch_root.display()
+            )
+        })?;"""
+edits = []
+test_file = "crates/basal-module/tests/module_lifecycle.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test module_lifecycle"
+expect_red = ["failed_start_does_not_bind_or_retain_the_store"]
+only = false
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "management-fixture-default-starts-a-spare"
+hub = "Management fixtures start no flow workers by default, so dedicated codemode execution leaves the ordinary flow pool unchanged"
+hub_targets = ["codemode"]
+guards = "management fixtures start no worker unless explicitly requested"
+file = "crates/basal-module/tests/common/mod.rs"
+old = "warm_spares: 0,"
+new = "warm_spares: 1, // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-module/tests/list_contract.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test list_contract"
+expect_red = ["management_fixture_starts_no_worker"]
+only = false
+platforms = ["macos"]
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "linux-module-accepts-a-worker-without-seccomp"
+guards = "the module hands out a Linux worker whose Welcome reports no seccomp"
+test_file = "crates/basal-module/tests/confinement.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test confinement"
+expect_red = ["spawn_refuses_a_stand_in_worker_with_seccomp_false"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/pool.rs"
+old = "if !accepts_welcome(process.welcome(), self.landlock) {"
+new = "if false && !accepts_welcome(process.welcome(), self.landlock) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "grant-loss-health-list-evidence-visible"
+guards = "flow listing retains the lost-grant subject visible in health"
+file = "crates/basal-module/src/ops.rs"
+old = 'row["grant_losses"] = json!(losses);'
+new = 'let _ = losses; row["grant_losses"] = json!([]); // NON-VACUITY BREAK'
+test_file = "crates/basal-module/tests/health_contract.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test health_contract"
+expect_red = ["health_and_list_show_grant_loss_and_retirement_evidence"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "grant-loss-retired-enable-wire-refusal"
+hub = "Retirement refuses enable with typed evidence for operator and owner, asserted by health visibility and caller-contract tests"
+hub_targets = ["ops"]
+guards = "flow.enable exposes the retirement refusal rather than an ordinary permission denial"
+file = "crates/basal-module/src/ops.rs"
+old = '''"agent_retired",
+                format!("flow {flow_id} involves a retired agent"),'''
+new = '''"not_permitted", /* NON-VACUITY BREAK */
+                format!("flow {flow_id} involves a retired agent"),'''
+test_file = "crates/basal-module/tests/health_contract.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test health_contract"
+expect_red = ["health_and_list_show_grant_loss_and_retirement_evidence"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "grant-loss-retirement-health-visible"
+guards = "flow health exposes standing retirement evidence"
+file = "crates/basal-module/src/ops.rs"
+old = '"agent_retirement": f.agent_retirement,'
+new = '"agent_retirement": Value::Null, /* NON-VACUITY BREAK */'
+test_file = "crates/basal-module/tests/health_contract.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test health_contract"
+expect_red = ["health_and_list_show_grant_loss_and_retirement_evidence"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "grant-card-engine-retracts-core-card"
+hub = "A superseded grant card is withdrawn through the path that raised it before its local withdrawal obligation is acknowledged"
+hub_targets = ["consent_paths"]
+guards = "withdrawal obligations are sent to core before they are acknowledged locally"
+file = "crates/basal-module/src/engine.rs"
+old = "inner.consent.withdraw_decision_on(&path, &id)"
+new = "Ok::<(),basal_host::ConsentError>(()) /* NON-VACUITY BREAK */"
+test_file = "crates/basal-module/tests/decisions.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test decisions"
+expect_red = ["repeated_grant_loss_raises_one_card_and_enable_retracts_it_after_restart"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "module-drop-detaches-activation-tail"
+# The stalled-drop test stalls inside the engine's thread join, so it also
+# observes whether drop reaches that join at all.
+guards = "Module drop joins an activation after its reservation is released"
+test_file = "crates/basal-module/src/engine_tests.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["engine::lifecycle_tests::module_drop_joins_activation_after_slot_release", "engine::lifecycle_tests::a_stalled_module_drop_panics_when_not_unwinding"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/module.rs"
+old = "            engine.join_threads();"
+new = "            // NON-VACUITY BREAK: detach engine threads during shutdown."
+
+[[control]]
+id = "consent-update-original-path"
+guards = "updates do not move an existing card when the catalog changes"
+test_file = "crates/basal-module/tests/consent_paths.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test consent_paths"
+expect_red = ["updates_and_withdrawals_use_the_raising_path_and_replacement_id"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/engine.rs"
+old = 'Some(path) => path.clone(),'
+new = 'Some(_path) => inner.consent.decision_path().unwrap(), // NON-VACUITY BREAK'
+
+[[control]]
+id = "consent-withdraw-original-path"
+guards = "withdrawals retain their raising provider across restart"
+test_file = "crates/basal-module/tests/consent_paths.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test consent_paths"
+expect_red = ["updates_and_withdrawals_use_the_raising_path_and_replacement_id"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/engine.rs"
+old = 'inner.consent.withdraw_decision_on(&path, &id)'
+new = 'inner.consent.withdraw_decision_on(&basal_host::DecisionPath::Legacy, &id) /* NON-VACUITY BREAK */'
+
+[[control]]
+id = "consent-persist-before-send"
+guards = "a lost reply cannot move a card after restart"
+test_file = "crates/basal-module/tests/consent_paths.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test consent_paths"
+expect_red = ["lost_request_reply_cannot_move_a_card_after_restart"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/engine.rs"
+old = 'Ok(path) => inner.rt.select_decision_path(record.seq, &path)?,'
+new = 'Ok(path) => path, // NON-VACUITY BREAK'
+
+[[control]]
+id = "s7-codemode-separate-pool"
+guards = "codemode execution cannot acquire a flow-pool worker or change flow PoolStats"
+test_file = "crates/basal-module/tests/codemode.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test codemode"
+expect_red = ["codemode_workers_are_separate_from_flow_pool_and_never_shared"]
+only = false
+file = "crates/basal-module/src/module.rs"
+old = '            codemode_pool.clone(),'
+new = '            pool.clone(), // NON-VACUITY BREAK'
+
+[[control]]
+id = "s7-codemode-single-use-lease"
+guards = "even an unused codemode lease is retired rather than cached for reuse"
+test_file = "crates/basal-module/tests/codemode.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test codemode"
+expect_red = ["codemode_pool_retires_even_an_unused_lease"]
+only = true
+file = "crates/basal-module/src/pool.rs"
+old = '(Binding::DryRun(_) | Binding::Codemode, false) => None,'
+new = '''(Binding::DryRun(_), false) => None,
+            (Binding::Codemode, false) => Some("codemode".into()), // NON-VACUITY BREAK'''
+
+[[control]]
+id = "s7-codemode-linux-address-space"
+guards = "a live Linux codemode worker has exactly the protocol's address-space cap"
+test_file = "crates/basal-module/tests/codemode.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test codemode"
+expect_red = ["codemode_linux_worker_address_space_equals_protocol_limit"]
+only = true
+file = "crates/basal-module/src/process.rs"
+old = '''rlim_cur: basal_proto::CODEMODE_ADDRESS_SPACE_BYTES as libc::rlim_t,
+                    rlim_max: basal_proto::CODEMODE_ADDRESS_SPACE_BYTES as libc::rlim_t,'''
+new = '''rlim_cur: (basal_proto::CODEMODE_ADDRESS_SPACE_BYTES + 4096) as libc::rlim_t, // NON-VACUITY BREAK
+                    rlim_max: (basal_proto::CODEMODE_ADDRESS_SPACE_BYTES + 4096) as libc::rlim_t,'''
+
+[[control]]
+id = "s7-codemode-macos-no-address-space-limit"
+hub = "The macOS-only limit prohibition protects codemode worker startup in pool, SDK, and tool-provider route tests"
+hub_targets = ["codemode", "codemode_scope", "tool_provider_conformance"]
+guards = "macOS codemode launches inherit limits rather than applying the Linux address-space cap"
+test_file = "crates/basal-module/src/process.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--lib"
+expect_red = ["process::codemode_limits::macos_codemode_leaves_address_space_limit_inherited"]
+only = false
+# Applying RLIMIT_AS prevents macOS workers from starting. Several codemode
+# tests then exhaust their 180-second waits for a provider call; allow their
+# cumulative duration in the broad replay without shortening those waits.
+timeout_s = 1800
+file = "crates/basal-module/src/process.rs"
+old = '''    #[cfg(target_os = "linux")]
+    if codemode {'''
+new = '''    #[cfg(any(target_os = "linux", target_os = "macos"))] // NON-VACUITY BREAK
+    if codemode {'''
+
+[[control]]
+id = "s7-codemode-shutdown-storage-failure"
+guards = "shutdown revokes a held codemode worker even when storage can no longer commit cancel"
+test_file = "crates/basal-module/tests/codemode.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test codemode"
+expect_red = ["codemode_shutdown_after_store_cut_revokes_a_held_worker"]
+only = false
+file = "crates/basal-module/src/codemode.rs"
+old = 'self.supervisor.shutdown()'
+new = 'Ok(()) // NON-VACUITY BREAK: skip shutdown'
+
+[[control]]
+id = "s7-codemode-production-describer"
+guards = "the production host factory attaches the real SDK describer before routing admission"
+test_file = "crates/basal-module/tests/codemode_scope.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test codemode_scope"
+expect_red = ["codemode_handler_attests_via_real_sdk_and_replaces_the_describe_connection"]
+only = true
+file = "crates/basal-module/src/scope_connection.rs"
+old = '.with_scope_describer(handle.clone(), runtime.clone()),'
+new = ', // NON-VACUITY BREAK: omit describer'
+
+[[control]]
+id = "s7-codemode-replacement-describer"
+guards = "a replacement SDK connection replaces every live host's describe handle"
+test_file = "crates/basal-module/tests/codemode_scope.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test codemode_scope"
+expect_red = ["codemode_handler_attests_via_real_sdk_and_replaces_the_describe_connection"]
+only = true
+file = "crates/basal-module/src/scope_connection.rs"
+old = 'host.set_scope_describer(handle.clone(), runtime.clone());'
+new = 'let _ = host; // NON-VACUITY BREAK: retain old connection'
+
+[[control]]
+id = "s7-codemode-handler-blocking-thread"
+hub = "Synchronous admission runs off Tokio workers so SDK descriptions and held core opens cannot starve route requests or withdrawals"
+hub_targets = ["tool_provider_conformance"]
+guards = "SDK admission runs off the Tokio worker, where its describe block_on is legal"
+test_file = "crates/basal-module/tests/codemode_scope.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test codemode_scope"
+expect_red = ["codemode_handler_attests_via_real_sdk_and_replaces_the_describe_connection"]
+only = false
+timeout_s = 1800
+file = "crates/basal-module/src/serve.rs"
+old = '''tokio::task::spawn_blocking(move || {
+            codemode.begin_guarded(&context, &request, || cancellation.is_cancelled())
+        })'''
+new = '''tokio::spawn(async move {
+            codemode.begin_guarded(&context, &request, || cancellation.is_cancelled())
+        }) /* NON-VACUITY BREAK */'''
+
+[[control]]
+id = "s7-codemode-reconnect-keeps-module"
+guards = "a replacement connection does not restart the live module and contend with its own store lease"
+test_file = "crates/basal-module/tests/codemode_scope.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test codemode_scope"
+expect_red = ["codemode_handler_attests_via_real_sdk_and_replaces_the_describe_connection"]
+only = true
+file = "crates/basal-module/src/serve.rs"
+old = '.swap(true, std::sync::atomic::Ordering::SeqCst)'
+new = '.swap(false, std::sync::atomic::Ordering::SeqCst) /* NON-VACUITY BREAK */'
+
+[[control]]
+id = "codemode-tool-keyless-random"
+guards = "keyless calls execute independently under fresh OS-random run identities"
+test_file = "crates/basal-module/tests/codemode.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test codemode"
+expect_red = ["keyless_calls_run_twice_have_no_withdrawal_or_late_result_and_warn"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/codemode.rs"
+old = "None => random_id()?,"
+new = 'None => run_id(&agent_id,"keyless"), /* NON-VACUITY BREAK */'
+
+[[control]]
+id = "codemode-tool-late-custodian"
+guards = "late results are pulled only by the recorded verified custodian principal"
+test_file = "crates/basal-module/tests/tool_provider_conformance.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test tool_provider_conformance"
+expect_red = ["real_route_late_cursor_ack_and_custodian_only_serving"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/codemode.rs"
+old = "FROM codemode_late_results WHERE custodian=?1 AND seq>?2 ORDER BY seq LIMIT ?3"
+new = "FROM codemode_late_results WHERE (custodian=?1 OR true) AND seq>?2 /* NON-VACUITY BREAK */ ORDER BY seq LIMIT ?3"
+
+[[control]]
+id = "codemode-tool-late-ack-once"
+guards = "acked terminal results stay published and cannot be recreated by a later pull"
+test_file = "crates/basal-module/tests/tool_provider_conformance.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test tool_provider_conformance"
+expect_red = ["real_route_late_cursor_ack_and_custodian_only_serving"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/codemode.rs"
+old = "SET published=1 WHERE carrier=?1 AND call_key=?2"
+new = "SET published=0 /* NON-VACUITY BREAK */ WHERE carrier=?1 AND call_key=?2"
+
+[[control]]
+id = "codemode-tool-late-retention-boundary"
+hub = "An unacknowledged late result expires with its identity at twenty-four hours; the per-session retention test and real provider route assert the same expiration boundary"
+hub_targets = ["basal_module"]
+guards = "unacked late results become identity-preserving expired entries at twenty-four hours"
+test_file = "crates/basal-module/tests/tool_provider_conformance.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test tool_provider_conformance"
+expect_red = ["real_route_late_retention_and_direct_call_owner_custody"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/codemode.rs"
+old = "clock.now_ms().saturating_sub(24 * 60 * 60 * 1000)"
+new = "clock.now_ms().saturating_sub(25 * 60 * 60 * 1000) /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "codemode-tool-late-incarnation"
+guards = "a cursor from a previous provider incarnation is refused while event identity survives restart"
+test_file = "crates/basal-module/tests/tool_provider_conformance.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test tool_provider_conformance"
+expect_red = ["real_route_late_incarnation_changes_and_event_identity_survives_restart"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/codemode.rs"
+old = "late_results::check_since(&self.incarnation, head, request.since.as_ref())?;"
+new = "let _ = (&self.incarnation,head,request.since.as_ref()); /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "codemode-tool-withdraw-record-scope"
+guards = "withdrawal refuses a record under a different stamped scope as a route error"
+test_file = "crates/basal-module/tests/tool_provider_conformance.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test tool_provider_conformance"
+expect_red = ["basal_tool_provider_conforms_for_declared_capabilities"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/codemode.rs"
+old = '''withdraw::check_record_scope(record_scope.as_ref(), scope.as_ref())
+            .map_err(|e| e.error())?;'''
+new = "let _ = (record_scope.as_ref(),scope.as_ref()); /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "codemode-tool-late-session-cap"
+guards = "late-result retention drops oldest results beyond one thousand per session"
+test_file = "crates/basal-module/src/codemode.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--lib"
+expect_red = ["codemode::tests::late_retention_bounds_each_session_then_expired_owner"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/codemode.rs"
+old = "WHERE expired=0) WHERE n>1000"
+new = "WHERE expired=0) WHERE n>1001 /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "codemode-tool-late-expired-owner-cap"
+guards = "expired late entries are bounded to one thousand per scope owner across sessions"
+test_file = "crates/basal-module/src/codemode.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--lib"
+expect_red = ["codemode::tests::late_retention_bounds_each_session_then_expired_owner"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/codemode.rs"
+old = "WHERE expired=1) WHERE n>1000"
+new = "WHERE expired=1) WHERE n>1001 /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "event-no-match-ack-removed"
+guards = "a notice no flow wants is acknowledged without a row"
+test_file = "crates/basal-module/tests/module_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test module_events"
+expect_red = ["no_match_is_acked_without_any_store_row"]
+select = "expected"
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/events.rs"
+old = "if acknowledge {"
+new = "if acknowledge && false { // NON-VACUITY BREAK"
+
+[[control]]
+id = "event-ack-precedes-commit"
+guards = "fanout commits atomically before any final acknowledgment"
+test_file = "crates/basal-module/tests/module_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test module_events"
+expect_red = ["per_flow_fanout_rolls_back_before_ack_on_commit_failure"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/events.rs"
+old = "let mut commit = tokio::task::spawn_blocking(move || rt.admit_events(&notices));"
+new = '''// NON-VACUITY BREAK: settle before the durable fan-out.
+    if acknowledge { for message in messages { message.double_ack().await.map_err(|e| e.to_string())?; } }
+    let mut commit = tokio::task::spawn_blocking(move || rt.admit_events(&notices));'''
+
+[[control]]
+id = "event-slow-commit-progress-removed"
+guards = "slow event commits send in-progress acknowledgments before redelivery"
+test_file = "crates/basal-module/tests/module_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test module_events"
+expect_red = ["slow_commit_sends_progress_before_ack_wait_expires"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/events.rs"
+old = "for message in messages { message.ack_with(jetstream::AckKind::Progress).await.map_err(|e| e.to_string())?; }"
+new = "for message in &messages[..0] { message.ack_with(jetstream::AckKind::Progress).await.map_err(|e| e.to_string())?; } // NON-VACUITY BREAK"
+
+[[control]]
+id = "event-publish-time-trusts-header"
+guards = "event admission uses JetStream publish metadata rather than a forged publisher header"
+test_file = "crates/basal-module/tests/module_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test module_events"
+expect_red = ["notices_before_first_approval_are_acked_and_reported"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/events.rs"
+old = "        published_at_ms,"
+new = '        published_at_ms: get("published_at_ms").ok().and_then(|v| v.parse().ok()).unwrap_or(published_at_ms), // NON-VACUITY BREAK'
+
+[[control]]
+id = "audience-read-allows-unverified-callers"
+guards = "flow.audience is reserved for verified unscoped module routes"
+test_file = "crates/basal-module/tests/audience.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test audience"
+expect_red = ["audience_op_requires_verified_unscoped_module_route"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/ops.rs"
+old = '''if !matches!(
+            caller,
+            Caller::Core | Caller::Operator | Caller::Module { .. }
+        ) {'''
+new = '''if false && !matches!(
+            caller,
+            Caller::Core | Caller::Operator | Caller::Module { .. }
+        ) { // NON-VACUITY BREAK'''
+
+[[control]]
+id = "audience-read-leaks-unapproved-flow-id"
+guards = "unknown and unapproved audience reads have indistinguishable refusals"
+test_file = "crates/basal-module/tests/audience.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test audience"
+expect_red = ["audience_op_unknown_and_unapproved_have_same_refusal"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/ops.rs"
+old = '"no approved flow audience",'
+new = 'format!("no approved flow audience: {}", p.flow_id), // NON-VACUITY BREAK'
+
+[[control]]
+id = "audience-read-uses-pending-version"
+guards = "audience reads use the approved manifest rather than a newer pending install"
+test_file = "crates/basal-module/tests/audience.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test audience"
+expect_red = ["audience_op_reads_approved_version_not_pending"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/ops.rs"
+old = '''"SELECT i.manifest FROM flows f JOIN installs i ON i.flow_id=f.flow_id AND i.version=f.approved_version WHERE f.flow_id=?1 AND i.state='approved'",'''
+new = '"SELECT i.manifest FROM flows f JOIN installs i ON i.flow_id=f.flow_id WHERE f.flow_id=?1 ORDER BY i.version DESC LIMIT 1", // NON-VACUITY BREAK'
+
+[[control]]
+id = "windows-sibling-worker-loses-exe-suffix"
+guards = "Worker executable naming preserves a trailing case-insensitive exe suffix"
+test_file = "crates/basal-module/src/pool.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["pool::names::worker_file_name_follows_parent_in_production_and_development"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/pool.rs"
+old = "name.push(\".exe\");"
+new = "let _ = &name; // NON-VACUITY BREAK"
+
+[[control]]
+id = "windows-fault-status-is-not-counted"
+guards = "windows fault status is not counted"
+test_file = "crates/basal-module/src/windows.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["windows"]
+target = "--lib"
+expect_red = ["windows::tests::fault_statuses_count_and_the_refusal_and_kill_codes_do_not"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/windows.rs"
+old = "matches!(code, STATUS_ACCESS_VIOLATION | STATUS_INVALID_HANDLE)"
+new = "false // NON-VACUITY BREAK"
+
+[[control]]
+id = "windows-welcome-ignores-false-confinement-fields"
+guards = "The parent refuses every false field in a Windows confinement report"
+test_file = "crates/basal-module/src/acceptance_tests.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["windows"]
+target = "--lib"
+expect_red = ["pool::acceptance_tests::windows_confinement_acceptance"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/windows.rs"
+old = "lpac && untrusted && no_thread_token && mitigations && handle_table"
+new = "true // NON-VACUITY BREAK"
+
+# The codemode manifest description is checked against the fixed bytes in
+# crates/basal-module/tests/fixtures/codemode-description.txt, not another call
+# to the manifest builder.
+[[control]]
+id = "codemode-tool-manifest-description"
+guards = "the public codemode tool manifest preserves its pinned description"
+test_file = "crates/basal-module/tests/codemode.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test codemode"
+expect_red = ["tool_manifest_description_and_schema_are_pinned_and_old_entries_are_gone"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/manifest.rs"
+old = "description: Some(crate::tool::DESCRIPTION.into()),"
+new = 'description: Some(format!("{} Changed", crate::tool::DESCRIPTION)), // NON-VACUITY BREAK'
+
+# Teardown waits for owners, not just empty activation slots or stopped pools.
+[[control]]
+id = "test-engine-cleanup-joins-activations"
+guards = "engine fixture deletion waits for activation threads to release the store"
+test_file = "crates/basal-module/src/engine_tests.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["engine::lifecycle_tests::engine_cleanup_joins_activation_before_removing_its_store"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/engine_tests.rs"
+old = "    engine.join_threads();"
+new = "    // NON-VACUITY BREAK: skip joining activation threads"
+
+[[control]]
+id = "test-module-fixture-cleanup-drops-module-first"
+guards = "shared fixture deletion follows module shutdown and release of its store"
+test_file = "crates/basal-module/tests/fixture_teardown.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test fixture_teardown"
+expect_red = ["fixture_releases_its_store_before_removing_the_directory"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+edits = [
+    {file="crates/basal-module/tests/common/mod.rs",old="pub struct Fixture {\n    pub module: Module,",new="pub struct Fixture {\n    _cleanup: DirectoryCleanup, // NON-VACUITY BREAK\n    pub module: Module,"},
+    {file="crates/basal-module/tests/common/mod.rs",old="    _cleanup: DirectoryCleanup,\n}",new="}"},
+]
+
+[[control]]
+id = "event-flow-target-ingress"
+guards = "the reader refuses and acknowledges a malformed flow-targeted notice"
+test_file = "crates/basal-module/tests/module_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test module_events"
+expect_red = ["delivered_notice_missing_flow_header_is_malformed_and_acked"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/events.rs"
+old = "notice.target_flow().map_err(|e| e.to_string())?;"
+new = "notice.identity().map_err(|e| e.to_string())?; // NON-VACUITY BREAK"
+
+[[control]]
+id = "install-decided-caller-unchecked"
+guards = "only prefrontal-core can trigger install decision handling"
+file = "crates/basal-module/src/ops.rs"
+old = '''fn op_install_decided(&self, caller: &Caller, params: Value) -> OpResult {
+        if !matches!(caller, Caller::Core) {'''
+new = '''fn op_install_decided(&self, caller: &Caller, params: Value) -> OpResult {
+        if false && !matches!(caller, Caller::Core) { // NON-VACUITY BREAK'''
+test_file = "crates/basal-module/tests/install_policy.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test install_policy"
+expect_red = ["install_decided_refuses_every_non_core_caller"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "template-end-owner"
+guards = "only an instance owner or the operator can end it"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["end_is_owner_scoped_repeatable_kept_and_reopened_by_same_values"]
+only = true
+file = "crates/basal-module/src/ops.rs"
+old = "Caller::Agent { agent_id, .. } if self.owns(agent_id, &p.flow_id)? => {}"
+new = "Caller::Agent { .. } => {} // NON-VACUITY BREAK"
+
+[[control]]
+id = "template-lifecycle-duplicate-receipt"
+guards = "duplicate receipts settle the durable pending event"
+test_file = "crates/basal-module/tests/module_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test module_events"
+expect_red = ["lifecycle::duplicate_publish_receipt_settles_outbox_after_ack_crash"]
+only = false
+file = "crates/basal-module/src/events.rs"
+old = "Ok(receipt) => {"
+new = '''Ok(receipt) => { if receipt.duplicate() { return Err("duplicate refused".into()); } // NON-VACUITY BREAK'''
+
+[[control]]
+id = "template-lifecycle-unavailable-retry"
+guards = "bus failures keep events unpublished for retry"
+test_file = "crates/basal-module/tests/module_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test module_events"
+expect_red = ["lifecycle::unavailable_bus_retries_with_durable_backoff_and_loses_nothing"]
+only = false
+file = "crates/basal-module/src/events.rs"
+old = "rt.template_event_retry(&event).map_err(|e| e.to_string())?;"
+new = "rt.template_event_published(&event).map_err(|e| e.to_string())?; // NON-VACUITY BREAK"
+
+[[control]]
+id = "template-lifecycle-live-auth"
+guards = "only prefrontal-core may take the live snapshot"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["live_snapshot_is_core_only_and_keeps_expired_not_ended_instances"]
+only = false
+file = "crates/basal-module/src/ops.rs"
+old = "fn op_live_instances(&self, caller: &Caller, params: Value) -> OpResult {\n        if *caller != Caller::Core {"
+new = "fn op_live_instances(&self, caller: &Caller, params: Value) -> OpResult {\n        if false && *caller != Caller::Core { // NON-VACUITY BREAK"
+
+[[control]]
+id = "template-lifecycle-body-auth"
+guards = "unknown keys and non-core callers cannot probe private event bodies"
+test_file = "crates/basal-module/tests/module_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test module_events"
+expect_red = ["lifecycle::body_lookup_hides_unknown_keys_and_non_core_callers_identically"]
+only = false
+file = "crates/basal-module/src/ops.rs"
+old = "if *caller != Caller::Core {\n            return Err(invisible());"
+new = "if false && *caller != Caller::Core { // NON-VACUITY BREAK\n            return Err(invisible());"
+
+[[control]]
+id = "template-lifecycle-body-name-mismatch"
+guards = "core receives a typed refusal when the stored event name differs"
+test_file = "crates/basal-module/tests/module_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test module_events"
+expect_red = ["lifecycle::core_body_lookup_reports_stored_event_name_mismatch"]
+only = false
+file = "crates/basal-module/src/ops.rs"
+old = "if expected != p.event_name {"
+new = "if false && expected != p.event_name { // NON-VACUITY BREAK"
+
+[[control]]
+id = "template-dry-run-effective-grants"
+guards = "preview activation receives canonical params and only their effective grants"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["template_dry_run_uses_canonical_values_effective_grants_and_capture"]
+only = true
+file = "crates/basal-module/src/dryrun.rs"
+old = "UPDATE runs SET self_input=?2,params_input=?3,grant_guards=?4 WHERE run_id=?1"
+new = "UPDATE runs SET self_input=?2,params_input='null',grant_guards=?4 WHERE run_id=?1 /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "template-dry-run-no-instance-or-quota"
+guards = "previews never create instances or consume quota, even when quota is full"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["template_dry_run_creates_no_rows_and_uses_no_quota"]
+only = true
+file = "crates/basal-module/src/ops.rs"
+old = "let guards = basal_core::templates::grant_guards(&manifest, &values);"
+new = """let guards = basal_core::templates::grant_guards(&manifest, &values);
+                    self.rt.instantiate(&manifest.id, manifest.version, agent_id, &values, "1h").expect("NON-VACUITY BREAK");"""
+
+[[control]]
+id = "template-dry-run-at-immediate"
+guards = "future one-shot previews run once immediately rather than replaying zero fires"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["template_dry_run_at_fires_once_immediately_with_canonical_timestamp"]
+only = true
+file = "crates/basal-module/src/dryrun.rs"
+old = "if request.template.is_some() && spec.at.is_some() {"
+new = "if false && request.template.is_some() && spec.at.is_some() { // NON-VACUITY BREAK"
+
+[[control]]
+id = "template-dry-run-instance-bound-values"
+guards = "instance previews use stored values rather than absent request params"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["instance_dry_run_uses_bound_values_owner_grants_and_approved_version"]
+only = true
+file = "crates/basal-module/src/ops.rs"
+old = "serde_json::from_str(values).map_err(invalid_params)?,"
+new = "p.params.clone(), // NON-VACUITY BREAK"
+
+[[control]]
+id = "template-dry-run-instance-fixed-values"
+guards = "instance previews refuse supplied params, including null and unchanged values"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["instance_dry_run_refuses_params_including_null"]
+only = true
+file = "crates/basal-module/src/ops.rs"
+old = "if instance.is_some() && params_present {"
+new = "if false && instance.is_some() && params_present { // NON-VACUITY BREAK"
+
+[[control]]
+id = "template-dry-run-values-required"
+guards = "template previews never guess values when params are absent"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["package_template_exclusion_and_ordinary_install_dry_run_refusals"]
+only = true
+file = "crates/basal-module/src/ops.rs"
+old = "if instance.is_none() && !params_present {"
+new = "if false && instance.is_none() && !params_present { // NON-VACUITY BREAK"
+
+[[control]]
+id = "template-dry-run-capture-only"
+guards = "template and instance previews reject requested live authority"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["template_dry_run_requires_agent_and_capture_instance_requires_owner_or_operator"]
+only = true
+file = "crates/basal-module/src/ops.rs"
+old = "if mode != Mode::Capture {"
+new = "if false && mode != Mode::Capture { // NON-VACUITY BREAK"
+
+[[control]]
+id = "template-dry-run-ordinary-params-refusal"
+guards = "ordinary-flow dry runs reject request params rather than ignoring them"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["template_dry_run_requires_agent_and_capture_instance_requires_owner_or_operator"]
+only = true
+file = "crates/basal-module/src/ops.rs"
+old = "if params_present {"
+new = "if false && params_present { // NON-VACUITY BREAK"
+
+[[control]]
+id = "call-modes-unserved-bind-accepted"
+guards = "codemode cannot execute from codemode or flow binds even when the body claims classic"
+file = "crates/basal-module/src/tool.rs"
+old = '|| (name == "codemode" && !serves_call_mode(&catalog_tool(), mode))'
+new = '|| (name == "codemode" && false && !serves_call_mode(&catalog_tool(), mode)) // NON-VACUITY BREAK'
+test_file = "crates/basal-module/tests/tool_provider_conformance.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test tool_provider_conformance"
+expect_red = ["unserved_modes_are_refused_from_the_bind_not_the_body"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "call-modes-unknown-role-accepted"
+guards = "unknown bind modes fail closed on tools and role operations"
+file = "crates/basal-module/src/tool.rs"
+old = 'if matches!(mode, CallMode::Unknown(_))'
+new = 'if false && matches!(mode, CallMode::Unknown(_)) // NON-VACUITY BREAK'
+test_file = "crates/basal-module/tests/tool_provider_conformance.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test tool_provider_conformance"
+expect_red = ["unknown_bind_mode_is_refused_for_tools_and_role_operations"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "call-modes-codemode-catalog-serves-flow"
+guards = "the public catalog declares only classic for codemode"
+file = "crates/basal-module/src/tool.rs"
+old = 'let tool = tool.with_modes(vec![CallMode::Classic]);'
+new = 'let tool = tool.with_modes(vec![CallMode::Flow]); // NON-VACUITY BREAK'
+test_file = "crates/basal-module/tests/tool_provider_conformance.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test tool_provider_conformance"
+expect_red = ["every_public_tool_declares_its_served_modes"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "call-modes-capability-not-declared"
+guards = "the daemon manifest promises call-mode enforcement"
+file = "crates/basal-module/src/manifest.rs"
+old = 'cortexkit_role_tool_provider::CALL_MODES_CAPABILITY.into(),'
+new = '"call-modes-disabled/v1".into(), // NON-VACUITY BREAK'
+test_file = "crates/basal-module/tests/tool_provider_conformance.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test tool_provider_conformance"
+expect_red = ["declares_call_modes_capability"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "call-modes-conformance-probe-missing"
+guards = "conformance must exercise the restricted-mode probe rather than skip it"
+file = "crates/basal-module/tests/tool_provider_conformance.rs"
+old = 'Capability::CallModes,'
+new = '// Capability::CallModes, NON-VACUITY BREAK'
+test_file = "crates/basal-module/tests/tool_provider_conformance.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test tool_provider_conformance"
+expect_red = ["basal_tool_provider_conforms_for_declared_capabilities"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "call-modes-legacy-bind-forced-classic"
+guards = "scope-derived SDK modes from legacy daemon binds reach the provider unchanged"
+file = "crates/basal-module/src/serve.rs"
+old = 'call_mode: request.call_mode.clone(),'
+new = 'call_mode: subc_client_rs::CallMode::Classic, // NON-VACUITY BREAK'
+test_file = "crates/basal-module/tests/tool_provider_conformance.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test tool_provider_conformance"
+expect_red = ["legacy_daemon_binds_derive_modes_and_missing_run_expiry_still_runs"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "codemode-content-result-size-unbounded"
+guards = "content results stay under 3 MiB without changing the outcome of a run"
+test_file = "crates/basal-module/src/codemode_result_tests.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::result_tests::content_size_cap_marks_omissions_without_changing_success_or_failure"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/codemode.rs"
+old = 'while serialized_size(&reply) >= MAX_RESULT_BYTES {'
+new = 'while false && serialized_size(&reply) >= MAX_RESULT_BYTES { // NON-VACUITY BREAK'
+
+[[control]]
+id = "codemode-content-result-error-unmarked"
+guards = "terminal content errors carry the existing error code and isError flag"
+test_file = "crates/basal-module/src/codemode_result_tests.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["codemode::result_tests::content_errors_preserve_the_run_outcome_and_code"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/codemode.rs"
+old = 'reply = reply.with_error(code);'
+new = 'let _ = code; // NON-VACUITY BREAK'

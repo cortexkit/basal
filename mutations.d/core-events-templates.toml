@@ -1,0 +1,666 @@
+# basal-core events and templates.
+
+# Module events: portable proofs run on Linux, including the real JetStream fixture.
+[[control]]
+id = "event-backlog-bound-removed"
+guards = "event backlog is bounded with durable overflow health"
+test_file = "crates/basal-core/src/events_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["events::tests::backlog_is_bounded_overflow_is_reported_and_oldest_runs_first"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/events.rs"
+old = "if queued < BACKLOG_BOUND {"
+new = "if true { // NON-VACUITY BREAK"
+
+[[control]]
+id = "event-receipt-dedup-removed"
+guards = "redelivered queued or refused notices do not consume another backlog slot"
+test_file = "crates/basal-core/src/events_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["events::tests::backlog_is_bounded_overflow_is_reported_and_oldest_runs_first"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/events.rs"
+old = "if known {"
+new = "if known && false { // NON-VACUITY BREAK"
+
+[[control]]
+id = "event-key-omits-subject"
+guards = "event dedup keys distinguish equal keys on different subjects"
+test_file = "crates/basal-core/src/events_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["events::tests::same_key_on_different_subjects_is_not_a_duplicate"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/events.rs"
+old = 'format!("event:{}:{}", self.subject, self.event_key)'
+new = 'format!("event:{}", self.event_key) // NON-VACUITY BREAK'
+
+[[control]]
+id = "event-receipt-retention-removed"
+guards = "event receipts survive seven days plus retention sweep slack"
+test_file = "crates/basal-core/src/events_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["events::tests::receipts_keep_eight_days_and_prune_by_index_with_tombstone_dedup"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/events.rs"
+old = "pub const RECEIPT_RETENTION_MS: i64 = 8 * 24 * 60 * 60 * 1000;"
+new = "pub const RECEIPT_RETENTION_MS: i64 = 0; // NON-VACUITY BREAK"
+
+[[control]]
+id = "event-body-hash-check-removed"
+guards = "event body bytes are hashed independently of the source digest"
+test_file = "crates/basal-core/src/events_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["events::tests::body_bytes_are_hashed_independently"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/events.rs"
+old = "if hash != expected || supplied != expected {"
+new = "if supplied != expected { // NON-VACUITY BREAK"
+
+[[control]]
+id = "event-reply-digest-check-removed"
+guards = "event source reply digest must match the notice digest"
+test_file = "crates/basal-core/src/events_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["events::tests::reply_digest_must_match_notice"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/events.rs"
+old = "if hash != expected || supplied != expected {"
+new = "if hash != expected { // NON-VACUITY BREAK"
+
+[[control]]
+id = "event-notice-digest-check-removed"
+guards = "event notice digest is the independent authority for both body and reply"
+test_file = "crates/basal-core/src/events_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["events::tests::notice_digest_must_match_body"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/events.rs"
+old = 'let expected = digest_hex(&notice.digest).ok_or("event_body_mismatch")?;'
+new = 'let expected = supplied; // NON-VACUITY BREAK'
+
+[[control]]
+id = "event-replay-fetches-live"
+guards = "event body replay uses journaled bytes without another live call"
+test_file = "crates/basal-core/src/events_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["events::tests::body_is_journaled_before_script_and_replay_never_calls_live"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/events.rs"
+old = "if let Some((Some(body), _, _)) = &saved {"
+new = "if let Some((Some(body), _, _)) = &None::<(Option<Vec<u8>>, i64, Option<i64>)> { // NON-VACUITY BREAK"
+
+[[control]]
+id = "event-refusal-code-lost"
+guards = "each event body refusal preserves its typed terminal failure"
+test_file = "crates/basal-core/src/events_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["events::tests::each_events_get_refusal_preserves_its_failure_kind"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/events.rs"
+old = "kind: code.into(),"
+new = 'kind: "events_get_refused".into(), // NON-VACUITY BREAK'
+
+[[control]]
+id = "event-late-body-admitted"
+guards = "a body returned at the run deadline never starts a script"
+test_file = "crates/basal-core/src/events_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["events::tests::body_returning_after_deadline_is_not_delivered_to_script"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/events.rs"
+old = ".is_some_and(|deadline| self.config.clock.now_ms() >= deadline)"
+new = ".is_some_and(|deadline| self.config.clock.now_ms() > deadline) // NON-VACUITY BREAK"
+
+[[control]]
+id = "event-before-first-approval-cutoff-removed"
+guards = "retained notices older than the flow's first approval are acked without a run"
+test_file = "crates/basal-module/tests/module_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test module_events"
+expect_red = ["notices_before_first_approval_are_acked_and_reported"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/events.rs"
+old = "if first_approved.is_some_and(|first| notice.published_at_ms >= first) {"
+new = "if true { // NON-VACUITY BREAK"
+
+[[control]]
+id = "event-flow-target-only"
+guards = "flow-targeted notices are not fanned out to other declaring flows"
+test_file = "crates/basal-module/tests/module_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test module_events"
+expect_red = ["delivered_notice_targets_only_named_flow_and_acks_no_match"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/events.rs"
+old = "if notice\n        .target_flow()?\n        .is_some_and(|target| target != flow_id)"
+new = "if false && notice\n        .target_flow()?\n        .is_some_and(|target| target != flow_id) // NON-VACUITY BREAK"
+
+[[control]]
+id = "event-flow-target-header-required"
+guards = "flow-targeted notices without a flow header are malformed even without candidate flows"
+test_file = "crates/basal-core/src/events_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["events::tests::flow_targeted_notice_missing_header_is_refused_without_flows"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/events.rs"
+old = ".ok_or_else(|| CoreError::Invalid(\"flow-targeted event lacks flow_id header\".into()))"
+new = ".map_or(Ok(None), Ok) // NON-VACUITY BREAK"
+
+[[control]]
+id = "event-flow-target-body"
+guards = "a resolved flow-targeted body must name the run's flow before script startup"
+test_file = "crates/basal-module/tests/event_preamble.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test event_preamble"
+expect_red = ["delivered_body_flow_mismatch_fails_run_before_script"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/events.rs"
+old = "match notice.target_flow() {"
+new = "let _ = (notice, body, flow_id); return true; // NON-VACUITY BREAK\n    #[allow(unreachable_code)] match notice.target_flow() {"
+
+[[control]]
+id = "event-flow-target-body-replay"
+guards = "a journaled event body must still name the run's flow"
+test_file = "crates/basal-core/src/events_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["events::tests::journaled_flow_targeted_body_is_checked_against_run"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/events.rs"
+old = "if let Some((Some(body), _, _)) = &saved {\n            if !body_targets_run(&notice, body, &run.flow_id) {"
+new = "if let Some((Some(body), _, _)) = &saved {\n            if false && !body_targets_run(&notice, body, &run.flow_id) { // NON-VACUITY BREAK"
+
+# Each template control selects its expected failing test by exact name.
+# Workspace test suites exercise the implementation on both macOS and Linux.
+[[control]]
+id = "template-parameter-count"
+guards = "templates declare at most sixteen parameters"
+test_file = "crates/basal-core/tests/templates.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["parameter_names_and_count_are_bounded"]
+only = true
+file = "crates/basal-core/src/templates.rs"
+old = "if decls.len() > 16 {"
+new = "if decls.len() > 17 { // NON-VACUITY BREAK"
+
+[[control]]
+id = "template-string-cap"
+guards = "string declarations allow 4096 bytes but not 4097"
+test_file = "crates/basal-core/tests/templates.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["all_parameter_declarations_require_closed_valid_bounds"]
+only = true
+file = "crates/basal-core/src/templates.rs"
+old = "(1..=4096).contains(max_bytes)"
+new = "(1..=4097).contains(max_bytes) /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "template-duration-minimum"
+guards = "duration minima cannot poll faster than the scheduler permits"
+test_file = "crates/basal-core/tests/templates.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["duration_minimum_and_interval_maximum_apply_at_registration"]
+only = true
+file = "crates/basal-core/src/templates.rs"
+old = "min >= crate::schedule::MIN_INTERVAL_SECS as i64 * 1000 && min <= max"
+new = "min >= 0 && min <= max /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "template-placeholder-slot"
+guards = "placeholders occur only in typed grant and timing positions"
+test_file = "crates/basal-core/tests/templates.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["placeholders_must_occupy_whole_strings_in_typed_slots_only"]
+only = true
+file = "crates/basal-core/src/templates.rs"
+old = "if !fits {\n                    return Err(placeholder(field));"
+new = "if false && !fits { // NON-VACUITY BREAK\n                    return Err(placeholder(field));"
+
+[[control]]
+id = "template-integer-exact-range"
+guards = "integer bounds preserve exact script-visible numbers"
+test_file = "crates/basal-core/tests/templates.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["integer_bounds_and_values_remain_exact_script_numbers"]
+only = true
+file = "crates/basal-core/src/templates.rs"
+old = "*max <= MAX_SAFE_INTEGER"
+new = "true /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "template-value-validation"
+guards = "supplied scalars satisfy their declared types and bounds"
+test_file = "crates/basal-core/tests/templates.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["scalar_values_keep_spelling_and_enforce_types_and_bounds"]
+only = true
+file = "crates/basal-core/src/templates.rs"
+old = "if !fits {\n            return Err(parameter_refusal(\"param_out_of_bounds\", name, bound));"
+new = "if false && !fits { // NON-VACUITY BREAK\n            return Err(parameter_refusal(\"param_out_of_bounds\", name, bound));"
+
+[[control]]
+id = "template-name-order"
+guards = "the first offending name is selected in UTF-8 order"
+test_file = "crates/basal-core/tests/templates.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["parameter_failures_are_reported_in_name_order_with_bounds"]
+only = true
+file = "crates/basal-core/src/templates.rs"
+old = "for name in names {"
+new = "for name in names.into_iter().rev() { // NON-VACUITY BREAK"
+
+[[control]]
+id = "template-id-domain"
+guards = "template ids use the public domain-separated framed vector contract"
+test_file = "crates/basal-core/tests/templates.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["template_ids_match_the_public_vectors"]
+only = true
+file = "crates/basal-core/src/templates.rs"
+old = 'h.update(b"basal-template-instance-v1\0");'
+new = 'h.update(b"basal-instance-id-v1\0"); // NON-VACUITY BREAK'
+
+[[control]]
+id = "template-canonical-path-bounds"
+guards = "symlinks and nonexistent descendants cannot escape under roots at creation"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["path_and_repo_values_resolve_symlinks_and_future_ancestors_before_bounds"]
+only = true
+file = "crates/basal-core/src/templates.rs"
+old = "inside && (!matches!(decl, Parameter::Repo { .. }) || is_repository(&real))"
+new = "true /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "template-expiry-admission"
+guards = "the exact expiry deadline blocks admission"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["expiry_blocks_admission_at_deadline_and_stops_kept_schedule"]
+only = true
+file = "crates/basal-core/src/templates.rs"
+old = "flow_id=?1 AND expires_at<=?2"
+new = "flow_id=?1 AND expires_at<?2 /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "template-expiry-schedule"
+guards = "expiry disables the kept schedule at the deadline"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["expiry_blocks_admission_at_deadline_and_stops_kept_schedule"]
+only = true
+file = "crates/basal-core/src/templates.rs"
+old = "SELECT flow_id FROM template_instances WHERE expires_at<=?1"
+new = "SELECT flow_id FROM template_instances WHERE expires_at<?1 /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "template-lifetime-cap"
+guards = "creation cannot exceed max_lifetime"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["lifetime_limit_refuses_without_creating"]
+only = true
+file = "crates/basal-core/src/templates.rs"
+old = "if lifetime > duration_ms(&limits.max_lifetime).unwrap() {"
+new = "if false && lifetime > duration_ms(&limits.max_lifetime).unwrap() { // NON-VACUITY BREAK"
+
+[[control]]
+id = "template-agent-quota"
+guards = "max_per_agent applies at its inclusive boundary"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["instance_limits_cover_agent_and_template_and_exclude_ended_expired"]
+only = true
+file = "crates/basal-core/src/templates.rs"
+old = "agent_live >= limits.max_per_agent"
+new = "agent_live > limits.max_per_agent /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "template-fleet-quota"
+guards = "max_live applies across agents at its inclusive boundary"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["instance_limits_cover_agent_and_template_and_exclude_ended_expired"]
+only = true
+file = "crates/basal-core/src/templates.rs"
+old = "total_live >= *limit"
+new = "total_live > *limit /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "template-expiry-never-shortens"
+guards = "same-value calls extend expiry without shortening it"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["idempotent_creation_moves_version_extends_never_shortens_and_keeps_state"]
+only = true
+file = "crates/basal-core/src/templates.rs"
+old = "unwrap_or(expires_at).max(expires_at)"
+new = "unwrap_or(expires_at).min(expires_at) /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "template-one-shot-ends"
+guards = "one-shot instances end after every terminal outcome"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["one_shot_fires_once_after_downtime_and_ends_on_success_failure_or_cancel"]
+only = true
+file = "crates/basal-core/src/templates.rs"
+old = "end(tx, &flow, at)?;"
+new = "let _ = (tx, &flow, at); // NON-VACUITY BREAK"
+
+[[control]]
+id = "template-incarnation-fence"
+guards = "an old run cannot end an instance reopened in a new incarnation"
+test_file = "crates/basal-testkit/tests/template_instances.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test template_instances"
+expect_red = ["old_self_end_cannot_end_an_instance_reopened_in_a_new_incarnation"]
+only = true
+file = "crates/basal-core/src/templates.rs"
+old = "r.template_incarnation=t.incarnation"
+new = "r.template_incarnation IS NOT NULL /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "template-self-end-replay"
+guards = "self-ending intent survives a committed local-effect crash and replay"
+test_file = "crates/basal-testkit/tests/template_instances.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["macos"]
+target = "--test template_instances"
+expect_red = ["journaled_self_end_survives_crash_and_replay_once"]
+only = true
+file = "crates/basal-core/src/templates.rs"
+old = "UPDATE runs SET end_instance=1 WHERE run_id=?1 AND template_incarnation IS NOT NULL"
+new = "UPDATE runs SET end_instance=0 WHERE run_id=?1 AND template_incarnation IS NOT NULL /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "template-repository-pointer-cap"
+guards = "repository layout markers cannot force unbounded creation reads"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["repository_layout_pointer_reads_are_bounded_during_creation"]
+only = true
+file = "crates/basal-core/src/templates.rs"
+old = "(text.len() as u64 <= LIMIT).then_some(text)"
+new = "(text.len() as u64 <= LIMIT + 1).then_some(text) /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "template-lifecycle-atomic-outbox"
+guards = "outbox insertion failure rolls back the instance change"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["lifecycle_change_rolls_back_if_outbox_insert_fails"]
+only = false
+file = "crates/basal-core/src/template_events.rs"
+old = '''tx.execute("INSERT INTO template_event_outbox(flow_id,seq,event_name,body,retry_at) VALUES (?1,?2,?3,?4,?5)", params![flow_id, body["seq"].as_i64(), event, body.to_string(), now])?;'''
+new = '''let _ = tx.execute("INSERT INTO template_event_outbox(flow_id,seq,event_name,body,retry_at) VALUES (?1,?2,?3,?4,?5)", params![flow_id, body["seq"].as_i64(), event, body.to_string(), now]); // NON-VACUITY BREAK'''
+
+[[control]]
+id = "template-lifecycle-sequence"
+guards = "sequence strictly increases across all lifecycle event kinds"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["lifecycle_sequence_changes_only_for_committed_changes_across_kinds"]
+only = false
+file = "crates/basal-core/src/template_events.rs"
+old = "UPDATE template_instances SET seq=seq+1 WHERE flow_id=?1"
+new = "UPDATE template_instances SET seq=1 WHERE flow_id=?1 /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "template-lifecycle-message-id"
+guards = "message ids are flow_id colon seq"
+test_file = "crates/basal-module/tests/module_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test module_events"
+expect_red = ["lifecycle::committed_outbox_survives_crash_before_publish"]
+only = false
+file = "crates/basal-core/src/template_events.rs"
+old = '''format!("{}:{}", self.flow_id, self.seq)'''
+new = '''format!("{}-{}", self.flow_id, self.seq) /* NON-VACUITY BREAK */'''
+
+[[control]]
+id = "template-lifecycle-expired-params"
+guards = "expired events carry canonical watch parameters"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["expiry_wakes_without_schedule_at_deadline_and_carries_canonical_params"]
+only = false
+file = "crates/basal-core/src/template_events.rs"
+old = '''if event == "flow_instance_expired" {'''
+new = '''if event == "never" { // NON-VACUITY BREAK'''
+
+[[control]]
+id = "template-lifecycle-expiry-deadline"
+guards = "expired fires at the deadline, not after it"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["expiry_wakes_without_schedule_at_deadline_and_carries_canonical_params"]
+only = false
+file = "crates/basal-core/src/templates.rs"
+old = "t.expires_at<=?1 AND t.expiry_notified=0"
+new = "t.expires_at<?1 AND t.expiry_notified=0 /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "template-lifecycle-ended-outbox"
+guards = "self-end and one-shot terminal transitions publish ended"
+test_file = "crates/basal-module/tests/module_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test module_events"
+expect_red = ["lifecycle::self_end_and_one_shot_publish_ended"]
+only = false
+file = "crates/basal-core/src/templates.rs"
+old = '''crate::template_events::enqueue(tx, flow_id, "flow_instance_ended", now)?;'''
+new = '''// NON-VACUITY BREAK: omit the ended outbox row.'''
+
+[[control]]
+id = "template-lifecycle-live-ended"
+guards = "ended instances are absent from the live snapshot"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["live_snapshot_is_core_only_and_keeps_expired_not_ended_instances"]
+only = false
+file = "crates/basal-core/src/template_events.rs"
+old = "WHERE f.removed=0 ORDER BY t.flow_id"
+new = "WHERE 1=1 ORDER BY t.flow_id /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "template-lifecycle-body-retention"
+guards = "unpublished bodies survive retention until acknowledged"
+test_file = "crates/basal-module/tests/module_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test module_events"
+expect_red = ["lifecycle::body_retention_starts_at_ack_and_never_prunes_unpublished_rows"]
+only = false
+file = "crates/basal-core/src/template_events.rs"
+old = "WHERE published_at IS NOT NULL AND published_at<?1"
+new = "WHERE published_at IS NULL OR published_at<?1 /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "template-dry-run-missing-param"
+guards = "missing preview values surface the instantiate refusal"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["template_dry_run_param_missing_matches_instantiate"]
+only = true
+file = "crates/basal-core/src/templates.rs"
+old = 'parameter_refusal("param_missing", name, bound)'
+new = 'parameter_refusal("invalid_params", name, bound) /* NON-VACUITY BREAK */'
+
+[[control]]
+id = "template-dry-run-unknown-param"
+guards = "undeclared preview values surface the instantiate refusal"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["template_dry_run_param_unknown_matches_instantiate"]
+only = true
+file = "crates/basal-core/src/templates.rs"
+old = 'parameter_refusal("param_unknown", name, Value::Null)'
+new = 'parameter_refusal("invalid_params", name, Value::Null) /* NON-VACUITY BREAK */'
+
+[[control]]
+id = "template-dry-run-bounds"
+guards = "preview values obey exact integer and UTC millisecond timestamp bounds"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["template_dry_run_bounds_preserve_integer_and_timestamp_rules"]
+only = true
+file = "crates/basal-core/src/templates.rs"
+old = """        };
+        if !fits {"""
+new = """        };
+        if false && !fits { // NON-VACUITY BREAK"""

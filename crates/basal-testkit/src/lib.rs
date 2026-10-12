@@ -5,7 +5,7 @@
 //! kill harness `kill -9`s (`src/bin/basal-test-parent.rs`); worker and journal
 //! benchmarks; and a local HTTPS server for the `net.fetch` tests (`https`).
 //! The mutation controls proving these tests catch broken rules are listed in
-//! `mutations.toml` at the repository root, and `ckdev-mutate` replays them.
+//! `mutations.d/` at the repository root, and `ckdev-mutate` replays them.
 
 mod backoff;
 pub mod binaries;
