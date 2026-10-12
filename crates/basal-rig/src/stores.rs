@@ -37,6 +37,42 @@ pub struct Receipt {
 }
 
 impl CoreStore {
+    /// Policy provenance and the absence of a consent intent are durable facts,
+    /// independent of the install response returned by basal.
+    pub fn policy_install(&self, flow_id: &str, version: i64) -> Result<Option<Value>, String> {
+        let c = open(&self.path)?;
+        c.query_row("SELECT code_hash,approved_by,author_agent_id,
+            (SELECT count(*) FROM flow_install_intent WHERE flow_id=?1 AND version=?2),
+            (SELECT count(*) FROM flow_install_decision_hint WHERE flow_id=?1 AND version=?2)
+            FROM flow_install WHERE flow_id=?1 AND version=?2 AND revoked_at_ms IS NULL",params![flow_id,version],|r| Ok(json!({
+                "code_hash":r.get::<_,String>(0)?,"approved_by":r.get::<_,String>(1)?,"author_agent_id":r.get::<_,Option<String>>(2)?,
+                "card_intents":r.get::<_,i64>(3)?,"card_hints":r.get::<_,i64>(4)?
+            }))).optional().map_err(|e|e.to_string())
+    }
+
+    /// Observe a card's committed decision and its acknowledged hint independently
+    /// of the consent API's answer acknowledgement.
+    pub fn install_decision(
+        &self,
+        flow_id: &str,
+        version: i64,
+        attempt: i64,
+    ) -> Result<Option<Value>, String> {
+        let c = open(&self.path)?;
+        c.query_row(
+            "SELECT t.state,t.code_hash,i.code_hash,i.approved_at_ms,h.terminal_state,h.created_at,h.delivered_at
+             FROM flow_install_intent t
+             LEFT JOIN flow_install i ON i.flow_id=t.flow_id AND i.version=t.version AND i.revoked_at_ms IS NULL
+             LEFT JOIN flow_install_decision_hint h ON h.flow_id=t.flow_id AND h.version=t.version AND h.attempt=t.attempt AND h.terminal_state=t.state
+             WHERE t.flow_id=?1 AND t.version=?2 AND t.attempt=?3",
+            params![flow_id,version,attempt],
+            |r| Ok(json!({"state":r.get::<_,String>(0)?,"code_hash":r.get::<_,String>(1)?,
+                "installed_hash":r.get::<_,Option<String>>(2)?,"approved_at_ms":r.get::<_,Option<i64>>(3)?,
+                "hint_state":r.get::<_,Option<String>>(4)?,"hint_created_at_ms":r.get::<_,Option<i64>>(5)?,
+                "hint_delivered_at_ms":r.get::<_,Option<i64>>(6)?})),
+        ).optional().map_err(|e| e.to_string())
+    }
+
     /// Read the run scope core stored for this run instead of trusting basal's
     /// reply to prove that core closed the scope.
     pub fn codemode_scope(&self, run_id: &str) -> Result<Option<Value>, String> {
@@ -193,6 +229,34 @@ pub struct Call {
 }
 
 impl BasalStore {
+    /// The card decision timestamp is written by basal, not inferred from core's
+    /// answer. The flow's enable switch alone is not approval: an undecided or
+    /// declined version can have an enabled switch and no approved version.
+    pub fn install_decision(
+        &self,
+        flow_id: &str,
+        version: i64,
+        attempt: i64,
+    ) -> Result<Option<Value>, String> {
+        let c = open(&self.path)?;
+        c.query_row(
+            "SELECT c.state,c.decided_at,f.state,f.approved_version,i.approved_at
+             FROM install_cards c JOIN flows f ON f.flow_id=c.flow_id
+             JOIN installs i ON i.flow_id=c.flow_id AND i.version=c.version
+             WHERE c.flow_id=?1 AND c.version=?2 AND c.attempt=?3",
+            params![flow_id, version, attempt],
+            |r| {
+                Ok(
+                    json!({"state":r.get::<_,String>(0)?,"decided_at_ms":r.get::<_,Option<i64>>(1)?,
+                "flow_state":r.get::<_,String>(2)?,"approved_version":r.get::<_,Option<i64>>(3)?,
+                "approved_at_ms":r.get::<_,Option<i64>>(4)?}),
+                )
+            },
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    }
+
     /// Find the run basal recorded for the invoking call key. Reading this id
     /// avoids deriving the expected probe identity with basal's own algorithm.
     pub fn codemode_call(&self, call_key: &str) -> Result<Option<Value>, String> {

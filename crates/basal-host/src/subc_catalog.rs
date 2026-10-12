@@ -205,7 +205,7 @@ impl SubcCatalog {
         let reply =
             self.transport
                 .management("entorhinal", "enumerate", json!({"workspaceId": id}))?;
-        let workspaces = reply["result"]["workspaces"].as_array().ok_or_else(|| {
+        let workspaces = reply["workspaces"].as_array().ok_or_else(|| {
             WireError::Unreadable("entorhinal.enumerate workspaces missing".into())
         })?;
         let mut found = false;

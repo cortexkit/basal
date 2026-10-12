@@ -52,6 +52,8 @@ mod codemode_cases;
 mod ownership;
 #[path = "basal-rig-contract/package_cases.rs"]
 mod package_cases;
+#[path = "basal-rig-contract/policy_cases.rs"]
+mod policy_cases;
 #[path = "basal-rig-contract/seeded.rs"]
 mod seeded;
 #[cfg(windows)]
@@ -302,6 +304,73 @@ fn code(reply: &Reply) -> Option<&str> {
 
 fn install_params(flow: &Flow) -> Value {
     json!({ "script": flow.script, "manifest": flow.manifest })
+}
+
+fn card_decision_settled(
+    choice: &str,
+    hash: &str,
+    version: i64,
+    paused: bool,
+    core: &Value,
+    basal: &Value,
+) -> bool {
+    let terminal = if choice == "approve" {
+        "executed"
+    } else {
+        "declined"
+    };
+    core["state"] == terminal
+        && core["code_hash"] == hash
+        && core["hint_state"] == terminal
+        && core["hint_delivered_at_ms"].as_i64().is_some()
+        && basal["decided_at_ms"].as_i64().is_some()
+        && if choice == "approve" {
+            core["installed_hash"] == hash
+                && core["approved_at_ms"].as_i64().is_some()
+                && basal["state"] == "approved"
+                && basal["approved_version"] == version
+                && basal["flow_state"] == if paused { "disabled" } else { "enabled" }
+        } else {
+            core["installed_hash"].is_null()
+                && basal["state"] == "declined"
+                && basal["approved_version"].is_null()
+        }
+}
+
+async fn await_card_decision(
+    rig: &Rig,
+    case: &mut Case,
+    flow: &Flow,
+    intent: (i64, &str),
+    choice: &str,
+    paused: bool,
+    answered_at_ms: i64,
+) -> bool {
+    let (attempt, hash) = intent;
+    let deadline = Instant::now() + Duration::from_secs(90);
+    loop {
+        let core = rig.core.install_decision(&flow.id, flow.version, attempt);
+        let basal = rig.basal.install_decision(&flow.id, flow.version, attempt);
+        let settled = core
+            .as_ref()
+            .ok()
+            .and_then(Option::as_ref)
+            .zip(basal.as_ref().ok().and_then(Option::as_ref))
+            .is_some_and(|(c, b)| card_decision_settled(choice, hash, flow.version, paused, c, b));
+        if settled || Instant::now() >= deadline {
+            let c = core.as_ref().ok().and_then(Option::as_ref);
+            let b = basal.as_ref().ok().and_then(Option::as_ref);
+            case.record("card_latency", json!({"answer_at_ms":answered_at_ms,"observed_at_ms":now_ms(),
+                "core_committed_after_ms":c.and_then(|v| v["approved_at_ms"].as_i64().or_else(|| v["hint_created_at_ms"].as_i64())).map(|t|t-answered_at_ms),
+                "hint_acknowledged_after_ms":c.and_then(|v| v["hint_delivered_at_ms"].as_i64()).map(|t|t-answered_at_ms),
+                "basal_decided_after_ms":b.and_then(|v| v["decided_at_ms"].as_i64()).map(|t|t-answered_at_ms),
+                "basal_approved_after_ms":b.and_then(|v| v["approved_at_ms"].as_i64()).map(|t|t-answered_at_ms),
+                "core":core,"basal":basal,
+                "hint_timestamp_semantics":"core timestamps the delivery attempt before the RPC; a delivered row proves basal acknowledged it by observed_at_ms"}));
+            return case.check("core committed the exact card decision, delivered its hint, and basal settled its own install before dependent operations", settled, json!({"core":core,"basal":basal}));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 impl Rig {
@@ -740,8 +809,28 @@ async fn install_with_pause(
     choice: &str,
     pause_before_approval: bool,
 ) -> Option<Value> {
-    let installed = match agent {
-        Some(agent) => {
+    let route = agent
+        .map(InstallRoute::Agent)
+        .unwrap_or(InstallRoute::Local);
+    install_with_route(rig, case, flow, route, choice, pause_before_approval).await
+}
+
+enum InstallRoute<'a> {
+    Local,
+    Operator,
+    Agent(&'a Agent),
+}
+
+async fn install_with_route(
+    rig: &Rig,
+    case: &mut Case,
+    flow: &Flow,
+    route: InstallRoute<'_>,
+    choice: &str,
+    pause_before_approval: bool,
+) -> Option<Value> {
+    let installed = match route {
+        InstallRoute::Agent(agent) => {
             let relayed = rig.relay(agent, "install", install_params(flow)).await;
             case.check(
                 "core relays the install to basal and passes basal's reply back as outcome: reply",
@@ -750,7 +839,12 @@ async fn install_with_pause(
             );
             relayed.into_reply()
         }
-        None => {
+        InstallRoute::Operator => {
+            rig.client
+                .basal_as_operator("flow.install", install_params(flow))
+                .await
+        }
+        InstallRoute::Local => {
             rig.client
                 .call(
                     BASAL,
@@ -849,15 +943,36 @@ async fn install_with_pause(
             return None;
         }
     }
+    let answer_started_ms = now_ms();
     let answered = rig.answer(&card, &choice_id).await;
     case.record("answer_reply", evidence(&answered));
-    case.check(
+    if !case.check(
         &format!("the operator's '{choice}' is accepted by cingulate's consent API"),
         answered
             .as_ref()
             .is_ok_and(|r| r["ok"] == true && r["elicitation"]["state"] == "answered"),
         evidence(&answered),
-    );
+    ) {
+        return None;
+    }
+    let answered_at_ms = answered
+        .as_ref()
+        .ok()
+        .and_then(|v| v["elicitation"]["answeredAtMs"].as_i64())
+        .unwrap_or(answer_started_ms);
+    if !await_card_decision(
+        rig,
+        case,
+        flow,
+        (attempt, hash),
+        choice,
+        pause_before_approval,
+        answered_at_ms,
+    )
+    .await
+    {
+        return None;
+    }
     Some(card)
 }
 
@@ -931,9 +1046,9 @@ async fn declined_install(rig: &Rig, flow: &Flow) -> Case {
         .await
         .is_some()
     {
-        let state = rig.wait_card_state(flow, "rejected").await;
+        let state = rig.wait_card_state(flow, "declined").await;
         case.check(
-            "basal records the card as rejected",
+            "basal records the card as declined",
             state.is_some(),
             json!(rig.basal.card_state(&flow.id, flow.version).ok()),
         );
@@ -2118,6 +2233,7 @@ async fn suite(
         return Ok(());
     }
     cases.extend(codemode_cases::run(&rig, &agent, args, &tag).await);
+    cases.extend(policy_cases::run(&rig, &agent, &tag).await?);
 
     let sinks_flow = flows::sinks(&format!("rig-sinks-{tag}"), &agent.name, "NoSuchAgent");
     let scope_flow = flows::writer(
@@ -2190,6 +2306,10 @@ async fn suite(
     // Without the kill switch the crash flow is never installed, so it is
     // not among the other callers' flows the operator's list must show.
     let mut others = vec![sinks_flow.id.as_str(), declined_flow.id.as_str()];
+    let policy_self_id = format!("rig-policy-self-{tag}");
+    let policy_workspace_id = format!("rig-policy-workspace-{tag}");
+    let policy_global_id = format!("rig-policy-global-{tag}");
+    others.extend([policy_workspace_id.as_str(), policy_global_id.as_str()]);
     if args.no_kill_hook {
         cases.push(Case::skipped(CRASH_CASE, NO_KILL_HOOK_REASON));
     } else {
@@ -2202,7 +2322,11 @@ async fn suite(
             &rig,
             &relayed_flow,
             &agent,
-            &[scope_flow.id.as_str(), relayed_flow.id.as_str()],
+            &[
+                scope_flow.id.as_str(),
+                relayed_flow.id.as_str(),
+                policy_self_id.as_str(),
+            ],
             &others,
         )
         .await,
@@ -2218,6 +2342,9 @@ async fn suite(
     cases.extend(package_cases::lifecycle(&rig, &agent, args, &tag).await);
 
     let mut cleanup_ids = vec![
+        format!("rig-policy-self-{tag}"),
+        format!("rig-policy-workspace-{tag}"),
+        format!("rig-policy-global-{tag}"),
         sinks_flow.id.clone(),
         scope_flow.id.clone(),
         crash_flow.id.clone(),

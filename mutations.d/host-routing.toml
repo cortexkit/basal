@@ -1460,3 +1460,19 @@ timeout_s = 600
 file = "crates/basal-host/src/subc_catalog.rs"
 old = "serde_json::from_value(event).ok()"
 new = "Some(EventDeclaration::new(\"fabricated_event\", 99)) // NON-VACUITY BREAK"
+
+[[control]]
+id = "host-workspace-double-management-result-unwrap"
+guards = "Workspace registry reads the decoded management payload, never a second result envelope"
+file = "crates/basal-host/src/subc_catalog.rs"
+old = 'let workspaces = reply["workspaces"].as_array().ok_or_else(|| {'
+new = 'let workspaces = reply["result"]["workspaces"].as_array().ok_or_else(|| { // NON-VACUITY BREAK: unwrap result twice'
+test_file = "crates/basal-host/src/transport.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["transport::tests::workspace_registry_reads_the_real_decoded_management_payload"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600

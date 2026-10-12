@@ -54,7 +54,7 @@ fn workspace_registry_uses_entorhinal_management_query_and_exact_id() {
         (json!([{"workspaceId":"other","name":"team space"}]), false),
     ] {
         let wire = Wire::new(Ok(
-            json!({"result":{"workspaces":workspaces,"projects":[],"generation":1}}),
+            json!({"workspaces":workspaces,"projects":[],"generation":1}),
         ));
         let catalog = SubcCatalog::new(wire.clone());
         assert_eq!(catalog.workspace_known("team space").unwrap(), exists);
@@ -74,9 +74,10 @@ fn unreadable_workspace_registry_fails_closed() {
     for reply in [
         Err(WireError::NeverSent("offline".into())),
         Ok(json!({})),
-        Ok(json!({"result":{"workspaces":null}})),
-        Ok(json!({"result":{"workspaces":[{}]}})),
-        Ok(json!({"result":{"workspaces":[{"workspaceId":"team"},{}]}})),
+        Ok(json!({"workspaces":null})),
+        Ok(json!({"workspaces":[{}]})),
+        Ok(json!({"workspaces":[{"workspaceId":"team"},{}]})),
+        Ok(json!({"result":{"workspaces":[{"workspaceId":"team"}]}})),
     ] {
         let catalog = SubcCatalog::new(Wire::new(reply));
         assert!(catalog.workspace_known("team").is_err());
