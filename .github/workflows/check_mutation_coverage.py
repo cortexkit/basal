@@ -15,6 +15,54 @@ PLATFORMS = ("linux", "macos", "windows")
 PORTABLE_PACKAGES = {"basal-proto", "basal-core", "basal-host"}
 SUCCESS = {"CAUGHT", "CAUGHT_BROADLY", "HUB", "EQUIVALENT", "UNREACHABLE"}
 ARTIFACT_PATTERN = re.compile(r"mutations-(linux|macos|windows)-[1-9][0-9]*")
+# These files contain macOS-specific F_GETPATH and verified-open guards. A
+# mutation qualifies for macOS only when it replaces a complete cfg(macos)
+# function; shared Unix callsites stay on Linux to avoid duplicate shard work.
+MACOS_NATIVE_FILES = {
+    "crates/basal-host/src/builtins/git.rs",
+    "crates/basal-host/src/builtins/fs.rs",
+}
+
+
+def macos_native_row(row):
+    """Require every edit to replace one complete macOS-only function."""
+    if row.get("package") != "basal-host":
+        return False
+    edits = list(row.get("edits", []))
+    if row.get("file"):
+        edits.insert(0, row)
+    if not edits:
+        return False
+    for edit in edits:
+        if edit.get("file") not in MACOS_NATIVE_FILES:
+            return False
+        old = edit.get("old", "").strip()
+        if not re.match(r'#\[cfg\(target_os = "macos"\)\]\s+(?:pub(?:\([^)]*\))?\s+)?fn\s+', old):
+            return False
+        # Whole-function anchors make the cfg boundary explicit in the row.
+        # Reject trailing items and unbalanced bodies rather than guessing scope.
+        start = old.find("{")
+        if start == -1:
+            return False
+        body = old[start:]
+        # Ignore regular literals and line comments while counting syntax
+        # braces. More complex Rust raw literals/block comments fail closed.
+        if "/*" in body or re.search(r'\b(?:b?r|cr)#*"', body):
+            return False
+        body = re.sub(r'''//[^\n]*|"(?:\\.|[^"\\])*"|'(?:[^'\\]|\\(?:[nrt0'"\\]|x[0-9a-fA-F]{2}|u\{[0-9a-fA-F_]+\}))' ''', "", body, flags=re.VERBOSE)
+        depth = 0
+        for index, character in enumerate(body):
+            if character == "{":
+                depth += 1
+            elif character == "}":
+                depth -= 1
+                if depth == 0 and index != len(body) - 1:
+                    return False
+                if depth < 0:
+                    return False
+        if depth != 0 or not old.endswith("}"):
+            return False
+    return True
 
 
 def partition(rows):
@@ -32,6 +80,7 @@ def partition(rows):
         windows_module = "windows" in file.parts or file.name == "windows.rs"
         if package in PORTABLE_PACKAGES and host != "linux" and not (
             host == "windows" and windows_module
+            or host == "macos" and macos_native_row(row)
         ):
             raise ValueError(f"{row['id']}: {package} proofs belong on Linux unless targeting a Windows-only module on Windows")
         if row["id"] in seen:
