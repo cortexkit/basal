@@ -71,6 +71,19 @@ pub fn scratch(tag: &str) -> PathBuf {
     dir
 }
 
+/// The real path of an existing `path`, spelled as a manifest root. On
+/// Windows `std::fs::canonicalize` adds the extended-length `\\?\` prefix,
+/// which manifest roots and the `fs` and `git` built-ins refuse, so it is
+/// removed here.
+pub fn canonical(path: &std::path::Path) -> PathBuf {
+    let real = std::fs::canonicalize(path).expect("canonical path");
+    #[cfg(windows)]
+    if let Some(plain) = real.to_str().and_then(|text| text.strip_prefix(r"\\?\")) {
+        return PathBuf::from(plain);
+    }
+    real
+}
+
 pub struct Options {
     pub hosts: Option<Hosts>,
     pub worker_binary: Option<PathBuf>,

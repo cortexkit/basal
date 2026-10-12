@@ -801,7 +801,7 @@ fn activation_uses_effective_grants_and_journaled_self_and_params() {
     let target = f.dir.join("target");
     std::fs::write(&target, "watched").unwrap();
     std::fs::write(f.dir.join("neighbor"), "private").unwrap();
-    let root = std::fs::canonicalize(&f.dir).unwrap();
+    let root = common::canonical(&f.dir);
     let mut m = manifest();
     m["params"]["path"] = json!({"type":"path","under":[root]});
     m["fs"] = json!({"read":["$params.path"]});
@@ -1303,7 +1303,7 @@ fn template_dry_run_uses_canonical_values_effective_grants_and_capture() {
     let target = f.dir.join("target");
     std::fs::write(&target, "watched").unwrap();
     std::fs::write(f.dir.join("neighbor"), "private").unwrap();
-    let root = std::fs::canonicalize(&f.dir).unwrap();
+    let root = common::canonical(&f.dir);
     let mut m = manifest();
     m["params"]["path"] = json!({"type":"path","under":[root]});
     m["fs"] = json!({"read":["$params.path"]});
@@ -1569,7 +1569,7 @@ fn instance_dry_run_uses_bound_values_owner_grants_and_approved_version() {
     let f = setup("instance-dry-bound", true);
     let target = f.dir.join("target");
     std::fs::write(&target, "bound").unwrap();
-    let root = std::fs::canonicalize(&f.dir).unwrap();
+    let root = common::canonical(&f.dir);
     let mut m = manifest();
     m["params"]["path"] = json!({"type":"path","under":[root]});
     m["fs"] = json!({"read":["$params.path"]});

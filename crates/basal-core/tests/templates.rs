@@ -10,6 +10,16 @@ fn base() -> Value {
 fn parse(value: &Value) -> Result<Manifest, ManifestError> {
     Manifest::parse(&value.to_string())
 }
+/// An absolute root as a manifest on this platform spells it: on Windows,
+/// roots are drive paths.
+#[cfg(unix)]
+const TMP: &str = "/tmp";
+#[cfg(windows)]
+const TMP: &str = r"C:\tmp";
+/// `TMP` joined with one more component, spelled for this platform.
+fn under_tmp(name: &str) -> String {
+    format!("{TMP}{}{name}", std::path::MAIN_SEPARATOR)
+}
 fn with_parameter(decl: Value) -> Value {
     let mut m = base();
     m["params"] = json!({"value":decl});
@@ -55,7 +65,7 @@ fn all_parameter_declarations_require_closed_valid_bounds() {
         json!({"type":"enum","values":[]}),
         json!({"type":"enum","values":(0..33).map(|n|format!("v{n}")).collect::<Vec<_>>()}),
         json!({"type":"enum","values":["v","v"]}),
-        json!({"type":"path","under":["/tmp","/tmp"]}),
+        json!({"type":"path","under":[TMP,TMP]}),
         json!({"type":"url","hosts":["example.com","example.com"]}),
         json!({"type":"timestamp","max_ahead":"forever"}),
         json!({"type":"unknown"}),
@@ -139,7 +149,7 @@ fn template_limits_and_lifetime_are_bounded_and_required() {
 
 #[test]
 fn placeholders_must_occupy_whole_strings_in_typed_slots_only() {
-    let mut m = with_parameter(json!({"type":"path","under":["/tmp"]}));
+    let mut m = with_parameter(json!({"type":"path","under":[TMP]}));
     for field in ["purpose", "placement"] {
         m[field] = json!("$params.value");
         assert!(
@@ -167,11 +177,11 @@ fn placeholders_must_occupy_whole_strings_in_typed_slots_only() {
             json!({"fs":{"read":["$params.value"]}}),
         ),
         (
-            json!({"type":"path","under":["/tmp"]}),
+            json!({"type":"path","under":[TMP]}),
             json!({"git":{"read":["$params.value"]}}),
         ),
         (
-            json!({"type":"repo","under":["/tmp"]}),
+            json!({"type":"repo","under":[TMP]}),
             json!({"fs":{"write":["$params.value"]}}),
         ),
         (
@@ -288,19 +298,20 @@ fn parameter_failures_are_reported_in_name_order_with_bounds() {
 #[test]
 fn effective_manifest_narrows_every_allowed_slot_and_preserves_static_grants() {
     let mut m = base();
-    m["params"] = json!({"path":{"type":"path","under":["/tmp"]},"repo":{"type":"repo","under":["/tmp"]},"url":{"type":"url","hosts":["example.com"]},"interval":{"type":"duration","min":"1m","max":"1h"}});
-    m["fs"] = json!({"read":["$params.path","/tmp"],"write":["$params.path"]});
+    m["params"] = json!({"path":{"type":"path","under":[TMP]},"repo":{"type":"repo","under":[TMP]},"url":{"type":"url","hosts":["example.com"]},"interval":{"type":"duration","min":"1m","max":"1h"}});
+    m["fs"] = json!({"read":["$params.path",TMP],"write":["$params.path"]});
     m["git"] = json!({"read":["$params.repo"]});
     m["net"] = json!({"fetch":[{"host":"$params.url"}]});
     m["trigger"]["schedule"]["interval"] = json!("$params.interval");
     let mut m = parse(&m).unwrap();
+    let (file, repo) = (under_tmp("file"), under_tmp("repo"));
     effective(
         &mut m,
-        &json!({"path":"/tmp/file","repo":"/tmp/repo","url":"https://example.com/only","interval":"2m"}),
+        &json!({"path":file,"repo":repo,"url":"https://example.com/only","interval":"2m"}),
     );
-    assert_eq!(m.fs.as_ref().unwrap().read, vec!["/tmp/file", "/tmp"]);
-    assert_eq!(m.fs.unwrap().write, vec!["/tmp/file"]);
-    assert_eq!(m.git.unwrap().read, vec!["/tmp/repo"]);
+    assert_eq!(m.fs.as_ref().unwrap().read, vec![file.as_str(), TMP]);
+    assert_eq!(m.fs.unwrap().write, vec![file]);
+    assert_eq!(m.git.unwrap().read, vec![repo]);
     assert_eq!(m.net.unwrap().fetch[0].host, "example.com");
     assert_eq!(m.trigger.schedule.unwrap().interval.as_deref(), Some("2m"));
 }

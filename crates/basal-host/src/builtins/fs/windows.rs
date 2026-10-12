@@ -1007,7 +1007,7 @@ fn process_profile_directory() -> Result<String, Denial> {
 }
 
 #[cfg(windows)]
-fn expand_root(root: &str) -> Result<std::borrow::Cow<'_, str>, Denial> {
+pub(crate) fn expand_root(root: &str) -> Result<std::borrow::Cow<'_, str>, Denial> {
     let suffix = if root == "~" {
         ""
     } else if let Some(suffix) = root.strip_prefix("~/") {
