@@ -341,7 +341,7 @@ new = "const JSONParse = ((evaluate) => (text) => evaluate('(' + text + ')'))(ev
 [[control]]
 id = "intrinsics-are-not-frozen"
 hub = "Intrinsics and the global object are frozen before script code runs, asserted by lockdown, wrapper-declaration unit and sandbox integrity tests"
-hub_targets = ["basal_worker", "sandbox_integrity"]
+hub_targets = ["basal_worker", "codemode", "sandbox_integrity"]
 guards = "intrinsics are not frozen"
 test_file = "crates/basal-worker/tests/lockdown.rs"
 runner = "cargo"
@@ -525,7 +525,7 @@ new = "if false && all_long {"
 [[control]]
 id = "interrupt-handler-never-stops-the-engine-cpu-loop"
 hub = "The JS CPU budget interrupts unbounded scripts, including loops, regex payloads and top-level wrapper code, asserted by budgets, fuzz and sandbox integrity tests"
-hub_targets = ["fuzz", "sandbox_integrity"]
+hub_targets = ["codemode", "fuzz", "sandbox_integrity"]
 guards = "interrupt handler never stops the engine (CPU loop)"
 test_file = "crates/basal-worker/tests/budgets.rs"
 runner = "cargo"
@@ -826,8 +826,8 @@ new = "awaited = NULL WHERE run_id = ?1 AND state IN ('pending', 'running')\","
 
 [[control]]
 id = "outcomes-arriving-during-an-activation-are-never-released-by-it"
-hub = "Available mailbox outcomes are delivered during the current activation after prefix replay, rather than waiting for another activation; live-call, scoped-flow and crash recovery tests assert that delivery"
-hub_targets = ["builtins_dispatch", "dispatch_authorization", "dispatch_kv", "dispatch_limits", "dispatch_tokens", "flow_scope_recovery", "flow_scopes", "global_model_scope", "journal_admin", "journal_cut", "journal_identity", "journal_kill", "journal_ownership", "journal_unknown", "package_instances"]
+hub = "Available mailbox outcomes are delivered in the current activation after prefix replay; live calls, refusals, recovery, temporary writes and instance operations depend on that delivery to progress instead of exhausting their activation deadlines"
+hub_targets = ["builtins_dispatch", "dispatch_authorization", "dispatch_kv", "dispatch_limits", "dispatch_tokens", "flow_scope_recovery", "flow_scopes", "fs_write_temps", "global_model_scope", "journal_admin", "journal_cut", "journal_identity", "journal_kill", "journal_ownership", "journal_races", "journal_unknown", "package_instances", "template_instances"]
 guards = "outcomes arriving during an activation are never released by it"
 test_file = "crates/basal-testkit/tests/journal_races.rs"
 runner = "cargo"
@@ -900,8 +900,8 @@ new = "            position,\n            { let _ = &settlement; \"fulfilled\" }
 
 [[control]]
 id = "calls-of-one-run-dispatched-serially-on-the-activation-s-thread"
-hub = "Calls dispatch concurrently off the activation thread, so a blocked host cannot prevent other calls, deadline enforcement or ownership loss from progressing"
-hub_targets = ["dispatch_slots", "flow_scopes", "journal_ownership"]
+hub = "Calls dispatch concurrently off the activation thread, so a blocked or panicking host cannot take over that thread and prevent other calls, deadline enforcement, ownership loss or temporary-write crash recovery from progressing"
+hub_targets = ["dispatch_slots", "flow_scopes", "fs_write_temps", "journal_ownership"]
 guards = "calls of one run dispatched serially on the activation's thread"
 test_file = "crates/basal-testkit/tests/journal_races.rs"
 runner = "cargo"
@@ -1055,8 +1055,8 @@ new = "(_, _) => resend.push(row.clone()),"
 
 [[control]]
 id = "a-resend-mints-a-new-idempotency-key"
-hub = "Every resend preserves the committed call key across cuts, reconciliation and scope deferral, asserted by each recovery target"
-hub_targets = ["flow_scope_recovery", "journal_cut", "journal_kill"]
+hub = "Every resend preserves the committed call key across cuts, reconciliation, scope deferral and temporary-file completion, so the original keyed effect and its cleanup are not duplicated"
+hub_targets = ["flow_scope_recovery", "fs_write_temps", "journal_cut", "journal_kill", "journal_unknown"]
 guards = "a resend mints a new idempotency key"
 test_file = "crates/basal-testkit/tests/journal_unknown.rs"
 runner = "cargo"
@@ -1304,8 +1304,8 @@ new = "(StoredClass::KeyedMutation, _) => resend.push(row.clone()),"
 
 [[control]]
 id = "recovery-does-not-resend-queries-cuts-in-recovery-suffixes"
-hub = "Recovery resends unresolved queries so runs finish after cuts or parent kills, asserted by the crash and built-in recovery targets"
-hub_targets = ["builtins_dispatch", "journal_kill"]
+hub = "Recovery resends unresolved queries after cuts or parent kills, including scoped queries that must reach a new readiness check before returning their outcome"
+hub_targets = ["builtins_dispatch", "flow_scopes", "journal_cut", "journal_kill"]
 guards = "recovery does not resend queries (cuts in recovery suffixes)"
 test_file = "crates/basal-testkit/tests/journal_cut.rs"
 runner = "cargo"
@@ -1322,8 +1322,8 @@ new = "(StoredClass::KeyedMutation, _) => resend.push(row.clone()),"
 
 [[control]]
 id = "recovery-does-not-resend-keyed-mutations-parent-kill-9"
-hub = "Recovery resends unresolved keyed mutations under their original key, asserted by built-in, KV, model and journal crash recovery tests"
-hub_targets = ["builtins_dispatch", "dispatch_kv", "dispatch_tokens", "journal_cut", "journal_unknown"]
+hub = "Recovery resends unresolved keyed mutations under their original key and request, including built-in writes, KV, models and temporary-file recovery, instead of requiring reconciliation"
+hub_targets = ["builtins_dispatch", "dispatch_kv", "dispatch_tokens", "fs_write_temps", "journal_cut", "journal_unknown"]
 guards = "recovery does not resend keyed mutations (parent kill -9)"
 test_file = "crates/basal-testkit/tests/journal_kill.rs"
 runner = "cargo"
@@ -1900,8 +1900,8 @@ new = "if false && used.saturating_add(r.amount) > r.cap {"
 
 [[control]]
 id = "a-re-issued-model-call-sends-the-script-s-bytes-not-the-journaled-request"
-hub = "A reissued call sends the frozen journaled request bytes, including model clamps and built-in envelopes, asserted by dispatch and crash tests"
-hub_targets = ["builtins_dispatch", "journal_cut", "journal_kill"]
+hub = "A reissued call sends the frozen journaled request bytes, including model clamps, target-scope envelopes and built-in temporary-write envelopes, rather than the script's unclamped arguments"
+hub_targets = ["builtins_dispatch", "flow_scopes", "fs_write_temps", "journal_cut", "journal_kill"]
 guards = "a re-issued model call sends the script's bytes, not the journaled request"
 test_file = "crates/basal-testkit/tests/dispatch_tokens.rs"
 runner = "cargo"
@@ -3049,6 +3049,8 @@ new = "\"state\": \"enabled\", // NON-VACUITY BREAK"
 
 [[control]]
 id = "the-manifest-declares-a-capability-subc-protocol-s-grammar-refuses"
+hub = "The emitted module manifest is valid under the manifest grammar; both the capability validator and the revision test's typed manifest decoder require that validity"
+hub_targets = ["manifest_gate"]
 guards = "the manifest declares a capability subc-protocol's grammar refuses"
 test_file = "crates/basal-module/tests/manifest_gate.rs"
 runner = "cargo"
@@ -3061,7 +3063,7 @@ build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-module/src/manifest.rs"
 old = 'cortexkit_role_tool_provider::PROVIDES.into(),'
-new = '"Not A Capability".into(), // NON-VACUITY BREAK'
+new = 'cortexkit_role_tool_provider::PROVIDES.into(), "Not A Capability".into(), // NON-VACUITY BREAK'
 
 [[control]]
 id = "the-manifest-leaves-out-an-op-the-module-serves"
@@ -3169,8 +3171,8 @@ new = "core_owned"
 
 [[control]]
 id = "an-unscoped-route-that-is-neither-direct-nor-core-s-is-taken-as-the-operator"
-hub = "An unscoped unrelated route is not the operator, asserted by caller classification, binding and authorization tests"
-hub_targets = ["basal_module", "ops"]
+hub = "An unscoped route without the operator's attested identity is not the operator; caller binding, identity classification and audience authorization reject authority fabricated from an unrelated or unverified principal"
+hub_targets = ["audience", "basal_module"]
 guards = "an unscoped route that is neither direct nor core's is taken as the operator"
 test_file = "crates/basal-module/tests/caller_binding.rs"
 runner = "cargo"
@@ -3664,8 +3666,8 @@ new = "let recovered: Vec<String> = Vec::new();"
 
 [[control]]
 id = "a-card-s-approval-is-applied-as-a-rejection"
-hub = "An approved install card approves its version, asserted both by the install test and by fixtures verifying approval before running flows"
-hub_targets = ["caller_binding", "decisions", "dry_run", "e2e", "engine", "health_contract", "hosts", "idle_wake", "install_gate", "list_contract", "module_lifecycle", "pool"]
+hub = "An approved install card approves its version and admits its flow; flow-running fixtures install through approval, so applying that approval as rejection leaves no approved audience, owner or admissible run"
+hub_targets = ["audience", "caller_binding", "dry_run", "e2e", "engine", "health_contract", "idle_wake", "list_contract", "module_lifecycle", "ops", "pool", "templates"]
 guards = "a card's approval is applied as a rejection"
 test_file = "crates/basal-module/tests/ops.rs"
 runner = "cargo"
@@ -3797,7 +3799,7 @@ build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-module/src/ops.rs"
 old = "if !matches!(caller, Caller::Operator | Caller::Core) {"
-new = "if matches!(caller, Caller::Other(_)) {"
+new = "if !matches!(caller, Caller::Operator | Caller::Core | Caller::Agent { .. }) { // NON-VACUITY BREAK"
 
 [[control]]
 id = "anyone-may-reconcile"
@@ -4209,6 +4211,8 @@ new = "let placement = Some(f[\"placement\"].as_str().filter(|p| !p.is_empty()).
 
 [[control]]
 id = "decision-cards-every-raise-goes-out-under-a-fresh-dedup-key-so-a-changed-card-is-a-second-card"
+hub = "A decision intent keeps its durable dedup key when its body changes or a raise is retried; both consent paths require that identity to update one card and settle its journaled intent"
+hub_targets = ["consent_paths", "decisions"]
 guards = "decision cards: every raise goes out under a fresh dedup key, so a changed card is a second card"
 test_file = "crates/basal-module/tests/decisions.rs"
 runner = "cargo"
@@ -4225,6 +4229,8 @@ new = "request[\"dedup_key\"] = json!(format!(\"{key}:{}\", std::time::SystemTim
 
 [[control]]
 id = "decision-cards-every-raise-goes-out-under-a-fresh-dedup-key-so-a-re-raise-after-a-crash-is-a-second-card"
+hub = "A decision intent is re-raised under its durable dedup key after a crash or lost reply; both consent paths require that identity to retain one card and settle its journaled intent"
+hub_targets = ["consent_paths", "decisions"]
 guards = "decision cards: every raise goes out under a fresh dedup key, so a re-raise after a crash is a second card"
 test_file = "crates/basal-module/tests/decisions.rs"
 runner = "cargo"
@@ -4289,6 +4295,8 @@ new = "Some(_) if false && !stands(tx, &card)? => {"
 
 [[control]]
 id = "decision-cards-an-answer-delivered-twice-is-applied-twice"
+hub = "A settled decision answer has no second effect after duplicate delivery or crash redelivery; both consent paths apply the journaled action exactly once"
+hub_targets = ["consent_paths", "decisions"]
 guards = "decision cards: an answer delivered twice is applied twice"
 test_file = "crates/basal-module/tests/decisions.rs"
 runner = "cargo"
@@ -4321,6 +4329,8 @@ new = "            Some(position),\n            detail,\n            elicitation
 
 [[control]]
 id = "decision-cards-a-card-whose-raise-failed-is-recorded-as-raised-so-the-intent-is-lost"
+hub = "A failed raise leaves the durable decision intent unacknowledged for retry; both consent paths must recover that intent after a lost initial or replacement reply"
+hub_targets = ["consent_paths"]
 guards = "decision cards: a card whose raise failed is recorded as raised, so the intent is lost"
 test_file = "crates/basal-module/tests/decisions.rs"
 runner = "cargo"
@@ -4386,6 +4396,8 @@ new = "&format!(\"the operator reconciled this call as applied at {}\", crate::s
 
 [[control]]
 id = "decision-cards-an-expired-card-applies-an-action-instead-of-its-default"
+hub = "An expired decision applies the declining default, never an affirmative reconcile or re-enable action; both consent paths and owned-card retention preserve that inert expiry"
+hub_targets = ["consent_paths", "decisions"]
 guards = "decision cards: an expired card applies an action instead of its default"
 test_file = "crates/basal-module/tests/decisions.rs"
 runner = "cargo"
@@ -4402,6 +4414,8 @@ new = "let state = match answer.choice.as_deref().or(Some(APPLIED)) {"
 
 [[control]]
 id = "decision-cards-a-re-enable-answer-does-not-enable-the-flow"
+hub = "An affirmative re-enable answer enables the card's flow; both consent paths depend on that durable state change before acknowledging or recovering the answer"
+hub_targets = ["consent_paths"]
 guards = "decision cards: a re-enable answer does not enable the flow"
 test_file = "crates/basal-module/tests/decisions.rs"
 runner = "cargo"
@@ -4450,6 +4464,8 @@ new = "pub const DECISION_ACTION_EFFECT: &str = \"grant\";"
 
 [[control]]
 id = "decision-cards-the-default-is-an-action-rather-than-the-declining-option"
+hub = "Decision requests name the declining option as their default, not an executable action; both pinned requester corpora and the core-validating settlement fixtures enforce that request contract"
+hub_targets = ["consent_paths", "decisions"]
 guards = "decision cards: the default is an action rather than the declining option"
 test_file = "crates/basal-module/tests/decisions.rs"
 runner = "cargo"
@@ -4482,6 +4498,8 @@ new = "true || op.split('.').all(segment_ok);"
 
 [[control]]
 id = "decision-cards-the-request-carries-a-field-core-s-vectors-do-not"
+hub = "Decision request envelopes are byte-compatible with core's closed vectors and contain no extra scope field; both requester corpora and the reconcile request witness enforce that envelope"
+hub_targets = ["consent_paths", "decisions"]
 guards = "decision cards: the request carries a field core's vectors do not"
 test_file = "crates/basal-module/tests/decisions.rs"
 runner = "cargo"
@@ -4498,6 +4516,8 @@ new = "\"scope\":{\"flow_id\":card.flow_id,\"version\":card.version},"
 
 [[control]]
 id = "decision-cards-the-body-leaves-out-the-unknown-reason"
+hub = "A reconcile request body includes its journaled unknown reason; both pinned requester corpora and core-validating decision fixtures enforce the same closed v2 body contract"
+hub_targets = ["consent_paths", "decisions"]
 guards = "decision cards: the body leaves out the unknown reason"
 test_file = "crates/basal-module/tests/decisions.rs"
 runner = "cargo"
@@ -5334,6 +5354,8 @@ new = "body.extend(serde_json::to_vec(&value).map_err(|e|WireError::NeverSent(e.
 
 [[control]]
 id = "integration-omitted-digest-sends-silent"
+hub = "An omitted digest action uses the recipient's approved cap, including piggyback, rather than unconditional silent; ordinary and audience sink dispatch assert that action"
+hub_targets = ["audience", "hosts"]
 guards = "integration: omitted digest sends silent"
 test_file = "crates/basal-module/tests/hosts.rs"
 runner = "cargo"
@@ -5849,6 +5871,8 @@ new = "fn event(&self, _: &str, _: &str, _: u32) -> Option<EventDecl> { Some(Eve
 
 [[control]]
 id = "hosts-registry-admission-bypassed"
+hub = "An absent, unreadable or malformed agent registry grants no agent authority; catalog and audience install or dry-run admission fail closed instead of trusting an unknown agent"
+hub_targets = ["audience", "hosts"]
 guards = "hosts: registry admission bypassed"
 test_file = "crates/basal-module/tests/hosts.rs"
 runner = "cargo"
@@ -5945,6 +5969,8 @@ new = "request.call_key = None;"
 
 [[control]]
 id = "hosts-provider-refusal-fulfilled"
+hub = "A typed core refusal remains a rejected settlement with its original code and message; host retry or admission checks and audience scripts must not receive it as successful data"
+hub_targets = ["audience", "hosts"]
 guards = "hosts: provider refusal fulfilled"
 test_file = "crates/basal-module/tests/hosts.rs"
 runner = "cargo"
@@ -6246,8 +6272,8 @@ new = "Err(WireError::Unknown(\"unrecognised core reply\".into()))"
 
 [[control]]
 id = "fs-a-path-is-not-required-to-lie-under-a-root-symlink-out"
-hub = "Every resolved filesystem path remains under a granted root, including symlink, missing-path and compromised-envelope checks in both dispatch targets"
-hub_targets = ["builtins_dispatch"]
+hub = "Every resolved filesystem path remains under a granted root, including symlinks, missing-path ancestors, compromised envelopes and temporary-write directories moved outside their root"
+hub_targets = ["builtins_dispatch", "builtins_fs", "fs_write_temps"]
 guards = "fs: a path is not required to lie under a root (symlink out)"
 test_file = "crates/basal-testkit/tests/builtins_fs.rs"
 runner = "cargo"
@@ -6264,8 +6290,8 @@ new = "!roots.is_empty() // NON-VACUITY BREAK"
 
 [[control]]
 id = "fs-a-path-is-not-required-to-lie-under-a-root-missing-path"
-hub = "Every resolved filesystem path remains under a granted root, including symlink, missing-path and compromised-envelope checks in both dispatch targets"
-hub_targets = ["builtins_dispatch"]
+hub = "Every resolved filesystem path remains under a granted root, including missing-path ancestors, symlinks, compromised envelopes and temporary-write directories moved outside their root"
+hub_targets = ["builtins_dispatch", "builtins_fs", "fs_write_temps"]
 guards = "fs: a path is not required to lie under a root (missing path)"
 test_file = "crates/basal-testkit/tests/builtins_fs.rs"
 runner = "cargo"
@@ -6492,6 +6518,8 @@ new = "Ok(_) => CallClass::Query, // NON-VACUITY BREAK"
 
 [[control]]
 id = "classes-fs-write-does-not-honour-idempotency-keys"
+hub = "fs.write is a keyed idempotent mutation; built-in classification and crash or temporary-file recovery resend an unknown write rather than requiring reconciliation"
+hub_targets = ["builtins_dispatch", "fs_write_temps"]
 guards = "classes: fs.write does not honour idempotency keys"
 test_file = "crates/basal-testkit/tests/builtins_dispatch.rs"
 runner = "cargo"
@@ -7130,8 +7158,8 @@ new = "if true || retry <= self.rt.config.clock.now_ms() { // NON-VACUITY BREAK"
 
 [[control]]
 id = "flow-deferred-resend-changes-call-key"
-hub = "Scope-deferred and crash-recovered resends preserve the committed call key, asserted by scope, reconciliation and crash recovery tests"
-hub_targets = ["journal_cut", "journal_kill", "journal_unknown"]
+hub = "Scope-deferred and crash-recovered resends preserve the committed call key through reconciliation and temporary-file completion, so the original keyed effect and its cleanup are not duplicated"
+hub_targets = ["fs_write_temps", "journal_cut", "journal_kill", "journal_unknown"]
 guards = "resend retains the original journal position and call key"
 test_file = "crates/basal-testkit/tests/flow_scope_recovery.rs"
 runner = "cargo"
@@ -8852,7 +8880,7 @@ build_timeout_s = 3600
 [[control]]
 id = "worker-top-level-evaluation-skips-js-time-metering"
 hub = "Every engine entry is metered against the JS time budget, so wrapper code, CPU loops and regex payloads are all stopped, asserted by sandbox, budget and fuzz tests"
-hub_targets = ["budgets", "fuzz"]
+hub_targets = ["budgets", "codemode", "fuzz"]
 guards = "worker top level evaluation skips js time metering"
 file = "crates/basal-worker/src/engine.rs"
 old = """
@@ -10768,6 +10796,8 @@ new = '"INSERT INTO codemode_tombstones (run_id, pruned_at) SELECT ?1, ?2 WHERE 
 
 [[control]]
 id = "codemode-digest-sorts-entries-by-name"
+hub = "Catalog entries sort by UTF-16 name before hashing; the reordered-entry unit test and published digest vectors require the same canonical catalog digest"
+hub_targets = ["codemode_digest_vectors"]
 guards = "the catalog digest sorts entries by name"
 test_file = "crates/basal-core/src/codemode/catalog.rs"
 runner = "cargo"
@@ -10824,6 +10854,8 @@ new = 'c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04X}", c as u32)),'
 
 [[control]]
 id = "codemode-canonical-parses-nearest-double"
+hub = "JSON text rounds to the nearest binary64 value before RFC 8785 canonicalization; the canonicalizer and independent RFC-example oracle require the same correctly rounded number parsing"
+hub_targets = ["codemode_digest_vectors"]
 guards = "JSON numbers parse to the nearest double before canonicalization"
 test_file = "crates/basal-core/src/codemode/canonical.rs"
 runner = "cargo"
@@ -14322,6 +14354,8 @@ new = '''call::<Open,Opened>(transport,"codemode.run_scope.open",request).or_els
 
 [[control]]
 id = "codemode-tool-keyed-attach"
+hub = "A repeated committed call key attaches to its existing codemode run without second admission; API, worker-pool and real-provider retries depend on that attachment to preserve the run and its original result"
+hub_targets = ["codemode", "tool_provider_conformance"]
 guards = "a retried call key attaches to its committed run rather than attempting a second admission"
 test_file = "crates/basal-module/tests/codemode.rs"
 runner = "cargo"
@@ -14448,6 +14482,8 @@ new = "SET published=0 /* NON-VACUITY BREAK */ WHERE carrier=?1 AND call_key=?2"
 
 [[control]]
 id = "codemode-tool-late-retention-boundary"
+hub = "An unacknowledged late result expires with its identity at twenty-four hours; the per-session retention test and real provider route assert the same expiration boundary"
+hub_targets = ["basal_module"]
 guards = "unacked late results become identity-preserving expired entries at twenty-four hours"
 test_file = "crates/basal-module/tests/tool_provider_conformance.rs"
 runner = "cargo"
