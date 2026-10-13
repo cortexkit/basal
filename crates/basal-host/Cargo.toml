@@ -46,6 +46,7 @@ basal-launch.workspace = true
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_Threading"] }
 
 [dev-dependencies]
-# Use a distinct name so package-qualified feature flags still name the package.
+# Give this dependency a different name so --features basal-host/test-support
+# still selects basal-host's own feature rather than this development dependency.
 basal-host-test-support = { package = "basal-host", path = ".", features = ["test-support"] }
 subc-transport.workspace = true

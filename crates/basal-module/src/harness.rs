@@ -418,8 +418,8 @@ fn module_config(
             clock: clock.clone(),
             selector,
             activation_deadline: Duration::from_secs(60),
-            // These flows are approved by an in-memory consent fixture, not
-            // the fleet's core service. Do not ask that service to confirm them.
+            // The harness approves its flows through an in-memory consent
+            // fixture. The fleet's core service has no install record to confirm.
             install_gate: basal_core::InstallGate::Off,
             ..Config::default()
         },
