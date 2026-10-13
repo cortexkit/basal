@@ -539,3 +539,102 @@ fn target_grants_and_audience_run_bounds_are_validated_by_install_and_dry_run() 
         );
     }
 }
+
+#[test]
+fn audience_facts_install_refusals_are_typed() {
+    let f = fixture("audience-facts-refusals", Options::default());
+    for (audience, facts, expected) in [
+        (
+            Some(json!({"kind":"workspace","id":"team"})),
+            json!({"targets":["$audience"]}),
+            "audience_facts_requires_global",
+        ),
+        (
+            Some(json!({"kind":"agent","id":"SYNAPSE"})),
+            json!({"targets":["$audience"]}),
+            "audience_facts_requires_global",
+        ),
+        (
+            Some(json!({"kind":"global"})),
+            json!({"targets":["$audience"],"text":true}),
+            "audience_facts_private_text",
+        ),
+        (
+            Some(json!({"kind":"global"})),
+            json!({"targets":["$audience","SYNAPSE"]}),
+            "audience_facts_mixed_targets",
+        ),
+        (
+            None,
+            json!({"targets":["$audience"]}),
+            "audience_placeholder_without_audience",
+        ),
+    ] {
+        let mut m = audience.map_or_else(
+            || events_manifest("facts-refused"),
+            |a| audience_manifest("facts-refused", a),
+        );
+        m["facts"] = facts;
+        assert_eq!(
+            f.module
+                .handle(
+                    &Caller::Operator,
+                    "flow.install",
+                    json!({"manifest":m.to_string(),"script":"return 1;"})
+                )
+                .unwrap_err()
+                .code,
+            expected
+        );
+    }
+}
+
+#[test]
+fn global_audience_facts_core_unknown_agent_refusal_is_unchanged() {
+    use basal_host::core_host::CoreHost;
+    use basal_host::transport::WireError;
+    use basal_module::module::Hosts;
+    use std::sync::Arc;
+    let fake = wire::Fake::new();
+    let consent = basal_host::MockConsent::new();
+    let f = fixture(
+        "audience-facts-script",
+        Options {
+            hosts: Some(Hosts {
+                transport: fake.clone(),
+                catalog: Arc::new(basal_host::MockCatalog::standard()),
+                host: Arc::new(CoreHost::new(fake.clone())),
+                consent: Arc::new(consent.clone()),
+                hooks: Arc::new(basal_core::NoHooks),
+            }),
+            ..Options::with_worker()
+        },
+    );
+    fake.enqueue(
+        "agent.facts",
+        vec![Err(WireError::Refused {
+            code: "unknown_agent".into(),
+            message: "unknown owner".into(),
+        })],
+    );
+    let mut m = audience_manifest("facts-script", json!({"kind":"global"}));
+    m["facts"] = json!({"targets":["$audience"]});
+    let reply = install(
+        &f,
+        &Caller::Operator,
+        "try { await facts('ag_missing',{include:['activity']}); } catch(e) { return e.data; }",
+        &m,
+    );
+    assert!(consent.decide(
+        reply["card_id"].as_str().unwrap(),
+        basal_host::CardDecision::Approve,
+        "operator"
+    ));
+    let run = common::admit(&f, "facts-script", "one");
+    f.module.engine.run_until_idle(50).unwrap();
+    let done = f.module.rt.run(&run).unwrap();
+    assert_eq!(done.state, basal_core::RunState::Succeeded);
+    let result: Value = serde_json::from_str(done.result.as_ref().unwrap()).unwrap();
+    assert_eq!(result["code"], "unknown_agent");
+    assert_eq!(fake.calls("agent.facts").len(), 1);
+}

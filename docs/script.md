@@ -168,3 +168,16 @@ signals inside the worker that no script can produce: the allocator refusing
 an allocation, and the thread's CPU clock. A script therefore can't fake
 either of those. A script that throws the stack message only misreports why
 its own run failed.
+
+## Public facts across a global audience
+
+A global flow may declare `facts: {"targets": ["$audience"]}` to call
+`facts(agent, {include: ['activity']})` for board owners discovered at run time.
+Activity values such as `activity.last_activity_at` are Fact envelopes: inspect
+`status` before using `value`. An `unknown` status is not evidence of activity.
+
+This facts form is global-only and cannot grant private text (`text: true`) or
+mix named targets with `$audience`. Workspace and agent audiences cannot use it
+until core can check facts membership. Named facts targets retain their existing
+static grants. Basal permits a global public-facts call for any agent id to be
+sent to core; core's refusal for an unknown agent reaches the script unchanged.

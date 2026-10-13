@@ -66,13 +66,20 @@ An agent-authored agent audience must resolve to that author, or installation
 and dry run return `foreign_agent_target`. An agent-authored workspace or global
 audience returns `audience_requires_operator`. Operator and local authors may
 request any audience; installing in an agent's name still applies that agent's
-authorship rules. Claims and facts retain their static self-only rules.
+authorship rules. An agent-authored flow may claim sources or read named facts
+targets only for its own stable agent id; operator-authored flows may name other agents.
 
 With an audience, every digest sink must declare `agent: "$audience"` and every
 status entry must be `"$audience"`. A named sink or status target returns
 `audience_sink_named`; static and audience targets cannot mix. Without an
 audience, `$audience` is refused with `audience_placeholder_without_audience`.
-It is not valid in claims, facts, or an agent audience id. A declaration grants only
+It is not valid in claims or an agent audience id. Facts may use it only with a
+global audience, exclusively as `facts: {"targets": ["$audience"]}` with `text`
+absent or false. Workspace and agent audiences return `audience_facts_requires_global`
+until core supports checking facts membership. Mixing named facts targets returns
+`audience_facts_mixed_targets`; granting private text returns `audience_facts_private_text`.
+Without any audience the placeholder returns `audience_placeholder_without_audience`.
+A declaration grants only
 its sink kind, not another kind. Scripts still pass a recipient on each write;
 core checks current audience membership at delivery time and refuses an outside
 recipient with `sink_target_not_in_audience`. Basal passes that code through
@@ -228,7 +235,7 @@ flow-health penalty, as is `for_target_requires_delegate`.
 
 | Field | Type | Required | Default | Meaning |
 |---|---|---|---|---|
-| `targets` | list of agent names | yes | | Agents whose `facts()` the flow may read. Each must be known. |
+| `targets` | list of agent names | yes | | Agents whose `facts()` the flow may read. Named targets must be known. A global audience may instead declare only `"$audience"`, permitting public facts of any agent id; core's unknown-agent error code and message reach the script unchanged. |
 | `text` | boolean | no | `false` | Whether `private-text` fields may be read (`include: ["text"]`). |
 
 ### Model grant

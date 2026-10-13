@@ -71,7 +71,7 @@ fn audience_sink_targets_cannot_mix_with_named_targets() {
 }
 
 #[test]
-fn audience_placeholder_requires_audience_and_only_names_sinks() {
+fn audience_placeholder_requires_audience_and_excludes_claims_and_agent_ids() {
     for field in ["sinks", "status", "claims", "facts", "audience"] {
         let mut m = manifest(None);
         match field {
@@ -317,4 +317,63 @@ fn max_targets_defaults_to_sixty_four_and_accepts_only_one_to_1024() {
         m["max_targets"] = json!(n);
         assert!(parse(&m).is_err());
     }
+}
+
+#[test]
+fn global_audience_public_facts_install_and_authorize_any_agent() {
+    let catalog = MockCatalog::standard();
+    let mut value = manifest(Some(json!({"kind":"global"})));
+    value["facts"] = json!({"targets":["$audience"]});
+    let m = parse(&value).unwrap();
+    assert!(m.agents().is_empty());
+    install::validate(&m, "operator", &catalog, &ShellDenylist::default(), false).unwrap();
+    for agent in ["SYNAPSE", "ag_new", "unknown"] {
+        authorize::check(
+            &m,
+            &ShellDenylist::default(),
+            &catalog,
+            &CallKind::Primitive(Primitive::Facts),
+            &json!({"agent":agent,"options":{"include":["activity"]}}),
+        )
+        .unwrap();
+    }
+    assert!(
+        authorize::check(
+            &m,
+            &ShellDenylist::default(),
+            &catalog,
+            &CallKind::Primitive(Primitive::Facts),
+            &json!({"agent":"ag_new","options":{"include":["text"]}})
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn audience_facts_requires_global() {
+    for audience in [
+        json!({"kind":"workspace","id":"team"}),
+        json!({"kind":"agent","id":"SYNAPSE"}),
+    ] {
+        let mut value = manifest(Some(audience));
+        value["facts"] = json!({"targets":["$audience"]});
+        assert_eq!(
+            parse(&value),
+            Err(ManifestError::AudienceFactsRequiresGlobal)
+        );
+    }
+}
+
+#[test]
+fn audience_facts_refuses_private_text() {
+    let mut value = manifest(Some(json!({"kind":"global"})));
+    value["facts"] = json!({"targets":["$audience"],"text":true});
+    assert_eq!(parse(&value), Err(ManifestError::AudienceFactsPrivateText));
+}
+
+#[test]
+fn audience_facts_refuses_mixed_targets() {
+    let mut value = manifest(Some(json!({"kind":"global"})));
+    value["facts"] = json!({"targets":["$audience","SYNAPSE"]});
+    assert_eq!(parse(&value), Err(ManifestError::AudienceFactsMixedTargets));
 }

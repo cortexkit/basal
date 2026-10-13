@@ -252,7 +252,13 @@ pub fn check(
                 let Some(grant) = &manifest.facts else {
                     return Err(Refusal::denied("the manifest grants no facts"));
                 };
-                if !grant.targets.iter().any(|t| t == agent) {
+                // Only validated global, public-facts grants may use the audience placeholder.
+                let audience_facts = matches!(
+                    manifest.audience,
+                    Some(crate::manifest::Audience::Global {})
+                ) && grant.targets == [crate::manifest::AUDIENCE_TARGET]
+                    && !grant.text;
+                if !audience_facts && !grant.targets.iter().any(|t| t == agent) {
                     return Err(Refusal::denied(format!(
                         "facts of {agent} are not in the manifest's targets"
                     )));
