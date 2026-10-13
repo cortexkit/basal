@@ -76,12 +76,99 @@ mod privacy {
         }
     }
 
+    fn runs_image(pid: u32, image: &std::fs::Metadata) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        let mut path = [0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+        // SAFETY: the buffer remains live and its size is given to libproc.
+        let len =
+            unsafe { libc::proc_pidpath(pid as i32, path.as_mut_ptr().cast(), path.len() as u32) };
+        len > 0
+            && std::ffi::CStr::from_bytes_until_nul(&path)
+                .ok()
+                .and_then(|p| p.to_str().ok())
+                .and_then(|p| std::fs::metadata(p).ok())
+                .is_some_and(|m| m.dev() == image.dev() && m.ino() == image.ino())
+    }
+
+    async fn cat_exec_barrier(control: &mut ReapedChild) {
+        // Spawn success is not an application-readiness acknowledgment. An echo
+        // proves that cat has reached userspace after exec and initialization;
+        // matching the image also excludes a launcher answering in its place.
+        control
+            .0
+            .stdin
+            .as_mut()
+            .expect("control stdin")
+            .write_all(b"R")
+            .expect("request control exec acknowledgment");
+        let mut stdout = control.0.stdout.take().expect("control stdout");
+        let stdout = tokio::time::timeout(
+            Duration::from_secs(300),
+            tokio::task::spawn_blocking(move || {
+                let mut echoed = [0u8; 1];
+                stdout
+                    .read_exact(&mut echoed)
+                    .expect("read control exec acknowledgment");
+                assert_eq!(&echoed, b"R", "control exec acknowledgment");
+                stdout
+            }),
+        )
+        .await
+        .expect("control exec acknowledgment deadline")
+        .expect("control exec acknowledgment reader");
+        control.0.stdout = Some(stdout);
+        assert!(
+            runs_image(
+                control.0.id(),
+                &std::fs::metadata("/bin/cat").expect("cat image")
+            ),
+            "control must be running the cat image after its acknowledgment"
+        );
+    }
+
+    #[tokio::test]
+    async fn plain_control_exec_barrier_drains_its_ack() {
+        let mut control = ReapedChild(
+            Command::new("/bin/cat")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("plain control child"),
+        );
+        cat_exec_barrier(&mut control).await;
+        // The next echo must be the new request, not an unread acknowledgment.
+        // This observes the real pipe rather than a helper's claimed readiness.
+        control
+            .0
+            .stdin
+            .as_mut()
+            .expect("control stdin")
+            .write_all(b"P")
+            .expect("probe request");
+        let mut stdout = control.0.stdout.take().expect("control stdout");
+        let echoed = tokio::time::timeout(
+            Duration::from_secs(300),
+            tokio::task::spawn_blocking(move || {
+                let mut echoed = [0u8; 1];
+                stdout.read_exact(&mut echoed).expect("probe echo");
+                echoed
+            }),
+        )
+        .await
+        .expect("probe echo deadline")
+        .expect("probe echo reader");
+        assert_eq!(
+            &echoed, b"P",
+            "exec barrier must consume the acknowledgment before a responsibility probe"
+        );
+    }
+
     /// The module's direct children whose running image is the worker file,
     /// compared by device and inode. Stat both the expected worker and the image
     /// path reported for each child so matching is based on the executable file,
     /// not on a possibly aliased path string.
     fn worker_pids(parent: u32, worker: &Path) -> Vec<u32> {
-        use std::os::unix::fs::MetadataExt;
         let target = std::fs::metadata(worker).expect("worker file");
         // libproc.h's parent-pid filter is not named by the libc crate.
         const PROC_PPID_ONLY: u32 = 6;
@@ -100,19 +187,9 @@ mod privacy {
         pids.into_iter()
             .take(bytes as usize / std::mem::size_of::<i32>())
             .filter(|pid| {
-                let mut path = [0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
-                // SAFETY: the buffer remains live and its size is given to
-                // libproc. Verify the exec image, not just a trampoline pid:
+                // Verify the exec image, not just a trampoline pid:
                 // until the trampoline execs the worker, the child is ck-basal.
-                let len = unsafe {
-                    libc::proc_pidpath(*pid, path.as_mut_ptr().cast(), path.len() as u32)
-                };
-                len > 0
-                    && std::ffi::CStr::from_bytes_until_nul(&path)
-                        .ok()
-                        .and_then(|p| p.to_str().ok())
-                        .and_then(|p| std::fs::metadata(p).ok())
-                        .is_some_and(|m| m.dev() == target.dev() && m.ino() == target.ino())
+                runs_image(*pid as u32, &target)
             })
             .map(|pid| pid as u32)
             .collect()
@@ -123,16 +200,24 @@ mod privacy {
         // A control: a plainly launched child, held alive by its open stdin
         // rather than a timer. It must report its parent's responsible process,
         // so the measurement below can tell a disclaimed worker from a plain one.
-        let control = ReapedChild(
+        let mut control = ReapedChild(
             Command::new("/bin/cat")
                 .stdin(Stdio::piped())
-                .stdout(Stdio::null())
+                .stdout(Stdio::piped())
                 .stderr(Stdio::null())
                 .spawn()
                 .expect("plain control child"),
         );
+        cat_exec_barrier(&mut control).await;
         let parent_responsible = responsible_pid(std::process::id());
-        assert_eq!(responsible_pid(control.0.id()), parent_responsible);
+        let control_responsible = responsible_pid(control.0.id());
+        assert_eq!(
+            control_responsible,
+            parent_responsible,
+            "plain control inheritance: parent={} child={}",
+            std::process::id(),
+            control.0.id()
+        );
         assert_ne!(responsible_pid(control.0.id()), control.0.id());
 
         let dir = Directory(scratch("privacy"));

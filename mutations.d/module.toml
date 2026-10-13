@@ -1272,6 +1272,28 @@ timeout_s = 600
 build_timeout_s = 3600
 
 [[control]]
+id = "plain-privacy-control-skips-exec-acknowledgment"
+guards = "the plain privacy control consumes cat's exec acknowledgment before probing responsibility"
+file = "crates/basal-module/tests/e2e.rs"
+old = '''                let mut echoed = [0u8; 1];
+                stdout
+                    .read_exact(&mut echoed)
+                    .expect("read control exec acknowledgment");
+                assert_eq!(&echoed, b"R", "control exec acknowledgment");'''
+new = '''                // NON-VACUITY BREAK: omit the exec acknowledgment barrier.'''
+edits = []
+test_file = "crates/basal-module/tests/e2e.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test e2e"
+expect_red = ["privacy::plain_control_exec_barrier_drains_its_ack"]
+select = "expected"
+only = false
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
 id = "production-worker-inherits-parent-privacy-identity"
 hub = "Production workers disclaim the module's privacy identity, asserted by the live responsible-process probe and production trampoline configuration"
 hub_targets = ["privacy_launch"]
