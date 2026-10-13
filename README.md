@@ -97,7 +97,7 @@ ckdev-mutate prove --id worker-closes-descriptors-proof \
 
 ## The test rig
 
-`script/flows-rig.sh` builds, places and runs ckdev-flows, a private subc daemon with its own port, homes and binaries, so basal can be tested against the real prefrontal-core, Broca and entorhinal without touching a production daemon. Its header documents the subcommands, what the rig isolates and the revisions it is pinned to.
+`script/flows-rig.sh` builds, places and runs ckdev-flows, a private subc daemon with its own port, homes and binaries, so basal can be tested against the real prefrontal-core, Broca and entorhinal without touching a production daemon. The rig root defaults to `~/Work/Projects/CortexKit-scratch/ckdev-flows`; set `BASAL_RIG_ROOT` to an absolute path to override it. The guard refuses roots under `~/.local/share/cortexkit/` or `/Volumes/`. Before a worker rehearses a production stage, the head runs `copy-stage <stage-dir>` to copy the binaries, sidecars, card and revision under `<rig-root>/stages/`; the worker then uses `place --from-stage <rig-root>/stages/<stage-name>`. Its header documents the subcommands and isolation rules.
 
 ## Documentation
 

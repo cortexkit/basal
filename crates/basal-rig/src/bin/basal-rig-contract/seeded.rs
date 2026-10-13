@@ -3,11 +3,8 @@ use super::*;
 /// The rig PATH excludes CortexKit directories; never discover a fleet CLI there.
 pub(super) fn module_cli_path(home: &std::path::Path) -> Result<PathBuf, String> {
     let root = home.parent().ok_or("HOME has no rig parent")?;
-    if !home.is_absolute()
-        || root.file_name().and_then(|s| s.to_str()) != Some("ckdev-flows")
-        || home != root.join("home")
-    {
-        return Err("module control requires the isolated ckdev-flows home".into());
+    if !home.is_absolute() || home != root.join("home") {
+        return Err("module control requires the isolated rig home".into());
     }
     #[cfg(unix)]
     {
@@ -50,9 +47,8 @@ pub(super) fn fixture_path_for(
     module: &str,
 ) -> Result<PathBuf, String> {
     let root = home.parent().ok_or("HOME has no parent")?;
-    if root.file_name().and_then(|s| s.to_str()) != Some("ckdev-flows") || home != root.join("home")
-    {
-        return Err("fixture writes require the ckdev-flows isolated home".into());
+    if !home.is_absolute() || home != root.join("home") {
+        return Err("fixture writes require the isolated rig home".into());
     }
     if !["basal", "prefrontal-core"].contains(&module) {
         return Err("unsupported fixture module".into());

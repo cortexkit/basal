@@ -350,3 +350,23 @@ expect_red = ["script.tests.flows_rig.RigChecks.test_report_rejects_zero_checks_
 only = false
 timeout_s = 120
 build_timeout_s = 1800
+
+[[control]]
+id = "rig-root-guard-allows-forbidden-storage"
+guards = "The rig root refuses the production store and removable volumes before rig paths are used"
+file = "script/flows-rig.sh"
+old = '''      /Volumes|/Volumes/*)
+        die "refusing: the rig root $RIG resolves under /Volumes; external disks are not supported" ;;'''
+new = '''      /Volumes|/Volumes/*)
+        : # Permit the rig root to be located on an external disk
+        ;;'''
+edits = []
+test_file = "script/tests/flows_rig.py"
+runner = "command"
+platforms = ["linux"]
+command = ["python3", "-c", 'import subprocess,sys; print("mutation diff stat:\\n" + subprocess.run(["git","diff","--stat"], capture_output=True,text=True,check=True).stdout, flush=True); sys.exit(subprocess.run(["python3","-m","unittest",sys.argv[1]]).returncode)', "{test}"]
+test_count_pattern = "Ran {count} test"
+expect_red = ["script.tests.flows_rig.RigChecks.test_rig_root_refuses_production_store_and_external_volumes"]
+only = false
+timeout_s = 120
+build_timeout_s = 1800
