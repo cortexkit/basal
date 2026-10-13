@@ -1,13 +1,13 @@
 #!/bin/sh
 # flows-rig.sh: build, place and run basal's isolated test rig, ckdev-flows.
 #
-# The rig is a private subc daemon with its own port, its own XDG homes under
-# ~/.local/share/cortexkit/ckdev-flows/ and its own ckdev-* binaries, every
-# one built here from a named revision. It runs the credentials vault,
-# Fusiform, Broca, entorhinal, cingulate, prefrontal-core, prefrontal-routing, ck-basal and a
-# rig-only callosum stub and run-scope probe. It never
-# reads, writes or starts anything belonging to the production daemon or to
-# another rig.
+# The rig is a private subc daemon with its own port and XDG homes under the
+# default root ~/Work/Projects/CortexKit-scratch/ckdev-flows (override with
+# BASAL_RIG_ROOT), and its own ckdev-* binaries, each built here from a named
+# revision. It runs the credentials vault, Fusiform, Broca, entorhinal,
+# cingulate, prefrontal-core, prefrontal-routing, ck-basal and a rig-only
+# callosum stub and run-scope probe. It never reads, writes or starts anything
+# belonging to the production daemon or another rig.
 #
 # Usage:
 #   script/flows-rig.sh build [--prefrontal-rev <rev>] [--subc-rev <rev>]
@@ -15,6 +15,7 @@
 #                             [--commons-rev <rev>] [--entorhinal-rev <rev>]
 #                             [--fusiform-rev <rev>] [--cingulate-rev <rev>]
 #                             [--sibling-lock <repo>]... [--dry-run]
+#   script/flows-rig.sh copy-stage <stage dir> [--dry-run]
 #   script/flows-rig.sh place    [--from-stage <dir>] [--dry-run]
 #   script/flows-rig.sh config   [--dry-run]
 #   script/flows-rig.sh start    [--dry-run]
@@ -53,7 +54,7 @@
 #   credential ingest the isolated API key with provider_ids: ["openai"],
 #             delete the input file after deposit and confirm exactly one
 #             active credential. The operator saves it at
-#             ~/.local/share/cortexkit/ckdev-flows/home/.secrets/openai.key.
+#             $RIG_HOME/.secrets/openai.key.
 #   start, status, stop
 #             run, inspect (pids, identifiers, open stores) and stop the
 #             daemon. status fails if any open store lies outside the rig.
@@ -108,10 +109,13 @@
 #             Any first-call refusal is reported verbatim and stops the model
 #             cases; it is never retried with another provider or model.
 #
-# place --from-stage <dir> places ck-basal and ck-basal-worker from a stage
-# directory script/stage.sh wrote, byte for byte and under their production
-# identifiers, instead of the rig's own build of them; every other binary is
-# the rig's build. The stage must be of the commit the rig built basal at.
+# copy-stage <dir> copies the stage's binaries, SHA-256 sidecars, card.md and
+# revision into stages/<stage-name>/ so a worker can use the copy without
+# reading production staging. The head runs this before handing the path to a
+# worker. place --from-stage <dir> places ck-basal and ck-basal-worker from a
+# stage directory script/stage.sh wrote, byte for byte and under their
+# production identifiers, instead of the rig's own build of them; every other
+# binary is the rig's build. The stage must be of the commit the rig built basal at.
 # The rig's own ck-basal is built with two rig-only switches: a one-shot kill
 # switch, armed by a file, that kills ck-basal at a named point in a run so the
 # suite can check crash recovery; and an unscoped-send switch, armed by
@@ -122,11 +126,11 @@
 # build back.
 #
 # What the rig isolates:
-#   - Everything lives under ~/.local/share/cortexkit/ckdev-flows/: src/ (one
-#     clone per repository at the commit built), build/ (cargo output and the
-#     build record), bin/ (the placed, signed binaries), config/, data/ and
-#     runtime/ (the rig's three XDG homes), home/ (HOME and working directory
-#     of every rig process), logs/ and results/<timestamp>/.
+#   - Everything lives under $RIG: src/ (one clone per repository at the
+#     commit built), build/ (cargo output and the build record), bin/ (the
+#     placed, signed binaries), config/, data/, runtime/ (the rig's XDG
+#     homes), home/ (HOME and working directory of every rig process), logs/,
+#     results/<timestamp>/ and stages/.
 #   - The daemon listens on port 8791; production's listens on 8757. config
 #     and start refuse if 8791 is taken.
 #   - Every rig process starts from an empty environment: the login name,
@@ -134,8 +138,9 @@
 #     rig's connection file, and a PATH with every CortexKit directory
 #     removed, so no production variable or file under the real home
 #     reaches a rig module.
-#   - The script refuses any path that resolves, before or after following
-#     symlinks, under ~/.local/share/cortexkit/ but outside ckdev-flows/.
+#   - The rig root must resolve outside ~/.local/share/cortexkit/ and /Volumes/.
+#     Every rig path is also refused if its written or resolved form reaches
+#     the production CortexKit store.
 #   - The vault starts empty with its own key file, so the macOS keychain is
 #     never touched. Every auth command names the rig data, key and connection
 #     paths explicitly. Fusiform's store and HTTPS catalog polling are isolated
@@ -160,7 +165,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
 WORKSPACE=${CORTEXKIT_WORKSPACE:-$HOME/Work/Projects/CortexKit}
 CK_SHARE="$HOME/.local/share/cortexkit"
 CK_CONFIG="$HOME/.config/cortexkit"
-RIG="$CK_SHARE/ckdev-flows"
+RIG=${BASAL_RIG_ROOT:-$HOME/Work/Projects/CortexKit-scratch/ckdev-flows}
 
 BIN="$RIG/bin"
 SRC="$RIG/src"
@@ -172,6 +177,7 @@ STACK="$RIG/build/stack.tsv"
 BASAL_SOURCE="$RIG/build/basal-source.tsv"
 LOGS="$RIG/logs"
 RESULTS="$RIG/results"
+STAGES="$RIG/stages"
 CONFIG_HOME="$RIG/config"
 DATA_HOME="$RIG/data"
 RUNTIME_DIR="$RIG/runtime"
@@ -230,27 +236,34 @@ physical() {
     || die "cannot resolve $1"
 }
 
-# Refuse a path under ~/.local/share/cortexkit/ that is not inside the rig,
-# both as written and after resolving symlinks.
+# Refuse any path under ~/.local/share/cortexkit/, both as written and after
+# resolving symlinks. The rig root is checked separately and is never exempt.
 guard_path() {
   resolved=$(physical "$1") || exit 1
   for form in "$1" "$resolved"; do
     case "$form" in
-      "$RIG" | "$RIG"/* | "$RIG_PHYSICAL" | "$RIG_PHYSICAL"/*) ;;
       "$CK_SHARE" | "$CK_SHARE"/* | "$CK_SHARE_PHYSICAL" | "$CK_SHARE_PHYSICAL"/*)
-        die "refusing: $1 resolves to $form, under $CK_SHARE but outside $RIG" ;;
+        die "refusing: $1 resolves to $form under $CK_SHARE (outside the rig)" ;;
     esac
   done
 }
 
 guard_all_paths() {
+  case "$RIG" in
+    /*) ;;
+    *) die "refusing: BASAL_RIG_ROOT must be an absolute path: $RIG" ;;
+  esac
   CK_SHARE_PHYSICAL=$(physical "$CK_SHARE")
   RIG_PHYSICAL=$(physical "$RIG")
-  case "$RIG_PHYSICAL" in
-    "$CK_SHARE_PHYSICAL"/ckdev-flows) ;;
-    *) die "refusing: the rig root $RIG resolves to $RIG_PHYSICAL" ;;
-  esac
-  for path in "$BIN" "$SRC" "$TARGETS" "$STACK" "$BASAL_SOURCE" "$LOGS" "$RESULTS" \
+  for root_form in "$RIG" "$RIG_PHYSICAL"; do
+    case "$root_form" in
+      "$CK_SHARE"|"$CK_SHARE"/*|"$CK_SHARE_PHYSICAL"|"$CK_SHARE_PHYSICAL"/*)
+        die "refusing: the rig root $RIG resolves under production store $CK_SHARE" ;;
+      /Volumes|/Volumes/*)
+        die "refusing: the rig root $RIG resolves under /Volumes; external disks are not supported" ;;
+    esac
+  done
+  for path in "$BIN" "$SRC" "$TARGETS" "$STACK" "$BASAL_SOURCE" "$LOGS" "$RESULTS" "$STAGES" \
       "$CONFIG_HOME" "$DATA_HOME" "$RUNTIME_DIR" "$CONN" "$PIDFILE" \
       "$SUBC_CONFIG" "$ROUTING_CONFIG" "$BROCA_INDEX" "$VAULT_DIR" "$VAULT_KEY" "$RIG_HOME" "$CORE_STORE" \
       "$BASAL_STORE" "$MACHINE_ID" "$KILL_FILE" "$UNSCOPED_FILE" "$CONTRACT" "$PROJECTS"; do
@@ -347,6 +360,7 @@ os.closerange(3, min(os.sysconf("SC_OPEN_MAX"), 1 << 16))
 os.execvp(sys.argv[1], sys.argv[1:])' \
     env -i \
     HOME="$RIG_HOME" USER="${USER:-}" LOGNAME="${LOGNAME:-}" LANG="${LANG:-en_US.UTF-8}" \
+    BASAL_RIG_ROOT="$RIG" \
     PATH="$(rig_path)" \
     TMPDIR="$RUNTIME_DIR/tmp" \
     XDG_CONFIG_HOME="$CONFIG_HOME" \
@@ -675,6 +689,63 @@ cargo_build() {
   # shellcheck disable=SC2086 # extra_env is a list of VAR=value words
   run_in "$SRC/$repo" env CARGO_TARGET_DIR="$TARGETS/$repo" $extra_env \
     cargo build --release "$@"
+}
+
+# copy-stage <stage dir> checks both binary sidecars and copies the complete
+# stage into the rig without changing the source in production staging.
+verify_stage_sha() {
+  file=$1
+  sidecar=$2
+  want=$(awk 'NF { print $1; exit }' "$sidecar" | tr '[:upper:]' '[:lower:]')
+  case "$want" in
+    ''|*[!0123456789abcdef]*) return 1 ;;
+  esac
+  [ "${#want}" -eq 64 ] || return 1
+  got=$(shasum -a 256 "$file" | awk '{ print tolower($1) }') || return 1
+  [ "$got" = "$want" ]
+}
+
+cmd_copy_stage() {
+  [ $# -eq 1 ] || usage
+  stage=$(cd "$1" 2>/dev/null && pwd -P) || die "no stage directory at $1"
+  name=${stage##*/}
+  case "$name" in
+    ''|.|..|*[!A-Za-z0-9._-]*) die "refusing: invalid stage directory name $name" ;;
+  esac
+  for file in ck-basal ck-basal.sha256 ck-basal-worker ck-basal-worker.sha256 card.md revision; do
+    [ -f "$stage/$file" ] && [ ! -L "$stage/$file" ] \
+      || die "refusing: stage is missing a regular $file file"
+  done
+  for binary in ck-basal ck-basal-worker; do
+    verify_stage_sha "$stage/$binary" "$stage/$binary.sha256" \
+      || die "refusing: $stage/$binary fails its SHA-256 sidecar"
+  done
+  destination="$STAGES/$name"
+  guard_path "$destination"
+  [ ! -e "$destination" ] && [ ! -L "$destination" ] \
+    || die "refusing: copied stage already exists at $destination"
+  if [ "$DRY" = 1 ]; then
+    say "+ mkdir -p $STAGES"
+    say "+ copy ck-basal ck-basal.sha256 ck-basal-worker ck-basal-worker.sha256 card.md revision from $stage to $destination"
+    say "+ verify both copied binaries against their SHA-256 sidecars"
+    return
+  fi
+  mkdir -p "$STAGES"
+  tmp=$(mktemp -d "$STAGES/.copy-stage.XXXXXX") || die "cannot create a temporary stage copy"
+  for file in ck-basal ck-basal.sha256 ck-basal-worker ck-basal-worker.sha256 card.md revision; do
+    if ! cp "$stage/$file" "$tmp/$file"; then
+      rm -rf "$tmp"
+      die "cannot copy $stage/$file into the rig"
+    fi
+  done
+  for binary in ck-basal ck-basal-worker; do
+    if ! verify_stage_sha "$tmp/$binary" "$tmp/$binary.sha256"; then
+      rm -rf "$tmp"
+      die "copied $binary fails its SHA-256 sidecar"
+    fi
+  done
+  mv "$tmp" "$destination"
+  say "copied and verified stage $name at $destination"
 }
 
 # ---------------------------------------------------------------- place
@@ -1446,7 +1517,7 @@ cmd_test() (
     say "+ if the rig daemon is not running: $0 start, and $0 stop after the suite"
     say "+ write $dir/stack.json, as manifest does"
     say "+ register the run's project in the rig's entorhinal (ensure_project)"
-    say "+ rig_env $CONTRACT --core-store $CORE_STORE --basal-store $BASAL_STORE"
+    say "+ rig_env $CONTRACT --rig-root $RIG --core-store $CORE_STORE --basal-store $BASAL_STORE"
     say "    --machine-id $MACHINE_ID --kill-file $KILL_FILE --project-id <the project>"
     say "    --unscoped-file $UNSCOPED_FILE"
     say "    --project-root $PROJECTS/basal-rig-$(printf '%s' "$stamp" | tr '[:upper:]' '[:lower:]')"
@@ -1502,7 +1573,7 @@ cmd_test() (
   fi
   say "running the contract suite (output: $dir/contract.log)"
   set +e
-  rig_env "$CONTRACT" --core-store "$CORE_STORE" --basal-store "$BASAL_STORE" \
+  rig_env "$CONTRACT" --rig-root "$RIG" --core-store "$CORE_STORE" --basal-store "$BASAL_STORE" \
     --machine-id "$MACHINE_ID" --kill-file "$KILL_FILE" --unscoped-file "$UNSCOPED_FILE" --project-id "$project_id" \
     --project-root "$project_root" \
     --results "$dir/contract.json" --broca-index "$BROCA_INDEX" "$@" > "$dir/contract.log" 2>&1
@@ -1611,6 +1682,7 @@ done
 guard_all_paths
 case "$command" in
   build) cmd_build "$@" ;;
+  copy-stage) cmd_copy_stage "$@" ;;
   place) cmd_place "$@" ;;
   config) cmd_config "$@" ;;
   start) cmd_start "$@" ;;

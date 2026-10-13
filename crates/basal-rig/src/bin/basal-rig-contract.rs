@@ -128,6 +128,11 @@ fn parse_args() -> Result<Args, String> {
             .remove(flag)
             .ok_or_else(|| format!("{flag} is required"))
     };
+    let rig_root = take("--rig-root")?;
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or("missing isolated HOME")?;
+    validate_rig_root(&rig_root, &home)?;
     let args = Args {
         connection_file: std::env::var_os("SUBC_CONNECTION_FILE")
             .map(PathBuf::from)
@@ -149,6 +154,13 @@ fn parse_args() -> Result<Args, String> {
         Some(unknown) => Err(format!("unknown argument {unknown}")),
         None => Ok(args),
     }
+}
+
+fn validate_rig_root(root: &std::path::Path, home: &std::path::Path) -> Result<(), String> {
+    if !root.is_absolute() || home != root.join("home") {
+        return Err("--rig-root must be absolute and contain the isolated HOME".into());
+    }
+    Ok(())
 }
 
 fn now_ms() -> i64 {

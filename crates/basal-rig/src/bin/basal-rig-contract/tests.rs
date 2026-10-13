@@ -248,6 +248,20 @@ fn seeded_fixture_requires_a_terminal_disabled_module_and_no_pid() {
 }
 
 #[test]
+fn contract_validates_the_root_passed_by_the_rig_script() {
+    let root = std::env::temp_dir().join("basal-rig-custom-root");
+    assert!(validate_rig_root(&root, &root.join("home")).is_ok());
+    assert!(validate_rig_root(&root, &root.join("not-home")).is_err());
+    assert!(
+        validate_rig_root(
+            std::path::Path::new("relative-rig"),
+            std::path::Path::new("relative-rig/home")
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn seeded_fixture_rejects_foreign_paths_and_symlinked_stores() {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let root = loop {
@@ -262,7 +276,7 @@ fn seeded_fixture_rejects_foreign_paths_and_symlinked_stores() {
             Err(error) => panic!("create isolated fixture: {error}"),
         }
     };
-    let rig = root.join("ckdev-flows");
+    let rig = root.join("custom-rig-root");
     let home = rig.join("home");
     let store = rig.join("data/cortexkit/basal/store.db");
     std::fs::create_dir_all(store.parent().unwrap()).unwrap();
@@ -318,7 +332,7 @@ fn authorship_fingerprint_allows_only_the_one_author_cell() {
 
 #[test]
 fn fixture_module_control_uses_only_the_absolute_isolated_cli() {
-    let root = std::env::temp_dir().join("rig").join("ckdev-flows");
+    let root = std::env::temp_dir().join("rig").join("custom-rig-root");
     let home = root.join("home");
     assert_eq!(
         seeded::module_cli_path(&home).unwrap(),
@@ -328,8 +342,8 @@ fn fixture_module_control_uses_only_the_absolute_isolated_cli() {
             "ckdev-ck"
         })
     );
-    assert!(seeded::module_cli_path(&std::env::temp_dir().join("rig").join("home")).is_err());
-    assert!(seeded::module_cli_path(std::path::Path::new("ckdev-flows/home")).is_err());
+    assert!(seeded::module_cli_path(&std::env::temp_dir().join("rig").join("not-home")).is_err());
+    assert!(seeded::module_cli_path(std::path::Path::new("relative-rig/home")).is_err());
 }
 
 #[cfg(windows)]

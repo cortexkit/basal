@@ -1,5 +1,6 @@
 """Offline checks of the rig's generated policy and explicit vault boundary."""
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -13,6 +14,37 @@ HELPERS = SCRIPT.read_text().split("# ------------------------------------------
 
 
 class RigChecks(unittest.TestCase):
+    def test_rig_root_defaults_to_scratch_and_honors_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp).resolve()
+            default = home / "Work/Projects/CortexKit-scratch/ckdev-flows"
+            result = self.run_shell('guard_all_paths; printf "%s\\n" "$RIG"', home)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), str(default))
+
+            override = home / "alternate" / "ckdev-flows"
+            result = self.run_shell(
+                'guard_all_paths; printf "%s\\n" "$RIG"', home,
+                {"BASAL_RIG_ROOT": str(override)},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), str(override))
+
+    def test_rig_root_refuses_production_store_and_external_volumes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp).resolve()
+            roots = [
+                home / ".local/share/cortexkit/ckdev-flows",
+                Path("/Volumes/ckdev-flows"),
+            ]
+            for root in roots:
+                with self.subTest(root=root):
+                    result = self.run_shell(
+                        "guard_all_paths", home, {"BASAL_RIG_ROOT": str(root)}
+                    )
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("refusing: the rig root", result.stderr)
+
     def test_report_rejects_zero_checks_unless_explicitly_not_run(self):
         with tempfile.TemporaryDirectory() as home:
             report_path = Path(home) / "contract.json"
@@ -81,7 +113,7 @@ cmd_build --prefrontal-rev HEAD
     def test_dangling_symlink_cannot_redirect_a_rig_write(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp).resolve()
-            root = home / '.local/share/cortexkit/ckdev-flows'
+            root = home / 'Work/Projects/CortexKit-scratch/ckdev-flows'
             root.mkdir(parents=True)
             (root / 'bin').symlink_to(home / '.local/share/cortexkit/bin')
             result = self.run_shell('guard_all_paths', home)
@@ -91,7 +123,7 @@ cmd_build --prefrontal-rev HEAD
     def test_bad_staged_copy_leaves_the_placed_binary_unchanged(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp).resolve()
-            root = home / '.local/share/cortexkit/ckdev-flows'
+            root = home / 'Work/Projects/CortexKit-scratch/ckdev-flows'
             dest = root / 'bin/ckdev-basal'
             dest.parent.mkdir(parents=True)
             dest.write_bytes(b'previous verified binary')
@@ -119,10 +151,67 @@ cmd_config
             self.assertNotEqual(result.returncode, 0)
             self.assertFalse((Path(home) / 'running').exists())
 
-    def run_shell(self, code, home):
+    def test_copy_stage_copies_and_verifies_the_stage_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp).resolve()
+            stage = home / "basal-0123456789ab"
+            stage.mkdir()
+            files = {
+                "ck-basal": b"basal staged bytes",
+                "ck-basal-worker": b"worker staged bytes",
+                "card.md": b"deployment card\n",
+                "revision": b"0123456789abcdef\n",
+            }
+            for name, content in files.items():
+                (stage / name).write_bytes(content)
+            for name in ("ck-basal", "ck-basal-worker"):
+                digest = hashlib.sha256(files[name]).hexdigest()
+                (stage / f"{name}.sha256").write_text(f"{digest}  {name}\n")
+
+            root = home / "scratch" / "ckdev-flows"
+            result = self.run_shell(
+                'guard_all_paths; cmd_copy_stage "$HOME/basal-0123456789ab"', home,
+                {"BASAL_RIG_ROOT": str(root)},
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            copied = root / "stages" / stage.name
+            for name, content in files.items():
+                self.assertEqual((copied / name).read_bytes(), content)
+            for name in ("ck-basal", "ck-basal-worker"):
+                self.assertEqual(
+                    (copied / f"{name}.sha256").read_text(),
+                    (stage / f"{name}.sha256").read_text(),
+                )
+
+    def test_copy_stage_refuses_tampered_sha256(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp).resolve()
+            stage = home / "basal-tampered"
+            stage.mkdir()
+            for name, content in (("ck-basal", b"basal"), ("ck-basal-worker", b"worker")):
+                (stage / name).write_bytes(content)
+                digest = hashlib.sha256(content).hexdigest()
+                (stage / f"{name}.sha256").write_text(f"{digest}  {name}\n")
+            (stage / "ck-basal.sha256").write_text("0" * 64 + "  ck-basal\n")
+            (stage / "card.md").write_text("card\n")
+            (stage / "revision").write_text("revision\n")
+
+            root = home / "scratch" / "ckdev-flows"
+            result = self.run_shell(
+                'guard_all_paths; cmd_copy_stage "$HOME/basal-tampered"', home,
+                {"BASAL_RIG_ROOT": str(root)},
+            )
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("fails its SHA-256 sidecar", result.stderr)
+            self.assertFalse((root / "stages" / stage.name).exists())
+
+    def run_shell(self, code, home, extra_env=None):
+        env = {**os.environ, "HOME": str(home)}
+        env.pop("BASAL_RIG_ROOT", None)
+        env.update(extra_env or {})
         return subprocess.run(
             ["/bin/sh", "-c", HELPERS + "\n" + code, str(SCRIPT)],
-            env={**os.environ, "HOME": str(home)},
+            env=env,
             text=True,
             capture_output=True,
             check=False,
@@ -163,7 +252,7 @@ basal_identifier ck-basal-worker
             code = 'guard_all_paths; rig_env() { /bin/cat "$HOME/catalog.json"; }; pin_routing'
             result = self.run_shell(code, home)
             self.assertEqual(result.returncode, 0, result.stderr)
-            policy = Path(home) / ".local/share/cortexkit/ckdev-flows/config/cortexkit/alfonso-routing.jsonc"
+            policy = Path(home) / "Work/Projects/CortexKit-scratch/ckdev-flows/config/cortexkit/alfonso-routing.jsonc"
             policy_text = policy.read_text()
             self.assertIn("// Rig fixture values, not measured model quality.", policy_text)
             value = json.loads("\n".join(line for line in policy_text.splitlines()
@@ -199,9 +288,9 @@ basal_identifier ck-basal-worker
             self.assertEqual(result.returncode, 0, result.stderr)
             for line in result.stdout.splitlines():
                 if " auth " in line:
-                    self.assertIn(f"--data-dir {home}/.local/share/cortexkit/ckdev-flows/data/cortexkit/claustrum", line)
-                    self.assertIn(f"--key-path {home}/.local/share/cortexkit/ckdev-flows/config/claustrum/master.key", line)
-                    self.assertIn(f"--subc {home}/.local/share/cortexkit/ckdev-flows/runtime/subc-connection.json", line)
+                    self.assertIn(f"--data-dir {home}/Work/Projects/CortexKit-scratch/ckdev-flows/data/cortexkit/claustrum", line)
+                    self.assertIn(f"--key-path {home}/Work/Projects/CortexKit-scratch/ckdev-flows/config/claustrum/master.key", line)
+                    self.assertIn(f"--subc {home}/Work/Projects/CortexKit-scratch/ckdev-flows/runtime/subc-connection.json", line)
             self.assertIn("--provider-id openai", result.stdout)
             self.assertIn("--payload-file", result.stdout)
             self.assertIn("key with spaces", result.stdout)
@@ -213,7 +302,7 @@ basal_identifier ck-basal-worker
             # for that reason alone, so the test couldn't tell whether the
             # check follows the key file's own symlink.
             home = os.path.realpath(tmp)
-            key = Path(home) / ".local/share/cortexkit/ckdev-flows/config/claustrum/master.key"
+            key = Path(home) / "Work/Projects/CortexKit-scratch/ckdev-flows/config/claustrum/master.key"
             key.parent.mkdir(parents=True)
             key.symlink_to(Path(home) / "outside-master.key")
             result = self.run_shell("guard_all_paths; DRY=1; rig_auth status", home)
@@ -268,7 +357,7 @@ cmd_config
         with tempfile.TemporaryDirectory() as home:
             result = self.run_shell('guard_all_paths; DRY=1; cmd_config; cmd_test --models', home)
             self.assertEqual(result.returncode, 0, result.stderr)
-            path = f"{home}/.local/share/cortexkit/ckdev-flows/runtime/basal-unscoped-send"
+            path = f"{home}/Work/Projects/CortexKit-scratch/ckdev-flows/runtime/basal-unscoped-send"
             self.assertIn(f'"BASAL_RIG_UNSCOPED_FILE": "{path}"', result.stdout)
             self.assertIn(f"--unscoped-file {path}", result.stdout)
 
@@ -293,8 +382,9 @@ rig_env() {
 cmd_test
 ''', home)
             self.assertEqual(result.returncode, 0, result.stderr)
-            rig = Path(home) / ".local/share/cortexkit/ckdev-flows"
+            rig = Path(home) / "Work/Projects/CortexKit-scratch/ckdev-flows"
             args = (rig / "captured-argv").read_text().splitlines()
+            self.assertEqual(args[args.index("--rig-root") + 1], str(rig))
             self.assertEqual(args[args.index("--project-root") + 1],
                              str(rig / "home/projects/basal-rig-20260101t000000z"))
 
@@ -320,7 +410,7 @@ rig_env() {
 cmd_test --packages
 ''', home)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            rig = Path(home) / ".local/share/cortexkit/ckdev-flows"
+            rig = Path(home) / "Work/Projects/CortexKit-scratch/ckdev-flows"
             args = (rig / "captured-argv").read_text().splitlines()
             self.assertEqual(args.count("--packages"), 1)
             self.assertNotIn("--models", args)
@@ -353,7 +443,7 @@ cmd_config
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("cingulate\tcingulate\tck-cingulate\tckdev-cingulate", result.stdout)
             self.assertIn("cingulate\tckdev-cingulate", result.stdout)
-            self.assertIn(f'"program": "{home}/.local/share/cortexkit/ckdev-flows/bin/ckdev-cingulate"', result.stdout)
+            self.assertIn(f'"program": "{home}/Work/Projects/CortexKit-scratch/ckdev-flows/bin/ckdev-cingulate"', result.stdout)
         self.assertIn("cingulate_rev=c650e9db6e87dbb28fe20dd5fc2815db5deb41e9", HELPERS)
 
 

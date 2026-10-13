@@ -86,13 +86,19 @@ ckdev-mutate run --all --report target/mutations/handover.json
 
 Every row must be `CAUGHT`; a build failure or a red test other than the named guard is not proof of that guard. Keep the JSON report with the handover evidence rather than committing machine output. New safety guards belong in the file for their area under `mutations.d/`: resolve the full libtest path, use `ckdev-mutate prove` to record only a caught edit, and commit the guard with its proof as described in the README. These source-level proofs complement, rather than replace, the signed-binary and live rig checks below.
 
-Run the staged bytes on the ckdev-flows rig, basal's isolated test stack ([`script/flows-rig.sh`](../script/flows-rig.sh) documents it in its header):
+Run the staged bytes on the ckdev-flows rig, basal's isolated test stack ([`script/flows-rig.sh`](../script/flows-rig.sh) documents it in its header). Its root defaults to `~/Work/Projects/CortexKit-scratch/ckdev-flows`; set `BASAL_RIG_ROOT` to an absolute path to override it. The guard refuses roots under `~/.local/share/cortexkit/` or `/Volumes/`.
+
+The head agent with access to production staging runs `copy-stage` first. It copies `ck-basal`, `ck-basal-worker`, their two `.sha256` sidecars, `card.md` and `revision` into the rig, and verifies both binary digests. Workers place from that rig-local copy, never from `~/.local/share/cortexkit/staging`:
 
 ```sh
 STAGING=$(mktemp -d)
 script/stage.sh --local-only --staging-root "$STAGING"
+script/flows-rig.sh copy-stage "$STAGING/basal-<short sha>"
+# The head agent gives the worker this copied rig-local directory; both use
+# the same rig root.
+RIG_ROOT=${BASAL_RIG_ROOT:-"$HOME/Work/Projects/CortexKit-scratch/ckdev-flows"}
 script/flows-rig.sh build --prefrontal-rev <rev> ...      # basal at the same HEAD
-script/flows-rig.sh place --from-stage "$STAGING/basal-<short sha>"
+script/flows-rig.sh place --from-stage "$RIG_ROOT/stages/basal-<short sha>"
 script/flows-rig.sh config
 script/flows-rig.sh test        # every case but the crash case, which is reported as not run
 script/flows-rig.sh place       # the rig's own build again, with the kill switch
