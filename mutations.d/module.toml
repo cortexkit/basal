@@ -797,13 +797,13 @@ runner = "cargo"
 package = "basal-module"
 platforms = ["macos"]
 target = "--test dry_run"
-expect_red = ["each_dry_run_has_its_own_scratch_store_and_the_real_kv_and_runs_are_untouched"]
-only = false
+expect_red = ["each_dry_run_has_its_own_scratch_store_and_the_real_kv_and_runs_are_untouched", "dry_runs_capture_every_built_in_and_live_runs_only_reads_in_scope"]
+only = true
 build_timeout_s = 3600
 timeout_s = 600
 edits = [
-  { file = "crates/basal-module/src/dryrun.rs", old = "\"dry-{}-{}-{n}\",\n            std::process::id(),\n            request.now_ms\n        ));", new = "\"dry-shared{}\",\n            n * 0\n        ));" },
-  { file = "crates/basal-module/src/dryrun.rs", old = "let _ = std::fs::remove_dir_all(&dir);", new = "let _ = &dir;" },
+  { file = "crates/basal-module/src/dryrun.rs", old = "\"dry-{}-{}-{n}\",\n            std::process::id(),\n            request.now_ms\n        ));", new = "\"dry-{}-{}-{}\",\n            std::process::id(),\n            if request.template.is_some() { request.now_ms } else { 0 },\n            if request.template.is_some() { n } else { 0 }\n        )); // NON-VACUITY BREAK" },
+  { file = "crates/basal-module/src/dryrun.rs", old = "let _ = std::fs::remove_dir_all(&dir);", new = "if request.template.is_some() { let _ = std::fs::remove_dir_all(&dir); } // NON-VACUITY BREAK" },
 ]
 
 [[control]]
@@ -1045,8 +1045,8 @@ new = "(Some(_), true) => \"active\","
 
 [[control]]
 id = "health-reports-a-flow-nobody-approved-by-its-enabled-switch"
-hub = "A flow with no approved version is unapproved regardless of its enabled switch, asserted by health, list and revocation tests"
-hub_targets = ["health_contract", "install_gate", "list_contract"]
+hub = "A flow with no approved version is unapproved regardless of its enabled switch, including pending, declined, expired and revoked installs asserted by health, list, install-policy and revocation tests"
+hub_targets = ["health_contract", "install_gate", "install_policy", "list_contract"]
 guards = "health reports a flow nobody approved by its enabled switch"
 test_file = "crates/basal-module/tests/ops.rs"
 runner = "cargo"

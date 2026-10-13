@@ -134,3 +134,165 @@ was then repeated with `--broad`.
   at least the production activation deadline of 60s`. With `--broad` it is also
   CAUGHT: of the package's 206 tests only the named test went red, so its
   `only = true` holds there as well.
+
+## Scheduled audit 38384837131 (e52441ae)
+
+This follow-up concerns the 2026-10-13 scheduled run of
+`e52441ae74096baef398aef3d555009f9bf9948a`, not the earlier audit above.
+All ten jobs that actually ran were retrieved through the GitHub REST
+`actions/jobs/{job_id}/logs` endpoint and their complete payloads inspected.
+The five skipped jobs had no steps and their log endpoints returned HTTP 404.
+The eight available artifacts were also downloaded through REST; six contained
+mutation reports, and two contained Windows application/restoration witnesses.
+The runner was the workflow-pinned `ckdev-mutate` 0.12.0, commons
+`be120e9254c4972191b39b2e6814987918206afc`.
+
+### Strict revocation witness
+
+`instance-revocation-preserves-enable` remains `only = true`. The template test
+`template_version_revocation_stops_only_that_version_and_keeps_registry` checks
+the same property as `instance_core_revocation_does_not_mutate_package_bytes`:
+revoking the selected version must clear approval without flipping the instance's
+enable switch. Its admission assertion at `template_instances.rs:162` requires
+`NotApproved`, not `Disabled`; it then selects a new version and successfully
+activates it. Both tests are now required in `expect_red`; the row's ordinary
+replay also includes both `package_instances` and `template_instances`, so push
+CI executes both required witnesses rather than looking for a test outside its
+run set. No assertion changed.
+
+### Six breadth decisions
+
+| Row | Decision | Exact other-target witnesses / narrowed collateral |
+|---|---|---|
+| dry-runs-share-one-scratch-store-that-is-never-removed | Narrow the mutant to ordinary dry runs, preserving template preview naming and cleanup. | Template previews test bound values, self-end, timestamps and quota-free results, rather than the ordinary scratch-store oracle. All four previously red template tests now stay green: `instance_dry_run_uses_bound_values_owner_grants_and_approved_version`, `template_dry_run_at_fires_once_immediately_with_canonical_timestamp`, `template_dry_run_captures_self_end_with_values_and_bound_instance`, `template_dry_run_creates_no_rows_and_uses_no_quota`. `each_dry_run_has_its_own_scratch_store_and_the_real_kv_and_runs_are_untouched` still fails; the same-target `dry_runs_capture_every_built_in_and_live_runs_only_reads_in_scope` also detects reuse of an earlier dry run's admission. Both are now required in `expect_red`, with `only = true` rejecting any other red test. No HUB targets are needed. |
+| health-reports-a-flow-nobody-approved-by-its-enabled-switch | Reviewed HUB; add `install_policy` to the existing `health_contract`, `install_gate`, `list_contract` targets. | Policy witnesses `declined_and_expired_hints_settle_unapproved_cards_and_are_visible`, `mismatched_policy_reply_hash_never_asks_status_or_approves`, `policy_status_must_be_active_with_the_local_hash`, and `unknown_install_outcome_is_an_error_even_with_a_valid_hash_or_card_id` all explicitly require `unapproved` with no approved version. Existing health/list/revocation witnesses assert exactly the same state rule. |
+| hosts-undeclared-events-fabricated | Narrow the mutant and review the genuine declaration witnesses as HUB `catalog_events`. | Keep acknowledgement, transport and module lookup intact; retain real matching declarations and their body/provenance. Only a missing, empty or unmatched event declaration is fabricated. `catalog_events_require_an_acknowledged_daemon_capability` now stays green. `missing_empty_or_unmatched_catalog_events_are_refused` and `recorded_live_plexus_catalog_accepts_github_pr_changed_v1` still fail on their undeclared-name/version refusals. |
+| install-agent-owned-foreign-targets | Reviewed HUB; add `audience` alongside `ops`. | `install_and_dry_run_apply_audience_authorship_and_resolution` reaches its explicit foreign-agent install refusal, the same self-only grant rule as the named `agent_targets` oracle and `install_refuses_what_an_agent_may_not_do` in `ops`. |
+| install-gate-a-revoked-version-activates | Reviewed HUB `template_instances`. | `template_version_revocation_stops_only_that_version_and_keeps_registry` requires `ActivationEnd::Revoked` before checking retained registry state and newer-version selection. Same-target resumed-run and new-approval tests also require the revoked gate to close. |
+| recovery-does-not-resend-queries-cut-harness | Reviewed HUB; add `flow_scopes` alongside `builtins_dispatch`, `journal_kill`. | `replay_reasks_core_and_outside_audience_call_fails_unsent` deliberately cuts after a query's answer but before persistence, recovers, and requires that query to be reissued through a fresh audience check. With query resend removed, its run cannot finish; this is the same unresolved-query recovery property as the cut, kill and built-in witnesses. |
+
+The hosts oracle was strengthened, not weakened: it now acknowledges
+`catalog-events/v1` before checking for an undeclared event. Previously the test
+could obtain `event_not_declared` merely from the missing acknowledgement, without
+exercising the declaration lookup. All its existing assertions remain unchanged.
+No catalogue row was deleted and no production source change is committed.
+
+### The six-hour limit and scheduled-only sharding
+
+Elapsed job minutes are `completed_at - started_at` from the REST jobs response;
+replay minutes use those same fields on each job's "Replay the full catalogue in
+an isolated shard" step:
+
+| Platform/shard | Job minutes | Replay minutes | Conclusion |
+|---|---:|---:|---|
+| Linux 1/2 | 360.95 | 358.23 | cancelled |
+| Linux 2/2 | 361.38 | 355.93 | cancelled |
+| macOS 1/5 | 327.72 | 325.63 | failure (WRONG_TEST) |
+| macOS 2/5 | 329.60 | 327.68 | success |
+| macOS 3/5 | 361.17 | 359.83 | cancelled |
+| macOS 4/5 | 340.75 | 339.12 | success |
+| macOS 5/5 | 310.45 | 309.08 | success |
+| Windows 1/2 | 49.87 | 34.22 | success |
+| Windows 2/2 | 45.95 | 32.42 | success |
+
+`WRONG_TEST` means the named witness failed but the strict row also reddened a
+test it had not declared. Here that extra red was the same-property template
+revocation witness, now explicitly required.
+
+The cancelled jobs began around 10:39 UTC and were stopped around 16:40 UTC,
+with no completed report to upload. This is the hosted runner's per-job cap,
+not evidence of a hung test. Increasing a timeout cannot evade that cap.
+
+Scheduled counts are now **16 Linux / 12 macOS / 2 Windows**. Push and manual
+runs retain **2 / 5 / 2**. The matrix generator selects the larger counts only
+for `event == "schedule"`; the original push prerequisite and event filter
+remain on the matrix job. More shards can queue behind the account's concurrency
+limit, but queue time does not consume their individual six-hour execution cap.
+
+Sizing uses the seven reported timing fields (`build_ms`, `test_ms`,
+`baseline_build_ms`, `baseline_test_ms`, `prebuild_ms`, `baseline_prebuild_ms`,
+`restore_prebuild_ms`). Their sums on the four completed macOS shards are
+325.54, 327.58, 339.04 and 309.00 minutes, close to the measured replay durations.
+The cancelled Linux and macOS shards have **no per-row report**, so their final
+costs cannot be measured and the six-hour values are censored lower bounds.
+The catalogue supplies deadlines, not measured per-row durations.
+
+For the current catalogue's sorted-ID assignments, imputing unreported macOS
+rows at the largest reported cost for their package (from the completed macOS
+and Windows reports) gives at most **240.1 minutes** with 12 shards. For Linux,
+using the completed macOS package maxima as deliberately pessimistic proxies,
+using the `basal-testkit` maximum for unreported `basal-core` breadth, and allowing
+10 minutes per row for packages with no native report, gives at most **286.2
+minutes** with 16 shards. Those projections leave about 120 and 74 minutes,
+respectively, before the hosted cap, before modest setup/teardown overhead.
+They are conservative sizing assumptions, not newly measured Linux runtimes or
+a guarantee against an individually hung row. A full scheduled replay cannot
+be triggered from this worktree; the next hosted audit must confirm headroom.
+
+The maximum selected row counts per new scheduled shard are 42 Linux, 46 macOS,
+and 34 Windows, versus roughly 300 Linux and 100 macOS previously. Sorting is
+across **all** catalogue IDs, before platform skips: the pinned runner's
+`main.rs:463-476` assigns `index % count == shard - 1`. Package grouping changes
+execution order later, not assignment. The workflow's generator emits every
+one-based shard once. `test_mutation_matrix.py` checks its CLI output and
+workflow wiring, then feeds assignments using that pinned algorithm through the
+unchanged coverage checker. The complete current catalogue (1,163 rows: 591
+Linux, 504 macOS, 68 Windows) is covered exactly once, including every
+other-platform skip, for both the scheduled and unchanged push matrices.
+These are assignment checks, not fabricated successful replay claims.
+
+`mutation-coverage` did **not** fail only because shards were cancelled. Its log
+explicitly fails first with:
+
+```text
+ValueError: instance-revocation-preserves-enable (mutations.d/core-install.toml:842): unsuccessful replay: WRONG_TEST
+```
+
+That unsuccessful row alone fails coverage. After correcting it, the absent
+Linux reports and absent macOS shard 3 would independently fail the check's
+missing-ID/exactly-once checks. The coverage gate and its accepted outcomes were
+not changed. Three additional Windows breadth warnings in this run are outside
+the six rows requested here and were not altered.
+
+### Replays and negative controls
+
+Each of the seven changed rows ran individually on its assigned platform,
+macOS, with the pinned 0.12.0 runner:
+
+`env -u BASAL_WORKER_BIN -u BASAL_CUT_EXHAUSTIVE ckdev-mutate run --only <id> --broad --allow-dirty --report <temporary-report>`
+
+| Row | Outcome | Red / green tests | Other red targets |
+|---|---|---:|---|
+| instance-revocation-preserves-enable | CAUGHT | 2 / 241 | none beyond the two required witnesses |
+| dry-runs-share-one-scratch-store-that-is-never-removed | CAUGHT | 2 / 386 | none beyond the two required same-target witnesses |
+| health-reports-a-flow-nobody-approved-by-its-enabled-switch | HUB | 12 / 376 | `health_contract`, `install_gate`, `install_policy`, `list_contract` |
+| hosts-undeclared-events-fabricated | HUB | 3 / 385 | `catalog_events` |
+| install-agent-owned-foreign-targets | HUB | 3 / 385 | `audience`, `ops` |
+| install-gate-a-revoked-version-activates | HUB | 4 / 239 | `template_instances`; two same-target witnesses |
+| recovery-does-not-resend-queries-cut-harness | HUB | 5 / 238 | `builtins_dispatch`, `flow_scopes`, `journal_kill`; one same-target witness |
+
+Every broad baseline was green. The two strict rows (instance revocation and
+ordinary scratch isolation) also graded CAUGHT on ordinary, non-broad replays,
+so their expanded required witness sets remain valid on push CI. Catalogue
+anchor/name checks passed on both Linux and macOS. In addition, each row's first
+named oracle was
+run with `cargo test --locked -p <package> --test <target> <test> -- --exact
+--test-threads=1`: one baseline test passed, then exactly that test failed after
+applying the catalogue edit, with every other test filtered out. Before every
+mutation, its source was staged and the worktree diff was empty; the mutation
+produced a nonempty diff, and `git checkout -- <source> && touch <source>` restored
+an empty diff. Exact witness details are included in the delivery's
+`mutation_evidence`; no transient mutant remains in the tree.
+
+The matrix negative control replaced scheduled Linux shard 16 by a second
+shard 15. Of the six matrix tests, only
+`MutationMatrixChecks.test_nightly_matrix_covers_every_row_once` went red
+(`linux: reports must contain every catalogue ID exactly once`, with missing
+and repeated IDs). The other five stayed green. During the break,
+`.github/workflows/mutation_matrix.py` had `2 +-` / one insertion and one deletion;
+after index restoration and touch, the diff was empty. All six tests then
+passed. The full workflow Python suite passed 27 tests and the catalogue/witness
+script suite passed 21. Python was 3.14.4 on Linux. Cargo 1.99.0 successfully
+checked `basal-module --test hosts`; rustfmt 1.10.0 checked workspace formatting.
+Local actionlint 1.7.12 validated the workflow (the Linux host lacks actionlint),
+and PyYAML 6.0.3 parsed it with three matrix/coverage wiring assertions.

@@ -257,8 +257,8 @@ new = "if let Some(run_id) = existing.filter(|_| false) {"
 
 [[control]]
 id = "recovery-does-not-resend-queries-cut-harness"
-hub = "Recovery resends unresolved queries so runs finish after cuts or parent kills, asserted by the crash and built-in recovery targets"
-hub_targets = ["builtins_dispatch", "journal_kill"]
+hub = "Recovery resends unresolved queries after cuts or parent kills, including scoped queries that must recheck the audience before returning an outcome, asserted by built-in, flow-scope and crash recovery tests"
+hub_targets = ["builtins_dispatch", "flow_scopes", "journal_kill"]
 guards = "recovery does not resend queries (cut harness)"
 test_file = "crates/basal-testkit/tests/journal_cut.rs"
 runner = "cargo"
@@ -362,6 +362,8 @@ new = "Ok(InstallStatus::Active { code_hash: _, scope }) => {"
 
 [[control]]
 id = "install-gate-a-revoked-version-activates"
+hub = "A revoked version never activates, including resumed runs and template instances that keep their registry and can later select a new version"
+hub_targets = ["template_instances"]
 guards = "install gate: a revoked version activates"
 test_file = "crates/basal-testkit/tests/install_gate.rs"
 runner = "cargo"
