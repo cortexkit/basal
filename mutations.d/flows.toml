@@ -111,3 +111,19 @@ timeout_s = 600
 file = "flows/board-hygiene/flow.js"
 old = "if (rule === 'eta_passed' && count === 1) {"
 new = "if (rule === 'eta_passed' && count >= 1) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "board-hygiene-replacement-fallback"
+guards = "an unsupported unsent replacement retries the same digest without its key"
+test_file = "crates/basal-module/tests/board_hygiene.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test board_hygiene"
+expect_red = ["unsupported_replacement_retries_without_key_and_logs_once_per_run"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/board-hygiene/flow.js"
+old = "        await sink.digest(agent, item, action);"
+new = "        return false; // NON-VACUITY BREAK: omit the unsent digest retry"

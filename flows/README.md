@@ -21,3 +21,13 @@ runtime (`basal_core::Config::rate`), not as manifest fields.
 Installation and audience selection belong to the operator. The offline tests
 in `crates/basal-module/tests/board_hygiene.rs` exercise the shipped script and
 validate its manifest with basal's parser.
+
+Reminders use a recipient-scoped digest replacement key when core supports it.
+If core does not advertise replacement support, basal refuses the keyed write
+before dispatch with `digest_replace_key_unsupported`. The flow retries the
+same reminder without the key and records the fallback once in the run-result
+log. Keys over 200 UTF-8 bytes are omitted. KV repeat throttling remains active
+in both modes.
+Item nudges carry current state and wait metadata; one-time copies also carry
+`own_*` identifiers for the waiting owner's item so the renderer targets the
+item to re-plan rather than the peer's item whose ETA passed.

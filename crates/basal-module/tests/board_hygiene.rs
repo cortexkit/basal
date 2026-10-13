@@ -1,7 +1,7 @@
 //! Offline execution of the shipped flow through basal's real worker and durable KV.
 mod common;
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use basal_core::{Manifest, NoHooks, RunState};
@@ -30,6 +30,7 @@ struct BoardHost {
     reads: Mutex<Vec<Value>>,
     writes: Mutex<Vec<Value>>,
     refuse: AtomicUsize,
+    replacement_supported: AtomicBool,
 }
 
 impl BoardHost {
@@ -66,6 +67,9 @@ impl BoardHost {
                         .is_none_or(|links| links.as_array().unwrap().len() <= 8)
                 );
                 assert!(args.get("options").is_none_or(Value::is_null));
+                if let Some(key) = args.get("replace_key") {
+                    assert!((1..=200).contains(&key.as_str().unwrap().len()));
+                }
                 self.writes.lock().unwrap().push(args);
                 if self.refuse.swap(0, Ordering::Relaxed) > 0 {
                     return Some(HostOutcome::rejected(text(
@@ -85,6 +89,10 @@ fn text(value: Value) -> JsonText {
 }
 
 impl Host for BoardHost {
+    fn supports_core_capability(&self, capability: &str) -> bool {
+        capability == basal_host::core_host::FLOW_DIGEST_REPLACE_KEY_V1
+            && self.replacement_supported.load(Ordering::Relaxed)
+    }
     fn classify(&self, kind: &CallKind) -> CallClass {
         self.mock.classify(kind)
     }
@@ -130,6 +138,7 @@ struct Test {
 impl Test {
     fn new(boards: Vec<Value>) -> Self {
         let host = Arc::new(BoardHost::default());
+        host.replacement_supported.store(true, Ordering::Relaxed);
         *host.boards.lock().unwrap() = boards;
         let catalog = MockCatalog::standard();
         catalog.set_flow_capable("prefrontal-core", true);
@@ -606,4 +615,101 @@ fn plain_peer_wait_copies_first_eta_once_with_own_item_data_and_replanning_choic
         assert_eq!(repeated[0]["action"], "piggyback");
         assert!(repeated[0]["item"]["data"].get("copy_of").is_none());
     }
+}
+
+#[test]
+fn replacement_keys_are_sent_for_items_lanes_copies_and_repeats() {
+    let mut target = item("pending", BASE);
+    target["eta_ms"] = json!(BASE);
+    let mut waiting = item("blocked", BASE);
+    waiting["wait"] = json!({"on":"ag_b","ref":"item:ag_b/item1"});
+    let mut t = Test::new(vec![
+        board("ag_a", vec![waiting]),
+        board("ag_b", vec![target]),
+        board("ag_c", vec![item("done", BASE - HOUR)]),
+    ]);
+    let first = t.run(BASE);
+    assert_eq!(first.len(), 3);
+    assert_eq!(first[0]["replace_key"], "board_nudge:ag_b:item1:eta_passed");
+    assert_eq!(first[1]["replace_key"], "board_nudge:ag_b:item1:eta_passed");
+    assert_eq!(first[0]["agent"], "ag_b");
+    assert_eq!(first[1]["agent"], "ag_a");
+    assert_eq!(first[2]["replace_key"], "board_nudge:ag_c:lane1:lane_done");
+    let repeated = t.run(BASE + 2 * HOUR);
+    assert_eq!(repeated.len(), 2);
+    assert_eq!(repeated[0]["replace_key"], first[0]["replace_key"]);
+    assert_eq!(repeated[1]["replace_key"], first[2]["replace_key"]);
+}
+
+#[test]
+fn unsupported_replacement_retries_without_key_and_logs_once_per_run() {
+    let mut i = item("pending", BASE);
+    i["eta_ms"] = json!(BASE);
+    let mut t = Test::new(vec![board("ag_a", vec![i.clone()]), board("ag_b", vec![i])]);
+    t.host.replacement_supported.store(false, Ordering::Relaxed);
+    let first = t.run(BASE);
+    assert_eq!(first.len(), 2);
+    assert_eq!(first[0]["agent"], "ag_a");
+    assert_eq!(first[1]["agent"], "ag_b");
+    assert!(
+        first
+            .iter()
+            .all(|write| write.get("replace_key").is_none() && write["action"] == "wake")
+    );
+    assert_eq!(
+        t.result["refusals"],
+        json!([{"message":"board hygiene digest replacement unsupported","code":"digest_replace_key_unsupported"}])
+    );
+    assert!(t.run(BASE + 2 * HOUR - 1).is_empty());
+    assert_eq!(t.result["refusals"], json!([]));
+    let repeated = t.run(BASE + 2 * HOUR);
+    assert_eq!(repeated.len(), 2);
+    assert!(
+        repeated
+            .iter()
+            .all(|write| write.get("replace_key").is_none() && write["action"] == "piggyback")
+    );
+    assert_eq!(t.result["refusals"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn replacement_key_over_two_hundred_bytes_is_omitted_without_refusal() {
+    let agent = format!("ag_{}", "a".repeat(125));
+    let mut i = item("pending", BASE);
+    i["id"] = json!("b".repeat(80));
+    i["eta_ms"] = json!(BASE);
+    let mut t = Test::new(vec![board(&agent, vec![i])]);
+    t.host.replacement_supported.store(false, Ordering::Relaxed);
+    let first = t.run(BASE);
+    assert_eq!(first.len(), 1);
+    assert!(first[0].get("replace_key").is_none());
+    assert_eq!(first[0]["agent"], agent);
+    assert_eq!(t.result["refusals"], json!([]));
+    assert!(t.run(BASE + 2 * HOUR - 1).is_empty());
+    assert_eq!(t.run(BASE + 2 * HOUR).len(), 1);
+}
+
+#[test]
+fn copied_renderer_data_with_large_follow_up_and_own_text_stays_bounded() {
+    let mut target = item("pending", BASE);
+    target["eta_ms"] = json!(BASE);
+    target["text"] = json!("🧭".repeat(300));
+    target["follow_up"] = json!("\"".repeat(4096));
+    let mut waiting = item("blocked", BASE);
+    waiting["text"] = json!("🧭".repeat(300));
+    waiting["wait"] = json!({"on":"ag_b","ref":"item:ag_b/item1"});
+    let mut t = Test::new(vec![
+        board("ag_a", vec![waiting]),
+        board("ag_b", vec![target]),
+    ]);
+    let writes = t.run(BASE);
+    assert_eq!(writes.len(), 2);
+    assert_eq!(writes[1]["item"]["data"]["own_lane_id"], "lane1");
+    assert_eq!(writes[1]["item"]["data"]["own_item_id"], "item1");
+    assert_eq!(writes[1]["item"]["data"]["item_state"], "blocked");
+    assert_eq!(
+        writes[1]["item"]["data"]["item_wait"],
+        json!({"on":"ag_b","ref":"item:ag_b/item1"})
+    );
+    assert!(writes[1]["item"]["data"]["own_item_text"].is_string());
 }

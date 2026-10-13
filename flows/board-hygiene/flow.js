@@ -49,8 +49,8 @@ function bounded(item) {
 }
 
 function replacementKey(data) {
-  // The digest replacement key belongs in sink.digest's fourth argument once prefrontal-core defines the field name and replacement permission.
-  return `board_nudge:${data.agent_id}:${data.item_id ?? data.lane_id}:${data.rule}`;
+  const key = `board_nudge:${data.agent_id}:${data.item_id ?? data.lane_id}:${data.rule}`;
+  return utf8Bytes(key) <= 200 ? key : null;
 }
 
 function itemRef(wait) {
@@ -117,8 +117,6 @@ function digest(rule, agent, lane, item, since, now, copyOf, copyPeer, waitingIt
     body = `Every item in this lane has been done since ${age(now, since)}. Retire the lane: board update: lane ${JSON.stringify(text)} → retired.`;
   }
   if (item?.follow_up) body += ` Follow-up: ${cut(item.follow_up, 2400)}`;
-  // Do not send a replacement option whose field name and required permission are not yet defined.
-  replacementKey(data);
   return bounded({title, body, data});
 }
 
@@ -194,9 +192,21 @@ async function run() {
     return true;
   }
 
+  let replacementUnsupportedLogged = false;
   async function send(agent, item, action) {
+    const key = replacementKey(item.data);
     try {
-      await sink.digest(agent, item, action);
+      try {
+        await sink.digest(agent, item, action, key === null ? undefined : {replace_key: key});
+      } catch (error) {
+        // Unsupported replacement is refused before dispatch, so retrying without it cannot duplicate a delivery.
+        if (key === null || error.data?.code !== 'digest_replace_key_unsupported') throw error;
+        if (!replacementUnsupportedLogged) {
+          log('board hygiene digest replacement unsupported', {code: error.data.code});
+          replacementUnsupportedLogged = true;
+        }
+        await sink.digest(agent, item, action);
+      }
       return true;
     } catch (error) {
       log('board hygiene digest refused', {agent, code: error.data?.code ?? String(error)});
