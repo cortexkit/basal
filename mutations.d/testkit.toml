@@ -193,7 +193,6 @@ let error = output_until_ready(
     )
     .unwrap_err();"""
 new = "let error = basal_testkit::process::output_until(&mut command, Duration::from_secs(10)).unwrap_err(); // NON-VACUITY BREAK"
-edits = []
 test_file = "crates/basal-testkit/tests/windows_process.rs"
 runner = "cargo"
 package = "basal-testkit"
