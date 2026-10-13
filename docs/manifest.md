@@ -137,6 +137,19 @@ receipt and increment the flow's cumulative `skipped_before_install` health
 counter; an acknowledgment lost after commit can count a delivery again.
 There is no catch-up opt-in yet.
 
+To receive Plexus's v2 envelope, declare the same event name with `"version": 2`
+in `trigger.events`, provided the source's `catalog-events/v1` declaration lists
+that version. Notices on `ck.<acct>.event.plexus.<event_name>.v2` match only v2
+triggers; `.v1` matches only v1. A missing version suffix is malformed. Other
+version suffixes must be canonical and declared by the catalog, or the notice
+is malformed.
+The same event key on v1 and v2 subjects represents two distinct deliveries;
+deduplication within each subject is unchanged. The v2 `event_key` header,
+transport id, explicit fetch version and always-present body fields are
+described in [the script contract](script.md#module-event-triggers). Every
+declared version beyond v1 uses the bare `event_key` header and an exact
+`<event_key>.v<N>` transport id, where `N` is the subject version.
+
 Flow-targeted events are admitted only to the flow named by the notice's
 `flow_id` header. Currently the known flow-targeted contract is
 `prefrontal-core`'s `digest_delivered` event, declared in `trigger.events`

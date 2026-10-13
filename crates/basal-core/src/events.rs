@@ -50,7 +50,9 @@ impl Notice {
             .ok_or_else(|| CoreError::Invalid("flow-targeted event lacks flow_id header".into()))
     }
 
-    pub fn identity(&self) -> Result<(&str, &str, u32)> {
+    /// Parse the subject before selecting the fetch key from transport headers.
+    /// Key validation belongs to `identity`, after the key has been selected.
+    pub fn subject_identity(&self) -> Result<(&str, &str, u32)> {
         let parts: Vec<_> = self.subject.split('.').collect();
         if parts.len() != 6
             || parts[0] != "ck"
@@ -64,9 +66,14 @@ impl Notice {
             .and_then(|v| v.parse::<u32>().ok())
             .filter(|v| *v > 0 && parts[5] == format!("v{v}"))
             .ok_or_else(|| CoreError::Invalid("invalid event version".into()))?;
-        let lifecycle_key = parts[3] == "basal"
+        Ok((parts[3], parts[4], version))
+    }
+
+    pub fn identity(&self) -> Result<(&str, &str, u32)> {
+        let (module, name, version) = self.subject_identity()?;
+        let lifecycle_key = module == "basal"
             && version == 1
-            && crate::template_events::EVENTS.contains(&parts[4])
+            && crate::template_events::EVENTS.contains(&name)
             && self
                 .headers
                 .get("flow_id")
@@ -89,7 +96,7 @@ impl Notice {
         {
             return Err(CoreError::Invalid("invalid event key".into()));
         }
-        Ok((parts[3], parts[4], version))
+        Ok((module, name, version))
     }
 
     pub fn trigger_id(&self) -> String {
@@ -386,7 +393,7 @@ impl Runtime {
         };
         let notice: Notice = serde_json::from_value(encoded.clone())
             .map_err(|e| CoreError::Corrupt(e.to_string()))?;
-        let (module, name, _) = notice.identity()?;
+        let (module, name, version) = notice.identity()?;
         let now = self.config.clock.now_ms();
         if run.deadline_at.is_some_and(|deadline| now >= deadline) {
             return Ok(Preamble::Failed {
@@ -438,7 +445,7 @@ impl Runtime {
             position: u64::MAX,
             kind: kind.clone(),
             args: JsonText::new(
-                serde_json::json!({"event_key":notice.event_key,"event_name":name}).to_string(),
+                serde_json::json!({"event_key":notice.event_key,"event_name":name,"version":version}).to_string(),
             )
             .map_err(|e| CoreError::Invalid(e.to_string()))?,
             idempotency_key: format!("event-body:{}", run.run_id),

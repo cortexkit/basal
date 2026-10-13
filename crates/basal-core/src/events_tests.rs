@@ -1,8 +1,8 @@
 use super::*;
 use crate::{Clock, Config, Durability, InstallGate, InstallRequest, Store};
 use basal_host::{
-    CallClass, CallRequest, CompletionSink, Dispatched, Host, HostOutcome, MockCatalog, OpDecl,
-    OpKind, TransportError,
+    CallClass, CallRequest, Catalog, CompletionSink, Dispatched, Host, HostOutcome, MockCatalog,
+    OpDecl, OpKind, TransportError,
 };
 use basal_proto::{CallKind, Settlement};
 use serde_json::json;
@@ -106,14 +106,34 @@ impl Fixture {
         InstallRequest { script: "return trigger.event.body;".into(), author: "local:unverified".into(), loop_override: false, manifest: json!({"id":id,"version":1,"purpose":"Receive a module event", "trigger":{"events":[{"module":"plexus","name":"github_pr_changed","version":1}]}, "ops":[{"module":"plexus","op":basal_host::catalog::EVENT_BODY_OP}]}).to_string() }
     }
     fn approve(&self, id: &str) {
-        let installed = self.rt.install(&self.request(id)).unwrap();
+        self.approve_version(id, 1);
+    }
+    fn approve_version(&self, id: &str, version: u32) {
+        self.catalog.set_event(
+            "plexus",
+            "github_pr_changed",
+            version,
+            self.catalog
+                .event("plexus", "github_pr_changed", 1)
+                .unwrap(),
+        );
+        let mut request = self.request(id);
+        let mut manifest: serde_json::Value = serde_json::from_str(&request.manifest).unwrap();
+        manifest["trigger"]["events"][0]["version"] = json!(version);
+        request.manifest = manifest.to_string();
+        let installed = self.rt.install(&request).unwrap();
         self.rt
             .approve(id, 1, &installed.code_hash, "test-approved")
             .unwrap();
     }
     fn run(&self) -> crate::Run {
-        self.approve("flow");
-        self.rt.admit_events(&[notice(0)]).unwrap();
+        self.run_version(1)
+    }
+    fn run_version(&self, version: u32) -> crate::Run {
+        self.approve_version("flow", version);
+        let mut notice = notice(0);
+        notice.subject = format!("ck.account.event.plexus.github_pr_changed.v{version}");
+        self.rt.admit_events(&[notice]).unwrap();
         let id: String = self
             .rt
             .store()
@@ -150,6 +170,53 @@ fn notice(n: u64) -> Notice {
 }
 fn reply() -> serde_json::Value {
     json!({"result":{"body":BODY,"digest":notice(0).digest,"event_key":notice(0).event_key,"event_name":"github_pr_changed"}})
+}
+
+#[test]
+fn body_fetch_uses_notice_version() {
+    for version in [1, 2, 3] {
+        let f = Fixture::new(60);
+        let run = f.run_version(version);
+        f.reply(reply(), Settlement::Fulfilled);
+        let manifest = Manifest::parse(&run.manifest).unwrap();
+        let Preamble::Ready(trigger) = f.rt.event_preamble(&run, &manifest).unwrap() else {
+            panic!("version {version} body preamble not ready")
+        };
+        let calls = f.source.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        let args: serde_json::Value = serde_json::from_str(calls[0].args.as_str()).unwrap();
+        assert_eq!(
+            args,
+            json!({"event_key":notice(0).event_key,
+            "event_name":"github_pr_changed","version":version})
+        );
+        let event: serde_json::Value = serde_json::from_str(trigger.as_str()).unwrap();
+        assert_eq!(event["event"]["version"], version);
+        assert_eq!(event["event"]["body"], json!({"changed":true}));
+    }
+}
+
+#[test]
+fn v2_body_digest_is_checked_before_journaling() {
+    let f = Fixture::new(60);
+    let run = f.run_version(2);
+    let mut changed = reply();
+    changed["result"]["body"] = json!("{\"changed\": false}");
+    f.reply(changed, Settlement::Fulfilled);
+    let manifest = Manifest::parse(&run.manifest).unwrap();
+    assert!(matches!(f.rt.event_preamble(&run, &manifest).unwrap(),
+        Preamble::Failed { kind, .. } if kind == "event_body_mismatch"));
+    let body: Option<Vec<u8>> =
+        f.rt.store()
+            .read(|c| {
+                Ok(c.query_row(
+                    "SELECT body FROM event_body_journal WHERE run_id=?1",
+                    [&run.run_id],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+    assert!(body.is_none());
 }
 
 #[test]
@@ -360,7 +427,7 @@ fn body_is_journaled_before_script_and_replay_never_calls_live() {
     );
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(calls[0].args.as_str()).unwrap(),
-        json!({"event_key":notice(0).event_key,"event_name":"github_pr_changed"})
+        json!({"event_key":notice(0).event_key,"event_name":"github_pr_changed","version":1})
     );
 }
 

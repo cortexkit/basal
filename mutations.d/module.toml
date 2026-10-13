@@ -2552,3 +2552,54 @@ timeout_s = 600
 file = "crates/basal-module/src/codemode.rs"
 old = 'reply = reply.with_error(code);'
 new = 'let _ = code; // NON-VACUITY BREAK'
+
+[[control]]
+id = "event-v2-fetch-key-header-optional"
+guards = "notices beyond v1 require the bare event_key header"
+test_file = "crates/basal-module/tests/module_events/v2.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test module_events"
+expect_red = ["v2::v2_missing_event_key_is_malformed_and_acked"]
+select = { filter = "v2::" }
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/events.rs"
+old = "notice.event_key = get(EVENT_KEY)?;"
+new = 'notice.event_key = get(EVENT_KEY).unwrap_or_else(|_| get(MESSAGE_ID).unwrap().trim_end_matches(format!(".v{version}").as_str()).to_owned()); // NON-VACUITY BREAK'
+
+[[control]]
+id = "event-v2-transport-id-check-removed"
+guards = "transport ids beyond v1 equal the bare fetch key plus the subject version suffix"
+test_file = "crates/basal-module/tests/module_events/v2.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test module_events"
+expect_red = ["v2::v2_mismatched_transport_id_is_malformed_and_acked", "v2::declared_v3_uses_header_key_and_refuses_mismatched_id"]
+select = { filter = "v2::" }
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/events.rs"
+old = 'if get(MESSAGE_ID)? != format!("{}.v{version}", notice.event_key) {'
+new = 'if false && get(MESSAGE_ID)? != format!("{}.v{version}", notice.event_key) { // NON-VACUITY BREAK'
+
+[[control]]
+id = "event-trigger-version-routing-removed"
+guards = "v1 and v2 notices match only their manifest trigger version"
+test_file = "crates/basal-module/tests/module_events/v2.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test module_events"
+expect_red = ["v2::v1_and_v2_route_separately_and_dedupe_per_version"]
+select = { filter = "v2::" }
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/events.rs"
+old = "e.module == module && e.name == name && e.version == version"
+new = "e.module == module && e.name == name && version > 0 /* NON-VACUITY BREAK */"

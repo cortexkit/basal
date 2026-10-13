@@ -239,13 +239,29 @@ async fn captured_lifecycle_notices_bodies_and_snapshot_match_vectors() {
     let mut captures = Vec::new();
     for message in messages {
         assert!(message.payload.is_empty());
-        let notice = basal_module::events::decode(&message).unwrap();
+        let notice = basal_module::events::decode(&message, f.module.rt.catalog()).unwrap();
         let event_name = message.subject.split('.').nth(4).unwrap();
         let request = json!({"event_key":notice.event_key,"event_name":event_name});
         let reply = f
             .module
             .handle(&Caller::Core, "events_get", request.clone())
             .unwrap();
+        let mut versioned = request.clone();
+        versioned["version"] = json!(1);
+        assert_eq!(
+            f.module
+                .handle(&Caller::Core, "events_get", versioned.clone())
+                .unwrap(),
+            reply
+        );
+        versioned["version"] = json!(2);
+        assert_eq!(
+            f.module
+                .handle(&Caller::Core, "events_get", versioned)
+                .unwrap_err()
+                .code,
+            "event_not_visible"
+        );
         assert_eq!(notice.digest, reply["digest"].as_str().unwrap());
         let body = reply["body"].as_str().unwrap();
         assert_eq!(

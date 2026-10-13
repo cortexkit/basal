@@ -284,13 +284,23 @@ impl Module {
         if *caller != Caller::Core {
             return Err(invisible());
         }
+        fn v1() -> u32 {
+            1
+        }
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Params {
             event_key: String,
             event_name: String,
+            #[serde(default = "v1")]
+            version: u32,
         }
         let p: Params = serde_json::from_value(params).map_err(invalid_params)?;
+        // Lifecycle bodies have only a v1 representation. The reader sends an
+        // explicit version even for v1; never substitute v1 for another version.
+        if p.version != 1 {
+            return Err(invisible());
+        }
         let reply = self
             .rt
             .template_event_body(&p.event_key)

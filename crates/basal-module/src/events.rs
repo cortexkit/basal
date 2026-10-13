@@ -12,7 +12,7 @@ use basal_core::{
     Runtime,
     events::{Notice, Report},
 };
-use basal_host::transport::Transport;
+use basal_host::{Catalog, transport::Transport};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use cortexkit_bus_naming::AccountNames;
 use cortexkit_bus_nats::{ConnectConfig, NatsConnection};
@@ -23,10 +23,11 @@ use serde_json::{Value, json};
 
 pub const BATCH: usize = 32;
 const DURABLE: &str = "m_basal";
-// cortexkit-bus-nats reserves these for the event key and SHA-256 body digest.
+// cortexkit-bus-nats reserves these for the transport id and SHA-256 body digest.
 // Its private codec does not export their names, so batch decoding names them here.
 const MESSAGE_ID: &str = "Nats-Msg-Id";
 const CONTENT_DIGEST: &str = "Ck-Content-Digest";
+const EVENT_KEY: &str = "event_key";
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Health {
@@ -235,7 +236,7 @@ pub async fn bind(connection: &NatsConnection, stream: &str) -> Result<PullConsu
         .map_err(|e| e.to_string())
 }
 
-pub fn decode(message: &jetstream::Message) -> Result<Notice, String> {
+pub fn decode(message: &jetstream::Message, catalog: &dyn Catalog) -> Result<Notice, String> {
     if !message.payload.is_empty() {
         return Err("event notice carries a body".into());
     }
@@ -271,13 +272,27 @@ pub fn decode(message: &jetstream::Message) -> Result<Notice, String> {
             .div_euclid(1_000_000),
     )
     .map_err(|e| e.to_string())?;
-    let notice = Notice {
+    let mut notice = Notice {
         subject: message.subject.to_string(),
         event_key: get(MESSAGE_ID)?,
         digest,
         headers: labels,
         published_at_ms,
     };
+    let (_, _, version) = notice.subject_identity().map_err(|e| e.to_string())?;
+    // Versions beyond v1 use distinct transport ids so stream-wide
+    // deduplication does not suppress another version of the same event.
+    // Only the bare key in the header can resolve the stored body.
+    if version != 1 {
+        notice.event_key = get(EVENT_KEY)?;
+        if get(MESSAGE_ID)? != format!("{}.v{version}", notice.event_key) {
+            return Err("versioned notice transport id does not match event_key".into());
+        }
+    }
+    let (module, name, version) = notice.identity().map_err(|e| e.to_string())?;
+    if version != 1 && catalog.event(module, name, version).is_none() {
+        return Err("undeclared event version".into());
+    }
     notice.target_flow().map_err(|e| e.to_string())?;
     Ok(notice)
 }
@@ -309,7 +324,7 @@ pub async fn commit_batch(
 ) -> Result<Report, String> {
     let notices = messages
         .iter()
-        .filter_map(|m| match decode(m) {
+        .filter_map(|m| match decode(m, rt.catalog()) {
             Ok(notice) => Some(notice),
             Err(reason) => {
                 tracing::warn!(target: "events", subject=%m.subject, %reason, "refusing malformed event notice before acknowledgement");
@@ -410,7 +425,7 @@ async fn reader_loop(
                 let messages = pull(&consumer).await?;
                 if messages.is_empty() { continue; }
                 let oldest = messages.iter().filter_map(|m| m.info().ok()).map(|i| now_ms().saturating_sub(i.published.unix_timestamp_nanos().div_euclid(1_000_000) as i64)).max();
-                let malformed = messages.iter().filter(|m| decode(m).is_err()).count();
+                let malformed = messages.iter().filter(|m| decode(m, rt.catalog()).is_err()).count();
                 let report = commit_batch(rt.clone(), &messages, true).await?;
                 let elapsed = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
                 let mut h = health.lock().unwrap_or_else(|p| p.into_inner());
