@@ -28,6 +28,7 @@ pub mod dryrun;
 pub mod engine;
 pub mod events;
 pub mod fatal;
+#[cfg(any(test, feature = "test-support"))]
 pub mod harness;
 pub mod manifest;
 pub mod metrics;

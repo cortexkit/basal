@@ -8,7 +8,9 @@
 //! approved is still refused. In production the catalog is the daemon's
 //! module catalog; [`MockCatalog`] stands in for it in tests.
 
+#[cfg(any(test, feature = "test-support"))]
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(any(test, feature = "test-support"))]
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 /// Read-only tool used by install validation and the event-body fetch that
@@ -91,6 +93,7 @@ pub trait Catalog: Send + Sync {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 struct Entries {
     flow_capable: BTreeSet<String>,
@@ -103,11 +106,13 @@ struct Entries {
 /// An in-memory catalog. Cloning shares the same entries, so a test can
 /// change a declaration after a flow was approved and watch the runtime
 /// react.
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Default)]
 pub struct MockCatalog {
     entries: Arc<RwLock<Entries>>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl MockCatalog {
     pub fn set_flow_capable(&self, module: &str, capable: bool) {
         if capable {
@@ -146,17 +151,17 @@ impl MockCatalog {
             "unmarked",
             OpDecl {
                 kind: None,
-                ..query.clone()
+                ..query
             },
         );
-        c.set_op("plexus", "pr.get", query.clone());
+        c.set_op("plexus", "pr.get", query);
         c.set_op("plexus", "pr.comment", mutate.clone());
         c.set_op(
             "plexus",
             "pr.label",
             OpDecl {
                 cause_echo: true,
-                ..mutate.clone()
+                ..mutate
             },
         );
         c.set_op(
@@ -164,7 +169,7 @@ impl MockCatalog {
             "bash",
             OpDecl {
                 shell_capable: true,
-                ..mutate.clone()
+                ..mutate
             },
         );
         c.set_event(
@@ -208,10 +213,6 @@ impl MockCatalog {
             .insert((module.to_owned(), op.to_owned()), decl);
     }
 
-    pub fn remove_op(&self, module: &str, op: &str) {
-        self.write().ops.remove(&(module.to_owned(), op.to_owned()));
-    }
-
     pub fn set_event(&self, module: &str, name: &str, version: u32, decl: EventDecl) {
         self.write()
             .events
@@ -235,6 +236,7 @@ impl MockCatalog {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl Catalog for MockCatalog {
     fn workspace_known(&self, id: &str) -> Result<bool, crate::transport::WireError> {
         Ok(self.read().workspaces.contains(id))

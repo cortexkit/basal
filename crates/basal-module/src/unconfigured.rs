@@ -11,7 +11,6 @@ use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use basal_host::{
     CallClass, CallRequest, Catalog, Consent, ConsentError, DecisionCard, DecisionSink, Dispatched,
@@ -91,10 +90,7 @@ impl Host for UnconfiguredHost {
     }
 
     fn now_ms(&self) -> f64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as f64)
-            .unwrap_or(0.0)
+        basal_proto::util::unix_millis() as f64
     }
 
     fn random(&self) -> f64 {

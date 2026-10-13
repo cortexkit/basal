@@ -61,7 +61,7 @@ impl Fatal {
     }
 
     fn lock(&self) -> MutexGuard<'_, Option<String>> {
-        self.inner.0.lock().unwrap_or_else(|p| p.into_inner())
+        basal_proto::util::lock(&self.inner.0)
     }
 
     /// Records a fatal error. The first one wins; later ones are logged only.

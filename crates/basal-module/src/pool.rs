@@ -651,6 +651,7 @@ impl Pool {
     }
 
     /// Waits until at least `n` spares are ready, up to `timeout`.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn wait_for_spares(&self, n: usize, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         let mut state = self.lock();
@@ -758,11 +759,9 @@ impl Pool {
         let crash_status = status.filter(|status| !lease.killed || is_confinement_fault(status));
         let crashed = crash_status.is_some();
         let keep = match (&lease.binding, lease.killed || crashed) {
-            (_, true) => None,
-            (Binding::DryRun(_) | Binding::Codemode, false) => None,
             (Binding::Flow(_), false) if activations >= self.shared.config.max_activations => None,
             (Binding::Flow(flow), false) if !state.stopped => Some(flow.clone()),
-            (Binding::Flow(_), false) => None,
+            _ => None,
         };
         match keep {
             Some(flow) => {
@@ -815,8 +814,7 @@ impl Shared {
         }
     }
     fn lock(&self) -> MutexGuard<'_, State> {
-        // A panic on another thread must not make the pool unusable.
-        self.state.lock().unwrap_or_else(|p| p.into_inner())
+        basal_proto::util::lock(&self.state)
     }
 
     /// Accounts for a worker that is gone. One killed or crashed is owed a

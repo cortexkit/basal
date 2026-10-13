@@ -502,6 +502,7 @@ new = "Caller::Agent { agent_id, .. } => Ok(json!({ \"scope\": agent_id })),"
 
 [[control]]
 id = "a-pending-card-is-raised-again-in-the-name-of-whoever-first-installed-it"
+scope = { after = "fn raise_install_card(", before = "\n    fn " }
 guards = "a pending card is raised again in the name of whoever first installed it"
 test_file = "crates/basal-module/tests/hosts.rs"
 runner = "cargo"
@@ -514,7 +515,7 @@ build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-module/src/ops.rs"
 old = "raised_fields[\"wire_author\"] = card_author(caller)?;"
-new = "let _ = card_author(caller)?;"
+new = "let _ = card_author(caller)?; // NON-VACUITY BREAK"
 
 [[control]]
 id = "an-idle-worker-bound-to-any-flow-is-reused-for-another"
@@ -1697,9 +1698,11 @@ target = "--test codemode"
 expect_red = ["codemode_pool_retires_even_an_unused_lease"]
 only = true
 file = "crates/basal-module/src/pool.rs"
-old = '(Binding::DryRun(_) | Binding::Codemode, false) => None,'
-new = '''(Binding::DryRun(_), false) => None,
-            (Binding::Codemode, false) => Some("codemode".into()), // NON-VACUITY BREAK'''
+old = '''(Binding::Flow(flow), false) if !state.stopped => Some(flow.clone()),
+            _ => None,'''
+new = '''(Binding::Flow(flow), false) if !state.stopped => Some(flow.clone()),
+            (Binding::Codemode, false) => Some("codemode".into()), // NON-VACUITY BREAK
+            _ => None,'''
 
 [[control]]
 id = "s7-codemode-linux-address-space"

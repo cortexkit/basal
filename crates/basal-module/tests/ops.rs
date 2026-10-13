@@ -19,15 +19,7 @@ const SCRIPT: &str = "const r = await ops.call('mock', 'echo', { n: 1 }); return
 const OWNER: &str = "SYNAPSE";
 const FLOW: &str = "flow-own";
 
-fn call(f: &Fixture, caller: &Caller, method: &str, params: Value) -> Result<Value, String> {
-    f.module
-        .handle(caller, method, params)
-        .map_err(|e| format!("{}: {}", e.code, e.message))
-}
-
-fn refused(r: &Result<Value, String>) -> bool {
-    matches!(r, Err(e) if e.starts_with("not_permitted"))
-}
+use common::{call, refused};
 
 /// A flow owned by SYNAPSE, approved, with a second version installed by
 /// the owner and pending.
@@ -38,9 +30,7 @@ fn owned_flow(tag: &str) -> Fixture {
 }
 
 fn v2() -> Value {
-    let mut m = events_manifest(FLOW);
-    m["version"] = json!(2);
-    m
+    common::events_v2(FLOW)
 }
 
 /// What an op did for one caller: ran (or failed for a reason other than

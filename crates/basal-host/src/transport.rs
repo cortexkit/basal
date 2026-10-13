@@ -85,13 +85,7 @@ pub trait Transport: Send + Sync {
     ) -> Result<(), crate::flow_refusal::FlowRefusal> {
         Ok(())
     }
-    fn configure_flow(
-        &self,
-        _flow: &str,
-        _agent_owned: bool,
-        _scope: Option<crate::flow_scope::RegisteredScope>,
-    ) {
-    }
+    fn configure_flow(&self, _flow: &str, _scope: Option<crate::flow_scope::RegisteredScope>) {}
     fn management_for_flow(
         &self,
         _flow: &str,
@@ -164,12 +158,11 @@ pub fn map_error(error: CallError) -> WireError {
     let cause = error.outcome_cause();
     match error {
         CallError::NotSent(e) => WireError::NeverSent(e.to_string()),
-        e @ CallError::StaleRouteHandle(_) => WireError::NeverSent(e.to_string()),
         CallError::Module(e) => refusal(e),
-        // The capability resolver's errors are raised before any request
-        // frame for a call is written. The client classifies all three as
-        // not sent, unlike failures of an already accepted request.
-        e @ (CallError::CapabilityUnprovided { .. }
+        // Stale handles and capability resolution errors are rejected before
+        // any request frame is written, unlike failures of accepted requests.
+        e @ (CallError::StaleRouteHandle(_)
+        | CallError::CapabilityUnprovided { .. }
         | CallError::CapabilityAmbiguous { .. }
         | CallError::InvalidCapabilityIdentifier { .. }) => WireError::NeverSent(e.to_string()),
         // A request the writer accepted and that got no reply; the client
@@ -222,15 +215,14 @@ fn outcome_unknown(cause: Option<OutcomeUnknownCause>, message: String) -> WireE
             | OutcomeUnknownCause::ConsumerClosed
             | OutcomeUnknownCause::ConnectionFailed
             | OutcomeUnknownCause::RouteEnded,
-        ) => WireError::Unknown(message),
+        )
+        | None => WireError::Unknown(message),
         // A completion inside the client was dropped or did not match its
         // request, so basal never received a usable reply.
         Some(OutcomeUnknownCause::CompletionFailed) => WireError::Unreadable(message),
-        // The client attaches a cause to every OutcomeUnknown it builds, so
-        // `None` is an error built elsewhere. It and any cause added in a
-        // later release are recorded as a lost connection: the request may
-        // have been sent, and nothing more is known.
-        None => WireError::Unknown(message),
+        // The client attaches a cause to its OutcomeUnknown errors. A missing
+        // cause still means a request may have left, so it uses Unknown rather
+        // than NeverSent. New causes are logged with that same uncertainty.
         Some(other) => {
             tracing::warn!(cause = ?other, %message, "unrecognised subc outcome-unknown cause; recording a lost connection");
             WireError::Unknown(message)
@@ -662,7 +654,7 @@ impl Transport for SubcTransport {
         let retired = cache.take_retired();
         drop(cache);
         for key in retired {
-            self.configure_flow(&key, true, None);
+            self.configure_flow(&key, None);
         }
         let scope = result?;
         let targets = self
@@ -674,7 +666,6 @@ impl Transport for SubcTransport {
         let key = scope.route_key();
         self.configure_flow(
             &key,
-            true,
             Some(crate::flow_scope::RegisteredScope {
                 selector: scope.selector(),
                 targets,
@@ -717,12 +708,7 @@ impl Transport for SubcTransport {
             .unwrap_or_else(|p| p.into_inner())
             .ready(flow, module, action)
     }
-    fn configure_flow(
-        &self,
-        flow: &str,
-        agent_owned: bool,
-        scope: Option<crate::flow_scope::RegisteredScope>,
-    ) {
+    fn configure_flow(&self, flow: &str, scope: Option<crate::flow_scope::RegisteredScope>) {
         if scope.is_none() {
             self.run_watchers
                 .lock()
@@ -733,7 +719,7 @@ impl Transport for SubcTransport {
             .routes
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .configure(flow, agent_owned, scope);
+            .configure(flow, scope);
         for handle in dropped {
             let _ = self
                 .handle
@@ -977,7 +963,7 @@ mod tests {
         let (entered, received) = std::sync::mpsc::sync_channel(1);
         let (release, paused) = tokio::sync::oneshot::channel();
         with_paused_open(Some((entered, paused)), |transport, _, _, _| {
-            transport.configure_flow("a", true, Some(registered()));
+            transport.configure_flow("a", Some(registered()));
             let opening = transport.clone();
             let thread = std::thread::spawn(move || {
                 opening.scoped_handle(
@@ -1003,7 +989,7 @@ mod tests {
     fn stale_handle_does_not_leave_a_scope_tombstone() {
         with_scoped_transport(|transport, _, _, _| {
             let scope = registered();
-            transport.configure_flow("a", true, Some(scope.clone()));
+            transport.configure_flow("a", Some(scope.clone()));
             let target = RouteTarget::ManagementSurface {
                 module_id: "broca".into(),
             };
@@ -1018,7 +1004,7 @@ mod tests {
             ));
             // A reconnect and the same core selector must not preserve a local stale handle.
             transport.routes.lock().unwrap().connection_restored();
-            transport.configure_flow("a", true, Some(scope));
+            transport.configure_flow("a", Some(scope));
             assert_eq!(
                 transport
                     .management_for_flow("a", "broca", "echo", json!({"n":1}))
@@ -1030,7 +1016,7 @@ mod tests {
     #[test]
     fn stale_model_subscription_evicts_its_dead_handle() {
         with_scoped_transport(|transport, _, _, _| {
-            transport.configure_flow("a", true, Some(registered()));
+            transport.configure_flow("a", Some(registered()));
             let target = RouteTarget::ManagementSurface {
                 module_id: "broca".into(),
             };
@@ -1057,7 +1043,7 @@ mod tests {
     #[test]
     fn stale_model_request_can_reopen_without_a_scope_epoch_change() {
         with_scoped_transport(|transport, _, _, _| {
-            transport.configure_flow("a", true, Some(registered()));
+            transport.configure_flow("a", Some(registered()));
             let target = RouteTarget::ManagementSurface {
                 module_id: "broca".into(),
             };
@@ -1084,7 +1070,7 @@ mod tests {
     #[test]
     fn model_refusal_has_provider_and_action_after_envelope_decoding() {
         with_scoped_transport(|transport, _, _, _| {
-            transport.configure_flow("a", true, Some(registered()));
+            transport.configure_flow("a", Some(registered()));
             let result = transport.management_for_model(
                 "a",
                 BindIdentity::new("/", "basal", "model"),
@@ -1101,7 +1087,7 @@ mod tests {
     #[test]
     fn stale_handle_mapping_keeps_the_client_handle_detail() {
         with_scoped_transport(|transport, _, _, _| {
-            transport.configure_flow("a", true, Some(registered()));
+            transport.configure_flow("a", Some(registered()));
             let handle = transport
                 .scoped_handle(
                     "a",
@@ -1298,7 +1284,7 @@ mod tests {
             assert!(opens.lock().unwrap().is_empty());
             let mut scope = registered();
             scope.targets.insert("mock".into());
-            transport.configure_flow("flow-a", true, Some(scope));
+            transport.configure_flow("flow-a", Some(scope));
             assert!(
                 transport
                     .grant_would_ask("flow-a", Some("owner"), "mock", "g1.ref")
@@ -1359,7 +1345,6 @@ mod tests {
             };
             transport.configure_flow(
                 "codemode:run",
-                false,
                 Some(crate::flow_scope::RegisteredScope {
                     selector: selector.clone(),
                     targets: ["mock".into()].into_iter().collect(),
@@ -1402,7 +1387,7 @@ mod tests {
                     .count(),
                 1
             );
-            transport.configure_flow("codemode:run", false, None);
+            transport.configure_flow("codemode:run", None);
         });
     }
 
@@ -1421,7 +1406,7 @@ mod tests {
                 selector: selector.clone(),
                 targets: ["mock".into(), "broca".into()].into_iter().collect(),
             };
-            transport.configure_flow("flow-a", true, Some(registered));
+            transport.configure_flow("flow-a", Some(registered));
             let (scope_ended, scope_events) = std::sync::mpsc::channel();
             transport.watch_run_scope(
                 "flow-a",
@@ -1514,7 +1499,6 @@ mod tests {
             );
             transport.configure_flow(
                 "flow-a",
-                true,
                 Some(RegisteredScope {
                     selector: selector.clone(),
                     targets: ["mock".into(), "broca".into()].into_iter().collect(),
@@ -1532,7 +1516,6 @@ mod tests {
             next.epoch += 1;
             transport.configure_flow(
                 "flow-a",
-                true,
                 Some(RegisteredScope {
                     selector: next.clone(),
                     targets: ["mock".into(), "broca".into()].into_iter().collect(),
@@ -1541,7 +1524,7 @@ mod tests {
             transport
                 .management_for_flow("flow-a", "mock", "echo", json!({}))
                 .unwrap();
-            transport.configure_flow("flow-a", true, None);
+            transport.configure_flow("flow-a", None);
             assert!(
                 !transport
                     .run_watchers
@@ -1599,7 +1582,6 @@ mod tests {
         with_scoped_transport(|transport, opens, calls, _| {
             transport.configure_flow(
                 "armed",
-                true,
                 Some(RegisteredScope {
                     selector: FlowScope {
                         owner: subc_protocol::Principal::Reserved {
@@ -1642,12 +1624,121 @@ mod tests {
         });
     }
 
+    fn scoped_model_requests(
+        selection: &dyn crate::selector::ModelSelector,
+    ) -> Vec<crate::CallRequest> {
+        use crate::selector::SelectionRequest;
+        use basal_proto::{CallKind, JsonText, Primitive};
+        let mut requests = Vec::new();
+        for (run, position, primitive, session) in [
+            ("run-a", 0, Primitive::Llm, "basal:flow-flow-a:run-a:0"),
+            ("run-a", 1, Primitive::Classify, "basal:flow-flow-a:run-a:1"),
+            ("run-b", 0, Primitive::Llm, "basal:flow-flow-a:run-b:0"),
+        ] {
+            let send = format!("send-{}", requests.len());
+            let chosen = selection
+                .select(&SelectionRequest {
+                    caller_class: "flow".into(),
+                    iq: 70,
+                    eq: 20,
+                    flow_id: "flow-a".into(),
+                    run_id: run.into(),
+                    send_id: send.clone(),
+                })
+                .unwrap();
+            let args = if primitive == Primitive::Classify {
+                json!({"text":"hello","labels":["answer","other"]})
+            } else {
+                json!({"prompt":"hello"})
+            };
+            requests.push(crate::CallRequest {
+                flow_id: "flow-a".into(), run_id: run.into(), position,
+                kind: CallKind::Primitive(primitive),
+                args: JsonText::new(json!({"send_id":send,"work_class":"flow:flow-a","session":session,"op":primitive.name(),"max_output":16,"request":args,"selection":chosen}).to_string()).unwrap(),
+                idempotency_key: send, attempt: 1,
+            });
+        }
+        requests
+    }
+
+    fn assert_model_opens(
+        send_opens: &[Value],
+        selector: &crate::flow_scope::FlowScope,
+        expected: &[&str],
+    ) {
+        assert_eq!(send_opens.len(), 3, "one scoped Broca route per call");
+        let mut sessions: Vec<_> = send_opens
+            .iter()
+            .map(|open| {
+                assert_eq!(
+                    open["scope"],
+                    serde_json::to_value(selector.selector()).unwrap()
+                );
+                open["identity"]["session"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("missing bind session: {open}"))
+                    .to_owned()
+            })
+            .collect();
+        sessions.sort();
+        assert_eq!(sessions, expected);
+        for open in send_opens {
+            assert_eq!(open["identity"]["project_root"], "/");
+            assert_eq!(open["identity"]["harness"], "basal");
+        }
+    }
+
+    fn assert_recovered_model_calls(
+        recorded_opens: &[Value],
+        recorded_calls: &[(u16, Value)],
+        expected_session: &str,
+    ) {
+        let session_for_channel = |channel: u16| {
+            recorded_opens[usize::from(channel - 11)]["identity"]["session"]
+                .as_str()
+                .unwrap()
+        };
+        for (channel, send) in recorded_calls
+            .iter()
+            .filter(|(_, body)| body["method"] == "session.send")
+        {
+            let session = session_for_channel(*channel);
+            let run = format!("broca-run:{}", send["params"]["send_id"].as_str().unwrap());
+            for method in ["run.result", "run.status"] {
+                let reads: Vec<_> = recorded_calls
+                    .iter()
+                    .filter(|(_, body)| body["method"] == method && body["params"]["run_id"] == run)
+                    .collect();
+                assert_eq!(reads.len(), 1);
+                assert_ne!(
+                    reads[0].0, *channel,
+                    "recovery uses the current selector's new channel"
+                );
+                assert_eq!(
+                    session_for_channel(reads[0].0),
+                    session,
+                    "recovery must read the send's conversation"
+                );
+            }
+            assert!(
+                recorded_calls
+                    .iter()
+                    .any(|(channel, body)| body["method"] == "session.subscribe"
+                        && session_for_channel(*channel) == session)
+            );
+        }
+        let read = recorded_calls
+            .iter()
+            .find(|(_, body)| body["method"] == "session.read")
+            .unwrap();
+        assert_eq!(session_for_channel(read.0), expected_session);
+    }
+
     #[test]
     fn scoped_model_calls_keep_per_call_sessions_across_runs_and_recovery() {
         use crate::broca::{BrocaHost, Transport as _};
         use crate::flow_scope::{FlowScope, RegisteredScope};
-        use crate::selector::{FakeSelector, ModelSelector, SelectionRequest};
-        use basal_proto::{CallKind, JsonText, Primitive};
+        use crate::selector::FakeSelector;
         with_scoped_transport(|transport, opens, calls, _| {
             let selector = FlowScope {
                 owner: subc_protocol::Principal::Reserved {
@@ -1660,7 +1751,7 @@ mod tests {
                 selector,
                 targets: ["broca".into()].into_iter().collect(),
             };
-            transport.configure_flow("flow-a", true, Some(register(selector.clone())));
+            transport.configure_flow("flow-a", Some(register(selector.clone())));
             let broca = crate::broca::subc::SubcBrocaTransport::new(
                 transport.clone(),
                 "broca".into(),
@@ -1675,35 +1766,7 @@ mod tests {
                 "basal".into(),
                 selection.clone(),
             );
-            let mut requests = Vec::new();
-            for (run, position, primitive, session) in [
-                ("run-a", 0, Primitive::Llm, "basal:flow-flow-a:run-a:0"),
-                ("run-a", 1, Primitive::Classify, "basal:flow-flow-a:run-a:1"),
-                ("run-b", 0, Primitive::Llm, "basal:flow-flow-a:run-b:0"),
-            ] {
-                let send = format!("send-{}", requests.len());
-                let chosen = selection
-                    .select(&SelectionRequest {
-                        caller_class: "flow".into(),
-                        iq: 70,
-                        eq: 20,
-                        flow_id: "flow-a".into(),
-                        run_id: run.into(),
-                        send_id: send.clone(),
-                    })
-                    .unwrap();
-                let args = if primitive == Primitive::Classify {
-                    json!({"text":"hello","labels":["answer","other"]})
-                } else {
-                    json!({"prompt":"hello"})
-                };
-                requests.push(crate::CallRequest {
-                    flow_id: "flow-a".into(), run_id: run.into(), position,
-                    kind: CallKind::Primitive(primitive),
-                    args: JsonText::new(json!({"send_id":send,"work_class":"flow:flow-a","session":session,"op":primitive.name(),"max_output":16,"request":args,"selection":chosen}).to_string()).unwrap(),
-                    idempotency_key: send, attempt: 1,
-                });
-            }
+            let requests = scoped_model_requests(selection.as_ref());
             // The accepted calls remain in flight together. Broca must not
             // receive their prompts under a shared conversation identity.
             std::thread::scope(|threads| {
@@ -1718,26 +1781,7 @@ mod tests {
                 "basal:flow-flow-a:run-b:0",
             ];
             let send_opens = opens.lock().unwrap().clone();
-            assert_eq!(send_opens.len(), 3, "one scoped Broca route per call");
-            let mut sessions: Vec<_> = send_opens
-                .iter()
-                .map(|open| {
-                    assert_eq!(
-                        open["scope"],
-                        serde_json::to_value(selector.selector()).unwrap()
-                    );
-                    open["identity"]["session"]
-                        .as_str()
-                        .unwrap_or_else(|| panic!("missing bind session: {open}"))
-                        .to_owned()
-                })
-                .collect();
-            sessions.sort();
-            assert_eq!(sessions, expected);
-            for open in &send_opens {
-                assert_eq!(open["identity"]["project_root"], "/");
-                assert_eq!(open["identity"]["harness"], "basal");
-            }
+            assert_model_opens(&send_opens, &selector, &expected);
             drop(host);
             drop(broca);
 
@@ -1745,7 +1789,7 @@ mod tests {
             // scoped channels without changing any call's conversation name.
             let mut current = selector;
             current.epoch += 1;
-            transport.configure_flow("flow-a", true, Some(register(current.clone())));
+            transport.configure_flow("flow-a", Some(register(current.clone())));
             let broca = crate::broca::subc::SubcBrocaTransport::new(
                 transport.clone(),
                 "broca".into(),
@@ -1774,47 +1818,7 @@ mod tests {
                 )
                 .unwrap();
             let recorded_calls = calls.lock().unwrap().clone();
-            let session_for_channel = |channel: u16| {
-                recorded_opens[usize::from(channel - 11)]["identity"]["session"]
-                    .as_str()
-                    .unwrap()
-            };
-            for (channel, send) in recorded_calls
-                .iter()
-                .filter(|(_, body)| body["method"] == "session.send")
-            {
-                let session = session_for_channel(*channel);
-                let run = format!("broca-run:{}", send["params"]["send_id"].as_str().unwrap());
-                for method in ["run.result", "run.status"] {
-                    let reads: Vec<_> = recorded_calls
-                        .iter()
-                        .filter(|(_, body)| {
-                            body["method"] == method && body["params"]["run_id"] == run
-                        })
-                        .collect();
-                    assert_eq!(reads.len(), 1);
-                    assert_ne!(
-                        reads[0].0, *channel,
-                        "recovery uses the current selector's new channel"
-                    );
-                    assert_eq!(
-                        session_for_channel(reads[0].0),
-                        session,
-                        "recovery must read the send's conversation"
-                    );
-                }
-                assert!(
-                    recorded_calls
-                        .iter()
-                        .any(|(channel, body)| body["method"] == "session.subscribe"
-                            && session_for_channel(*channel) == session)
-                );
-            }
-            let read = recorded_calls
-                .iter()
-                .find(|(_, body)| body["method"] == "session.read")
-                .unwrap();
-            assert_eq!(session_for_channel(read.0), expected[0]);
+            assert_recovered_model_calls(&recorded_opens, &recorded_calls, expected[0]);
             broca.release(&crate::broca::Route {
                 flow_id: Some("flow-a".into()),
                 project_root: "/".into(),
@@ -1995,7 +1999,7 @@ mod tests {
                 let mut scope = registered();
                 scope.selector.scope_ref = reference.into();
                 scope.targets.insert("mock".into());
-                transport.configure_flow(flow, true, Some(scope));
+                transport.configure_flow(flow, Some(scope));
                 let error = transport
                     .management_for_flow(flow, "mock", "cut_scope", json!({}))
                     .unwrap_err();

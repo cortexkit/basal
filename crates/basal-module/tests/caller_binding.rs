@@ -88,20 +88,10 @@ fn agent_route(handler: &BasalHandler, channel: u16, agent: &str, session: &str)
     )
 }
 
-fn call(f: &Fixture, caller: &Caller, method: &str, params: Value) -> Result<Value, String> {
-    f.module
-        .handle(caller, method, params)
-        .map_err(|e| format!("{}: {}", e.code, e.message))
-}
-
-fn refused(r: &Result<Value, String>) -> bool {
-    matches!(r, Err(e) if e.starts_with("not_permitted"))
-}
+use common::{call, refused};
 
 fn v2() -> Value {
-    let mut m = events_manifest(FLOW);
-    m["version"] = json!(2);
-    m
+    common::events_v2(FLOW)
 }
 
 /// Every op a flow's owning agent may call on it, refused for `caller`.

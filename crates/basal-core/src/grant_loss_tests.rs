@@ -47,7 +47,7 @@ impl Host for ProbeHost {
         }
         Ok(self.yes.load(Ordering::SeqCst))
     }
-    fn configure_flow(&self, flow: &str, _: bool, scope: Option<RegisteredScope>) {
+    fn configure_flow(&self, flow: &str, scope: Option<RegisteredScope>) {
         assert!(scope.is_some());
         *lock(&self.configured) = Some(flow.into());
     }

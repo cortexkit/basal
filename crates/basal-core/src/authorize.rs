@@ -53,12 +53,7 @@ impl Refusal {
 
 /// The rejection codes basal journals for calls it refuses.
 pub mod codes {
-    /// Not allowed by the approved manifest or by the flow profile.
-    pub const DENIED: &str = "denied";
-    /// Arguments that are not JSON or do not have the call's shape.
-    pub const INVALID_ARGUMENTS: &str = "invalid_arguments";
-    /// An argument over the byte cap, refused before it was parsed.
-    pub const TOO_LARGE: &str = "too_large";
+    pub use basal_host::builtins::codes::{DENIED, INVALID_ARGUMENTS, TOO_LARGE};
     /// The flow is disabled: it makes no new calls outside its VM.
     pub const FLOW_DISABLED: &str = "flow_disabled";
     /// The flow's dispatch budget for the current window is spent.
@@ -236,8 +231,11 @@ pub fn check(
             Ok(())
         }
         CallKind::Primitive(p) => match p {
-            Primitive::Now | Primitive::Random => Ok(()),
-            Primitive::KvGet | Primitive::KvSet | Primitive::KvDelete => Ok(()),
+            Primitive::Now
+            | Primitive::Random
+            | Primitive::KvGet
+            | Primitive::KvSet
+            | Primitive::KvDelete => Ok(()),
             Primitive::InstanceEnd => {
                 if manifest.params.is_some() {
                     Ok(())

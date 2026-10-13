@@ -11,7 +11,7 @@
 use basal_proto::{ArgsDigest, CallKind};
 use rusqlite::{Connection, Transaction, params};
 
-use crate::error::{CoreError, Result};
+use crate::error::Result;
 use crate::model::to_u64;
 
 /// The outcome recorded for a call that was allowed.
@@ -30,8 +30,7 @@ pub fn record(
     outcome: &str,
     at: i64,
 ) -> Result<()> {
-    let position =
-        i64::try_from(position).map_err(|_| CoreError::Invalid(format!("position {position}")))?;
+    let position = crate::model::position_i64(position)?;
     tx.execute(
         "INSERT INTO call_audit (run_id, position, flow_id, op, args_digest, outcome, at) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",

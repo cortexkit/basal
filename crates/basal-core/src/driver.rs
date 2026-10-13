@@ -577,7 +577,7 @@ impl Activation<'_> {
     ///   operator reconciled as not applied: sent again with the same key;
     /// - any other mutation: its outcome cannot be proven, so the run stops
     ///   in `needs_reconcile` naming it.
-    fn recover_calls(&mut self) -> Result<Flow> {
+    fn recover_calls(&self) -> Result<Flow> {
         let run_id = self.lease.run_id.clone();
         let (rows, waiting) = self.rt.store().read(|c| {
             Ok((
@@ -764,6 +764,16 @@ impl Activation<'_> {
             Err(refusal) => return self.refuse(&call, &flow_id, &refusal),
         };
         let class = self.rt.class_of(&call.kind, prepared.args.as_ref());
+        self.commit_host_call(call, flow_id, prepared, class)
+    }
+
+    fn commit_host_call(
+        &mut self,
+        call: HostCall,
+        flow_id: String,
+        prepared: Prepared,
+        class: StoredClass,
+    ) -> Result<Flow> {
         if matches!(
             call.kind,
             CallKind::Primitive(Primitive::Llm | Primitive::Classify)
@@ -781,84 +791,8 @@ impl Activation<'_> {
         };
         let audited_at = self.rt.config.clock.now_ms();
         match class {
-            StoredClass::Sync => {
-                let (settlement, value, clock) = self.sync_value(&call.kind)?;
-                let outcome = self.rt.store().write(|tx| {
-                    journal::insert_call(tx, &self.lease, &flow_id, &new)?;
-                    audit::record(
-                        tx,
-                        &flow_id,
-                        &self.lease.run_id,
-                        call.position,
-                        &call.kind,
-                        &ArgsDigest::of(&call.args),
-                        audit::ALLOWED,
-                        audited_at,
-                    )?;
-                    // Re-read the latest clock inside the transaction, so
-                    // the value is monotonic against everything committed.
-                    let clock = match (clock, journal::last_clock(tx, &self.lease.run_id)?) {
-                        (Some(c), Some(last)) => Some(c.max(last)),
-                        (c, _) => c,
-                    };
-                    let value = clock.map_or(value.clone(), number_text);
-                    journal::record_sync(tx, &self.lease, call.position, settlement, &value, clock)
-                })?;
-                self.next_position += 1;
-                self.at(Boundary::SyncCommitted {
-                    position: call.position,
-                })?;
-                self.reply(outcome)
-            }
-            StoredClass::Local => {
-                let limits = self.rt.config.kv;
-                let refused = self.rt.store().write(|tx| {
-                    if install::is_disabled(tx, &flow_id)? {
-                        self.record_refusal(tx, &flow_id, &call, &disabled_refusal())?;
-                        return Ok(true);
-                    }
-                    journal::insert_call(tx, &self.lease, &flow_id, &new)?;
-                    // The effect, its audit row and its outcome commit with
-                    // the journal row: all of them or none.
-                    let outcome =
-                        if matches!(call.kind, CallKind::Primitive(Primitive::InstanceEnd)) {
-                            crate::templates::request_end(tx, &self.lease.run_id, &call.args)?
-                        } else {
-                            kv::apply(tx, &flow_id, &call.kind, &call.args, &limits)?
-                        };
-                    audit::record(
-                        tx,
-                        &flow_id,
-                        &self.lease.run_id,
-                        call.position,
-                        &call.kind,
-                        &ArgsDigest::of(&call.args),
-                        &outcome_label(&outcome),
-                        audited_at,
-                    )?;
-                    journal::accept_outcome(
-                        tx,
-                        &self.lease.run_id,
-                        call.position,
-                        None,
-                        &outcome,
-                        Source::Local,
-                    )?;
-                    Ok(false)
-                })?;
-                self.next_position += 1;
-                self.at(if refused {
-                    Boundary::RefusalCommitted {
-                        position: call.position,
-                    }
-                } else {
-                    Boundary::LocalCommitted {
-                        position: call.position,
-                    }
-                })?;
-                self.rt.shared.signal.bump();
-                Ok(Flow::Continue)
-            }
+            StoredClass::Sync => self.commit_sync_call(&call, &flow_id, &new, audited_at),
+            StoredClass::Local => self.commit_local_call(&call, &flow_id, &new, audited_at),
             _ => {
                 let run_id = self.lease.run_id.clone();
                 self.rt.register(&run_id, call.position);
@@ -903,6 +837,97 @@ impl Activation<'_> {
                 Ok(Flow::Continue)
             }
         }
+    }
+
+    fn commit_local_call(
+        &mut self,
+        call: &HostCall,
+        flow_id: &str,
+        new: &NewCall<'_>,
+        audited_at: i64,
+    ) -> Result<Flow> {
+        let limits = self.rt.config.kv;
+        let refused = self.rt.store().write(|tx| {
+            if install::is_disabled(tx, flow_id)? {
+                self.record_refusal(tx, flow_id, call, &disabled_refusal())?;
+                return Ok(true);
+            }
+            journal::insert_call(tx, &self.lease, flow_id, new)?;
+            // The effect, its audit row and its outcome commit with
+            // the journal row: all of them or none.
+            let outcome = if matches!(call.kind, CallKind::Primitive(Primitive::InstanceEnd)) {
+                crate::templates::request_end(tx, &self.lease.run_id, &call.args)?
+            } else {
+                kv::apply(tx, flow_id, &call.kind, &call.args, &limits)?
+            };
+            audit::record(
+                tx,
+                flow_id,
+                &self.lease.run_id,
+                call.position,
+                &call.kind,
+                &ArgsDigest::of(&call.args),
+                &outcome_label(&outcome),
+                audited_at,
+            )?;
+            journal::accept_outcome(
+                tx,
+                &self.lease.run_id,
+                call.position,
+                None,
+                &outcome,
+                Source::Local,
+            )?;
+            Ok(false)
+        })?;
+        self.next_position += 1;
+        self.at(if refused {
+            Boundary::RefusalCommitted {
+                position: call.position,
+            }
+        } else {
+            Boundary::LocalCommitted {
+                position: call.position,
+            }
+        })?;
+        self.rt.shared.signal.bump();
+        Ok(Flow::Continue)
+    }
+
+    fn commit_sync_call(
+        &mut self,
+        call: &HostCall,
+        flow_id: &str,
+        new: &NewCall<'_>,
+        audited_at: i64,
+    ) -> Result<Flow> {
+        let (settlement, value, clock) = self.sync_value(&call.kind)?;
+        let outcome = self.rt.store().write(|tx| {
+            journal::insert_call(tx, &self.lease, flow_id, new)?;
+            audit::record(
+                tx,
+                flow_id,
+                &self.lease.run_id,
+                call.position,
+                &call.kind,
+                &ArgsDigest::of(&call.args),
+                audit::ALLOWED,
+                audited_at,
+            )?;
+            // Re-read the latest clock inside the transaction, so
+            // the value is monotonic against everything committed.
+            let clock = match (clock, journal::last_clock(tx, &self.lease.run_id)?) {
+                (Some(c), Some(last)) => Some(c.max(last)),
+                (c, _) => c,
+            };
+            let value = clock.map_or(value.clone(), number_text);
+            journal::record_sync(tx, &self.lease, call.position, settlement, &value, clock)
+        })?;
+        self.next_position += 1;
+        self.at(Boundary::SyncCommitted {
+            position: call.position,
+        })?;
+        self.reply(outcome)
     }
 
     /// Checks a new call's argument size and its grant in the approved
@@ -1127,7 +1152,7 @@ impl Activation<'_> {
     /// fails the run before anything about the call is written, refusal
     /// included: a refusal would itself add a journal row.
     fn check_run_limits(
-        &mut self,
+        &self,
         call: &HostCall,
         request: Option<&JsonText>,
     ) -> Result<Option<Flow>> {
@@ -1442,7 +1467,7 @@ impl Activation<'_> {
         }
     }
 
-    fn on_finished(&mut self, result: ActivationResult) -> Result<Flow> {
+    fn on_finished(&self, result: ActivationResult) -> Result<Flow> {
         match result {
             ActivationResult::Completed { value } => {
                 let exit = Exit::Succeeded {

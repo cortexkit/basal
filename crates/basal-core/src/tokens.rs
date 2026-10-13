@@ -38,13 +38,14 @@ use crate::manifest::LlmGrant;
 /// Added to every input estimate for what the request's bytes do not show:
 /// the provider's own framing of a request (roles, system wrapping,
 /// message separators).
-pub const INPUT_OVERHEAD_TOKENS: u64 = 256;
+const INPUT_OVERHEAD_TOKENS: u64 = 256;
 
 /// The output ceiling of a `classify` call: it answers with one label.
-pub const CLASSIFY_MAX_OUTPUT: u32 = 64;
+pub(crate) const CLASSIFY_MAX_OUTPUT: u32 = 64;
 
 /// Token usage as Broca reports it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg(any(test, feature = "test-support"))]
 pub struct Usage {
     /// Fresh input.
     pub input_tokens: u64,
@@ -55,27 +56,16 @@ pub struct Usage {
     pub cached_input_tokens: u64,
 }
 
-impl Usage {
-    /// What counts against the cap.
-    pub fn capped(&self) -> u64 {
-        self.input_tokens
-            .saturating_add(self.cache_write_tokens)
-            .saturating_add(self.output_tokens)
-    }
-}
-
 fn to_i64(n: u64) -> Result<i64> {
     i64::try_from(n).map_err(|_| CoreError::Invalid(format!("{n} tokens")))
 }
 
-fn to_u64(n: i64, what: &str) -> Result<u64> {
-    crate::model::to_u64(n, what)
-}
+use crate::model::to_u64;
 
 /// A model call ready to journal: the exact request to send, and the
 /// tokens to reserve for it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Clamped {
+pub(crate) struct Clamped {
     pub request: JsonText,
     pub max_output: u32,
     pub reserve: u64,
@@ -88,7 +78,7 @@ pub struct Clamped {
 /// an upper bound on the text's tokens, and JSON quoting and the envelope's
 /// own fields only add bytes that are not tokens. The fixed overhead covers
 /// the provider's framing.
-pub fn estimate_input(bytes: usize) -> u64 {
+pub(crate) fn estimate_input(bytes: usize) -> u64 {
     (bytes as u64).saturating_add(INPUT_OVERHEAD_TOKENS)
 }
 
@@ -97,7 +87,7 @@ fn json_string(s: &str) -> String {
 }
 
 /// Parent-assigned call identity, used for the send key and isolated session.
-pub struct Identity<'a> {
+pub(crate) struct Identity<'a> {
     pub flow_id: &'a str,
     pub run_id: &'a str,
     pub position: u64,
@@ -109,7 +99,7 @@ pub struct Identity<'a> {
 /// the `send_id`, the flow's work class and session, and the clamped
 /// output ceiling. llm steps get no tools, so a request asking for them is
 /// refused.
-pub fn clamp(
+pub(crate) fn clamp(
     primitive: Primitive,
     args_text: &JsonText,
     args: &Value,
@@ -184,7 +174,7 @@ pub fn window_start(now_ms: i64, window_ms: i64) -> i64 {
 
 /// One reservation to make.
 #[derive(Debug, Clone)]
-pub struct Reservation<'a> {
+pub(crate) struct Reservation<'a> {
     pub send_id: &'a str,
     pub flow_id: &'a str,
     pub run_id: &'a str,
@@ -199,7 +189,10 @@ pub struct Reservation<'a> {
 /// what the window already counts (outstanding reservations included) plus
 /// `amount` exceeds the cap. Runs in the transaction that journals the
 /// call, so the check and the reservation are one atomic step.
-pub fn reserve(tx: &Transaction, r: &Reservation<'_>) -> Result<std::result::Result<(), Refusal>> {
+pub(crate) fn reserve(
+    tx: &Transaction,
+    r: &Reservation<'_>,
+) -> Result<std::result::Result<(), Refusal>> {
     let start = window_start(r.now_ms, r.window_ms);
     tx.execute(
         "INSERT OR IGNORE INTO token_windows (flow_id, window_ms, window_start) VALUES (?1, ?2, ?3)",
@@ -229,8 +222,7 @@ pub fn reserve(tx: &Transaction, r: &Reservation<'_>) -> Result<std::result::Res
          WHERE flow_id = ?1 AND window_ms = ?2 AND window_start = ?3",
         params![r.flow_id, r.window_ms, start, amount],
     )?;
-    let position = i64::try_from(r.position)
-        .map_err(|_| CoreError::Invalid(format!("position {}", r.position)))?;
+    let position = crate::model::position_i64(r.position)?;
     tx.execute(
         "INSERT INTO token_ledger (send_id, flow_id, run_id, position, window_ms, window_start, \
          reserved, state, reserved_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'reserved', ?8)",
@@ -250,8 +242,9 @@ pub fn reserve(tx: &Transaction, r: &Reservation<'_>) -> Result<std::result::Res
 
 /// What a settled call reported.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Report {
+pub(crate) enum Report {
     /// Broca's usage.
+    #[cfg(any(test, feature = "test-support"))]
     Usage(Usage),
     /// Token measurements attached to the outcome, with missing fields
     /// retained as absent instead of being converted to zero.
@@ -266,16 +259,21 @@ pub enum Report {
 
 /// Which reservation to settle.
 #[derive(Debug, Clone, Copy)]
-pub enum Key<'a> {
+pub(crate) enum Key<'a> {
+    #[cfg(any(test, feature = "test-support"))]
     SendId(&'a str),
-    Call { run_id: &'a str, position: u64 },
+    Call {
+        run_id: &'a str,
+        position: u64,
+    },
 }
 
 /// Replaces a reservation with what was reported. Applied once per send
 /// id: a reservation already settled is left alone, so a duplicate report
 /// changes nothing. Returns whether this report was the one applied.
-pub fn settle(tx: &Transaction, key: Key<'_>, report: Report, now_ms: i64) -> Result<bool> {
+pub(crate) fn settle(tx: &Transaction, key: Key<'_>, report: Report, now_ms: i64) -> Result<bool> {
     let row: Option<(String, String, i64, i64, i64)> = match key {
+        #[cfg(any(test, feature = "test-support"))]
         Key::SendId(send_id) => tx
             .query_row(
                 "SELECT send_id, flow_id, window_ms, window_start, reserved FROM token_ledger \
@@ -285,8 +283,7 @@ pub fn settle(tx: &Transaction, key: Key<'_>, report: Report, now_ms: i64) -> Re
             )
             .optional()?,
         Key::Call { run_id, position } => {
-            let position = i64::try_from(position)
-                .map_err(|_| CoreError::Invalid(format!("position {position}")))?;
+            let position = crate::model::position_i64(position)?;
             tx.query_row(
                 "SELECT send_id, flow_id, window_ms, window_start, reserved FROM token_ledger \
                  WHERE run_id = ?1 AND position = ?2 AND state = 'reserved'",
@@ -300,6 +297,7 @@ pub fn settle(tx: &Transaction, key: Key<'_>, report: Report, now_ms: i64) -> Re
         return Ok(false);
     };
     let (usage, mut unreported) = match report {
+        #[cfg(any(test, feature = "test-support"))]
         Report::Usage(u) => (
             basal_host::TokenUsage {
                 input_tokens: Some(u.input_tokens),
@@ -388,7 +386,7 @@ fn saturate_usage(tokens: u64) -> i64 {
 
 /// Settles the reservation of the call at (run, position), if it has one
 /// still open, from the outcome that arrived for it.
-pub fn settle_outcome(
+pub(crate) fn settle_outcome(
     tx: &Transaction,
     run_id: &str,
     position: u64,
@@ -443,7 +441,7 @@ impl WindowUsage {
 }
 
 /// What the window starting at `window_start` counts for the flow.
-pub fn window_usage(
+pub(crate) fn window_usage(
     conn: &Connection,
     flow_id: &str,
     window_ms: i64,
@@ -469,6 +467,15 @@ pub fn window_usage(
         .optional()?;
     let (reserved, input, cache_write, output, cached, unreported) =
         row.unwrap_or((0, 0, 0, 0, 0, 0));
+    window_counts(
+        window_ms,
+        window_start,
+        [reserved, input, cache_write, output, cached, unreported],
+    )
+}
+
+fn window_counts(window_ms: i64, window_start: i64, counts: [i64; 6]) -> Result<WindowUsage> {
+    let [reserved, input, cache_write, output, cached, unreported] = counts;
     Ok(WindowUsage {
         window_ms,
         window_start,
@@ -479,6 +486,84 @@ pub fn window_usage(
         cached_input_tokens: to_u64(cached, "cached input tokens")?,
         unreported_tokens: to_u64(unreported, "unreported tokens")?,
     })
+}
+
+/// Read approved manifests and their current token windows in one statement.
+/// Package instances prefer the package approval, just as `install::approved`
+/// does; a missing ledger row still means an empty window, not a missing flow.
+pub(crate) fn window_usage_many(
+    conn: &Connection,
+    flow_ids: &[&str],
+    at_ms: i64,
+) -> Result<std::collections::BTreeMap<String, WindowUsage>> {
+    let ids = serde_json::json!(flow_ids).to_string();
+    let mut stmt = conn.prepare(
+        "SELECT f.flow_id, COALESCE(p.version, i.version),
+                COALESCE(p.code_hash, i.code_hash), COALESCE(p.script, i.script),
+                COALESCE(p.manifest, i.manifest), w.window_ms, w.window_start,
+                w.reserved, w.input_tokens, w.cache_write_tokens, w.output_tokens,
+                w.cached_input_tokens, w.unreported_tokens
+         FROM flows f
+         LEFT JOIN package_versions p ON p.package=f.package AND p.version=f.approved_version
+             AND f.removed=0 AND NOT EXISTS (
+                 SELECT 1 FROM instance_revocations r
+                 WHERE r.flow_id=f.flow_id AND r.version=f.approved_version)
+         LEFT JOIN installs i ON i.flow_id=f.flow_id AND i.version=f.approved_version
+             AND i.state='approved'
+         LEFT JOIN token_windows w ON w.flow_id=f.flow_id
+             AND w.window_start<=?2 AND (?2-w.window_start)<w.window_ms
+         WHERE f.flow_id IN (SELECT value FROM json_each(?1))
+             AND (p.package IS NOT NULL OR i.flow_id IS NOT NULL)
+         ORDER BY f.flow_id",
+    )?;
+    let mut rows = stmt.query(params![ids, at_ms])?;
+    let mut windows = std::collections::BTreeMap::new();
+    while let Some(row) = rows.next()? {
+        let flow_id: String = row.get(0)?;
+        if !windows.contains_key(&flow_id) {
+            let version: i64 = row.get(1)?;
+            u32::try_from(version).map_err(|_| CoreError::Corrupt(format!("version {version}")))?;
+            crate::model::digest(row.get(2)?)?;
+            let _: String = row.get(3)?;
+            let manifest: String = row.get(4)?;
+            let manifest = crate::manifest::Manifest::parse(&manifest)
+                .map_err(|e| CoreError::Corrupt(e.to_string()))?;
+            windows.insert(
+                flow_id.clone(),
+                manifest.token_window_ms().map(|window_ms| WindowUsage {
+                    window_ms,
+                    window_start: window_start(at_ms, window_ms),
+                    reserved: 0,
+                    input_tokens: 0,
+                    cache_write_tokens: 0,
+                    output_tokens: 0,
+                    cached_input_tokens: 0,
+                    unreported_tokens: 0,
+                }),
+            );
+        }
+        if let Some(Some(window)) = windows.get_mut(&flow_id)
+            && row.get::<_, Option<i64>>(5)? == Some(window.window_ms)
+            && row.get::<_, Option<i64>>(6)? == Some(window.window_start)
+        {
+            *window = window_counts(
+                window.window_ms,
+                window.window_start,
+                [
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                    row.get(10)?,
+                    row.get(11)?,
+                    row.get(12)?,
+                ],
+            )?;
+        }
+    }
+    Ok(windows
+        .into_iter()
+        .filter_map(|(id, window)| window.map(|w| (id, w)))
+        .collect())
 }
 
 /// Model-call reservations not yet settled, for a run.

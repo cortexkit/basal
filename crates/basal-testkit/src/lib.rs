@@ -7,6 +7,8 @@
 //! The mutation controls proving these tests catch broken rules are listed in
 //! `mutations.d/` at the repository root, and `ckdev-mutate` replays them.
 
+#![cfg(any(test, feature = "test-support"))]
+
 mod backoff;
 pub mod binaries;
 pub mod channel;
@@ -22,6 +24,6 @@ pub mod run_scopes;
 
 pub use binaries::{DevBinaries, dev_binary};
 pub use channel::{FrameCounts, ProcessChannel, ProcessSource, worker_binary};
-pub use mock::{Answer, MockHost};
+pub use mock::{Answer, ScriptHost};
 pub use parent::{Ending, Journal, JournalEntry, Report, TestParent};
 pub use process::{ParentError, WorkerProcess};

@@ -31,9 +31,7 @@ use crate::model::{
 use crate::runs::{FENCE, Lease};
 use crate::store::now_ms;
 
-fn pos(p: u64) -> Result<i64> {
-    i64::try_from(p).map_err(|_| CoreError::Invalid(format!("position {p}")))
-}
+use crate::model::position_i64 as pos;
 
 /// Every call row of a run, in position order.
 pub fn rows(conn: &Connection, run_id: &str) -> Result<Vec<CallRow>> {

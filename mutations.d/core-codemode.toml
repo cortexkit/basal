@@ -1669,7 +1669,7 @@ only = false
 file = "crates/basal-core/src/codemode/supervisor.rs"
 old = '''shared
         .transport
-        .configure_flow(&format!("codemode:{id}"), false, None);'''
+        .configure_flow(&format!("codemode:{id}"), None);'''
 new = 'let _ = id; // NON-VACUITY BREAK'
 
 [[control]]

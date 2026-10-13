@@ -243,7 +243,13 @@ fn new_runs(report: &basal_core::schedule::TickReport) -> Vec<String> {
 }
 
 fn id(due: &str) -> String {
-    format!("schedule:{due}")
+    basal_core::schedule::fire_trigger_id(ts(due))
+}
+
+#[test]
+fn schedule_fire_ids_keep_the_literal_timestamp_contract() {
+    assert_eq!(id("2026-05-01T01:00:00Z"), "schedule:2026-05-01T01:00:00Z");
+    assert_eq!(id("2026-05-01T10:15:07Z"), "schedule:2026-05-01T10:15:07Z");
 }
 
 /// Ticks once a minute from `from` to `to` inclusive and returns, for
@@ -458,10 +464,7 @@ fn a_sleep_gap_under_each_fires_the_newest_up_to_the_cap_oldest_first() {
         ]
     );
     for (trigger_id, trigger, _) in fx.fires("hourly").into_iter().skip(1) {
-        assert_eq!(
-            trigger_id,
-            format!("schedule:{}", trigger["due"].as_str().expect("due"))
-        );
+        assert_eq!(trigger_id, id(trigger["due"].as_str().expect("due")));
         assert_eq!(
             catch_up(&trigger),
             &json!({

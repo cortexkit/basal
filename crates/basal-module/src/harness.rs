@@ -320,13 +320,7 @@ pub fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
-    let broca = Arc::new(BrocaHost::new(
-        fake.clone(),
-        broca_store.clone(),
-        args.dir.to_string_lossy().into_owned(),
-        "basal".into(),
-        selector.clone(),
-    ));
+    let broca = make_broca_host(&args, &fake, &broca_store, &selector);
     let model_host: Arc<dyn Host> = if args.broca {
         broca.clone()
     } else {
@@ -345,50 +339,13 @@ pub fn main() -> std::process::ExitCode {
     let mut pool = PoolConfig::new(&args.worker, crate::process::WorkerLaunch::Plain);
     pool.warm_spares = args.warm_spares;
     pool.handshake_timeout = Duration::from_secs(180);
-    let config = ModuleConfig {
-        store_path: args.dir.join("basal.db"),
-        durability: Durability { fullfsync: false },
-        runtime: Config {
-            clock: clock.clone(),
-            selector: selector.clone(),
-            activation_deadline: Duration::from_secs(60),
-            // The harness's consent plane is a mock, so no core approved its
-            // flows and no core could be asked about them.
-            install_gate: basal_core::InstallGate::Off,
-            ..Config::default()
-        },
-        pool: pool.clone(),
-        engine: EngineConfig {
-            max_concurrent_activations: args.max_concurrent,
-            ..EngineConfig::default()
-        },
-        dry_run: DryRunConfig::new(args.dir.join("dry-run")),
-    };
-    let host: Arc<dyn basal_host::Host> = if args.routing_fake {
-        use basal_host::{
-            core_host::CoreHost,
-            routing::{ModuleOpsHost, RoutingHost},
-            subc_catalog::SubcCatalog,
-        };
-        let transport = Arc::new(harness_transport::HarnessTransport(mock.clone()));
-        let catalog = Arc::new(SubcCatalog::new(transport.clone()));
-        let builtins = match builtins_config(&args) {
-            Ok(config) => config,
-            Err(e) => {
-                eprintln!("ck-basal-harness: {e}");
-                return std::process::ExitCode::from(64);
-            }
-        };
-        Arc::new(
-            RoutingHost::new(
-                Arc::new(ModuleOpsHost::new(transport.clone(), catalog)),
-                Arc::new(CoreHost::new(transport)),
-                model_host.clone(),
-            )
-            .with_builtins(Arc::new(basal_host::builtins::BuiltinHost::new(builtins))),
-        )
-    } else {
-        model_host
+    let config = module_config(&args, &clock, selector, &pool);
+    let host = match configured_host(&args, model_host, &mock) {
+        Ok(host) => host,
+        Err(e) => {
+            eprintln!("ck-basal-harness: {e}");
+            return std::process::ExitCode::from(64);
+        }
     };
     let module = match Module::start_with_store(
         config,
@@ -422,7 +379,95 @@ pub fn main() -> std::process::ExitCode {
     }
     let _ = pool_slot.set(module.pool.clone());
     module.fatal.exit_when_raised();
+    command_loop(
+        &args,
+        &module,
+        &mock,
+        &consent,
+        &clock,
+        fake.as_ref(),
+        broca.as_ref(),
+    )
+}
 
+fn make_broca_host(
+    args: &Args,
+    fake: &Arc<FakeBroca>,
+    store: &Arc<BrocaStore>,
+    selector: &Arc<basal_host::selector::FakeSelector>,
+) -> Arc<BrocaHost> {
+    Arc::new(BrocaHost::new(
+        fake.clone(),
+        store.clone(),
+        args.dir.to_string_lossy().into_owned(),
+        "basal".into(),
+        selector.clone(),
+    ))
+}
+
+fn module_config(
+    args: &Args,
+    clock: &Clock,
+    selector: Arc<dyn basal_host::selector::ModelSelector>,
+    pool: &PoolConfig,
+) -> ModuleConfig {
+    ModuleConfig {
+        store_path: args.dir.join("basal.db"),
+        durability: Durability { fullfsync: false },
+        runtime: Config {
+            clock: clock.clone(),
+            selector,
+            activation_deadline: Duration::from_secs(60),
+            // The harness approves its flows through an in-memory consent
+            // fixture. The fleet's core service has no install record to confirm.
+            install_gate: basal_core::InstallGate::Off,
+            ..Config::default()
+        },
+        pool: pool.clone(),
+        engine: EngineConfig {
+            max_concurrent_activations: args.max_concurrent,
+            ..EngineConfig::default()
+        },
+        dry_run: DryRunConfig::new(args.dir.join("dry-run")),
+    }
+}
+
+fn configured_host(
+    args: &Args,
+    model_host: Arc<dyn Host>,
+    mock: &MockHost,
+) -> Result<Arc<dyn Host>, String> {
+    Ok(if args.routing_fake {
+        use basal_host::{
+            core_host::CoreHost,
+            routing::{ModuleOpsHost, RoutingHost},
+            subc_catalog::SubcCatalog,
+        };
+        let transport = Arc::new(harness_transport::HarnessTransport(mock.clone()));
+        let catalog = Arc::new(SubcCatalog::new(transport.clone()));
+        let builtins = builtins_config(args)?;
+        Arc::new(
+            RoutingHost::new(
+                Arc::new(ModuleOpsHost::new(transport.clone(), catalog)),
+                Arc::new(CoreHost::new(transport)),
+                model_host,
+            )
+            .with_builtins(Arc::new(basal_host::builtins::BuiltinHost::new(builtins))),
+        )
+    } else {
+        model_host
+    })
+}
+
+fn command_loop(
+    args: &Args,
+    module: &Module,
+    mock: &MockHost,
+    consent: &MockConsent,
+    clock: &Clock,
+    fake: &FakeBroca,
+    broca: &BrocaHost,
+) -> std::process::ExitCode {
     let stdin = std::io::stdin();
     let mut out = std::io::stdout();
     for line in stdin.lock().lines() {
@@ -464,8 +509,7 @@ pub fn main() -> std::process::ExitCode {
                     let sends: Vec<Value> = fake.sends().into_iter().map(|(route, bytes)| json!({"route": route, "params": serde_json::from_slice::<Value>(&bytes).ok()})).collect();
                     json!({"ok": true, "result": sends})
                 } else {
-                    let reply =
-                        command_reply(&module, &mock, &consent, &clock, &args.dir, &command);
+                    let reply = command_reply(module, mock, consent, clock, &args.dir, &command);
                     if args.broca
                         && let Err(error) = broca.poll()
                     {

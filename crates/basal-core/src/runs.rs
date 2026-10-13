@@ -60,7 +60,7 @@ impl Lease {
     }
 }
 
-pub fn load(conn: &Connection, run_id: &str) -> Result<Run> {
+pub(crate) fn load(conn: &Connection, run_id: &str) -> Result<Run> {
     conn.query_row(
         &format!("SELECT {RUN_COLUMNS} FROM runs WHERE run_id = ?1"),
         [run_id],
@@ -70,7 +70,7 @@ pub fn load(conn: &Connection, run_id: &str) -> Result<Run> {
     .ok_or_else(|| CoreError::NoSuchRun(run_id.to_owned()))?
 }
 
-pub fn state(conn: &Connection, run_id: &str) -> Result<RunState> {
+pub(crate) fn state(conn: &Connection, run_id: &str) -> Result<RunState> {
     let s: Option<String> = conn
         .query_row("SELECT state FROM runs WHERE run_id = ?1", [run_id], |r| {
             r.get(0)
@@ -81,7 +81,7 @@ pub fn state(conn: &Connection, run_id: &str) -> Result<RunState> {
 
 /// The run's readiness sequence: bumped by every outcome, acceptance or
 /// unknown result recorded for one of its calls.
-pub fn readiness(conn: &Connection, run_id: &str) -> Result<u64> {
+pub(crate) fn readiness(conn: &Connection, run_id: &str) -> Result<u64> {
     let r: i64 = conn.query_row(
         "SELECT readiness FROM runs WHERE run_id = ?1",
         [run_id],
@@ -97,7 +97,7 @@ pub const HOLDS_SLOT: &str = "('pending', 'running', 'suspended', 'needs_reconci
 /// The earliest-admitted run of the same flow that was admitted before
 /// `run_id` and has not reached a terminal state, if any. Runs of one flow
 /// run one at a time in trigger order, so such a run holds the slot.
-pub fn slot_holder(conn: &Connection, run_id: &str) -> Result<Option<String>> {
+fn slot_holder(conn: &Connection, run_id: &str) -> Result<Option<String>> {
     Ok(conn
         .query_row(
             &format!(
@@ -114,7 +114,7 @@ pub fn slot_holder(conn: &Connection, run_id: &str) -> Result<Option<String>> {
 /// Pending runs that no earlier run of their flow holds back, in admission
 /// order, as (run, flow). Runs of one flow run one at a time, so this is at
 /// most one run per flow: the runs a scheduler of activations may start now.
-pub fn startable(conn: &Connection) -> Result<Vec<(String, String)>> {
+pub(crate) fn startable(conn: &Connection) -> Result<Vec<(String, String)>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT r.run_id, r.flow_id FROM runs r WHERE r.state = 'pending' AND NOT EXISTS \
          (SELECT 1 FROM runs o WHERE o.flow_id = r.flow_id AND o.admit_seq < r.admit_seq \
@@ -180,7 +180,7 @@ pub fn claim(tx: &Transaction, run_id: &str, owner: &str, clock_ms: i64) -> Resu
 /// run already dispatched keep their obligations. `needs_reconcile` runs
 /// are left for the operator: failing one would take away the chance to
 /// reconcile its unknown call as not applied.
-pub fn expire(
+pub(crate) fn expire(
     tx: &Transaction,
     clock_ms: i64,
     only: Option<&str>,
@@ -210,7 +210,7 @@ pub fn expire(
 /// Takes a running run away from its current activation, as a lease
 /// takeover does when the owner is presumed dead. The old activation's next
 /// fenced write fails.
-pub fn take_over(
+pub(crate) fn take_over(
     tx: &Transaction,
     run_id: &str,
     owner: &str,
@@ -260,7 +260,7 @@ pub fn requeue_orphans(tx: &Transaction) -> Result<Vec<String>> {
 }
 
 /// Records the runtime fingerprint at a run's first activation.
-pub fn record_fingerprint(tx: &Transaction, lease: &Lease, fingerprint: &str) -> Result<()> {
+pub(crate) fn record_fingerprint(tx: &Transaction, lease: &Lease, fingerprint: &str) -> Result<()> {
     let changed = tx.execute(
         &format!(
             "UPDATE runs SET fingerprint = ?4 WHERE run_id = ?1 AND fingerprint IS NULL AND {FENCE}"
@@ -311,7 +311,7 @@ pub enum Exit {
 }
 
 /// Moves the run out of `running`, fenced by the activation's lease.
-pub fn exit(tx: &Transaction, lease: &Lease, exit: &Exit) -> Result<RunState> {
+pub(crate) fn exit(tx: &Transaction, lease: &Lease, exit: &Exit) -> Result<RunState> {
     let g = lease.generation_i64()?;
     let now = now_ms();
     let (changed, state) = match exit {
@@ -403,7 +403,7 @@ pub fn exit(tx: &Transaction, lease: &Lease, exit: &Exit) -> Result<RunState> {
 
 /// Removes the activation row a claim wrote, for a claim the install gate
 /// turned back before the run reached a worker: no activation started.
-pub fn forget_claim(tx: &Transaction, lease: &Lease) -> Result<()> {
+pub(crate) fn forget_claim(tx: &Transaction, lease: &Lease) -> Result<()> {
     tx.execute(
         "DELETE FROM activations WHERE run_id = ?1 AND generation = ?2",
         params![lease.run_id, lease.generation_i64()?],
@@ -452,7 +452,7 @@ pub fn park(
     )?;
     let mut settled_awaited = false;
     for p in awaited {
-        let p = i64::try_from(*p).map_err(|_| CoreError::Invalid(format!("position {p}")))?;
+        let p = crate::model::position_i64(*p)?;
         let settled: bool = tx.query_row(
             "SELECT EXISTS (SELECT 1 FROM journal WHERE run_id = ?1 AND position = ?2 \
              AND settlement IS NOT NULL) OR EXISTS (SELECT 1 FROM mailbox WHERE run_id = ?1 \
@@ -495,7 +495,7 @@ pub fn park(
 /// Cancels a run that has not ended. Bumps the generation so an activation
 /// still driving it loses ownership at its next fenced write. Calls already
 /// dispatched keep their obligations.
-pub fn cancel(tx: &Transaction, run_id: &str, detail: &str) -> Result<()> {
+pub(crate) fn cancel(tx: &Transaction, run_id: &str, detail: &str) -> Result<()> {
     let changed = tx.execute(
         "UPDATE runs SET state = 'cancelled', owner = NULL, generation = generation + 1, \
          error_kind = 'cancelled', error_detail = ?2, ended_at = ?3 \
@@ -537,7 +537,7 @@ pub(crate) fn fail_external(
 }
 
 /// Number of activations ever started for the run.
-pub fn activation_count(conn: &Connection, run_id: &str) -> Result<u64> {
+pub(crate) fn activation_count(conn: &Connection, run_id: &str) -> Result<u64> {
     let n: i64 = conn.query_row(
         "SELECT COUNT(*) FROM activations WHERE run_id = ?1",
         [run_id],

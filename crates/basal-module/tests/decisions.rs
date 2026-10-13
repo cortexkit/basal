@@ -273,9 +273,7 @@ fn body<'a>(request: &'a Value, field: &str) -> &'a Value {
     &request["flow_decision"][field]
 }
 
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
+use basal_proto::util::hex;
 
 #[test]
 fn a_run_in_needs_reconcile_raises_one_card_per_unknown_call_to_the_operator_only() {

@@ -1108,3 +1108,19 @@ only = false
 platforms = ["macos"]
 timeout_s = 600
 build_timeout_s = 3600
+[[control]]
+id = "net-unauthorized-fetch-resolves-before-refusal"
+guards = "an unauthorized net.fetch is refused before any DNS lookup"
+file = "crates/basal-host/src/builtins/net.rs"
+old = "let approval = allowed_url(rules, &url, &method);"
+new = """let approval = allowed_url(rules, &url, &method);
+            if approval.is_err() { let _ = self.config.resolver.resolve(&url.host, url.port); } // NON-VACUITY BREAK"""
+test_file = "crates/basal-testkit/tests/builtins_net.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test builtins_net"
+expect_red = ["a_host_or_method_not_approved_is_refused_before_connecting"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600

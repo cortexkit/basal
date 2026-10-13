@@ -462,13 +462,9 @@ pub fn all(conn: &Connection) -> Result<Vec<DecisionRecord>> {
     select(conn, "ORDER BY seq", [])
 }
 
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
+use basal_proto::util::hex;
 
-fn pos(p: u64) -> Result<i64> {
-    i64::try_from(p).map_err(|_| CoreError::Invalid(format!("position {p}")))
-}
+use crate::model::position_i64 as pos;
 
 /// Writes or updates the reconcile card intent of every unknown call of
 /// every run in `needs_reconcile`. Cheap when nothing changed: it reads the

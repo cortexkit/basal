@@ -59,7 +59,7 @@ type Provider = dyn Fn(&str, Value, &str) -> std::result::Result<Value, WireErro
 struct FakeTransport {
     attempts: mpsc::Sender<Attempt>,
     events: Arc<Mutex<Vec<String>>>,
-    registrations: Mutex<Vec<(String, bool, Option<RegisteredScope>)>>,
+    registrations: Mutex<Vec<(String, Option<RegisteredScope>)>>,
     catalog_error: AtomicBool,
     broca_opted_in: AtomicBool,
     readiness: Mutex<Option<FlowRefusal>>,
@@ -95,11 +95,11 @@ impl Transport for FakeTransport {
             )
         }
     }
-    fn configure_flow(&self, key: &str, agent_owned: bool, scope: Option<RegisteredScope>) {
+    fn configure_flow(&self, key: &str, scope: Option<RegisteredScope>) {
         self.registrations
             .lock()
             .unwrap()
-            .push((key.into(), agent_owned, scope.clone()));
+            .push((key.into(), scope.clone()));
         if scope.is_some() {
             self.events.lock().unwrap().push("register".into());
         } else {
@@ -707,14 +707,13 @@ fn supervisor_registers_routes_records_before_delivery_and_releases() {
     let registrations = f.host.registrations.lock().unwrap();
     assert_eq!(registrations.len(), 2);
     assert_eq!(registrations[0].0, "codemode:r");
-    assert!(!registrations[0].1);
-    let scope = registrations[0].2.as_ref().unwrap();
+    let scope = registrations[0].1.as_ref().unwrap();
     assert_eq!(
         serde_json::to_value(&scope.selector).unwrap(),
         json!({"owner":{"kind":"reserved","module_id":"core"},"ref":"scope-r","epoch":7})
     );
     assert!(scope.targets.contains("notes"));
-    assert_eq!(registrations[1], ("codemode:r".into(), false, None));
+    assert_eq!(registrations[1], ("codemode:r".into(), None));
     f.assert_order();
 }
 

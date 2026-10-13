@@ -8,6 +8,9 @@ publish.workspace = true
 rust-version.workspace = true
 
 [features]
+# In-memory hosts, catalogs, consent planes and deterministic polling helpers.
+# Production staging rejects binaries built with this feature.
+test-support = []
 # Test-only switches, never enabled in a production build. The rig is basal's
 # isolated test deployment (script/flows-rig.sh): a private subc daemon with
 # its own modules, whose ck-basal is built with this feature through
@@ -43,4 +46,7 @@ basal-launch.workspace = true
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_Threading"] }
 
 [dev-dependencies]
+# Give this dependency a different name so --features basal-host/test-support
+# still selects basal-host's own feature rather than this development dependency.
+basal-host-test-support = { package = "basal-host", path = ".", features = ["test-support"] }
 subc-transport.workspace = true

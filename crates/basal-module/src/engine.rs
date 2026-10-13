@@ -534,6 +534,7 @@ impl Engine {
 
     /// Waits until an activation is in progress for `run_id`, up to
     /// `timeout`. For tests that act while a run is being driven.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn wait_active(&self, run_id: &str, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         let mut active = self.active();

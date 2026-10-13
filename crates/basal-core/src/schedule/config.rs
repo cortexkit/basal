@@ -1,6 +1,7 @@
 //! Scheduler settings, the clock it reads, and the points where a test can
 //! stop it.
 
+#[cfg(any(test, feature = "test-support"))]
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -45,10 +46,12 @@ pub trait Clock: Send + Sync {
 }
 
 /// A clock that moves only when told to.
+#[cfg(any(test, feature = "test-support"))]
 pub struct ManualClock {
     now: Mutex<Timestamp>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl ManualClock {
     pub fn new(now: Timestamp) -> Self {
         Self {
@@ -61,6 +64,7 @@ impl ManualClock {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl Clock for ManualClock {
     fn now(&self) -> Timestamp {
         *self.now.lock().unwrap_or_else(|p| p.into_inner())

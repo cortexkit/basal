@@ -720,7 +720,7 @@ pub(crate) fn run_activation_with_raw_bridge(
 fn run(
     request: &ActivationRequest,
     link: Rc<RefCell<dyn HostLink>>,
-    #[allow(unused_variables)] expose_raw_bridge: bool,
+    #[cfg_attr(not(test), expect(unused_variables))] expose_raw_bridge: bool,
     prefix: Vec<RecordedCall>,
 ) -> ActivationResult {
     let bridge = match plan(request, prefix) {

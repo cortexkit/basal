@@ -18,8 +18,10 @@ path = "src/main.rs"
 name = "ck-basal-harness"
 path = "src/bin/ck-basal-harness.rs"
 test = false
+required-features = ["test-support"]
 
 [features]
+test-support = ["basal-core/test-support", "basal-host/test-support"]
 # Compiles the one-shot kill switch (`src/rig_kill.rs`) into ck-basal. Only
 # script/flows-rig.sh turns it on, for the ckdev-flows rig's own binary; a
 # production build never does.
@@ -66,7 +68,10 @@ windows-sys = { version = "0.61", features = ["Win32_System_Threading"] }
 sha2.workspace = true
 
 [dev-dependencies]
-basal-testkit.workspace = true
+# Give this dependency a different name so --features basal-module/test-support
+# still selects basal-module's own feature rather than this development dependency.
+basal-module-test-support = { package = "basal-module", path = ".", features = ["test-support"] }
+basal-testkit = { workspace = true, features = ["test-support"] }
 cortexkit-role-tool-provider-conformance.workspace = true
 cortexkit-role-harness = "=0.1.0"
 subc-client-rs = { workspace = true, features = ["test-support"] }

@@ -28,7 +28,9 @@ use std::sync::Arc;
 
 use jiff::Timestamp;
 
-pub use config::{Clock, ManualClock, SchedulerConfig, TickHooks, TickPoint};
+#[cfg(any(test, feature = "test-support"))]
+pub use config::ManualClock;
+pub use config::{Clock, SchedulerConfig, TickHooks, TickPoint};
 pub use due::DueError;
 pub use spec::{
     CompiledSchedule, DEFAULT_EACH_CAP, MAX_EACH_CAP, MAX_INTERVAL_SECS, MIN_INTERVAL_SECS, Missed,
@@ -121,6 +123,7 @@ impl Scheduler {
 
     /// The same scheduler, asking `hooks` at every commit boundary of a tick
     /// whether to carry on or to stop as if the process had died there.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn with_hooks(mut self, hooks: Arc<dyn TickHooks>) -> Self {
         self.hooks = hooks;
         self

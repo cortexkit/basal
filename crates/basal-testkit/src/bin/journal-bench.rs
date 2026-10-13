@@ -1,9 +1,13 @@
 //! Measurements for the parent side: the store and the activation driver.
 //!
 //! ```text
-//! cargo run --release -p basal-testkit --bin journal-bench -- \
+//! cargo run --release -p basal-testkit --bin journal-bench --features test-support -- \
 //!     --worker target/release/ck-basal-worker --out evidence/slice-2-measurements.json
 //! ```
+//!
+//! The example writes a JSON report of the commit, replay and host-call
+//! measurements listed below, using the repository's saved parent-side
+//! benchmark report path.
 //!
 //! - Commit cost: one small write transaction through the store, under
 //!   `synchronous = FULL`, with and without `F_FULLFSYNC`.

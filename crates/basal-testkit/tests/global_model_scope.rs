@@ -44,8 +44,8 @@ struct Models {
     sends: Mutex<Vec<u64>>,
 }
 impl Transport for Models {
-    fn configure_flow(&self, flow: &str, owned: bool, scope: Option<RegisteredScope>) {
-        self.routes.lock().unwrap().configure(flow, owned, scope);
+    fn configure_flow(&self, flow: &str, scope: Option<RegisteredScope>) {
+        self.routes.lock().unwrap().configure(flow, scope);
     }
     fn provider_ready(&self, flow: &str, action: &str) -> Result<(), FlowRefusal> {
         self.routes.lock().unwrap().ready(flow, "broca", action)

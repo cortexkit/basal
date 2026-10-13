@@ -49,6 +49,28 @@ fn admit(rt: &basal_core::Runtime, id: &str, trigger: &str) -> String {
 }
 
 #[test]
+fn batched_token_usage_reads_package_approvals_and_omits_revoked_instances() {
+    let world = World::new("pkg-token-batch");
+    let rt = runtime(&world, InstallGate::Core);
+    let id = ensure(&rt, "return 1", 1, 1);
+    let usage = rt.token_usage_many(&[&id], 1_000).unwrap();
+    assert_eq!(usage.len(), 1);
+    assert_eq!(usage[&id].window_ms, 86_400_000);
+    assert_eq!(usage[&id].window_start, 0);
+    assert_eq!(usage[&id].counted(), 0);
+    assert_eq!(
+        Some(&usage[&id]),
+        rt.token_usage(&id, 1_000).unwrap().as_ref()
+    );
+    rt.store().write(|tx| {
+        tx.execute("INSERT INTO instance_revocations (flow_id,version,reason,revoked_at) VALUES (?1,1,'revoked',1)", [&id])?;
+        Ok(())
+    }).unwrap();
+    assert!(rt.token_usage_many(&[&id], 1_000).unwrap().is_empty());
+    assert!(rt.token_usage(&id, 1_000).unwrap().is_none());
+}
+
+#[test]
 fn self_grants_resolve_to_the_owner_and_sink_calls_carry_stable_id() {
     let world = World::new("pkg-resolution");
     let rt = runtime(&world, InstallGate::Core);

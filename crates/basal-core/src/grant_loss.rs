@@ -341,9 +341,7 @@ impl Runtime {
                     .filter(|owner| {
                         *owner != crate::decisions::OPERATOR_ACTOR && *owner != "local:unverified"
                     });
-                self.shared
-                    .host
-                    .configure_flow(&loss.flow_id, agent.is_some(), Some(scope));
+                self.shared.host.configure_flow(&loss.flow_id, Some(scope));
                 Ok(self
                     .shared
                     .host

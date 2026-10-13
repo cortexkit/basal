@@ -154,11 +154,10 @@ impl DispatchState {
     }
 }
 
-pub fn settlement_str(s: Settlement) -> &'static str {
-    match s {
-        Settlement::Fulfilled => "fulfilled",
-        Settlement::Rejected => "rejected",
-    }
+pub use basal_proto::util::settlement_str;
+
+pub(crate) fn position_i64(position: u64) -> Result<i64> {
+    i64::try_from(position).map_err(|_| CoreError::Invalid(format!("position {position}")))
 }
 
 pub fn parse_settlement(s: &str) -> Result<Settlement> {

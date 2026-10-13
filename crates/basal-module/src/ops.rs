@@ -447,6 +447,22 @@ impl Module {
 
     // ---- flow.install --------------------------------------------------
 
+    fn parse_install_manifest(&self, text: &str) -> Result<Manifest, OpError> {
+        Manifest::parse_ordinary(text).map_err(|e| match e {
+            e @ (ManifestError::ParamsRequirePackage { .. }
+            | ManifestError::AudienceSinkNamed
+            | ManifestError::AudiencePlaceholderWithoutAudience
+            | ManifestError::ForTargetRequiresAudience
+            | ManifestError::RunBoundExceedsAudienceLimit) => {
+                self.install_error(InstallError::Manifest(e))
+            }
+            other => OpError::new(
+                "install_refused",
+                format!("the manifest is invalid: {other}"),
+            ),
+        })
+    }
+
     fn op_install(&self, caller: &Caller, params: Value) -> OpResult {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
@@ -460,21 +476,7 @@ impl Module {
             loop_override: bool,
         }
         let p: Params = serde_json::from_value(params).map_err(invalid_params)?;
-        let manifest = Manifest::parse_ordinary(&p.manifest).map_err(|e| match e {
-            ManifestError::ParamsRequirePackage { .. } => {
-                self.install_error(InstallError::Manifest(e))
-            }
-            e @ (ManifestError::AudienceSinkNamed
-            | ManifestError::AudiencePlaceholderWithoutAudience
-            | ManifestError::ForTargetRequiresAudience
-            | ManifestError::RunBoundExceedsAudienceLimit) => {
-                self.install_error(InstallError::Manifest(e))
-            }
-            other => OpError::new(
-                "install_refused",
-                format!("the manifest is invalid: {other}"),
-            ),
-        })?;
+        let manifest = self.parse_install_manifest(&p.manifest)?;
         // Package instances derive their ids from the package and agent.
         // Plain installs must not occupy that namespace before an instance exists.
         if manifest.id.rsplit_once('_').is_some_and(|(_, suffix)| {
@@ -560,18 +562,28 @@ impl Module {
             .install(&request)
             .map_err(|e| self.install_error(e))?;
 
+        self.install_card(caller, &manifest, &request, installed)
+    }
+
+    fn install_card(
+        &self,
+        caller: &Caller,
+        manifest: &Manifest,
+        request: &InstallRequest,
+        installed: basal_core::Installed,
+    ) -> OpResult {
         let existing = self
             .rt
             .cards(&installed.flow_id)
             .map_err(|e| self.core_error(e))?
             .into_iter()
             .find(|c| c.version == installed.version);
-        let mut record = match existing {
+        let record = match existing {
             Some(card) => card,
             None => {
                 let now = self.rt.config().clock.now_ms();
                 let dry_run = match self.dry.run_install(
-                    &request,
+                    request,
                     Mode::Capture,
                     &DryTrigger::Schedule { window: None },
                     now,
@@ -598,7 +610,7 @@ impl Module {
                         })
                     });
                 let mut fields = card::fields(&CardInput {
-                    manifest: &manifest,
+                    manifest,
                     script: &request.script,
                     manifest_text: &request.manifest,
                     author: &request.author,
@@ -620,6 +632,16 @@ impl Module {
             }
         };
         let fields: Value = serde_json::from_str(&record.card).unwrap_or(Value::Null);
+        self.raise_install_card(caller, record, fields, installed.new)
+    }
+
+    fn raise_install_card(
+        &self,
+        caller: &Caller,
+        mut record: basal_core::cards::CardRecord,
+        fields: Value,
+        new: bool,
+    ) -> OpResult {
         if record.state == CardState::Pending {
             // Raised every time the version is installed while undecided: a
             // raise that was lost (the consent plane was down) is retried by
@@ -712,6 +734,15 @@ impl Module {
                 }
             }
         }
+        self.install_reply(record, &fields, new)
+    }
+
+    fn install_reply(
+        &self,
+        record: basal_core::cards::CardRecord,
+        fields: &Value,
+        new: bool,
+    ) -> OpResult {
         let approval = self
             .rt
             .store()
@@ -727,7 +758,7 @@ impl Module {
             "card_id": if policy { Value::Null } else { json!(record.card_id) },
             "state": record.state.as_str(),
             "attempt": record.attempt,
-            "new": installed.new,
+            "new": new,
             "warnings": fields.get("warnings").cloned().unwrap_or(Value::Null),
             "dry_run": fields.get("dry_run_summary").cloned().unwrap_or(Value::Null),
         });
@@ -1168,12 +1199,13 @@ impl Module {
         let ages = self.rt.run_ages().map_err(|e| self.core_error(e))?;
         let health = self.rt.health().map_err(|e| self.core_error(e))?;
         let mut tokens = Vec::new();
+        let flow_ids: Vec<_> = flows.iter().map(|f| f.flow_id.as_str()).collect();
+        let token_usage = self
+            .rt
+            .token_usage_many(&flow_ids, now)
+            .map_err(|e| self.core_error(e))?;
         for f in &flows {
-            if let Some(w) = self
-                .rt
-                .token_usage(&f.flow_id, now)
-                .map_err(|e| self.core_error(e))?
-            {
+            if let Some(w) = token_usage.get(&f.flow_id) {
                 tokens.push(json!({
                     "flow_id": f.flow_id,
                     "window_start": w.window_start,

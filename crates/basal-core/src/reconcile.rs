@@ -68,9 +68,7 @@ pub(crate) fn audit_answer(
     detail: &str,
     elicitation_id: Option<&str>,
 ) -> Result<()> {
-    let position = position
-        .map(|p| i64::try_from(p).map_err(|_| CoreError::Invalid(format!("position {p}"))))
-        .transpose()?;
+    let position = position.map(crate::model::position_i64).transpose()?;
     tx.execute(
         "INSERT INTO audit (at, actor, action, run_id, position, detail, elicitation_id) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -152,11 +150,7 @@ pub(crate) fn resolve(
             tx.execute(
                 "UPDATE journal SET dispatch = 'not_applied' WHERE run_id = ?1 \
                  AND position = ?2 AND settlement IS NULL",
-                params![
-                    run_id,
-                    i64::try_from(position)
-                        .map_err(|_| CoreError::Invalid(format!("position {position}")))?
-                ],
+                params![run_id, crate::model::position_i64(position)?],
             )?;
             audit("reconcile.not_applied", "")?;
         }

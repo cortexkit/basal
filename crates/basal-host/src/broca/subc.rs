@@ -12,9 +12,7 @@ use std::time::Duration;
 use subc_client_rs::consumer::ConnectionState;
 use subc_protocol::BindIdentity;
 
-fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(|p| p.into_inner())
-}
+use basal_proto::util::lock;
 fn error(e: WireError) -> BrocaError {
     match e {
         WireError::Typed(refusal) => BrocaError::Flow(refusal),
@@ -301,8 +299,7 @@ impl Transport for SubcBrocaTransport {
             crate::InstallStatus::Active { code_hash, scope }
                 if code_hash == identity.code_hash =>
             {
-                self.connection
-                    .configure_flow(&identity.flow_id, true, scope);
+                self.connection.configure_flow(&identity.flow_id, scope);
                 Ok(())
             }
             _ => Err(BrocaError::Unavailable {
@@ -311,18 +308,8 @@ impl Transport for SubcBrocaTransport {
             }),
         }
     }
-    fn configure_flow(
-        &self,
-        flow_id: &str,
-        agent_owned: bool,
-        scope: Option<crate::flow_scope::RegisteredScope>,
-    ) {
-        crate::transport::Transport::configure_flow(
-            self.connection.as_ref(),
-            flow_id,
-            agent_owned,
-            scope,
-        );
+    fn configure_flow(&self, flow_id: &str, scope: Option<crate::flow_scope::RegisteredScope>) {
+        crate::transport::Transport::configure_flow(self.connection.as_ref(), flow_id, scope);
     }
     fn send(&self, route: &Route, params: &[u8]) -> Result<SendResult, BrocaError> {
         #[cfg(feature = "rig-kill-hook")]
