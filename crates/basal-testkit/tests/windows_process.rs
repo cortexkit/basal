@@ -2,7 +2,7 @@
 
 use basal_testkit::command::Command;
 use basal_testkit::harness::scratch;
-use basal_testkit::process::{assert_reaped, output_until};
+use basal_testkit::process::{assert_reaped, output_until_ready};
 use basal_testkit::{WorkerProcess, worker_binary};
 use std::path::Path;
 use std::time::Duration;
@@ -34,6 +34,44 @@ fn pipe_tree(dir: &Path, hold_parent: bool) -> Command {
         .args(["-NoProfile", "-NonInteractive", "-Command"])
         .arg(script);
     command
+}
+
+fn descendant_is_live(dir: &Path) -> std::io::Result<bool> {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::Foundation::{WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, WaitForSingleObject,
+    };
+
+    let pid_file = dir.join("descendant.pid");
+    let pid_text = match std::fs::read_to_string(pid_file) {
+        Ok(pid) => pid,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    let pid = match pid_text.trim().parse::<u32>() {
+        Ok(pid) => pid,
+        Err(_) => return Ok(false),
+    };
+    // SYNCHRONIZE is a standard access right, not a process-specific flag.
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | 0x0010_0000, 0, pid) };
+    if handle.is_null() {
+        let error = std::io::Error::last_os_error();
+        return if error.raw_os_error() == Some(87) {
+            Ok(false)
+        } else {
+            Err(error)
+        };
+    }
+    let handle = unsafe { OwnedHandle::from_raw_handle(handle) };
+    match unsafe { WaitForSingleObject(handle.as_raw_handle(), 0) } {
+        WAIT_TIMEOUT => Ok(true),
+        WAIT_OBJECT_0 => Ok(false),
+        WAIT_FAILED => Err(std::io::Error::last_os_error()),
+        result => Err(std::io::Error::other(format!(
+            "unexpected WaitForSingleObject result {result}"
+        ))),
+    }
 }
 
 fn assert_descendant_dead(dir: &Path) {
@@ -69,7 +107,21 @@ fn assert_descendant_dead(dir: &Path) {
 fn subprocess_deadline_reaps_descendants_holding_output_pipes() {
     let dir = scratch("windows-pipe-deadline");
     let mut command = pipe_tree(&dir, true);
-    let error = output_until(&mut command, Duration::from_secs(10)).unwrap_err();
+    let mut descendant_ready = false;
+    let error = output_until_ready(
+        &mut command,
+        Duration::from_secs(10),
+        Duration::from_secs(120),
+        || {
+            descendant_ready = descendant_is_live(&dir)?;
+            Ok(descendant_ready)
+        },
+    )
+    .unwrap_err();
+    assert!(
+        descendant_ready,
+        "descendant never became ready within 120s: {error}"
+    );
     assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
     assert_descendant_dead(&dir);
     std::fs::remove_dir_all(dir).unwrap();
@@ -78,7 +130,28 @@ fn subprocess_deadline_reaps_descendants_holding_output_pipes() {
 #[test]
 fn subprocess_exit_reaps_descendants_holding_output_pipes() {
     let dir = scratch("windows-pipe-exit");
-    let output = output_until(&mut pipe_tree(&dir, false), Duration::from_secs(30)).unwrap();
+    let mut command = pipe_tree(&dir, false);
+    let mut descendant_ready = false;
+    let output = output_until_ready(
+        &mut command,
+        Duration::from_secs(30),
+        Duration::from_secs(120),
+        || {
+            descendant_ready = descendant_is_live(&dir)?;
+            Ok(descendant_ready)
+        },
+    )
+    .unwrap_or_else(|error| {
+        assert!(
+            descendant_ready,
+            "descendant never became ready within 120s: {error}"
+        );
+        panic!("subprocess exit wait failed: {error}");
+    });
+    assert!(
+        descendant_ready,
+        "descendant never became ready within 120s"
+    );
     assert!(
         output.status.success(),
         "{}",

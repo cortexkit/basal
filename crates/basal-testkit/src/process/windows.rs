@@ -154,6 +154,30 @@ pub(crate) fn output_until(
     command: &basal_launch::PlainCommand,
     timeout: std::time::Duration,
 ) -> io::Result<std::process::Output> {
+    output_until_inner(command, timeout, None, || Ok(true))
+}
+
+pub(crate) fn output_until_ready<F>(
+    command: &basal_launch::PlainCommand,
+    timeout: std::time::Duration,
+    readiness_timeout: std::time::Duration,
+    ready: F,
+) -> io::Result<std::process::Output>
+where
+    F: FnMut() -> io::Result<bool>,
+{
+    output_until_inner(command, timeout, Some(readiness_timeout), ready)
+}
+
+fn output_until_inner<F>(
+    command: &basal_launch::PlainCommand,
+    timeout: std::time::Duration,
+    readiness_timeout: Option<std::time::Duration>,
+    mut ready: F,
+) -> io::Result<std::process::Output>
+where
+    F: FnMut() -> io::Result<bool>,
+{
     use std::io::Read;
     use std::time::{Duration, Instant};
     let mut child = basal_launch::spawn_plain(command).map_err(io::Error::other)?;
@@ -167,6 +191,39 @@ pub(crate) fn output_until(
         let mut bytes = Vec::new();
         stderr.read_to_end(&mut bytes).map(|_| bytes)
     });
+
+    if let Some(readiness_timeout) = readiness_timeout {
+        let readiness_deadline = Instant::now() + readiness_timeout;
+        let readiness_error = loop {
+            match ready() {
+                Ok(true) if Instant::now() <= readiness_deadline => break None,
+                Ok(false) if Instant::now() < readiness_deadline => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Ok(_) => {
+                    break Some(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!(
+                            "readiness condition was not satisfied within {readiness_timeout:?}"
+                        ),
+                    ));
+                }
+                Err(error) => break Some(error),
+            }
+        };
+        if let Some(error) = readiness_error {
+            child.kill()?;
+            child.wait()?;
+            drop(child);
+            out.join()
+                .map_err(|_| io::Error::other("stdout reader panicked"))??;
+            err.join()
+                .map_err(|_| io::Error::other("stderr reader panicked"))??;
+            return Err(error);
+        }
+    }
+
+    // The output deadline starts only after the optional readiness condition holds.
     let deadline = Instant::now() + timeout;
     let mut timed_out = false;
     let status = loop {
