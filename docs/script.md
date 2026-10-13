@@ -26,7 +26,9 @@ An event-triggered script receives `trigger` in this shape:
 ```
 
 Before sending any script to the worker, basal calls the source's `events_get`
-query on **that flow's scoped route**, with `{event_key, event_name}`. It hashes
+query on **that flow's scoped route**, with `{event_key, event_name, version}`.
+Basal always sends the integer version from the notice (`1` or `2` for Plexus),
+although Plexus defaults to v1 when callers omit it. It hashes
 the exact UTF-8 bytes of the returned body string with SHA-256 and requires
 that hash and the reply's bare lowercase-hex digest to equal the notice's
 digest. Only a notice's `sha256:` prefix is normalized; uppercase and other
@@ -39,6 +41,21 @@ bytes or inconsistent digests fail it as `event_body_mismatch`. Other source
 refusals retain their code as the failure kind. An unavailable source defers
 the preamble with durable exponential backoff until the run's deadline. No
 script instruction runs before a body has been verified.
+
+Plexus v2 notices use `ck.<acct>.event.plexus.<event_name>.v2`. Their
+`Nats-Msg-Id` is `<event_key>.v2`, while the required `event_key` header carries
+the bare fetch key. Basal refuses a missing header or mismatched transport id
+as malformed; it never fetches using the suffixed transport id. The v2 digest
+covers exactly the stored JCS body string, which `events_get` returns unchanged.
+An old row without a v2 envelope fails a v2 fetch as `event_not_visible`, with
+no fallback to v1.
+
+The v2 body has `kind` (`issue`, `pull_request`, `ci_job`, `ci_run` or `release`),
+`event_key`, lowercase `repo`, `action`, `actor_logins` and `actor_unknown`, plus
+the fields defined for that kind. Every defined field is always present;
+unknown values are JSON `null`, never omitted. Scripts can therefore distinguish
+unknown values without testing for absent properties. V1 bodies keep their
+existing shape.
 
 For a capture-mode dry run, supply the complete synthetic `{event: {...}}`
 value above as the `flow.dry_run` request's `trigger`. The supplied `body` is

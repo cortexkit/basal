@@ -16,6 +16,8 @@ use std::time::{Duration, Instant};
 mod common;
 #[path = "module_events/lifecycle.rs"]
 mod lifecycle;
+#[path = "module_events/v2.rs"]
+mod v2;
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 const STREAM: &str = "CK_ACCOUNT_EVENT";
@@ -267,7 +269,7 @@ async fn delivered_notice_missing_flow_header_is_malformed_and_acked() {
     let messages = pull(&consumer).await.unwrap();
     assert_eq!(messages.len(), 1);
     assert!(
-        basal_module::events::decode(&messages[0])
+        basal_module::events::decode(&messages[0], rt.catalog())
             .unwrap_err()
             .contains("flow_id")
     );

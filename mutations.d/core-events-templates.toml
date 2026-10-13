@@ -73,7 +73,7 @@ runner = "cargo"
 package = "basal-core"
 platforms = ["linux"]
 target = "--lib"
-expect_red = ["events::tests::body_bytes_are_hashed_independently"]
+expect_red = ["events::tests::body_bytes_are_hashed_independently", "events::tests::v2_body_digest_is_checked_before_journaling"]
 only = true
 build_timeout_s = 3600
 timeout_s = 600
@@ -665,3 +665,20 @@ old = """        };
         if !fits {"""
 new = """        };
         if false && !fits { // NON-VACUITY BREAK"""
+
+[[control]]
+id = "event-body-fetch-version-forced-v1"
+guards = "events_get receives the version from the admitted notice"
+test_file = "crates/basal-core/src/events_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["events::tests::body_fetch_uses_notice_version"]
+select = { tests = ["events::tests::body_fetch_uses_notice_version", "events::tests::v2_body_digest_is_checked_before_journaling"] }
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/events.rs"
+old = '"event_name":name,"version":version'
+new = '"event_name":name,"version":1 /* NON-VACUITY BREAK */'

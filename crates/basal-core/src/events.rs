@@ -52,18 +52,21 @@ impl Notice {
 
     pub fn identity(&self) -> Result<(&str, &str, u32)> {
         let parts: Vec<_> = self.subject.split('.').collect();
-        if parts.len() != 6
+        if !matches!(parts.len(), 5 | 6)
             || parts[0] != "ck"
             || parts[2] != "event"
             || parts.iter().any(|p| p.is_empty() || p.contains(['*', '>']))
         {
             return Err(CoreError::Invalid("invalid event subject".into()));
         }
-        let version = parts[5]
-            .strip_prefix('v')
-            .and_then(|v| v.parse::<u32>().ok())
-            .filter(|v| *v > 0 && parts[5] == format!("v{v}"))
-            .ok_or_else(|| CoreError::Invalid("invalid event version".into()))?;
+        let version = match parts.get(5) {
+            None => 1,
+            Some(suffix) => suffix
+                .strip_prefix('v')
+                .and_then(|v| v.parse::<u32>().ok())
+                .filter(|v| *v > 0 && *suffix == format!("v{v}"))
+                .ok_or_else(|| CoreError::Invalid("invalid event version".into()))?,
+        };
         let lifecycle_key = parts[3] == "basal"
             && version == 1
             && crate::template_events::EVENTS.contains(&parts[4])
@@ -386,7 +389,7 @@ impl Runtime {
         };
         let notice: Notice = serde_json::from_value(encoded.clone())
             .map_err(|e| CoreError::Corrupt(e.to_string()))?;
-        let (module, name, _) = notice.identity()?;
+        let (module, name, version) = notice.identity()?;
         let now = self.config.clock.now_ms();
         if run.deadline_at.is_some_and(|deadline| now >= deadline) {
             return Ok(Preamble::Failed {
@@ -438,7 +441,7 @@ impl Runtime {
             position: u64::MAX,
             kind: kind.clone(),
             args: JsonText::new(
-                serde_json::json!({"event_key":notice.event_key,"event_name":name}).to_string(),
+                serde_json::json!({"event_key":notice.event_key,"event_name":name,"version":version}).to_string(),
             )
             .map_err(|e| CoreError::Invalid(e.to_string()))?,
             idempotency_key: format!("event-body:{}", run.run_id),
