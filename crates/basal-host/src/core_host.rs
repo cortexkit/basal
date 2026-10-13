@@ -9,6 +9,8 @@ use basal_proto::{CallKind, JsonText, Primitive};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
+pub const FLOW_DIGEST_REPLACE_KEY_V1: &str = "flow-digest-replace-key/v1";
+
 /// The call's identity and times, fixed when its intent is built.
 pub struct IntentContext<'a> {
     pub flow_id: &'a str,
@@ -37,6 +39,9 @@ pub fn intent(kind: Primitive, args: &Value, ctx: IntentContext<'_>) -> Value {
             "due_at":due_at,"created_at":created_at,"item":args["item"],"claim":null});
             if let Some(tag) = args.get("options").and_then(|o| o.get("status_tag")) {
                 request["status_tag"] = tag.clone();
+            }
+            if let Some(replace_key) = args.get("options").and_then(|o| o.get("replace_key")) {
+                request["replace_key"] = replace_key.clone();
             }
             request
         }
@@ -88,6 +93,25 @@ pub struct CoreHost {
 impl CoreHost {
     pub fn new(transport: Arc<dyn Transport>) -> Self {
         Self { transport }
+    }
+
+    /// Read the current catalog for each gated write; a stale catalog cannot
+    /// authorize a field that an older core may refuse.
+    pub fn supports_capability(&self, capability: &str) -> bool {
+        self.transport
+            .catalog()
+            .ok()
+            .and_then(|catalog| {
+                catalog["modules"].as_array().map(|modules| {
+                    modules.iter().any(|module| {
+                        module["module_id"] == CORE
+                            && module["capabilities"]["provides"].as_array().is_some_and(
+                                |provided| provided.iter().any(|item| item == capability),
+                            )
+                    })
+                })
+            })
+            .unwrap_or(false)
     }
 }
 
@@ -183,6 +207,9 @@ pub fn decode_install_status(value: &Value) -> Result<InstallStatus, String> {
 }
 
 impl Host for CoreHost {
+    fn supports_core_capability(&self, capability: &str) -> bool {
+        self.supports_capability(capability)
+    }
     fn classify(&self, kind: &CallKind) -> CallClass {
         match kind {
             CallKind::Primitive(Primitive::Facts) => CallClass::Query,

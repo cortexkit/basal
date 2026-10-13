@@ -111,6 +111,18 @@ before preparing or sending a core request. The same checks apply in dry runs
 and to the `$audience` sink grant. To use the default action with a tag, pass
 `undefined` as the third argument.
 
+The options object may also contain `replace_key`. It must be a string of 1 to
+200 UTF-8 bytes with no control characters; otherwise basal refuses the call
+before dispatch with `invalid_arguments`. Basal sends it as the top-level
+`replace_key` field beside `item`, and journals it with the core request. Basal
+only sends the field when the current prefrontal-core catalog advertises
+`flow-digest-replace-key/v1`. If it does not, basal refuses the call before
+dispatch with `digest_replace_key_unsupported`, which a script may catch and
+then retry without the key. Basal never silently drops a supplied key. The
+replacement behavior belongs to core: within one flow, a write with the same
+key replaces that agent's earlier undelivered item; after delivery, the next
+write starts fresh.
+
 Basal sends the tag to prefrontal-core as top-level `status_tag`, not in the
 item or its `data`. Without a tag that field is omitted and the wire request
 is unchanged. The journal freezes it with the request, so crash replay resends
@@ -132,12 +144,18 @@ host, or `{ kind: 'work', id: 'wi_…' }`. The whole item may be at most 16,384
 bytes as canonical JSON.
 
 ```js
-await sink.digest('BASAL', {
+const item = {
   title: 'basal nightly CI: failure',
   body: 'Commit 0123abc, started 2026-10-09T03:17:00Z.',
   data: { run_id: 123 },
   links: [{ kind: 'url', url: 'https://github.com/cortexkit/basal/actions/runs/123' }],
-}, 'wake', { status_tag: 'NI' });
+};
+try {
+  await sink.digest('BASAL', item, 'wake', { status_tag: 'NI', replace_key: 'nightly-ci:123' });
+} catch (e) {
+  if (e.data.code !== 'digest_replace_key_unsupported') throw e;
+  await sink.digest('BASAL', item, 'wake', { status_tag: 'NI' });
+}
 ```
 
 ## The script body is not a syntactic boundary
