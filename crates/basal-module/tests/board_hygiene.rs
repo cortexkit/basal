@@ -266,7 +266,7 @@ fn eta_first_at_eta_and_repeats_after_two_hours() {
     assert_eq!(first[0]["action"], "wake");
     assert_eq!(
         first[0]["item"]["data"],
-        json!({"kind":"board_nudge","rule":"eta_passed","agent_id":"ag_a","lane_id":"lane1","lane_title":"Release","item_id":"item1","item_text":"Ship","since_ms":BASE,"eta_ms":BASE})
+        json!({"kind":"board_nudge","rule":"eta_passed","agent_id":"ag_a","lane_id":"lane1","lane_title":"Release","item_id":"item1","item_text":"Ship","item_state":"pending","since_ms":BASE,"eta_ms":BASE})
     );
     assert!(t.run(BASE + 2 * HOUR - 1).is_empty());
     let repeated = t.run(BASE + 2 * HOUR);
@@ -285,7 +285,7 @@ fn stale_active_first_at_six_hours_and_repeats_after_six_hours() {
     assert_eq!(first[0]["action"], "piggyback");
     assert_eq!(
         first[0]["item"]["data"],
-        json!({"kind":"board_nudge","rule":"stale_active","agent_id":"ag_a","lane_id":"lane1","lane_title":"Release","item_id":"item1","item_text":"Ship","since_ms":BASE})
+        json!({"kind":"board_nudge","rule":"stale_active","agent_id":"ag_a","lane_id":"lane1","lane_title":"Release","item_id":"item1","item_text":"Ship","item_state":"active","since_ms":BASE})
     );
     assert!(t.run(BASE + 12 * HOUR - 1).is_empty());
     assert_eq!(t.run(BASE + 12 * HOUR).len(), 1);
@@ -370,7 +370,7 @@ fn plain_peer_wait_nudges_the_peer_and_nonpeer_wait_nudges_owner() {
         }
         let mut t = Test::new(vec![board("ag_a", vec![i])]);
         let writes = t.run(BASE + 6 * HOUR);
-        assert_eq!(writes.len(), 1);
+        assert_eq!(writes.len(), if recipient == "ag_a" { 1 } else { 2 });
         assert_eq!(writes[0]["agent"], recipient);
         assert_eq!(writes[0]["item"]["data"]["agent_id"], "ag_a");
         if recipient != "ag_a" {
@@ -391,11 +391,13 @@ fn item_wait_copies_only_the_first_target_eta_nudge_to_each_waiting_owner() {
     let mut waiting = item("blocked", BASE);
     waiting["eta_ms"] = json!(BASE + HOUR);
     waiting["wait"] = json!({"on":"ag_b","ref":"item:ag_b/item1"});
-    let mut t = Test::new(vec![
-        board("ag_a", vec![waiting.clone(), waiting.clone()]),
-        board("ag_b", vec![target]),
-        board("ag_c", vec![waiting]),
-    ]);
+    waiting["id"] = json!("waiting1");
+    waiting["text"] = json!("Publish");
+    let mut a = board("ag_a", vec![waiting.clone()]);
+    a["board"]["lanes"][0]["id"] = json!("waiting-lane");
+    let mut c = board("ag_c", vec![waiting]);
+    c["board"]["lanes"][0]["id"] = json!("waiting-lane");
+    let mut t = Test::new(vec![a, board("ag_b", vec![target]), c]);
     let first = t.run(BASE + HOUR);
     assert_eq!(first.len(), 3);
     assert_eq!(first[0]["agent"], "ag_b");
@@ -405,9 +407,13 @@ fn item_wait_copies_only_the_first_target_eta_nudge_to_each_waiting_owner() {
         assert_eq!(copy["action"], "piggyback");
         assert_eq!(copy["item"]["data"]["agent_id"], "ag_b");
         assert_eq!(copy["item"]["data"]["copy_of"], owner);
+        assert!(copy["item"]["body"].as_str().unwrap().contains(
+            "Follow up with ag_b, or re-plan your item: set a new ETA or change its wait."
+        ));
+        assert!(!copy["item"]["body"].as_str().unwrap().contains("→ active"));
         assert_eq!(
             copy["item"]["data"],
-            json!({"kind":"board_nudge","rule":"eta_passed","agent_id":"ag_b","lane_id":"lane1","lane_title":"Release","item_id":"item1","item_text":"Ship","since_ms":BASE+HOUR,"eta_ms":BASE+HOUR,"copy_of":owner})
+            json!({"kind":"board_nudge","rule":"eta_passed","agent_id":"ag_b","lane_id":"lane1","lane_title":"Release","item_id":"item1","item_text":"Ship","since_ms":BASE+HOUR,"eta_ms":BASE+HOUR,"copy_of":owner,"own_lane_id":"waiting-lane","own_item_id":"waiting1","own_item_text":"Publish","item_state":"blocked","item_wait":{"on":"ag_b","ref":"item:ag_b/item1"}})
         );
     }
     let repeated = t.run(BASE + 3 * HOUR);
@@ -540,7 +546,7 @@ fn digest_data_is_exact_and_escaped_large_text_stays_within_core_limits() {
     assert_eq!(first.len(), 1);
     assert_eq!(
         first[0]["item"]["data"],
-        json!({"kind":"board_nudge","rule":"wait_ended","agent_id":"ag_a","lane_id":"lane1","lane_title":"Release","item_id":"item1","item_text":"Ship","since_ms":BASE,"ref":"item:ag_b/item2","ref_terminal_at_ms":BASE,"eta_ms":BASE+HOUR,"follow_up":"Publish release","note_ref":"mc_note_1"})
+        json!({"kind":"board_nudge","rule":"wait_ended","agent_id":"ag_a","lane_id":"lane1","lane_title":"Release","item_id":"item1","item_text":"Ship","item_state":"blocked","item_wait":{"on":"ag_b","ref":"item:ag_b/item2"},"since_ms":BASE,"ref":"item:ag_b/item2","ref_terminal_at_ms":BASE,"eta_ms":BASE+HOUR,"follow_up":"Publish release","note_ref":"mc_note_1"})
     );
     assert!(
         first[0]["item"]["body"]
@@ -559,4 +565,45 @@ fn digest_data_is_exact_and_escaped_large_text_stays_within_core_limits() {
             .unwrap()
             .contains("Follow-up:")
     );
+}
+
+#[test]
+fn plain_peer_wait_copies_first_eta_once_with_own_item_data_and_replanning_choices() {
+    for reference in [None, Some("peer:ag_b")] {
+        let mut waiting = item("blocked", BASE);
+        waiting["eta_ms"] = json!(BASE + HOUR);
+        waiting["wait"] = json!({"on":"ag_b","since_ms":BASE});
+        if let Some(reference) = reference {
+            waiting["wait"]["ref"] = json!(reference);
+        }
+        let mut t = Test::new(vec![board("ag_a", vec![waiting])]);
+        assert!(t.run(BASE + HOUR - 1).is_empty());
+        let first = t.run(BASE + HOUR);
+        assert_eq!(first.len(), 2);
+        assert_eq!(first[0]["agent"], "ag_b");
+        assert_eq!(first[0]["action"], "wake");
+        let mut expected = json!({"kind":"board_nudge","rule":"eta_passed","agent_id":"ag_a","lane_id":"lane1","lane_title":"Release","item_id":"item1","item_text":"Ship","since_ms":BASE+HOUR,"eta_ms":BASE+HOUR,"item_state":"blocked","item_wait":{"on":"ag_b"}});
+        if let Some(reference) = reference {
+            expected["ref"] = json!(reference);
+            expected["item_wait"]["ref"] = json!(reference);
+        }
+        assert_eq!(first[0]["item"]["data"], expected);
+        expected["copy_of"] = json!("ag_a");
+        expected["own_lane_id"] = json!("lane1");
+        expected["own_item_id"] = json!("item1");
+        expected["own_item_text"] = json!("Ship");
+        assert_eq!(first[1]["agent"], "ag_a");
+        assert_eq!(first[1]["action"], "piggyback");
+        assert_eq!(first[1]["item"]["data"], expected);
+        assert_eq!(
+            first[1]["item"]["body"],
+            "ag_b's item you wait on passed its ETA 0 min ago. Follow up with ag_b, or re-plan your item: set a new ETA or change its wait."
+        );
+        assert!(t.run(BASE + 3 * HOUR - 1).is_empty());
+        let repeated = t.run(BASE + 3 * HOUR);
+        assert_eq!(repeated.len(), 1);
+        assert_eq!(repeated[0]["agent"], "ag_b");
+        assert_eq!(repeated[0]["action"], "piggyback");
+        assert!(repeated[0]["item"]["data"].get("copy_of").is_none());
+    }
 }

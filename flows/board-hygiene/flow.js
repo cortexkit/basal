@@ -31,10 +31,16 @@ function bounded(item) {
   item.body = cut(item.body, 4096);
   // Escaping can make JSON much larger than the original strings.
   while (utf8Bytes(JSON.stringify(item.data)) > 8192) {
-    const strings = Object.keys(item.data).filter(key => typeof item.data[key] === 'string');
-    strings.sort((a, b) => utf8Bytes(item.data[b]) - utf8Bytes(item.data[a]));
-    const key = strings[0];
-    item.data[key] = cut(item.data[key], Math.floor(utf8Bytes(item.data[key]) / 2));
+    const fields = [];
+    for (const key of Object.keys(item.data)) {
+      if (typeof item.data[key] === 'string') fields.push([item.data, key]);
+    }
+    for (const key of Object.keys(item.data.item_wait ?? {})) {
+      if (typeof item.data.item_wait[key] === 'string') fields.push([item.data.item_wait, key]);
+    }
+    fields.sort(([a, ka], [b, kb]) => utf8Bytes(b[kb]) - utf8Bytes(a[ka]));
+    const [object, key] = fields[0];
+    object[key] = cut(object[key], Math.floor(utf8Bytes(object[key]) / 2));
   }
   while (utf8Bytes(JSON.stringify(item)) > 16384) {
     item.body = cut(item.body, Math.floor(utf8Bytes(item.body) / 2));
@@ -61,19 +67,31 @@ function age(now, since) {
   return minutes < 60 ? `${minutes} min ago` : `${Math.floor(minutes / 60)} h ago`;
 }
 
-function digest(rule, agent, lane, item, since, now, copyOf, waitingItem) {
+function digest(rule, agent, lane, item, since, now, copyOf, copyPeer, waitingItem, waitingLane) {
   const data = {kind: 'board_nudge', rule, agent_id: agent, lane_id: lane.id,
     lane_title: lane.title, since_ms: since};
   if (item) {
     data.item_id = item.id;
     data.item_text = item.text;
+    const current = waitingItem ?? item;
+    data.item_state = current.state;
+    if (current.state === 'blocked') {
+      data.item_wait = {};
+      if (current.wait?.on != null) data.item_wait.on = current.wait.on;
+      if (current.wait?.ref != null) data.item_wait.ref = current.wait.ref;
+    }
     for (const key of ['eta_ms', 'follow_up', 'note_ref']) {
       if (item[key] !== undefined) data[key] = item[key];
     }
     if (item.wait?.ref !== undefined) data.ref = item.wait.ref;
     if (item.wait?.ref_terminal_at_ms !== undefined) data.ref_terminal_at_ms = item.wait.ref_terminal_at_ms;
   }
-  if (copyOf !== undefined) data.copy_of = copyOf;
+  if (copyOf !== undefined) {
+    data.copy_of = copyOf;
+    data.own_lane_id = (waitingLane ?? lane).id;
+    data.own_item_id = (waitingItem ?? item).id;
+    data.own_item_text = (waitingItem ?? item).text;
+  }
   const text = cut(item?.text ?? lane.title, 600);
   const call = `board update: item ${JSON.stringify(text)} → done`;
   let title;
@@ -84,7 +102,8 @@ function digest(rule, agent, lane, item, since, now, copyOf, waitingItem) {
   } else if (rule === 'eta_passed') {
     title = `ETA passed: ${text}`;
     if (copyOf !== undefined) {
-      body = `${agent}'s item passed its ETA ${age(now, since)}. Revisit your wait on item:${agent}/${item.id}: board update: item ${JSON.stringify(cut(waitingItem.text, 600))} → active.`;
+      const peer = copyPeer ?? agent;
+      body = `${peer}'s item you wait on passed its ETA ${age(now, since)}. Follow up with ${peer}, or re-plan your item: set a new ETA or change its wait.`;
     } else if (peerWait(item.wait)) {
       body = `${agent} is waiting on you; the ETA passed ${age(now, since)}. Commit with an item on your own board, or decline: board update: add item ${JSON.stringify(text)} with an ETA; or tell ${agent} you decline.`;
     } else {
@@ -144,7 +163,7 @@ async function run() {
         if (item.state === 'done' || !ref) continue;
         const key = JSON.stringify([ref[1], ref[2]]);
         if (!reverse.has(key)) reverse.set(key, new Map());
-        reverse.get(key).set(agent, item);
+        reverse.get(key).set(agent, {item, lane});
       }
     }
   }
@@ -215,8 +234,11 @@ async function run() {
         return;
       }
       if (rule === 'eta_passed' && count === 1) {
-        for (const [owner, waitingItem] of reverse.get(JSON.stringify([agent, item.id])) ?? []) {
-          await send(owner, digest(rule, agent, lane, item, since, now, owner, waitingItem), 'piggyback');
+        if (peerWait(item.wait)) {
+          await send(agent, digest(rule, agent, lane, item, since, now, agent, item.wait.on), 'piggyback');
+        }
+        for (const [owner, waiting] of reverse.get(JSON.stringify([agent, item.id])) ?? []) {
+          await send(owner, digest(rule, agent, lane, item, since, now, owner, agent, waiting.item, waiting.lane), 'piggyback');
         }
       }
     } catch (error) {
