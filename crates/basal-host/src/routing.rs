@@ -278,6 +278,9 @@ impl Host for RoutingHost {
         }
         self.target(kind).provider_ready(flow_id, kind)
     }
+    fn supports_core_capability(&self, capability: &str) -> bool {
+        self.core.supports_core_capability(capability)
+    }
     fn refusal_committed(&self, request: &CallRequest, refusal: &crate::flow_refusal::FlowRefusal) {
         self.target(&request.kind)
             .refusal_committed(request, refusal);

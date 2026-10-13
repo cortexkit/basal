@@ -984,6 +984,22 @@ impl Activation<'_> {
             &call.kind,
             &args,
         )?;
+        if matches!(call.kind, CallKind::Primitive(Primitive::SinkDigest))
+            && args
+                .get("options")
+                .and_then(|options| options.get("replace_key"))
+                .is_some()
+            && !self
+                .rt
+                .shared
+                .host
+                .supports_core_capability(basal_host::core_host::FLOW_DIGEST_REPLACE_KEY_V1)
+        {
+            return Err(Refusal::new(
+                codes::DIGEST_REPLACE_KEY_UNSUPPORTED,
+                "prefrontal-core does not currently advertise flow-digest-replace-key/v1",
+            ));
+        }
         if !matches!(call.kind, CallKind::OpFor { .. }) {
             self.rt
                 .shared

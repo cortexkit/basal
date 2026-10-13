@@ -967,6 +967,39 @@ timeout_s = 600
 file = "crates/basal-core/src/authorize.rs"
 old = "if !tag\n                        .as_str()\n                        .is_some_and(crate::manifest::valid_status_label)"
 new = "if false && !tag\n                        .as_str()\n                        .is_some_and(crate::manifest::valid_status_label) // NON-VACUITY BREAK"
+
+[[control]]
+id = "digest-replace-key-catalog-capability-gate"
+guards = "a digest replace key is refused before send without core's advertised capability"
+test_file = "crates/basal-module/tests/hosts.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test hosts"
+expect_red = ["digest_replace_key_requires_core_catalog_capability"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "&& !self\n                .rt\n                .shared\n                .host\n                .supports_core_capability(basal_host::core_host::FLOW_DIGEST_REPLACE_KEY_V1)"
+new = "&& false // NON-VACUITY BREAK"
+
+[[control]]
+id = "digest-replace-key-length-and-control-validation"
+guards = "overlong and control-character digest replace keys are refused before send"
+test_file = "crates/basal-module/tests/hosts.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test hosts"
+expect_red = ["digest_replace_key_validation_refuses_invalid_values_unsent"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/authorize.rs"
+old = "!key.is_empty() && key.len() <= 200 && !key.chars().any(char::is_control)"
+new = "true // NON-VACUITY BREAK"
+
 [[control]]
 id = "token-usage-batch-executes-an-extra-query"
 guards = "the flow.health token batch executes exactly one SQL statement"

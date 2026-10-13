@@ -504,6 +504,11 @@ pub trait Host: Send + Sync {
     ) -> Result<(), flow_refusal::FlowRefusal> {
         Ok(())
     }
+    /// Whether the current core catalog advertises a capability. Hosts that
+    /// cannot read that catalog fail closed.
+    fn supports_core_capability(&self, _capability: &str) -> bool {
+        false
+    }
     fn refusal_committed(&self, _request: &CallRequest, _refusal: &flow_refusal::FlowRefusal) {}
     /// Require core's registered scope before provider calls and refresh it
     /// when recovering pending calls. Offline simulations can disable these
