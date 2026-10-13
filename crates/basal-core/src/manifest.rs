@@ -383,6 +383,9 @@ pub enum ManifestError {
         reason: String,
     },
     AudienceSinkNamed,
+    AudienceFactsRequiresGlobal,
+    AudienceFactsPrivateText,
+    AudienceFactsMixedTargets,
     AudiencePlaceholderWithoutAudience,
     ForTargetRequiresAudience,
     RunBoundExceedsAudienceLimit,
@@ -417,6 +420,15 @@ impl std::fmt::Display for ManifestError {
             }
             Self::TemplateBoundInvalid { field, reason } => write!(f, "{field}: {reason}"),
             Self::AudienceSinkNamed => write!(f, "audience sinks and status must name $audience"),
+            Self::AudienceFactsRequiresGlobal => {
+                write!(f, "$audience facts require a global audience")
+            }
+            Self::AudienceFactsPrivateText => {
+                write!(f, "$audience facts cannot grant private text")
+            }
+            Self::AudienceFactsMixedTargets => {
+                write!(f, "$audience facts cannot mix with named targets")
+            }
             Self::ForTargetRequiresAudience => write!(f, "for_target requires an audience"),
             Self::RunBoundExceedsAudienceLimit => {
                 write!(f, "audience run deadlines may not exceed 12h")
@@ -717,8 +729,25 @@ impl Manifest {
             return Err(invalid("max_targets", "must be between 1 and 1024"));
         }
         if let Some(facts) = &self.facts {
+            let audience_facts = facts.targets.iter().any(|a| a == AUDIENCE_TARGET);
+            if audience_facts {
+                if self.audience.is_none() {
+                    return Err(ManifestError::AudiencePlaceholderWithoutAudience);
+                }
+                if !matches!(self.audience, Some(Audience::Global {})) {
+                    return Err(ManifestError::AudienceFactsRequiresGlobal);
+                }
+                if facts.text {
+                    return Err(ManifestError::AudienceFactsPrivateText);
+                }
+                if facts.targets.len() != 1 {
+                    return Err(ManifestError::AudienceFactsMixedTargets);
+                }
+            }
             for a in &facts.targets {
-                check_agent("facts.targets", a)?;
+                if a != AUDIENCE_TARGET {
+                    check_agent("facts.targets", a)?;
+                }
             }
             check_list("facts.targets", facts.targets.iter().cloned())?;
         }
@@ -955,7 +984,12 @@ impl Manifest {
         );
         out.extend(self.claims.iter().map(|c| ("claims", c.agent.as_str())));
         if let Some(f) = &self.facts {
-            out.extend(f.targets.iter().map(|a| ("facts.targets", a.as_str())));
+            out.extend(
+                f.targets
+                    .iter()
+                    .filter(|a| a.as_str() != AUDIENCE_TARGET)
+                    .map(|a| ("facts.targets", a.as_str())),
+            );
         }
         out
     }

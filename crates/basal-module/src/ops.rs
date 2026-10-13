@@ -152,6 +152,15 @@ impl Module {
             InstallError::Manifest(ManifestError::AudienceSinkNamed) => {
                 OpError::new("audience_sink_named", e.to_string())
             }
+            InstallError::Manifest(ManifestError::AudienceFactsRequiresGlobal) => {
+                OpError::new("audience_facts_requires_global", e.to_string())
+            }
+            InstallError::Manifest(ManifestError::AudienceFactsPrivateText) => {
+                OpError::new("audience_facts_private_text", e.to_string())
+            }
+            InstallError::Manifest(ManifestError::AudienceFactsMixedTargets) => {
+                OpError::new("audience_facts_mixed_targets", e.to_string())
+            }
             InstallError::Manifest(ManifestError::AudiencePlaceholderWithoutAudience) => {
                 OpError::new("audience_placeholder_without_audience", e.to_string())
             }
@@ -461,6 +470,9 @@ impl Module {
         Manifest::parse_ordinary(text).map_err(|e| match e {
             e @ (ManifestError::ParamsRequirePackage { .. }
             | ManifestError::AudienceSinkNamed
+            | ManifestError::AudienceFactsRequiresGlobal
+            | ManifestError::AudienceFactsPrivateText
+            | ManifestError::AudienceFactsMixedTargets
             | ManifestError::AudiencePlaceholderWithoutAudience
             | ManifestError::ForTargetRequiresAudience
             | ManifestError::RunBoundExceedsAudienceLimit) => {

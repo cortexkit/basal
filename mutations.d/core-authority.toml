@@ -63,8 +63,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/authorize.rs"
-old = "if !grant.targets.iter().any(|t| t == agent) {"
-new = "if false && !grant.targets.iter().any(|t| t == agent) {"
+old = "if !audience_facts && !grant.targets.iter().any(|t| t == agent) {"
+new = "if false && !audience_facts && !grant.targets.iter().any(|t| t == agent) { // NON-VACUITY BREAK"
 
 [[control]]
 id = "digest-actions-above-the-manifest-s-cap-are-allowed"
@@ -1016,3 +1016,35 @@ expect_red = ["batched_token_usage_keeps_current_windows_and_omits_unapproved_fl
 only = true
 timeout_s = 600
 build_timeout_s = 3600
+
+[[control]]
+id = "audience-facts-global-only"
+guards = "dynamic public facts cannot bypass workspace or agent audience membership"
+test_file = "crates/basal-core/tests/audience.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--test audience"
+expect_red = ["audience_facts_requires_global"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/manifest.rs"
+old = "if !matches!(self.audience, Some(Audience::Global {})) {"
+new = "if false && !matches!(self.audience, Some(Audience::Global {})) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "audience-facts-private-text-refused"
+guards = "dynamic global facts cannot grant private text"
+test_file = "crates/basal-core/tests/audience.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--test audience"
+expect_red = ["audience_facts_refuses_private_text"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/manifest.rs"
+old = "if facts.text {"
+new = "if false && facts.text { // NON-VACUITY BREAK"

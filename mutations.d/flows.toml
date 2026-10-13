@@ -1,0 +1,129 @@
+# Operator-installed board flows, exercised offline through basal-module.
+
+[[control]]
+id = "board-hygiene-stop-on-change"
+guards = "a moved item timestamp drops old nudge memory without sending"
+test_file = "crates/basal-module/tests/board_hygiene.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test board_hygiene"
+expect_red = ["changed_items_drop_memory_without_sending_on_that_run"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/board-hygiene/flow.js"
+old = "if (previous && previous.changed_at_ms !== changed) {"
+new = "if (false && previous && previous.changed_at_ms !== changed) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "board-hygiene-wait-ended-interval"
+guards = "ended waits repeat only after thirty minutes"
+test_file = "crates/basal-module/tests/board_hygiene.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test board_hygiene"
+expect_red = ["wait_ended_first_at_thirty_minutes_and_repeats_after_thirty_minutes"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/board-hygiene/flow.js"
+old = "wait_ended: 30 * MINUTE"
+new = "wait_ended: 31 * MINUTE /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "board-hygiene-eta-interval"
+guards = "ETA nudges repeat only after two hours"
+test_file = "crates/basal-module/tests/board_hygiene.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test board_hygiene"
+expect_red = ["eta_first_at_eta_and_repeats_after_two_hours"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/board-hygiene/flow.js"
+old = "eta_passed: 2 * HOUR"
+new = "eta_passed: 3 * HOUR /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "board-hygiene-stale-interval"
+guards = "stale active nudges repeat only after six hours"
+test_file = "crates/basal-module/tests/board_hygiene.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test board_hygiene"
+expect_red = ["stale_active_first_at_six_hours_and_repeats_after_six_hours"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/board-hygiene/flow.js"
+old = "stale_active: 6 * HOUR"
+new = "stale_active: 7 * HOUR /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "board-hygiene-lane-done-interval"
+guards = "completed lanes repeat only after two hours"
+test_file = "crates/basal-module/tests/board_hygiene.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test board_hygiene"
+expect_red = ["lane_done_first_at_thirty_minutes_and_repeats_after_two_hours_with_fallback"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/board-hygiene/flow.js"
+old = "lane_done: 2 * HOUR"
+new = "lane_done: 3 * HOUR /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "board-hygiene-unknown-activity"
+guards = "unknown activity never proves a stale item owner was active"
+test_file = "crates/basal-module/tests/board_hygiene.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test board_hygiene"
+expect_red = ["unknown_activity_skips_stale_items"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/board-hygiene/flow.js"
+old = "activity?.status === 'ok'"
+new = "activity?.status !== 'denied' /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "board-hygiene-copy-once"
+guards = "waiting owners receive only the first target ETA nudge"
+test_file = "crates/basal-module/tests/board_hygiene.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test board_hygiene"
+expect_red = ["item_wait_copies_only_the_first_target_eta_nudge_to_each_waiting_owner", "plain_peer_wait_copies_first_eta_once_with_own_item_data_and_replanning_choices"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/board-hygiene/flow.js"
+old = "if (rule === 'eta_passed' && count === 1) {"
+new = "if (rule === 'eta_passed' && count >= 1) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "board-hygiene-replacement-fallback"
+guards = "an unsupported unsent replacement retries the same digest without its key"
+test_file = "crates/basal-module/tests/board_hygiene.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test board_hygiene"
+expect_red = ["unsupported_replacement_retries_without_key_and_logs_once_per_run"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/board-hygiene/flow.js"
+old = "        await sink.digest(agent, item, action);"
+new = "        return false; // NON-VACUITY BREAK: omit the unsent digest retry"
