@@ -92,9 +92,33 @@ mod windows {
         }
 
         pub fn output_until(&self, timeout: Duration) -> io::Result<Output> {
+            let command = self.plain_command()?;
+            super::super::process::windows::output_until(&command, timeout)
+        }
+
+        /// Starts the output deadline only after `ready` confirms the child is ready.
+        pub fn output_until_ready<F>(
+            &self,
+            timeout: Duration,
+            readiness_timeout: Duration,
+            ready: F,
+        ) -> io::Result<Output>
+        where
+            F: FnMut() -> io::Result<bool>,
+        {
+            let command = self.plain_command()?;
+            super::super::process::windows::output_until_ready(
+                &command,
+                timeout,
+                readiness_timeout,
+                ready,
+            )
+        }
+
+        fn plain_command(&self) -> io::Result<basal_launch::PlainCommand> {
             use basal_launch::{PlainCommand, PlainStdio};
             let program = resolve_program(&self.program, &self.env, self.cwd.as_deref())?;
-            let command = PlainCommand {
+            Ok(PlainCommand {
                 program,
                 args: self.args.clone(),
                 env: self
@@ -106,8 +130,7 @@ mod windows {
                 stdin: PlainStdio::Null,
                 stdout: PlainStdio::Piped,
                 stderr: PlainStdio::Piped,
-            };
-            super::super::process::windows::output_until(&command, timeout)
+            })
         }
     }
 

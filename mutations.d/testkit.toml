@@ -176,3 +176,29 @@ only = true
 platforms = ["macos"]
 timeout_s = 600
 build_timeout_s = 3600
+
+[[control]]
+id = "windows-subprocess-deadline-starts-after-descendant-readiness"
+guards = "The subprocess deadline starts only after its descendant is provably live"
+file = "crates/basal-testkit/tests/windows_process.rs"
+old = """
+let error = output_until_ready(
+        &mut command,
+        Duration::from_secs(10),
+        Duration::from_secs(120),
+        || {
+            descendant_ready = descendant_is_live(&dir)?;
+            Ok(descendant_ready)
+        },
+    )
+    .unwrap_err();"""
+new = "let error = basal_testkit::process::output_until(&mut command, Duration::from_secs(10)).unwrap_err(); // NON-VACUITY BREAK"
+test_file = "crates/basal-testkit/tests/windows_process.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["windows"]
+target = "--test windows_process"
+expect_red = ["subprocess_deadline_reaps_descendants_holding_output_pipes"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600

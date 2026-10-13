@@ -383,6 +383,22 @@ pub fn output_until(command: &mut Command, timeout: Duration) -> io::Result<std:
     command.output_until(timeout)
 }
 
+#[cfg(windows)]
+/// Capture a subprocess after its readiness predicate succeeds.
+///
+/// The readiness timeout is separate; `timeout` begins only once `ready` returns true.
+pub fn output_until_ready<F>(
+    command: &mut Command,
+    timeout: Duration,
+    readiness_timeout: Duration,
+    ready: F,
+) -> io::Result<std::process::Output>
+where
+    F: FnMut() -> io::Result<bool>,
+{
+    command.output_until_ready(timeout, readiness_timeout, ready)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
