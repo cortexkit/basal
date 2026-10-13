@@ -2555,7 +2555,7 @@ new = 'let _ = code; // NON-VACUITY BREAK'
 
 [[control]]
 id = "event-v2-fetch-key-header-optional"
-guards = "v2 notices require the bare event_key header"
+guards = "notices beyond v1 require the bare event_key header"
 test_file = "crates/basal-module/tests/module_events/v2.rs"
 runner = "cargo"
 package = "basal-module"
@@ -2568,24 +2568,24 @@ build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-module/src/events.rs"
 old = "notice.event_key = get(EVENT_KEY)?;"
-new = 'notice.event_key = get(EVENT_KEY).unwrap_or_else(|_| get(MESSAGE_ID).unwrap().trim_end_matches(".v2").to_owned()); // NON-VACUITY BREAK'
+new = 'notice.event_key = get(EVENT_KEY).unwrap_or_else(|_| get(MESSAGE_ID).unwrap().trim_end_matches(format!(".v{version}").as_str()).to_owned()); // NON-VACUITY BREAK'
 
 [[control]]
 id = "event-v2-transport-id-check-removed"
-guards = "v2 transport ids equal the bare fetch key plus .v2"
+guards = "transport ids beyond v1 equal the bare fetch key plus the subject version suffix"
 test_file = "crates/basal-module/tests/module_events/v2.rs"
 runner = "cargo"
 package = "basal-module"
 platforms = ["linux"]
 target = "--test module_events"
-expect_red = ["v2::v2_mismatched_transport_id_is_malformed_and_acked"]
+expect_red = ["v2::v2_mismatched_transport_id_is_malformed_and_acked", "v2::declared_v3_uses_header_key_and_refuses_mismatched_id"]
 select = { filter = "v2::" }
 only = true
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-module/src/events.rs"
-old = 'if get(MESSAGE_ID)? != format!("{}.v2", notice.event_key) {'
-new = 'if false && get(MESSAGE_ID)? != format!("{}.v2", notice.event_key) { // NON-VACUITY BREAK'
+old = 'if get(MESSAGE_ID)? != format!("{}.v{version}", notice.event_key) {'
+new = 'if false && get(MESSAGE_ID)? != format!("{}.v{version}", notice.event_key) { // NON-VACUITY BREAK'
 
 [[control]]
 id = "event-trigger-version-routing-removed"

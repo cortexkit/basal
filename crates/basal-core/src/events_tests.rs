@@ -174,7 +174,7 @@ fn reply() -> serde_json::Value {
 
 #[test]
 fn body_fetch_uses_notice_version() {
-    for version in [1, 2] {
+    for version in [1, 2, 3] {
         let f = Fixture::new(60);
         let run = f.run_version(version);
         f.reply(reply(), Settlement::Fulfilled);

@@ -279,12 +279,14 @@ pub fn decode(message: &jetstream::Message, catalog: &dyn Catalog) -> Result<Not
         headers: labels,
         published_at_ms,
     };
-    // V2 uses a distinct transport id so stream-wide deduplication does not
-    // suppress v1. Only the bare key in the header can resolve its stored body.
-    if notice.subject.ends_with(".v2") {
+    let (_, _, version) = notice.subject_identity().map_err(|e| e.to_string())?;
+    // Versions beyond v1 use distinct transport ids so stream-wide
+    // deduplication does not suppress another version of the same event.
+    // Only the bare key in the header can resolve the stored body.
+    if version != 1 {
         notice.event_key = get(EVENT_KEY)?;
-        if get(MESSAGE_ID)? != format!("{}.v2", notice.event_key) {
-            return Err("v2 notice transport id does not match event_key".into());
+        if get(MESSAGE_ID)? != format!("{}.v{version}", notice.event_key) {
+            return Err("versioned notice transport id does not match event_key".into());
         }
     }
     let (module, name, version) = notice.identity().map_err(|e| e.to_string())?;

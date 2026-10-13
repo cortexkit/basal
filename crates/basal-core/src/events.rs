@@ -50,26 +50,30 @@ impl Notice {
             .ok_or_else(|| CoreError::Invalid("flow-targeted event lacks flow_id header".into()))
     }
 
-    pub fn identity(&self) -> Result<(&str, &str, u32)> {
+    /// Parse the subject before selecting the fetch key from transport headers.
+    /// Key validation belongs to `identity`, after the key has been selected.
+    pub fn subject_identity(&self) -> Result<(&str, &str, u32)> {
         let parts: Vec<_> = self.subject.split('.').collect();
-        if !matches!(parts.len(), 5 | 6)
+        if parts.len() != 6
             || parts[0] != "ck"
             || parts[2] != "event"
             || parts.iter().any(|p| p.is_empty() || p.contains(['*', '>']))
         {
             return Err(CoreError::Invalid("invalid event subject".into()));
         }
-        let version = match parts.get(5) {
-            None => 1,
-            Some(suffix) => suffix
-                .strip_prefix('v')
-                .and_then(|v| v.parse::<u32>().ok())
-                .filter(|v| *v > 0 && *suffix == format!("v{v}"))
-                .ok_or_else(|| CoreError::Invalid("invalid event version".into()))?,
-        };
-        let lifecycle_key = parts[3] == "basal"
+        let version = parts[5]
+            .strip_prefix('v')
+            .and_then(|v| v.parse::<u32>().ok())
+            .filter(|v| *v > 0 && parts[5] == format!("v{v}"))
+            .ok_or_else(|| CoreError::Invalid("invalid event version".into()))?;
+        Ok((parts[3], parts[4], version))
+    }
+
+    pub fn identity(&self) -> Result<(&str, &str, u32)> {
+        let (module, name, version) = self.subject_identity()?;
+        let lifecycle_key = module == "basal"
             && version == 1
-            && crate::template_events::EVENTS.contains(&parts[4])
+            && crate::template_events::EVENTS.contains(&name)
             && self
                 .headers
                 .get("flow_id")
@@ -92,7 +96,7 @@ impl Notice {
         {
             return Err(CoreError::Invalid("invalid event key".into()));
         }
-        Ok((parts[3], parts[4], version))
+        Ok((module, name, version))
     }
 
     pub fn trigger_id(&self) -> String {

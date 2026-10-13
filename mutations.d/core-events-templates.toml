@@ -682,3 +682,21 @@ timeout_s = 600
 file = "crates/basal-core/src/events.rs"
 old = '"event_name":name,"version":version'
 new = '"event_name":name,"version":1 /* NON-VACUITY BREAK */'
+
+[[control]]
+id = "event-suffixless-subject-accepted"
+guards = "event subjects require an explicit canonical version suffix"
+test_file = "crates/basal-module/tests/module_events/v2.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test module_events"
+expect_red = ["v2::suffixless_subject_is_malformed_and_acked"]
+select = { filter = "v2::" }
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/events.rs"
+old = "if parts.len() != 6"
+new = """if parts.len() == 5 { return Ok((parts[3], parts[4], 1)); } // NON-VACUITY BREAK
+        if parts.len() != 6"""
