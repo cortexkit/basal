@@ -14,20 +14,27 @@ fn pipe_tree(dir: &Path, hold_parent: bool) -> Command {
         .join("v1.0")
         .join("powershell.exe");
     let pid_file = dir.join("descendant.pid");
+    let release_file = dir.join("release-parent");
     let quoted_path = pid_file.display().to_string().replace('\'', "''");
+    let quoted_release_path = release_file.display().to_string().replace('\'', "''");
     // Start-Process without redirection inherits the parent's standard pipes.
     // The child publishes its pid before waiting, so a missing job kill would
     // leave both a live process and a pipe reader that cannot finish.
+    // Keep the exiting parent alive until the test confirms the child is live.
+    let parent_action = if hold_parent {
+        "Start-Sleep -Seconds 600".to_owned()
+    } else {
+        format!(
+            "while (!(Test-Path '{}')) {{ Start-Sleep -Milliseconds 10 }}; exit 0",
+            quoted_release_path
+        )
+    };
     let script = format!(
         "$p = Start-Process -PassThru -NoNewWindow -FilePath '{}' -ArgumentList '-NoProfile','-Command','\"[IO.File]::WriteAllText(''{}'', [string]$PID); Start-Sleep -Seconds 600\"'; while (!(Test-Path '{}')) {{ Start-Sleep -Milliseconds 10 }}; {}",
         powershell.display(),
         quoted_path,
         quoted_path,
-        if hold_parent {
-            "Start-Sleep -Seconds 600"
-        } else {
-            "exit 0"
-        },
+        parent_action,
     );
     let mut command = Command::new(powershell);
     command
@@ -138,6 +145,9 @@ fn subprocess_exit_reaps_descendants_holding_output_pipes() {
         Duration::from_secs(120),
         || {
             descendant_ready = descendant_is_live(&dir)?;
+            if descendant_ready {
+                std::fs::write(dir.join("release-parent"), b"")?;
+            }
             Ok(descendant_ready)
         },
     )
