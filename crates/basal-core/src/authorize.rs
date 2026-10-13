@@ -62,6 +62,9 @@ pub mod codes {
     pub const TOKEN_CAP: &str = "token_cap";
     /// A `kv` size limit.
     pub const KV_LIMIT: &str = "kv_limit";
+    /// The refusal code when prefrontal-core's current catalog does not declare
+    /// support for keyed digest writes.
+    pub const DIGEST_REPLACE_KEY_UNSUPPORTED: &str = "digest_replace_key_unsupported";
 }
 
 /// The module ops a flow may never call, even when its manifest lists
@@ -276,6 +279,18 @@ pub fn check(
             }
             Primitive::SinkDigest => {
                 let agent = agent_arg(args, *p)?;
+                if let Some(replace_key) = args
+                    .get("options")
+                    .and_then(|options| options.get("replace_key"))
+                    && !replace_key.as_str().is_some_and(|key| {
+                        !key.is_empty() && key.len() <= 200 && !key.chars().any(char::is_control)
+                    })
+                {
+                    return Err(Refusal::new(
+                        codes::INVALID_ARGUMENTS,
+                        "options.replace_key must be a 1 to 200 byte string without control characters",
+                    ));
+                }
                 if let Some(tag) = args.get("options").and_then(|o| o.get("status_tag")) {
                     if !tag
                         .as_str()

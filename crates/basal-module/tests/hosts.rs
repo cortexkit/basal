@@ -29,6 +29,33 @@ fn call(p: Primitive, args: Value) -> CallRequest {
     }
 }
 
+fn set_core_digest_replace_key_capability(fake: &Fake, supported: bool) {
+    let mut catalog = fake.catalog.lock().unwrap();
+    let modules = catalog["modules"].as_array_mut().unwrap();
+    let core = modules
+        .iter_mut()
+        .find(|module| module["module_id"] == "prefrontal-core");
+    if let Some(core) = core {
+        let capabilities = core["capabilities"]["provides"]
+            .as_array_mut()
+            .expect("core provides is an array");
+        capabilities
+            .retain(|capability| capability != basal_host::core_host::FLOW_DIGEST_REPLACE_KEY_V1);
+        if supported {
+            capabilities.push(json!(basal_host::core_host::FLOW_DIGEST_REPLACE_KEY_V1));
+        }
+    } else {
+        modules.push(json!({
+            "module_id": "prefrontal-core",
+            "capabilities": {"provides": if supported {
+                vec![basal_host::core_host::FLOW_DIGEST_REPLACE_KEY_V1]
+            } else {
+                Vec::new()
+            }}
+        }));
+    }
+}
+
 #[test]
 fn core_requests_match_c3_c4_field_for_field() {
     let f = Fake::new();
@@ -625,6 +652,109 @@ fn malformed_status_tag_is_refused_before_send() {
 }
 
 #[test]
+fn digest_replace_key_validation_refuses_invalid_values_unsent() {
+    let fake = Fake::new();
+    let consent = Arc::new(CoreConsent::new(fake.clone()));
+    let f = worker_fixture(fake.clone(), consent.clone(), "replace-key-invalid");
+    let malformed = json!([
+        "",
+        "x".repeat(201),
+        "é".repeat(101),
+        "line\nbreak",
+        "delete\u{7f}",
+        "control\u{0085}",
+        null,
+        4,
+        false,
+        {},
+        []
+    ]);
+    let script = format!(
+        "const keys={malformed}; const results=[]; for (const replace_key of keys) {{ try {{ await sink.digest('SYNAPSE',{{title:'x',body:'y'}},'silent',{{replace_key}}); results.push('sent'); }} catch (e) {{ results.push(e.data.code); }} }} return results;"
+    );
+    common::install(&f, &Caller::Operator, &script, &manifest());
+    approve(&fake, &f.module);
+    let run = common::admit(&f, "host-flow", "invalid-keys");
+    f.module.engine.run_until_idle(50).unwrap();
+    let done = f.module.rt.run(&run).unwrap();
+    assert_eq!(done.state, RunState::Succeeded);
+    assert_eq!(
+        serde_json::from_str::<Value>(done.result.as_ref().unwrap()).unwrap(),
+        json!(vec![
+            "invalid_arguments";
+            malformed.as_array().unwrap().len()
+        ])
+    );
+    assert!(fake.calls("sink.digest").is_empty());
+    let calls = f.module.rt.calls(&run).unwrap();
+    assert_eq!(calls.len(), malformed.as_array().unwrap().len());
+    assert!(calls.iter().all(|call| call.request.is_none()));
+}
+
+#[test]
+fn digest_replace_key_requires_core_catalog_capability() {
+    let fake = Fake::new();
+    set_core_digest_replace_key_capability(&fake, false);
+    let consent = Arc::new(CoreConsent::new(fake.clone()));
+    let f = worker_fixture(fake.clone(), consent.clone(), "replace-key-unsupported");
+    common::install(
+        &f,
+        &Caller::Operator,
+        "try { await sink.digest('SYNAPSE',{title:'x',body:'y'},'silent',{replace_key:'article:42'}); } catch (e) { return e.data.code; } return 'sent';",
+        &manifest(),
+    );
+    approve(&fake, &f.module);
+    let run = common::admit(&f, "host-flow", "unsupported-key");
+    f.module.engine.run_until_idle(50).unwrap();
+    let done = f.module.rt.run(&run).unwrap();
+    assert_eq!(done.state, RunState::Succeeded);
+    assert_eq!(
+        done.result.as_deref(),
+        Some("\"digest_replace_key_unsupported\"")
+    );
+    assert!(fake.calls("sink.digest").is_empty());
+    let calls = f.module.rt.calls(&run).unwrap();
+    assert_eq!(calls.len(), 1);
+    assert!(calls[0].request.is_none());
+}
+
+#[test]
+fn digest_replace_key_is_top_level_when_core_catalog_capability_is_present() {
+    let fake = Fake::new();
+    set_core_digest_replace_key_capability(&fake, true);
+    let consent = Arc::new(CoreConsent::new(fake.clone()));
+    let f = worker_fixture(fake.clone(), consent.clone(), "replace-key-supported");
+    let replace_key = "é".repeat(100);
+    let script = format!(
+        "await sink.digest('SYNAPSE',{{title:'x',body:'y'}},'silent',{{replace_key:{}}}); return 1;",
+        json!(replace_key)
+    );
+    common::install(&f, &Caller::Operator, &script, &manifest());
+    approve(&fake, &f.module);
+    let run = common::admit(&f, "host-flow", "supported-key");
+    f.module.engine.run_until_idle(50).unwrap();
+    assert_eq!(f.module.rt.run(&run).unwrap().state, RunState::Succeeded);
+    let sent = fake.calls("sink.digest");
+    assert_eq!(sent.len(), 1);
+    let expected = json!({
+        "flow_id": "host-flow",
+        "flow_version": 1,
+        "run_id": run,
+        "call_position": 0,
+        "agent": "SYNAPSE",
+        "action": "silent",
+        "due_at": common::T0,
+        "created_at": common::T0,
+        "item": {"title":"x","body":"y"},
+        "claim": null,
+        "replace_key": replace_key
+    });
+    assert_eq!(sent[0]["params"], expected);
+    assert_eq!(sent[0]["params"]["replace_key"], replace_key);
+    assert!(sent[0]["params"]["item"].get("replace_key").is_none());
+}
+
+#[test]
 fn digest_status_tag_is_top_level_and_absence_preserves_wire_bytes() {
     let fake = Fake::new();
     let consent = Arc::new(CoreConsent::new(fake.clone()));
@@ -773,7 +903,7 @@ fn journaled_sink_intent_is_byte_identical_after_a_cut() {
     for (op, script) in [
         (
             "sink.digest",
-            "await sink.digest('SYNAPSE',{title:'x',body:'y'},'piggyback',{status_tag:'NI'}); return 1;",
+            "await sink.digest('SYNAPSE',{title:'x',body:'y'},'piggyback',{status_tag:'NI',replace_key:'article:42'}); return 1;",
         ),
         (
             "sink.status",
@@ -800,6 +930,9 @@ fn journaled_sink_intent_is_byte_identical_after_a_cut() {
             dry_run: DryRunConfig::new(dir.join("dry")),
         };
         let fake = Fake::new();
+        if op == "sink.digest" {
+            set_core_digest_replace_key_capability(&fake, true);
+        }
         let consent = Arc::new(CoreConsent::new(fake.clone()));
         let probe = Arc::new(Probe::crash_at(
             Point::parse("HostAnswered { position: 0 }#1").unwrap(),
@@ -858,6 +991,8 @@ fn journaled_sink_intent_is_byte_identical_after_a_cut() {
         if op == "sink.digest" {
             assert_eq!(sent[0]["params"]["status_tag"], "NI");
             assert_eq!(sent[1]["params"]["status_tag"], "NI");
+            assert_eq!(sent[0]["params"]["replace_key"], "article:42");
+            assert_eq!(sent[1]["params"]["replace_key"], "article:42");
             assert_eq!(sent[1]["params"]["created_at"], common::T0);
             assert_eq!(sent[1]["params"]["due_at"], common::T0);
             assert_eq!(sent[1]["params"]["run_id"], run);
