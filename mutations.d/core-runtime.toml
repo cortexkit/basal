@@ -57,6 +57,7 @@ new = "if true || row.class != StoredClass::Sync || row.outcome.is_some() {"
 
 [[control]]
 id = "clock-reads-not-kept-monotonic-within-a-run"
+scope = { after = "fn commit_sync_call(", before = "\n    ///" }
 guards = "clock reads not kept monotonic within a run"
 test_file = "crates/basal-testkit/tests/journal_races.rs"
 runner = "cargo"
@@ -67,9 +68,9 @@ expect_red = ["clock_stays_monotonic_across_activations"]
 only = false
 build_timeout_s = 3600
 timeout_s = 600
-edits = [
-  { file = "crates/basal-core/src/driver.rs", old = "(Some(c), Some(last)) => Some(c.max(last)),", new = "(Some(c), Some(_)) => Some(c)," },
-]
+file = "crates/basal-core/src/driver.rs"
+old = "(Some(c), Some(last)) => Some(c.max(last)),"
+new = "(Some(c), Some(_)) => Some(c), // NON-VACUITY BREAK"
 
 [[control]]
 id = "recovery-resends-a-call-this-process-is-still-dispatching"
@@ -845,6 +846,7 @@ new = "            limit: limits.max_dispatches,\n"
 
 [[control]]
 id = "selector-selection-checkpoint-moved-after-intent"
+scope = { after = "fn commit_host_call(", before = "\n    fn " }
 guards = "selector: selection checkpoint moved after intent"
 test_file = "crates/basal-module/tests/hosts.rs"
 runner = "cargo"
@@ -856,8 +858,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 edits = [
-  { file = "crates/basal-core/src/driver.rs", old = "        if matches!(\n            call.kind,\n            CallKind::Primitive(Primitive::Llm | Primitive::Classify)\n        ) {\n            self.at(Boundary::ModelSelected {\n                position: call.position,\n            })?;\n        }\n        let new = NewCall {", new = "        let new = NewCall {" },
-  { file = "crates/basal-core/src/driver.rs", old = "                self.at(Boundary::CallCommitted {\n                    position: call.position,\n                })?;", new = "                self.at(Boundary::CallCommitted {\n                    position: call.position,\n                })?; if matches!(call.kind, CallKind::Primitive(Primitive::Llm | Primitive::Classify)) { self.at(Boundary::ModelSelected {position:call.position})?; }" },
+  { file = "crates/basal-core/src/driver.rs", old = "        if matches!(\n            call.kind,\n            CallKind::Primitive(Primitive::Llm | Primitive::Classify)\n        ) {\n            self.at(Boundary::ModelSelected {\n                position: call.position,\n            })?;\n        }\n        let new = NewCall {", new = "        let new = NewCall { // NON-VACUITY BREAK" },
+  { file = "crates/basal-core/src/driver.rs", old = "                self.at(Boundary::CallCommitted {\n                    position: call.position,\n                })?;", new = "                self.at(Boundary::CallCommitted {\n                    position: call.position,\n                })?; if matches!(call.kind, CallKind::Primitive(Primitive::Llm | Primitive::Classify)) { self.at(Boundary::ModelSelected {position:call.position})?; } // NON-VACUITY BREAK" },
 ]
 
 [[control]]

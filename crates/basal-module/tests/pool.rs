@@ -20,6 +20,7 @@ use common::{
 };
 
 use basal_proto::Budgets;
+#[cfg(unix)]
 use serde_json::{Value, json};
 
 const SCRIPT: &str = "const r = await ops.call('mock', 'echo', { n: 1 }); return r.n;";

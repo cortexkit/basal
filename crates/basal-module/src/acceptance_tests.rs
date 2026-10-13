@@ -1,5 +1,7 @@
 use super::*;
-use basal_proto::{LandlockReport, PROTOCOL_VERSION, PreludeHash};
+#[cfg(unix)]
+use basal_proto::LandlockReport;
+use basal_proto::{PROTOCOL_VERSION, PreludeHash};
 
 fn welcome(confinement: Confinement) -> Welcome {
     Welcome {

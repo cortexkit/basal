@@ -9,6 +9,7 @@
 //! stream event costs latency, never correctness. `run.result` reads through
 //! Broca's archive, so it answers for archived sessions too.
 
+#[cfg(any(test, feature = "test-support"))]
 pub mod fake;
 pub mod subc;
 pub mod wire;
@@ -81,13 +82,7 @@ pub trait Transport: Send + Sync {
     fn refresh_flow(&self, _identity: &FlowIdentity) -> Result<(), BrocaError> {
         Ok(())
     }
-    fn configure_flow(
-        &self,
-        _flow_id: &str,
-        _agent_owned: bool,
-        _scope: Option<crate::flow_scope::RegisteredScope>,
-    ) {
-    }
+    fn configure_flow(&self, _flow_id: &str, _scope: Option<crate::flow_scope::RegisteredScope>) {}
     fn send(&self, route: &Route, params: &[u8]) -> Result<SendResult, BrocaError>;
     /// Makes sure a subscription attached at the session's live head is
     /// open, and that it wakes `BrocaHost::poll` when the session's run
@@ -218,9 +213,7 @@ pub struct BrocaHost {
     codemode_sink: Mutex<Option<Arc<dyn CompletionSink>>>,
 }
 
-fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(|p| p.into_inner())
-}
+use basal_proto::util::lock;
 
 impl BrocaHost {
     pub fn new(
@@ -834,13 +827,8 @@ impl Host for BrocaHost {
         self.scope_checks
             .store(enabled, std::sync::atomic::Ordering::SeqCst);
     }
-    fn configure_flow(
-        &self,
-        flow_id: &str,
-        agent_owned: bool,
-        scope: Option<crate::flow_scope::RegisteredScope>,
-    ) {
-        self.transport.configure_flow(flow_id, agent_owned, scope);
+    fn configure_flow(&self, flow_id: &str, scope: Option<crate::flow_scope::RegisteredScope>) {
+        self.transport.configure_flow(flow_id, scope);
     }
     fn classify(&self, _: &CallKind) -> CallClass {
         CallClass::Mutation {
@@ -948,7 +936,7 @@ fn rejection(code: &str, detail: &str, usage: Option<TokenUsage>) -> StoredOutco
 fn json_text(value: Value) -> JsonText {
     // This helper only handles small, host-owned errors. Oversized wire values
     // are checked by StoredOutcome::host and never use this fallback.
-    JsonText::new(value.to_string()).unwrap_or_else(|_| JsonText::null())
+    crate::json_text_or_null(&value)
 }
 
 mod params_bytes {

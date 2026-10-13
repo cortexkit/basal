@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -128,9 +128,7 @@ pub struct BasalHandler {
     tool_foreground: Duration,
 }
 
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(|p| p.into_inner())
-}
+use basal_proto::util::lock;
 
 impl BasalHandler {
     pub fn new(configure: Configure, hosts: MakeHosts) -> Self {
@@ -311,7 +309,6 @@ fn store_path(ack: &ModuleHelloAckBody) -> Result<PathBuf, String> {
     };
     match descriptor.backend {
         StorageBackend::Sqlite { path } => Ok(PathBuf::from(path)),
-        #[allow(unreachable_patterns)]
         other => Err(format!(
             "basal needs a SQLite store, the daemon offered {other:?}"
         )),

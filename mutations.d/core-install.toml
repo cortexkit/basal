@@ -514,6 +514,7 @@ new = "#[serde(default)]\n    pub iq: u32,"
 
 [[control]]
 id = "selector-iq-upper-bound-omitted"
+scope = { after = "fn check_host_grants(", before = "\n    fn " }
 guards = "selector: iq upper bound omitted"
 test_file = "crates/basal-testkit/tests/dispatch_manifest.rs"
 runner = "cargo"
@@ -526,10 +527,11 @@ build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/manifest.rs"
 old = "if llm.iq > 100 {"
-new = "if false {"
+new = "if false { // NON-VACUITY BREAK"
 
 [[control]]
 id = "selector-eq-upper-bound-omitted"
+scope = { after = "fn check_host_grants(", before = "\n    fn " }
 guards = "selector: eq upper bound omitted"
 test_file = "crates/basal-testkit/tests/dispatch_manifest.rs"
 runner = "cargo"
@@ -542,7 +544,7 @@ build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/manifest.rs"
 old = "if llm.eq > 100 {"
-new = "if false {"
+new = "if false { // NON-VACUITY BREAK"
 
 [[control]]
 id = "install-a-root-that-does-not-exist-is-accepted"
@@ -562,6 +564,7 @@ new = "let exists = root.starts_with('/') || root.starts_with('~'); // NON-VACUI
 
 [[control]]
 id = "install-wildcard-and-ip-literal-hosts-are-accepted"
+scope = { after = "fn check_host_grants(", before = "\n    fn " }
 guards = "install: wildcard and IP-literal hosts are accepted"
 test_file = "crates/basal-testkit/tests/builtins_dispatch.rs"
 runner = "cargo"
@@ -578,6 +581,7 @@ new = "let Some(problem) = None::<&str> /* NON-VACUITY BREAK */"
 
 [[control]]
 id = "install-any-method-name-is-accepted"
+scope = { after = "fn check_host_grants(", before = "\n    fn " }
 guards = "install: any method name is accepted"
 test_file = "crates/basal-testkit/tests/builtins_dispatch.rs"
 runner = "cargo"
@@ -1006,6 +1010,7 @@ new = '#[serde(tag = "kind", rename_all = "snake_case")] // NON-VACUITY BREAK'
 
 [[control]]
 id = "audience-sinks-allow-named-targets"
+scope = { after = "fn check_targets(", before = "\n    fn " }
 guards = "audience sink declarations cannot mix static named targets"
 test_file = "crates/basal-core/tests/audience.rs"
 runner = "cargo"
@@ -1022,6 +1027,7 @@ new = 'if false && agent != AUDIENCE_TARGET { // NON-VACUITY BREAK'
 
 [[control]]
 id = "audience-placeholder-without-reach"
+scope = { after = "fn check_targets(", before = "\n    fn " }
 guards = "the audience placeholder requires an audience"
 test_file = "crates/basal-core/tests/audience.rs"
 runner = "cargo"
@@ -1156,6 +1162,7 @@ new = '} else if !catalog.agent_known(agent) && field != "audience.id" { // NON-
 
 [[control]]
 id = "target-grant-requires-audience-at-install"
+scope = { after = "fn check_targets(", before = "\n    fn " }
 guards = "Delegating grants without an audience are refused when validating installs"
 test_file = "crates/basal-module/tests/audience.rs"
 runner = "cargo"
@@ -1172,6 +1179,7 @@ new = "if false && o.for_target.is_some() && self.audience.is_none() { // NON-VA
 
 [[control]]
 id = "target-audience-run-bound-limit"
+scope = { after = "fn check_runtime_limits(", before = "\n    ///" }
 guards = "Audience manifests cannot promise a run longer than half the daemon scope limit"
 test_file = "crates/basal-core/tests/audience.rs"
 runner = "cargo"
@@ -1188,6 +1196,7 @@ new = "if false && self.audience.is_some() && self.deadline_ms(600_000) > 12 * 6
 
 [[control]]
 id = "target-max-targets-range"
+scope = { after = "fn check_targets(", before = "\n    fn " }
 guards = "max_targets remains bounded between one and 1024"
 test_file = "crates/basal-core/tests/audience.rs"
 runner = "cargo"
@@ -1221,6 +1230,7 @@ new = "let _ = (field, spelling); Ok(()) // NON-VACUITY BREAK"
 
 [[control]]
 id = "digest-status-group-validation"
+scope = { after = "fn check_targets(", before = "\n    fn " }
 guards = "digest status groups accept only one to four uppercase ASCII letters"
 test_file = "crates/basal-core/src/manifest.rs"
 runner = "cargo"

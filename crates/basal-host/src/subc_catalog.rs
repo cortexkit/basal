@@ -95,10 +95,6 @@ impl SubcCatalog {
         self.daemon_capabilities = capabilities;
         self
     }
-    pub fn with_denylist(mut self, denylist: Vec<(String, String)>) -> Self {
-        self.denylist = denylist;
-        self
-    }
     pub fn resolve(&self, module: &str, op: &str) -> Result<Option<CatalogOp>, WireError> {
         self.resolve_for_dispatch(module, op).map(|(decl, _)| decl)
     }

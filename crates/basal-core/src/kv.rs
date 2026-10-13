@@ -50,8 +50,7 @@ pub fn is_kv(kind: &CallKind) -> bool {
 /// A rejection outcome with a code the script can branch on.
 pub fn rejection(code: &str, message: &str) -> HostOutcome {
     HostOutcome::rejected(
-        JsonText::new(json!({"message": message, "code": code}).to_string())
-            .unwrap_or_else(|_| JsonText::null()),
+        basal_host::rejection_text(code, message).unwrap_or_else(|_| JsonText::null()),
     )
 }
 

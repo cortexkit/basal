@@ -38,7 +38,7 @@ pub enum Answer {
 
 /// Clock, randomness and op behaviour.
 #[derive(Debug, Clone)]
-pub struct MockHost {
+pub struct ScriptHost {
     /// The next clock read returns this, in milliseconds since the epoch.
     pub clock_ms: u64,
     /// Added to the clock after every read, so reads are monotonic.
@@ -48,7 +48,7 @@ pub struct MockHost {
     random_state: u64,
 }
 
-impl Default for MockHost {
+impl Default for ScriptHost {
     fn default() -> Self {
         Self {
             clock_ms: 1_767_225_600_000, // 2026-01-01T00:00:00Z
@@ -59,11 +59,9 @@ impl Default for MockHost {
     }
 }
 
-fn text(value: &Value) -> JsonText {
-    JsonText::new(value.to_string()).unwrap_or_else(|_| JsonText::null())
-}
+use basal_host::json_text_or_null as text;
 
-impl MockHost {
+impl ScriptHost {
     pub fn advance(&mut self, by: Duration) {
         self.clock_ms += by.as_millis() as u64;
     }

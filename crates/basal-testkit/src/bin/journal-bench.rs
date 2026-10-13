@@ -1,7 +1,7 @@
 //! Measurements for the parent side: the store and the activation driver.
 //!
 //! ```text
-//! cargo run --release -p basal-testkit --bin journal-bench -- \
+//! cargo run --release -p basal-testkit --bin journal-bench --features test-support -- \
 //!     --worker target/release/ck-basal-worker --out evidence/slice-2-measurements.json
 //! ```
 //!

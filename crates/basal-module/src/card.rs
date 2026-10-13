@@ -8,9 +8,7 @@ use basal_core::{Installed, Warning};
 use basal_host::Catalog;
 use serde_json::{Value, json};
 
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
+use basal_proto::util::hex;
 
 pub fn code_hash_hex(hash: &[u8; 32]) -> String {
     hex(hash)

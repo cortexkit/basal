@@ -37,6 +37,7 @@ pub mod core_consent;
 pub mod core_host;
 pub mod flow_refusal;
 pub mod flow_scope;
+#[cfg(any(test, feature = "test-support"))]
 pub mod mock;
 pub mod routing;
 pub mod run_scope;
@@ -46,14 +47,57 @@ pub mod subc_catalog;
 pub mod target_scope;
 pub mod transport;
 
-pub use catalog::{Catalog, EventBody, EventDecl, EventOrigin, MockCatalog, OpDecl, OpKind};
+#[cfg(any(test, feature = "test-support"))]
+pub use catalog::MockCatalog;
+pub use catalog::{Catalog, EventBody, EventDecl, EventOrigin, OpDecl, OpKind};
+#[cfg(any(test, feature = "test-support"))]
+pub use consent::MockConsent;
 pub use consent::{
     CardDecision, Consent, ConsentError, DecisionAnswer, DecisionCard, DecisionContext,
     DecisionEvent, DecisionKind, DecisionOption, DecisionPath, DecisionSink, InstallCard,
-    InstallOutcome, MockConsent,
+    InstallOutcome,
 };
+
+/// Retain a staging sentinel whenever test support is enabled, even if the
+/// linker discards unused test doubles. The production entry point calls this.
+#[inline]
+pub fn retain_test_support_marker() {
+    #[cfg(feature = "test-support")]
+    std::hint::black_box("BASAL_TEST_SUPPORT_ENABLED");
+}
+
+/// Small host-owned JSON values use null if they exceed the IPC value limit.
+/// Built-in result payloads instead return a typed size refusal.
+pub fn json_text_or_null(value: &serde_json::Value) -> basal_proto::JsonText {
+    basal_proto::JsonText::new(value.to_string()).unwrap_or_else(|_| basal_proto::JsonText::null())
+}
+
+/// Encode the common local rejection shape. Callers choose their own bounded
+/// fallback because KV and built-in refusals have different oversize contracts.
+pub fn rejection_text(
+    code: &str,
+    message: &str,
+) -> Result<basal_proto::JsonText, basal_proto::ValueTooLarge> {
+    basal_proto::JsonText::new(serde_json::json!({"message": message, "code": code}).to_string())
+}
 pub use scope_describe::{ScopeDescribeError, ScopeDescription};
 pub use subc_protocol::scope::{ScopeStamp, ScopeStatus};
+
+// Local hosts read wall time and OS randomness and need no completion
+// subscription. The routing host forwards these methods to child hosts;
+// the model adapter instead needs its own completion polling.
+macro_rules! live_host_services {
+    () => {
+        fn now_ms(&self) -> f64 {
+            $crate::core_host::system_now()
+        }
+        fn random(&self) -> f64 {
+            $crate::core_host::sample()
+        }
+        fn attach(&self, _: std::sync::Arc<dyn $crate::CompletionSink>) {}
+    };
+}
+pub(crate) use live_host_services;
 
 /// The usage fields of a Broca outcome, in Broca's canonical names: fresh
 /// input, cache write, output (reasoning is already inside it) and cached
@@ -130,7 +174,7 @@ pub enum CallClass {
 
 impl CallClass {
     /// Whether sending the call again can never produce a second effect.
-    pub fn safe_to_repeat(self) -> bool {
+    pub(crate) fn safe_to_repeat(self) -> bool {
         match self {
             Self::Query => true,
             Self::Mutation {
@@ -467,13 +511,7 @@ pub trait Host: Send + Sync {
     fn scope_checks(&self, _enabled: bool) {}
     /// Registers authority under a route key (a flow id or `codemode:<run_id>`).
     /// Passing no scope releases the key, including one never registered.
-    fn configure_flow(
-        &self,
-        _flow_id: &str,
-        _agent_owned: bool,
-        _scope: Option<flow_scope::RegisteredScope>,
-    ) {
-    }
+    fn configure_flow(&self, _flow_id: &str, _scope: Option<flow_scope::RegisteredScope>) {}
     /// Whether the call only reads, and if not whether it honours
     /// idempotency keys.
     fn classify(&self, kind: &CallKind) -> CallClass;

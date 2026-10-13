@@ -3,9 +3,12 @@
 //! Operator decision cards use the consent provider and deliver their answers
 //! to an attached [`DecisionSink`] until accepted, including after a restart.
 
+#[cfg(any(test, feature = "test-support"))]
 use std::collections::BTreeMap;
 use std::fmt;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
+#[cfg(any(test, feature = "test-support"))]
+use std::sync::{Mutex, MutexGuard};
 
 use crate::{DisabledReason, SinkError, UnknownReason};
 
@@ -155,11 +158,6 @@ pub struct DecisionCard {
 }
 
 impl DecisionCard {
-    /// The fail-closed default shown by the consent plane: the one that declines.
-    pub fn default_option(&self) -> Option<&DecisionOption> {
-        self.options.iter().find(|o| o.decline)
-    }
-
     pub fn decision(&self) -> DecisionKind {
         self.context.kind()
     }
@@ -371,6 +369,7 @@ pub trait Consent: Send + Sync {
     fn attach(&self, sink: Arc<dyn DecisionSink>);
 }
 
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 struct State {
     cards: BTreeMap<String, InstallCard>,
@@ -379,7 +378,6 @@ struct State {
     undelivered: Vec<DecisionEvent>,
     /// Decision cards by deduplication key, with their elicitation ids.
     decision_cards: BTreeMap<String, (String, DecisionCard)>,
-    decision_raises: BTreeMap<String, usize>,
     withdrawn: Vec<String>,
     /// Answers to decision cards not yet accepted by the sink.
     undelivered_answers: Vec<DecisionAnswer>,
@@ -388,19 +386,20 @@ struct State {
 }
 
 /// An in-memory consent plane for tests. Cloning shares the same state.
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Default)]
 pub struct MockConsent {
     state: Arc<Mutex<State>>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl MockConsent {
     pub fn new() -> Self {
         Self::default()
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
-        // A panic in another test thread must not make the mock unusable.
-        self.state.lock().unwrap_or_else(|p| p.into_inner())
+        basal_proto::util::lock(&self.state)
     }
 
     /// Every card raised, by card id.
@@ -448,15 +447,6 @@ impl MockConsent {
             .values()
             .map(|(_, c)| c.clone())
             .collect()
-    }
-
-    /// How many times a decision card was raised under `dedup_key`.
-    pub fn decision_raise_count(&self, dedup_key: &str) -> usize {
-        self.lock()
-            .decision_raises
-            .get(dedup_key)
-            .copied()
-            .unwrap_or(0)
     }
 
     pub fn withdrawn_decisions(&self) -> Vec<String> {
@@ -529,6 +519,7 @@ impl MockConsent {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl Consent for MockConsent {
     fn withdraw_decision(&self, elicitation_id: &str) -> Result<(), ConsentError> {
         let mut state = self.lock();
@@ -568,7 +559,6 @@ impl Consent for MockConsent {
             ));
         }
         let key = card.dedup_key.clone().unwrap_or_default();
-        *state.decision_raises.entry(key.clone()).or_insert(0) += 1;
         let next = format!("mock-el-{}", state.decision_cards.len() + 1);
         let entry = state
             .decision_cards

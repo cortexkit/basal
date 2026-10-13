@@ -237,7 +237,7 @@ impl Runtime {
                         }
                     }
                 }
-                self.shared.host.configure_flow(flow_id, true, scope);
+                self.shared.host.configure_flow(flow_id, scope);
                 self.clear_backoff(&run.run_id);
                 return Ok(Gate::Open);
             }

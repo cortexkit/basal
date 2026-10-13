@@ -32,7 +32,7 @@
 //! the test agent through core's relay, never as a local caller.
 
 use std::path::PathBuf;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use basal_rig::client::{Client, Relayed, Reply, evidence, suite_identity};
 use basal_rig::flows::{self, Flow};
@@ -150,10 +150,7 @@ fn parse_args() -> Result<Args, String> {
 }
 
 fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
-        .unwrap_or(0)
+    i64::try_from(basal_proto::util::unix_millis()).unwrap_or(i64::MAX)
 }
 
 // ------------------------------------------------------------------ report
@@ -950,7 +947,7 @@ async fn declined_install(rig: &Rig, flow: &Flow) -> Case {
         case.check(
             "core holds no install record for the declined flow",
             installs.as_ref().is_ok_and(|v| v == &json!([])),
-            json!(installs.map_err(|e| e.to_string())),
+            json!(installs),
         );
     }
     case
@@ -1689,7 +1686,7 @@ fn kill_evidence(rig: &Rig) -> Value {
 }
 
 /// Compare each send's independent admission evidence with core's durable selector.
-async fn check_model_scope(rig: &Rig, case: &mut Case, flow: &Flow, run: &Run, snapshot: &Value) {
+fn check_model_scope(rig: &Rig, case: &mut Case, flow: &Flow, run: &Run, snapshot: &Value) {
     let route = &snapshot["route"];
     let ownership = rig.broca.ownership(route);
     let registered = rig.core.flow_scope(&flow.id, flow.version);
@@ -1852,7 +1849,7 @@ async fn models_inner(
         .flatten()
         .unwrap_or(Value::Null);
     if let Some(r) = &run {
-        check_model_scope(rig, &mut minimal, &first, r, &call["broca"]).await;
+        check_model_scope(rig, &mut minimal, &first, r, &call["broca"]);
     }
     cases.push(minimal);
     let mut routing = if args.no_kill_hook {
@@ -1869,7 +1866,7 @@ async fn models_inner(
                 && before_send["settlement"].is_null() && selected_luna(&before_send["args"]["selection"])
                 && before_send["args"]["selection"] == call["journal"]["selection"], before_send);
         if let Some(r) = &run {
-            check_model_scope(rig, &mut routing, &first, r, &call["broca"]).await;
+            check_model_scope(rig, &mut routing, &first, r, &call["broca"]);
         }
     }
     cases.push(routing);
@@ -1889,8 +1886,21 @@ async fn models_inner(
     if call.is_null() {
         return Err("first model call has no Broca snapshot".into());
     }
-    let snapshot = &call["broca"];
     cases.push(non_carrier(rig, &first, &run).await?);
+
+    models_result(rig, args, agent, tag, cases, (first, run, call)).await
+}
+
+async fn models_result(
+    rig: &Rig,
+    args: &Args,
+    agent: &Agent,
+    tag: &str,
+    cases: &mut Vec<Case>,
+    initial: (Flow, Run, Value),
+) -> Result<(), String> {
+    let (first, run, call) = initial;
+    let snapshot = &call["broca"];
 
     let mut result = Case::new(MODEL_CASES[2]);
     let indexed = rig.broca.runs(&snapshot["route"])?;
@@ -1900,7 +1910,7 @@ async fn models_inner(
         json!({"bind": snapshot["route"], "ownership": rig.broca.ownership(&snapshot["route"])?}),
     );
     result.record("saved_call", call.clone());
-    check_model_scope(rig, &mut result, &first, &run, snapshot).await;
+    check_model_scope(rig, &mut result, &first, &run, snapshot);
     let text = poll(Duration::from_secs(20), || async {
         rig.broca.final_text(&snapshot["route"]).ok().flatten()
     })
@@ -1930,7 +1940,7 @@ async fn models_inner(
     cases.push(result);
 
     let mut tools = Case::new(MODEL_CASES[6]);
-    check_model_scope(rig, &mut tools, &first, &run, snapshot).await;
+    check_model_scope(rig, &mut tools, &first, &run, snapshot);
     let send = frozen_send(snapshot).ok_or("invalid frozen Broca send")?;
     tools.check(
         "the frozen Broca send has no tools and tool_choice none",
@@ -1938,6 +1948,35 @@ async fn models_inner(
         send,
     );
 
+    models_followups(rig, args, agent, tag, cases, snapshot, tools).await
+}
+
+async fn model_cap(rig: &Rig, agent: &Agent, tag: &str, snapshot: &Value) -> Result<Case, String> {
+    let capped = flows::model(&format!("rig-model-cap-{tag}"), &agent.name, false, true);
+    let mut cap = Case::new(MODEL_CASES[4]);
+    if let Some(r) = model_run(rig, agent, &capped, &mut cap).await {
+        let calls = rig.basal.calls(&capped.id)?;
+        let route = json!({"project_root": snapshot["route"]["project_root"], "harness": snapshot["route"]["harness"],
+            "session": format!("basal:flow-{}:{}:0", capped.id, r.run_id)});
+        let sends = rig.broca.runs(&route)?;
+        cap.check("token_cap rejection is journaled with no dispatch, reservation or Broca run",
+            r.result.as_ref().is_some_and(|v| v["refused"]["data"]["code"] == "token_cap")
+                && calls.len() == 1 && calls[0].attempts == 0 && calls[0].settlement.as_deref() == Some("rejected")
+                && rig.basal.ledger(&r.run_id)?.is_empty() && rig.basal.model_call(&r.run_id)?.is_none() && sends.is_empty(),
+            json!({"result": r.result, "broca_runs": sends, "attempts": calls.first().map(|c| c.attempts)}));
+    }
+    Ok(cap)
+}
+
+async fn models_followups(
+    rig: &Rig,
+    args: &Args,
+    agent: &Agent,
+    tag: &str,
+    cases: &mut Vec<Case>,
+    snapshot: &Value,
+    mut tools: Case,
+) -> Result<(), String> {
     let classify = flows::model(
         &format!("rig-model-classify-{tag}"),
         &agent.name,
@@ -1958,8 +1997,8 @@ async fn models_inner(
     );
     if let Some(r) = &classified {
         let saved = rig.basal.model_call(&r.run_id)?.unwrap_or(Value::Null);
-        check_model_scope(rig, &mut label, &classify, r, &saved["broca"]).await;
-        check_model_scope(rig, &mut tools, &classify, r, &saved["broca"]).await;
+        check_model_scope(rig, &mut label, &classify, r, &saved["broca"]);
+        check_model_scope(rig, &mut tools, &classify, r, &saved["broca"]);
         if !saved.is_null() {
             label.record(
                 "broca_send",
@@ -1977,20 +2016,7 @@ async fn models_inner(
     }
     cases.push(label);
 
-    let capped = flows::model(&format!("rig-model-cap-{tag}"), &agent.name, false, true);
-    let mut cap = Case::new(MODEL_CASES[4]);
-    if let Some(r) = model_run(rig, agent, &capped, &mut cap).await {
-        let calls = rig.basal.calls(&capped.id)?;
-        let route = json!({"project_root": snapshot["route"]["project_root"], "harness": snapshot["route"]["harness"],
-            "session": format!("basal:flow-{}:{}:0", capped.id, r.run_id)});
-        let sends = rig.broca.runs(&route)?;
-        cap.check("token_cap rejection is journaled with no dispatch, reservation or Broca run",
-            r.result.as_ref().is_some_and(|v| v["refused"]["data"]["code"] == "token_cap")
-                && calls.len() == 1 && calls[0].attempts == 0 && calls[0].settlement.as_deref() == Some("rejected")
-                && rig.basal.ledger(&r.run_id)?.is_empty() && rig.basal.model_call(&r.run_id)?.is_none() && sends.is_empty(),
-            json!({"result": r.result, "broca_runs": sends, "attempts": calls.first().map(|c| c.attempts)}));
-    }
-    cases.push(cap);
+    cases.push(model_cap(rig, agent, tag, snapshot).await?);
 
     if args.no_kill_hook {
         cases.push(Case::skipped(MODEL_CASES[5], NO_KILL_HOOK_REASON));
@@ -2015,8 +2041,8 @@ async fn models_inner(
         );
         if let Some(r) = recovered {
             let saved = rig.basal.model_call(&r.run_id)?.unwrap_or(Value::Null);
-            check_model_scope(rig, &mut crash, &flow, &r, &saved["broca"]).await;
-            check_model_scope(rig, &mut tools, &flow, &r, &saved["broca"]).await;
+            check_model_scope(rig, &mut crash, &flow, &r, &saved["broca"]);
+            check_model_scope(rig, &mut tools, &flow, &r, &saved["broca"]);
             let sends = rig.broca.runs(&saved["broca"]["route"])?;
             crash.record(
                 "broca_send",

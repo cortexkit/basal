@@ -94,6 +94,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 name = "basal-core"
 version = "0.1.0"
 dependencies = [
+ "basal-core",
  "basal-host",
  "basal-proto",
  "blake3",
@@ -114,6 +115,7 @@ dependencies = [
 name = "basal-host"
 version = "0.1.0"
 dependencies = [
+ "basal-host",
  "basal-launch",
  "basal-proto",
  "cortexkit-resource-busy",
@@ -147,6 +149,7 @@ dependencies = [
  "basal-core",
  "basal-host",
  "basal-launch",
+ "basal-module",
  "basal-proto",
  "basal-testkit",
  "base64",
@@ -209,6 +212,7 @@ dependencies = [
  "basal-host",
  "basal-launch",
  "basal-proto",
+ "basal-testkit",
  "blake3",
  "jiff",
  "libc",

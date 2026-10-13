@@ -29,6 +29,7 @@ path = "src/bin/basal-rig-contract.rs"
 test = true
 
 [dependencies]
+basal-proto.workspace = true
 async-trait.workspace = true
 blake3.workspace = true
 rusqlite.workspace = true
@@ -49,4 +50,3 @@ windows-sys = { version = "0.61", features = [
 
 [dev-dependencies]
 basal-host.workspace = true
-basal-proto.workspace = true

@@ -46,9 +46,27 @@ impl HarnessTransport {
 }
 impl Transport for HarnessTransport {
     fn catalog(&self) -> Result<Value, WireError> {
-        Ok(
-            json!({"generation":1,"modules":[{"module_id":"mock","roles":[{"role":"management_surface","operations":[{"name":"echo","kind":"query"},{"name":"post","kind":"mutate"}],"identity_scope":[],"config_schema":{},"observability":[],"concurrency":"serial"},{"role":"tool_provider","tools":[{"name":"send","execution_mode":"mutating","schema":{}}],"identity_scope":[],"concurrency":"serial","emits_push":false,"sub_supervises":false}],"control_ops":[]}]}),
-        )
+        Ok(json!({
+            "generation": 1,
+            "modules": [{
+                "module_id": "mock",
+                "roles": [{
+                    "role": "management_surface",
+                    "operations": [
+                        {"name": "echo", "kind": "query"},
+                        {"name": "post", "kind": "mutate"}
+                    ],
+                    "identity_scope": [], "config_schema": {}, "observability": [],
+                    "concurrency": "serial"
+                }, {
+                    "role": "tool_provider",
+                    "tools": [{"name": "send", "execution_mode": "mutating", "schema": {}}],
+                    "identity_scope": [], "concurrency": "serial",
+                    "emits_push": false, "sub_supervises": false
+                }],
+                "control_ops": []
+            }]
+        }))
     }
     fn management(&self, module: &str, op: &str, params: Value) -> Result<Value, WireError> {
         if module == "prefrontal-core" && op == "sink.digest" {

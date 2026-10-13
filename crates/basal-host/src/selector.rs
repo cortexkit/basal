@@ -5,7 +5,9 @@ use crate::transport::{Transport, WireError};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::fmt;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+#[cfg(any(test, feature = "test-support"))]
+use std::sync::Mutex;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectionRequest {
@@ -183,12 +185,14 @@ impl ModelSelector for RoutingSelector {
 /// Tests supply this fake explicitly. The runtime defaults to a refusing
 /// selector rather than choosing a model without fleet routing.
 #[derive(Debug, Default)]
+#[cfg(any(test, feature = "test-support"))]
 pub struct FakeSelector {
     pub requests: Mutex<Vec<SelectionRequest>>,
     pub reports: Mutex<Vec<(String, ModelOutcome)>>,
     pub replies: Mutex<std::collections::VecDeque<Result<ModelSelection, SelectionError>>>,
     pub report_error: Mutex<Option<SelectionError>>,
 }
+#[cfg(any(test, feature = "test-support"))]
 impl ModelSelector for FakeSelector {
     fn select(&self, request: &SelectionRequest) -> Result<ModelSelection, SelectionError> {
         self.requests

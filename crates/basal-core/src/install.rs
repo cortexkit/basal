@@ -1054,6 +1054,7 @@ impl Runtime {
     }
 
     /// Enables a disabled flow again. Operator only.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn enable_flow(&self, flow_id: &str) -> std::result::Result<bool, InstallError> {
         let now = self.config().clock.now_ms();
         decide(self, |tx| enable(tx, flow_id, now))

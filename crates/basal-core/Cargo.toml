@@ -7,6 +7,9 @@ license.workspace = true
 publish.workspace = true
 rust-version.workspace = true
 
+[features]
+test-support = ["basal-host/test-support"]
+
 # basal-core owns every durable thing and talks to hosts only through the Host
 # trait. It never depends on basal-worker: workers are separate processes
 # reached through the WorkerChannel trait.
@@ -29,3 +32,7 @@ sha2.workspace = true
 serde_json = { workspace = true, features = ["float_roundtrip"] }
 subc-protocol.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+# Use a distinct name so package-qualified feature flags still name the package.
+basal-core-test-support = { package = "basal-core", path = ".", features = ["test-support"] }

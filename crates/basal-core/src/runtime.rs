@@ -212,7 +212,7 @@ pub(crate) struct Signal {
 
 impl Signal {
     fn lock(&self) -> MutexGuard<'_, u64> {
-        self.epoch.lock().unwrap_or_else(|p| p.into_inner())
+        lock(&self.epoch)
     }
 
     pub(crate) fn current(&self) -> u64 {
@@ -308,9 +308,7 @@ impl CompletionSink for Sink {
     }
 }
 
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(|p| p.into_inner())
-}
+use basal_proto::util::lock;
 
 /// The rejection recorded for a call the host could not be reached for,
 /// when the call provably had no effect.
@@ -368,6 +366,7 @@ impl Runtime {
 
     /// Another handle on the same store and process state with a different
     /// owner identity, standing in for a second owner taking runs over.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn with_owner(&self, owner: &str) -> Self {
         let mut config = (*self.config).clone();
         config.owner = owner.to_owned();
@@ -1166,6 +1165,7 @@ impl Runtime {
     /// reports usage with the run's end). Deduplicated by `send_id`: only
     /// the first report for a reservation is applied, whichever way it
     /// came. Returns whether this one was applied.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn report_usage(&self, send_id: &str, usage: crate::tokens::Usage) -> Result<bool> {
         let now = self.config.clock.now_ms();
         self.shared.store.write(|tx| {
@@ -1197,6 +1197,18 @@ impl Runtime {
             let start = crate::tokens::window_start(at_ms, window_ms);
             crate::tokens::window_usage(c, flow_id, window_ms, start).map(Some)
         })
+    }
+
+    /// Current token windows for approved flows, read in one store query.
+    /// Unknown flows and flows without token grants are omitted.
+    pub fn token_usage_many(
+        &self,
+        flow_ids: &[&str],
+        at_ms: i64,
+    ) -> Result<std::collections::BTreeMap<String, crate::tokens::WindowUsage>> {
+        self.shared
+            .store
+            .read(|c| crate::tokens::window_usage_many(c, flow_ids, at_ms))
     }
 }
 

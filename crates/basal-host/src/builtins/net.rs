@@ -27,6 +27,7 @@
 #[cfg(test)]
 mod tests;
 
+#[cfg(any(test, feature = "test-support"))]
 use std::collections::BTreeMap;
 #[cfg(any(test, feature = "rig-kill-hook"))]
 use std::collections::BTreeSet;
@@ -565,8 +566,10 @@ fn dns_worker() -> &'static mpsc::SyncSender<DnsJob> {
 /// A fixed table of host names to addresses, for tests. The port each
 /// entry names is used whatever port the URL asks for.
 #[derive(Debug, Clone, Default)]
+#[cfg(any(test, feature = "test-support"))]
 pub struct StaticResolver(pub BTreeMap<String, Vec<SocketAddr>>);
 
+#[cfg(any(test, feature = "test-support"))]
 impl Resolve for StaticResolver {
     fn resolve(&self, host: &str, _port: u16) -> std::io::Result<Vec<SocketAddr>> {
         self.0.get(host).cloned().ok_or_else(|| {
@@ -636,6 +639,13 @@ fn unsent(detail: String) -> Failure {
 }
 
 impl Client {
+    #[cfg_attr(
+        not(any(test, feature = "rig-kill-hook")),
+        expect(
+            clippy::unused_self,
+            reason = "production always denies private-address exemptions"
+        )
+    )]
     fn private_host(&self, _host: &str) -> bool {
         #[cfg(any(test, feature = "rig-kill-hook"))]
         {

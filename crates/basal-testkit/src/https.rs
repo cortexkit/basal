@@ -20,6 +20,52 @@ use rustls::{ServerConfig, ServerConnection, StreamOwned};
 /// The host names the certificate covers.
 pub const TEST_HOSTS: [&str; 3] = ["api.test", "other.test", "evil.test"];
 
+/// A resolver that records actual lookups before delegating to the fixture's
+/// fixed addresses, so authorization tests need not infer DNS from accepts.
+pub struct ResolverSpy {
+    resolver: basal_host::builtins::net::StaticResolver,
+    calls: AtomicUsize,
+}
+
+impl ResolverSpy {
+    pub fn new(server: &TestServer) -> Self {
+        Self {
+            resolver: basal_host::builtins::net::StaticResolver(
+                TEST_HOSTS
+                    .iter()
+                    .map(|host| ((*host).to_owned(), vec![server.addr()]))
+                    .collect(),
+            ),
+            calls: AtomicUsize::new(0),
+        }
+    }
+
+    pub fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+}
+
+impl basal_host::builtins::net::Resolve for ResolverSpy {
+    fn resolve(&self, host: &str, port: u16) -> std::io::Result<Vec<SocketAddr>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.resolver.resolve(host, port)
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum AcceptRetry {
+    Immediate,
+    Wait,
+}
+
+fn accept_retry(error: std::io::Error) -> std::io::Result<AcceptRetry> {
+    match error.kind() {
+        std::io::ErrorKind::Interrupted => Ok(AcceptRetry::Immediate),
+        std::io::ErrorKind::WouldBlock => Ok(AcceptRetry::Wait),
+        _ => Err(error),
+    }
+}
+
 /// One answer the server gives.
 #[derive(Debug, Clone)]
 pub struct Reply {
@@ -153,8 +199,13 @@ impl TestServer {
                                 let _ = serve(tcp, config, &routes, &seen);
                             });
                         }
-                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                        Err(e) => panic!("accept test HTTPS connection: {e}"),
+                        Err(e) => match accept_retry(e) {
+                            Ok(AcceptRetry::Immediate) => continue,
+                            // The fixture normally blocks in accept. If the
+                            // listener ever becomes nonblocking, avoid spinning.
+                            Ok(AcceptRetry::Wait) => thread::park_timeout(Duration::from_millis(1)),
+                            Err(e) => panic!("accept test HTTPS connection: {e}"),
+                        },
                     }
                 }
             })
@@ -295,6 +346,25 @@ fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn listener_errors_distinguish_interrupt_wait_and_fatal() {
+        use std::io::{Error, ErrorKind};
+        assert_eq!(
+            accept_retry(Error::from(ErrorKind::Interrupted)).unwrap(),
+            AcceptRetry::Immediate
+        );
+        assert_eq!(
+            accept_retry(Error::from(ErrorKind::WouldBlock)).unwrap(),
+            AcceptRetry::Wait
+        );
+        assert_eq!(
+            accept_retry(Error::from(ErrorKind::PermissionDenied))
+                .unwrap_err()
+                .kind(),
+            ErrorKind::PermissionDenied
+        );
+    }
 
     #[test]
     fn idle_https_accept_blocks_and_shutdown_wakes_it_without_a_request() {

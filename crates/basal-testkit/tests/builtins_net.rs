@@ -12,7 +12,7 @@ use std::time::Duration;
 use basal_host::builtins::net::{self, Client, HostRule, NetConfig, Resolve, StaticResolver};
 use basal_host::builtins::{Failure, codes};
 use basal_host::{Sent, TransportError, UnknownReason};
-use basal_testkit::https::{Reply, TEST_HOSTS, TestServer};
+use basal_testkit::https::{Reply, ResolverSpy, TEST_HOSTS, TestServer};
 use serde_json::{Value, json};
 
 fn routes(_server_port: u16) -> BTreeMap<String, Reply> {
@@ -217,7 +217,13 @@ fn only_https_urls_are_fetched() {
 #[test]
 fn a_host_or_method_not_approved_is_refused_before_connecting() {
     let server = server();
-    let client = client(&server);
+    let resolver = Arc::new(ResolverSpy::new(&server));
+    let client = Client::new(NetConfig {
+        resolver: resolver.clone(),
+        trust_anchors: Some(vec![server.trust_der()]),
+        private_hosts: TEST_HOSTS.iter().map(|h| (*h).to_owned()).collect(),
+        ..NetConfig::default()
+    });
     let rules = rules(&[("api.test", GET_HEAD), ("other.test", &["POST"])]);
     assert_eq!(
         refused(fetch(
@@ -236,6 +242,7 @@ fn a_host_or_method_not_approved_is_refused_before_connecting() {
         codes::DENIED
     );
     assert_eq!(server.connections(), 0);
+    assert_eq!(resolver.calls(), 0, "unauthorized requests reached DNS");
     // The method approved for other.test is sent, with its body.
     let posted = fetch(
         &client,
@@ -244,6 +251,11 @@ fn a_host_or_method_not_approved_is_refused_before_connecting() {
     )
     .expect("post");
     assert_eq!(posted["status"], 201);
+    assert_eq!(
+        resolver.calls(),
+        1,
+        "the permitted request must exercise the spy"
+    );
     let seen = server.seen();
     assert_eq!(seen.len(), 1);
     assert_eq!(seen[0].method, "POST");

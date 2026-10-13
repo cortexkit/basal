@@ -125,12 +125,7 @@ impl<H: Copy + Eq> ScopedRoutes<H> {
         self.routes.retain(|_, (_, handle, _)| handle.is_none());
         self.connection_generation = self.connection_generation.wrapping_add(1);
     }
-    pub fn configure(
-        &mut self,
-        flow: &str,
-        _agent_owned: bool,
-        scope: Option<RegisteredScope>,
-    ) -> Vec<H> {
+    pub fn configure(&mut self, flow: &str, scope: Option<RegisteredScope>) -> Vec<H> {
         if let Some((_, key)) = self.flows.remove(flow) {
             let users = self
                 .scope_users
@@ -433,7 +428,7 @@ mod tests {
     fn a_scope_closed_route_is_not_reopened_under_the_same_selector() {
         let mut routes = ScopedRoutes::<u64>::default();
         let scope = decode(&fixture()).unwrap().unwrap().selector;
-        routes.configure("a", true, Some(registered(scope.clone())));
+        routes.configure("a", Some(registered(scope.clone())));
         let target = subc_protocol::RouteTarget::ManagementSurface {
             module_id: "broca".into(),
         };
@@ -443,7 +438,7 @@ mod tests {
             routes.route("a", &target, |_| panic!("scope close reopened")),
             Err(WireError::Typed(_))
         ));
-        routes.configure("a", true, Some(registered(scope.clone())));
+        routes.configure("a", Some(registered(scope.clone())));
         assert!(
             routes
                 .route("a", &target, |_| panic!(
@@ -453,7 +448,7 @@ mod tests {
         );
         let mut next = scope;
         next.epoch += 1;
-        routes.configure("a", true, Some(registered(next)));
+        routes.configure("a", Some(registered(next)));
         assert_eq!(routes.route("a", &target, |_| Ok(2)).unwrap(), Some(2));
     }
     #[test]
@@ -463,7 +458,7 @@ mod tests {
         let target = subc_protocol::RouteTarget::ManagementSurface {
             module_id: "broca".into(),
         };
-        routes.configure("a", true, Some(registered(scope.clone())));
+        routes.configure("a", Some(registered(scope.clone())));
         routes.route("a", &target, |_| Ok(1)).unwrap();
         assert_eq!(
             routes
@@ -472,10 +467,7 @@ mod tests {
             Some(1)
         );
         scope.epoch += 1;
-        assert_eq!(
-            routes.configure("a", true, Some(registered(scope))),
-            vec![1]
-        );
+        assert_eq!(routes.configure("a", Some(registered(scope))), vec![1]);
         assert_eq!(routes.route("a", &target, |_| Ok(2)).unwrap(), Some(2));
     }
 
@@ -486,17 +478,17 @@ mod tests {
         let target = subc_protocol::RouteTarget::ManagementSurface {
             module_id: "broca".into(),
         };
-        routes.configure("a", true, Some(scope.clone()));
-        routes.configure("b", true, Some(scope.clone()));
+        routes.configure("a", Some(scope.clone()));
+        routes.configure("b", Some(scope.clone()));
         routes.route("a", &target, |_| Ok(1)).unwrap();
-        assert!(routes.configure("a", true, None).is_empty());
+        assert!(routes.configure("a", None).is_empty());
         assert_eq!(
             routes
                 .route("b", &target, |_| panic!("shared handle dropped"))
                 .unwrap(),
             Some(1)
         );
-        assert_eq!(routes.configure("b", true, None), [1]);
+        assert_eq!(routes.configure("b", None), [1]);
         assert!(routes.flows.is_empty());
         assert!(routes.scope_users.is_empty());
         assert!(routes.routes.is_empty());
@@ -509,7 +501,7 @@ mod tests {
         let target = subc_protocol::RouteTarget::ManagementSurface {
             module_id: "broca".into(),
         };
-        routes.configure("a", true, Some(scope.clone()));
+        routes.configure("a", Some(scope.clone()));
         let plan = routes.prepare("a", &target, None).unwrap();
         routes.connection_restored();
         assert!(matches!(
@@ -519,7 +511,7 @@ mod tests {
         let plan = routes.prepare("a", &target, None).unwrap();
         let mut next = scope;
         next.selector.epoch += 1;
-        routes.configure("a", true, Some(next));
+        routes.configure("a", Some(next));
         assert!(matches!(
             routes.install("a", plan, 2),
             Err(WireError::NeverSent(_))

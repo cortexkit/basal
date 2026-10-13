@@ -5,7 +5,7 @@
 use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
 use cortexkit_store::{SqliteStore, StoreError, open_sqlite};
 use cortexkit_store_types::{Isolation, StorageBackend, StorageDescriptor};
@@ -67,10 +67,7 @@ pub(crate) fn now_ms() -> i64 {
 }
 
 pub(crate) fn system_now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+    basal_proto::util::unix_millis() as i64
 }
 
 impl Store {

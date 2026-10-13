@@ -1,6 +1,22 @@
 # script/: staging, signing, the flows rig and the repository fences.
 
 [[control]]
+id = "stage-test-support-marker-refusal"
+guards = "production staging rejects test-support markers in either binary"
+file = "script/stage.sh"
+old = '[ "$support" = 0 ] || die'
+new = '[ "$support" -ge 0 ] || die # NON-VACUITY BREAK'
+test_file = "script/tests/stage_card.py"
+runner = "command"
+platforms = ["linux"]
+command = ["python3.14", "-m", "unittest", "{test}"]
+test_count_pattern = "Ran {count} test"
+expect_red = ["script.tests.stage_card.StageBinaryChecks.test_test_support_is_rejected_in_each_staged_binary"]
+only = false
+timeout_s = 120
+build_timeout_s = 1800
+
+[[control]]
 id = "rig-routing-pin-accepts-a-catalog-without-luna"
 guards = "the routing pin refuses a served catalog without openai/gpt-6-luna"
 file = "script/flows-rig.sh"

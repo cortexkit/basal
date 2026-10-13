@@ -2,8 +2,8 @@
 use crate::subc_catalog::CORE;
 use crate::transport::{Transport, WireError};
 use crate::{
-    CallClass, CallRequest, CompletionSink, Dispatched, Host, HostOutcome, InstallApproval,
-    InstallStatus, TransportError, UnknownReason,
+    CallClass, CallRequest, Dispatched, Host, HostOutcome, InstallApproval, InstallStatus,
+    TransportError, UnknownReason,
 };
 use basal_proto::{CallKind, JsonText, Primitive};
 use serde_json::{Value, json};
@@ -215,13 +215,7 @@ impl Host for CoreHost {
                 .and_then(|v| validate_reply(p, v)),
         )
     }
-    fn now_ms(&self) -> f64 {
-        system_now()
-    }
-    fn random(&self) -> f64 {
-        sample()
-    }
-    fn attach(&self, _: Arc<dyn CompletionSink>) {}
+    crate::live_host_services!();
     fn install_status(&self, flow_id: &str, version: u32) -> Result<InstallStatus, TransportError> {
         self.install_status_with_approval(flow_id, version)
             .map(|(status, _)| status)
@@ -269,9 +263,7 @@ impl Host for CoreHost {
     }
 }
 pub(crate) fn system_now() -> f64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0.0, |d| d.as_millis() as f64)
+    basal_proto::util::unix_millis() as f64
 }
 pub(crate) fn sample() -> f64 {
     let mut x = 0u64;

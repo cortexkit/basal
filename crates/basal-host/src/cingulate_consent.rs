@@ -30,6 +30,7 @@ impl CingulateConsent {
 
     /// Read and apply settlement pages immediately, without a polling timer.
     /// Saved providers remain pollable when absent from the daemon catalog.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn poll_once(&self) -> Result<(), ConsentError> {
         self.core.poll_once()
     }

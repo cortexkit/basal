@@ -43,6 +43,14 @@ CI also refuses Cargo path dependencies that resolve outside this repository and
 
 The `rig-kill-hook` feature adds a one-shot kill switch used only by the test rig; a production build never enables it.
 
+Mock hosts, fake providers and test-only runtime helpers require `cfg(test)` or
+the owning crate's `test-support` feature. Development dependencies enable that
+feature for `cargo test`; production builds do not enable it. The harness and
+testkit binaries also require `test-support` when built by hand, for example
+`cargo build -p basal-module --bin ck-basal-harness --features test-support`.
+Production staging rejects the retained test-support marker as well as the rig
+kill-hook marker, even if the linker removes unused test doubles.
+
 ## Mutation proofs
 
 A passing safety test proves little until it has been seen to fail. [`mutations.d/`](mutations.d) is the checked-in catalogue of source edits and the exact full libtest paths that must catch them, one TOML file per crate or area. The shared `ckdev-mutate` runner builds each mutant separately, runs its target's tests, requires the named test to fail, and restores the saved source bytes and checks `Cargo.lock`. The existing proofs name one guard each; other tests may also catch the mutant (`only = false`). Install the reviewed, immutable revision (ckdev-mutate 0.12.0):
@@ -66,7 +74,7 @@ The runner reads every visible `*.toml` file directly inside `mutations.d/`, in 
 
 Moving rows between files is not a change to any proof, and `ckdev-mutate run --diff` does not select a row only because it moved. `python3 script/mutation_catalogue.py --same-rows-as <revision>` compares every row with the catalogue at a Git revision, field for field, and fails on any added, removed or changed row, so a reorganisation can show it moved rows without editing them.
 
-New rows can narrow two things the runner otherwise applies to a whole file or a whole target; the existing rows use neither:
+Rows can narrow two things the runner otherwise applies to a whole file or a whole target; the catalogue uses both `scope` and `select`:
 
 - **Anchor scope.** `scope = { after = "fn verify_signature(", before = "\nfn " }` bounds where `old` may match. `after` must occur exactly once in the file, and the region starts right after it; the region ends at the first `before` after that, or at the end of the file when `before` is omitted. `old` must occur exactly once inside the region, though it may appear elsewhere in the file. Use it when the anchor text could also appear in another function: a file-wide anchor that still matches once after a refactor could otherwise edit the wrong code. `check` reports a missing or ambiguous boundary, or an `old` that is not unique in the region. A row has one scope, so all its `edits` must be in one file. `prove --scope-after <text> [--scope-before <text>]` writes it.
 - **Run set.** `select = { filter = "trust_roster_" }` runs only the target's tests whose full name contains that literal text (not a regex), and `select = { tests = ["tests::a", "tests::b"] }` runs exactly the listed full names. The set must contain every `expect_red` name and at least one other test that executes; otherwise use `select = "expected"`. With `only = true`, a failure of any other test in the set grades `WRONG_TEST`; tests outside the set do not run, and `--broad` does not widen it. Command rows (`runner = "command"`) and HUB rows (rows with `hub` and `hub_targets`, described below) cannot use a run set. `prove --select-filter <text>` or `prove --select-tests <a>,<b>` writes it.

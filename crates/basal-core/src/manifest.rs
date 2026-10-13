@@ -647,6 +647,10 @@ impl Manifest {
                 });
             }
         }
+        self.check_targets()
+    }
+
+    fn check_targets(&self) -> Result<(), ManifestError> {
         if let Some(audience) = &self.audience {
             match audience {
                 Audience::Global {} => {}
@@ -718,6 +722,10 @@ impl Manifest {
             }
             check_list("facts.targets", facts.targets.iter().cloned())?;
         }
+        self.check_host_grants()
+    }
+
+    fn check_host_grants(&self) -> Result<(), ManifestError> {
         if let Some(llm) = &self.llm {
             if llm.iq > 100 {
                 return Err(invalid("llm.iq", "must be between 0 and 100"));
@@ -809,6 +817,10 @@ impl Manifest {
             }
             check_list("net.fetch", net.fetch.iter().map(|f| f.host.clone()))?;
         }
+        self.check_runtime_limits()
+    }
+
+    fn check_runtime_limits(&self) -> Result<(), ManifestError> {
         if let Some(p) = &self.placement
             && (p.is_empty() || p.len() > MAX_NAME_BYTES || p.chars().any(char::is_control))
         {

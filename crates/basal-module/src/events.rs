@@ -5,7 +5,7 @@ use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
 };
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use async_nats::jetstream::{self, consumer::PullConsumer};
 use basal_core::{
@@ -90,13 +90,7 @@ impl Drop for Reader {
 }
 
 fn now_ms() -> i64 {
-    i64::try_from(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis(),
-    )
-    .unwrap_or(i64::MAX)
+    i64::try_from(basal_proto::util::unix_millis()).unwrap_or(i64::MAX)
 }
 
 #[derive(Clone, Deserialize)]

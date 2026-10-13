@@ -590,11 +590,11 @@ impl Driver {
         }
         self.shared
             .transport
-            .configure_flow(&self.key(), false, Some(self.start.scope.clone()));
+            .configure_flow(&self.key(), Some(self.start.scope.clone()));
         if let Some(models) = self.shared.models.lock().unwrap().as_ref() {
             models
                 .host
-                .configure_flow(&self.key(), false, Some(self.start.scope.clone()));
+                .configure_flow(&self.key(), Some(self.start.scope.clone()));
         }
         let scope_events = self.event_tx.clone();
         self.shared.transport.watch_run_scope(
@@ -1381,7 +1381,7 @@ fn terminate(
         .write(|tx| store::settle_pending_calls(tx, id, at))?;
     shared
         .transport
-        .configure_flow(&format!("codemode:{id}"), false, None);
+        .configure_flow(&format!("codemode:{id}"), None);
     shared
         .store
         .write(|tx| store::commit_terminal(tx, id, &terminal, at))?;

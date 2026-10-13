@@ -203,7 +203,7 @@ impl Module {
             hosts.catalog.clone(),
             hosts.host,
             pool.clone(),
-            config.dry_run.clone(),
+            config.dry_run,
             runtime_config,
             metrics.clone(),
         );

@@ -35,6 +35,7 @@ class StageBinaryChecks(unittest.TestCase):
 TARGET=/unused
 BINARIES="ck-basal ck-basal-worker"
 KILL_HOOK_NEEDLE=BASAL_RIG_KILL_FILE
+TEST_SUPPORT_NEEDLE=BASAL_TEST_SUPPORT_ENABLED
 say() { :; }
 die() { echo "$*" >&2; exit 1; }
 strings() { :; }
@@ -43,6 +44,35 @@ nm() { :; }
                 result = subprocess.run(['/bin/sh', '-c', code], text=True,
                                         capture_output=True, check=False)
                 self.assertNotEqual(result.returncode, 0, reader + ' failure was accepted')
+
+    def test_test_support_is_rejected_in_each_staged_binary(self):
+        checks = SOURCE.split('[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]')[1]
+        checks = checks.split('\n', 2)[2].split('# ---------------------------------------------------------------- sign')[0]
+        for contaminated in ['ck-basal', 'ck-basal-worker', 'none']:
+            with self.subTest(binary=contaminated):
+                code = '''set -eu
+TARGET=/unused
+BINARIES="ck-basal ck-basal-worker"
+KILL_HOOK_NEEDLE=BASAL_RIG_KILL_FILE
+TEST_SUPPORT_NEEDLE=BASAL_TEST_SUPPORT_ENABLED
+say() { :; }
+die() { echo "$*" >&2; exit 1; }
+nm() { :; }
+strings() {
+  case "$1" in
+    */''' + contaminated + ''') printf '%s\\n' BASAL_TEST_SUPPORT_ENABLED ;;
+    *) printf '%s\\n' production ;;
+  esac
+}
+''' + checks
+                result = subprocess.run(['/bin/sh', '-c', code], text=True,
+                                        capture_output=True, check=False)
+                if contaminated == 'none':
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                else:
+                    self.assertNotEqual(result.returncode, 0,
+                                        contaminated + ' test support was accepted')
+                    self.assertIn(contaminated + ' contains test support', result.stderr)
 
 
 class StageSmokeNameChecks(unittest.TestCase):

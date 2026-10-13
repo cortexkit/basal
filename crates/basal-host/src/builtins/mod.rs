@@ -32,12 +32,11 @@ use basal_proto::{CallKind, JsonText, Primitive};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
-use crate::core_host::{sample, system_now};
-use crate::{
-    CallClass, CallRequest, CompletionSink, Dispatched, Host, HostOutcome, TransportError,
-};
+use crate::{CallClass, CallRequest, Dispatched, Host, HostOutcome, TransportError};
 
-pub use net::{HostRule, NetConfig, Resolve, StaticResolver, SystemResolver};
+#[cfg(any(test, feature = "test-support"))]
+pub use net::StaticResolver;
+pub use net::{HostRule, NetConfig, Resolve, SystemResolver};
 
 /// The rejection codes the built-ins answer with, as the script sees them
 /// in `e.data.code`.
@@ -91,7 +90,7 @@ impl Denial {
 
     /// The rejection a script sees.
     pub fn outcome(&self) -> HostOutcome {
-        HostOutcome::rejected(text(&json!({ "message": self.message, "code": self.code })).unwrap_or_else(|_| {
+        HostOutcome::rejected(crate::rejection_text(self.code, &self.message).unwrap_or_else(|_| {
             JsonText::new(json!({"message":"built-in result exceeds the encoded limit", "code":codes::TOO_LARGE}).to_string()).expect("small host-owned refusal")
         }))
     }
@@ -591,15 +590,7 @@ impl Host for BuiltinHost {
         self.dispatch_checked(request, Some(class))
     }
 
-    fn now_ms(&self) -> f64 {
-        system_now()
-    }
-
-    fn random(&self) -> f64 {
-        sample()
-    }
-
-    fn attach(&self, _: Arc<dyn CompletionSink>) {}
+    crate::live_host_services!();
 
     fn bind_fs_temps(&self, ledger: Arc<dyn fs::TempLedger>) {
         *self.temps.write().unwrap_or_else(|p| p.into_inner()) = Some(ledger);

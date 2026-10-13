@@ -41,7 +41,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -133,7 +133,6 @@ struct Rendezvous {
 #[derive(Default)]
 struct Controls {
     faults: HashMap<(String, String), Vec<Fault>>,
-    classes: HashMap<(String, String), CallClass>,
     open_gates: HashSet<String>,
     rendezvous: HashMap<String, Rendezvous>,
     /// What core answers about each flow version; `None` is no answer (core
@@ -174,14 +173,9 @@ impl Default for MockHost {
     }
 }
 
-fn text(value: &Value) -> JsonText {
-    JsonText::new(value.to_string()).unwrap_or_else(|_| JsonText::null())
-}
+use crate::json_text_or_null as text;
 
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    // A panic in another test thread must not make the mock unusable.
-    m.lock().unwrap_or_else(|p| p.into_inner())
-}
+use basal_proto::util::lock;
 
 fn op_names(kind: &CallKind) -> (String, String) {
     match kind {
@@ -291,15 +285,6 @@ impl MockHost {
         }
     }
 
-    /// Declares how an op is classified, overriding the table above. This is
-    /// the stand-in for the operator-approved list of ops whose idempotency
-    /// claim basal trusts.
-    pub fn set_class(&self, module: &str, op: &str, class: CallClass) {
-        lock(&self.shared.controls)
-            .classes
-            .insert((module.to_owned(), op.to_owned()), class);
-    }
-
     /// Makes the next sends of (module, op) fail, one fault per send.
     pub fn inject(&self, module: &str, op: &str, faults: &[Fault]) {
         assert!(
@@ -344,15 +329,6 @@ impl MockHost {
 
     pub fn effects(&self) -> Vec<Effect> {
         lock(&self.shared.state).effects.clone()
-    }
-
-    /// Effects per idempotency key.
-    pub fn effect_counts(&self) -> BTreeMap<String, usize> {
-        let mut counts = BTreeMap::new();
-        for e in &lock(&self.shared.state).effects {
-            *counts.entry(e.key.clone()).or_insert(0) += 1;
-        }
-        counts
     }
 
     /// Sends that reached the mock under `key`, effects or not.
@@ -548,7 +524,6 @@ impl MockHost {
 
     /// Applies a keyed mutation once and returns its reply.
     fn mutate(
-        &self,
         state: &mut State,
         request: &CallRequest,
         module: &str,
@@ -614,7 +589,7 @@ impl Host for MockHost {
     ) -> Result<crate::ScopeDescription, crate::ScopeDescribeError> {
         let mut controls = lock(&self.shared.controls);
         let key = (owner.clone(), scope_ref.to_owned());
-        controls.scope_queries.push(key.clone());
+        controls.scope_queries.push(key);
         controls
             .scope_descriptions
             .iter()
@@ -634,10 +609,6 @@ impl Host for MockHost {
     }
 
     fn classify(&self, kind: &CallKind) -> CallClass {
-        let names = op_names(kind);
-        if let Some(class) = lock(&self.shared.controls).classes.get(&names) {
-            return *class;
-        }
         Self::default_class(kind)
     }
 
@@ -725,7 +696,7 @@ impl Host for MockHost {
             || matches!(&request.kind, CallKind::Op { module, op } if module == "mock" && op == "long");
         let result = if long {
             let handle = format!("h-{}", request.idempotency_key);
-            let reply = self.mutate(
+            let reply = Self::mutate(
                 &mut state,
                 request,
                 &module,
@@ -744,7 +715,7 @@ impl Host for MockHost {
                 key: request.idempotency_key.clone(),
                 outcome: None,
                 acknowledged: false,
-                usage: usage.clone(),
+                usage,
             });
             if let Some(ms) = args.get("complete_after_ms").and_then(Value::as_u64) {
                 let mock = self.clone();
@@ -768,7 +739,7 @@ impl Host for MockHost {
                     )))
                 }
                 (_, CallClass::Mutation { .. }) => {
-                    let reply = self.mutate(
+                    let reply = Self::mutate(
                         &mut state,
                         request,
                         &module,
@@ -790,7 +761,7 @@ impl Host for MockHost {
                         .cloned()
                         .unwrap_or(Value::Null);
                     let mut outcome = HostOutcome::fulfilled(text(&label));
-                    outcome.usage = usage.clone().and_then(|u| serde_json::from_value(u).ok());
+                    outcome.usage = usage.and_then(|u| serde_json::from_value(u).ok());
                     Dispatched::Completed(outcome)
                 }
                 _ => Dispatched::Completed(HostOutcome::fulfilled(request.args.clone())),
@@ -856,12 +827,7 @@ impl MockHost {
     }
 }
 
-fn settlement_code(s: Settlement) -> &'static str {
-    match s {
-        Settlement::Fulfilled => "fulfilled",
-        Settlement::Rejected => "rejected",
-    }
-}
+use basal_proto::util::settlement_str as settlement_code;
 
 fn encode_state(state: &State) -> Value {
     json!({

@@ -89,10 +89,9 @@ impl Host for CommittedBroca {
     fn configure_flow(
         &self,
         flow_id: &str,
-        agent_owned: bool,
         scope: Option<basal_host::flow_scope::RegisteredScope>,
     ) {
-        self.host.configure_flow(flow_id, agent_owned, scope);
+        self.host.configure_flow(flow_id, scope);
     }
     fn classify(&self, kind: &CallKind) -> CallClass {
         self.host.classify(kind)

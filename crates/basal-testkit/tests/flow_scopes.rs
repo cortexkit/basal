@@ -77,7 +77,7 @@ impl Transport for Wire {
             || self.management("prefrontal-core", "flow.target_scope", json!({"flow_id":request.flow_id,"version":call.version,"agent":call.agent,"expires_at_ms":call.expires_at_ms})),
         );
         for key in cache.take_retired() {
-            self.configure_flow(&key, true, None);
+            self.configure_flow(&key, None);
         }
         let scope = result?;
         let key = scope.route_key();
@@ -89,7 +89,6 @@ impl Transport for Wire {
             .unwrap();
         self.configure_flow(
             &key,
-            true,
             Some(RegisteredScope {
                 selector: scope.selector(),
                 targets,
@@ -100,8 +99,8 @@ impl Transport for Wire {
     fn provider_ready(&self, flow: &str, module: &str, action: &str) -> Result<(), FlowRefusal> {
         self.routes.lock().unwrap().ready(flow, module, action)
     }
-    fn configure_flow(&self, flow: &str, owned: bool, scope: Option<RegisteredScope>) {
-        self.routes.lock().unwrap().configure(flow, owned, scope);
+    fn configure_flow(&self, flow: &str, scope: Option<RegisteredScope>) {
+        self.routes.lock().unwrap().configure(flow, scope);
     }
     fn catalog(&self) -> Result<Value, WireError> {
         let mut modules = vec![
@@ -994,7 +993,7 @@ fn core_flow_ops_require_a_scope_and_never_change_script_arguments() {
     *wire.core_capable.lock().unwrap() = true;
     let mut core_scope = scope(1);
     core_scope.targets.insert("prefrontal-core".into());
-    host.configure_flow("flow-a", true, Some(core_scope));
+    host.configure_flow("flow-a", Some(core_scope));
     host.dispatch(&request).unwrap();
     assert_eq!(
         wire.calls.lock().unwrap()[0],
@@ -1004,7 +1003,7 @@ fn core_flow_ops_require_a_scope_and_never_change_script_arguments() {
             management_body("board.read", args)
         )
     );
-    host.configure_flow("flow-a", false, None);
+    host.configure_flow("flow-a", None);
     assert!(matches!(
         host.dispatch(&request),
         Err(basal_host::TransportError::Refused(FlowRefusal {
@@ -1286,7 +1285,7 @@ fn answer(reference: &str, epoch: u64, expiry: i64) -> Result<Value, WireError> 
 #[test]
 fn rolling_target_scopes_preserve_each_runs_pinned_ref() {
     let f = target_fixture("rolling-target-scopes", "return 1;");
-    f.wire.configure_flow("flow-test", false, Some(scope(1)));
+    f.wire.configure_flow("flow-test", Some(scope(1)));
     f.wire
         .target_answers
         .lock()
@@ -1323,7 +1322,7 @@ fn rolling_target_scopes_preserve_each_runs_pinned_ref() {
 #[test]
 fn target_scope_expiry_and_deadline_extension_reask_and_expired_refs_are_dropped() {
     let f = target_fixture("expired-target-scopes", "return 1;");
-    f.wire.configure_flow("flow-test", false, Some(scope(1)));
+    f.wire.configure_flow("flow-test", Some(scope(1)));
     f.wire.target_answers.lock().unwrap().extend([
         answer("first", 1, 200),
         answer("second", 1, 400),
@@ -1345,7 +1344,7 @@ fn target_scope_expiry_and_deadline_extension_reask_and_expired_refs_are_dropped
 #[test]
 fn closed_target_scope_reasks_and_never_reopens_the_ended_ref() {
     let f = target_fixture("closed-target-scopes", "return 1;");
-    f.wire.configure_flow("flow-test", false, Some(scope(1)));
+    f.wire.configure_flow("flow-test", Some(scope(1)));
     f.wire.target_answers.lock().unwrap().extend([
         answer("first", 1, 200),
         answer("first", 1, 200),
@@ -1372,7 +1371,7 @@ fn closed_target_scope_reasks_and_never_reopens_the_ended_ref() {
 #[test]
 fn changed_target_epoch_drops_old_routes_and_invalidates_old_run_pins() {
     let f = target_fixture("changed-target-epoch", "return 1;");
-    f.wire.configure_flow("flow-test", false, Some(scope(1)));
+    f.wire.configure_flow("flow-test", Some(scope(1)));
     f.wire
         .target_answers
         .lock()

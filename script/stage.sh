@@ -50,6 +50,9 @@ control_of() {
 # The rig's kill switch reads this variable; only a rig-kill-hook build
 # contains it, and a production ck-basal must not.
 KILL_HOOK_NEEDLE=BASAL_RIG_KILL_FILE
+# basal-host retains BASAL_TEST_SUPPORT_ENABLED in ck-basal's entry point,
+# so test-support builds are detectable even if unused test doubles disappear.
+TEST_SUPPORT_NEEDLE=BASAL_TEST_SUPPORT_ENABLED
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'stage: %s\n' "$*" >&2; exit 1; }
@@ -178,11 +181,15 @@ say "ck-basal carries no rig kill switch ($KILL_HOOK_NEEDLE: 0)"
 # OSO entries pointing at object files on the build machine). Cargo strips
 # release builds, but a stripping failure is only a warning, so check.
 for bin in $BINARIES; do
+  support_table=$(strings "$TARGET/release/$bin") || die "cannot inspect $bin for test support; nothing staged"
+  support=$(printf '%s\n' "$support_table" | grep -cF -- "$TEST_SUPPORT_NEEDLE" || true)
+  [ "$support" = 0 ] || die "$bin contains test support ($TEST_SUPPORT_NEEDLE); nothing staged"
   symbols=$(nm -a "$TARGET/release/$bin") || die "cannot inspect $bin's symbols; nothing staged"
   oso=$(printf '%s\n' "$symbols" | grep -c ' OSO ' || true)
   [ "$oso" = 0 ] || die "$bin still carries $oso debug-map entries: stripping failed; nothing staged"
 done
 say "debug map: 0 entries in each binary"
+say "test support: 0 markers in each binary"
 
 # ---------------------------------------------------------------- sign
 

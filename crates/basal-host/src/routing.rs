@@ -1,7 +1,7 @@
 //! Send module ops to their providers and grant-checked facts and sinks to
 //! core. Model calls use a separate host that can be replaced independently.
 use crate::builtins::BuiltinHost;
-use crate::core_host::{outcome, sample, system_now};
+use crate::core_host::outcome;
 use crate::subc_catalog::{SubcCatalog, Surface};
 use crate::transport::{Transport, WireError};
 use crate::{CallClass, CallRequest, CompletionSink, Dispatched, Host, OpKind, TransportError};
@@ -176,13 +176,8 @@ impl Host for ModuleOpsHost {
             Ok(())
         }
     }
-    fn configure_flow(
-        &self,
-        flow_id: &str,
-        agent_owned: bool,
-        scope: Option<crate::flow_scope::RegisteredScope>,
-    ) {
-        self.transport.configure_flow(flow_id, agent_owned, scope);
+    fn configure_flow(&self, flow_id: &str, scope: Option<crate::flow_scope::RegisteredScope>) {
+        self.transport.configure_flow(flow_id, scope);
     }
     fn classify(&self, kind: &CallKind) -> CallClass {
         if let CallKind::Op { module, op } | CallKind::OpFor { module, op } = kind
@@ -204,13 +199,7 @@ impl Host for ModuleOpsHost {
     ) -> Result<Dispatched, TransportError> {
         self.dispatch_checked(request, Some(class))
     }
-    fn now_ms(&self) -> f64 {
-        system_now()
-    }
-    fn random(&self) -> f64 {
-        sample()
-    }
-    fn attach(&self, _: Arc<dyn CompletionSink>) {}
+    crate::live_host_services!();
 }
 
 pub struct RoutingHost {
@@ -296,14 +285,9 @@ impl Host for RoutingHost {
     fn scope_checks(&self, enabled: bool) {
         self.model.scope_checks(enabled);
     }
-    fn configure_flow(
-        &self,
-        flow_id: &str,
-        agent_owned: bool,
-        scope: Option<crate::flow_scope::RegisteredScope>,
-    ) {
-        self.ops.configure_flow(flow_id, agent_owned, scope.clone());
-        self.model.configure_flow(flow_id, agent_owned, scope);
+    fn configure_flow(&self, flow_id: &str, scope: Option<crate::flow_scope::RegisteredScope>) {
+        self.ops.configure_flow(flow_id, scope.clone());
+        self.model.configure_flow(flow_id, scope);
     }
     fn classify(&self, kind: &CallKind) -> CallClass {
         self.target(kind).classify(kind)

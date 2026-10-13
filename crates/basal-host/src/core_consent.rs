@@ -501,6 +501,7 @@ impl CoreConsent {
         self
     }
     /// Also exposed for deterministic tests, which drive pages without sleeping.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn poll_once(&self) -> Result<(), ConsentError> {
         poll(&self.state)
     }

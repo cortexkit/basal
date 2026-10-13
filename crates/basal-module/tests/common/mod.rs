@@ -63,12 +63,23 @@ impl Drop for Fixture {
 }
 
 pub fn scratch(tag: &str) -> PathBuf {
-    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("basal-module-{tag}-{}-{n}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
+    basal_testkit::harness::scratch(&format!("module-{tag}"))
+}
+
+pub fn call(f: &Fixture, caller: &Caller, method: &str, params: Value) -> Result<Value, String> {
+    f.module
+        .handle(caller, method, params)
+        .map_err(|e| format!("{}: {}", e.code, e.message))
+}
+
+pub fn refused(r: &Result<Value, String>) -> bool {
+    matches!(r, Err(e) if e.starts_with("not_permitted"))
+}
+
+pub fn events_v2(flow: &str) -> Value {
+    let mut manifest = events_manifest(flow);
+    manifest["version"] = json!(2);
+    manifest
 }
 
 /// The real path of an existing `path`, spelled as a manifest root. On

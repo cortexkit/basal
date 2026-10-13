@@ -24,7 +24,7 @@ fn route_cache_reuses_handles_and_replaces_changed_selectors() {
     let target = RouteTarget::ManagementSurface {
         module_id: "broca".into(),
     };
-    routes.configure("flow-a", true, Some(registered(scope.clone())));
+    routes.configure("flow-a", Some(registered(scope.clone())));
     assert_eq!(
         routes
             .route("flow-a", &target, |actual| {
@@ -44,7 +44,7 @@ fn route_cache_reuses_handles_and_replaces_changed_selectors() {
     );
     scope.epoch = 2;
     assert_eq!(
-        routes.configure("flow-a", true, Some(registered(scope.clone()))),
+        routes.configure("flow-a", Some(registered(scope.clone()))),
         vec![7]
     );
     assert_eq!(
@@ -58,7 +58,7 @@ fn route_cache_reuses_handles_and_replaces_changed_selectors() {
     );
     scope.scope_ref = "flow-replacement".into();
     assert_eq!(
-        routes.configure("flow-a", true, Some(registered(scope.clone()))),
+        routes.configure("flow-a", Some(registered(scope.clone()))),
         vec![13]
     );
     assert_eq!(
@@ -75,18 +75,15 @@ fn route_cache_reuses_handles_and_replaces_changed_selectors() {
 #[derive(Default)]
 struct RouteTransport {
     routes: Mutex<ScopedRoutes<u64>>,
-    configurations: Mutex<Vec<(String, bool, Option<RegisteredScope>)>>,
+    configurations: Mutex<Vec<(String, Option<RegisteredScope>)>>,
 }
 impl Transport for RouteTransport {
-    fn configure_flow(&self, key: &str, agent_owned: bool, scope: Option<RegisteredScope>) {
+    fn configure_flow(&self, key: &str, scope: Option<RegisteredScope>) {
         self.configurations
             .lock()
             .unwrap()
-            .push((key.into(), agent_owned, scope.clone()));
-        self.routes
-            .lock()
-            .unwrap()
-            .configure(key, agent_owned, scope);
+            .push((key.into(), scope.clone()));
+        self.routes.lock().unwrap().configure(key, scope);
     }
     fn catalog(&self) -> Result<Value, WireError> {
         panic!("configure must not query providers")
@@ -129,10 +126,10 @@ fn target() -> RouteTarget {
 #[test]
 fn configure_flow_registers_a_codemode_route_key() {
     let (host, wire) = route_host();
-    host.configure_flow("codemode:run-1", false, Some(codemode_scope()));
+    host.configure_flow("codemode:run-1", Some(codemode_scope()));
     assert_eq!(
         *wire.configurations.lock().unwrap(),
-        vec![("codemode:run-1".into(), false, Some(codemode_scope()))]
+        vec![("codemode:run-1".into(), Some(codemode_scope()))]
     );
     assert_eq!(
         wire.routes
@@ -150,8 +147,8 @@ fn configure_flow_registers_a_codemode_route_key() {
 #[test]
 fn configure_flow_releases_a_codemode_route_key_without_releasing_other_users() {
     let (host, wire) = route_host();
-    host.configure_flow("codemode:run-1", false, Some(codemode_scope()));
-    host.configure_flow("flow:other", true, Some(codemode_scope()));
+    host.configure_flow("codemode:run-1", Some(codemode_scope()));
+    host.configure_flow("flow:other", Some(codemode_scope()));
     assert_eq!(
         wire.routes
             .lock()
@@ -160,10 +157,10 @@ fn configure_flow_releases_a_codemode_route_key_without_releasing_other_users() 
             .unwrap(),
         Some(13)
     );
-    host.configure_flow("codemode:run-1", false, None);
+    host.configure_flow("codemode:run-1", None);
     assert_eq!(
         wire.configurations.lock().unwrap().last(),
-        Some(&("codemode:run-1".into(), false, None))
+        Some(&("codemode:run-1".into(), None))
     );
     assert!(
         matches!(wire.routes.lock().unwrap().route("codemode:run-1", &target(), |_| panic!("released scopes cannot open routes")), Err(WireError::Typed(refusal)) if refusal.reason == basal_host::flow_refusal::RefusalReason::NoFlowScope)
@@ -178,7 +175,7 @@ fn configure_flow_releases_a_codemode_route_key_without_releasing_other_users() 
             .unwrap(),
         Some(13)
     );
-    host.configure_flow("flow:other", true, None);
+    host.configure_flow("flow:other", None);
     assert!(
         wire.routes
             .lock()
@@ -193,7 +190,7 @@ fn configure_flow_releases_a_codemode_route_key_without_releasing_other_users() 
 #[test]
 fn configure_flow_release_of_an_unregistered_codemode_key_is_a_noop() {
     let (host, wire) = route_host();
-    host.configure_flow("flow:other", true, Some(codemode_scope()));
+    host.configure_flow("flow:other", Some(codemode_scope()));
     assert_eq!(
         wire.routes
             .lock()
@@ -202,8 +199,8 @@ fn configure_flow_release_of_an_unregistered_codemode_key_is_a_noop() {
             .unwrap(),
         Some(17)
     );
-    host.configure_flow("codemode:never-registered", false, None);
-    host.configure_flow("codemode:never-registered", false, None);
+    host.configure_flow("codemode:never-registered", None);
+    host.configure_flow("codemode:never-registered", None);
     assert_eq!(
         wire.routes
             .lock()

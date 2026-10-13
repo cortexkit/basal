@@ -120,9 +120,7 @@ impl fmt::Debug for PreludeHash {
     }
 }
 
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
+use crate::util::hex;
 
 /// Which host-call primitives a script is given. Both profiles get the same
 /// primitives (ops, facts, sinks, kv, llm, classify, clock and random) except

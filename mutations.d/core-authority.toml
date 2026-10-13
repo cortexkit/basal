@@ -967,3 +967,19 @@ timeout_s = 600
 file = "crates/basal-core/src/authorize.rs"
 old = "if !tag\n                        .as_str()\n                        .is_some_and(crate::manifest::valid_status_label)"
 new = "if false && !tag\n                        .as_str()\n                        .is_some_and(crate::manifest::valid_status_label) // NON-VACUITY BREAK"
+[[control]]
+id = "token-usage-batch-executes-an-extra-query"
+guards = "the flow.health token batch executes exactly one SQL statement"
+file = "crates/basal-core/src/tokens.rs"
+old = "let ids = serde_json::json!(flow_ids).to_string();"
+new = """let ids = serde_json::json!(flow_ids).to_string();
+    conn.query_row("SELECT 1", [], |r| r.get::<_, i64>(0))?; // NON-VACUITY BREAK"""
+test_file = "crates/basal-testkit/tests/dispatch_tokens.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test dispatch_tokens"
+expect_red = ["batched_token_usage_keeps_current_windows_and_omits_unapproved_flows"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600

@@ -11,7 +11,7 @@ use basal_proto::{
     Settlement, Welcome, WorkerMessage,
 };
 
-use crate::mock::{Answer, MockHost};
+use crate::mock::{Answer, ScriptHost};
 use crate::process::{ParentError, WorkerProcess};
 
 /// One journaled call.
@@ -131,7 +131,7 @@ pub struct TestParent {
     binary: PathBuf,
     worker: Option<WorkerProcess>,
     pub welcome: Option<Welcome>,
-    pub host: MockHost,
+    pub host: ScriptHost,
     pub journals: HashMap<String, Journal>,
     pub profile: Profile,
     pub budgets: Budgets,
@@ -147,7 +147,7 @@ impl TestParent {
             binary: binary.as_ref().to_path_buf(),
             worker: None,
             welcome: None,
-            host: MockHost::default(),
+            host: ScriptHost::default(),
             journals: HashMap::new(),
             profile: Profile::Flow,
             budgets: Budgets::default(),
@@ -439,7 +439,7 @@ impl TestParent {
     }
 }
 
-fn pending_for(host: &mut MockHost, call: &HostCall, tick: u64) -> Pending {
+fn pending_for(host: &mut ScriptHost, call: &HostCall, tick: u64) -> Pending {
     match host.answer(call) {
         Answer::Ready {
             delay_ticks,

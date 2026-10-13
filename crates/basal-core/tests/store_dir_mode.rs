@@ -9,19 +9,9 @@ use basal_core::{Durability, Store};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 fn scratch(name: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!(
-        "basal-store-mode-{name}-{}-{nanos}",
-        std::process::id()
-    ));
-    fs::create_dir_all(&dir).unwrap();
-    dir
+    basal_core::test_support::timestamp_scratch("store-mode", name)
 }
 
 struct Cleanup(PathBuf);

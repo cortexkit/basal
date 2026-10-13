@@ -11,10 +11,7 @@ use crate::schema::JOURNAL_FORMAT;
 /// every recorded call look divergent.
 pub const ARGS_DIGEST_FORMAT: &str = "blake3-exact-bytes-v1";
 
-/// Lowercase hex, as core writes a code hash.
-pub fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
+pub use basal_proto::util::hex;
 
 /// BLAKE3 of the exact script and manifest bytes. The script's length comes
 /// first so that moving bytes between the two cannot produce the same hash.

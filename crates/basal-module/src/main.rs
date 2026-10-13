@@ -23,6 +23,7 @@ use basal_module::serve::BasalHandler;
 use subc_os::privacy_identity;
 
 fn main() -> ExitCode {
+    basal_host::retain_test_support_marker();
     #[cfg(target_os = "macos")]
     {
         let args: Vec<_> = std::env::args_os().skip(1).collect();
@@ -117,7 +118,7 @@ fn serve() -> ExitCode {
     let configured_models = models.clone();
     let built_models = models.clone();
     let initialized_models = models.clone();
-    let ready_models = models.clone();
+    let ready_models = models;
     let event_transport = transport.clone();
     // Only the rig's kill switch reads this: the store path, once known.
     let store_path_cell = Arc::new(std::sync::OnceLock::<std::path::PathBuf>::new());

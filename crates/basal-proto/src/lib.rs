@@ -27,6 +27,7 @@ mod codec;
 mod frame;
 mod limits;
 mod types;
+pub mod util;
 mod wire;
 
 pub use codec::DecodeError;
