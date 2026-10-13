@@ -181,7 +181,10 @@ say "ck-basal carries no rig kill switch ($KILL_HOOK_NEEDLE: 0)"
 # OSO entries pointing at object files on the build machine). Cargo strips
 # release builds, but a stripping failure is only a warning, so check.
 for bin in $BINARIES; do
-  support_table=$(strings "$TARGET/release/$bin") || die "cannot inspect $bin for test support; nothing staged"
+  case "$bin" in
+    ck-basal) support_table=$hook_table ;;
+    *) support_table=$(strings "$TARGET/release/$bin") || die "cannot inspect $bin for test support; nothing staged" ;;
+  esac
   support=$(printf '%s\n' "$support_table" | grep -cF -- "$TEST_SUPPORT_NEEDLE" || true)
   [ "$support" = 0 ] || die "$bin contains test support ($TEST_SUPPORT_NEEDLE); nothing staged"
   symbols=$(nm -a "$TARGET/release/$bin") || die "cannot inspect $bin's symbols; nothing staged"
