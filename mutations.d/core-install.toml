@@ -646,8 +646,8 @@ new = "if false && module == basal_host::subc_catalog::CORE && !catalog.supports
 
 [[control]]
 id = "install-agent-owned-foreign-targets"
-hub = "Agent targets and install_refuses_what_an_agent_may_not_do both assert that an agent's ordinary install can grant only its own identity, never another agent"
-hub_targets = ["ops"]
+hub = "Agent-target, audience-authorship and ops tests assert that an agent's ordinary install can grant only its own identity, never another agent"
+hub_targets = ["audience", "ops"]
 guards = "agent-owned flows cannot target another agent"
 file = "crates/basal-core/src/install.rs"
 old = 'if author != crate::decisions::OPERATOR_ACTOR && author != "local:unverified" {'
@@ -659,7 +659,7 @@ package = "basal-module"
 platforms = ["macos"]
 target = "--test agent_targets"
 expect_red = ["agent_owned_manifests_reject_foreign_targets_before_install_and_dry_run"]
-# Both targets intentionally assert the same self-only install restriction.
+# All three targets intentionally assert the same self-only install restriction.
 only = false
 timeout_s = 600
 build_timeout_s = 3600
@@ -851,8 +851,8 @@ test_file = "crates/basal-testkit/tests/package_instances.rs"
 runner = "cargo"
 package = "basal-testkit"
 platforms = ["macos"]
-target = "--test package_instances"
-expect_red = ["instance_core_revocation_does_not_mutate_package_bytes"]
+target = "--test package_instances --test template_instances"
+expect_red = ["instance_core_revocation_does_not_mutate_package_bytes", "template_version_revocation_stops_only_that_version_and_keeps_registry"]
 only = true
 timeout_s = 600
 build_timeout_s = 3600

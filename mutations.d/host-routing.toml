@@ -452,6 +452,8 @@ new = "        Ok((found.or_else(|| Some(CatalogOp { // NON-VACUITY BREAK\n     
 
 [[control]]
 id = "hosts-undeclared-events-fabricated"
+hub = "Install and dry-run admission require the requested event name and version to have a published declaration, including missing or empty declarations and recorded live catalogs"
+hub_targets = ["catalog_events"]
 guards = "hosts: undeclared events fabricated"
 test_file = "crates/basal-module/tests/hosts.rs"
 runner = "cargo"
@@ -463,8 +465,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/subc_catalog.rs"
-old = "fn event(&self, module: &str, name: &str, version: u32) -> Option<EventDecl> {\n        if !self.daemon_capabilities.supports_catalog_events() {\n            return None;\n        }\n        let catalog = self.transport.catalog().ok()?;\n        let entry = catalog[\"modules\"]\n            .as_array()?\n            .iter()\n            .find(|e| e[\"module_id\"] == module)?;\n        declared_event(&catalog_event_declarations(entry)?, name, version)\n    }"
-new = "fn event(&self, _: &str, _: &str, _: u32) -> Option<EventDecl> { Some(EventDecl { origin: crate::EventOrigin::Internal, body: crate::EventBody::Inline }) }"
+old = "declared_event(&catalog_event_declarations(entry)?, name, version)"
+new = "declared_event(&catalog_event_declarations(entry).unwrap_or_default(), name, version).or_else(|| Some(EventDecl { origin: crate::EventOrigin::Internal, body: crate::EventBody::Inline })) // NON-VACUITY BREAK"
 
 [[control]]
 id = "hosts-registry-admission-bypassed"

@@ -283,7 +283,28 @@ fn approve(f: &Fake, module: &basal_module::module::Module) {
 fn catalog_install_refuses_missing_ops_and_events_and_marks_mutations() {
     let fake = Fake::new();
     let consent = Arc::new(CoreConsent::new(fake.clone()));
-    let f = fixture(fake.clone(), consent, "catalog-real");
+    // Acknowledgement must not substitute for the event's published declaration.
+    let capabilities = Arc::new(basal_host::subc_catalog::DaemonCapabilities::default());
+    capabilities.observe_hello_ack(
+        &serde_json::from_value(json!({
+            "negotiated_ver": subc_protocol::PROTOCOL_VERSION,
+            "subc_ops": [],
+            "subc_capabilities": [subc_protocol::manifest::CAP_CATALOG_EVENTS_V1],
+            "storage": null,
+            "machine_id": null,
+        }))
+        .unwrap(),
+    );
+    let mut configured_hosts = hosts(fake.clone(), consent);
+    configured_hosts.catalog =
+        Arc::new(SubcCatalog::new(fake.clone()).with_daemon_capabilities(capabilities));
+    let f = common::fixture(
+        "catalog-real",
+        common::Options {
+            hosts: Some(configured_hosts),
+            ..common::Options::default()
+        },
+    );
     let mut m = manifest();
     m["ops"] = json!([{"module":"mock","op":"absent"}]);
     let err = f
