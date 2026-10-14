@@ -91,6 +91,10 @@ struct Rig {
 
 impl Rig {
     fn new(tag: &str, rate: Option<RateLimits>) -> Self {
+        Self::with_store_id(tag, rate, None)
+    }
+
+    fn with_store_id(tag: &str, rate: Option<RateLimits>, store_id: Option<&str>) -> Self {
         let dir = common::scratch(tag);
         let pool = PoolConfig::new(
             basal_testkit::channel::worker_binary(),
@@ -111,6 +115,18 @@ impl Rig {
             engine: EngineConfig::default(),
             dry_run: DryRunConfig::new(dir.join("dry")),
         };
+        if let Some(store_id) = store_id {
+            // Run IDs include the store identity, so seed it before module startup for stable vectors.
+            let store = basal_core::Store::open(&config.store_path, Durability::throwaway())
+                .expect("open deterministic fixture store");
+            store
+                .write(|tx| {
+                    tx.execute("UPDATE meta SET value=?1 WHERE key='store_id'", [store_id])?;
+                    Ok(())
+                })
+                .expect("set deterministic fixture store id");
+            drop(store);
+        }
         let fake = Fake::new();
         let consent = Arc::new(CoreConsent::new(fake.clone()));
         let mut rig = Self {
@@ -167,11 +183,15 @@ impl Rig {
 
     /// Installs `script` as the operator and approves its install card.
     fn install(&self, script: &str) {
+        self.install_with_manifest(script, manifest());
+    }
+
+    fn install_with_manifest(&self, script: &str, manifest: Value) {
         self.m()
             .handle(
                 &Caller::Operator,
                 "flow.install",
-                json!({"script":script,"manifest":manifest().to_string()}),
+                json!({"script":script,"manifest":manifest.to_string()}),
             )
             .expect("install");
         let flow = self.fake.calls("flow.install_request")[0]["params"]["flow_install"].clone();
@@ -234,7 +254,10 @@ impl Rig {
             .into_iter()
             .filter(|c| c.dedup_key == key)
             .collect();
-        cards.last().cloned().expect("a card under the key")
+        cards
+            .last()
+            .cloned()
+            .unwrap_or_else(|| panic!("no decision card under {key}; found {} cards", cards.len()))
     }
 
     /// The audit rows written through the card with this elicitation id,
@@ -853,6 +876,26 @@ fn auto_disabled(tag: &str) -> Rig {
     rig
 }
 
+/// Exceeds the call budget during a run so the engine records a re-enable
+/// card for a dispatch-limit auto-disable, rather than a run-limit one.
+fn dispatch_disabled(tag: &str, store_id: &str) -> Rig {
+    let mut rate = tight();
+    rate.max_runs = 10;
+    rate.max_dispatches = 1;
+    let rig = Rig::with_store_id(tag, Some(rate), Some(store_id));
+    rig.install(
+        "await ops.call('mock','echo',{n:1}); await ops.call('mock','echo',{n:2}); return 1;",
+    );
+    rig.admit("dispatch-limit")
+        .expect("run admitted before call limit");
+    rig.pass();
+    assert!(
+        !rig.m().rt.flow(FLOW).unwrap().unwrap().enabled,
+        "the dispatch limit disables the flow"
+    );
+    rig
+}
+
 #[test]
 fn an_auto_disabled_flow_raises_one_reenable_card_and_each_option_applies() {
     let key = decisions::reenable_key(FLOW, 1);
@@ -1099,6 +1142,182 @@ fn the_request_builder_reproduces_core_vectors_byte_for_byte() {
             "{file}"
         );
     }
+}
+
+#[test]
+fn the_phone_fixture_vectors_are_generated_by_the_engine_card_builders() {
+    use basal_host::flow_refusal::{FlowRefusal, RefusalReason};
+    use sha2::{Digest, Sha256};
+
+    const STORE_ID: &str = "phone-decision-fixture-v1";
+    const GRANT: &str = "grant:github:read:cortexkit/basal";
+    const GRANT_LABEL: &str = "Read GitHub for cortexkit/basal";
+    const DIRECTORY: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../test-vectors/flow-decision-phone-v1"
+    );
+
+    let reconcile = Rig::with_store_id("phone-decision-reconcile", None, Some(STORE_ID));
+    let run = reconcile.lost_post(POST);
+    assert_eq!(run, format!("run-{STORE_ID}-1"));
+    let reconcile_record = reconcile.card(&decisions::reconcile_key(FLOW, &run, 0));
+    assert_eq!(reconcile_record.kind, DecisionKind::Reconcile);
+    assert_eq!(reconcile_record.version, 1);
+    let DecisionContext::Reconcile {
+        run_id: card_run,
+        run_admitted_at_ms,
+        call_key,
+        op,
+        attempts,
+        unknown_reason,
+        ..
+    } = reconcile_record.context().unwrap()
+    else {
+        panic!("expected reconcile context");
+    };
+    assert_eq!(card_run, run);
+    assert_eq!(call_key, basal_core::ids::idempotency_key(FLOW, &run, 0));
+    assert_eq!(run_admitted_at_ms, common::T0);
+    assert_eq!(op, "mock.post");
+    assert_eq!(attempts, 1);
+    assert_eq!(unknown_reason, UnknownReason::ConnectionLost);
+
+    let reenable = dispatch_disabled("phone-decision-reenable", STORE_ID);
+    let reenable_record = reenable.card(&decisions::reenable_key(FLOW, 1));
+    assert_eq!(reenable_record.kind, DecisionKind::Reenable);
+    assert_eq!(reenable_record.version, 1);
+    assert_eq!(
+        reenable_record.context().unwrap(),
+        DecisionContext::Reenable {
+            disabled_at_ms: common::T0,
+            disabled_reason: DisabledReason::DispatchLimitSaturated,
+            limit: 1,
+            window_ms: 60_000,
+            saturated_windows: 1,
+        }
+    );
+
+    let grant_lost = Rig::with_store_id("phone-decision-grant-lost", None, Some(STORE_ID));
+    grant_lost.fake.catalog.lock().unwrap()["modules"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"module_id":"plexus","roles":[{"role":"management_surface","operations":[{"name":"read","kind":"query"}],"config_schema":{},"observability":[],"identity_scope":[],"concurrency":"serial"}],"control_ops":[]}));
+    let mut grant_manifest = manifest();
+    grant_manifest["ops"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"module":"plexus","op":"read"}));
+    grant_lost.install_with_manifest(
+        "return await ops.call('plexus','read',{n:1});",
+        grant_manifest,
+    );
+    let mut refusal = FlowRefusal::new(RefusalReason::ModuleGrantAbsent, "plexus", "read");
+    refusal.detail = Some(json!({"grant":GRANT,"grant_label":GRANT_LABEL}));
+    grant_lost
+        .fake
+        .enqueue("read", vec![Err(WireError::Typed(refusal))]);
+    let grant_lost_run = grant_lost.admit("grant-loss").expect("run admitted");
+    grant_lost.pass();
+    let grant_record = grant_lost
+        .m()
+        .rt
+        .decision_cards()
+        .unwrap()
+        .into_iter()
+        .find(|record| record.kind == DecisionKind::GrantLost)
+        .unwrap_or_else(|| {
+            panic!(
+                "grant loss was not recorded for run {grant_lost_run}; state: {:?}",
+                grant_lost.m().rt.run(&grant_lost_run).unwrap().state
+            )
+        });
+    assert_eq!(grant_record.kind, DecisionKind::GrantLost);
+    assert_eq!(grant_record.version, 1);
+    assert_eq!(
+        grant_record.context().unwrap(),
+        DecisionContext::GrantLost {
+            provider: "plexus".into(),
+            grant: GRANT.into(),
+            grant_label: GRANT_LABEL.into(),
+            refused_at_ms: common::T0,
+        }
+    );
+
+    let write_vectors = std::env::var("BASAL_WRITE_VECTORS").as_deref() == Ok("1");
+    if write_vectors {
+        std::fs::create_dir_all(DIRECTORY).expect("create phone vector directory");
+    }
+
+    let records = [
+        ("decision-reconcile-request.json", reconcile_record),
+        ("decision-reenable-request.json", reenable_record),
+        ("decision-grant-lost-request.json", grant_record),
+    ];
+    let mut generated = Vec::new();
+    for (file, record) in records {
+        let card = record.to_card().expect("production decision card");
+        let request = decision_request(&card).expect("production consent request");
+        assert_eq!(request["title"], card.title);
+        assert_eq!(request["prompt"], card.prompt);
+        assert_eq!(request["scope"], json!({"flow_id":card.flow_id}));
+        assert_eq!(
+            request["target"],
+            json!({"kind":"flow","label":card.flow_id})
+        );
+        assert_eq!(
+            request["expires_in_ms"],
+            basal_host::core_consent::DECISION_EXPIRES_IN_MS
+        );
+        assert!(request["dedup_key"].is_string());
+        assert!(request["default"].is_string());
+        assert!(request["options"].is_array());
+        assert!(request["flow_decision"].is_object());
+        assert!(
+            request.get("facts").is_none(),
+            "basal leaves facts for core"
+        );
+        assert_eq!(
+            request.get("args_digest").is_some(),
+            record.kind == DecisionKind::Reconcile
+        );
+
+        let text = serde_json::to_string_pretty(&request).expect("pretty JSON") + "\n";
+        let bytes = text.into_bytes();
+        if write_vectors {
+            std::fs::write(format!("{DIRECTORY}/{file}"), &bytes)
+                .expect("write generated phone request");
+        }
+        let committed = std::fs::read(format!("{DIRECTORY}/{file}")).unwrap_or_else(|_| {
+            panic!(
+                "missing {file}; generated bytes:\n{}",
+                String::from_utf8_lossy(&bytes)
+            )
+        });
+        assert_eq!(
+            committed,
+            bytes,
+            "{file} differs from the production builder; generated bytes:\n{}",
+            String::from_utf8_lossy(&bytes)
+        );
+        generated.push((file, bytes));
+    }
+
+    let readme = std::fs::read(format!("{DIRECTORY}/README.md")).expect("phone vector README");
+    let mut sums = String::new();
+    sums.push_str(&format!("{}  README.md\n", hex(&Sha256::digest(&readme))));
+    for (file, bytes) in &generated {
+        sums.push_str(&format!("{}  {file}\n", hex(&Sha256::digest(bytes))));
+    }
+    if write_vectors {
+        std::fs::write(format!("{DIRECTORY}/SHA256SUMS"), &sums)
+            .expect("write phone vector checksums");
+    }
+    let committed_sums = std::fs::read_to_string(format!("{DIRECTORY}/SHA256SUMS"))
+        .unwrap_or_else(|_| panic!("missing SHA256SUMS; generated contents:\n{sums}"));
+    assert_eq!(
+        committed_sums, sums,
+        "SHA256SUMS differs from generated bytes:\n{sums}"
+    );
 }
 
 #[test]

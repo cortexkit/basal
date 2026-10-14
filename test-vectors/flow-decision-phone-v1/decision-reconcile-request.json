@@ -1,0 +1,53 @@
+{
+  "args_digest": "d88775a5e63750fdc32c2ffeb7d3b456e0ca8cb74a2b71fad447eb67e05d7d30",
+  "dedup_key": "flow_decision:reconcile:host-flow:run-phone-decision-fixture-v1-1:0",
+  "default": "leave",
+  "expires_in_ms": 86400000,
+  "flow_decision": {
+    "attempts": 1,
+    "call_key": "bk1-95bc6e45fe42cf687c3ac7e3247e9fcac9f38552",
+    "decision": "reconcile",
+    "flow_id": "host-flow",
+    "op": "mock.post",
+    "run_admitted_at_ms": 1777593600000,
+    "run_id": "run-phone-decision-fixture-v1-1",
+    "unknown_reason": "connection_lost",
+    "version": 1
+  },
+  "kind": "flow_decision",
+  "late_execution": "notify_only",
+  "material_damage": false,
+  "on_expiry": "deny",
+  "options": [
+    {
+      "effect": "choose",
+      "id": "not_applied",
+      "label": "Send the call again"
+    },
+    {
+      "effect": "choose",
+      "id": "applied",
+      "label": "Continue as applied"
+    },
+    {
+      "effect": "choose",
+      "id": "cancel",
+      "label": "Cancel the run"
+    },
+    {
+      "effect": "decline",
+      "id": "leave",
+      "label": "Leave it unresolved"
+    }
+  ],
+  "prompt": "Run 2026-05-01 00:00 UTC of host-flow may not have finished: its call to mock.post was sent and then the connection closed before a reply came.",
+  "scope": {
+    "flow_id": "host-flow"
+  },
+  "target": {
+    "kind": "flow",
+    "label": "host-flow"
+  },
+  "title": "Decide about host-flow",
+  "urgency": "normal"
+}

@@ -1,0 +1,41 @@
+{
+  "dedup_key": "flow_decision:reenable:host-flow:1",
+  "default": "keep",
+  "expires_in_ms": 86400000,
+  "flow_decision": {
+    "decision": "reenable",
+    "disabled_at_ms": 1777593600000,
+    "disabled_reason": "dispatch_limit_saturated",
+    "flow_id": "host-flow",
+    "limit": 1,
+    "saturated_windows": 1,
+    "version": 1,
+    "window_ms": 60000
+  },
+  "kind": "flow_decision",
+  "late_execution": "notify_only",
+  "material_damage": false,
+  "on_expiry": "deny",
+  "options": [
+    {
+      "effect": "choose",
+      "id": "reenable",
+      "label": "Re-enable the flow"
+    },
+    {
+      "effect": "decline",
+      "id": "keep",
+      "label": "Keep disabled"
+    }
+  ],
+  "prompt": "basal disabled host-flow at 2026-05-01 00:00 UTC: it reached its limit of 1 calls per 60-second window in 1 windows in a row.",
+  "scope": {
+    "flow_id": "host-flow"
+  },
+  "target": {
+    "kind": "flow",
+    "label": "host-flow"
+  },
+  "title": "Decide about host-flow",
+  "urgency": "normal"
+}
