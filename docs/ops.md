@@ -464,19 +464,26 @@ Digest: `d53d18c23212ea7b6300594bb89bce60218f6eff2b9d628b8cc42d3e79bbd5ab`
 ## Operator decision cards
 
 Basal raises `flow_decision` cards for reconciliation, re-enabling an
-auto-disabled flow, and lost grants. For each new card it reads the daemon
+auto-disabled flow, and lost grants. Each initial raise reads the daemon
 catalog: a provider advertising `consent/v1` receives `consent.request` on
-basal's attested `reserved:basal` route; with no such provider, core receives
-the legacy `elicitation.request`. Install cards still go through core.
+basal's attested `reserved:basal` route. If no provider advertises that
+capability, selection returns `Unavailable` naming `consent/v1`; no path is
+committed and the card stays pending for retry. Core rejects new-card raises on
+its legacy `elicitation.request` endpoint with `elicitation_frozen`, so basal
+reports the missing provider instead of sending a request that core will refuse.
+Install cards still go through core.
 
-The chosen path and provider are committed before sending, including requests
-whose replies may be lost. A card never changes paths. Updates use its original
-endpoint and `dedup_key`; withdrawals use that endpoint and the current card id.
-Cingulate refreshes identical content in place, but changed content replaces the
-pending card with a new id. Basal records that replacement id and rejects answers
-to older bodies or known superseded ids. If a replacement reply is lost, only an
-outstanding cingulate grant-loss revision with an exact current context can learn
-its new id from an answer; legacy cards retain their existing id checks.
+The selected path is committed before sending, including requests whose replies
+may be lost. A card never changes paths. Updates use its original endpoint and
+`dedup_key`; older cards already recorded on the legacy path keep using core's
+`elicitation.request` for updates. Withdrawals use the original
+endpoint and current card id. Cingulate refreshes identical content in place,
+but changed content replaces the pending card with a new id. Basal records that
+replacement id and rejects answers to older bodies or known superseded ids. If a
+replacement request reply is lost, an answer can supply the new id only for an
+outstanding cingulate grant-loss card whose answer body exactly matches the
+current revision. This prevents an answer to older or unrelated content from
+claiming the replacement id. Legacy cards retain their existing id checks.
 
 Both answer feeds remain active while they have open cards. Basal applies each
 answer durably and idempotently before acknowledging it on its own path. The
@@ -486,11 +493,14 @@ cover withdrawals. A failed apply keeps the page unacknowledged; a failed ack
 is retried even after the last card closes or basal restarts. Retention
 tombstones close only their matching owned card and never apply a choice.
 
-No switch-window timing is required: removing the capability sends new cards
-back to legacy while cingulate-raised cards keep using their recorded provider
-whenever it is reachable. A listed but unreachable consent provider delays its
-cards rather than duplicating them on core. Catalog read failures also delay
-selection rather than guessing a path.
+Adding or removing a `consent/v1` provider does not require changing the daemon
+catalog and basal's card state at the same time. If the provider is absent, new
+cards wait for retry; adding one later lets basal select it on a later pass.
+Previously recorded cingulate cards keep using their provider when it is
+reachable, while cards recorded as legacy by older builds keep their core
+answer, acknowledgement, update and withdrawal path. A listed but unreachable
+consent provider delays its cards rather than duplicating them on core. Catalog
+read failures also delay selection rather than guessing a path.
 
 The decision body remains core's validated v2 body on either endpoint;
 cingulate checks the envelope but stores that body opaquely. Flow decisions

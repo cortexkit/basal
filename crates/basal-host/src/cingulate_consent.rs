@@ -1,6 +1,6 @@
-//! Decision cards use the catalogued consent provider; install cards stay on
-//! prefrontal-core. A stored endpoint owns updates, withdrawals and answers even
-//! if the daemon catalog later changes.
+//! New decision cards require a catalogued `consent/v1` provider; install cards
+//! stay on prefrontal-core. Stored legacy cards keep their core endpoint for
+//! updates, withdrawals and answers even if the daemon catalog later changes.
 use crate::core_consent::{CoreConsent, decision_request, error};
 use crate::subc_catalog::CORE;
 use crate::transport::Transport;
@@ -60,7 +60,9 @@ impl Consent for CingulateConsent {
                 return Ok(DecisionPath::Consent(provider.to_owned()));
             }
         }
-        Ok(DecisionPath::Legacy)
+        Err(ConsentError::Unavailable(
+            "no provider advertises consent/v1".into(),
+        ))
     }
 
     fn raise_decision(&self, card: &DecisionCard) -> Result<String, ConsentError> {
