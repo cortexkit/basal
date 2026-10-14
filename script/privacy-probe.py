@@ -33,7 +33,7 @@ def main():
 
     def run(slot, iteration, full):
         name = f"{'full' if full else 'single'}-{slot}-{iteration}"
-        args = [binaries[0], "--nocapture"]
+        args = [str(tmp / "privacy-launch"), binaries[0], "--nocapture"]
         if not full:
             args += ["--exact", "privacy::production_worker_is_its_own_responsible_process"]
         before = time.monotonic()
@@ -56,8 +56,21 @@ def main():
                     return [run(slot, iteration, slot % 2 == 0) for iteration in range(100)]
 
                 with concurrent.futures.ThreadPoolExecutor(max_workers=cores * 2) as pool:
+                    pressure_log = (out / "pressure.log").open("w")
+                    pressure = subprocess.Popen([
+                        str(tmp / "privacy-launch"), binaries[0], "--nocapture", "--ignored",
+                        "--exact", "privacy::calibration_pressure_probe"],
+                        stdout=pressure_log, stderr=subprocess.STDOUT)
                     for lane_results in pool.map(lane, range(cores * 2)):
                         results.extend(lane_results)
+                    try:
+                        pressure_status = pressure.wait(timeout=600)
+                    except subprocess.TimeoutExpired:
+                        pressure.kill()
+                        pressure.wait()
+                        pressure_status = "timeout"
+                    finally:
+                        pressure_log.close()
                 workspace_status = workspace.wait(timeout=600)
             finally:
                 if workspace.poll() is None:
@@ -70,10 +83,11 @@ def main():
             load.wait()
     summary = {"cores": cores, "runs": len(results), "results": results,
                "failed": sum(r["status"] != 0 for r in results),
+               "pressure_status": pressure_status,
                "workspace_status": workspace_status, "seconds": time.monotonic() - started}
     (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps({k: v for k, v in summary.items() if k != "results"}), flush=True)
-    raise SystemExit(1 if summary["failed"] or workspace_status else 0)
+    raise SystemExit(1 if summary["failed"] or workspace_status or pressure_status else 0)
 
 
 if __name__ == "__main__":

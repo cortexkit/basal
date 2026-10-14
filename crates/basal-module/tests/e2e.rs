@@ -149,6 +149,42 @@ mod privacy {
     }
 
     #[tokio::test]
+    #[ignore = "temporary GitHub-only calibration pressure probe"]
+    async fn calibration_pressure_probe() {
+        use std::os::unix::process::CommandExt;
+        for iteration in 0..5000 {
+            let started = Instant::now();
+            let mut command = Command::new("/bin/cat");
+            command
+                .env_remove("DYLD_INSERT_LIBRARIES")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit());
+            let fork = iteration % 2 == 1;
+            if fork {
+                // SAFETY: the diagnostic hook performs no operations in the forked child.
+                unsafe { command.pre_exec(|| Ok(())) };
+            }
+            let mut control = ReapedChild(command.spawn().expect("pressure control"));
+            let at_spawn = responsible_pid(control.0.id());
+            cat_exec_barrier(&mut control).await;
+            let at_echo = responsible_pid(control.0.id());
+            let parent = responsible_pid(std::process::id());
+            eprintln!(
+                "PRIVACY_PRESSURE {}",
+                json!({"iteration": iteration, "fork": fork, "pid": control.0.id(),
+                    "observer": std::process::id(), "parent_responsible": parent,
+                    "spawn_responsible": at_spawn, "echo_responsible": at_echo,
+                    "elapsed_us": started.elapsed().as_micros()})
+            );
+            if at_spawn != parent || at_echo != parent {
+                trace_responsibility(control.0.id(), "pressure_echo", started, at_echo).await;
+            }
+            assert_eq!(at_echo, parent, "pressure plain control inheritance");
+        }
+    }
+
+    #[tokio::test]
     async fn plain_control_exec_barrier_drains_its_ack() {
         let mut control = ReapedChild(
             Command::new("/bin/cat")

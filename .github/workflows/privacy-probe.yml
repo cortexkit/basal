@@ -39,6 +39,7 @@ jobs:
           cargo test --locked --workspace --no-run --message-format=json > "$RUNNER_TEMP/build.jsonl"
           clang --version
           clang -Wall -Wextra -Werror -dynamiclib script/privacy-spawn-probe.c -o "$RUNNER_TEMP/privacy-spawn-probe.dylib"
+          clang -Wall -Wextra -Werror script/privacy-launch.c -o "$RUNNER_TEMP/privacy-launch"
       - name: Reproduce under CPU and concurrent e2e load
         env:
           BASAL_PRIVACY_TRACE: '1'
