@@ -592,14 +592,14 @@ fn scheduler_skips_only_state_busy_flow_for_this_pass() {
         .unwrap();
     f.rt.approve("other", 1, &installed.code_hash, "other-approved")
         .unwrap();
-    // The invalid due time forces quarantine behind the skipped flow's fires,
-    // so selection and cleanup must agree on which row is eligible.
+    // Every fire is valid and due before the clock at 1000 ms. Only the old
+    // run's state-epoch fence may hold back the waiting flow's fires.
     f.rt.store().write(|tx| {
         tx.execute_batch("INSERT INTO schedule_fires(flow_id,trigger_id,version,due_ms,payload,planned_at) VALUES
-            ('flow','waiting-1',2,1000,'{\"first\":true}',1000),
-            ('flow','waiting-2',2,1001,'{\"second\":true}',1000),
-            ('other','bad',1,9223372036854775807,'{}',1000),
-            ('other','ready',1,1003,'{}',1000);")?;
+            ('flow','waiting-1',2,900,'{\"first\":true}',1000),
+            ('flow','waiting-2',2,901,'{\"second\":true}',1000),
+            ('other','ready-1',1,902,'{}',1000),
+            ('other','ready-2',1,903,'{}',1000);")?;
         Ok(())
     }).unwrap();
     let waiting = || {
@@ -614,28 +614,33 @@ fn scheduler_skips_only_state_busy_flow_for_this_pass() {
     let first = scheduler.tick().unwrap();
     assert_eq!(
         first.admitted.len(),
-        1,
+        2,
         "busy A must not block B in the same tick"
     );
-    assert_eq!(first.admitted[0].flow_id, "other");
-    assert_eq!(first.admitted[0].trigger_id, "ready");
-    assert!(matches!(
-        first.admitted[0].admission,
-        Admission::Admitted { .. }
-    ));
+    assert_eq!(
+        first
+            .admitted
+            .iter()
+            .map(|fire| (fire.flow_id.as_str(), fire.trigger_id.as_str()))
+            .collect::<Vec<_>>(),
+        vec![("other", "ready-1"), ("other", "ready-2")]
+    );
+    assert!(
+        first
+            .admitted
+            .iter()
+            .all(|fire| matches!(fire.admission, Admission::Admitted { .. }))
+    );
     assert_eq!(first.waiting, 2);
     assert_eq!(waiting(), before, "both A fires stay planned and untouched");
     assert_eq!(state(&f, "flow"), (1, 1));
     f.rt.store()
         .read(|c| {
-            let dropped: (String, String) =
-                c.query_row("SELECT flow_id,trigger_id FROM schedule_dropped", [], |r| {
-                    Ok((r.get(0)?, r.get(1)?))
-                })?;
             assert_eq!(
-                dropped,
-                ("other".into(), "bad".into()),
-                "quarantine uses the oldest eligible fire, not A's skipped fire"
+                c.query_row("SELECT count(*) FROM schedule_dropped", [], |r| r
+                    .get::<_, usize>(0))?,
+                0,
+                "valid planned fires do not need quarantine"
             );
             assert_eq!(
                 c.query_row(
