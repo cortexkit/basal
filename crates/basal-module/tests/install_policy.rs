@@ -388,7 +388,7 @@ fn decided_hint_confirms_card_or_policy_provenance_in_the_shared_transaction() {
             assert_eq!(row["approval"], approval);
             assert_eq!(
                 row["install_cards"],
-                json!([{"version":1,"attempt":7,"state":"approved"}])
+                json!([{"version":1,"attempt":7,"state":"approved","rejected_reason":null,"disposition":null}])
             );
         }
         let schedules: i64 = f
@@ -431,7 +431,7 @@ fn declined_and_expired_hints_settle_unapproved_cards_and_are_visible() {
             assert_eq!(row["state"], "unapproved");
             assert_eq!(
                 row["install_cards"],
-                json!([{"version":1,"attempt":7,"state":state}])
+                json!([{"version":1,"attempt":7,"state":state,"rejected_reason":null,"disposition":null}])
             );
         }
         assert_eq!(
@@ -902,7 +902,7 @@ fn startup_recovers_declined_expired_and_pending_cards_once() {
         for op in ["flow.list", "flow.health"] {
             assert_eq!(
                 entry(&f, op, FLOW)["install_cards"],
-                json!([{"version":1,"attempt":7,"state":state}])
+                json!([{"version":1,"attempt":7,"state":state,"rejected_reason":null,"disposition":null}])
             );
         }
         let before = fake.calls("flow.install_status").len();
@@ -912,6 +912,119 @@ fn startup_recovers_declined_expired_and_pending_cards_once() {
         assert_eq!(fake.calls("flow.install_status").len(), before);
     }
     assert_eq!(fake.calls("flow.install_status").len(), 3);
+}
+
+#[test]
+fn startup_rejected_install_status_settles_once_and_stays_settled() {
+    let fake = Fake::new();
+    let reason = "store_decode";
+    let disposition = "approved_not_executed";
+    let f = common::fixture_with_store(
+        "startup-rejected-card",
+        common::Options {
+            hosts: Some(hosts(&fake, false)),
+            ..common::Options::default()
+        },
+        |store| {
+            seed(&store, FLOW, true, true);
+            fake.enqueue(
+                "flow.install_status",
+                vec![Ok(json!({
+                    "state":"rejected",
+                    "code_hash":hash(FLOW,1),
+                    "attempt":7,
+                    "rejected_reason":reason,
+                    "disposition":disposition
+                }))],
+            );
+            Ok(())
+        },
+    );
+    assert_eq!(
+        f.module.rt.flow(FLOW).unwrap().unwrap().approved_version,
+        None
+    );
+    let card = f.module.rt.cards(FLOW).unwrap().remove(0);
+    assert_eq!(card.state, basal_core::cards::CardState::Rejected);
+    assert_eq!(card.rejected_reason.as_deref(), Some(reason));
+    assert_eq!(card.disposition.as_deref(), Some(disposition));
+    let expected = json!([{
+        "version":1,
+        "attempt":7,
+        "state":"rejected",
+        "rejected_reason":reason,
+        "disposition":disposition
+    }]);
+    for op in ["flow.list", "flow.health"] {
+        let row = entry(&f, op, FLOW);
+        assert_eq!(row["state"], "unapproved");
+        assert_eq!(row["install_cards"], expected);
+    }
+    let outbox = f.module.rt.outbox().unwrap();
+    assert_eq!(outbox.len(), 1);
+    assert_eq!(outbox[0].kind, "flow.install_rejected");
+    let body: Value = serde_json::from_str(&outbox[0].body).unwrap();
+    assert_eq!(body["rejected_reason"], reason);
+    assert_eq!(body["disposition"], disposition);
+    assert_eq!(fake.calls("flow.install_status").len(), 1);
+
+    // Startup recovery only asks about pending cards, even on another restart.
+    f.module.rt.recover_cardless_installs().unwrap();
+    f.module.engine.run_until_idle(10).unwrap();
+    assert_eq!(fake.calls("flow.install_status").len(), 1);
+    assert_eq!(f.module.rt.outbox().unwrap().len(), 1);
+}
+
+#[test]
+fn unknown_install_status_keeps_card_pending() {
+    let fake = Fake::new();
+    let f = common::fixture_with_store(
+        "startup-unknown-install-status",
+        common::Options {
+            hosts: Some(hosts(&fake, false)),
+            ..common::Options::default()
+        },
+        |store| {
+            seed(&store, FLOW, true, true);
+            fake.enqueue(
+                "flow.install_status",
+                vec![Ok(json!({
+                    "state":"future_state",
+                    "code_hash":hash(FLOW,1),
+                    "attempt":7
+                }))],
+            );
+            Ok(())
+        },
+    );
+    assert_eq!(
+        f.module.rt.flow(FLOW).unwrap().unwrap().approved_version,
+        None
+    );
+    assert_eq!(
+        f.module.rt.cards(FLOW).unwrap()[0].state,
+        basal_core::cards::CardState::Pending
+    );
+    for op in ["flow.list", "flow.health"] {
+        assert_eq!(
+            entry(&f, op, FLOW)["install_cards"],
+            json!([{
+                "version":1,
+                "attempt":7,
+                "state":"pending",
+                "rejected_reason":null,
+                "disposition":null
+            }])
+        );
+        assert!(
+            entry(&f, op, FLOW)["install_checks"][0]["error"]
+                .as_str()
+                .unwrap()
+                .contains("unrecognised install status")
+        );
+    }
+    assert!(f.module.rt.outbox().unwrap().is_empty());
+    assert_eq!(fake.calls("flow.install_status").len(), 1);
 }
 
 #[test]

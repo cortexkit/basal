@@ -204,6 +204,19 @@ impl Runtime {
                 self.settle_install_card(card, "declined")?
             }
             Ok((InstallStatus::Expired { .. }, _)) => self.settle_install_card(card, "expired")?,
+            Ok((
+                InstallStatus::Rejected {
+                    rejected_reason,
+                    disposition,
+                    ..
+                },
+                _,
+            )) => self.settle_install_card_with_details(
+                card,
+                "rejected",
+                rejected_reason,
+                disposition,
+            )?,
             Ok((InstallStatus::Pending { .. }, _)) => {}
             Ok((InstallStatus::Unknown, _)) => {
                 tracing::warn!(target: "consent", flow_id, version, attempt = ?card.attempt, "core holds no install record for an open card");
@@ -218,12 +231,27 @@ impl Runtime {
     }
 
     fn settle_install_card(&self, card: &crate::cards::CardRecord, state: &str) -> Result<()> {
+        self.settle_install_card_with_details(card, state, None, None)
+    }
+
+    fn settle_install_card_with_details(
+        &self,
+        card: &crate::cards::CardRecord,
+        state: &str,
+        rejected_reason: Option<String>,
+        disposition: Option<String>,
+    ) -> Result<()> {
         let now = self.config().clock.now_ms();
         self.store().write(|tx| {
-            let changed = tx.execute("UPDATE install_cards SET state=?2, decided_by='core:card', decided_at=?3 WHERE card_id=?1 AND state='pending' AND attempt IS ?4", params![card.card_id, state, now, card.attempt])?;
+            let changed = tx.execute("UPDATE install_cards SET state=?2, decided_by='core:card', decided_at=?3, rejected_reason=?5, disposition=?6 WHERE card_id=?1 AND state='pending' AND attempt IS ?4", params![card.card_id, state, now, card.attempt, rejected_reason.as_deref(), disposition.as_deref()])?;
             if changed == 0 { return Ok(()); }
             tx.execute("UPDATE installs SET install_check_error=NULL WHERE flow_id=?1 AND version=?2", params![card.flow_id, card.version])?;
-            tx.execute("INSERT INTO outbox(at,kind,flow_id,recipient,body) VALUES (?1,?2,?3,?4,?5)", params![now, format!("flow.install_{state}"), card.flow_id, card.author, json!({"flow_id":card.flow_id,"version":card.version,"attempt":card.attempt,"decision":state}).to_string()])?;
+            let mut body = json!({"flow_id":card.flow_id,"version":card.version,"attempt":card.attempt,"decision":state});
+            if state == "rejected" {
+                body["rejected_reason"] = json!(rejected_reason);
+                body["disposition"] = json!(disposition);
+            }
+            tx.execute("INSERT INTO outbox(at,kind,flow_id,recipient,body) VALUES (?1,?2,?3,?4,?5)", params![now, format!("flow.install_{state}"), card.flow_id, card.author, body.to_string()])?;
             Ok(())
         })?;
         self.shared.signal.bump();

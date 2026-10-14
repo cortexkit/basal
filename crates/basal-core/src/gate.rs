@@ -266,6 +266,10 @@ impl Runtime {
                 RevokeCause::Unknown,
                 format!("core holds no install of {flow_id} v{version}"),
             ),
+            Ok(InstallStatus::Rejected { .. }) => (
+                RevokeCause::Unknown,
+                format!("core holds no install of {flow_id} v{version}"),
+            ),
             Err(e) => {
                 return self.defer(
                     lease,

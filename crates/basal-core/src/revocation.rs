@@ -62,7 +62,8 @@ impl Runtime {
             InstallStatus::Unknown
             | InstallStatus::Pending { .. }
             | InstallStatus::Declined { .. }
-            | InstallStatus::Expired { .. } => {
+            | InstallStatus::Expired { .. }
+            | InstallStatus::Rejected { .. } => {
                 format!("core holds no install of {flow} v{version}")
             }
         };

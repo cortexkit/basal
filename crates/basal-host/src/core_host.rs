@@ -168,15 +168,28 @@ pub(crate) fn is_code_hash(value: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-/// Decodes core's `flow.install_status` reply, `{state, code_hash}`. Known
-/// versions carry their code hash, including cards not approved; an `unknown`
-/// version carries a null hash. Unreadable replies are refused and cannot serve
-/// as evidence of approval.
+/// Decodes core's `flow.install_status` reply. Unknown states and malformed
+/// replies are errors, so basal leaves the install card pending without
+/// approval.
+const MAX_INSTALL_STATUS_TEXT_BYTES: usize = 256;
+
+fn optional_install_status_text(value: &Value, field: &str) -> Result<Option<String>, String> {
+    match value.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(text)) if text.len() <= MAX_INSTALL_STATUS_TEXT_BYTES => {
+            Ok(Some(text.clone()))
+        }
+        Some(Value::String(_)) => Err(format!(
+            "install status {field} exceeds {MAX_INSTALL_STATUS_TEXT_BYTES} bytes"
+        )),
+        Some(_) => Err(format!("install status {field} is not a string")),
+    }
+}
+
 pub fn decode_install_status(value: &Value) -> Result<InstallStatus, String> {
     let scope = crate::flow_scope::decode(value)?;
-    if scope.is_some() && value["state"] != "active" {
-        return Err("only an active install may carry a scope".into());
-    }
+    // Scope metadata is validated on every status reply, but only an active
+    // install may use it to authorize a routed call.
     let hash = value.get("code_hash");
     let approved_hash = || match hash.and_then(Value::as_str) {
         Some(h) if is_code_hash(h) => Ok(h.to_owned()),
@@ -195,12 +208,43 @@ pub fn decode_install_status(value: &Value) -> Result<InstallStatus, String> {
         Some("pending") => Ok(InstallStatus::Pending {
             code_hash: approved_hash()?,
         }),
+        Some("executed") => Ok(InstallStatus::Pending {
+            code_hash: approved_hash()?,
+        }),
         Some("declined") => Ok(InstallStatus::Declined {
             code_hash: approved_hash()?,
         }),
         Some("expired") => Ok(InstallStatus::Expired {
             code_hash: approved_hash()?,
         }),
+        Some("rejected") => {
+            let code_hash = match hash {
+                None | Some(Value::Null) => None,
+                Some(Value::String(hash)) if is_code_hash(hash) => Some(hash.clone()),
+                _ => {
+                    return Err(format!(
+                        "rejected install status carries an invalid code hash: {value}"
+                    ));
+                }
+            };
+            let attempt = match value.get("attempt") {
+                None | Some(Value::Null) => None,
+                Some(attempt) => match attempt.as_i64() {
+                    Some(attempt) if attempt > 0 => Some(attempt),
+                    _ => {
+                        return Err(format!(
+                            "rejected install status carries an invalid attempt: {value}"
+                        ));
+                    }
+                },
+            };
+            Ok(InstallStatus::Rejected {
+                code_hash,
+                attempt,
+                rejected_reason: optional_install_status_text(value, "rejected_reason")?,
+                disposition: optional_install_status_text(value, "disposition")?,
+            })
+        }
         Some("unknown") if hash.is_none_or(Value::is_null) => Ok(InstallStatus::Unknown),
         _ => Err(format!("unrecognised install status: {value}")),
     }

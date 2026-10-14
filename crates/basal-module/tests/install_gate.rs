@@ -373,7 +373,7 @@ fn unknown_in_core_cancels_the_run() {
 
 #[test]
 fn unapproved_core_states_close_the_activation_gate_like_unknown() {
-    for state in ["pending", "declined", "expired"] {
+    for state in ["pending", "declined", "expired", "rejected"] {
         let fake = Fake::new();
         let (f, consent) = gated(&fake, "gate-not-approved");
         install_approved(&f, &fake, &consent, true);
@@ -443,9 +443,9 @@ fn an_undecodable_reply_defers_the_run() {
     assert_eq!(health_entry(&f)["state"], "enabled");
 }
 
-/// Core's reply decodes only as `{state, code_hash}` with `state` one of
-/// `active`, `revoked`, `pending`, `declined`, `expired` (each with a
-/// 64-digit lowercase hex hash) or `unknown` (with a null hash).
+/// `flow.install_status` accepts only these `state` values. Active, revoked,
+/// pending, executed, declined and expired states require a valid hash; rejected
+/// may omit the hash, while unknown must have no hash.
 #[test]
 fn install_status_replies_decode_strictly() {
     let hash = "0123456789abcdef".repeat(4);
@@ -498,8 +498,51 @@ fn install_status_replies_decode_strictly() {
             assert!(decode_install_status(&bad).is_err());
         }
     }
+    assert_eq!(
+        decode_install_status(&json!({
+            "state":"rejected",
+            "code_hash":hash,
+            "attempt":7,
+            "rejected_reason":"store_decode",
+            "disposition":"approved_not_executed",
+            "scope":{
+                "owner":{"kind":"reserved","module_id":"prefrontal-core"},
+                "ref":"0123456789abcdef0123456789abcdef",
+                "epoch":1
+            },
+            "flow_scope_targets":["broca"]
+        })),
+        Ok(InstallStatus::Rejected {
+            code_hash: Some(hash.clone()),
+            attempt: Some(7),
+            rejected_reason: Some("store_decode".into()),
+            disposition: Some("approved_not_executed".into()),
+        })
+    );
+    assert_eq!(
+        decode_install_status(&json!({"state":"rejected","code_hash":null})),
+        Ok(InstallStatus::Rejected {
+            code_hash: None,
+            attempt: None,
+            rejected_reason: None,
+            disposition: None,
+        })
+    );
     for bad in [
-        json!({"state":"active"}),
+        json!({"state":"rejected","code_hash":"bad"}),
+        json!({"state":"rejected","attempt":0}),
+        json!({"state":"rejected","rejected_reason":false}),
+        json!({"state":"rejected","disposition":"x".repeat(257)}),
+    ] {
+        assert!(decode_install_status(&bad).is_err(), "{bad}");
+    }
+    assert_eq!(
+        decode_install_status(&json!({"state":"executed","code_hash":hash})),
+        Ok(InstallStatus::Pending {
+            code_hash: hash.clone(),
+        })
+    );
+    for bad in [
         json!({"state":"active","code_hash":null}),
         json!({"state":"active","code_hash":hash.to_uppercase()}),
         json!({"state":"active","code_hash":"abc"}),

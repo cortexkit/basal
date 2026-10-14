@@ -1424,3 +1424,24 @@ expect_red = ["decided_hint_requires_active_status_with_the_local_hash"]
 only = false
 build_timeout_s = 3600
 timeout_s = 600
+
+[[control]]
+id = "install-rejected-status-settles-card"
+guards = "a rejected install status is terminal and never rechecked after settlement"
+test_file = "crates/basal-module/tests/install_policy.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test install_policy"
+expect_red = ["startup_rejected_install_status_settles_once_and_stays_settled"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/install_policy.rs"
+old = '''self.settle_install_card_with_details(
+                card,
+                "rejected",
+                rejected_reason,
+                disposition,
+            )?'''
+new = '''() /* NON-VACUITY BREAK */'''

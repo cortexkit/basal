@@ -1219,7 +1219,7 @@ impl Module {
                     .into_iter().filter(|g| matches!(g.state.as_str(), "polling" | "stopped")).collect::<Vec<_>>();
                 let approval = basal_core::install_policy::approval(c, flow_id, row["approved_version"].as_u64().map(|v| v as u32))?;
                 let install_checks = basal_core::install_policy::check_errors(c, flow_id)?;
-                let install_cards = basal_core::cards::for_flow(c, flow_id)?.iter().map(|card| json!({"version":card.version,"attempt":card.attempt,"state":card.state.as_str()})).collect::<Vec<_>>();
+                let install_cards = basal_core::cards::for_flow(c, flow_id)?.iter().map(|card| json!({"version":card.version,"attempt":card.attempt,"state":card.state.as_str(),"rejected_reason":card.rejected_reason,"disposition":card.disposition})).collect::<Vec<_>>();
                 let instance = c.query_row("SELECT f.package,f.approved_version,t.params,t.expires_at FROM template_instances t JOIN flows f USING(flow_id) WHERE flow_id=?1", [flow_id], |r| Ok((r.get::<_,String>(0)?,r.get::<_,u32>(1)?,r.get::<_,String>(2)?,r.get::<_,i64>(3)?))).optional()?;
                 row["grant_losses"] = json!(losses);
                 row["approval"] = json!(approval);
@@ -1345,7 +1345,7 @@ impl Module {
                 "last_state_reset_at": f.last_state_reset_at.map(rfc3339).transpose()?,
                 "approval": f.approval,
                 "install_checks": f.install_checks,
-                "install_cards": self.rt.cards(&f.flow_id).map_err(|e| self.core_error(e))?.iter().map(|card| json!({"version":card.version,"attempt":card.attempt,"state":card.state.as_str()})).collect::<Vec<_>>(),
+                "install_cards": self.rt.cards(&f.flow_id).map_err(|e| self.core_error(e))?.iter().map(|card| json!({"version":card.version,"attempt":card.attempt,"state":card.state.as_str(),"rejected_reason":card.rejected_reason,"disposition":card.disposition})).collect::<Vec<_>>(),
                 "disabled_by": f.disabled_by,
                 // Who disabled the flow, by kind (operator, the owning
                 // agent, or auto for the runtime's own saturation

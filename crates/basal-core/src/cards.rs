@@ -70,6 +70,8 @@ pub struct CardRecord {
     /// The card's fields as JSON, exactly as raised.
     pub card: String,
     pub state: CardState,
+    pub rejected_reason: Option<String>,
+    pub disposition: Option<String>,
     pub decided_by: Option<String>,
     /// The attempt number core returned with this flow id and version. Together
     /// they identify the displayed install card; absent before a card reply.
@@ -102,8 +104,7 @@ pub fn card_id(flow_id: &str, version: u32, code_hash: &[u8; 32]) -> String {
     format!("card:{flow_id}:v{version}:{hex}")
 }
 
-const COLUMNS: &str =
-    "card_id, flow_id, version, code_hash, author, card, state, decided_by, attempt";
+const COLUMNS: &str = "card_id, flow_id, version, code_hash, author, card, state, decided_by, attempt, rejected_reason, disposition";
 
 fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<CardRecord>> {
     let card_id: String = row.get(0)?;
@@ -126,6 +127,8 @@ fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<CardRecord>> {
             state: CardState::parse(&state)?,
             decided_by,
             attempt: row.get(8)?,
+            rejected_reason: row.get(9)?,
+            disposition: row.get(10)?,
         })
     })())
 }
