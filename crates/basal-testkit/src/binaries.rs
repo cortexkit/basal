@@ -413,8 +413,8 @@ mod tests {
             (Some(OsStr::new("/var/folders/ab/cd/T")), None),
             (Some(OsStr::new("/private/var/folders/ab/cd/T")), None),
             (
-                Some(OsStr::new("/Users/test/aft-task-tmp")),
-                Some(PathBuf::from("/Users/test/aft-task-tmp/basal-exec-42")),
+                Some(OsStr::new("/opt/worker-task-tmp")),
+                Some(PathBuf::from("/opt/worker-task-tmp/basal-exec-42")),
             ),
         ];
 
