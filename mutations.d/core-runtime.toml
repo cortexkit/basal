@@ -1460,3 +1460,20 @@ timeout_s = 600
 file = "crates/basal-core/src/runtime.rs"
 old = "!self.config.capture_instance_end"
 new = "true /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "scratch-directory-names-include-a-sequence-counter"
+guards = "scratch directory names include their sequence counter"
+file = "crates/basal-core/src/test_support.rs"
+old = "\"basal-{prefix}-{name}-{}-{nanos}-{sequence}\","
+new = "\"basal-{prefix}-{name}-{}-{nanos}\" /* NON-VACUITY BREAK */ ,"
+test_file = "crates/basal-core/src/test_support.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["test_support::tests::scratch_names_include_the_sequence_counter"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
