@@ -920,8 +920,8 @@ fn an_auto_disabled_flow_raises_one_reenable_card_and_each_option_applies() {
     assert_eq!(
         request["prompt"],
         format!(
-            "basal disabled {FLOW} at 2026-05-01 00:00 UTC: it reached its limit of 1 runs per \
-             60-second window in 1 windows in a row."
+            "basal disabled {FLOW} at 2026-05-01 00:00 UTC: it reached its limit of 1 run per \
+             60-second window in 1 window in a row."
         )
     );
     // The rule's numbers as they were when it tripped, kept with the
@@ -1258,6 +1258,13 @@ fn the_phone_fixture_vectors_are_generated_by_the_engine_card_builders() {
         let card = record.to_card().expect("production decision card");
         let request = decision_request(&card).expect("production consent request");
         assert_eq!(request["title"], card.title);
+        let expected_title = match record.kind {
+            DecisionKind::Reconcile => "A run of host-flow may not have finished",
+            DecisionKind::Reenable => "host-flow was disabled",
+            DecisionKind::GrantLost => "host-flow lost a permission",
+        };
+        assert_eq!(card.title, expected_title);
+        assert!(card.title.chars().count() <= 80);
         assert_eq!(request["prompt"], card.prompt);
         assert_eq!(request["scope"], json!({"flow_id":card.flow_id}));
         assert_eq!(
@@ -1499,7 +1506,7 @@ fn grant_lost_phone_vector_and_production_prompt_are_pinned() {
     assert!(request["flow_decision"].get("version").is_none());
     assert_eq!(
         basal_core::decisions::prompt("flow-x", &grant_lost_context()),
-        phone["prompt"].as_str().unwrap()
+        "flow-x was disabled after github refused its grant at 2026-06-02 14:05 UTC. Check now re-checks the permission. Keep disabled stops checking. If you don't answer, basal keeps checking in the background and changes nothing."
     );
     assert_eq!(phone["facts"][4]["value"], "2026-06-02 14:05 UTC");
 }

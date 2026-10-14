@@ -28,7 +28,7 @@
       "label": "Keep disabled"
     }
   ],
-  "prompt": "basal disabled host-flow at 2026-05-01 00:00 UTC: it reached its limit of 1 calls per 60-second window in 1 windows in a row.",
+  "prompt": "basal disabled host-flow at 2026-05-01 00:00 UTC: it reached its limit of 1 call per 60-second window in 1 window in a row.",
   "scope": {
     "flow_id": "host-flow"
   },
@@ -36,6 +36,6 @@
     "kind": "flow",
     "label": "host-flow"
   },
-  "title": "Decide about host-flow",
+  "title": "host-flow was disabled",
   "urgency": "normal"
 }

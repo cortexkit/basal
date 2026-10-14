@@ -48,6 +48,6 @@
     "kind": "flow",
     "label": "host-flow"
   },
-  "title": "Decide about host-flow",
+  "title": "A run of host-flow may not have finished",
   "urgency": "normal"
 }

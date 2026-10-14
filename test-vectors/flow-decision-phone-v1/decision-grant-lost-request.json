@@ -26,7 +26,7 @@
       "label": "Keep disabled"
     }
   ],
-  "prompt": "host-flow was disabled after plexus refused its grant at 2026-05-01 00:00 UTC. Check now re-checks the existing grant; keep disabled stops polling. No answer keeps background polling without applying a choice.",
+  "prompt": "host-flow was disabled after plexus refused its grant at 2026-05-01 00:00 UTC. Check now re-checks the permission. Keep disabled stops checking. If you don't answer, basal keeps checking in the background and changes nothing.",
   "scope": {
     "flow_id": "host-flow"
   },
@@ -34,6 +34,6 @@
     "kind": "flow",
     "label": "host-flow"
   },
-  "title": "Decide about host-flow",
+  "title": "host-flow lost a permission",
   "urgency": "normal"
 }
