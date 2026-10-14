@@ -68,6 +68,9 @@ pub enum EventBody {
 pub struct EventDecl {
     pub origin: EventOrigin,
     pub body: EventBody,
+    /// Header names the publisher allows in admission filters. Their values
+    /// can skip notices, but do not prove anything about the verified body.
+    pub headers: Vec<String>,
 }
 
 /// The declarations basal validates manifests against. Implementations
@@ -177,6 +180,7 @@ impl MockCatalog {
             "pull_request_review",
             1,
             EventDecl {
+                headers: vec![],
                 origin: EventOrigin::External,
                 body: EventBody::Inline,
             },
@@ -186,6 +190,7 @@ impl MockCatalog {
             "pull_request",
             2,
             EventDecl {
+                headers: vec![],
                 origin: EventOrigin::External,
                 body: EventBody::Resolved {
                     resolve_op: "pr.get".into(),

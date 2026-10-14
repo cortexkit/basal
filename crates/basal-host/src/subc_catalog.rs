@@ -37,7 +37,8 @@ pub fn declared_event(events: &[EventDeclaration], name: &str, version: u32) -> 
     events
         .iter()
         .find(|e| e.name == name && e.version == version)
-        .map(|_| EventDecl {
+        .map(|event| EventDecl {
+            headers: event.headers.clone(),
             // The declaration has no provenance marker. Treat all publisher text
             // as external rather than granting trust the publisher did not declare.
             origin: EventOrigin::External,

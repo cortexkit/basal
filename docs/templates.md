@@ -44,16 +44,27 @@ A parameter may appear in a grant only where it narrows what the template's own 
 | `net.fetch[].host` | `url` | The instance may fetch from that URL's host. |
 | `trigger.schedule.interval` | `duration` | The instance's cadence. |
 | `trigger.schedule.at` | `timestamp` | A one-shot fire (see below). |
+| `trigger.events[].match.<header>` | `string`, `enum` | A cost-only notice-header pattern bound before admission. |
 
 At registration, basal checks every placeholder: it names a declared parameter; that parameter's type fits the position; a `path` or `repo` placeholder sits in a grant list, and its `under` roots meet that list's rules (absolute, existing at registration); and a `url` parameter's `hosts` meet `net.fetch`'s host rules. Anything else is refused with `template_placeholder_invalid`, naming the field. Grants without placeholders apply to every instance as written.
 
-**Paths are canonical.** A `path` or `repo` value is canonicalized, with symlinks resolved, before the `under` check, and the instance's effective grant is the resolved path; otherwise a symlink under a root could point outside it. If the path doesn't exist yet, basal resolves its deepest existing ancestor and checks that. At creation, the parameter's `under` roots are also canonicalized and recorded with the instance. On every file or git access, a parameter-derived grant is resolved again and must remain inside those recorded bounds. If the path existed at creation, it must also still resolve to the creation-time path. Replacing the root or an ancestor with a symlink therefore cannot move authority outside the approved bounds. Ordinary static grants keep their existing behavior. A template's `fs.stat` on a missing parameter-derived target returns `{"exists": false}` after checking the resolved deepest existing ancestor and the recorded boundaries. Once the target appears, normal stat metadata is returned. A missing target behind an ancestor moved outside the bounds is refused, not reported absent. Reads and writes keep their existing behavior, including missing-root refusals. Parameters not used in any grant (`string`, `integer`, `enum`, or a `url` or `path` the script only reads) are passed to the script and limit nothing.
+**Paths are canonical.** A `path` or `repo` value is canonicalized, with symlinks resolved, before the `under` check, and the instance's effective grant is the resolved path; otherwise a symlink under a root could point outside it. If the path doesn't exist yet, basal resolves its deepest existing ancestor and checks that. At creation, the parameter's `under` roots are also canonicalized and recorded with the instance. On every file or git access, a parameter-derived grant is resolved again and must remain inside those recorded bounds. If the path existed at creation, it must also still resolve to the creation-time path. Replacing the root or an ancestor with a symlink therefore cannot move authority outside the approved bounds. Ordinary static grants keep their existing behavior. A template's `fs.stat` on a missing parameter-derived target returns `{"exists": false}` after checking the resolved deepest existing ancestor and the recorded boundaries. Once the target appears, normal stat metadata is returned. A missing target behind an ancestor moved outside the bounds is refused, not reported absent. Reads and writes keep their existing behavior, including missing-root refusals. Parameters not used in any grant or header filter (`string`, `integer`, `enum`, or a `url` or `path` the script only reads) are passed to the script and limit nothing.
 
 The code hash covers the manifest's exact bytes, placeholders and bounds included, so one approval covers exactly the bounds the approval card shows.
 
+Header-filter placeholders must occupy the whole pattern string; interpolation
+and non-string parameter types are refused at registration. At instantiate,
+values used as patterns must also satisfy the ordinary **1–256 UTF-8 byte**
+pattern limit, even if the parameter's string bound or enum permits more;
+otherwise the refusal is `param_out_of_bounds`. The effective instance manifest
+carries the bound pattern, and the instance id already covers its parameter
+values. `*` crosses `/`; `repo` is ASCII-case-insensitive and other headers are
+exact. These filters narrow admission cost, not authority: scripts must check
+the verified body, since publisher headers can be wrong.
+
 ### What the approval card shows
 
-Core renders the card from the manifest bytes the code hash covers, as for every install card. For a template it shows, besides the usual grants: each parameter with its type and bounds; for each placeholder, which grant it narrows (for example "fs.read: one path under ~/Work"); that a `url` parameter narrows to a host, not to that one URL; and `max_per_agent`, `max_live` and `max_lifetime`. One card covers one template version.
+Core renders the card from the manifest bytes the code hash covers, as for every install card. For a template it shows, besides the usual grants: each parameter with its type and bounds; for each placeholder, which grant or event-header filter it narrows (for example "fs.read: one path under ~/Work"); that a `url` parameter narrows to a host, not to that one URL; and `max_per_agent`, `max_live` and `max_lifetime`. One card covers one template version.
 
 ### One-shot schedules
 

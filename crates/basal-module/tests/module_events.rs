@@ -179,6 +179,7 @@ fn delivered_runtime(path: &std::path::Path) -> Runtime {
         "digest_delivered",
         1,
         basal_host::EventDecl {
+            headers: vec![],
             origin: basal_host::EventOrigin::External,
             body: basal_host::EventBody::Resolved {
                 resolve_op: basal_host::catalog::EVENT_BODY_OP.into(),
@@ -333,6 +334,72 @@ async fn journal_then_ack_crash_redelivers_without_second_run_across_restart() {
     let info = consumer.info().await.unwrap();
     assert_eq!(info.num_ack_pending, 0);
     assert_eq!(info.num_pending, 0);
+}
+
+#[tokio::test]
+async fn header_filtered_notice_is_acked_without_receipt_and_redelivery_stays_idempotent() {
+    let server = Server::start().await;
+    let catalog = MockCatalog::standard();
+    let mut event =
+        basal_host::Catalog::event(&catalog, "plexus", "pull_request_review", 1).unwrap();
+    event.headers = vec!["repo".into()];
+    catalog.set_event("plexus", "pull_request_review", 1, event);
+    let rt = runtime_with_catalog(&server.dir.join("basal.db"), catalog);
+    let installed = rt
+        .install(&InstallRequest {
+            script: "return 1;".into(),
+            manifest: json!({"id":"flow","version":1,"purpose":"Filter repository notices",
+            "trigger":{"events":[{"module":"plexus","name":"pull_request_review","version":1,
+            "match":{"repo":"cortexkit/*"}}]}})
+            .to_string(),
+            author: "local:unverified".into(),
+            loop_override: false,
+        })
+        .unwrap();
+    rt.approve("flow", 1, &installed.code_hash, "test").unwrap();
+    server
+        .publish_with_headers(1, SUBJECT, [("repo".into(), "other/repo".into())].into())
+        .await;
+    let mut consumer = bind(&server.bus, STREAM).await.unwrap();
+    let messages = pull(&consumer).await.unwrap();
+    let report = commit_batch(rt.clone(), &messages, true).await.unwrap();
+    assert_eq!(
+        (report.filtered_out, report.admitted, report.queued),
+        (1, 0, 0)
+    );
+    assert_eq!(run_count(&rt), 0);
+    let receipts: i64 = rt
+        .store()
+        .read(|c| Ok(c.query_row("SELECT COUNT(*) FROM event_receipts", [], |r| r.get(0))?))
+        .unwrap();
+    assert_eq!(receipts, 0);
+    assert_eq!(rt.flow_health().unwrap()[0].filtered_out, 1);
+    assert_eq!(consumer.info().await.unwrap().num_ack_pending, 0);
+
+    server
+        .publish_with_headers(
+            2,
+            SUBJECT,
+            [("repo".into(), "CortexKit/basal".into())].into(),
+        )
+        .await;
+    let messages = pull(&consumer).await.unwrap();
+    assert_eq!(
+        commit_batch(rt.clone(), &messages, false)
+            .await
+            .unwrap()
+            .admitted,
+        1
+    );
+    assert_eq!(
+        commit_batch(rt.clone(), &messages, true)
+            .await
+            .unwrap()
+            .duplicate,
+        1
+    );
+    assert_eq!(run_count(&rt), 1);
+    assert_eq!(consumer.info().await.unwrap().num_ack_pending, 0);
 }
 
 #[tokio::test]

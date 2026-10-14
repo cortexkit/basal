@@ -119,7 +119,7 @@ and only queries may retry.
 
 ### `trigger`
 
-- `{ "events": [ { "module": "plexus", "name": "github_pr_changed", "version": 1 }, ... ] }`: at least one event. Each entry has exactly `module`, `name` and `version`. Install refuses an event or version the catalog does not declare, an event whose `resolve_op` is not a query, or a resolver absent from `ops`. For Plexus notices grant `{ "module": "plexus", "op": "events_get" }`, its separate read-only body tool. The broader `events` tool can change subscriptions, so it is not a safe body resolver. Matching uses the module, name and version, plus the flow-targeting rule below; script-defined header filter fields are not supported and are refused as unknown fields.
+- `{ "events": [ { "module": "plexus", "name": "github_pr_changed", "version": 1, "match": { "repo": "cortexkit/*" } }, ... ] }`: at least one event. Each entry has `module`, `name`, `version`, and an optional `match` object. Install refuses an event or version the catalog does not declare, an event whose `resolve_op` is not a query, or a resolver absent from `ops`. For Plexus notices grant `{ "module": "plexus", "op": "events_get" }`, its separate read-only body tool. The broader `events` tool can change subscriptions, so it is not a safe body resolver. Matching uses the module, name and version, the optional header filters, and the flow-targeting rule below.
 - `{ "schedule": { ... } }`: the scheduler's `ScheduleSpec` (`crates/basal-core/src/schedule/spec.rs`), decoded with unknown fields refused and compiled by `schedule::validate` when the manifest is checked. Exactly one of `cron`, `interval`, or a template-only `at`:
 
   A template's `at` is the whole-string placeholder `"$params.<name>"` for a `timestamp` parameter. It fires once, including one catch-up after downtime, and ends the instance after that run regardless of outcome. Only default or explicit `missed: "once"` is permitted; `tz`, `each_cap`, `skip` and `each` are refused with `template_placeholder_invalid`, naming the field. A literal timestamp is not permitted in the registered manifest. [Templates](templates.md#one-shot-schedules) specifies creation-time timestamp validation and normalization.
@@ -135,6 +135,31 @@ and only queries may retry.
 
   The newest due time is on time when it is at most the grace period (60 s by default) old; every older due time in the window is missed and follows `missed`. `once` fires one catch-up identified by the last missed due time; `each` keeps the newest `each_cap` missed due times and fires them oldest first. An on-time due time always fires, after any catch-up. A fire's trigger id is `schedule:<due time, RFC 3339 UTC>` (`schedule:2026-03-29T01:00:00Z`), and admission deduplicates on flow and trigger id, so one due time starts at most one run. The script sees `trigger` as `{ "kind": "schedule", "due": "..." }`; a catch-up fire adds `"catch_up": { "policy", "missed_count", "missed_window": { "first", "last" } }`, counting every missed due time, including those `each_cap` dropped. A scheduled fire, like every trigger, runs the flow's version approved and enabled when it is admitted.
 - Both, or neither, is refused.
+
+`match` has at most **8** keys. Keys are header names: **1–64 bytes** of
+`a-z`, `0-9`, or `_`, and must appear in that event version's catalog `headers`
+declaration. An unknown key (including when headers are absent or empty) is
+refused at install and dry run with `event_header_not_declared`, naming the key.
+Values are string patterns of **1–256 UTF-8 bytes**. Only `*` is special: it
+matches any run of characters, including zero characters and `/`. Everything
+else is literal: no `?`, character classes, regex, or escape syntax. `repo`
+values compare case-insensitively for ASCII letters; all other values compare
+exactly. Every key must be present with a **non-empty** matching value. An
+absent or empty `match` imposes no filters. Templates may bind whole-string
+`$params.<name>` values of type `string` or `enum` (see [templates](templates.md)).
+
+Filters run before admission, receipts, rate accounting and backlog insertion.
+A filtered notice is acknowledged without any of that work and increments the
+flow's cumulative `filtered_out` health counter (and the reader's delivery
+counter). Like `skipped_before_install`, redelivery after a lost acknowledgment
+may count a skip again. Filters and their placeholders are part of the exact
+hashed manifest bytes shown on the approval card.
+
+**Headers remain hints, not authority.** A publisher can mislabel a notice.
+Filters can only skip work to reduce cost; they never establish authorization,
+repository identity or a condition worth acting on. Scripts must still check
+the verified body before making decisions. Body retrieval uses the flow's own
+scope regardless of the filter.
 
 Module notices fan out to the flows approved and enabled at admission, but only
 when JetStream's stored publish time is at or after the flow's **first approval**.

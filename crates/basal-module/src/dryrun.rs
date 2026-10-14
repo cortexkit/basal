@@ -485,6 +485,7 @@ impl DryRunner {
         };
         let installed = install_result.map_err(|e| match e {
             e @ (basal_core::InstallError::ForeignAgentTarget { .. }
+            | basal_core::InstallError::UnknownEventHeader { .. }
             | basal_core::InstallError::UnknownWorkspace(_)
             | basal_core::InstallError::WorkspaceRegistryUnavailable(_)
             | basal_core::InstallError::UnknownAgent {

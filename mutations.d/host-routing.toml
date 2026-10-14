@@ -466,7 +466,7 @@ build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/subc_catalog.rs"
 old = "declared_event(&catalog_event_declarations(entry)?, name, version)"
-new = "declared_event(&catalog_event_declarations(entry).unwrap_or_default(), name, version).or_else(|| Some(EventDecl { origin: crate::EventOrigin::Internal, body: crate::EventBody::Inline })) // NON-VACUITY BREAK"
+new = "declared_event(&catalog_event_declarations(entry).unwrap_or_default(), name, version).or_else(|| Some(EventDecl { origin: crate::EventOrigin::Internal, body: crate::EventBody::Inline, headers: vec![] })) // NON-VACUITY BREAK"
 
 [[control]]
 id = "hosts-registry-admission-bypassed"

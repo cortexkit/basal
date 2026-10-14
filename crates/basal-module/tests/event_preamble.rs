@@ -51,6 +51,7 @@ fn worker_preamble_supplies_verified_json_and_synthetic_capture_calls_nothing_li
         "github_pr_changed",
         1,
         basal_host::EventDecl {
+            headers: vec![],
             origin: basal_host::EventOrigin::External,
             body: basal_host::EventBody::Resolved {
                 resolve_op: basal_host::catalog::EVENT_BODY_OP.into(),
@@ -172,6 +173,7 @@ fn delivered_body_flow_mismatch_fails_run_before_script() {
             "digest_delivered",
             1,
             basal_host::EventDecl {
+                headers: vec![],
                 origin: basal_host::EventOrigin::External,
                 body: basal_host::EventBody::Resolved {
                     resolve_op: basal_host::catalog::EVENT_BODY_OP.into(),

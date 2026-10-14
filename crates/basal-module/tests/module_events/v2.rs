@@ -11,6 +11,7 @@ fn catalog() -> MockCatalog {
         "pull_request_review",
         2,
         basal_host::EventDecl {
+            headers: vec![],
             origin: basal_host::EventOrigin::External,
             body: basal_host::EventBody::Inline,
         },
@@ -132,6 +133,7 @@ async fn declared_v3_uses_header_key_and_refuses_mismatched_id() {
         "pull_request_review",
         3,
         basal_host::EventDecl {
+            headers: vec![],
             origin: basal_host::EventOrigin::External,
             body: basal_host::EventBody::Inline,
         },

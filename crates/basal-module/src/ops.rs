@@ -205,6 +205,15 @@ impl Module {
                     "event {module}.{name} v{version} is not catalogued; an events trigger requires a published declaration"
                 ),
             ),
+            InstallError::UnknownEventHeader {
+                module,
+                name,
+                version,
+                key,
+            } => OpError::new(
+                "event_header_not_declared",
+                format!("header {key} is not declared for event {module}.{name} v{version}"),
+            ),
             InstallError::NoSuchFlow(f) => OpError::new("not_found", format!("no flow {f}")),
             InstallError::Store(inner) => self.core_error(inner),
             other => OpError::new("install_refused", format!("{other:?}")),
@@ -1264,6 +1273,7 @@ impl Module {
                 "needs_reconcile": !f.needs_reconcile.is_empty(),
                 "event_backlog": f.event_backlog,
                 "skipped_before_install": f.skipped_before_install,
+                "filtered_out": f.filtered_out,
                 "event_overflow": f.event_overflow,
                 "overflowed": f.event_overflow > 0,
                 "auto_disabled": f.auto_disabled,
