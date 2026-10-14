@@ -112,6 +112,7 @@ impl Notice {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Report {
     pub skipped_before_install: usize,
+    pub filtered_out: usize,
     pub matched: usize,
     pub admitted: usize,
     pub duplicate: usize,
@@ -119,20 +120,90 @@ pub struct Report {
     pub overflow: usize,
 }
 
-fn matches(manifest: &str, notice: &Notice, flow_id: &str) -> Result<bool> {
+#[derive(PartialEq, Eq)]
+enum HeaderMatch {
+    Unrelated,
+    Filtered,
+    Accepted,
+}
+
+fn header_matches(key: &str, pattern: &str, value: &str) -> bool {
+    if value.is_empty() {
+        return false;
+    }
+    let (pattern, value) = (pattern.as_bytes(), value.as_bytes());
+    let equal = |a: u8, b: u8| {
+        if key == "repo" {
+            a.eq_ignore_ascii_case(&b)
+        } else {
+            a == b
+        }
+    };
+    let (mut p, mut v, mut star) = (0, 0, None);
+    while v < value.len() {
+        if p < pattern.len() && pattern[p] == b'*' {
+            star = Some((p, v));
+            p += 1;
+        } else if p < pattern.len() && equal(pattern[p], value[v]) {
+            p += 1;
+            v += 1;
+        } else if let Some((start, consumed)) = star {
+            v = consumed + 1;
+            star = Some((start, v));
+            p = start + 1;
+        } else {
+            return false;
+        }
+    }
+    while p < pattern.len() && pattern[p] == b'*' {
+        p += 1;
+    }
+    p == pattern.len()
+}
+
+fn effective_manifest(conn: &rusqlite::Connection, text: &str, flow: &str) -> Result<Manifest> {
+    let mut manifest = Manifest::parse(text).map_err(|e| CoreError::Corrupt(e.to_string()))?;
+    if manifest.params.is_some() {
+        let text: String = conn.query_row(
+            "SELECT params FROM template_instances WHERE flow_id=?1",
+            [flow],
+            |r| r.get(0),
+        )?;
+        let values = serde_json::from_str(&text).map_err(|e| CoreError::Corrupt(e.to_string()))?;
+        crate::templates::effective(&mut manifest, &values);
+    }
+    Ok(manifest)
+}
+
+fn matches(manifest: &Manifest, notice: &Notice, flow_id: &str) -> Result<HeaderMatch> {
     if notice
         .target_flow()?
         .is_some_and(|target| target != flow_id)
     {
-        return Ok(false);
+        return Ok(HeaderMatch::Unrelated);
     }
     let (module, name, version) = notice.identity()?;
-    let manifest = Manifest::parse(manifest).map_err(|e| CoreError::Corrupt(e.to_string()))?;
-    Ok(manifest.trigger.events.as_ref().is_some_and(|events| {
-        events
-            .iter()
-            .any(|e| e.module == module && e.name == name && e.version == version)
-    }))
+    let Some(event) = manifest
+        .trigger
+        .events
+        .iter()
+        .flatten()
+        .find(|e| e.module == module && e.name == name && e.version == version)
+    else {
+        return Ok(HeaderMatch::Unrelated);
+    };
+    Ok(
+        if event.header_match.iter().all(|(key, pattern)| {
+            notice
+                .headers
+                .get(key)
+                .is_some_and(|value| header_matches(key, pattern, value))
+        }) {
+            HeaderMatch::Accepted
+        } else {
+            HeaderMatch::Filtered
+        },
+    )
 }
 
 fn receipt(tx: &Transaction, flow: &str, notice: &Notice, state: &str, now: i64) -> Result<()> {
@@ -227,15 +298,27 @@ impl Runtime {
                 .collect::<rusqlite::Result<_>>()?;
             let approved = flows
                 .iter()
-                .map(|(flow, first_approved)| Ok((flow, first_approved, install::approved(tx, flow)?)))
+                .map(|(flow, first_approved)| {
+                    let manifest = install::approved(tx, flow)?
+                        .map(|approved| effective_manifest(tx, &approved.manifest, flow))
+                        .transpose()?;
+                    Ok((flow, first_approved, manifest))
+                })
                 .collect::<Result<Vec<_>>>()?;
             let mut report = Report::default();
             for notice in notices {
                 notice.target_flow()?;
                 for (flow, first_approved, approved) in &approved {
-                    if let Some(approved) = approved
-                        && matches(&approved.manifest, notice, flow)?
-                    {
+                    if let Some(manifest) = approved {
+                        match matches(manifest, notice, flow)? {
+                            HeaderMatch::Unrelated => continue,
+                            HeaderMatch::Filtered => {
+                                tx.execute("INSERT INTO event_flow_health(flow_id,filtered_out) VALUES (?1,1) ON CONFLICT(flow_id) DO UPDATE SET filtered_out=filtered_out+1", [flow])?;
+                                report.filtered_out += 1;
+                                continue;
+                            }
+                            HeaderMatch::Accepted => {}
+                        }
                         // Upgrades retain the first approval point, so events
                         // during an upgrade remain eligible for the current code.
                         if !after_first_approval(tx, flow, notice, **first_approved)? {
@@ -270,7 +353,10 @@ impl Runtime {
                     continue;
                 }
                 let approved = install::approved(tx, &flow)?;
-                if !approved.as_ref().map(|a| matches(&a.manifest, &notice, &flow)).transpose()?.unwrap_or(false) {
+                let eligible = approved.as_ref().map(|a| {
+                    matches(&effective_manifest(tx, &a.manifest, &flow)?, &notice, &flow)
+                }).transpose()?;
+                if eligible != Some(HeaderMatch::Accepted) {
                     tx.execute("UPDATE event_receipts SET state='refused' WHERE rowid=?1", [rowid])?;
                     continue;
                 }

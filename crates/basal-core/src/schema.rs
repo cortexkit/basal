@@ -335,6 +335,10 @@ ALTER TABLE installs ADD COLUMN revoked_reason TEXT;
         version: 27,
         statements: TEMPLATE_EVENTS,
     },
+    Migration {
+        version: 28,
+        statements: "ALTER TABLE event_flow_health ADD COLUMN filtered_out INTEGER NOT NULL DEFAULT 0;",
+    },
 ];
 
 const TEMPLATE_EVENTS: &str = r#"

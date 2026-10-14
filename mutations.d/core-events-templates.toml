@@ -700,3 +700,73 @@ file = "crates/basal-core/src/events.rs"
 old = "if parts.len() != 6"
 new = """if parts.len() == 5 { return Ok((parts[3], parts[4], 1)); } // NON-VACUITY BREAK
         if parts.len() != 6"""
+
+# Nonmatching notice headers prevent creation of a receipt, backlog entry or run.
+[[control]]
+id = "event-header-filter-admission-bypassed"
+guards = "nonmatching headers create no receipt run backlog or rate charge"
+test_file = "crates/basal-core/src/events_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["events::tests::header_filters_skip_before_receipts_runs_backlog_and_rate", "events::tests::header_patterns_match_only_present_nonempty_values"] }
+expect_red = ["events::tests::header_filters_skip_before_receipts_runs_backlog_and_rate"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/events.rs"
+scope = { after = "fn matches(", before = "\nfn receipt(" }
+old = "HeaderMatch::Filtered"
+new = "HeaderMatch::Accepted /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "event-header-pattern-bounds-removed"
+guards = "header patterns and bound parameters obey byte length limits"
+test_file = "crates/basal-core/src/manifest.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["manifest::tests::event_header_filters_validate_keys_patterns_and_placeholder_types", "manifest::tests::status_group_is_one_to_four_uppercase_ascii_letters"] }
+expect_red = ["manifest::tests::event_header_filters_validate_keys_patterns_and_placeholder_types"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/manifest.rs"
+old = "(1..=256).contains(&pattern.len())"
+new = "true || (1..=256).contains(&pattern.len()) // NON-VACUITY BREAK"
+
+[[control]]
+id = "event-header-template-binding-removed"
+guards = "event admission uses the instance parameter not an unbound placeholder"
+test_file = "crates/basal-core/src/events_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["events::tests::template_header_filter_binds_before_admission_and_keeps_redelivery_idempotent", "events::tests::header_patterns_match_only_present_nonempty_values"] }
+expect_red = ["events::tests::template_header_filter_binds_before_admission_and_keeps_redelivery_idempotent"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/templates.rs"
+old = "replace(pattern, false);"
+new = "let _ = pattern; // NON-VACUITY BREAK"
+
+[[control]]
+id = "event-header-catalog-key-check-removed"
+guards = "install and dry run refuse keys missing from declared filter headers"
+test_file = "crates/basal-module/tests/catalog_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test catalog_events"
+select = { tests = ["header_filters_require_declared_catalog_keys_at_install_and_dry_run", "declared_catalog_event_is_accepted_by_install_and_dry_run"] }
+expect_red = ["header_filters_require_declared_catalog_keys_at_install_and_dry_run"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/install.rs"
+old = "if !decl.headers.contains(key) {"
+new = "if false && !decl.headers.contains(key) { // NON-VACUITY BREAK"

@@ -177,6 +177,9 @@ pub(crate) fn check(manifest: &Manifest) -> Result<(), ManifestError> {
                         field == "trigger.schedule.interval"
                     }
                     Parameter::Timestamp { .. } => field == "trigger.schedule.at",
+                    Parameter::String { .. } | Parameter::Enum { .. } => {
+                        field.starts_with("trigger.events[") && field.contains("].match.")
+                    }
                     _ => false,
                 };
                 if !fits {
@@ -430,6 +433,19 @@ pub fn validate_values(manifest: &Manifest, values: &Value, now: i64) -> Result<
                 })
             }
         };
+        let used_as_pattern = manifest.trigger.events.iter().flatten().any(|event| {
+            event
+                .header_match
+                .values()
+                .any(|pattern| pattern.strip_prefix("$params.") == Some(name.as_str()))
+        });
+        let fits = if used_as_pattern {
+            fits && value
+                .as_str()
+                .is_some_and(crate::manifest::valid_header_pattern)
+        } else {
+            fits
+        };
         if !fits {
             return Err(parameter_refusal("param_out_of_bounds", name, bound));
         }
@@ -475,7 +491,7 @@ pub fn grant_guards(
         .collect()
 }
 
-/// Substitutes only validated grant and timing slots, never arbitrary manifest
+/// Substitutes only validated grant, timing and header-filter slots, never arbitrary manifest
 /// text. The stored manifest and its hash remain the exact approved bytes.
 pub fn effective(manifest: &mut Manifest, values: &Value) {
     let replace = |slot: &mut String, host: bool| {
@@ -511,6 +527,13 @@ pub fn effective(manifest: &mut Manifest, values: &Value) {
         }
         if let Some(at) = &mut schedule.at {
             replace(at, false);
+        }
+    }
+    if let Some(events) = &mut manifest.trigger.events {
+        for event in events {
+            for pattern in event.header_match.values_mut() {
+                replace(pattern, false);
+            }
         }
     }
 }
@@ -781,6 +804,13 @@ impl<'de> Deserialize<'de> for UniqueJson {
         }
         deserializer.deserialize_any(Visitor)
     }
+}
+
+pub(crate) fn decode_header_match<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeMap<String, String>, D::Error> {
+    let UniqueJson(value) = UniqueJson::deserialize(deserializer)?;
+    serde_json::from_value(value).map_err(serde::de::Error::custom)
 }
 
 pub(crate) fn decode_params<'de, D: serde::Deserializer<'de>>(

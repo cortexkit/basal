@@ -100,6 +100,50 @@ fn catalog_events_require_an_acknowledged_daemon_capability() {
 }
 
 #[test]
+fn header_filters_require_declared_catalog_keys_at_install_and_dry_run() {
+    let capabilities = Arc::new(DaemonCapabilities::default());
+    acknowledge(&capabilities, &[CAP_CATALOG_EVENTS_V1]);
+    let (f, wire) = fixture(entry(), capabilities);
+    let mut filtered = manifest("github_pr_changed", 1);
+    filtered["trigger"]["events"][0]["match"] = json!({"repo":"cortexkit/*"});
+    f.module
+        .handle(
+            &Caller::Operator,
+            "flow.install",
+            json!({
+                "script":"return 7;", "manifest":filtered.to_string()
+            }),
+        )
+        .unwrap();
+    assert!(dry_run(&f).is_ok());
+    for headers in [Some(json!([])), Some(json!(["project"])), None] {
+        let mut catalog = wire.catalog.lock().unwrap();
+        let declaration = &mut catalog["modules"][0]["events"][0];
+        if let Some(headers) = headers {
+            declaration["headers"] = headers;
+        } else {
+            declaration.as_object_mut().unwrap().remove("headers");
+        }
+        drop(catalog);
+        let error = f
+            .module
+            .handle(
+                &Caller::Operator,
+                "flow.install",
+                json!({
+                    "script":"return 7;", "manifest":filtered.to_string()
+                }),
+            )
+            .unwrap_err();
+        assert_eq!(error.code, "event_header_not_declared");
+        assert!(error.message.contains("repo"), "{error:?}");
+        let error = dry_run(&f).unwrap_err();
+        assert_eq!(error.code, "event_header_not_declared");
+        assert!(error.message.contains("repo"), "{error:?}");
+    }
+}
+
+#[test]
 fn declared_catalog_event_is_accepted_by_install_and_dry_run() {
     let capabilities = Arc::new(DaemonCapabilities::default());
     acknowledge(&capabilities, &[CAP_CATALOG_EVENTS_V1]);

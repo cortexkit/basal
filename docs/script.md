@@ -60,8 +60,15 @@ existing shape.
 For a capture-mode dry run, supply the complete synthetic `{event: {...}}`
 value above as the `flow.dry_run` request's `trigger`. The supplied `body` is
 already a JSON value, not stored text; it is delivered without a live body
-lookup or any other live call. Header labels are context for script logic,
-not authority, and manifest header filters remain a follow-up.
+lookup or any other live call. Synthetic dry-run triggers exercise script logic,
+not live notice admission. Optional `trigger.events[].match` filters skip
+non-matching notices before any run, body lookup, receipt or backlog entry, and
+count skips in `filtered_out` health. Patterns use only `*` (including across
+`/`); `repo` compares ASCII-case-insensitively, other headers exactly, and every
+filtered header must be present and non-empty. See [manifest filters](manifest.md#trigger).
+Headers are publisher hints, **not authority**: a publisher may label wrongly.
+A filter only reduces cost; scripts must still check the verified body before
+deciding what to do. It never grants access to an otherwise invisible body.
 
 ## Module calls for a target agent
 

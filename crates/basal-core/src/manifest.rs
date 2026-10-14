@@ -132,6 +132,20 @@ pub struct EventRef {
     pub module: String,
     pub name: String,
     pub version: u32,
+    /// Compare publisher labels before starting a run, avoiding work for
+    /// unrelated notices. Labels are unverified; scripts must check the body.
+    #[serde(
+        default,
+        rename = "match",
+        skip_serializing_if = "std::collections::BTreeMap::is_empty",
+        deserialize_with = "crate::templates::decode_header_match"
+    )]
+    pub header_match: std::collections::BTreeMap<String, String>,
+}
+
+/// Patterns have only one operator: `*` consumes any run, including `/`.
+pub(crate) fn valid_header_pattern(pattern: &str) -> bool {
+    (1..=256).contains(&pattern.len())
 }
 
 /// A digest delivery action. Ordered from least to most intrusive, so the
@@ -640,6 +654,22 @@ impl Manifest {
                     if e.version == 0 {
                         return Err(invalid("trigger.events.version", "must be at least 1"));
                     }
+                    if e.header_match.len() > 8 {
+                        return Err(invalid("trigger.events.match", "at most 8 keys"));
+                    }
+                    for (key, pattern) in &e.header_match {
+                        check_name("trigger.events.match", key, 64, |b| {
+                            b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'
+                        })?;
+                        if !crate::templates::is_placeholder(pattern)
+                            && !valid_header_pattern(pattern)
+                        {
+                            return Err(invalid(
+                                "trigger.events.match",
+                                format!("{key}: pattern must be 1 to 256 bytes"),
+                            ));
+                        }
+                    }
                 }
                 check_list(
                     "trigger.events",
@@ -1038,6 +1068,84 @@ mod tests {
                     Err(ManifestError::Invalid { ref field, .. }) if field == "fs.write"
                 ),
                 "{root} was accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn event_header_filters_validate_keys_patterns_and_placeholder_types() {
+        let mut value = serde_json::json!({
+            "id":"filters", "version":1, "purpose":"Skip unrelated events",
+            "trigger":{"events":[{"module":"plexus","name":"changed","version":1}]}
+        });
+        for filters in [
+            serde_json::json!({"repo":"cortexkit/*","branch":"main"}),
+            serde_json::json!({"a_0":"*", "b":"x".repeat(256)}),
+            serde_json::json!({"a".repeat(64):"x"}),
+        ] {
+            value["trigger"]["events"][0]["match"] = filters.clone();
+            let parsed = Manifest::parse(&value.to_string()).unwrap();
+            assert_eq!(
+                serde_json::to_value(parsed).unwrap()["trigger"]["events"][0]["match"],
+                filters
+            );
+        }
+        for filters in [
+            serde_json::json!({"repo":""}),
+            serde_json::json!({"repo":"é".repeat(129)}),
+            serde_json::json!({"repo":1}),
+            serde_json::json!({"":"x"}),
+            serde_json::json!({"Repo":"x"}),
+            serde_json::json!({"bad-key":"x"}),
+            serde_json::json!({"é":"x"}),
+            serde_json::json!({"a".repeat(65):"x"}),
+            serde_json::json!({"a":"*","b":"*","c":"*","d":"*","e":"*","f":"*","g":"*","h":"*","i":"*"}),
+        ] {
+            value["trigger"]["events"][0]["match"] = filters;
+            assert!(Manifest::parse(&value.to_string()).is_err(), "{value}");
+        }
+        value["trigger"]["events"][0]["match"] = serde_json::json!({"repo":"$params.repo"});
+        assert!(Manifest::parse(&value.to_string()).is_err());
+        assert!(Manifest::parse(r#"{"id":"filters","version":1,"purpose":"test","trigger":{"events":[{"module":"plexus","name":"changed","version":1,"match":{"repo":"a","repo":"b"}}]}}"#).is_err());
+        value["template"] = serde_json::json!({"max_per_agent":10,"max_lifetime":"1d"});
+        for decl in [
+            serde_json::json!({"type":"string","max_bytes":4096}),
+            serde_json::json!({"type":"enum","values":["cortexkit/*"]}),
+        ] {
+            value["params"] = serde_json::json!({"repo":decl});
+            let manifest = Manifest::parse(&value.to_string()).unwrap();
+            let params = serde_json::json!({"repo":"cortexkit/*"});
+            assert!(crate::templates::validate_values(&manifest, &params, 0).is_ok());
+        }
+        value["params"]["repo"] = serde_json::json!({"type":"integer","min":0,"max":1});
+        assert!(matches!(
+            Manifest::parse(&value.to_string()),
+            Err(ManifestError::TemplatePlaceholderInvalid { .. })
+        ));
+        value["params"]["repo"] = serde_json::json!({"type":"string","max_bytes":4096});
+        let manifest = Manifest::parse(&value.to_string()).unwrap();
+        for pattern in ["".to_owned(), "x".repeat(257)] {
+            let error = crate::templates::validate_values(
+                &manifest,
+                &serde_json::json!({"repo":pattern}),
+                0,
+            )
+            .unwrap_err();
+            assert_eq!(error.code, "param_out_of_bounds");
+            assert_eq!(error.detail["param"], "repo");
+        }
+        value["params"]["repo"] = serde_json::json!({"type":"enum","values":["", "x".repeat(257)]});
+        let manifest = Manifest::parse(&value.to_string()).unwrap();
+        for pattern in ["".to_owned(), "x".repeat(257)] {
+            assert_eq!(
+                crate::templates::validate_values(
+                    &manifest,
+                    &serde_json::json!({"repo":pattern}),
+                    0
+                )
+                .unwrap_err()
+                .code,
+                "param_out_of_bounds"
             );
         }
     }

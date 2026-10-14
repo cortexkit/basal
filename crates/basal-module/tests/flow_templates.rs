@@ -208,6 +208,7 @@ impl Test {
                 name,
                 1,
                 EventDecl {
+                    headers: vec!["repo".into()],
                     origin: EventOrigin::External,
                     body: EventBody::Resolved {
                         resolve_op: "events_get".into(),
@@ -240,7 +241,12 @@ impl Test {
             let stored = f
                 .module
                 .rt
-                .get_package(registered["package"].as_str().unwrap(), 1)
+                .get_package(
+                    registered["package"].as_str().unwrap(),
+                    serde_json::from_str::<Value>(manifest).unwrap()["version"]
+                        .as_u64()
+                        .unwrap() as u32,
+                )
                 .unwrap();
             assert_eq!(stored["manifest"], manifest);
             assert_eq!(stored["script"], script);
@@ -255,7 +261,7 @@ impl Test {
                 &agent(OWNER),
                 "flow.instantiate",
                 json!({
-                    "template":template,"version":1,"params":params,"expires_in":"365d",
+                    "template":template,"version":if template == "watch-github" { 2 } else { 1 },"params":params,"expires_in":"365d",
                 }),
             )
             .unwrap()
@@ -318,6 +324,25 @@ impl Test {
         );
         self.finish(&run);
         run
+    }
+
+    fn filtered_event(&self, name: &str, repo: &str) {
+        let resolved = self.host.resolved.load(Ordering::Relaxed);
+        let report = self
+            .f
+            .module
+            .rt
+            .admit_events(&[basal_core::events::Notice {
+                published_at_ms: self.f.clock.now_ms(),
+                subject: format!("ck.account.event.plexus.{name}.v1"),
+                event_key: "f".repeat(64),
+                digest: format!("{:x}", Sha256::digest(b"{}")),
+                headers: [("repo".into(), repo.into())].into(),
+            }])
+            .unwrap();
+        assert_eq!((report.filtered_out, report.admitted), (1, 0));
+        assert!(self.f.module.rt.startable().unwrap().is_empty());
+        assert_eq!(self.host.resolved.load(Ordering::Relaxed), resolved);
     }
 
     fn items(&self) -> Vec<Value> {
@@ -472,7 +497,12 @@ fn published_templates_declare_exact_bounds_and_self_only_grants() {
     for (name, manifest, _) in TEMPLATES {
         let m: Value = serde_json::from_str(manifest).unwrap();
         assert_eq!(m["id"], name);
-        assert_eq!(m["version"], 1);
+        assert_eq!(m["version"], if name == "watch-github" { 2 } else { 1 });
+        if name == "watch-github" {
+            for event in m["trigger"]["events"].as_array().unwrap() {
+                assert_eq!(event["match"], json!({"repo":"$params.repo"}));
+            }
+        }
         assert_eq!(
             m["params"]["note"],
             json!({"type":"string","max_bytes":4096})
@@ -768,12 +798,7 @@ fn github_pr_filters_headers_number_kind_and_state_before_notifying() {
         open["state"] = json!("open");
         open["merged"] = json!(false);
         open["merged_at"] = Value::Null;
-        t.event(
-            &instance,
-            "github_pr_changed",
-            "other/project",
-            open.clone(),
-        );
+        t.filtered_event("github_pr_changed", "other/project");
         let mut wrong_number = open.clone();
         wrong_number["number"] = json!(43);
         t.event(
@@ -807,7 +832,7 @@ fn github_pr_filters_headers_number_kind_and_state_before_notifying() {
         assert_eq!(item["data"]["observed"]["merged"], true);
         assert_eq!(item["data"]["observed"]["number"], 42);
         assert_eq!(item["links"], json!([{"kind":"url","url":met["html_url"]}]));
-        assert_eq!(t.host.resolved.load(Ordering::Relaxed), 6);
+        assert_eq!(t.host.resolved.load(Ordering::Relaxed), 5);
     }
 }
 
@@ -827,7 +852,7 @@ fn github_closed_pr_or_issue_and_any_change_notify_once() {
             "github_issue_changed"
         };
         let mut body: Value = serde_json::from_str(fixture).unwrap();
-        t.event(&instance, name, "other/project", body.clone());
+        t.filtered_event(name, "other/project");
         assert!(t.items().is_empty());
         t.live(&instance, true);
         if state == "closed" {
@@ -861,12 +886,7 @@ fn github_release_waits_for_its_repository_and_ignores_number_and_state() {
     params["number"] = json!(10000000);
     let instance = t.create("watch-github", params);
     let body: Value = serde_json::from_str(RELEASE).unwrap();
-    t.event(
-        &instance,
-        "github_release_published",
-        "other/project",
-        body.clone(),
-    );
+    t.filtered_event("github_release_published", "other/project");
     t.event(
         &instance,
         "github_pr_changed",
@@ -890,10 +910,12 @@ fn github_release_waits_for_its_repository_and_ignores_number_and_state() {
 fn github_issue_cannot_merge_stops_on_its_first_subscribed_event() {
     let t = Test::new();
     let instance = t.create("watch-github", github_params("issue", "merged"));
+    t.filtered_event("github_release_published", "other/project");
+    t.live(&instance, true);
     let run = t.event(
         &instance,
         "github_release_published",
-        "other/project",
+        "example/project",
         serde_json::from_str(RELEASE).unwrap(),
     );
     let item = t.notified(&instance, &run, "stopped: issues cannot merge");
@@ -1024,7 +1046,7 @@ fn exact_file_and_git_template_roots_refuse_values_outside_work() {
                     &agent(OWNER),
                     "flow.instantiate",
                     json!({
-                        "template":template,"version":1,"params":values,"expires_in":"1d",
+                        "template":template,"version":if template == "watch-github" { 2 } else { 1 },"params":values,"expires_in":"1d",
                     }),
                 )
                 .unwrap_err();

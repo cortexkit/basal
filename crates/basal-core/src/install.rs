@@ -58,6 +58,12 @@ pub enum InstallError {
         name: String,
         version: u32,
     },
+    UnknownEventHeader {
+        module: String,
+        name: String,
+        version: u32,
+        key: String,
+    },
     /// An event's `resolve_op` is not a query, so reading a body through it
     /// could change something.
     ResolveOpNotQuery {
@@ -229,6 +235,16 @@ pub(crate) fn validate_inner(
                     version: e.version,
                 });
             };
+            for key in e.header_match.keys() {
+                if !decl.headers.contains(key) {
+                    return Err(InstallError::UnknownEventHeader {
+                        module: e.module.clone(),
+                        name: e.name.clone(),
+                        version: e.version,
+                        key: key.clone(),
+                    });
+                }
+            }
             if let EventBody::Resolved { resolve_op } = &decl.body {
                 let kind = catalog.op(&e.module, resolve_op).and_then(|d| d.kind);
                 if kind != Some(OpKind::Query) {

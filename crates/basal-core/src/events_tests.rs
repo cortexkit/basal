@@ -64,6 +64,7 @@ impl Fixture {
             "github_pr_changed",
             1,
             basal_host::EventDecl {
+                headers: vec!["repo".into(), "branch".into()],
                 origin: basal_host::EventOrigin::External,
                 body: basal_host::EventBody::Resolved {
                     resolve_op: basal_host::catalog::EVENT_BODY_OP.into(),
@@ -170,6 +171,163 @@ fn notice(n: u64) -> Notice {
 }
 fn reply() -> serde_json::Value {
     json!({"result":{"body":BODY,"digest":notice(0).digest,"event_key":notice(0).event_key,"event_name":"github_pr_changed"}})
+}
+
+#[test]
+fn header_patterns_match_only_present_nonempty_values() {
+    for (key, pattern, value, expected) in [
+        ("repo", "cortexkit/*", "CortexKit/basal", true),
+        ("repo", "CORTEXKIT/*", "cortexkit/basal", true),
+        ("repo", "cortexkit/*", "other/basal", false),
+        ("repo", "*", "", false),
+        ("branch", "main", "Main", false),
+        ("branch", "main", "main", true),
+        ("branch", "feature/*", "feature/a/b", true),
+        ("branch", "*a*b", "a/ab", true),
+        ("branch", "*a*b", "a/abc", false),
+        ("branch", "ma?in", "main", false),
+        ("branch", "ma?in", "ma?in", true),
+        ("repo", "é", "É", false),
+        ("branch", "**", "main", true),
+        ("branch", "main*", "main", true),
+    ] {
+        assert_eq!(
+            header_matches(key, pattern, value),
+            expected,
+            "{key} {pattern:?} {value:?}"
+        );
+    }
+}
+
+#[test]
+fn template_header_filter_binds_before_admission_and_keeps_redelivery_idempotent() {
+    let f = Fixture::new(60);
+    let owner = "agent_47120287c700722b";
+    f.catalog.add_named_agent(owner, "Owner");
+    let mut request = f.request("watch");
+    let mut manifest: serde_json::Value = serde_json::from_str(&request.manifest).unwrap();
+    manifest["params"] = json!({"repo":{"type":"string","max_bytes":4096}});
+    manifest["template"] = json!({"max_per_agent":10,"max_lifetime":"1d"});
+    manifest["trigger"]["events"][0]["match"] = json!({"repo":"$params.repo"});
+    request.manifest = manifest.to_string();
+    f.rt.register_package(&request.script, &request.manifest)
+        .unwrap();
+    for pattern in ["".to_owned(), "x".repeat(257)] {
+        assert!(matches!(
+            f.rt.instantiate("watch", 1, owner, &json!({"repo":pattern}), "1h"),
+            Err(crate::templates::TemplateError::Refused(
+                crate::templates::Refusal {
+                    code: "param_out_of_bounds",
+                    ..
+                }
+            ))
+        ));
+    }
+    let first =
+        f.rt.instantiate("watch", 1, owner, &json!({"repo":"owner/repo"}), "1h")
+            .unwrap();
+    let second =
+        f.rt.instantiate("watch", 1, owner, &json!({"repo":"other/repo"}), "1h")
+            .unwrap();
+    assert_ne!(first["flow_id"], second["flow_id"]);
+    let id = first["flow_id"].as_str().unwrap();
+    let effective =
+        f.rt.store()
+            .read(|c| effective_manifest(c, &request.manifest, id))
+            .unwrap();
+    assert_eq!(
+        effective.trigger.events.unwrap()[0].header_match["repo"],
+        "owner/repo"
+    );
+    let report = f.rt.admit_events(&[notice(1)]).unwrap();
+    assert_eq!((report.admitted, report.filtered_out), (1, 1));
+    let report = f.rt.admit_events(&[notice(1)]).unwrap();
+    assert_eq!(
+        (report.admitted, report.duplicate, report.filtered_out),
+        (0, 1, 1)
+    );
+    f.rt.store()
+        .read(|c| {
+            let flow: String = c.query_row("SELECT flow_id FROM runs", [], |r| r.get(0))?;
+            assert_eq!(flow, id);
+            let receipts: i64 =
+                c.query_row("SELECT COUNT(*) FROM event_receipts", [], |r| r.get(0))?;
+            assert_eq!(receipts, 1);
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn header_filters_skip_before_receipts_runs_backlog_and_rate() {
+    let f = Fixture::new(1);
+    let mut request = f.request("flow");
+    let mut manifest: serde_json::Value = serde_json::from_str(&request.manifest).unwrap();
+    manifest["trigger"]["events"][0]["match"] = json!({"repo":"OWNER/*", "branch":"main"});
+    request.manifest = manifest.to_string();
+    let installed = f.rt.install(&request).unwrap();
+    f.rt.approve("flow", 1, &installed.code_hash, "test-approved")
+        .unwrap();
+    for n in 0..200 {
+        let mut other = notice(n);
+        other.headers.insert("repo".into(), "other/repo".into());
+        other.headers.insert("branch".into(), "main".into());
+        let report = f.rt.admit_events(&[other]).unwrap();
+        assert_eq!(
+            (
+                report.filtered_out,
+                report.matched,
+                report.admitted,
+                report.queued
+            ),
+            (1, 0, 0, 0)
+        );
+    }
+    for (n, repo, branch) in [
+        (200, Some("owner/repo"), None),
+        (201, Some(""), Some("main")),
+        (202, None, Some("main")),
+        (203, Some("owner/repo"), Some("")),
+        (204, Some("owner/repo"), Some("Main")),
+    ] {
+        let mut other = notice(n);
+        other.headers.clear();
+        if let Some(repo) = repo {
+            other.headers.insert("repo".into(), repo.into());
+        }
+        if let Some(branch) = branch {
+            other.headers.insert("branch".into(), branch.into());
+        }
+        assert_eq!(f.rt.admit_events(&[other]).unwrap().filtered_out, 1);
+    }
+    f.rt.store()
+        .read(|c| {
+            for table in ["event_receipts", "runs", "trigger_inbox", "rate_windows"] {
+                let count: i64 =
+                    c.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))?;
+                assert_eq!(count, 0, "{table}");
+            }
+            Ok(())
+        })
+        .unwrap();
+    let health = f.rt.flow_health().unwrap();
+    assert_eq!(
+        (
+            health[0].filtered_out,
+            health[0].event_backlog,
+            health[0].event_overflow
+        ),
+        (205, 0, 0)
+    );
+    assert!(health[0].enabled);
+    let mut accepted = notice(205);
+    accepted
+        .headers
+        .insert("repo".into(), "owner/nested/repo".into());
+    accepted.headers.insert("branch".into(), "main".into());
+    assert_eq!(f.rt.admit_events(&[accepted.clone()]).unwrap().admitted, 1);
+    assert_eq!(f.rt.admit_events(&[accepted]).unwrap().duplicate, 1);
+    assert_eq!(f.rt.flow_health().unwrap()[0].filtered_out, 205);
 }
 
 #[test]
@@ -515,6 +673,7 @@ fn same_key_on_different_subjects_is_not_a_duplicate() {
         "github_issue_changed",
         1,
         basal_host::EventDecl {
+            headers: vec![],
             origin: basal_host::EventOrigin::External,
             body: basal_host::EventBody::Resolved {
                 resolve_op: basal_host::catalog::EVENT_BODY_OP.into(),
@@ -729,6 +888,7 @@ fn journaled_flow_targeted_body_is_checked_against_run() {
         "digest_delivered",
         1,
         basal_host::EventDecl {
+            headers: vec![],
             origin: basal_host::EventOrigin::External,
             body: basal_host::EventBody::Resolved {
                 resolve_op: basal_host::catalog::EVENT_BODY_OP.into(),

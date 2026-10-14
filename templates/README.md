@@ -1,6 +1,6 @@
 # One-shot watches and reminders
 
-Each directory is a version-1 flow template: register its exact `manifest.json`
+Each directory is a flow template: register its exact `manifest.json`
 and `flow.js` bytes with `package.register`, approve that version once, then
 create watches with `flow.instantiate`. Each instance writes only to the agent
 that created it, with the `wake` digest action, and ends after its notification.
@@ -77,12 +77,19 @@ Example values:
 
 ## `watch-github`
 
-Uses Plexus **v1** `github_pr_changed`, `github_issue_changed`, and
+Template version **2** uses Plexus **v1** `github_pr_changed`, `github_issue_changed`, and
 `github_release_published` events, not polling. Basal fetches and verifies the
 body before running the script. V1 bodies are raw GitHub items; repository
 identity comes from the notice's `repo` header, compared case-insensitively.
 Missing fields do not invent a state or identity. A later template version can
 move to Plexus's planned normalized v2 envelope.
+
+All three subscriptions bind a `repo` admission filter to the instance's `repo`
+parameter, so unrelated notices create no run or body lookup. The script retains
+its own repository check. Headers are publisher hints, not authorization or
+verified body evidence; a publisher can label incorrectly. This v1 watch cannot
+prove repository identity from a raw item alone. Access to bodies remains scoped
+to the receiving flow.
 
 | Parameter | Meaning |
 | --- | --- |
@@ -95,7 +102,7 @@ PRs count as merged when `merged` is true or `merged_at` is non-null; closed
 means `state` is `closed` (including merged PRs). An issue cannot merge, so
 `kind: "issue"` with `state: "merged"` stops as misconfigured on its first run.
 Because this is event-triggered, that run happens on its first subscribed
-event, not immediately on creation. `any_change` fires on the first event for
+event for its repository, not immediately on creation. `any_change` fires on the first event for
 the selected number; a release watch fires on its first matching repository
 release event. Basal admits only events published after the instance's first
 approval, so it does not notify for older releases. When present and valid,
