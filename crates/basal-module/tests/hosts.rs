@@ -30,6 +30,14 @@ fn call(p: Primitive, args: Value) -> CallRequest {
 }
 
 fn set_core_digest_replace_key_capability(fake: &Fake, supported: bool) {
+    set_core_capability(
+        fake,
+        basal_host::core_host::FLOW_DIGEST_REPLACE_KEY_V1,
+        supported,
+    );
+}
+
+fn set_core_capability(fake: &Fake, capability: &str, supported: bool) {
     let mut catalog = fake.catalog.lock().unwrap();
     let modules = catalog["modules"].as_array_mut().unwrap();
     let core = modules
@@ -39,16 +47,15 @@ fn set_core_digest_replace_key_capability(fake: &Fake, supported: bool) {
         let capabilities = core["capabilities"]["provides"]
             .as_array_mut()
             .expect("core provides is an array");
-        capabilities
-            .retain(|capability| capability != basal_host::core_host::FLOW_DIGEST_REPLACE_KEY_V1);
+        capabilities.retain(|provided| provided != capability);
         if supported {
-            capabilities.push(json!(basal_host::core_host::FLOW_DIGEST_REPLACE_KEY_V1));
+            capabilities.push(json!(capability));
         }
     } else {
         modules.push(json!({
             "module_id": "prefrontal-core",
             "capabilities": {"provides": if supported {
-                vec![basal_host::core_host::FLOW_DIGEST_REPLACE_KEY_V1]
+                vec![capability]
             } else {
                 Vec::new()
             }}
@@ -418,6 +425,60 @@ fn install_card_is_byte_exact_and_scope_comes_from_the_route_stamp() {
         operator["flow_install"]["token_usage"],
         json!({"window":"1d","fresh_input":0,"cache_write":0,"output":0,"cache_read":0})
     );
+}
+
+#[test]
+fn install_request_carries_dry_run_text_only_when_core_lists_the_capability() {
+    use basal_host::InstallCard;
+    use basal_host::core_consent::{FLOW_INSTALL_DRY_RUN_TEXT_V1, request};
+    let fake = Fake::new();
+    let consent = Arc::new(CoreConsent::new(fake.clone()));
+    let f = worker_fixture(fake.clone(), consent, "dry-run-text");
+    let script = "return 1;\n";
+    // The request an older core receives: built from the card as recorded.
+    let unchanged = |flow: &str| {
+        let card = f.module.rt.cards(flow).unwrap().remove(0);
+        let fields: Value = serde_json::from_str(&card.card).unwrap();
+        let sent = request(&InstallCard {
+            card_id: card.card_id,
+            flow_id: card.flow_id,
+            version: card.version,
+            fields: fields.clone(),
+        })
+        .unwrap();
+        (sent, fields)
+    };
+
+    set_core_capability(&fake, FLOW_INSTALL_DRY_RUN_TEXT_V1, false);
+    common::install(&f, &Caller::Operator, script, &manifest());
+    let without = fake.calls("flow.install_request")[0]["params"].clone();
+    let (expected, fields) = unchanged("host-flow");
+    assert_eq!(without, expected, "exactly the request an older core takes");
+    assert!(without["flow_install"].get("dry_run_text").is_none());
+    // The card holds the text either way; only the request is gated.
+    assert!(fields["dry_run_text"]["summary"].is_string(), "{fields:#}");
+
+    set_core_capability(&fake, FLOW_INSTALL_DRY_RUN_TEXT_V1, true);
+    let mut m = manifest();
+    m["id"] = json!("text-flow");
+    common::install(&f, &Caller::Operator, script, &m);
+    let mut with = fake.calls("flow.install_request")[1]["params"].clone();
+    let (expected, fields) = unchanged("text-flow");
+    let text = with["flow_install"]
+        .as_object_mut()
+        .unwrap()
+        .remove("dry_run_text")
+        .expect("dry_run_text is sent when core lists the capability");
+    assert_eq!(text, fields["dry_run_text"]);
+    assert_eq!(
+        text["summary"],
+        "In the last 24 hours it would have run 24 times, every hour; the dry run tried the newest 10."
+    );
+    assert_eq!(text["would"], json!([]));
+    assert_eq!(text["problems"], json!([]));
+    // Apart from the text, the request is unchanged, raw summary included.
+    assert_eq!(with, expected);
+    assert!(with["flow_install"]["dry_run_summary"]["runs"].is_array());
 }
 
 #[test]

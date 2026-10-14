@@ -250,6 +250,23 @@ fn published_manifest_has_global_minimal_grants_and_five_minute_schedule() {
 }
 
 #[test]
+fn install_card_dry_run_text_matches_its_committed_fixture() {
+    let t = Test::new(Vec::new());
+    let card = t.f.module.rt.cards("board-hygiene").unwrap().remove(0);
+    let fields: Value = serde_json::from_str(&card.card).unwrap();
+    // Every replayed run stops at its first board read, which a dry run
+    // captures; none of that is a problem.
+    let runs = fields["dry_run_summary"]["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 10, "{fields:#}");
+    assert!(
+        runs.iter().all(|run| run["state"] == "failed"),
+        "{fields:#}"
+    );
+    assert_eq!(fields["dry_run_text"]["problems"], json!([]));
+    common::assert_dry_run_text_fixture("board-hygiene.json", &fields["dry_run_text"]);
+}
+
+#[test]
 fn wait_ended_first_at_thirty_minutes_and_repeats_after_thirty_minutes() {
     let mut i = item("blocked", BASE - MIN);
     i["wait"] =
