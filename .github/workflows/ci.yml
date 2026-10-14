@@ -28,21 +28,68 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: never
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
   PYTHONDONTWRITEBYTECODE: 1
   # ckdev-mutate 0.12.0. It reads the catalogue from mutations.d/, one file per
   # crate or area, and every replay, shard and report covers all of its files.
   CK_MUTATE_REV: be120e9254c4972191b39b2e6814987918206afc
 
 jobs:
+  lint:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - name: Install stable Rust and rustfmt
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt
+          rustup default stable
+      - run: cargo fmt --all --check
+      - name: Check shell scripts
+        run: |
+          curl --fail --location --retry 3 https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz -o "$RUNNER_TEMP/shellcheck.tar.xz"
+          tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP"
+          "$RUNNER_TEMP/shellcheck-v0.11.0/shellcheck" --version
+          "$RUNNER_TEMP/shellcheck-v0.11.0/shellcheck" -x script/*.sh
+      # These suites use fixture signing and debugger functions, not the real
+      # codesign, lldb or worker, so they need no Rust build or macOS runner.
+      - name: Check offline flow rig contracts
+        run: python3 -m unittest script.tests.flows_rig -v
+      - name: Check Cargo path dependency boundary
+        run: |
+          python3 script/check-path-deps.py
+          python3 -m unittest script.tests.check_path_deps -v
+      - name: Check development executable names
+        run: |
+          python3 script/check-ckdev-names.py
+          python3 -m unittest script.tests.check_ckdev_names -v
+      - name: Check tracked local paths
+        run: |
+          python3 script/check-local-paths.py
+          python3 -m unittest script.tests.check_local_paths -v
+      - name: Check offline placement cards
+        run: |
+          /bin/sh -n script/stage.sh
+          python3 -m unittest script.tests.stage_card -v
+      - name: Check catalogue platform coverage schema
+        run: |
+          python3 --version
+          python3 .github/workflows/check_mutation_coverage.py
+          python3 -m unittest discover -s .github/workflows -p 'test_*.py' -v
+          python3 -m unittest script.tests.mutation_catalogue script.tests.witness_mutations -v
+
   checks:
     if: github.event_name != 'schedule'
     # The worker confines itself on macOS (Seatbelt) and on Linux (seccomp and
     # Landlock), so every leg runs the worker packages. Their macOS-only probes
     # (codesign, privacy disclaim) are compiled only on macOS. The Linux
     # seccomp filter has a separate syscall table per architecture, so Linux
-    # runs natively on both x86_64 and aarch64. Analysis, script checks and
-    # catalogue validation run once, on the x86_64 Linux leg; the aarch64 leg
-    # replays no mutation rows, so it installs no mutation runner.
+    # runs natively on both x86_64 and aarch64. The lint job handles build-free
+    # checks; the aarch64 leg replays no mutation rows, so it installs no
+    # mutation runner.
     strategy:
       fail-fast: false
       matrix:
@@ -88,39 +135,49 @@ jobs:
       - name: Record installed Rust version
         id: rust
         run: echo "version=$(rustc --version | cut -d ' ' -f 2)" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+      - name: Restore Cargo build cache
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-checks-${{ github.sha }}
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-checks-main-${{ github.run_id }}
           restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-checks-main-
             ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-checks-
             ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-
-      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+      - &restored-build-size
+        name: Measure restored build folder
+        shell: bash
+        run: du -sk target 2>/dev/null || test ! -d target
+      - uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         if: matrix.platform != 'linux-arm64'
         id: mutate-cache
         with:
           path: ~/.cargo/bin/ckdev-mutate${{ runner.os == 'Windows' && '.exe' || '' }}
-          key: ${{ runner.os }}-${{ runner.arch }}-ckdev-mutate-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-${{ env.CK_MUTATE_REV }}
+          key: ${{ runner.os }}-${{ runner.arch }}-ckdev-mutate-${{ steps.rust.outputs.version }}-${{ env.CK_MUTATE_REV }}
       - name: Install pinned mutation runner
         if: matrix.platform != 'linux-arm64' && steps.mutate-cache.outputs.cache-hit != 'true'
         run: cargo install --locked --git https://github.com/cortexkit/commons --rev "$CK_MUTATE_REV" cortexkit-mutate
-      - run: cargo fmt --all --check
-        if: matrix.platform == 'linux'
+      - name: Save pinned mutation runner
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.platform != 'linux-arm64' && steps.mutate-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.cargo/bin/ckdev-mutate${{ runner.os == 'Windows' && '.exe' || '' }}
+          key: ${{ runner.os }}-${{ runner.arch }}-ckdev-mutate-${{ steps.rust.outputs.version }}-${{ env.CK_MUTATE_REV }}
       - run: cargo clippy --workspace --all-targets -- -D warnings
         if: matrix.platform == 'linux'
       - run: cargo clippy --workspace --all-targets --features basal-module/rig-kill-hook -- -D warnings
-        if: matrix.platform == 'linux'
       - name: Test portable crates
         if: runner.os == 'Linux'
         run: cargo test --locked -p basal-proto -p basal-core -p basal-host
       # The module feature propagates to basal-host, so portable tests need both
       # modes as well. Enable it on the selected host crate without selecting the
-      # worker-using module. Worker packages run both modes on every leg.
+      # worker-using module. The hook's Linux tests run on x86_64; aarch64
+      # retains production-mode tests and hook-enabled clippy coverage.
       - name: Test portable crates with the rig kill hook
-        if: runner.os == 'Linux'
+        if: matrix.platform == 'linux'
         run: cargo test --locked -p basal-proto -p basal-core -p basal-host --features basal-host/rig-kill-hook
       # A procfs mounted with hidepid hides the confined worker from its parent,
       # and the Linux startup tests then accept a weaker self-reported status.
@@ -131,54 +188,31 @@ jobs:
           BASAL_REQUIRE_VISIBLE_PROC: ${{ runner.os == 'Linux' && '1' || '' }}
         run: cargo test --locked -p basal-worker -p basal-module -p basal-testkit -p basal-rig
       - name: Test confined worker packages with the rig kill hook
+        if: matrix.platform != 'linux-arm64'
         env:
           BASAL_REQUIRE_VISIBLE_PROC: ${{ runner.os == 'Linux' && '1' || '' }}
         run: cargo test --locked -p basal-worker -p basal-module -p basal-testkit -p basal-rig --features basal-module/rig-kill-hook
-      - name: Check shell scripts
-        if: matrix.platform == 'linux'
-        run: |
-          curl --fail --location --retry 3 https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz -o "$RUNNER_TEMP/shellcheck.tar.xz"
-          tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP"
-          "$RUNNER_TEMP/shellcheck-v0.11.0/shellcheck" --version
-          "$RUNNER_TEMP/shellcheck-v0.11.0/shellcheck" -x script/*.sh
-      # These Python suites invoke POSIX /bin/sh with fixture signing and
-      # debugger functions; none invokes the real codesign, lldb or worker.
-      - name: Check offline flow rig contracts
-        if: matrix.platform == 'linux'
-        run: python3 -m unittest script.tests.flows_rig -v
-      - name: Check Cargo path dependency boundary
-        if: matrix.platform == 'linux'
-        run: |
-          python3 script/check-path-deps.py
-          python3 -m unittest script.tests.check_path_deps -v
-      - name: Check development executable names
-        if: matrix.platform == 'linux'
-        run: |
-          python3 script/check-ckdev-names.py
-          python3 -m unittest script.tests.check_ckdev_names -v
-      - name: Check tracked local paths
-        if: matrix.platform == 'linux'
-        run: |
-          python3 script/check-local-paths.py
-          python3 -m unittest script.tests.check_local_paths -v
-      - name: Check offline placement cards
-        if: matrix.platform == 'linux'
-        run: |
-          /bin/sh -n script/stage.sh
-          python3 -m unittest script.tests.stage_card -v
-      - name: Check catalogue platform coverage
-        if: matrix.platform == 'linux'
-        run: |
-          python3 --version
-          python3 .github/workflows/check_mutation_coverage.py
-          python3 -m unittest discover -s .github/workflows -p 'test_*.py' -v
-          python3 -m unittest script.tests.mutation_catalogue script.tests.witness_mutations -v
       # `ckdev-mutate check` validates every catalogue row's anchors and test
       # names. Listing test names compiles the test binaries but runs no test,
       # so no worker starts. Rows marked for the other OS are skipped, so each
       # host validates the rows it will replay.
       - run: ckdev-mutate check
         if: matrix.platform != 'linux-arm64'
+      - &final-build-size
+        name: Measure final build folder
+        shell: bash
+        run: du -sk target
+      # Cache entries are immutable. Only main publishes a new run-scoped entry;
+      # PRs read the newest main prefix without consuming cache quota.
+      - name: Save Cargo build cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-checks-main-${{ github.run_id }}
 
   # Native aarch64 evidence for the Linux seccomp allowlist. The filter has a
   # separate aarch64 syscall table, and only a native trace shows which calls
@@ -210,7 +244,7 @@ jobs:
 
   mutations-pr:
     if: github.event_name == 'pull_request'
-    needs: checks
+    needs: [checks, lint]
     defaults:
       run:
         shell: bash
@@ -262,27 +296,39 @@ jobs:
       - name: Record installed Rust version
         id: rust
         run: echo "version=$(rustc --version | cut -d ' ' -f 2)" >> "$GITHUB_OUTPUT"
-      # Restore the build the checks job saved for this commit and never save
-      # a second copy: the repository's cache quota holds only a few target
-      # directories.
+      # Main's checks publish this run's cache before replay starts. PR checks
+      # do not save, so PR replays restore the newest main entry by prefix.
+      # Windows has no checks leg; its fallback uses the Windows baseline.
       - uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-checks-${{ github.sha }}
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-checks-main-${{ github.run_id }}
           restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-checks-main-
+            ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-windows-baseline-windows-2022-main-${{ github.run_id }}-module-core-testkit-rig
+            ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-windows-baseline-windows-2022-main-
+            ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-windows-baseline-windows-2022-
             ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-checks-
             ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-
-      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+      - *restored-build-size
+      - uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         id: mutate-cache
         with:
           path: ~/.cargo/bin/ckdev-mutate${{ runner.os == 'Windows' && '.exe' || '' }}
-          key: ${{ runner.os }}-${{ runner.arch }}-ckdev-mutate-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-${{ env.CK_MUTATE_REV }}
+          key: ${{ runner.os }}-${{ runner.arch }}-ckdev-mutate-${{ steps.rust.outputs.version }}-${{ env.CK_MUTATE_REV }}
       - name: Install pinned mutation runner
         if: steps.mutate-cache.outputs.cache-hit != 'true'
         run: cargo install --locked --git https://github.com/cortexkit/commons --rev "$CK_MUTATE_REV" cortexkit-mutate
+      - &save-mutation-runner
+        name: Save pinned mutation runner
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.mutate-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.cargo/bin/ckdev-mutate${{ runner.os == 'Windows' && '.exe' || '' }}
+          key: ${{ runner.os }}-${{ runner.arch }}-ckdev-mutate-${{ steps.rust.outputs.version }}-${{ env.CK_MUTATE_REV }}
       - name: Replay proofs selected by the PR diff
         run: |
           mkdir -p target/mutations
@@ -290,12 +336,36 @@ jobs:
           env -u BASAL_WORKER_BIN -u BASAL_CUT_EXHAUSTIVE ckdev-mutate run --diff origin/main --report target/mutations/diff.json
       - name: Capture exact Windows mutation application and restoration witnesses
         if: matrix.platform == 'windows'
-        run: python script/witness-mutations.py --platform windows --output "$RUNNER_TEMP/windows-mutation-evidence"
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import os
+          import subprocess
+          import sys
+
+          sys.path.insert(0, "script")
+          import mutation_catalogue
+
+          rows, _ = mutation_catalogue.load(Path.cwd())
+          windows_ids = {row["id"] for row in rows if row["platforms"] == ["windows"]}
+          report = json.loads(Path("target/mutations/diff.json").read_text())
+          selected = sorted({row["id"] for row in report} & windows_ids)
+          if not selected:
+              print("Skipping Windows witnesses: the PR diff selected no Windows catalogue rows.")
+          else:
+              command = [sys.executable, "script/witness-mutations.py", "--platform", "windows",
+                         "--output", str(Path(os.environ["RUNNER_TEMP"]) / "windows-mutation-evidence")]
+              for row_id in selected:
+                  command.extend(["--only", row_id])
+              subprocess.run(command, check=True)
+          PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always() && matrix.platform == 'windows'
         with:
           name: windows-mutation-evidence-pr
           path: ${{ runner.temp }}/windows-mutation-evidence
+      - *final-build-size
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
@@ -307,8 +377,8 @@ jobs:
   # always() lets the scheduled matrix proceed past the skipped checks job;
   # push and manual runs still require those checks to succeed.
   mutation-matrix:
-    if: always() && ((github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.checks.result == 'success') || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && needs.checks.result == 'success'))
-    needs: checks
+    if: always() && ((github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.checks.result == 'success' && needs.lint.result == 'success') || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && needs.checks.result == 'success' && needs.lint.result == 'success'))
+    needs: [checks, lint]
     runs-on: ubuntu-latest
     outputs:
       include: ${{ steps.matrix.outputs.include }}
@@ -332,7 +402,7 @@ jobs:
       fail-fast: false
       matrix:
         # Scheduled breadth needs shorter shards to stay below the hosted
-        # runner's six-hour limit. Push and manual counts remain unchanged.
+        # runner's six-hour limit. Push and manual runs use eight Linux shards.
         # Every host shards the entire sorted catalogue independently;
         # rows for other platforms are reported as skips, not built.
         include: ${{ fromJSON(needs.mutation-matrix.outputs.include) }}
@@ -357,18 +427,24 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-checks-${{ github.sha }}
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-checks-main-${{ github.run_id }}
           restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-checks-main-
+            ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-windows-baseline-windows-2022-main-${{ github.run_id }}-module-core-testkit-rig
+            ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-windows-baseline-windows-2022-main-
+            ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-windows-baseline-windows-2022-
             ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-checks-
             ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-
-      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+      - *restored-build-size
+      - uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         id: mutate-cache
         with:
           path: ~/.cargo/bin/ckdev-mutate${{ runner.os == 'Windows' && '.exe' || '' }}
-          key: ${{ runner.os }}-${{ runner.arch }}-ckdev-mutate-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-${{ env.CK_MUTATE_REV }}
+          key: ${{ runner.os }}-${{ runner.arch }}-ckdev-mutate-${{ steps.rust.outputs.version }}-${{ env.CK_MUTATE_REV }}
       - name: Install pinned mutation runner
         if: steps.mutate-cache.outputs.cache-hit != 'true'
         run: cargo install --locked --git https://github.com/cortexkit/commons --rev "$CK_MUTATE_REV" cortexkit-mutate
+      - *save-mutation-runner
       - name: Replay the full catalogue in an isolated shard
         run: |
           mkdir -p target/mutations
@@ -384,6 +460,7 @@ jobs:
         with:
           name: windows-mutation-evidence-${{ matrix.shard }}
           path: ${{ runner.temp }}/windows-mutation-evidence
+      - *final-build-size
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
@@ -425,31 +502,45 @@ jobs:
       - name: Record installed Rust version
         id: rust
         run: echo "version=$(rustc +1.88.0 --version | cut -d ' ' -f 2)" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+      - name: Restore Cargo build cache
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-minimum-${{ github.sha }}
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-minimum-main-${{ github.run_id }}
           restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-minimum-main-
             ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-minimum-
             ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-
+      - *restored-build-size
       - name: Build every target with the declared minimum Rust
         run: |
           cargo +1.88.0 check --workspace --all-targets --locked
           cargo +1.88.0 check --workspace --all-targets --locked --features basal-module/rig-kill-hook
+      - *final-build-size
+      - name: Save Cargo build cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-minimum-main-${{ github.run_id }}
 
   # Each Windows image leaves a different set of loader and thread-pool handles
   # in the worker, so both must exercise the startup allowlist. Native suites
-  # also exercise the launcher, worker probes and filesystem/Git guards before
-  # the workspace gate. Logs are retained even when a gate fails.
+  # also exercise the launcher, worker probes and filesystem/Git guards. Two
+  # package groups run in parallel per image; logs survive failed gates.
   windows-baseline:
     if: github.event_name != 'schedule'
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest, windows-2022]
+        suite: [launch-worker-host, module-core-testkit-rig]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     defaults:
@@ -467,21 +558,38 @@ jobs:
       - name: Record installed Rust version
         id: rust
         run: echo "version=$(rustc --version | cut -d ' ' -f 2)" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+      - name: Restore Cargo build cache
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-windows-baseline-${{ matrix.os }}-${{ github.sha }}
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-windows-baseline-${{ matrix.os }}-main-${{ github.run_id }}-${{ matrix.suite }}
           restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-windows-baseline-${{ matrix.os }}-main-
             ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-windows-baseline-${{ matrix.os }}-
+      - *restored-build-size
       - name: Prepare the log directory
         run: mkdir -p "$RUNNER_TEMP/windows-baseline"
+      - uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        if: matrix.os == 'windows-2022' && matrix.suite == 'module-core-testkit-rig'
+        id: mutate-cache
+        with:
+          path: ~/.cargo/bin/ckdev-mutate.exe
+          key: ${{ runner.os }}-${{ runner.arch }}-ckdev-mutate-${{ steps.rust.outputs.version }}-${{ env.CK_MUTATE_REV }}
+      - name: Install pinned mutation runner
+        if: matrix.os == 'windows-2022' && matrix.suite == 'module-core-testkit-rig' && steps.mutate-cache.outputs.cache-hit != 'true'
+        run: cargo install --locked --git https://github.com/cortexkit/commons --rev "$CK_MUTATE_REV" cortexkit-mutate 2>&1 | tee "$RUNNER_TEMP/windows-baseline/install-mutate.log"
+      - name: Save pinned mutation runner
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.os == 'windows-2022' && matrix.suite == 'module-core-testkit-rig' && steps.mutate-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.cargo/bin/ckdev-mutate.exe
+          key: ${{ runner.os }}-${{ runner.arch }}-ckdev-mutate-${{ steps.rust.outputs.version }}-${{ env.CK_MUTATE_REV }}
       - name: Verify the pinned mutation runner on Windows
-        if: matrix.os == 'windows-2022'
+        if: matrix.os == 'windows-2022' && matrix.suite == 'module-core-testkit-rig'
         run: |
-          cargo install --locked --git https://github.com/cortexkit/commons --rev "$CK_MUTATE_REV" cortexkit-mutate 2>&1 | tee "$RUNNER_TEMP/windows-baseline/install-mutate.log"
           ckdev-mutate --version 2>&1 | tee "$RUNNER_TEMP/windows-baseline/mutate-version.log"
           ckdev-mutate check 2>&1 | tee "$RUNNER_TEMP/windows-baseline/mutate-check.log"
       # The Windows launcher's own tests start real confined children, so
@@ -490,6 +598,7 @@ jobs:
       # what the parent read back, so the log shows it even when the
       # workspace steps below fail.
       - name: Test the Windows launcher with its test variants
+        if: matrix.suite == 'launch-worker-host'
         id: test-launch
         timeout-minutes: 20
         run: |
@@ -502,6 +611,7 @@ jobs:
       # worker that honours that request, for the three checks the parent
       # cannot break from outside.
       - name: Test the worker on its own
+        if: matrix.suite == 'launch-worker-host'
         id: test-worker
         timeout-minutes: 30
         run: cargo test -p basal-worker --locked --no-fail-fast -- --show-output 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-worker.log"
@@ -510,9 +620,11 @@ jobs:
       # live handle table with the fixed per-image count limits; the image test
       # rejects DLL imports absent from the worker's windows-imports.txt file.
       - name: Witness the startup-handle and import-inventory mutants
+        if: matrix.suite == 'launch-worker-host'
         timeout-minutes: 10
         run: python crates/basal-worker/tests/windows_mutation_witness.py "$RUNNER_TEMP/windows-baseline"
       - name: Test the worker with its test variants
+        if: matrix.suite == 'launch-worker-host'
         id: test-worker-deviations
         timeout-minutes: 30
         run: cargo test -p basal-worker --features deviations --locked --no-fail-fast -- --show-output 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-worker-deviations.log"
@@ -523,71 +635,69 @@ jobs:
       # basal-core's tests run with them: the module's store and runtime
       # are basal-core's.
       - name: Test the module and the core
+        if: matrix.suite == 'module-core-testkit-rig'
         id: test-module
         timeout-minutes: 40
         run: cargo test -p basal-module -p basal-core --locked --no-fail-fast -- --show-output 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-module.log"
-      # Every Windows spawn takes one process-wide lock while its child's
-      # handles are inheritable. This test starts confined, plain and git
-      # children at once and checks that no child inherited another child's
-      # stdin, stdout or stderr.
-      - name: Test the shared spawn lock across the launcher and git
-        id: test-spawn-lock
-        timeout-minutes: 20
-        run: cargo test -p basal-host --lib --locked -- spawn_lock_tests --show-output 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-spawn-lock.log"
       - name: Test the shared test kit on its own
+        if: matrix.suite == 'module-core-testkit-rig'
         id: test-testkit
         timeout-minutes: 30
         run: cargo test -p basal-testkit --locked --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-testkit.log"
       - name: Test the integration rig on its own
+        if: matrix.suite == 'module-core-testkit-rig'
         id: test-rig
         timeout-minutes: 30
         run: cargo test -p basal-rig --locked --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-rig.log"
       - name: Check every workspace target
+        if: matrix.suite == 'module-core-testkit-rig'
         id: check
         timeout-minutes: 40
         run: cargo check --workspace --all-targets --locked 2>&1 | tee "$RUNNER_TEMP/windows-baseline/check.log"
       - name: Check every workspace target, continuing past failed crates
-        if: failure() && steps.check.outcome == 'failure'
+        if: failure() && matrix.suite == 'module-core-testkit-rig' && steps.check.outcome == 'failure'
         timeout-minutes: 40
         run: cargo check --workspace --all-targets --locked --keep-going 2>&1 | tee "$RUNNER_TEMP/windows-baseline/check-keep-going.log"
       # The rest of the workspace: every package not already tested by its own
       # step above. Testing those again doubled the job's time, and on a slow
       # runner pushed this step past its limit.
       - name: Test the workspace
+        if: matrix.suite == 'launch-worker-host'
         id: test
         timeout-minutes: 40
         run: cargo test --workspace --exclude basal-launch --exclude basal-worker --exclude basal-module --exclude basal-core --exclude basal-testkit --exclude basal-rig --locked 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test.log"
       - name: Test the workspace, continuing past failed tests
-        if: failure() && steps.test.outcome == 'failure'
+        if: failure() && matrix.suite == 'launch-worker-host' && steps.test.outcome == 'failure'
         timeout-minutes: 40
         run: cargo test --workspace --exclude basal-launch --exclude basal-worker --exclude basal-module --exclude basal-core --exclude basal-testkit --exclude basal-rig --locked --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-no-fail-fast.log"
-      # Separate host suites retain filesystem and Git failure logs so a failing
-      # built-in can be diagnosed without searching the full workspace log.
-      - name: Test basal-host on its own
-        id: test-host
-        timeout-minutes: 30
-        run: cargo test -p basal-host --lib --locked --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-host.log"
-      - name: Test the host integration regressions on their own
-        id: test-host-regressions
-        timeout-minutes: 20
-        run: cargo test -p basal-host --test builtin_host_regressions --locked --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-basal-host-regressions.log"
+      - *final-build-size
+      - name: Save Cargo build cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-${{ steps.rust.outputs.version }}-windows-baseline-${{ matrix.os }}-main-${{ github.run_id }}-${{ matrix.suite }}
       - name: Summarize the Windows gates
         if: always()
         run: |
           {
-            echo "## Windows gates ($(rustc --version))"
+            echo "## Windows gates (${{ matrix.os }}, ${{ matrix.suite }}, $(rustc --version))"
             echo
             echo "- cargo check --workspace --all-targets --locked: ${{ steps.check.outcome }}"
             echo "- cargo test --workspace --locked: ${{ steps.test.outcome }}"
             echo "- cargo test -p basal-launch --features deviations --locked: ${{ steps.test-launch.outcome }}"
             echo "- cargo test -p basal-module -p basal-core --locked --no-fail-fast: ${{ steps.test-module.outcome }}"
-            echo "- cargo test -p basal-host --lib --locked -- spawn_lock_tests: ${{ steps.test-spawn-lock.outcome }}"
+            echo "- cargo test -p basal-worker --locked: ${{ steps.test-worker.outcome }}"
+            echo "- cargo test -p basal-worker --features deviations --locked: ${{ steps.test-worker-deviations.outcome }}"
             echo "- cargo test -p basal-testkit --locked --no-fail-fast: ${{ steps.test-testkit.outcome }}"
             echo "- cargo test -p basal-rig --locked --no-fail-fast: ${{ steps.test-rig.outcome }}"
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
-          name: windows-baseline-logs${{ matrix.os == 'windows-2022' && '-windows-2022' || '' }}
+          name: windows-baseline-logs-${{ matrix.os }}-${{ matrix.suite }}
           path: ${{ runner.temp }}/windows-baseline
           if-no-files-found: error

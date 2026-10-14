@@ -12,7 +12,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo clippy --workspace --all-targets --features basal-module/rig-kill-hook -- -D warnings
 ```
 
-Tests, with and without the rig kill hook. The portable crates run on Linux in CI; the worker packages run on every Linux, macOS and Windows leg:
+Tests, with and without the rig kill hook. Portable production-mode tests run on both Linux architectures; their hook-enabled pass runs on x86_64 Linux only. Worker packages run in production mode on every Linux, macOS and Windows image. The hook-enabled worker pass runs on x86_64 Linux and macOS, where the rig uses the hook; hook-enabled clippy still runs on all three platforms in the `checks` job (x86_64 Linux, Linux aarch64 and macOS):
 
 ```sh
 cargo test --locked -p basal-proto -p basal-core -p basal-host
@@ -28,7 +28,7 @@ cargo +1.88.0 check --workspace --all-targets --locked
 cargo +1.88.0 check --workspace --all-targets --locked --features basal-module/rig-kill-hook
 ```
 
-The script checks:
+Formatting and the script checks run once in a build-cache-free `lint` job:
 
 ```sh
 shellcheck -x script/*.sh
@@ -47,7 +47,7 @@ ckdev-mutate check
 python3 .github/workflows/check_mutation_coverage.py
 ```
 
-`ckdev-mutate check` validates every row's anchors and test names, and `check_mutation_coverage.py` enforces that every row declares exactly one replay platform. On a pull request CI then replays the rows the diff touches, with `ckdev-mutate run --diff origin/main`; on a push to `main` it replays the whole catalogue in shards, and `check_mutation_coverage.py --reports` requires exactly one successful replay of every row across all shards. A separate Windows job runs the launcher, worker, module and host suites natively on windows-latest and windows-2022.
+`ckdev-mutate check` validates every row's anchors and test names, and `check_mutation_coverage.py` enforces that every row declares exactly one replay platform. The latter's schema check and Python tests run in `lint`; native anchor/test-name checks stay with the build jobs. On a pull request CI then replays the rows the diff touches, with `ckdev-mutate run --diff origin/main`; Windows application/restoration witnesses (indexed source diffs and exact named-test failures captured by `script/witness-mutations.py`) are restricted to the selected Windows rows. On a push to `main` it replays the whole catalogue in shards (eight Linux, five macOS, two Windows), uploads full Windows witness evidence across both shards, and `check_mutation_coverage.py --reports` requires exactly one successful replay of every row across all shards. Each Windows image, windows-latest and windows-2022, runs two parallel package groups: launcher + worker + host (including the remaining workspace packages), and module + core + testkit + rig. The workspace pass includes all host tests once; launcher and worker suites retain both production and `deviations` modes.
 
 ## Commits
 

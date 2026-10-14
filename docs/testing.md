@@ -6,9 +6,9 @@
 
 Mock hosts, fake providers and test-only runtime helpers require `cfg(test)` or the owning crate's `test-support` feature. Development dependencies enable that feature for `cargo test`; production builds do not enable it. The harness and testkit binaries also require `test-support` when built by hand, for example `cargo build -p basal-module --bin ck-basal-harness --features test-support`. Production staging rejects the retained test-support marker as well as the rig kill-hook marker, even if the linker removes unused test doubles.
 
-The `rig-kill-hook` feature adds a one-shot kill switch used only by the test rig; a production build never enables it. CI runs the workspace tests and clippy both with and without it.
+The `rig-kill-hook` feature adds a one-shot kill switch used only by the test rig; a production build never enables it. CI runs hook-enabled tests on x86_64 Linux and macOS, not Linux aarch64. All three `checks` legs retain hook-enabled clippy; x86_64 Linux also runs clippy without the hook.
 
-On Windows, `basal-launch` and `basal-worker` also have a `deviations` feature that adds test-only launch variants, one per confinement check; the production worker refuses the launcher's request to skip a check. CI runs natively on both Windows runner images, windows-latest and windows-2022, because each image leaves a different set of handles in the worker ([sandbox.md](sandbox.md#residual-handles-and-production-measurements)).
+On Windows, `basal-launch` and `basal-worker` also have a `deviations` feature that adds test-only launch variants, one per confinement check; the production worker refuses the launcher's request to skip a check. CI runs natively on both Windows runner images, windows-latest and windows-2022, because each image leaves a different set of handles in the worker ([sandbox.md](sandbox.md#residual-handles-and-production-measurements)). Each image runs two package-group jobs in parallel with each other: launcher + worker + host, and module + core + testkit + rig. Host library and integration tests, including the shared spawn-lock regressions, run once in the remaining-workspace pass, rather than being repeated in separate host steps.
 
 ## Boundaries CI enforces
 
