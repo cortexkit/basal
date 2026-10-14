@@ -432,7 +432,7 @@ runner = "cargo"
 package = "basal-module"
 platforms = ["macos"]
 target = "--test consent_paths"
-expect_red = ["new_cards_choose_only_an_advertised_consent_capability"]
+expect_red = ["new_cards_require_an_advertised_consent_capability"]
 select = "expected"
 only = false
 build_timeout_s = 3600
@@ -440,6 +440,26 @@ timeout_s = 600
 file = "crates/basal-host/src/cingulate_consent.rs"
 old = 'return Ok(DecisionPath::Consent(provider.to_owned()));'
 new = 'let _ = provider; return Ok(DecisionPath::Legacy); // NON-VACUITY BREAK'
+
+# prefrontal-core refuses new decision cards on elicitation.request; keep them pending so basal can retry when a consent/v1 provider is advertised.
+[[control]]
+id = "no-consent-provider-does-not-fall-back-to-legacy-raise"
+guards = "without consent/v1, a new decision card remains pending without a core raise"
+test_file = "crates/basal-host/src/cingulate_consent_tests.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["cingulate_consent::tests::missing_consent_provider_is_unavailable_without_calling_core"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/cingulate_consent.rs"
+old = '''Err(ConsentError::Unavailable(
+            "no provider advertises consent/v1".into(),
+        ))'''
+new = "Ok(DecisionPath::Legacy) // NON-VACUITY BREAK"
 
 [[control]]
 id = "consent-drain-both-paths"
@@ -483,7 +503,7 @@ runner = "cargo"
 package = "basal-module"
 platforms = ["macos"]
 target = "--test consent_paths"
-expect_red = ["provider_disappearance_falls_back_but_keeps_reading_old_answers"]
+expect_red = ["provider_disappearance_keeps_old_answers_and_leaves_new_cards_pending"]
 select = "expected"
 only = false
 build_timeout_s = 3600
