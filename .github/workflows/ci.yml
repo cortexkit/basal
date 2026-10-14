@@ -18,8 +18,12 @@ permissions:
 # A newer push to a pull request supersedes the older run. On main every
 # commit gets its full catalogue replay, and the nightly audit always
 # finishes, so a later run never cancels either.
+# Every push to main gets its own group, so a later push never cancels the
+# pending run of an earlier one: each pushed commit can be a deploy candidate
+# and needs its own full result. A pull request's newer commits do cancel its
+# older runs.
 concurrency:
-  group: ci-${{ github.event_name }}-${{ github.ref }}
+  group: ci-${{ github.event_name }}-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
