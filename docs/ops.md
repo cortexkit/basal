@@ -208,7 +208,9 @@ The version's approval is approval of the reset, not a separate card. Only
 with the admission and epoch update. Earlier admitted runs must finish first;
 events follow normal bounded-backlog and eligibility rules, and planned schedule
 fires wait for retry during that boundary. Rollback to a different
-epoch resets again. Approval or dry run alone resets nothing. Token/rate windows,
+epoch resets again. An epoch-busy flow does not stop other flows' planned fires
+from being admitted in the same scheduler pass. Approval or dry run alone resets
+nothing. Token/rate windows,
 schedule positions, event receipts/backlog, deduplication records, journals and
 decision cards are preserved. The durable `state_resets` log records flow id,
 old/new epoch, keys cleared and reset time.

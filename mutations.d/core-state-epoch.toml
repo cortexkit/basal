@@ -67,3 +67,20 @@ timeout_s = 600
 file = "crates/basal-core/src/state_epoch.rs"
 old = "if old_epoch != new_epoch {"
 new = "if old_epoch < new_epoch { // NON-VACUITY BREAK"
+
+[[control]]
+id = "state-busy-flow-blocks-other-scheduled-flows"
+guards = "an epoch-busy flow leaves its own fires planned but cannot block another flow in the same scheduler pass"
+test_file = "crates/basal-core/src/state_epoch_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["state_epoch::tests::scheduler_skips_only_state_busy_flow_for_this_pass"]
+select = { tests = ["state_epoch::tests::scheduler_skips_only_state_busy_flow_for_this_pass", "state_epoch::tests::absent_epoch_upgrade_keeps_existing_values"] }
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/schedule/mod.rs"
+old = "if fire.admission == Admission::StateBusy {\n                blocked.insert(fire.flow_id);\n                continue;\n            }"
+new = "if fire.admission == Admission::StateBusy { // NON-VACUITY BREAK\n                return Ok(());\n            }"

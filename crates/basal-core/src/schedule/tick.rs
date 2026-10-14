@@ -250,6 +250,18 @@ pub fn admit_next(
     store_id: &str,
     ctx: &AdmitContext,
 ) -> Result<Option<AdmittedFire>> {
+    admit_next_unblocked(tx, store_id, ctx, &std::collections::BTreeSet::new())
+}
+
+/// Per-pass exclusions preserve order within each flow without allowing a
+/// waiting flow's oldest fire to block unrelated flows or be retried in a loop.
+pub(crate) fn admit_next_unblocked(
+    tx: &Transaction,
+    store_id: &str,
+    ctx: &AdmitContext,
+    blocked: &std::collections::BTreeSet<String>,
+) -> Result<Option<AdmittedFire>> {
+    let blocked = serde_json::json!(blocked).to_string();
     loop {
         // Admitting a fire can fail on stored data this build cannot use (a
         // planned payload that is not valid JSON, an approved manifest that
@@ -260,7 +272,7 @@ pub fn admit_next(
         // the planned fires, and go on to the next one, so one bad fire
         // cannot block every fire behind it.
         tx.execute_batch("SAVEPOINT schedule_admission")?;
-        match admit_oldest(tx, store_id, ctx) {
+        match admit_oldest(tx, store_id, ctx, &blocked) {
             Ok(fire) => {
                 tx.execute_batch("RELEASE schedule_admission")?;
                 return Ok(fire);
@@ -270,11 +282,11 @@ pub fn admit_next(
                 let CoreError::Corrupt(detail) = error else {
                     return Err(error);
                 };
-                tx.execute("INSERT INTO schedule_dropped(flow_id,trigger_id,due_ms,payload,reason,at) SELECT flow_id,trigger_id,due_ms,payload,'not_approved',?1 FROM schedule_fires ORDER BY seq ASC LIMIT 1", [ctx.now_ms])?;
+                tx.execute("INSERT INTO schedule_dropped(flow_id,trigger_id,due_ms,payload,reason,at) SELECT flow_id,trigger_id,due_ms,payload,'not_approved',?1 FROM schedule_fires WHERE flow_id NOT IN (SELECT value FROM json_each(?2)) ORDER BY seq ASC LIMIT 1", params![ctx.now_ms, blocked])?;
                 tx.execute("INSERT INTO audit(at,actor,action,detail) VALUES (?1,'runtime','schedule.corrupt',?2)", params![ctx.now_ms, serde_json::json!({"error":detail}).to_string()])?;
                 tx.execute(
-                    "DELETE FROM schedule_fires WHERE seq=(SELECT MIN(seq) FROM schedule_fires)",
-                    [],
+                    "DELETE FROM schedule_fires WHERE seq=(SELECT MIN(seq) FROM schedule_fires WHERE flow_id NOT IN (SELECT value FROM json_each(?1)))",
+                    [&blocked],
                 )?;
             }
         }
@@ -285,12 +297,13 @@ fn admit_oldest(
     tx: &Transaction,
     store_id: &str,
     ctx: &AdmitContext,
+    blocked: &str,
 ) -> Result<Option<AdmittedFire>> {
     let row = tx
         .query_row(
             "SELECT seq, flow_id, trigger_id, due_ms, payload \
-             FROM schedule_fires ORDER BY seq LIMIT 1",
-            [],
+             FROM schedule_fires WHERE flow_id NOT IN (SELECT value FROM json_each(?1)) ORDER BY seq LIMIT 1",
+            [blocked],
             |r| {
                 Ok((
                     r.get::<_, i64>(0)?,

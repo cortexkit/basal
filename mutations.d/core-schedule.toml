@@ -249,8 +249,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/schedule/tick.rs"
-old = "FROM schedule_fires ORDER BY seq LIMIT 1"
-new = "FROM schedule_fires ORDER BY seq DESC LIMIT 1"
+old = "FROM schedule_fires WHERE flow_id NOT IN (SELECT value FROM json_each(?1)) ORDER BY seq LIMIT 1"
+new = "FROM schedule_fires WHERE flow_id NOT IN (SELECT value FROM json_each(?1)) ORDER BY seq DESC LIMIT 1"
 
 [[control]]
 id = "the-schedule-is-not-advanced-and-fire-ids-are-not-derived-from-the-due-time"

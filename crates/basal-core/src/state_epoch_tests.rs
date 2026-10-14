@@ -572,3 +572,100 @@ fn reset_preview_keeps_flow_and_package_namespaces_separate() {
         })
         .unwrap();
 }
+
+#[test]
+fn scheduler_skips_only_state_busy_flow_for_this_pass() {
+    let f = fixture("schedule-busy");
+    approve(&f, 1, None);
+    let old = admit(&f, "flow", "old");
+    approve(&f, 2, Some(2));
+    seed(&f, "flow");
+    let mut b: Value = serde_json::from_str(&manifest(1, None)).unwrap();
+    b["id"] = json!("other");
+    let installed =
+        f.rt.install(&basal_core::install::InstallRequest {
+            script: "return 1;".into(),
+            manifest: b.to_string(),
+            author: "operator".into(),
+            loop_override: false,
+        })
+        .unwrap();
+    f.rt.approve("other", 1, &installed.code_hash, "other-approved")
+        .unwrap();
+    // The invalid due time forces quarantine behind the skipped flow's fires,
+    // so selection and cleanup must agree on which row is eligible.
+    f.rt.store().write(|tx| {
+        tx.execute_batch("INSERT INTO schedule_fires(flow_id,trigger_id,version,due_ms,payload,planned_at) VALUES
+            ('flow','waiting-1',2,1000,'{\"first\":true}',1000),
+            ('flow','waiting-2',2,1001,'{\"second\":true}',1000),
+            ('other','bad',1,9223372036854775807,'{}',1000),
+            ('other','ready',1,1003,'{}',1000);")?;
+        Ok(())
+    }).unwrap();
+    let waiting = || {
+        f.rt.store().read(|c| {
+        Ok(c.prepare("SELECT seq,trigger_id,version,due_ms,payload,planned_at FROM schedule_fires WHERE flow_id='flow' ORDER BY seq")?
+            .query_map([], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,u32>(2)?,r.get::<_,i64>(3)?,r.get::<_,String>(4)?,r.get::<_,i64>(5)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?)
+    }).unwrap()
+    };
+    let before = waiting();
+    let scheduler = f.rt.scheduler().unwrap();
+    let first = scheduler.tick().unwrap();
+    assert_eq!(
+        first.admitted.len(),
+        1,
+        "busy A must not block B in the same tick"
+    );
+    assert_eq!(first.admitted[0].flow_id, "other");
+    assert_eq!(first.admitted[0].trigger_id, "ready");
+    assert!(matches!(
+        first.admitted[0].admission,
+        Admission::Admitted { .. }
+    ));
+    assert_eq!(first.waiting, 2);
+    assert_eq!(waiting(), before, "both A fires stay planned and untouched");
+    assert_eq!(state(&f, "flow"), (1, 1));
+    f.rt.store()
+        .read(|c| {
+            let dropped: (String, String) =
+                c.query_row("SELECT flow_id,trigger_id FROM schedule_dropped", [], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })?;
+            assert_eq!(
+                dropped,
+                ("other".into(), "bad".into()),
+                "quarantine uses the oldest eligible fire, not A's skipped fire"
+            );
+            assert_eq!(
+                c.query_row(
+                    "SELECT runs FROM rate_windows WHERE flow_id='flow'",
+                    [],
+                    |r| r.get::<_, u32>(0)
+                )?,
+                1,
+                "no busy-fire retry loop or rate charge"
+            );
+            Ok(())
+        })
+        .unwrap();
+    finish(&f, &old);
+    let second = scheduler.tick().unwrap();
+    assert_eq!(second.waiting, 0);
+    assert_eq!(
+        second
+            .admitted
+            .iter()
+            .map(|fire| (fire.flow_id.as_str(), fire.trigger_id.as_str()))
+            .collect::<Vec<_>>(),
+        vec![("flow", "waiting-1"), ("flow", "waiting-2")]
+    );
+    assert!(
+        second
+            .admitted
+            .iter()
+            .all(|fire| matches!(fire.admission, Admission::Admitted { .. }))
+    );
+    assert!(waiting().is_empty());
+    assert_eq!(state(&f, "flow"), (2, 0));
+}

@@ -56,6 +56,8 @@ Previously admitted runs retain their own version and finish before an
 incompatible version can be admitted (`state_busy` internally while waiting).
 Events follow normal bounded-backlog and eligibility rules; planned schedule
 fires stay queued for retry.
+An epoch-busy flow is skipped for the rest of that scheduler admission pass;
+other flows' planned fires continue, and the next pass rechecks the waiting flow.
 Token/rate windows, schedule positions, event receipts/backlog, deduplication
 records, journals and decision cards are never cleared by the reset. Durable
 `state_resets` history logs flow id, old/new epoch, keys cleared and time.
