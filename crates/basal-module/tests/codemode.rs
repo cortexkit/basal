@@ -557,7 +557,7 @@ fn shutdown_module(tag: &str) -> (basal_module::module::Module, std::path::PathB
     let module = basal_module::module::Module::start(
         basal_module::module::ModuleConfig {
             store_path: dir.join("basal.db"),
-            durability: basal_core::Durability { fullfsync: false },
+            durability: basal_core::Durability::throwaway(),
             runtime: basal_core::Config {
                 clock: basal_core::Clock::manual(common::T0),
                 ..Default::default()
@@ -627,10 +627,7 @@ fn module_drop_releases_codemode_store_before_a_held_provider_returns() {
     }
     dropping.join().unwrap();
     result.expect("shutdown must not retain a store through a provider");
-    let store = basal_core::Store::open(
-        dir.join("basal.db"),
-        basal_core::Durability { fullfsync: false },
-    );
+    let store = basal_core::Store::open(dir.join("basal.db"), basal_core::Durability::throwaway());
     core.release();
     assert!(store.is_ok(), "writer lease retained after drop");
     drop(store);

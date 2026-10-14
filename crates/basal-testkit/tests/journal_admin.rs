@@ -145,8 +145,16 @@ fn pruning_spares_unfinished_runs_and_open_obligations() {
 fn store_runs_synchronous_full_and_the_chosen_fullfsync() {
     for fullfsync in [true, false] {
         let dir = scratch("pragmas");
-        let store =
-            Arc::new(Store::open(dir.join("basal.db"), Durability { fullfsync }).expect("open"));
+        let store = Arc::new(
+            Store::open(
+                dir.join("basal.db"),
+                Durability {
+                    fullfsync,
+                    ..Durability::default()
+                },
+            )
+            .expect("open"),
+        );
         let p = store.pragmas().expect("pragmas");
         assert_eq!(p.synchronous, 2, "synchronous is not FULL");
         assert_eq!(p.fullfsync, fullfsync);
@@ -156,6 +164,19 @@ fn store_runs_synchronous_full_and_the_chosen_fullfsync() {
         let _ = std::fs::remove_dir_all(dir);
     }
     assert!(Durability::default().fullfsync);
+}
+
+#[test]
+fn throwaway_store_disables_both_sync_axes() {
+    let dir = scratch("throwaway-pragmas");
+    let store = Store::open(dir.join("basal.db"), Durability::throwaway()).expect("open");
+    let pragmas = store.pragmas().expect("pragmas");
+    assert_eq!(pragmas.synchronous, 0, "synchronous is not OFF");
+    assert!(!pragmas.fullfsync);
+    assert!(!pragmas.checkpoint_fullfsync);
+    assert!(pragmas.journal_mode_wal);
+    drop(store);
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]

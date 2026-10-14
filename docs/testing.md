@@ -17,3 +17,27 @@ CI also refuses Cargo path dependencies that resolve outside this repository and
 ## The ckdev-flows rig
 
 `script/flows-rig.sh` builds, places and runs ckdev-flows, a private subc daemon with its own port, homes and binaries, so basal can be tested against the real prefrontal-core, Broca and entorhinal without touching a production daemon. The rig root defaults to `~/Work/Projects/CortexKit-scratch/ckdev-flows`; set `BASAL_RIG_ROOT` to an absolute path to override it. The guard refuses roots under `~/.local/share/cortexkit/` or `/Volumes/`. Before a worker rehearses a production stage, the head runs `copy-stage <stage-dir>` to copy the binaries, sidecars, card and revision under `<rig-root>/stages/`; the worker then uses `place --from-stage <rig-root>/stages/<stage-name>`. Its header documents the subcommands and isolation rules. [deploy.md](deploy.md#the-rig-run-before-a-handover) gives the rig run that precedes a handover.
+## Disposable stores
+
+Test fixtures use `Durability::throwaway()`: SQLite synchronous OFF with both
+fullfsync settings off. This constructor is available only with `cfg(test)` or
+the core's `test-support` feature. OFF gives up power-loss and OS-crash safety,
+not process-kill recovery: the cut and kill harnesses leave the OS page cache
+intact. Production uses `Durability::default()` (FULL and fullfsync on).
+
+`tests::production_store_opens_with_full_durability` in the `ck-basal` binary
+opens a store through the configuration factory used by serving and the store
+opener used by module startup, and checks the pragmas SQLite actually reports.
+`store_runs_synchronous_full_and_the_chosen_fullfsync` and `journal-bench` retain
+FULL deliberately because they assert or measure production durability.
+`basal-test-parent --fullfsync` is an explicit full-durability probe; crash tests
+omit that option and use throwaway stores.
+
+The `basal-module` integration target `durability_boundary` scans every workspace
+`src/` Rust file for the `throwaway` identifier outside test-only code. It uses
+syn's Rust parser instead of line matching, follows both inline and external
+modules, and treats unknown platform/feature cfg conditions as possibly
+production. This avoids hiding other platforms' production code while allowing
+test modules, test-support features, comments and strings. Unreferenced source
+files are scanned too. Planted-use tests and mutation catalogue rows exercise
+both the source fence and the production pragma check.

@@ -30,7 +30,7 @@ fn opening_the_store_creates_its_directory_private() {
     let root = scratch("fresh");
     let _cleanup = Cleanup(root.clone());
     let dir = root.join("basal");
-    let _store = Store::open(dir.join("store.db"), Durability::default()).expect("open");
+    let _store = Store::open(dir.join("store.db"), Durability::throwaway()).expect("open");
     assert_eq!(mode(&dir), 0o700, "a new store directory must be 0700");
     fs::remove_dir_all(&root).unwrap();
 }
@@ -42,7 +42,7 @@ fn opening_the_store_narrows_an_existing_open_directory() {
     let dir = root.join("basal");
     fs::create_dir(&dir).unwrap();
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
-    let _store = Store::open(dir.join("store.db"), Durability::default()).expect("open");
+    let _store = Store::open(dir.join("store.db"), Durability::throwaway()).expect("open");
     assert_eq!(
         mode(&dir),
         0o700,

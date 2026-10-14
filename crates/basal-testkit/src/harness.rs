@@ -502,9 +502,9 @@ impl World {
             selector: Arc::new(basal_host::selector::FakeSelector::default()),
             catalog: MockCatalog::standard(),
             source: Arc::new(ProcessSource::new(worker_binary())),
-            // The harness checks logic, not power loss; skipping F_FULLFSYNC
+            // The harness checks logic, not power loss; skipping disk syncs
             // keeps hundreds of cuts fast. Durability is measured separately.
-            durability: Durability { fullfsync: false },
+            durability: Durability::throwaway(),
         }
     }
 

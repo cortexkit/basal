@@ -2699,3 +2699,21 @@ file = "crates/basal-module/src/events.rs"
 old = '''tracing::debug!(target: "events", %error, "event backlog poll timed out; retaining last value");
             return;'''
 new = 'panic!("backlog poll timed out: {error}"); // NON-VACUITY BREAK'
+
+# Production durability is checked independently from fixture-only helpers.
+[[control]]
+id = "production-source-uses-throwaway-durability"
+guards = "throwaway durability never appears in production Rust code"
+file = "crates/basal-module/src/main.rs"
+scope = { after = "fn production_config(", before = "\n/// The runtime's hooks" }
+old = "durability: Durability::default(),"
+new = "durability: Durability::throwaway(), // NON-VACUITY BREAK"
+test_file = "crates/basal-module/tests/durability_boundary.rs"
+package = "basal-module"
+runner = "cargo"
+target = "--test durability_boundary"
+platforms = ["linux"]
+expect_red = ["production_sources_never_use_throwaway"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600

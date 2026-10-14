@@ -196,7 +196,7 @@ impl Rig {
         let dir = common::scratch("consent-paths");
         let config = basal_module::module::ModuleConfig {
             store_path: dir.join("basal.db"),
-            durability: basal_core::Durability { fullfsync: false },
+            durability: basal_core::Durability::throwaway(),
             runtime: basal_core::Config {
                 clock: basal_core::Clock::manual(common::T0),
                 install_gate: basal_core::InstallGate::Off,

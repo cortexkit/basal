@@ -75,7 +75,7 @@ fn open(
     hooks: Option<Arc<dyn TickHooks>>,
     schedule: SchedulerConfig,
 ) -> (Runtime, Scheduler) {
-    let store = Store::open(dir.join("basal.db"), Durability { fullfsync: false }).expect("open");
+    let store = Store::open(dir.join("basal.db"), Durability::throwaway()).expect("open");
     let rt = Runtime::new(
         Arc::new(store),
         Arc::new(MockHost::new()),

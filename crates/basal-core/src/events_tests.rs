@@ -51,8 +51,7 @@ impl Fixture {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        let store =
-            Arc::new(Store::open(path.join("basal.db"), Durability { fullfsync: false }).unwrap());
+        let store = Arc::new(Store::open(path.join("basal.db"), Durability::throwaway()).unwrap());
         let source = Arc::new(Source {
             replies: Mutex::new(Vec::new()),
             calls: Mutex::new(Vec::new()),

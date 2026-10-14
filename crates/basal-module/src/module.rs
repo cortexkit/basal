@@ -35,6 +35,14 @@ pub struct ModuleConfig {
     pub dry_run: DryRunConfig,
 }
 
+impl ModuleConfig {
+    /// Opens the configured store, before recovery or worker startup.
+    pub fn open_store(&self) -> Result<Store, String> {
+        Store::open(&self.store_path, self.durability)
+            .map_err(|e| format!("opening the store at {}: {e}", self.store_path.display()))
+    }
+}
+
 /// The systems the module reaches, supplied by whoever starts it: the real
 /// adapters, the unconfigured ones, or the mocks.
 #[derive(Clone)]
@@ -126,8 +134,7 @@ impl Module {
         spawner: Arc<dyn Spawn>,
         initialize: impl FnOnce(Arc<Store>) -> Result<(), String>,
     ) -> Result<Self, String> {
-        let store = Store::open(&config.store_path, config.durability)
-            .map_err(|e| format!("opening the store at {}: {e}", config.store_path.display()))?;
+        let store = config.open_store()?;
         let store = Arc::new(store);
         let runtime_config = Config {
             auto_resume: false,

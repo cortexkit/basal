@@ -940,7 +940,7 @@ fn journaled_sink_intent_is_byte_identical_after_a_cut() {
         );
         let config = ModuleConfig {
             store_path: dir.join("basal.db"),
-            durability: Durability { fullfsync: false },
+            durability: Durability::throwaway(),
             runtime: Config {
                 clock: clock.clone(),
                 install_gate: basal_core::InstallGate::Off,
@@ -1858,7 +1858,7 @@ fn selections_freeze_at_intent_commit_and_only_uncommitted_calls_reselect() {
         );
         let config = ModuleConfig {
             store_path: dir.join("basal.db"),
-            durability: Durability { fullfsync: false },
+            durability: Durability::throwaway(),
             runtime: Config {
                 clock: Clock::manual(common::T0),
                 selector: selector.clone(),

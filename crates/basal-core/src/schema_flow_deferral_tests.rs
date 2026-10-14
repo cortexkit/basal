@@ -171,7 +171,7 @@ fn current_store_refuses_a_deferred_call_with_a_refusal_outside_the_closed_set()
         std::process::id(),
         NEXT.fetch_add(1, Ordering::SeqCst)
     ));
-    let store = Store::open(dir.join("core.db"), Durability { fullfsync: false }).unwrap();
+    let store = Store::open(dir.join("core.db"), Durability::throwaway()).unwrap();
     store
         .write(|tx| {
             tx.execute_batch("INSERT INTO flows (flow_id,created_at) VALUES ('f',1); INSERT INTO runs (run_id,flow_id,trigger_id,attempt,trigger,script,manifest,code_hash,state,admitted_at) VALUES ('r','f','t',1,'{}','return 1','{}',zeroblob(32),'pending',1)")?;

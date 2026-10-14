@@ -105,7 +105,7 @@ impl Rig {
         }
         let config = ModuleConfig {
             store_path: dir.join("basal.db"),
-            durability: Durability { fullfsync: false },
+            durability: Durability::throwaway(),
             runtime,
             pool: pool.clone(),
             engine: EngineConfig::default(),

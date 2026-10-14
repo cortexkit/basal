@@ -77,6 +77,8 @@ cortexkit-role-harness = "=0.1.0"
 subc-client-rs = { workspace = true, features = ["test-support"] }
 sha2.workspace = true
 subc-transport.workspace = true
+proc-macro2 = "1"
+syn = { version = "2", features = ["full", "visit"] }
 
 # tests/store_dacl.rs reads the store directory's and database's security
 # descriptors back to check they are owner-only.

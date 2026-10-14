@@ -43,9 +43,8 @@ impl TestRuntime {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&path).unwrap();
-        let store = Arc::new(
-            Store::open(path.join("store.sqlite"), Durability { fullfsync: false }).unwrap(),
-        );
+        let store =
+            Arc::new(Store::open(path.join("store.sqlite"), Durability::throwaway()).unwrap());
         let rt = Runtime::new(
             store,
             Arc::new(MockHost::new()),

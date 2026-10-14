@@ -114,9 +114,8 @@ impl Fixture {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::SeqCst)
         ));
-        let store = Arc::new(
-            Store::open(path.join("core.db"), crate::Durability { fullfsync: false }).unwrap(),
-        );
+        let store =
+            Arc::new(Store::open(path.join("core.db"), crate::Durability::throwaway()).unwrap());
         let host = Arc::new(TestHost::default());
         let rt = Runtime::new(
             store,

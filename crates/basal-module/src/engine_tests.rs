@@ -31,7 +31,7 @@ fn engine_with_spawner(
     let path = dir.join("store.db");
     let clock = basal_core::Clock::manual(0);
     let rt = Runtime::new(
-        Arc::new(Store::open(&path, Durability { fullfsync: false }).unwrap()),
+        Arc::new(Store::open(&path, Durability::throwaway()).unwrap()),
         Arc::new(MockHost::new()),
         Arc::new(MockCatalog::standard()),
         Arc::new(NoHooks),
@@ -771,7 +771,7 @@ fn module(spawn_panics: bool) -> (crate::module::Module, std::path::PathBuf, Arc
     let module = Module::start(
         ModuleConfig {
             store_path: path.clone(),
-            durability: Durability { fullfsync: false },
+            durability: Durability::throwaway(),
             runtime: Config {
                 clock: basal_core::Clock::manual(0),
                 install_gate: basal_core::InstallGate::Off,
@@ -842,7 +842,7 @@ fn module_drop_joins_activation_after_slot_release() {
             Event::Dropped
         );
     }
-    let reopened = Store::open(&path, Durability { fullfsync: false });
+    let reopened = Store::open(&path, Durability::throwaway());
     if first == Event::Dropped {
         release.wait();
     }

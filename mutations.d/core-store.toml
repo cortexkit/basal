@@ -1,0 +1,18 @@
+# Store durability and the production construction path.
+
+[[control]]
+id = "production-store-default-disables-synchronous"
+guards = "the production binary opens SQLite with FULL synchronous durability"
+file = "crates/basal-core/src/store.rs"
+scope = { after = "impl Default for Durability {", before = "\n/// The pragmas" }
+old = "synchronous: Synchronous::Full,"
+new = "synchronous: Synchronous::Off, // NON-VACUITY BREAK"
+test_file = "crates/basal-module/src/main.rs"
+package = "basal-module"
+runner = "cargo"
+target = "--bin ck-basal"
+platforms = ["linux"]
+expect_red = ["tests::production_store_opens_with_full_durability"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600

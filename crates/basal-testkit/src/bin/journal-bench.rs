@@ -98,8 +98,14 @@ fn runtime(
     mock: &MockHost,
     source: Arc<ProcessSource>,
 ) -> Result<Runtime, String> {
-    let store =
-        Store::open(dir.join("basal.db"), Durability { fullfsync }).map_err(|e| e.to_string())?;
+    let store = Store::open(
+        dir.join("basal.db"),
+        Durability {
+            fullfsync,
+            ..Durability::default()
+        },
+    )
+    .map_err(|e| e.to_string())?;
     let config = Config {
         activation_deadline: Duration::from_secs(300),
         budgets: basal_proto::Budgets {
@@ -127,8 +133,14 @@ fn runtime(
 
 fn commit_cost(fullfsync: bool, samples: usize) -> Result<Value, String> {
     let dir = scratch("bench-commit");
-    let store =
-        Store::open(dir.join("basal.db"), Durability { fullfsync }).map_err(|e| e.to_string())?;
+    let store = Store::open(
+        dir.join("basal.db"),
+        Durability {
+            fullfsync,
+            ..Durability::default()
+        },
+    )
+    .map_err(|e| e.to_string())?;
     let pragmas = store.pragmas().map_err(|e| e.to_string())?;
     store
         .write(|tx| {
