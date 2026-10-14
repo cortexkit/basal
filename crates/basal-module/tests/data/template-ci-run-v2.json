@@ -1,0 +1,18 @@
+{
+  "event_key": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "kind": "ci_run",
+  "repo": "example/project",
+  "action": "completed",
+  "actor_logins": [],
+  "actor_unknown": true,
+  "id": 42,
+  "name": "CI",
+  "conclusion": "failure",
+  "status": "completed",
+  "head_branch": "main",
+  "head_sha": "0123456789abcdef0123456789abcdef01234567",
+  "url": "https://github.com/example/project/actions/runs/42",
+  "run_id": 42,
+  "run_attempt": 1,
+  "completed_at": "2027-01-01T12:45:00Z"
+}

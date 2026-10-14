@@ -1,0 +1,21 @@
+{
+  "format": 1,
+  "id": "github-ci-watch",
+  "version": 1,
+  "purpose": "Watch GitHub CI failures for the creating agent, updating one digest item per run attempt.",
+  "trigger": {
+    "events": [
+      { "module": "plexus", "name": "github_ci_job_failed", "version": 2, "match": { "repo": "$params.repo", "branch": "$params.branch" } },
+      { "module": "plexus", "name": "github_ci_run_completed", "version": 2, "match": { "repo": "$params.repo", "branch": "$params.branch" } }
+    ]
+  },
+  "sinks": [{ "agent": "$self", "digest_max": "wake" }],
+  "ops": [{ "module": "plexus", "op": "events_get" }],
+  "params": {
+    "note": { "type": "string", "max_bytes": 1024 },
+    "repo": { "type": "string", "max_bytes": 200 },
+    "branch": { "type": "string", "max_bytes": 256 },
+    "main_branch": { "type": "string", "max_bytes": 256 }
+  },
+  "template": { "max_per_agent": 100, "max_lifetime": "365d" }
+}

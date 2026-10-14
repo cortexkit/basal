@@ -1,13 +1,14 @@
-# One-shot watches and reminders
+# Watches and reminders
 
 Each directory is a flow template: register its exact `manifest.json`
 and `flow.js` bytes with `package.register`, approve that version once, then
 create watches with `flow.instantiate`. Each instance writes only to the agent
-that created it, with the `wake` digest action, and ends after its notification.
-There are no model calls or network fetches. Template versions have their own
+that created it. The four one-shot watches/reminders use `wake` and end after
+notification; `github-ci-watch` is a standing watch, described below. There are
+no model calls or script-side network fetches. Template versions have their own
 approval card; instances do not go through ordinary flow-install approval.
 
-All templates require `note`: a string of at most **4096 UTF-8 bytes**, without
+The four one-shot templates require `note`: a string of at most **4096 UTF-8 bytes**, without
 control characters. The digest body is exactly that note, including for a
 stopped watch. The short title explains what happened or why the watch stopped.
 `data.params` contains the other parameters; `data.observed` records the result.
@@ -19,8 +20,9 @@ byte length. Oversized links are omitted rather than shortened and marked too.
 Every declared parameter is required, even if a particular condition ignores
 it. Each template allows at most 100 live instances per agent and an
 `expires_in` of at most `365d`; watches expire even when they never fire.
-Transient check errors leave the watch live for its next trigger. Permanent
-configuration or access failures produce a stopped item and end the watch.
+For the one-shot watches, transient check errors leave the watch live for its
+next trigger. Permanent configuration or access failures produce a stopped
+item and end the watch.
 Capture-mode `flow.dry_run` accepts sample parameters and makes no live calls;
 captured reads cannot prove that a condition is met.
 
@@ -124,3 +126,50 @@ next scheduled check.
 
 Example values:
 `{"note":"Check the release rollout","at":"2027-01-01T09:00:00Z"}`.
+
+## `github-ci-watch`
+
+A standing watch with no instance-approval card replaces `gh run list` pollers. It consumes Plexus
+**v2** `github_ci_job_failed` and `github_ci_run_completed` events. Both use
+`repo` and `branch` header admission filters; nonmatching notices create no run
+or body fetch. Basal checks the fetched body bytes against the event's digest;
+Plexus v2 supplies the same CI fields for webhook and polling sources. The script
+independently checks the body's repository and branch using the same patterns. Headers are hints,
+not authority. Unknown body branches match only an all-branches `*` watch.
+
+| Parameter | Meaning |
+| --- | --- |
+| `note` | A short label, at most **1024 UTF-8 bytes**, preserved in full beside CI details in the body. |
+| `repo` | Repository pattern, at most 200 UTF-8 bytes, ASCII-case-insensitive. Only `*` is a wildcard, including across `/`, e.g. `cortexkit/*`. |
+| `branch` | Branch pattern, at most 256 UTF-8 bytes, case-sensitive; `*` watches all branches. |
+| `main_branch` | Exact branch whose failures wake the owner, at most 256 UTF-8 bytes, e.g. `main`. Other branches use `piggyback`. |
+
+Every failed/timed-out job reports immediately, without waiting for a roughly
+45-minute workflow to end. Job IDs are deduplicated in instance `kv`, and each
+attempt uses `ci:<repo>:<run_id>:<run_attempt>` as its `replace_key`. Further
+failed jobs update the same undelivered digest item. A rerun gets a separate
+item. The summary lists failed jobs; the body includes a short head SHA, the
+note, and **test names unavailable**. V2 has neither step/test names nor a
+workflow name on job events. Links include failed jobs and the run URL when
+known, up to eight total (the run link takes the final slot if needed).
+
+A `failure`, `cancelled`, or `startup_failure` run completion updates the item
+to say the run finished red. Without reported jobs, it creates a “run failed
+with no failed job reported” item. A `success` completion updates an already
+reported attempt to “now green” with `silent`; an unreported green is ignored.
+Null conclusions and branches are displayed as `unknown`, never green. An
+unknown conclusion on a run completion reports uncertainty rather than success.
+
+State expires after about 14 days relative to the newest event `completed_at`;
+older late deliveries are ignored. A 48,000-byte state cap also evicts oldest
+attempts during bursts or when timestamps are unknown. If the run identity is
+unknown, events are deduplicated by event key and use a plain digest rather than
+merging unrelated attempts. Keys too large for core's 200-byte replacement
+limit also use a plain digest. Unsupported replacement falls back to an
+explicit plain write; it may therefore append instead of updating. The watch
+never ends itself: it stands until expiry or an explicit end by its owner.
+
+Example values:
+`{"note":"Watch CI for the release","repo":"cortexkit/*","branch":"*","main_branch":"main"}`.
+Capture-mode `flow.dry_run` can supply a synthetic v2 event with headers and the
+normalized body; no live lookup or sink delivery occurs.
