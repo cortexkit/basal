@@ -112,7 +112,7 @@ impl Transport for Wire {
                 json!([{"name":"echo","kind":"query"},{"name":"post","kind":"mutate"}]);
             modules[0]["roles"].as_array_mut().unwrap().push(json!({"role":"tool_provider","tools":[{"name":"send","execution_mode":"mutating","schema":{}}],"identity_scope":[],"config_schema":{},"observability":[],"concurrency":"serial","emits_push":false,"sub_supervises":false}));
         }
-        modules.push(json!({"module_id":"prefrontal-core", "capabilities":{"provides":if *self.core_capable.lock().unwrap() {vec!["flow-scopes/v1"]} else {vec![]}}, "roles":[{"role":"management_surface","operations":[{"name":"board.read","kind":"query"}],"config_schema":{},"observability":[],"identity_scope":[],"concurrency":"serial"}]}));
+        modules.push(json!({"module_id":"prefrontal-core", "capabilities":{"provides":if *self.core_capable.lock().unwrap() {vec!["flow-scopes/v1"]} else {vec![]}}, "roles":[{"role":"management_surface","operations":[{"name":"board.read","kind":"query"},{"name":"board.write","kind":"mutate"}],"config_schema":{},"observability":[],"identity_scope":[],"concurrency":"serial"}]}));
         Ok(json!({"generation":1,"modules":modules,"subc_ops":[]}))
     }
     fn management(&self, module: &str, op: &str, params: Value) -> Result<Value, WireError> {
@@ -968,7 +968,7 @@ fn a_stalled_scope_activation_deadline_reaps_its_worker() {
 }
 
 #[test]
-fn core_flow_ops_require_a_scope_and_never_change_script_arguments() {
+fn other_core_flow_ops_require_a_scope_and_never_change_script_arguments() {
     let wire = Arc::new(Wire::default());
     let host = ModuleOpsHost::new(wire.clone(), Arc::new(SubcCatalog::new(wire.clone())));
     let args = json!({"agent":"ALF","limit":3});
@@ -978,7 +978,7 @@ fn core_flow_ops_require_a_scope_and_never_change_script_arguments() {
         position: 0,
         kind: CallKind::Op {
             module: "prefrontal-core".into(),
-            op: "board.read".into(),
+            op: "board.write".into(),
         },
         args: JsonText::new(args.to_string()).unwrap(),
         idempotency_key: "key-a".into(),
@@ -1000,7 +1000,7 @@ fn core_flow_ops_require_a_scope_and_never_change_script_arguments() {
         (
             Some(1),
             "prefrontal-core".into(),
-            management_body("board.read", args)
+            management_body("board.write", args)
         )
     );
     host.configure_flow("flow-a", None);
@@ -1012,6 +1012,132 @@ fn core_flow_ops_require_a_scope_and_never_change_script_arguments() {
         }))
     ));
     assert_eq!(wire.calls.lock().unwrap().len(), 1);
+}
+
+fn board_read_fixture(tag: &str, script: &str) -> Fixture {
+    let f = Fixture::new(tag, script, false, false);
+    f.world.catalog.set_flow_capable("prefrontal-core", false);
+    f.world.catalog.set_op(
+        "prefrontal-core",
+        "board.read",
+        basal_host::OpDecl {
+            kind: Some(basal_host::OpKind::Query),
+            cause_echo: false,
+            shell_capable: false,
+        },
+    );
+    install_target_manifest(&f, |manifest| {
+        manifest["ops"] = json!([{"module":"prefrontal-core","op":"board.read"}]);
+    });
+    f
+}
+
+#[test]
+fn board_read_uses_basal_route_with_journaled_approved_stamp() {
+    let f = board_read_fixture(
+        "board-carrier",
+        "return await ops.call('prefrontal-core', 'board.read', {limit: 3, cursor: 'agent_0'});",
+    );
+    let run = f.admit("board-carrier");
+    f.activate(&run);
+    let expected = json!({"limit":3,"cursor":"agent_0","stamp":{
+        "flow_id":"flow-test","flow_version":2,"code_hash":*f.wire.hash.lock().unwrap(),
+    }});
+    assert_eq!(run_result(&f, &run), expected);
+    let calls = f.wire.calls.lock().unwrap();
+    let board_calls: Vec<_> = calls
+        .iter()
+        .filter(|(_, _, body)| body["method"] == "board.read")
+        .collect();
+    assert_eq!(board_calls.len(), 1);
+    assert_eq!(
+        *board_calls[0],
+        (
+            None,
+            "prefrontal-core".into(),
+            management_body("board.read", expected.clone())
+        )
+    );
+    assert!(f.wire.opens.lock().unwrap().is_empty());
+    assert!(f.wire.target_asks.lock().unwrap().is_empty());
+    let (class, request, original): (String, String, String) =
+        f.rt.store()
+            .read(|c| {
+                Ok(c.query_row(
+                    "SELECT class, request, args FROM journal WHERE run_id=?1 AND position=0",
+                    [&run],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?)
+            })
+            .unwrap();
+    assert_eq!(class, "query");
+    assert_eq!(serde_json::from_str::<Value>(&request).unwrap(), expected);
+    assert_eq!(
+        serde_json::from_str::<Value>(&original).unwrap(),
+        json!({"limit":3,"cursor":"agent_0"})
+    );
+}
+
+#[test]
+fn board_read_refuses_script_supplied_stamp_fields() {
+    for (field, value) in [
+        (
+            "stamp",
+            json!({"flow_id":"forged","flow_version":99,"code_hash":"forged"}),
+        ),
+        ("stamp", Value::Null),
+        ("flow_id", json!("forged")),
+        ("flow_version", json!(99)),
+        ("code_hash", json!("forged")),
+    ] {
+        let args = json!({field: value});
+        let f = board_read_fixture(
+            "board-forged-stamp",
+            &format!(
+                "try {{ await ops.call('prefrontal-core', 'board.read', {args}); return 'sent'; }} catch (e) {{ return e.data; }}"
+            ),
+        );
+        let run = f.admit("board-forged-stamp");
+        f.activate(&run);
+        let result = run_result(&f, &run);
+        assert_eq!(result["code"], "invalid_arguments", "{field}: {result}");
+        assert!(result["message"].as_str().unwrap().contains("stamp"));
+        assert!(
+            f.wire
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(_, _, body)| body["method"] != "board.read")
+        );
+        assert!(f.wire.opens.lock().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn board_read_requires_object_arguments_and_own_audience_selector() {
+    for call in [
+        "ops.call('prefrontal-core', 'board.read', null)",
+        "ops.call('prefrontal-core', 'board.read', [])",
+        "ops.call('prefrontal-core', 'board.read', {limit: 1}, {for: 'Alice'})",
+    ] {
+        let f = board_read_fixture(
+            "board-carrier-args",
+            &format!("try {{ await {call}; return 'sent'; }} catch (e) {{ return e.data; }}"),
+        );
+        let run = f.admit("board-carrier-args");
+        f.activate(&run);
+        assert_eq!(run_result(&f, &run)["code"], "invalid_arguments", "{call}");
+        assert!(
+            f.wire
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(_, _, body)| body["method"] != "board.read")
+        );
+        assert!(f.wire.target_asks.lock().unwrap().is_empty());
+    }
 }
 
 fn install_target_manifest(f: &Fixture, modify: impl FnOnce(&mut Value)) {

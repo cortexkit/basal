@@ -255,6 +255,80 @@ an install ends every target scope for the flow. Provider route opens use these
 selectors exactly as they use the flow's own selector. A scope close during a
 call is a lost reply, never evidence that a mutation was unsent.
 
+## Core carrier operations: `board.read`
+
+The explicit core carrier-op list contains only `prefrontal-core` / `board.read`.
+Keep the manifest grant `{"module":"prefrontal-core","op":"board.read"}` and
+call it with `ops.call('prefrontal-core', 'board.read', args)`. Basal sends this
+query on its own reserved route (principal `reserved:basal`), not a flow-scoped
+provider route; it does not require core to advertise `flow-scopes/v1`. Other
+declared core ops still require that capability. The normal grant, catalog and
+shell checks remain in force.
+
+Basal adds the approved run's install stamp and journals the entire prepared
+request before dispatch. Scripts cannot supply `stamp`, `flow_id`,
+`flow_version`, or `code_hash`, even as `null`: basal refuses those arguments
+with `invalid_arguments`. The targeted-call `for` option is not supported for
+carrier ops; select boards using the read arguments instead. Core rechecks installation, the code
+hash, board-read authorization and the audience; the carrier route is not a
+grant bypass.
+
+The core wire contract below was read at prefrontal revision
+`1b5853b6656bf7f13101e2d90986fa889e13a044` in
+`crates/prefrontal-core-module/src/flow_sinks.rs`, with stamp and authorization
+types in `crates/prefrontal-core-store/src/flow_install.rs`.
+
+```json
+{
+  "stamp": {"flow_id":"board-hygiene","flow_version":1,"code_hash":"<approved code hash>"},
+  "limit": 16,
+  "cursor": "<previous next_cursor>"
+}
+```
+
+`stamp` is required on the wire, and all three stamp fields are required.
+`flow_id` is 1–128 characters with no control characters; `flow_version` must
+be positive. Requests reject unknown fields. The only optional top-level
+fields are `agent`, `agents`, `limit`, and `cursor`:
+
+- With `agent`, core reads one board. This form cannot include `agents`,
+  `limit`, or `cursor` and returns the board object directly.
+- Without `agent`, core pages boards in sorted agent-ID order. `agents` may
+  explicitly select at most 64 IDs; if omitted, core enumerates board agents
+  and filters them by the installed audience. An explicit out-of-audience ID
+  is refused rather than silently filtered.
+- `limit` defaults to 16 and must be between 1 and 16. `cursor` is the exclusive
+  after-agent ID: use the previous reply's `next_cursor`, or omit it for the
+  first page. It must be nonempty, at most 256 bytes, and contain no control
+  characters. A paged read requires an audience on the approved install.
+
+The paged reply is
+`{"boards":[{"agent_id":"...","board":{...}}],"next_cursor":null,"page_cap":16}`.
+`next_cursor` is the last returned agent ID if another item exists, otherwise
+`null`. A board is core's `BoardState` JSON object, with fields `roomId`,
+`sessionId`, `vocabulary`, `servedSeq`, `lanes`, `laneBlocks`, `blocks`,
+`servedBlocks`, `totalBlocks`, and `health`.
+
+Core's refusal codes are:
+
+| Code | Meaning |
+|---|---|
+| `sink_principal_refused` | Caller is not `reserved:basal`. |
+| `sink_item_invalid` | Strict request decoding or validation failed, including incompatible single/paged arguments, invalid limit/cursor, or more than 64 explicit agents. The message identifies the invalid field and reason. |
+| `sink_flow_not_installed` | No active approved install for the stamp. |
+| `sink_flow_hash_mismatch` | Stamp hash differs from the installed code hash. |
+| `sink_audience_check_required` | Paged read has no installed audience (also used when the lower-level single-board dispatcher is called without an agent). |
+| `sink_audience_unavailable` | Audience membership cannot be checked. |
+| `sink_target_not_in_audience` | Explicit target is outside the approved audience. |
+| `board_read_target_not_granted` | Target is unresolved/ungranted, board-read manifest authorization or a separate live grant is missing, owner restriction fails, or the board room is absent. Audience membership alone does not grant a read. |
+
+Core normally sets the refusal message to the refusal code identifier itself.
+`sink_item_invalid` instead identifies the invalid field and decoding or
+validation reason. `sink_target_not_in_audience` names the flow, target and
+audience; `sink_audience_unavailable` may include those names and the lookup
+failure detail. Basal exposes core refusals to the script as ordinary query
+rejections and journals them like other replies.
+
 ## Codemode
 
 Basal is a `tool-provider/v1` provider with one agent tool, `codemode`. Core grants access and owns each ephemeral run scope; it does not carry the tool or provide its input schemas. The daemon verifies the caller's principal and stamps the incoming route with scope owner, ref, epoch and authoritative attributes including `agent_id`; basal takes its agent and invoking scope only from that stamp. Arguments cannot override either. Each child provider route carries the invoking route's `BindIdentity` unchanged. Its project root configures where relative paths and shell commands run; its harness and session configure the provider's client and session context. A registered project ID is also copied unchanged when present. These values preserve the configuration of the agent's direct calls, never authority: basal identifies the agent and scope only from the daemon's recorded principal and scope.
