@@ -20,6 +20,12 @@ def main():
                 and "basal-module" in a.get("package_id", "")]
     assert len(binaries) == 1, binaries
     env = dict(os.environ, DYLD_INSERT_LIBRARIES=str(tmp / "privacy-spawn-probe.dylib"))
+    for label, child_env in [("injected", env), ("plain", os.environ)]:
+        cat = subprocess.run(["/bin/cat"], input=b"R", stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, env=child_env)
+        (out / f"cat-preflight-{label}.json").write_text(json.dumps({
+            "status": cat.returncode, "stdout": cat.stdout.decode(errors="replace"),
+            "stderr": cat.stderr.decode(errors="replace")}) + "\n")
     cores = os.cpu_count() or 2
     results = []
     loads = []
@@ -33,7 +39,8 @@ def main():
         before = time.monotonic()
         with (out / f"{name}.log").open("w") as log:
             try:
-                status = subprocess.run(args, env=env, stdout=log, stderr=subprocess.STDOUT,
+                status = subprocess.run(args, env=os.environ if full else env,
+                                        stdout=log, stderr=subprocess.STDOUT,
                                         timeout=360).returncode
             except subprocess.TimeoutExpired:
                 status = "timeout"
@@ -42,7 +49,7 @@ def main():
     try:
         loads = [subprocess.Popen(["/usr/bin/yes"], stdout=subprocess.DEVNULL) for _ in range(cores)]
         with (out / "workspace.log").open("w") as workspace_log:
-            workspace = subprocess.Popen(["cargo", "test", "--locked", "--workspace"], env=env,
+            workspace = subprocess.Popen(["cargo", "test", "--locked", "--workspace"],
                                          stdout=workspace_log, stderr=subprocess.STDOUT)
             try:
                 def lane(slot):
@@ -66,6 +73,7 @@ def main():
                "workspace_status": workspace_status, "seconds": time.monotonic() - started}
     (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps({k: v for k, v in summary.items() if k != "results"}), flush=True)
+    raise SystemExit(1 if summary["failed"] or workspace_status else 0)
 
 
 if __name__ == "__main__":

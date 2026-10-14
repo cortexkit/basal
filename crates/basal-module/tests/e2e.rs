@@ -152,6 +152,7 @@ mod privacy {
     async fn plain_control_exec_barrier_drains_its_ack() {
         let mut control = ReapedChild(
             Command::new("/bin/cat")
+                .env_remove("DYLD_INSERT_LIBRARIES")
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
@@ -225,6 +226,7 @@ mod privacy {
         let started = Instant::now();
         let mut control = ReapedChild(
             Command::new("/bin/cat")
+                .env_remove("DYLD_INSERT_LIBRARIES")
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
