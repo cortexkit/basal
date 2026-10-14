@@ -630,3 +630,93 @@ mod capability_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod reader_health_tests {
+    use super::*;
+    use basal_host::transport::{Transport, WireError};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct PanickingCredentials(AtomicUsize);
+
+    impl Transport for PanickingCredentials {
+        fn catalog(&self) -> Result<Value, WireError> {
+            unreachable!()
+        }
+        fn tool(&self, _: &str, _: &str, _: Value, _: &str) -> Result<Value, WireError> {
+            unreachable!()
+        }
+        fn management(&self, _: &str, _: &str, _: Value) -> Result<Value, WireError> {
+            if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+                panic!("injected reader credential panic");
+            }
+            std::thread::sleep(Duration::from_millis(500));
+            Err(WireError::NeverSent("credential retry reached".into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn dead_reader_degrades_top_level_health_and_retries() {
+        let dir = std::env::temp_dir().join(format!("basal-reader-health-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut pool =
+            crate::pool::PoolConfig::new("unused-worker", crate::process::WorkerLaunch::Plain);
+        pool.warm_spares = 0;
+        let config = ModuleConfig {
+            store_path: dir.join("store.db"),
+            durability: basal_core::Durability { fullfsync: false },
+            runtime: basal_core::Config::default(),
+            pool: pool.clone(),
+            engine: Default::default(),
+            dry_run: crate::dryrun::DryRunConfig::new(dir.join("dry-run")),
+        };
+        let transport = Arc::new(PanickingCredentials(AtomicUsize::new(0)));
+        let hosts = Hosts {
+            transport: transport.clone(),
+            host: Arc::new(basal_host::mock::MockHost::new()),
+            catalog: Arc::new(basal_host::MockCatalog::standard()),
+            consent: Arc::new(basal_host::MockConsent::new()),
+            hooks: Arc::new(basal_core::NoHooks),
+        };
+        let module =
+            Arc::new(Module::start(config, hosts, Arc::new(ProcessSpawner::new(&pool))).unwrap());
+        let handler = BasalHandler::new(Box::new(|_| unreachable!()), Box::new(|| unreachable!()));
+        *lock(&handler.phase) = Phase::Ready(module.clone());
+        assert_eq!(handler.health().await.status, HealthStatus::Ok);
+        *lock(&module.event_reader) = Some(crate::events::Reader::start(
+            module.rt.clone(),
+            transport.clone(),
+        ));
+        let until = std::time::Instant::now() + Duration::from_secs(5);
+        let report = loop {
+            let report = handler.health().await;
+            if report
+                .detail
+                .as_ref()
+                .is_some_and(|e| e.contains("injected reader credential panic"))
+            {
+                break report;
+            }
+            assert!(
+                std::time::Instant::now() < until,
+                "panic missing from top-level health"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        assert_eq!(report.status, HealthStatus::Degraded);
+        assert!(report.detail.unwrap().starts_with("reader stopped:"));
+        let events = &report.metrics.unwrap()["events"];
+        assert_eq!(events["connected"], false);
+        assert!(events["retry_in_ms"].as_u64().unwrap() >= 250);
+        while transport.0.load(Ordering::SeqCst) < 2 {
+            assert!(
+                std::time::Instant::now() < until,
+                "reader never retried after panic"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        *lock(&handler.phase) = Phase::Starting;
+        drop(module);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}

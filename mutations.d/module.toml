@@ -2001,10 +2001,10 @@ only = true
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-module/src/events.rs"
-old = "let mut commit = tokio::task::spawn_blocking(move || rt.admit_events(&notices));"
+old = "let mut commit = tokio::task::spawn_blocking(move || {"
 new = '''// NON-VACUITY BREAK: settle before the durable fan-out.
     if acknowledge { for message in messages { message.double_ack().await.map_err(|e| e.to_string())?; } }
-    let mut commit = tokio::task::spawn_blocking(move || rt.admit_events(&notices));'''
+    let mut commit = tokio::task::spawn_blocking(move || {'''
 
 [[control]]
 id = "event-slow-commit-progress-removed"
@@ -2603,3 +2603,60 @@ timeout_s = 600
 file = "crates/basal-core/src/events.rs"
 old = "e.module == module && e.name == name && e.version == version"
 new = "e.module == module && e.name == name && version > 0 /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "event-reader-decode-blocks-async-thread"
+guards = "versioned reader decoding keeps synchronous catalog runtime re-entry off async threads"
+test_file = "crates/basal-module/tests/module_events/reader.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test module_events"
+expect_red = ["reader::reader_admits_v2_with_blocking_catalog_and_stays_alive"]
+select = { tests = ["reader::reader_admits_v2_with_blocking_catalog_and_stays_alive", "no_match_is_acked_without_any_store_row"] }
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/events.rs"
+old = "let owned_messages = messages.to_vec();"
+new = """let owned_messages = messages.to_vec();
+    for message in messages { let _ = decode(message, rt.catalog()); } // NON-VACUITY BREAK"""
+
+[[control]]
+id = "event-reader-worker-panic-hidden-from-health"
+guards = "batch worker panic disconnects reader health before retrying the unacknowledged batch"
+test_file = "crates/basal-module/tests/module_events/reader.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test module_events"
+expect_red = ["reader::reader_panic_reports_dead_health_and_restarts"]
+select = { tests = ["reader::reader_panic_reports_dead_health_and_restarts", "reader::reader_admits_v2_with_blocking_catalog_and_stays_alive"] }
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/events.rs"
+old = """h.connected = false;
+            h.error = session.err();"""
+new = """h.connected = true; // NON-VACUITY BREAK
+            h.error = None;
+            let _ = session;"""
+
+[[control]]
+id = "event-reader-loop-panic-hidden-from-health"
+guards = "a panicked reader loop reports stopped health during supervisor backoff"
+test_file = "crates/basal-module/src/events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["events::tests::reader_supervisor_reports_panic_and_restarts"]
+select = { tests = ["events::tests::reader_supervisor_reports_panic_and_restarts", "serve::reader_health_tests::dead_reader_degrades_top_level_health_and_retries"] }
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+scope = { after = "fn supervise(", before = "\nimpl Reader" }
+edits = [
+    { file = "crates/basal-module/src/events.rs", old = "let _stopped = ReaderStopped(health.clone());", new = "let _stopped = (); // NON-VACUITY BREAK" },
+    { file = "crates/basal-module/src/events.rs", old = "h.connected = false;\n            h.error = Some(reason);", new = "h.connected = true; // NON-VACUITY BREAK\n            h.error = None;\n            let _ = reason;" },
+]

@@ -1,6 +1,7 @@
 //! Read the JetStream pull consumer `m_basal`, which ck-bus provisions on the
 //! event stream. This reader never creates or modifies the stream or consumer.
 use std::collections::BTreeMap;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -35,6 +36,8 @@ pub struct Health {
     pub connected: bool,
     pub error: Option<String>,
     pub retry_in_ms: u64,
+    /// Pending plus delivered-but-unacknowledged notices at the last consumer poll.
+    pub backlog: u64,
     pub batches: u64,
     pub notices: u64,
     pub admitted: u64,
@@ -52,6 +55,50 @@ pub struct Reader {
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
+// Clear connection health during unwinding as well as ordinary reader exit,
+// before the supervisor has a chance to observe the stopped reader.
+struct ReaderStopped(Arc<Mutex<Health>>);
+
+impl Drop for ReaderStopped {
+    fn drop(&mut self) {
+        let mut h = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        h.connected = false;
+        h.error = Some("reader stopped".into());
+    }
+}
+
+fn supervise(health: Arc<Mutex<Health>>, stop: Arc<AtomicBool>, mut run: impl FnMut()) {
+    let mut delay = 250u64;
+    while !stop.load(Ordering::Acquire) {
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let _stopped = ReaderStopped(health.clone());
+            run();
+        }));
+        let reason = match result {
+            Ok(()) => "reader stopped: loop exited".into(),
+            Err(panic) => {
+                let reason = panic
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| panic.downcast_ref::<&str>().copied())
+                    .unwrap_or("unknown panic");
+                format!("reader stopped: panic: {reason}")
+            }
+        };
+        {
+            let mut h = health.lock().unwrap_or_else(|p| p.into_inner());
+            h.connected = false;
+            h.error = Some(reason);
+            h.retry_in_ms = delay;
+        }
+        let until = Instant::now() + Duration::from_millis(delay);
+        while !stop.load(Ordering::Acquire) && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        delay = (delay * 2).min(30_000);
+    }
+}
+
 impl Reader {
     pub fn start(rt: Runtime, transport: Arc<dyn Transport>) -> Self {
         let health = Arc::new(Mutex::new(Health::default()));
@@ -59,12 +106,20 @@ impl Reader {
         let thread_health = health.clone();
         let thread_stop = stop.clone();
         let thread = std::thread::spawn(move || {
+            let _stopped = ReaderStopped(thread_health.clone());
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(2)
                 .enable_all()
                 .build()
                 .expect("event reader runtime");
-            runtime.block_on(reader_loop(rt, transport, thread_health, thread_stop));
+            supervise(thread_health.clone(), thread_stop.clone(), || {
+                runtime.block_on(reader_loop(
+                    rt.clone(),
+                    transport.clone(),
+                    thread_health.clone(),
+                    thread_stop.clone(),
+                ));
+            });
         });
         Self {
             health,
@@ -136,7 +191,7 @@ async fn credential_call(
             .map_err(|e| format!("ckbus {method}: {e:?}"))
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| format!("reader stopped: credential worker {e}"))?
 }
 
 async fn credential(
@@ -322,24 +377,40 @@ pub async fn commit_batch(
     messages: &[jetstream::Message],
     acknowledge: bool,
 ) -> Result<Report, String> {
-    let notices = messages
-        .iter()
-        .filter_map(|m| match decode(m, rt.catalog()) {
-            Ok(notice) => Some(notice),
-            Err(reason) => {
-                tracing::warn!(target: "events", subject=%m.subject, %reason, "refusing malformed event notice before acknowledgement");
-                None
-            }
-        })
-        .collect::<Vec<_>>();
-    let mut commit = tokio::task::spawn_blocking(move || rt.admit_events(&notices));
+    commit_batch_report(rt, messages, acknowledge)
+        .await
+        .map(|(report, _)| report)
+}
+
+async fn commit_batch_report(
+    rt: Runtime,
+    messages: &[jetstream::Message],
+    acknowledge: bool,
+) -> Result<(Report, usize), String> {
+    let owned_messages = messages.to_vec();
+    // Decoding consults the synchronous daemon catalog. Keep it with SQLite
+    // admission on the blocking pool, while the async task sends progress acks.
+    let mut commit = tokio::task::spawn_blocking(move || {
+        let notices = owned_messages
+            .iter()
+            .filter_map(|m| match decode(m, rt.catalog()) {
+                Ok(notice) => Some(notice),
+                Err(reason) => {
+                    tracing::warn!(target: "events", subject=%m.subject, %reason, "refusing malformed event notice before acknowledgement");
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        let malformed = owned_messages.len() - notices.len();
+        rt.admit_events(&notices).map(|report| (report, malformed))
+    });
     let mut progress = tokio::time::interval_at(
         tokio::time::Instant::now() + Duration::from_secs(5),
         Duration::from_secs(5),
     );
     let report = loop {
         tokio::select! {
-            result = &mut commit => break result.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?,
+            result = &mut commit => break result.map_err(|e| format!("reader stopped: batch worker {e}"))?.map_err(|e| e.to_string())?,
             _ = progress.tick() => {
                 for message in messages { message.ack_with(jetstream::AckKind::Progress).await.map_err(|e| e.to_string())?; }
             }
@@ -411,7 +482,7 @@ async fn reader_loop(
             prior = Some(credential.clone());
             let connection = connect(transport.clone(), &credential).await?;
             let names = AccountNames::derive(&credential.acct).map_err(|e| e.to_string())?;
-            let consumer = bind(&connection, &names.streams().event).await?;
+            let mut consumer = bind(&connection, &names.streams().event).await?;
             {
                 let mut h = health.lock().unwrap_or_else(|p| p.into_inner());
                 h.connected = true; h.error = None; h.retry_in_ms = 0;
@@ -423,10 +494,12 @@ async fn reader_loop(
                 publish_outbox(&rt, &connection, &credential.acct).await?;
                 let start = Instant::now();
                 let messages = pull(&consumer).await?;
+                let info = tokio::time::timeout(Duration::from_secs(2), consumer.info())
+                    .await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
+                health.lock().unwrap_or_else(|p| p.into_inner()).backlog = info.num_pending.saturating_add(u64::try_from(info.num_ack_pending).unwrap_or(u64::MAX));
                 if messages.is_empty() { continue; }
                 let oldest = messages.iter().filter_map(|m| m.info().ok()).map(|i| now_ms().saturating_sub(i.published.unix_timestamp_nanos().div_euclid(1_000_000) as i64)).max();
-                let malformed = messages.iter().filter(|m| decode(m, rt.catalog()).is_err()).count();
-                let report = commit_batch(rt.clone(), &messages, true).await?;
+                let (report, malformed) = commit_batch_report(rt.clone(), &messages, true).await?;
                 let elapsed = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
                 let mut h = health.lock().unwrap_or_else(|p| p.into_inner());
                 if h.first_batch_notices.is_none() {
@@ -443,20 +516,66 @@ async fn reader_loop(
             }
             Ok::<_, String>(())
         }.await;
-        if stop.load(Ordering::Acquire) {
-            break;
-        }
-        if let Err(error) = session {
-            tracing::warn!(target: "events", retry_in_ms=delay, "event reader: {error}");
+        {
             let mut h = health.lock().unwrap_or_else(|p| p.into_inner());
             h.connected = false;
-            h.error = Some(error);
+            h.error = session.err();
             h.retry_in_ms = delay;
+            if let Some(error) = &h.error {
+                tracing::warn!(target: "events", retry_in_ms=delay, "event reader: {error}");
+            }
+        }
+        if stop.load(Ordering::Acquire) {
+            break;
         }
         let until = tokio::time::Instant::now() + Duration::from_millis(delay);
         while !stop.load(Ordering::Acquire) && tokio::time::Instant::now() < until {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         delay = (delay * 2).min(30_000);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reader_supervisor_reports_panic_and_restarts() {
+        check_restart(true);
+    }
+
+    #[test]
+    fn reader_supervisor_reports_unexpected_exit_and_restarts() {
+        check_restart(false);
+    }
+
+    fn check_restart(panic: bool) {
+        let health = Arc::new(Mutex::new(Health::default()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut attempts = 0;
+        let start = Instant::now();
+        let mut stopped_health = None;
+        supervise(health.clone(), stop.clone(), || {
+            attempts += 1;
+            if attempts == 1 {
+                health.lock().unwrap().connected = true;
+                assert!(!panic, "injected reader loop panic");
+            } else {
+                stopped_health = Some(health.lock().unwrap().clone());
+                stop.store(true, Ordering::Release);
+            }
+        });
+        assert_eq!(attempts, 2);
+        let h = stopped_health.unwrap();
+        assert!(!h.connected);
+        let expected = if panic {
+            "reader stopped: panic: injected reader loop panic"
+        } else {
+            "reader stopped: loop exited"
+        };
+        assert_eq!(h.error.as_deref(), Some(expected));
+        assert_eq!(h.retry_in_ms, 250);
+        assert!(start.elapsed() >= Duration::from_millis(250));
     }
 }

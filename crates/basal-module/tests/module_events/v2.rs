@@ -18,7 +18,7 @@ fn catalog() -> MockCatalog {
     catalog
 }
 
-async fn publish(server: &Server, subject: &str, id: &str, key: Option<&str>) {
+pub(super) async fn publish(server: &Server, subject: &str, id: &str, key: Option<&str>) {
     let headers = key
         .map(|key| BTreeMap::from([("event_key".into(), key.into())]))
         .unwrap_or_default();

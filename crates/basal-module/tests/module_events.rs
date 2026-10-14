@@ -16,6 +16,8 @@ use std::time::{Duration, Instant};
 mod common;
 #[path = "module_events/lifecycle.rs"]
 mod lifecycle;
+#[path = "module_events/reader.rs"]
+mod reader;
 #[path = "module_events/v2.rs"]
 mod v2;
 
@@ -48,6 +50,7 @@ struct Server {
     child: Child,
     dir: std::path::PathBuf,
     bus: NatsConnection,
+    url: String,
 }
 impl Server {
     async fn start() -> Self {
@@ -108,7 +111,12 @@ impl Server {
             })
             .await
             .unwrap();
-        Self { child, dir, bus }
+        Self {
+            child,
+            dir,
+            bus,
+            url: format!("nats://127.0.0.1:{port}"),
+        }
     }
     async fn publish(&self, n: u64, subject: &str) {
         self.publish_with_headers(n, subject, Default::default())
