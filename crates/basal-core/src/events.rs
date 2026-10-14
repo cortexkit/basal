@@ -270,7 +270,7 @@ fn offer(
             report.admitted += 1;
         }
         Admission::Duplicate { .. } | Admission::Tombstoned { .. } => report.duplicate += 1,
-        Admission::RateLimited | Admission::Draining => {
+        Admission::RateLimited | Admission::Draining | Admission::StateBusy => {
             if queued < BACKLOG_BOUND {
                 receipt(tx, flow, notice, "backlog", ctx.now_ms)?;
                 report.queued += 1;

@@ -372,8 +372,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/schedule/tick.rs"
-old = "if admission != Admission::Draining {"
-new = "if admission != Admission::Draining || true {"
+old = "if !matches!(admission, Admission::Draining | Admission::StateBusy) {"
+new = "if !matches!(admission, Admission::Draining | Admission::StateBusy) || true { // NON-VACUITY BREAK"
 
 [[control]]
 id = "unknown-spec-fields-accepted"

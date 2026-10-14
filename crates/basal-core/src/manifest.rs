@@ -52,6 +52,9 @@ pub struct Manifest {
     pub format: u32,
     pub id: String,
     pub version: u32,
+    /// Compatibility of this version with the flow's stored values.
+    #[serde(default = "one")]
+    pub state_epoch: u32,
     pub purpose: String,
     pub trigger: Trigger,
     /// Bounded values supplied by a template instance's creator.
@@ -630,6 +633,9 @@ impl Manifest {
         check_name("id", &self.id, MAX_FLOW_ID_BYTES, id_byte)?;
         if self.version == 0 {
             return Err(invalid("version", "must be at least 1"));
+        }
+        if self.state_epoch == 0 || self.state_epoch > i32::MAX as u32 {
+            return Err(invalid("state_epoch", "must be from 1 to 2147483647"));
         }
         if self.purpose.trim().is_empty() {
             return Err(invalid("purpose", "must not be empty"));

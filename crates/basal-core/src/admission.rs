@@ -58,6 +58,8 @@ pub enum Admission {
     /// trigger was not admitted. Callers may offer it again later, but the
     /// scheduler records it as dropped and does not retry that scheduled fire.
     RateLimited,
+    /// An epoch change waits for every previously admitted run to finish.
+    StateBusy,
 }
 
 impl Admission {
@@ -66,7 +68,11 @@ impl Admission {
             Self::Admitted { run_id }
             | Self::Duplicate { run_id }
             | Self::Tombstoned { run_id } => Some(run_id),
-            Self::Draining | Self::NotApproved | Self::Disabled | Self::RateLimited => None,
+            Self::Draining
+            | Self::NotApproved
+            | Self::Disabled
+            | Self::RateLimited
+            | Self::StateBusy => None,
         }
     }
 }
@@ -178,6 +184,21 @@ fn gate(
         return Ok(Err(Admission::NotApproved));
     }
     let deadline_ms = approved_deadline(&spec.manifest, ctx.default_deadline_ms)?;
+    let epoch = Manifest::parse(&spec.manifest)
+        .map_err(|e| CoreError::Corrupt(e.to_string()))?
+        .state_epoch;
+    if crate::state_epoch::recorded(tx, &spec.flow_id)? != epoch
+        && tx.query_row(
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM runs WHERE flow_id=?1 AND state IN {})",
+                runs::HOLDS_SLOT
+            ),
+            [&spec.flow_id],
+            |r| r.get::<_, bool>(0),
+        )?
+    {
+        return Ok(Err(Admission::StateBusy));
+    }
     if let Take::Refused { .. } =
         rate::take(tx, &spec.flow_id, rate::Kind::Run, ctx.now_ms, &ctx.rate)?
     {
@@ -200,6 +221,10 @@ fn insert_run(
     // age (how long it has waited since admission) is measured on one clock.
     now: i64,
 ) -> Result<String> {
+    // Admission may queue runs of the same epoch, but an epoch change is
+    // gated until all older runs are terminal. Reset and run creation commit
+    // together, before any worker can read or write the new epoch's values.
+    crate::state_epoch::reset(tx, &spec.flow_id, &spec.manifest, now)?;
     let (run_id, seq) = next_run_id(tx, store_id)?;
     tx.execute(
         "INSERT INTO runs (run_id, flow_id, trigger_id, attempt, trigger, script, manifest, \

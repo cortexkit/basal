@@ -142,7 +142,7 @@ fn registered_versions_are_immutable_and_get_returns_exact_bytes() {
         .unwrap();
     assert_eq!(
         got,
-        json!({"package":"dark-wake","version":1,"script":"return 1;","manifest":manifest(1).to_string(),"code_hash":first["code_hash"]})
+        json!({"package":"dark-wake","version":1,"script":"return 1;","manifest":manifest(1).to_string(),"code_hash":first["code_hash"],"state_epoch":1})
     );
     assert!(f.consent.undelivered().is_empty());
     assert!(f.module.rt.cards("dark-wake").unwrap().is_empty());

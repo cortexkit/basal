@@ -217,7 +217,7 @@ impl Scheduler {
     }
 
     /// Admits planned fires oldest first, one commit each, until none is
-    /// left or admission is draining.
+    /// left, admission is draining, or an epoch change is waiting for old runs.
     fn admit_planned(&self, now: Timestamp, out: &mut Vec<AdmittedFire>) -> Result<()> {
         let store_id = self.store.store_id().to_owned();
         let ctx = AdmitContext {
@@ -232,7 +232,7 @@ impl Scheduler {
             else {
                 return Ok(());
             };
-            if fire.admission == Admission::Draining {
+            if matches!(fire.admission, Admission::Draining | Admission::StateBusy) {
                 return Ok(());
             }
             let point = TickPoint::Admitted {

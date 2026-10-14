@@ -1012,7 +1012,17 @@ impl Module {
             DryRunError::Invalid(m) => invalid_params(m),
             DryRunError::Failed(m) => OpError::new("dry_run_failed", m),
         })?;
-        Ok(json!({ "flow_id": p.flow_id, "version": version.version, "summary": summary }))
+        let epoch = basal_core::Manifest::parse(&request.manifest)
+            .map_err(|e| OpError::new("internal", e.to_string()))?
+            .state_epoch;
+        let state_reset = self
+            .rt
+            .store()
+            .read(|c| basal_core::state_epoch::would_reset(c, &p.flow_id, epoch))
+            .map_err(|e| self.core_error(e))?;
+        Ok(
+            json!({ "flow_id": p.flow_id, "version": version.version, "summary": summary, "state_reset": state_reset }),
+        )
     }
 
     /// The version a dry run runs: the one named, else the approved one,
@@ -1121,7 +1131,7 @@ impl Module {
                     f.disabled_by, f.disabled_reason, f.disabled_at,
                     (SELECT MAX(i.version) FROM installs i WHERE i.flow_id=f.flow_id AND i.state='validated' AND NOT EXISTS (SELECT 1 FROM install_cards c WHERE c.flow_id=i.flow_id AND c.version=i.version AND c.state<>'pending')),
                     r.run_id, r.state, COALESCE(r.ended_at,r.admitted_at),
-                    EXISTS(SELECT 1 FROM runs WHERE flow_id=f.flow_id AND state='needs_reconcile'), f.agent_retirement
+                    EXISTS(SELECT 1 FROM runs WHERE flow_id=f.flow_id AND state='needs_reconcile'), f.agent_retirement, f.state_epoch
                  FROM flows f LEFT JOIN runs r ON r.run_id=(
                     SELECT run_id FROM runs WHERE flow_id=f.flow_id
                     AND state IN ('succeeded','failed','engine_mismatch','cancelled')
@@ -1150,6 +1160,7 @@ impl Module {
                     },
                     "needs_reconcile": r.get::<_, bool>(10)?,
                     "agent_retirement": r.get::<_, Option<String>>(11)?,
+                    "state_epoch": r.get::<_, u32>(12)?,
                 }))
             })?.collect::<rusqlite::Result<Vec<_>>>()?;
             for row in &mut rows {
@@ -1280,6 +1291,8 @@ impl Module {
                 "needs_reconcile_runs": f.needs_reconcile,
                 "owner": f.owner,
                 "approved_version": f.approved_version,
+                "state_epoch": f.state_epoch,
+                "last_state_reset_at": f.last_state_reset_at.map(rfc3339).transpose()?,
                 "approval": f.approval,
                 "install_checks": f.install_checks,
                 "install_cards": self.rt.cards(&f.flow_id).map_err(|e| self.core_error(e))?.iter().map(|card| json!({"version":card.version,"attempt":card.attempt,"state":card.state.as_str()})).collect::<Vec<_>>(),

@@ -200,13 +200,16 @@ impl Runtime {
     }
 
     pub fn get_package(&self, package: &str, version: u32) -> Result<Value, PackageError> {
-        let p = self
-            .store()
-            .read(|c| get(c, package, version))?
-            .ok_or_else(|| refused("package_unknown"))?;
-        Ok(
-            json!({"package":package,"version":version,"script":p.script,"manifest":p.manifest,"code_hash":hex(&p.code_hash)}),
-        )
+        self.store().read(|c| {
+            let Some(p) = get(c, package, version)? else { return Ok(None); };
+            let epoch = Manifest::parse(&p.manifest).map_err(|e| CoreError::Corrupt(e.to_string()))?.state_epoch;
+            let epochs = c.prepare("SELECT flow_id,state_epoch FROM flows WHERE package=?1 ORDER BY flow_id")?
+                .query_map([package], |r| Ok((r.get::<_,String>(0)?,r.get::<_,u32>(1)?)))?
+                .collect::<rusqlite::Result<std::collections::BTreeMap<_,_>>>()?;
+            let mut reply = json!({"package":package,"version":version,"script":p.script,"manifest":p.manifest,"code_hash":hex(&p.code_hash),"state_epoch":epoch});
+            if !epochs.is_empty() { reply["instance_state_epochs"] = json!(epochs); }
+            Ok(Some(reply))
+        })?.ok_or_else(|| refused("package_unknown"))
     }
 
     pub fn ensure_instance(

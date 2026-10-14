@@ -55,6 +55,7 @@ fn documented_example_round_trips_and_installs() {
     let parsed = Manifest::parse(&text).expect("the documented example parses");
     assert_eq!(parsed.id, "synapse-xcom-inference-news");
     assert_eq!(parsed.version, 3);
+    assert_eq!(parsed.state_epoch, 1);
     assert_eq!(parsed.llm.as_ref().unwrap().iq, 65);
     assert_eq!(parsed.llm.as_ref().unwrap().eq, 20);
     let again = serde_json::to_string(&parsed).expect("serialise");

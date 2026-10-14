@@ -75,6 +75,8 @@ pub struct FlowHealth {
     pub agent_retirement: Option<serde_json::Value>,
     pub waiting_reason: Option<String>,
     pub flow_id: String,
+    pub state_epoch: u32,
+    pub last_state_reset_at: Option<i64>,
     pub enabled: bool,
     pub owner: Option<String>,
     pub approved_version: Option<u32>,
@@ -205,6 +207,12 @@ pub fn flow_health(conn: &Connection, now_ms: i64) -> Result<Vec<FlowHealth>> {
             )?,
         };
         flows.push(FlowHealth {
+            state_epoch: crate::state_epoch::recorded(conn, &flow_id)?,
+            last_state_reset_at: conn.query_row(
+                "SELECT last_state_reset_at FROM flows WHERE flow_id=?1",
+                [&flow_id],
+                |r| r.get(0),
+            )?,
             filtered_out: conn
                 .query_row(
                     "SELECT filtered_out FROM event_flow_health WHERE flow_id=?1",

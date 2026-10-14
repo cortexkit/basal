@@ -242,7 +242,8 @@ fn dropped_reason(admission: &Admission) -> Option<&'static str> {
 
 /// Admits the oldest planned fire, in the caller's transaction, under the
 /// flow's version approved now, and removes it from the planned fires
-/// unless admission is draining. A fire refused for good is recorded in
+/// unless admission is draining or waiting for an older state epoch's runs.
+/// A fire refused for good is recorded in
 /// `schedule_dropped`. `None` when nothing is planned.
 pub fn admit_next(
     tx: &Transaction,
@@ -307,7 +308,7 @@ fn admit_oldest(
     let trigger = JsonText::new(payload.clone())
         .map_err(|e| CoreError::Corrupt(format!("planned fire {trigger_id}: {e:?}")))?;
     let admission = admission::admit_current(tx, store_id, &flow_id, &trigger_id, trigger, ctx)?;
-    if admission != Admission::Draining {
+    if !matches!(admission, Admission::Draining | Admission::StateBusy) {
         if let Some(reason) = dropped_reason(&admission) {
             tx.execute(
                 "INSERT INTO schedule_dropped (flow_id, trigger_id, due_ms, payload, reason, at) \

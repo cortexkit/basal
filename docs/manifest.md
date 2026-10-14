@@ -16,6 +16,7 @@ A flow is a script plus a manifest. The manifest says everything the flow may do
 | `format` | integer | no | `1` | The manifest format. Only `1` is read. |
 | `id` | string | yes | | The flow id: 1 to 63 bytes of `a-z`, `0-9`, `-`, `_`. Stable across versions; `kv`, the token windows, the rate limits and the owner are per flow id. `flow.install` refuses ids ending in `_` followed by exactly 16 lowercase hex characters (`_[0-9a-f]{16}$`) with `flow_id_reserved`: this namespace belongs to [package instances](packages.md). |
 | `version` | integer | yes | | At least 1. A new install must be above the approved version. |
+| `state_epoch` | integer | no | `1` | From 1 to 2147483647. Declares which stored-value layout this version reads; valid for ordinary flows, packages and templates. Part of the hashed manifest and approval card. |
 | `purpose` | string | yes | | 1 to 1024 bytes, no control characters except newline. Shown on the card. |
 | `trigger` | object | yes | | Exactly one of `events` and `schedule` (below). |
 | `audience` | `{kind, id?}` | no | none | Approved delivery reach: global, workspace or agent. See below. |
@@ -38,6 +39,31 @@ A flow is a script plus a manifest. The manifest says everything the flow may do
 Names: module ids use `a-z`, `0-9`, `-`, `_`; op names add `A-Z` and `.` (`browser.read_page`; the pair, never the dots, identifies the op); event names and source kinds are one NATS subject token, `a-z`, `0-9`, `_`; agent names use letters, digits, `-` and `_`. Every name is 1 to 128 bytes.
 
 A duration is a positive whole number followed by one unit: `s`, `m`, `h` or `d` (`"90s"`, `"10m"`, `"6h"`, `"1d"`).
+
+### Stored-value compatibility
+
+Each flow id records the `state_epoch` its `kv` belongs to, initially 1 for existing
+and new flows. Template instances inherit their version's epoch declaration,
+but their recorded epoch starts at 1 and changes independently on admission.
+If the declared and recorded epochs
+differ, the first admitted run clears only that flow id's `kv` and records the
+new epoch in the same transaction. Equality is the only rule: rolling back from
+epoch 2 to epoch 1 clears values again. Approving the version approves this reset;
+there is no separate reset card. Approval alone, or a version never admitted,
+clears nothing.
+
+Previously admitted runs retain their own version and finish before an
+incompatible version can be admitted (`state_busy` internally while waiting).
+Events follow normal bounded-backlog and eligibility rules; planned schedule
+fires stay queued for retry.
+Token/rate windows, schedule positions, event receipts/backlog, deduplication
+records, journals and decision cards are never cleared by the reset. Durable
+`state_resets` history logs flow id, old/new epoch, keys cleared and time.
+
+Management fields are described in [ops](ops.md): `flow.list` and `flow.health`
+report recorded `state_epoch`; health adds `last_state_reset_at`; `package.get`
+reports declared `state_epoch` and `instance_state_epochs`; `flow.dry_run` always
+reports boolean `state_reset` without changing stored values.
 
 ### Agent fields
 
@@ -291,6 +317,7 @@ This example is parsed, round-tripped and installed by `dispatch_manifest::docum
   "format": 1,
   "id": "synapse-xcom-inference-news",
   "version": 3,
+  "state_epoch": 1,
   "purpose": "Walk the operator's x.com feed for inference news and send hits to Synapse.",
   "trigger": { "schedule": { "cron": "*/30 * * * *", "tz": "Europe/Madrid", "missed": "once" } },
   "sinks": [ { "agent": "SYNAPSE", "digest_max": "piggyback", "break_through": false } ],

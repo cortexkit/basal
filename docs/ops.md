@@ -80,8 +80,15 @@ Dry run validates the stored manifest under its author with the same self-only r
 
 Reply:
 ```json
-{"flow_id":"string","version":"integer","summary":"any"}
+{"flow_id":"string","version":"integer","summary":"any","state_reset":"boolean"}
 ```
+`state_reset` is always present: true when the selected version's declared
+`state_epoch` differs from the flow's recorded epoch, or from any retained
+instance's epoch when naming a template. Otherwise it is false, including for
+a template with no instances. This preview reads real state on one snapshot,
+but never clears it. The optional manifest `state_epoch` is an integer from
+1 to 2147483647, default 1, and is covered by the version's hash and approval.
+
 The summary is the dry-run trace, including calls and sink writes. Its journal uses an isolated scratch store; live mode dispatches eligible query ops to real hosts and is not a guarantee of no external effects. Its fields are:
 ```json
 {"mode":"capture|live","window":"window shape below","partial":"boolean","runs":[{"run_id":"string","trigger_id":"string","trigger":"any","state":"string","result":"any|null","error":{"kind":"string","detail":"string|null"},"ending":"string|null","partial":"boolean","calls":[{"position":"integer","kind":"string","module":"string|null","op":"string|null","args":"any","outcome":"outcome shape below|null","action":"live|captured|local|refused","partial":"boolean","sink?":{"agent":"string","requested":"string|null","cap":"string|null","effective":"string|null","policy":"string"}}],"calls_total":"integer"}]}
@@ -170,13 +177,41 @@ The reply shape below is validated by `crates/basal-module/tests/list_contract.r
 
 Reply (machine-checked by `list_contract`):
 ```json
-{"as_of":"integer","flows":[{"flow_id":"string","state":"enabled|disabled|unapproved","approved_version":"integer|null","approval":"approval|null","install_checks":[{"version":"integer","error":"string"}],"install_cards":[{"version":"integer","attempt":"integer|null","state":"pending|approved|declined|expired|rejected|stale"}],"pending_version":"integer|null","disabled":{"by":"operator|owner|auto|core","reason":"string","at":"integer"},"last_run":{"run_id":"string","state":"string","ended_at":"integer"},"needs_reconcile":"boolean","grant_losses":[{"flow_id":"string","provider":"string","grant":"string","grant_label":"string","echoable":"boolean","run_id":"string","version":"integer","revision":"integer","state":"polling|stopped","failures":"integer","next_poll_at_ms":"integer","lost_at_ms":"integer"}],"agent_retirement":{"agent_id":"string|null","agent_reference":"string|null","provider":"string","action":"string","at_ms":"integer"}}]}
+{"as_of":"integer","flows":[{"flow_id":"string","state_epoch":"integer","state":"enabled|disabled|unapproved","approved_version":"integer|null","approval":"approval|null","install_checks":[{"version":"integer","error":"string"}],"install_cards":[{"version":"integer","attempt":"integer|null","state":"pending|approved|declined|expired|rejected|stale"}],"pending_version":"integer|null","disabled":{"by":"operator|owner|auto|core","reason":"string","at":"integer"},"last_run":{"run_id":"string","state":"string","ended_at":"integer"},"needs_reconcile":"boolean","grant_losses":[{"flow_id":"string","provider":"string","grant":"string","grant_label":"string","echoable":"boolean","run_id":"string","version":"integer","revision":"integer","state":"polling|stopped","failures":"integer","next_poll_at_ms":"integer","lost_at_ms":"integer"}],"agent_retirement":{"agent_id":"string|null","agent_reference":"string|null","provider":"string","action":"string","at_ms":"integer"}}]}
 ```
 `disabled` and `last_run` may each be null, but their keys must be present. All times are Unix epoch milliseconds. `pending_version` is the newest undecided installed version (with a card or awaiting policy confirmation), or null; `approved_version` is null until approval. `state` uses the same approval-first computation as `flow.health`. `last_run` is the most recent finished run, not an in-flight run. `needs_reconcile` is true if any run awaits reconciliation. The disable's actor kind, reason and time are the recorded disable, or null after enabling. `by` is `operator`, `owner` (the owning agent), `auto` (the runtime's loop protection) or `core`. A `core` disable may mean core revoked the version, holds no install of that version, or approved a different code hash for it; it may also mean `grant_lost` or `agent_retired`. Losing core's approval also clears the approved version, so the flow lists as `unapproved`; approval of a newer version clears that stop, but does not override an operator or owner stop.
 
 Template instance entries additionally contain `template`, `version`, canonical `params` and `expires_at` in Unix milliseconds. Persona and ordinary entries omit those keys. Expired and ended instances remain visible to their owner and the operator. The enable state is independent of ending and expiry; enabling cannot reopen an ended or expired instance.
 
 `install_cards` is always an array of `{version, attempt, state}` records, including declined and expired requests; an attempt is null when no core card key was received. Both `flow.list` and `flow.health` also report `approval` for the current approved version: null when none is approved, `{kind: card}`, `{kind: policy, rule: string}`, or `{kind: unknown}` for approval whose provenance core did not supply. `install_checks` is always an array of `{version: integer, error: string}` records for pending versions whose last confirmation failed; a successful card raise or approval clears that version's error.
+
+## Stored-value epochs in management replies
+
+Each `flow.list.flows[]` and `flow.health.flows[]` entry includes integer
+`state_epoch`: the epoch of that flow id's current stored values, not necessarily
+its approved version's declared epoch. Existing flows start at 1. Health also
+includes `last_state_reset_at`, an RFC 3339 UTC timestamp or null if never reset.
+It timestamps the epoch-reset admission even if there were zero keys to clear.
+Both fields apply independently to package and template instances.
+
+Core-only `package.get` returns the exact registered bytes plus integer
+`state_epoch` (that version's declaration, default 1) and, when instances exist,
+`instance_state_epochs`, an object mapping each retained instance flow id to its
+recorded integer epoch. Removed, ended and expired instances are included because
+they can still own stored values. No instances means the map is omitted. Core
+compares its values with the declared epoch and renders
+"Upgrading clears this flow's stored values (every instance)" when they differ.
+See [packages](packages.md#package.get).
+
+The version's approval is approval of the reset, not a separate card. Only
+`kv` is cleared, at the first admitted run with a differing epoch, atomically
+with the admission and epoch update. Earlier admitted runs must finish first;
+events follow normal bounded-backlog and eligibility rules, and planned schedule
+fires wait for retry during that boundary. Rollback to a different
+epoch resets again. Approval or dry run alone resets nothing. Token/rate windows,
+schedule positions, event receipts/backlog, deduplication records, journals and
+decision cards are preserved. The durable `state_resets` log records flow id,
+old/new epoch, keys cleared and reset time.
 
 ## Target flow scopes
 
