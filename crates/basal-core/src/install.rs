@@ -42,7 +42,6 @@ pub struct InstallRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstallError {
     SelfRequiresPackage,
-    AudienceRequiresOperator,
     UnknownWorkspace(String),
     WorkspaceRegistryUnavailable(String),
     FlowScopeUnsupported {
@@ -218,7 +217,7 @@ pub(crate) fn validate_inner(
     loop_override: bool,
     package: bool,
 ) -> std::result::Result<Vec<Warning>, InstallError> {
-    validate_audience(manifest, author, catalog)?;
+    validate_audience(manifest, catalog)?;
     let mut warnings = Vec::new();
     let mut trigger_modules: Vec<&str> = Vec::new();
     if let Some(events) = &manifest.trigger.events {
@@ -361,26 +360,14 @@ pub(crate) fn validate_inner(
     Ok(warnings)
 }
 
-/// Broad delivery by an agent author is opt-in policy, not implied by a sink grant.
-fn agent_may_request_broad_audience() -> bool {
-    false
-}
-
+/// Validate audience references; core decides whether the requested reach is approved.
 fn validate_audience(
     manifest: &Manifest,
-    author: &str,
     catalog: &dyn Catalog,
 ) -> std::result::Result<(), InstallError> {
     let Some(audience) = &manifest.audience else {
         return Ok(());
     };
-    if author != crate::decisions::OPERATOR_ACTOR
-        && author != "local:unverified"
-        && !matches!(audience, Audience::Agent { .. })
-        && !agent_may_request_broad_audience()
-    {
-        return Err(InstallError::AudienceRequiresOperator);
-    }
     if let Audience::Workspace { id } = audience {
         match catalog.workspace_known(id) {
             Ok(true) => {}

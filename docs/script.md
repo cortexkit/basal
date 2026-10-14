@@ -96,6 +96,12 @@ the approved audience at delivery time. A refusal such as
 `sink_target_not_in_audience` reaches the script unchanged, so it can catch the
 rejection. Membership is not cached at install or decided by the script.
 
+Any author may request a workspace or global audience through `flow.install`;
+the requester does not grant that reach. Core allows self installs by default,
+asks for workspace installs by default (configurable), and always asks for
+global installs. Basal never accepts a policy approval for global reach, even
+at startup recovery: that audience needs core's card answer.
+
 `sink.digest(agent, item, action, options)` delivers `item` to the agent's digest
 through prefrontal-core, which validates it strictly. `action` is `silent`,
 `piggyback` or `wake`; the manifest's `digest_max` is the approved cap. The item has

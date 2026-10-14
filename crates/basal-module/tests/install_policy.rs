@@ -25,8 +25,34 @@ const FLOW: &str = "policy-flow";
 const RULE: &str = "head-self-within-limits";
 const SCRIPT: &str = "return 1;";
 
+fn head() -> Caller {
+    Caller::Agent {
+        agent_id: "ag_synapse".into(),
+        scope_ref: wire::LIVE_SYNAPSE_SCOPES[0].into(),
+    }
+}
+
 fn manifest(id: &str, version: u32) -> String {
     json!({"id":id,"version":version,"purpose":"Report to Synapse","trigger":{"schedule":{"interval":"1h"}},"sinks":[{"agent":"SYNAPSE","digest_max":"piggyback"}],"ops":[{"module":"mock","op":"echo"}]}).to_string()
+}
+
+fn audience_manifest(audience: Value) -> String {
+    let mut value: Value = serde_json::from_str(&manifest(FLOW, 1)).unwrap();
+    value["audience"] = audience;
+    value["sinks"][0]["agent"] = json!("$audience");
+    value.to_string()
+}
+
+fn install_audience(
+    f: &common::Fixture,
+    caller: &Caller,
+    manifest: &str,
+) -> Result<Value, basal_module::ops::OpError> {
+    f.module.handle(
+        caller,
+        "flow.install",
+        json!({"script":SCRIPT,"manifest":manifest}),
+    )
 }
 
 fn hash(id: &str, version: u32) -> String {
@@ -179,6 +205,142 @@ fn hint(
         "flow.install_decided",
         json!({"flow_id":FLOW,"version":1,"attempt":attempt}),
     )
+}
+
+#[test]
+fn agent_global_install_waits_for_core_card_answer() {
+    let fake = Fake::new();
+    let f = fixture(&fake, "agent-global-card");
+    let manifest = audience_manifest(json!({"kind":"global"}));
+    let hash = basal_core::ids::hex(&basal_core::ids::code_hash(SCRIPT, &manifest));
+    let reply = install_audience(&f, &head(), &manifest).unwrap();
+    assert_eq!(reply["state"], "pending");
+    assert!(reply["card_id"].is_string());
+    let requests = fake.calls("flow.install_request");
+    assert_eq!(requests.len(), 1);
+    let sent_manifest: Value = serde_json::from_str(
+        requests[0]["params"]["flow_install"]["manifest_json"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(sent_manifest["audience"], json!({"kind":"global"}));
+    assert_eq!(
+        f.module.rt.flow(FLOW).unwrap().unwrap().approved_version,
+        None
+    );
+    assert!(f.module.rt.outbox().unwrap().is_empty());
+    let attempt = reply["attempt"].as_i64().unwrap();
+    fake.enqueue(
+        "flow.install_status",
+        vec![Ok(
+            json!({"state":"pending","code_hash":hash,"attempt":attempt}),
+        )],
+    );
+    hint(&f, &Caller::Core, attempt).unwrap();
+    assert_eq!(
+        f.module.rt.flow(FLOW).unwrap().unwrap().approved_version,
+        None
+    );
+    fake.enqueue(
+        "flow.install_status",
+        vec![Ok(
+            json!({"state":"active","code_hash":hash,"approval":{"kind":"card"}}),
+        )],
+    );
+    hint(&f, &Caller::Core, attempt).unwrap();
+    assert_eq!(
+        f.module.rt.flow(FLOW).unwrap().unwrap().approved_version,
+        Some(1)
+    );
+    assert_eq!(
+        entry(&f, "flow.health", FLOW)["approval"],
+        json!({"kind":"card"})
+    );
+    assert_eq!(fake.calls("flow.install_status").len(), 2);
+}
+
+fn assert_global_policy_refused(f: &common::Fixture) {
+    assert_pending(f);
+    let health = entry(f, "flow.health", FLOW);
+    let error = health["install_checks"][0]["error"].as_str().unwrap();
+    for text in [
+        "global audience requires a card approval",
+        RULE,
+        FLOW,
+        "version 1",
+    ] {
+        assert!(error.contains(text), "{error}");
+    }
+    assert!(f.module.rt.outbox().unwrap().is_empty());
+    assert!(
+        f.module
+            .rt
+            .store()
+            .read(|c| basal_core::schedule::table::load(c, FLOW))
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        f.module.rt.cards(FLOW).unwrap()[0].state,
+        basal_core::cards::CardState::Pending
+    );
+}
+
+#[test]
+fn global_policy_approval_is_refused_live() {
+    for caller in [Caller::Operator, Caller::Local, head()] {
+        for policy_reply_first in [true, false] {
+            let fake = Fake::new();
+            let f = fixture(&fake, "global-policy-live");
+            let manifest = audience_manifest(json!({"kind":"global"}));
+            let hash = basal_core::ids::hex(&basal_core::ids::code_hash(SCRIPT, &manifest));
+            if policy_reply_first {
+                fake.enqueue("flow.install_request", vec![Ok(policy_reply(&hash))]);
+                // Even a card status cannot legitimize the policy reply's global reach.
+                fake.enqueue(
+                    "flow.install_status",
+                    vec![Ok(
+                        json!({"state":"active","code_hash":hash,"approval":{"kind":"card"}}),
+                    )],
+                );
+                assert_eq!(
+                    install_audience(&f, &caller, &manifest).unwrap_err().code,
+                    "install_policy_unconfirmed"
+                );
+            } else {
+                let reply = install_audience(&f, &caller, &manifest).unwrap();
+                fake.enqueue("flow.install_status", vec![Ok(active(&hash))]);
+                hint(&f, &Caller::Core, reply["attempt"].as_i64().unwrap()).unwrap();
+            }
+            assert_global_policy_refused(&f);
+            assert_eq!(fake.calls("flow.install_status").len(), 1);
+        }
+    }
+}
+
+#[test]
+fn self_and_workspace_audiences_accept_policy_approval() {
+    for audience in [
+        json!({"kind":"agent","id":"ag_synapse"}),
+        json!({"kind":"workspace","id":"team"}),
+    ] {
+        let fake = Fake::new();
+        fake.catalog.lock().unwrap()["modules"].as_array_mut().unwrap().push(json!({"module_id":"entorhinal","roles":[{"role":"management_surface","operations":[{"name":"enumerate","kind":"query"}],"config_schema":{},"observability":[],"identity_scope":[],"concurrency":"serial"}]}));
+        fake.enqueue(
+            "enumerate",
+            vec![Ok(json!({"workspaces":[{"workspaceId":"team"}]}))],
+        );
+        let f = fixture(&fake, "audience-policy");
+        let manifest = audience_manifest(audience);
+        let hash = basal_core::ids::hex(&basal_core::ids::code_hash(SCRIPT, &manifest));
+        fake.enqueue("flow.install_request", vec![Ok(policy_reply(&hash))]);
+        fake.enqueue("flow.install_status", vec![Ok(active(&hash))]);
+        let reply = install_audience(&f, &head(), &manifest).unwrap();
+        assert_eq!(reply["state"], "approved");
+        assert_eq!(reply["approval"], json!({"kind":"policy","rule":RULE}));
+        assert_eq!(entry(&f, "flow.health", FLOW)["install_checks"], json!([]));
+    }
 }
 
 #[test]
@@ -481,9 +643,13 @@ fn unknown_install_outcome_is_an_error_even_with_a_valid_hash_or_card_id() {
 }
 
 fn seed(store: &Store, id: &str, card: bool, confirmed: bool) {
+    seed_manifest(store, id, &manifest(id, 1), card, confirmed);
+}
+
+fn seed_manifest(store: &Store, id: &str, manifest: &str, card: bool, confirmed: bool) {
     let request = InstallRequest {
         script: SCRIPT.into(),
-        manifest: manifest(id, 1),
+        manifest: manifest.into(),
         author: "operator".into(),
         loop_override: false,
     };
@@ -501,6 +667,56 @@ fn seed(store: &Store, id: &str, card: bool, confirmed: bool) {
             Ok(())
         })
         .unwrap();
+}
+
+#[test]
+fn global_policy_approval_is_refused_at_startup() {
+    for (card, confirmed) in [(false, false), (true, false), (true, true)] {
+        let fake = Fake::new();
+        let manifest = audience_manifest(json!({"kind":"global"}));
+        let hash = basal_core::ids::hex(&basal_core::ids::code_hash(SCRIPT, &manifest));
+        let f = common::fixture_with_store(
+            "global-policy-startup",
+            common::Options {
+                hosts: Some(hosts(&fake, false)),
+                install_gate: InstallGate::Core,
+                ..common::Options::default()
+            },
+            |store| {
+                seed_manifest(&store, FLOW, &manifest, card, confirmed);
+                fake.enqueue("flow.install_status", vec![Ok(active(&hash))]);
+                Ok(())
+            },
+        );
+        assert_pending(&f);
+        let health = entry(&f, "flow.health", FLOW);
+        let error = health["install_checks"][0]["error"].as_str().unwrap();
+        assert!(
+            error.contains("global audience requires a card approval"),
+            "{error}"
+        );
+        assert!(error.contains(RULE), "{error}");
+        assert!(f.module.rt.outbox().unwrap().is_empty());
+        assert!(
+            f.module
+                .rt
+                .store()
+                .read(|c| basal_core::schedule::table::load(c, FLOW))
+                .unwrap()
+                .is_none()
+        );
+        if card {
+            assert_eq!(
+                f.module.rt.cards(FLOW).unwrap()[0].state,
+                basal_core::cards::CardState::Pending
+            );
+        }
+        assert_eq!(fake.calls("flow.install_status").len(), 1);
+        for _ in 0..3 {
+            f.module.engine.run_until_idle(10).unwrap();
+        }
+        assert_eq!(fake.calls("flow.install_status").len(), 1);
+    }
 }
 
 struct StartupTransport {

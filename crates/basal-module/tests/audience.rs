@@ -223,18 +223,6 @@ fn install_and_dry_run_apply_audience_authorship_and_resolution() {
     f.catalog.add_workspace("team");
     for (n, audience, author, expected) in [
         (
-            0,
-            json!({"kind":"global"}),
-            "agent_owner",
-            "audience_requires_operator",
-        ),
-        (
-            1,
-            json!({"kind":"workspace","id":"team"}),
-            "agent_owner",
-            "audience_requires_operator",
-        ),
-        (
             2,
             json!({"kind":"agent","id":"ALF"}),
             "agent_owner",
@@ -313,6 +301,12 @@ fn install_and_dry_run_apply_audience_authorship_and_resolution() {
         (4, Caller::Local, json!({"kind":"global"})),
         (5, Caller::Local, json!({"kind":"workspace","id":"team"})),
         (6, Caller::Local, json!({"kind":"agent","id":"ALF"})),
+        (7, agent("agent_owner"), json!({"kind":"global"})),
+        (
+            8,
+            agent("agent_owner"),
+            json!({"kind":"workspace","id":"team"}),
+        ),
     ] {
         let id = format!("allowed-{n}");
         let reply = install(&f, &caller, "return 1;", &audience_manifest(&id, audience));
@@ -326,6 +320,62 @@ fn install_and_dry_run_apply_audience_authorship_and_resolution() {
             )
             .unwrap();
     }
+}
+
+#[test]
+fn operator_live_dry_run_of_agent_global_flow_captures_sinks_without_enabling() {
+    let f = fixture("audience-live-dry", Options::default());
+    let script = "const digest = await sink.digest('ALF', { title: 'test' }, 'piggyback').catch(e => e.data.code); const status = await sink.status('ALF', 'test').catch(e => e.data.code); return { digest, status };";
+    let reply = install(
+        &f,
+        &agent("SYNAPSE"),
+        script,
+        &audience_manifest("dry-global", json!({"kind":"global"})),
+    );
+    assert_eq!(reply["state"], "pending");
+    assert_eq!(
+        f.module
+            .handle(
+                &agent("SYNAPSE"),
+                "flow.dry_run",
+                json!({"flow_id":"dry-global","mode":"live","trigger":{}})
+            )
+            .unwrap_err()
+            .code,
+        "not_permitted"
+    );
+    let summary = f
+        .module
+        .handle(
+            &Caller::Operator,
+            "flow.dry_run",
+            json!({"flow_id":"dry-global","mode":"live","trigger":{}}),
+        )
+        .unwrap();
+    let run = &summary["summary"]["runs"][0];
+    assert_eq!(
+        run["result"],
+        json!({"digest":"captured","status":"captured"}),
+        "{summary}"
+    );
+    let calls = run["calls"].as_array().unwrap();
+    assert_eq!(calls.len(), 2, "{summary}");
+    assert!(
+        calls.iter().all(|call| call["action"] == "captured"),
+        "{summary}"
+    );
+    assert_eq!(
+        f.module
+            .rt
+            .flow("dry-global")
+            .unwrap()
+            .unwrap()
+            .approved_version,
+        None
+    );
+    assert!(f.mock.effects().is_empty());
+    assert_eq!(f.mock.total_sends(), 0);
+    assert!(f.module.rt.outbox().unwrap().is_empty());
 }
 
 #[test]

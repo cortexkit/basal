@@ -131,7 +131,7 @@ fn agent_audience_resolves_to_same_stable_author() {
 }
 
 #[test]
-fn broad_audience_requires_operator_authorship() {
+fn all_authors_may_request_broad_audiences() {
     let catalog = MockCatalog::standard();
     catalog.add_workspace("team");
     for audience in [
@@ -139,23 +139,7 @@ fn broad_audience_requires_operator_authorship() {
         json!({"kind":"global"}),
     ] {
         let m = parse(&manifest(Some(audience))).unwrap();
-        assert!(matches!(
-            install::validate(&m, "SYNAPSE", &catalog, &ShellDenylist::default(), false),
-            Err(InstallError::AudienceRequiresOperator)
-        ));
-    }
-}
-
-#[test]
-fn operator_and_local_authors_may_request_broad_audiences() {
-    let catalog = MockCatalog::standard();
-    catalog.add_workspace("team");
-    for audience in [
-        json!({"kind":"workspace","id":"team"}),
-        json!({"kind":"global"}),
-    ] {
-        let m = parse(&manifest(Some(audience))).unwrap();
-        for author in ["operator", "local:unverified"] {
+        for author in ["SYNAPSE", "operator", "local:unverified"] {
             install::validate(&m, author, &catalog, &ShellDenylist::default(), false).unwrap();
         }
     }
@@ -165,9 +149,11 @@ fn operator_and_local_authors_may_request_broad_audiences() {
 fn workspace_audience_must_exist() {
     let catalog = MockCatalog::standard();
     let m = parse(&manifest(Some(json!({"kind":"workspace","id":"missing"})))).unwrap();
-    assert!(
-        matches!(install::validate(&m, "operator", &catalog, &ShellDenylist::default(), false), Err(InstallError::UnknownWorkspace(id)) if id == "missing")
-    );
+    for author in ["SYNAPSE", "operator", "local:unverified"] {
+        assert!(
+            matches!(install::validate(&m, author, &catalog, &ShellDenylist::default(), false), Err(InstallError::UnknownWorkspace(id)) if id == "missing")
+        );
+    }
 }
 
 #[test]
