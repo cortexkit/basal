@@ -126,6 +126,28 @@ mod privacy {
         );
     }
 
+    async fn trace_responsibility(pid: u32, phase: &str, started: Instant, first: u32) {
+        if std::env::var_os("BASAL_PRIVACY_TRACE").is_none() {
+            return;
+        }
+        eprintln!(
+            "PRIVACY_PROBE {}",
+            json!({"phase": phase, "pid": pid, "observer": std::process::id(),
+                "elapsed_us": started.elapsed().as_micros(), "responsible": first,
+                "observer_responsible": responsible_pid(std::process::id())})
+        );
+        for delay_ms in [1, 10, 100, 1000] {
+            // Diagnostic sampling only: the assertion uses the value captured before this loop.
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            eprintln!(
+                "PRIVACY_PROBE {}",
+                json!({"phase": phase, "pid": pid, "observer": std::process::id(),
+                    "elapsed_us": started.elapsed().as_micros(), "responsible": responsible_pid(pid),
+                    "observer_responsible": responsible_pid(std::process::id())})
+            );
+        }
+    }
+
     #[tokio::test]
     async fn plain_control_exec_barrier_drains_its_ack() {
         let mut control = ReapedChild(
@@ -200,6 +222,7 @@ mod privacy {
         // A control: a plainly launched child, held alive by its open stdin
         // rather than a timer. It must report its parent's responsible process,
         // so the measurement below can tell a disclaimed worker from a plain one.
+        let started = Instant::now();
         let mut control = ReapedChild(
             Command::new("/bin/cat")
                 .stdin(Stdio::piped())
@@ -208,9 +231,19 @@ mod privacy {
                 .spawn()
                 .expect("plain control child"),
         );
+        if std::env::var_os("BASAL_PRIVACY_TRACE").is_some() {
+            eprintln!(
+                "PRIVACY_PROBE {}",
+                json!({"phase": "control_spawn", "pid": control.0.id(),
+                    "observer": std::process::id(), "elapsed_us": started.elapsed().as_micros(),
+                    "responsible": responsible_pid(control.0.id()),
+                    "observer_responsible": responsible_pid(std::process::id())})
+            );
+        }
         cat_exec_barrier(&mut control).await;
         let parent_responsible = responsible_pid(std::process::id());
         let control_responsible = responsible_pid(control.0.id());
+        trace_responsibility(control.0.id(), "control_echo", started, control_responsible).await;
         assert_eq!(
             control_responsible,
             parent_responsible,
@@ -328,6 +361,7 @@ mod privacy {
             };
             for pid in pids {
                 let responsible = responsible_pid(pid);
+                trace_responsibility(pid, "worker_image", Instant::now(), responsible).await;
                 assert_eq!(
                     responsible, pid,
                     "worker must be its own responsible process"
