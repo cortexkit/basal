@@ -1018,7 +1018,14 @@ impl Module {
         let state_reset = self
             .rt
             .store()
-            .read(|c| basal_core::state_epoch::would_reset(c, &p.flow_id, epoch))
+            .read(|c| {
+                basal_core::state_epoch::would_reset(
+                    c,
+                    &p.flow_id,
+                    epoch,
+                    template.is_some() && instance.is_none(),
+                )
+            })
             .map_err(|e| self.core_error(e))?;
         Ok(
             json!({ "flow_id": p.flow_id, "version": version.version, "summary": summary, "state_reset": state_reset }),

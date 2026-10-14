@@ -89,6 +89,28 @@ fn flow_epoch_list_health_and_dry_run_report_recorded_state() {
     assert_eq!(health()["flows"][0]["state_epoch"], 1);
     assert!(health()["flows"][0]["last_state_reset_at"].is_null());
     assert_eq!(dry(1)["state_reset"], false);
+    let mut package = m.clone();
+    package["sinks"][0]["agent"] = json!("$self");
+    package["state_epoch"] = json!(2);
+    f.module
+        .rt
+        .register_package("return 1;", &package.to_string())
+        .unwrap();
+    let owner = f.module.rt.catalog().agent_id("SYNAPSE").unwrap();
+    let instance = f.module.rt.ensure_instance("values", 1, &owner, 1).unwrap();
+    f.module
+        .rt
+        .admit_trigger(
+            instance["flow_id"].as_str().unwrap(),
+            "instance",
+            JsonText::null(),
+        )
+        .unwrap();
+    assert_eq!(
+        dry(1)["state_reset"],
+        false,
+        "a same-named package's instance is not this ordinary flow's state"
+    );
     let mut m = m;
     m["version"] = json!(2);
     m["state_epoch"] = json!(2);

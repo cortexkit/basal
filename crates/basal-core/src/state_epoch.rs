@@ -17,11 +17,17 @@ pub fn recorded(conn: &Connection, flow_id: &str) -> Result<u32> {
     )?)
 }
 
-/// Compare an ordinary flow or all instances of a package/template on one snapshot.
-pub fn would_reset(conn: &Connection, flow_id: &str, epoch: u32) -> Result<bool> {
+/// Compare a named flow, or all instances when naming a template. Flow and
+/// package ids have separate namespaces and can contain the same name.
+pub fn would_reset(
+    conn: &Connection,
+    flow_id: &str,
+    epoch: u32,
+    all_instances: bool,
+) -> Result<bool> {
     Ok(conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM flows WHERE (flow_id=?1 OR package=?1) AND state_epoch<>?2)",
-        params![flow_id, epoch],
+        "SELECT EXISTS(SELECT 1 FROM flows WHERE ((?3 AND package=?1) OR (NOT ?3 AND flow_id=?1)) AND state_epoch<>?2)",
+        params![flow_id, epoch, all_instances],
         |r| r.get(0),
     )?)
 }

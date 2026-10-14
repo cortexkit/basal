@@ -469,7 +469,7 @@ fn template_instances_reset_independently_on_first_admission() {
     assert_eq!(state(&f, b), (1, 1));
     assert!(
         f.rt.store()
-            .read(|c| basal_core::state_epoch::would_reset(c, "watch", 2))
+            .read(|c| basal_core::state_epoch::would_reset(c, "watch", 2, true))
             .unwrap()
     );
     admit(&f, b, "new-b");
@@ -481,7 +481,7 @@ fn template_instances_reset_independently_on_first_admission() {
     assert!(
         !f.rt
             .store()
-            .read(|c| basal_core::state_epoch::would_reset(c, "watch", 2))
+            .read(|c| basal_core::state_epoch::would_reset(c, "watch", 2, true))
             .unwrap()
     );
 }
@@ -552,4 +552,23 @@ fn epoch_crash_after_admission_reopens_complete_reset() {
         .unwrap();
     drop(store);
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn reset_preview_keeps_flow_and_package_namespaces_separate() {
+    let f = fixture("preview-namespace");
+    approve(&f, 1, None);
+    f.rt.store().write(|tx| {
+        tx.execute("INSERT INTO flows(flow_id,package,state_epoch,created_at) VALUES ('instance','flow',2,0)", [])?;
+        Ok(())
+    }).unwrap();
+    f.rt.store()
+        .read(|c| {
+            assert!(!basal_core::state_epoch::would_reset(c, "flow", 1, false)?);
+            assert!(basal_core::state_epoch::would_reset(c, "flow", 1, true)?);
+            assert!(basal_core::state_epoch::would_reset(c, "flow", 2, false)?);
+            assert!(!basal_core::state_epoch::would_reset(c, "flow", 2, true)?);
+            Ok(())
+        })
+        .unwrap();
 }
