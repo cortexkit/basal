@@ -1,6 +1,8 @@
 name: Temporary macOS responsibility probe
 
 on:
+  push:
+    branches: [ci/privacy-probe]
   pull_request:
   workflow_dispatch:
 
