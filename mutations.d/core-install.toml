@@ -162,7 +162,7 @@ build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/install.rs"
 old = "let Some(decl) = catalog.event(&e.module, &e.name, e.version) else {"
-new = "let Some(decl) = catalog.event(&e.module, &e.name, e.version).or(Some(basal_host::EventDecl { origin: basal_host::EventOrigin::Internal, body: EventBody::Inline })) else {"
+new = "let Some(decl) = catalog.event(&e.module, &e.name, e.version).or(Some(basal_host::EventDecl { origin: basal_host::EventOrigin::Internal, body: EventBody::Inline, headers: vec![] })) else {"
 
 [[control]]
 id = "install-accepts-ops-missing-from-the-catalog"
