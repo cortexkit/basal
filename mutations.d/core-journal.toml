@@ -239,8 +239,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/store.rs"
-old = "c.pragma_update(None, \"synchronous\", \"FULL\")?;"
-new = "c.pragma_update(None, \"synchronous\", \"NORMAL\")?;"
+old = 'Synchronous::Full => "FULL",'
+new = 'Synchronous::Full => "NORMAL", // NON-VACUITY BREAK'
 
 [[control]]
 id = "fullfsync-choice-not-applied"

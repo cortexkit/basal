@@ -664,7 +664,7 @@ mod reader_health_tests {
         pool.warm_spares = 0;
         let config = ModuleConfig {
             store_path: dir.join("store.db"),
-            durability: basal_core::Durability { fullfsync: false },
+            durability: basal_core::Durability::throwaway(),
             runtime: basal_core::Config::default(),
             pool: pool.clone(),
             engine: Default::default(),

@@ -23,7 +23,7 @@ pub(crate) fn temp_store() -> TempStore {
         std::process::id(),
         NEXT.fetch_add(1, Ordering::SeqCst)
     ));
-    let store = Store::open(dir.join("core.db"), Durability { fullfsync: false }).unwrap();
+    let store = Store::open(dir.join("core.db"), Durability::throwaway()).unwrap();
     TempStore { store, dir }
 }
 

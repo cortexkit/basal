@@ -330,8 +330,7 @@ impl Fixture {
         Self::at_with_provider(dir, None)
     }
     fn at_with_provider(dir: PathBuf, provider: Option<Arc<Provider>>) -> Self {
-        let store =
-            Arc::new(Store::open(dir.join("core.db"), Durability { fullfsync: false }).unwrap());
+        let store = Arc::new(Store::open(dir.join("core.db"), Durability::throwaway()).unwrap());
         let events = Arc::new(Mutex::new(Vec::new()));
         let (worker, messages) = mpsc::channel();
         let (parent_tx, parent) = mpsc::channel();

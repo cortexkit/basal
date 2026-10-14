@@ -676,11 +676,8 @@ mod tests {
     #[test]
     fn late_retention_bounds_each_session_then_expired_owner() {
         let root = std::env::temp_dir().join(format!("basal-late-caps-{}", random_id().unwrap()));
-        let store = Store::open(
-            root.join("basal.db"),
-            basal_core::Durability { fullfsync: false },
-        )
-        .unwrap();
+        let store =
+            Store::open(root.join("basal.db"), basal_core::Durability::throwaway()).unwrap();
         let clock = Clock::manual(100);
         store.write(|tx| {
             for session in ["one","two"] {

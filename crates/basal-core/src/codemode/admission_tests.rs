@@ -239,6 +239,9 @@ fn describe_can_write_while_admission_is_attesting() {
         // busy wait. Calling Store::write here could instead deadlock on the
         // store's connection mutex and hide the regression behind a timeout.
         let mut connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .pragma_update(None, "synchronous", "OFF")
+            .unwrap();
         connection.busy_timeout(Duration::ZERO).unwrap();
         let tx = connection
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
@@ -293,6 +296,9 @@ fn known_id_needs_no_write_lock_or_describe() {
         })
         .unwrap();
     let mut connection = rusqlite::Connection::open(path).unwrap();
+    connection
+        .pragma_update(None, "synchronous", "OFF")
+        .unwrap();
     let writer = connection
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .unwrap();

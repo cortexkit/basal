@@ -53,7 +53,7 @@ fn startup_binds_the_model_store_before_host_recovery() {
     pool.warm_spares = 0;
     let config = ModuleConfig {
         store_path: dir.join("store.db"),
-        durability: Durability { fullfsync: false },
+        durability: Durability::throwaway(),
         runtime: Config::default(),
         pool,
         engine: Default::default(),
@@ -108,7 +108,7 @@ fn failed_start_does_not_bind_or_retain_the_store() {
     pool.warm_spares = 0;
     let config = ModuleConfig {
         store_path: dir.join("store.db"),
-        durability: Durability { fullfsync: false },
+        durability: Durability::throwaway(),
         runtime: Config::default(),
         pool,
         engine: Default::default(),

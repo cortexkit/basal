@@ -413,7 +413,7 @@ fn module_config(
 ) -> ModuleConfig {
     ModuleConfig {
         store_path: args.dir.join("basal.db"),
-        durability: Durability { fullfsync: false },
+        durability: Durability::throwaway(),
         runtime: Config {
             clock: clock.clone(),
             selector,

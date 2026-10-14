@@ -50,7 +50,7 @@ fn fixture(now: i64) -> Fixture {
         std::process::id(),
         NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
     ));
-    let store = Store::open(dir.join("core.db"), crate::Durability { fullfsync: false }).unwrap();
+    let store = Store::open(dir.join("core.db"), crate::Durability::throwaway()).unwrap();
     let clock = Clock::manual(now);
     let rt = Runtime::new(
         Arc::new(store),

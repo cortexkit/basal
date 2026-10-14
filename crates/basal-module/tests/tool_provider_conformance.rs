@@ -324,7 +324,7 @@ impl Harness for Subject {
                 pool.warm_spares = 0;
                 basal_module::module::ModuleConfig {
                     store_path: configured_root.join("basal.db"),
-                    durability: basal_core::Durability { fullfsync: false },
+                    durability: basal_core::Durability::throwaway(),
                     runtime: basal_core::Config {
                         clock: clock.clone(),
                         ..Default::default()

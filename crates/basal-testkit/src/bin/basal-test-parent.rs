@@ -17,6 +17,8 @@
 //! that boundary. Otherwise it prints one JSON line: the run's summary and
 //! every boundary it passed.
 
+#![cfg(feature = "test-support")]
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -87,8 +89,10 @@ fn run(args: Args) -> Result<serde_json::Value, String> {
     });
     let store = Store::open(
         args.dir.join("basal.db"),
-        Durability {
-            fullfsync: args.fullfsync,
+        if args.fullfsync {
+            Durability::default()
+        } else {
+            Durability::throwaway()
         },
     )
     .map_err(|e| e.to_string())?;

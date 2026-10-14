@@ -415,8 +415,7 @@ impl DryRunner {
         request: &BorrowedRequest<'_>,
         fires: &[(String, Value)],
     ) -> Result<Vec<Value>, DryRunError> {
-        let store =
-            Store::open(dir.join("scratch.db"), Durability { fullfsync: false }).map_err(failed)?;
+        let store = Store::open(dir.join("scratch.db"), Durability::default()).map_err(failed)?;
         let clock = basal_core::Clock::manual(request.now_ms);
         let host = Arc::new(CaptureHost {
             mode: request.mode,

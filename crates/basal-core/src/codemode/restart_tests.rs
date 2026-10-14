@@ -290,7 +290,7 @@ fn restart_case(seam: &str, sends: usize, outcomes: &[&str]) {
     // These assertions observe the committed state before any recovery code
     // runs, so a crash hook accidentally placed after recording cannot pass.
     {
-        let store = Store::open(dir.join("core.db"), Durability { fullfsync: false }).unwrap();
+        let store = Store::open(dir.join("core.db"), Durability::throwaway()).unwrap();
         let Lookup::Found(run) = store.read(|c| store::lookup(c, "r")).unwrap() else {
             panic!()
         };

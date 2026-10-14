@@ -41,11 +41,7 @@ fn production_retention_catches_up_full_batches_without_waiting_a_whole_interval
         let clock = Clock::manual(now);
         let rt = Runtime::new(
             Arc::new(
-                Store::open(
-                    temp.0.join("core.db"),
-                    basal_core::Durability { fullfsync: false },
-                )
-                .unwrap(),
+                Store::open(temp.0.join("core.db"), basal_core::Durability::throwaway()).unwrap(),
             ),
             Arc::new(NoDispatch),
             Arc::new(basal_host::catalog::MockCatalog::new()),

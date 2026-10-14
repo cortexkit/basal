@@ -27,7 +27,7 @@ fn fixture(tag: &str) -> Fixture {
 }
 fn fixture_at(dir: std::path::PathBuf) -> Fixture {
     let rt = Runtime::new(
-        Arc::new(Store::open(dir.join("core.db"), Durability { fullfsync: false }).unwrap()),
+        Arc::new(Store::open(dir.join("core.db"), Durability::throwaway()).unwrap()),
         Arc::new(MockHost::new()),
         Arc::new(MockCatalog::standard()),
         Arc::new(NoHooks),
@@ -223,7 +223,7 @@ fn epoch_reset_commits_with_admission_and_rolls_back_with_it() {
     let dir = f.dir.clone();
     f.cleanup = false;
     drop(f);
-    let reopened = Store::open(dir.join("core.db"), Durability { fullfsync: false }).unwrap();
+    let reopened = Store::open(dir.join("core.db"), Durability::throwaway()).unwrap();
     reopened
         .read(|c| {
             assert_eq!(basal_core::state_epoch::recorded(c, "flow")?, 2);
@@ -515,7 +515,7 @@ fn epoch_crash_after_admission_reopens_complete_reset() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    let store = Store::open(dir.join("core.db"), Durability { fullfsync: false }).unwrap();
+    let store = Store::open(dir.join("core.db"), Durability::throwaway()).unwrap();
     store
         .read(|c| {
             assert_eq!(basal_core::state_epoch::recorded(c, "flow")?, 2);

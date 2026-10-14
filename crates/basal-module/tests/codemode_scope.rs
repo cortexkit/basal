@@ -91,7 +91,7 @@ fn codemode_handler_attests_via_real_sdk_and_replaces_the_describe_connection() 
                 ),
                 store_path,
                 pool,
-                durability: basal_core::Durability { fullfsync: false },
+                durability: basal_core::Durability::throwaway(),
                 runtime: basal_core::Config {
                     clock: basal_core::Clock::manual(common::T0),
                     ..Default::default()
@@ -208,8 +208,7 @@ fn codemode_handler_attests_via_real_sdk_and_replaces_the_describe_connection() 
     );
     drop(handler);
     drop(connection);
-    let store =
-        basal_core::Store::open(&store_path, basal_core::Durability { fullfsync: false }).unwrap();
+    let store = basal_core::Store::open(&store_path, basal_core::Durability::throwaway()).unwrap();
     for session in 1..=2 {
         let id = opens.lock().unwrap()[session - 1].run_id.clone();
         store

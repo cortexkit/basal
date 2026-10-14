@@ -271,6 +271,7 @@ mod tests {
         let path =
             std::env::temp_dir().join(format!("basal-rig-evidence-{}.db", std::process::id()));
         let c = Connection::open(&path).unwrap();
+        c.pragma_update(None, "synchronous", "OFF").unwrap();
         c.execute_batch("CREATE TABLE journal (run_id TEXT, position INTEGER, args TEXT, request TEXT,
             dispatch TEXT, attempts INTEGER, settlement TEXT);
             CREATE TABLE broca_calls (run_id TEXT);
@@ -308,6 +309,7 @@ mod position_tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("store.db");
         let c = Connection::open(&path).unwrap();
+        c.pragma_update(None, "synchronous", "OFF").unwrap();
         c.execute_batch("CREATE TABLE journal (run_id TEXT, position INTEGER, args TEXT, request TEXT, dispatch TEXT, attempts INTEGER, settlement TEXT);
             CREATE TABLE broca_calls (run_id TEXT);
             INSERT INTO journal VALUES ('r',0,'0',NULL,'sent',1,NULL), ('r',3,'3',NULL,'answered',2,'fulfilled');").unwrap();

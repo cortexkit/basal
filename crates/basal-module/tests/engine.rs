@@ -117,7 +117,7 @@ fn the_unconfigured_host_refuses_every_dispatch_as_never_sent() {
     let module = Module::start(
         ModuleConfig {
             store_path: dir.join("basal.db"),
-            durability: Durability { fullfsync: false },
+            durability: Durability::throwaway(),
             runtime: Config {
                 clock,
                 install_gate: basal_core::InstallGate::Off,

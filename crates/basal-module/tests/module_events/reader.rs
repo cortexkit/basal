@@ -84,13 +84,7 @@ async fn fixture(server: &Server) -> (Runtime, Arc<BlockingTransport>) {
         .unwrap(),
     );
     let rt = Runtime::new(
-        Arc::new(
-            Store::open(
-                server.dir.join("reader.db"),
-                Durability { fullfsync: false },
-            )
-            .unwrap(),
-        ),
+        Arc::new(Store::open(server.dir.join("reader.db"), Durability::throwaway()).unwrap()),
         Arc::new(MockHost::new()),
         Arc::new(SubcCatalog::new(transport.clone()).with_daemon_capabilities(capabilities)),
         Arc::new(basal_core::NoHooks),

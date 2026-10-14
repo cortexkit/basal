@@ -101,8 +101,9 @@ impl Fixture {
             NEXT.fetch_add(1, Ordering::SeqCst)
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let store =
-            Arc::new(Store::open(dir.join("store.sqlite"), crate::Durability::default()).unwrap());
+        let store = Arc::new(
+            Store::open(dir.join("store.sqlite"), crate::Durability::throwaway()).unwrap(),
+        );
         let hash = crate::ids::code_hash("return 1", &manifest(1, json!([])));
         store.write(|tx| {
             tx.execute("INSERT INTO flows(flow_id,owner,approved_version,created_at) VALUES ('flow',?1,1,0)",[owner])?;

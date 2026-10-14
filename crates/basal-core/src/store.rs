@@ -16,7 +16,7 @@ use crate::schema::{MIGRATIONS, NAMESPACE};
 
 /// How hard a commit tries to reach stable storage.
 ///
-/// The store always runs `synchronous = FULL`: an inbox commit precedes a
+/// Production stores run `synchronous = FULL`: an inbox commit precedes a
 /// broker acknowledgement and an intent precedes a dispatch, so a commit that
 /// a power loss could undo would break both promises. On macOS, `fsync` only
 /// hands data to the drive, which may still hold it in a volatile cache;
@@ -27,7 +27,28 @@ use crate::schema::{MIGRATIONS, NAMESPACE};
 /// times more (`evidence/slice-2-measurements.json`, from `journal-bench`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Durability {
+    pub synchronous: Synchronous,
     pub fullfsync: bool,
+}
+
+/// Whether SQLite waits for committed writes to reach stable storage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Synchronous {
+    Full,
+    Off,
+}
+
+impl Durability {
+    /// For disposable test stores only: no disk syncs and no power-loss safety.
+    /// Process kills leave the OS page cache intact, so WAL recovery still
+    /// exercises committed writes in the crash harnesses without disk flushes.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn throwaway() -> Self {
+        Self {
+            synchronous: Synchronous::Off,
+            fullfsync: false,
+        }
+    }
 }
 
 impl Default for Durability {
@@ -36,7 +57,10 @@ impl Default for Durability {
     /// commits per new asynchronous call, that is a small share of flow
     /// calls that take tens of milliseconds to seconds.
     fn default() -> Self {
-        Self { fullfsync: true }
+        Self {
+            synchronous: Synchronous::Full,
+            fullfsync: true,
+        }
     }
 }
 
@@ -87,7 +111,14 @@ impl Store {
         let inner = open_sqlite(&descriptor).map_err(backend)?;
         inner
             .with_conn(|c| {
-                c.pragma_update(None, "synchronous", "FULL")?;
+                c.pragma_update(
+                    None,
+                    "synchronous",
+                    match durability.synchronous {
+                        Synchronous::Full => "FULL",
+                        Synchronous::Off => "OFF",
+                    },
+                )?;
                 c.pragma_update(None, "fullfsync", durability.fullfsync)?;
                 c.pragma_update(None, "checkpoint_fullfsync", durability.fullfsync)
             })

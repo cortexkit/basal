@@ -20,7 +20,7 @@ fn keyed_snapshot_lookup_ignores_unrelated_corruption_and_migrates_legacy_params
         }
     }
     let _cleanup = Cleanup(dir.clone());
-    let store = Arc::new(Store::open(dir.join("store.db"), Durability::default()).unwrap());
+    let store = Arc::new(Store::open(dir.join("store.db"), Durability::throwaway()).unwrap());
     let memory = Arc::new(MemoryStore::default());
     let selection = FakeSelector::default()
         .select(&SelectionRequest {

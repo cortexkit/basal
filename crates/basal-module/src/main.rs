@@ -129,14 +129,9 @@ fn serve() -> ExitCode {
     let handler = BasalHandler::new(
         Box::new(move |store_path| {
             let _ = configured_store.set(store_path.clone());
-            let scratch = store_path
-                .parent()
-                .map(|d| d.join("dry-run"))
-                .unwrap_or_else(|| std::env::temp_dir().join("ck-basal-dry-run"));
-            ModuleConfig {
+            production_config(
                 store_path,
-                durability: Durability::default(),
-                runtime: Config {
+                Config {
                     selector: configured_models
                         .lock()
                         .unwrap_or_else(|p| p.into_inner())
@@ -145,10 +140,8 @@ fn serve() -> ExitCode {
                         .unwrap_or_else(|| Arc::new(basal_host::selector::UnconfiguredSelector)),
                     ..Config::default()
                 },
-                pool: pool.clone(),
-                engine: EngineConfig::default(),
-                dry_run: DryRunConfig::new(scratch),
-            }
+                pool.clone(),
+            )
         }),
         Box::new(move || {
             use basal_host::{
@@ -232,6 +225,25 @@ fn serve() -> ExitCode {
     }
 }
 
+fn production_config(
+    store_path: std::path::PathBuf,
+    runtime: Config,
+    pool: PoolConfig,
+) -> ModuleConfig {
+    let scratch = store_path
+        .parent()
+        .map(|d| d.join("dry-run"))
+        .unwrap_or_else(|| std::env::temp_dir().join("ck-basal-dry-run"));
+    ModuleConfig {
+        store_path,
+        durability: Durability::default(),
+        runtime,
+        pool,
+        engine: EngineConfig::default(),
+        dry_run: DryRunConfig::new(scratch),
+    }
+}
+
 /// The runtime's hooks: none in production. Only the isolated test rig's own
 /// build (feature `rig-kill-hook`, see `rig_kill`) adds a kill switch, which
 /// its crash test uses to end the process at a chosen runtime boundary.
@@ -259,4 +271,27 @@ async fn run(
     scope_connection.attach(handle, tokio::runtime::Handle::current());
     serving.await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn production_store_opens_with_full_durability() {
+        let dir = basal_core::test_support::timestamp_scratch("production-store", "pragmas");
+        let config = production_config(
+            dir.join("basal.db"),
+            Config::default(),
+            PoolConfig::beside_current_exe().expect("production pool config"),
+        );
+        let store = config.open_store().expect("open production store");
+        let pragmas = store.pragmas().expect("read actual SQLite pragmas");
+        assert_eq!(pragmas.synchronous, 2, "production must use FULL");
+        assert!(pragmas.fullfsync);
+        assert!(pragmas.checkpoint_fullfsync);
+        assert!(pragmas.journal_mode_wal);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

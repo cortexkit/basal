@@ -90,7 +90,7 @@ pub use retention::PruneReport;
 pub use runtime::RunLimits;
 pub use runtime::{ActivationEnd, Config, Runtime};
 pub use schedule::{ScheduleSpec, Scheduler, SchedulerConfig};
-pub use store::{Durability, Pragmas, Store};
+pub use store::{Durability, Pragmas, Store, Synchronous};
 
 #[cfg(test)]
 mod runtime_authorization_regressions;

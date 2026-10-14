@@ -4,6 +4,16 @@ use basal_rig::stores::{BasalStore, BrocaStore, CoreStore};
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 
+// These fixtures build partial schemas, not basal-core stores. They are
+// disposable and need no power-loss safety, just like Durability::throwaway.
+fn throwaway_connection(path: impl AsRef<std::path::Path>) -> Connection {
+    let connection = Connection::open(path).unwrap();
+    connection
+        .pragma_update(None, "synchronous", "OFF")
+        .unwrap();
+    connection
+}
+
 struct Scratch(PathBuf);
 impl Scratch {
     fn new() -> Self {
@@ -32,7 +42,7 @@ impl Drop for Scratch {
 #[test]
 fn broca_run_count_observes_real_insertions_and_store_errors() {
     let scratch = Scratch::new();
-    let c = Connection::open(&scratch.0).unwrap();
+    let c = throwaway_connection(&scratch.0);
     let store = BrocaStore {
         path: scratch.0.clone(),
     };
@@ -51,7 +61,7 @@ fn broca_run_count_observes_real_insertions_and_store_errors() {
 #[test]
 fn codemode_evidence_reads_actual_keyed_run_and_owner_scope() {
     let scratch = Scratch::new();
-    let c = Connection::open(&scratch.0).unwrap();
+    let c = throwaway_connection(&scratch.0);
     c.execute_batch("CREATE TABLE codemode_runs(run_id TEXT,agent_id TEXT,status TEXT);
         CREATE TABLE codemode_tool_calls(run_id TEXT,call_key TEXT);
         CREATE TABLE codemode_run_scope(run_id TEXT,agent_id TEXT,scope_ref TEXT,scope_epoch INTEGER,catalog_json TEXT,lifecycle TEXT,end_settled INTEGER);
@@ -95,7 +105,7 @@ fn codemode_evidence_reads_actual_keyed_run_and_owner_scope() {
 #[test]
 fn journal_evidence_rejects_negative_positions() {
     let scratch = Scratch::new();
-    let c = Connection::open(&scratch.0).unwrap();
+    let c = throwaway_connection(&scratch.0);
     c.execute_batch(
         "CREATE TABLE runs(run_id TEXT, flow_id TEXT);
         CREATE TABLE journal(run_id TEXT, position INTEGER, kind_code INTEGER, dispatch TEXT,
@@ -116,8 +126,7 @@ fn journal_evidence_rejects_negative_positions() {
 #[test]
 fn transcript_evidence_rejects_ambiguous_session_keys() {
     let scratch = Scratch::new();
-    Connection::open(&scratch.0)
-        .unwrap()
+    throwaway_connection(&scratch.0)
         .execute_batch("CREATE TABLE message(session TEXT, ord INTEGER, json TEXT);")
         .unwrap();
     let store = BrocaStore {
@@ -135,7 +144,7 @@ fn transcript_evidence_rejects_ambiguous_session_keys() {
 #[test]
 fn independent_broca_evidence_matches_the_entire_bind_and_counts_duplicate_runs() {
     let scratch = Scratch::new();
-    let c = Connection::open(&scratch.0).unwrap();
+    let c = throwaway_connection(&scratch.0);
     c.execute_batch(
         "CREATE TABLE run_index (run_id TEXT, session TEXT, state TEXT, usage_json TEXT);
         CREATE TABLE message (session TEXT, ord INTEGER, json TEXT);",
@@ -186,7 +195,7 @@ fn independent_broca_evidence_matches_the_entire_bind_and_counts_duplicate_runs(
 #[test]
 fn model_journal_and_ledger_reads_are_scoped_to_the_run_and_preserve_missing_usage() {
     let scratch = Scratch::new();
-    let c = Connection::open(&scratch.0).unwrap();
+    let c = throwaway_connection(&scratch.0);
     c.execute_batch(
         "CREATE TABLE journal (run_id TEXT, position INTEGER, args TEXT, request TEXT);
         CREATE TABLE broca_calls (run_id TEXT, position INTEGER, snapshot TEXT);
@@ -216,7 +225,7 @@ fn model_journal_and_ledger_reads_are_scoped_to_the_run_and_preserve_missing_usa
 #[test]
 fn ownership_reads_brocas_attestation_not_the_callers_harness_label() {
     let scratch = Scratch::new();
-    let c = Connection::open(&scratch.0).unwrap();
+    let c = throwaway_connection(&scratch.0);
     c.execute_batch("CREATE TABLE meta (session TEXT, admission_checkpoint_json TEXT);")
         .unwrap();
     let owner = json!({"episodes":1,"first_principal":{"kind":"direct"},
@@ -251,7 +260,7 @@ fn ownership_reads_brocas_attestation_not_the_callers_harness_label() {
 #[test]
 fn core_scope_reader_requires_this_active_version_and_an_accepted_registration() {
     let scratch = Scratch::new();
-    let c = Connection::open(&scratch.0).unwrap();
+    let c = throwaway_connection(&scratch.0);
     c.execute_batch("CREATE TABLE agent (agent_id TEXT, terminal_reason TEXT);
         CREATE TABLE flow_scope (flow_id TEXT, scope_ref TEXT, scope_epoch INTEGER, agent_id TEXT,
             flow_scope_targets_json TEXT, removed_at_ms INTEGER);
@@ -304,7 +313,7 @@ fn core_scope_reader_requires_this_active_version_and_an_accepted_registration()
 #[test]
 fn scoped_ownership_preserves_ref_epoch_flow_and_attested_sender_for_the_exact_bind() {
     let scratch = Scratch::new();
-    let c = Connection::open(&scratch.0).unwrap();
+    let c = throwaway_connection(&scratch.0);
     c.execute_batch("CREATE TABLE meta (session TEXT, admission_checkpoint_json TEXT);")
         .unwrap();
     let owner = json!({"scope":{"owner":{"kind":"reserved","module_id":"prefrontal-core"},
@@ -375,7 +384,7 @@ fn wal_no_record_reader_rejects_record_bytes_and_partial_writes_at_the_pinned_ad
 #[test]
 fn digest_evidence_reads_the_recipient_and_flow_from_core_rows() {
     let scratch = Scratch::new();
-    let c = Connection::open(&scratch.0).unwrap();
+    let c = throwaway_connection(&scratch.0);
     c.execute_batch("CREATE TABLE wake_fire(fire_id TEXT, agent_id TEXT, origin_flow_id TEXT, origin_flow_version INTEGER);
         INSERT INTO wake_fire VALUES ('foreign-hit','foreign','probe',1), ('owner-hit','owner','probe',1), ('other-flow','foreign','different',2);").unwrap();
     let store = CoreStore {
@@ -393,7 +402,7 @@ fn digest_evidence_reads_the_recipient_and_flow_from_core_rows() {
 #[test]
 fn package_intent_evidence_keeps_the_provider_rejection_and_rendered_body() {
     let scratch = Scratch::new();
-    let c = Connection::open(&scratch.0).unwrap();
+    let c = throwaway_connection(&scratch.0);
     c.execute_batch("CREATE TABLE package_consent_intent(package TEXT,version INTEGER,attempt INTEGER,provider TEXT,request_json TEXT,state TEXT,elicitation_id TEXT);
         INSERT INTO package_consent_intent VALUES ('package',1,2,'cingulate','{\"kind\":\"package\",\"package\":{\"manifest_json\":\"exact bytes\"}}','rejected',NULL);
         INSERT INTO package_consent_intent VALUES ('other',1,3,'other-provider','{}','prepared',NULL);").unwrap();
@@ -414,7 +423,7 @@ fn package_intent_evidence_keeps_the_provider_rejection_and_rendered_body() {
 #[test]
 fn flow_enable_evidence_reads_basals_state_column() {
     let scratch = Scratch::new();
-    let c = Connection::open(&scratch.0).unwrap();
+    let c = throwaway_connection(&scratch.0);
     c.execute_batch("CREATE TABLE flows(flow_id TEXT,state TEXT); INSERT INTO flows VALUES ('enabled-flow','enabled'),('disabled-flow','disabled');").unwrap();
     let store = BasalStore {
         path: scratch.0.clone(),
@@ -427,7 +436,7 @@ fn flow_enable_evidence_reads_basals_state_column() {
 #[test]
 fn install_intent_reads_only_the_exact_flow_version_attempt_and_hash() {
     let scratch = Scratch::new();
-    let c = Connection::open(&scratch.0).unwrap();
+    let c = throwaway_connection(&scratch.0);
     c.execute_batch("CREATE TABLE flow_install_intent(flow_id TEXT,version INTEGER,attempt INTEGER,code_hash TEXT,provider TEXT,request_json TEXT,state TEXT,elicitation_id TEXT);
         INSERT INTO flow_install_intent VALUES ('flow',1,2,'hash','cingulate','{\"flow_install\":{\"manifest_json\":\"exact bytes\"}}','sent','el_exact');
         INSERT INTO flow_install_intent VALUES ('other',1,2,'hash','cingulate','{}','sent','el_other');
@@ -458,7 +467,7 @@ fn install_intent_reads_only_the_exact_flow_version_attempt_and_hash() {
 #[test]
 fn instance_evidence_keeps_removal_separate_from_enablement_and_generation() {
     let scratch = Scratch::new();
-    let c = Connection::open(&scratch.0).unwrap();
+    let c = throwaway_connection(&scratch.0);
     c.execute_batch("CREATE TABLE flows(flow_id TEXT,owner TEXT,package TEXT,state TEXT,approved_version INTEGER,removed INTEGER,disabled_by TEXT,disabled_reason TEXT,disabled_at INTEGER);
         CREATE TABLE instance_generations(package TEXT,agent_id TEXT,generation INTEGER,operation TEXT,reply TEXT);
         INSERT INTO flows VALUES ('instance','owner','package','enabled',1,1,NULL,NULL,NULL);
@@ -484,7 +493,7 @@ fn instance_evidence_keeps_removal_separate_from_enablement_and_generation() {
 #[test]
 fn card_decision_observations_are_keyed_to_the_exact_attempt_and_committed_row() {
     let scratch = Scratch::new();
-    let c = Connection::open(&scratch.0).unwrap();
+    let c = throwaway_connection(&scratch.0);
     c.execute_batch("CREATE TABLE flow_install_intent(flow_id TEXT,version INTEGER,attempt INTEGER,state TEXT,code_hash TEXT);
         CREATE TABLE flow_install(flow_id TEXT,version INTEGER,code_hash TEXT,approved_at_ms INTEGER,revoked_at_ms INTEGER,approved_by TEXT,author_agent_id TEXT);
         CREATE TABLE flow_install_decision_hint(flow_id TEXT,version INTEGER,attempt INTEGER,terminal_state TEXT,created_at INTEGER,delivered_at INTEGER);

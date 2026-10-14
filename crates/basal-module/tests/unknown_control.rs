@@ -219,7 +219,7 @@ async fn unknown_control_field_is_refused_and_the_following_health_check_is_answ
             let scratch = store_path.parent().unwrap().join("dry-run");
             basal_module::module::ModuleConfig {
                 store_path,
-                durability: basal_core::Durability { fullfsync: false },
+                durability: basal_core::Durability::throwaway(),
                 runtime: basal_core::Config::default(),
                 pool,
                 engine: Default::default(),

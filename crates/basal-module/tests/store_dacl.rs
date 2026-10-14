@@ -166,7 +166,7 @@ fn opening_the_store_makes_its_directory_and_database_owner_only() {
     let root = scratch("fresh");
     let _cleanup = Cleanup(root.clone());
     let dir = root.join("basal");
-    let store = Store::open(dir.join("store.db"), Durability::default()).expect("open");
+    let store = Store::open(dir.join("store.db"), Durability::throwaway()).expect("open");
     assert_owner_only(&dir, true);
     assert_owner_only(&dir.join("store.db"), false);
     drop(store);
@@ -185,7 +185,7 @@ fn opening_the_store_narrows_an_existing_inherited_directory() {
         !protected && entries.len() > 1,
         "the control directory should inherit a broader DACL: {entries:?}"
     );
-    let store = Store::open(dir.join("store.db"), Durability::default()).expect("open");
+    let store = Store::open(dir.join("store.db"), Durability::throwaway()).expect("open");
     assert_owner_only(&dir, true);
     assert_owner_only(&dir.join("store.db"), false);
     drop(store);
