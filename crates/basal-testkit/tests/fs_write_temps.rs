@@ -292,8 +292,8 @@ fn a_cancelled_runs_write_that_dies_mid_flight_is_cleaned_up() {
         std::thread::spawn(move || rt.run_to_rest(&run_id, Duration::from_secs(60)))
     };
     let lease = created_rx
-        .recv()
-        .expect("the write reached its temporary file");
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the write must reach its temporary file within ten seconds");
     let temp = lease.dir.join(&lease.temp);
     assert!(temp.is_file(), "{temp:?}");
     assert_eq!(records(&store), 1);

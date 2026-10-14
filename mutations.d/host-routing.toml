@@ -1475,7 +1475,9 @@ package = "basal-host"
 platforms = ["linux"]
 target = "--lib"
 expect_red = ["transport::tests::workspace_registry_reads_the_real_decoded_management_payload"]
-only = true
+only = false
+hub = "The workspace registry consumes an already-decoded management payload exactly once and rejects a second result envelope; transport decoding and audience registry tests assert both valid workspace lookup and malformed-envelope refusal"
+hub_targets = ["audience"]
 timeout_s = 600
 build_timeout_s = 3600
 

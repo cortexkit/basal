@@ -1181,6 +1181,8 @@ platforms = ["linux"]
 target = "--lib"
 expect_red = ["engine::lifecycle_tests::idle_engine_wakes_at_unscheduled_instance_expiry"]
 only = false
+hub = "Runtime next-wake includes an unscheduled instance's expiry deadline; the idle engine and canonical expiry test both require that deadline to wake expiry processing without a schedule"
+hub_targets = ["templates"]
 file = "crates/basal-core/src/maintenance.rs"
 old = "Ok([schedule, deadline, retry, codemode, grant, expiry]"
 new = "let _ = expiry; Ok([schedule, deadline, retry, codemode, grant] /* NON-VACUITY BREAK */"

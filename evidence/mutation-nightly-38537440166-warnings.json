@@ -1,0 +1,1162 @@
+{
+  "run_id": 38537440166,
+  "head_sha": "1d207f37f104131f096a02f1a1ecfa5dc8679758",
+  "role": "Historical collateral names for deferred triage; not a successful replay claim",
+  "rows": [
+    {
+      "id": "audience-workspace-compares-display-name",
+      "platform": "linux",
+      "primary_guards": [
+        "workspace_registry_uses_entorhinal_management_query_and_exact_id"
+      ],
+      "collateral_tests": [
+        "transport::tests::workspace_registry_reads_the_real_decoded_management_payload"
+      ],
+      "collateral_targets": [
+        "basal_host"
+      ]
+    },
+    {
+      "id": "template-lifecycle-expired-params",
+      "platform": "linux",
+      "primary_guards": [
+        "expiry_wakes_without_schedule_at_deadline_and_carries_canonical_params"
+      ],
+      "collateral_tests": [
+        "lifecycle::captured_lifecycle_notices_bodies_and_snapshot_match_vectors"
+      ],
+      "collateral_targets": [
+        "module_events"
+      ]
+    },
+    {
+      "id": "policy-card-raised-no-longer-decodes",
+      "platform": "linux",
+      "primary_guards": [
+        "card_raised_without_elicitation_id_is_keyed_on_the_triple"
+      ],
+      "collateral_tests": [
+        "a_changed_decision_updates_its_card_and_another_unknown_call_gets_its_own",
+        "a_core_revoke_raises_no_reenable_card_and_a_new_approval_brings_the_flow_back",
+        "a_crash_between_receiving_an_answer_and_applying_it_applies_it_exactly_once",
+        "a_crash_between_the_intent_and_core_accepting_still_shows_exactly_one_card",
+        "a_duplicate_answer_changes_nothing",
+        "a_run_in_needs_reconcile_raises_one_card_per_unknown_call_to_the_operator_only",
+        "active_with_another_code_hash_is_revoked",
+        "active_with_the_runs_code_hash_activates",
+        "an_answer_after_the_decision_was_settled_another_way_is_stale",
+        "an_auto_disabled_flow_raises_one_reenable_card_and_each_option_applies",
+        "an_expiry_is_the_decline_whatever_choice_it_names",
+        "an_unconfigured_selector_has_no_default_model",
+        "an_undecodable_reply_defers_the_run",
+        "card_author_is_scope_operator_or_local_and_nothing_else",
+        "catalog_changes_cannot_execute_mutations_under_a_query_retry_policy",
+        "catalog_install_refuses_missing_ops_and_events_and_marks_mutations",
+        "core_refusing_the_author_scope_is_a_clear_install_error",
+        "decided_hint_confirms_card_or_policy_provenance_in_the_shared_transaction",
+        "decided_hint_requires_active_status_with_the_local_hash",
+        "declined_and_expired_hints_settle_unapproved_cards_and_are_visible",
+        "digest_replace_key_is_top_level_when_core_catalog_capability_is_present",
+        "digest_replace_key_requires_core_catalog_capability",
+        "digest_replace_key_validation_refuses_invalid_values_unsent",
+        "digest_status_tag_is_top_level_and_absence_preserves_wire_bytes",
+        "duplicate_and_unknown_hints_are_harmless",
+        "each_reconcile_option_and_the_default_on_expiry_apply_through_the_journaled_path",
+        "each_unknown_site_records_its_reason_and_the_card_shows_it",
+        "install_card_is_byte_exact_and_scope_comes_from_the_route_stamp",
+        "install_cards_only_use_core_install_request_and_never_wake_answer_polling",
+        "install_decided_refuses_every_non_core_caller",
+        "journaled_sink_intent_is_byte_identical_after_a_cut",
+        "malformed_status_tag_is_refused_before_send",
+        "omitted_digest_action_uses_each_recipient_approved_cap",
+        "operator_keyed_tools_retry_but_unfenceable_tools_do_not",
+        "placement_is_sent_only_when_the_manifest_states_one",
+        "policy_approval_uses_card_version_schedule_and_core_disable_rules",
+        "policy_provenance_and_approval_roll_back_in_one_transaction",
+        "reconciled_as_applied_is_journaled_and_replays_the_same_rejection",
+        "repeated_grant_loss_raises_one_card_and_enable_retracts_it_after_restart",
+        "revoked_in_core_the_next_scheduled_run_never_activates",
+        "routing_host_model_selection_and_digest_sink_share_the_journal_store",
+        "routing_host_runs_install_decision_facts_ops_and_sinks_end_to_end",
+        "script_model_or_provider_is_rejected_before_selection_even_if_it_matches",
+        "selections_freeze_at_intent_commit_and_only_uncommitted_calls_reselect",
+        "selector_refusals_are_journaled_with_each_code_and_never_send_broca",
+        "status_tag_without_group_is_refused_before_send",
+        "transport_failures_reach_journal_with_safe_retries_only",
+        "unapproved_core_states_close_the_activation_gate_like_unknown",
+        "unknown_in_core_cancels_the_run",
+        "unreachable_core_keeps_the_run_pending_without_a_hot_loop",
+        "unreachable_selector_retries_boundedly_then_journals_route_unavailable"
+      ],
+      "collateral_targets": [
+        "decisions",
+        "hosts",
+        "install_gate",
+        "install_policy"
+      ]
+    },
+    {
+      "id": "template-lifecycle-live-ended",
+      "platform": "linux",
+      "primary_guards": [
+        "live_snapshot_is_core_only_and_keeps_expired_not_ended_instances"
+      ],
+      "collateral_tests": [
+        "a_quote_filled_note_and_very_long_path_still_deliver_with_bounded_metadata",
+        "digest_helper_bounds_escaped_note_long_metadata_and_links_on_every_platform",
+        "file_conditions_wait_then_notify_once_and_end",
+        "file_empty_content_condition_is_stopped_as_misconfigured",
+        "file_lost_parameter_authority_stops_and_ends",
+        "file_transient_and_current_content_failures_retry_without_ending",
+        "git_disappeared_repository_writes_stopped_and_ends",
+        "git_existing_match_is_baselined_and_complete_nonmatches_advance_it",
+        "git_full_scan_cap_stops_but_a_match_at_the_cap_still_fires",
+        "git_ref_waits_for_branch_then_notifies_once",
+        "git_rewritten_history_stops_instead_of_matching_older_commits",
+        "github_closed_pr_or_issue_and_any_change_notify_once",
+        "github_issue_cannot_merge_stops_on_its_first_subscribed_event",
+        "github_pr_filters_headers_number_kind_and_state_before_notifying",
+        "github_release_waits_for_its_repository_and_ignores_number_and_state",
+        "lifecycle::self_end_and_one_shot_publish_ended",
+        "reminder_waits_until_due_then_catches_up_once_and_ends"
+      ],
+      "collateral_targets": [
+        "flow_templates",
+        "module_events"
+      ]
+    },
+    {
+      "id": "install-request-not-dedicated",
+      "platform": "linux",
+      "primary_guards": [
+        "install_cards_only_use_core_install_request_and_never_wake_answer_polling"
+      ],
+      "collateral_tests": [
+        "a_changed_decision_updates_its_card_and_another_unknown_call_gets_its_own",
+        "a_core_revoke_raises_no_reenable_card_and_a_new_approval_brings_the_flow_back",
+        "a_crash_between_receiving_an_answer_and_applying_it_applies_it_exactly_once",
+        "a_crash_between_the_intent_and_core_accepting_still_shows_exactly_one_card",
+        "a_duplicate_answer_changes_nothing",
+        "a_run_in_needs_reconcile_raises_one_card_per_unknown_call_to_the_operator_only",
+        "active_with_another_code_hash_is_revoked",
+        "active_with_the_runs_code_hash_activates",
+        "an_answer_after_the_decision_was_settled_another_way_is_stale",
+        "an_auto_disabled_flow_raises_one_reenable_card_and_each_option_applies",
+        "an_expiry_is_the_decline_whatever_choice_it_names",
+        "an_unconfigured_selector_has_no_default_model",
+        "an_undecodable_reply_defers_the_run",
+        "card_author_is_scope_operator_or_local_and_nothing_else",
+        "card_raised_without_elicitation_id_is_keyed_on_the_triple",
+        "catalog_changes_cannot_execute_mutations_under_a_query_retry_policy",
+        "catalog_install_refuses_missing_ops_and_events_and_marks_mutations",
+        "consent_refusal_codes_and_unknown_transport_are_typed",
+        "core_refusing_the_author_scope_is_a_clear_install_error",
+        "decided_hint_confirms_card_or_policy_provenance_in_the_shared_transaction",
+        "decided_hint_requires_active_status_with_the_local_hash",
+        "declined_and_expired_hints_settle_unapproved_cards_and_are_visible",
+        "digest_replace_key_is_top_level_when_core_catalog_capability_is_present",
+        "digest_replace_key_requires_core_catalog_capability",
+        "digest_replace_key_validation_refuses_invalid_values_unsent",
+        "digest_status_tag_is_top_level_and_absence_preserves_wire_bytes",
+        "duplicate_and_unknown_hints_are_harmless",
+        "each_reconcile_option_and_the_default_on_expiry_apply_through_the_journaled_path",
+        "each_unknown_site_records_its_reason_and_the_card_shows_it",
+        "idle_policy_install_has_zero_status_calls_after_confirmation",
+        "install_card_is_byte_exact_and_scope_comes_from_the_route_stamp",
+        "install_decided_refuses_every_non_core_caller",
+        "journaled_sink_intent_is_byte_identical_after_a_cut",
+        "malformed_status_tag_is_refused_before_send",
+        "matching_policy_reply_and_active_status_approve_on_both_consent_paths",
+        "mismatched_policy_reply_hash_never_asks_status_or_approves",
+        "omitted_digest_action_uses_each_recipient_approved_cap",
+        "operator_keyed_tools_retry_but_unfenceable_tools_do_not",
+        "placement_is_sent_only_when_the_manifest_states_one",
+        "policy_approval_uses_card_version_schedule_and_core_disable_rules",
+        "policy_provenance_and_approval_roll_back_in_one_transaction",
+        "policy_status_must_be_active_with_the_local_hash",
+        "reconciled_as_applied_is_journaled_and_replays_the_same_rejection",
+        "repeated_grant_loss_raises_one_card_and_enable_retracts_it_after_restart",
+        "revoked_in_core_the_next_scheduled_run_never_activates",
+        "routing_host_model_selection_and_digest_sink_share_the_journal_store",
+        "routing_host_runs_install_decision_facts_ops_and_sinks_end_to_end",
+        "script_model_or_provider_is_rejected_before_selection_even_if_it_matches",
+        "selections_freeze_at_intent_commit_and_only_uncommitted_calls_reselect",
+        "selector_refusals_are_journaled_with_each_code_and_never_send_broca",
+        "status_tag_without_group_is_refused_before_send",
+        "transport_failures_reach_journal_with_safe_retries_only",
+        "unapproved_core_states_close_the_activation_gate_like_unknown",
+        "unknown_in_core_cancels_the_run",
+        "unreachable_core_keeps_the_run_pending_without_a_hot_loop",
+        "unreachable_selector_retries_boundedly_then_journals_route_unavailable"
+      ],
+      "collateral_targets": [
+        "decisions",
+        "hosts",
+        "install_gate",
+        "install_policy"
+      ]
+    },
+    {
+      "id": "policy-shared-approval-skipped",
+      "platform": "linux",
+      "primary_guards": [
+        "policy_approval_uses_card_version_schedule_and_core_disable_rules"
+      ],
+      "collateral_tests": [
+        "a_changed_decision_updates_its_card_and_another_unknown_call_gets_its_own",
+        "a_crash_between_receiving_an_answer_and_applying_it_applies_it_exactly_once",
+        "a_crash_between_the_intent_and_core_accepting_still_shows_exactly_one_card",
+        "a_duplicate_answer_changes_nothing",
+        "a_run_in_needs_reconcile_raises_one_card_per_unknown_call_to_the_operator_only",
+        "an_answer_after_the_decision_was_settled_another_way_is_stale",
+        "an_auto_disabled_flow_raises_one_reenable_card_and_each_option_applies",
+        "an_expiry_is_the_decline_whatever_choice_it_names",
+        "catalog_changes_cannot_execute_mutations_under_a_query_retry_policy",
+        "decided_hint_confirms_card_or_policy_provenance_in_the_shared_transaction",
+        "digest_replace_key_is_top_level_when_core_catalog_capability_is_present",
+        "digest_replace_key_requires_core_catalog_capability",
+        "digest_replace_key_validation_refuses_invalid_values_unsent",
+        "digest_status_tag_is_top_level_and_absence_preserves_wire_bytes",
+        "each_reconcile_option_and_the_default_on_expiry_apply_through_the_journaled_path",
+        "each_unknown_site_records_its_reason_and_the_card_shows_it",
+        "journaled_sink_intent_is_byte_identical_after_a_cut",
+        "malformed_status_tag_is_refused_before_send",
+        "matching_policy_reply_and_active_status_approve_on_both_consent_paths",
+        "omitted_digest_action_uses_each_recipient_approved_cap",
+        "operator_keyed_tools_retry_but_unfenceable_tools_do_not",
+        "reconciled_as_applied_is_journaled_and_replays_the_same_rejection",
+        "repeated_grant_loss_raises_one_card_and_enable_retracts_it_after_restart",
+        "routing_host_runs_install_decision_facts_ops_and_sinks_end_to_end",
+        "startup_checks_every_undecided_card_and_pending_policy_once",
+        "status_tag_without_group_is_refused_before_send",
+        "transport_failures_reach_journal_with_safe_retries_only"
+      ],
+      "collateral_targets": [
+        "decisions",
+        "hosts",
+        "install_policy"
+      ]
+    },
+    {
+      "id": "template-lifecycle-body-retention",
+      "platform": "linux",
+      "primary_guards": [
+        "lifecycle::body_retention_starts_at_ack_and_never_prunes_unpublished_rows"
+      ],
+      "collateral_tests": [
+        "engine::lifecycle_tests::idle_engine_wakes_at_unscheduled_instance_expiry",
+        "expiry_wakes_without_schedule_at_deadline_and_carries_canonical_params",
+        "lifecycle::captured_lifecycle_notices_bodies_and_snapshot_match_vectors",
+        "lifecycle::self_end_and_one_shot_publish_ended",
+        "lifecycle_sequence_changes_only_for_committed_changes_across_kinds",
+        "overdue_expiry_is_recorded_before_renewal_or_end_without_scheduler_tick"
+      ],
+      "collateral_targets": [
+        "basal_module",
+        "module_events",
+        "templates"
+      ]
+    },
+    {
+      "id": "interrupt-handler-never-stops-the-engine-catastrophic-regex",
+      "platform": "macos",
+      "primary_guards": [
+        "catastrophic_regex_is_stopped_by_the_js_time_budget"
+      ],
+      "collateral_tests": [
+        "codemode_js_cpu_budget_stops_loops",
+        "cpu_bound_loop_is_stopped_by_the_js_time_budget",
+        "fuzzed_payloads_end_typed_and_the_worker_survives",
+        "top_level_wrapper_code_has_activation_budgets"
+      ],
+      "collateral_targets": [
+        "budgets",
+        "codemode",
+        "fuzz",
+        "sandbox_integrity"
+      ]
+    },
+    {
+      "id": "flow-list-state-diverges-from-flow-health",
+      "platform": "macos",
+      "primary_guards": [
+        "list_reply_decodes_against_documented_shape_and_health_state"
+      ],
+      "collateral_tests": [
+        "a_core_revoke_raises_no_reenable_card_and_a_new_approval_brings_the_flow_back",
+        "active_with_another_code_hash_is_revoked",
+        "declined_and_expired_hints_settle_unapproved_cards_and_are_visible",
+        "list_declined_card_and_reconciliation",
+        "revoked_in_core_the_next_scheduled_run_never_activates",
+        "unapproved_core_states_close_the_activation_gate_like_unknown",
+        "unknown_in_core_cancels_the_run"
+      ],
+      "collateral_targets": [
+        "install_gate",
+        "install_policy",
+        "list_contract"
+      ]
+    },
+    {
+      "id": "capture-mode-sends-calls-to-the-host",
+      "platform": "macos",
+      "primary_guards": [
+        "capture_mode_executes_no_host_call_and_replays_the_schedule_window"
+      ],
+      "collateral_tests": [
+        "a_captured_call_the_script_uses_marks_the_trace_partial",
+        "a_crash_between_receiving_an_answer_and_applying_it_applies_it_exactly_once",
+        "a_schedule_flow_survives_a_catch_up_a_worker_kill_and_a_module_kill_with_each_write_once",
+        "a_store_error_ends_the_process_non_zero_and_the_restart_recovers",
+        "all_four_templates_dry_run_successfully_in_capture_mode",
+        "an_answer_after_the_decision_was_settled_another_way_is_stale",
+        "an_expiry_is_the_decline_whatever_choice_it_names",
+        "catalog_changes_cannot_execute_mutations_under_a_query_retry_policy",
+        "digest_status_tag_is_top_level_and_absence_preserves_wire_bytes",
+        "dry_runs_capture_every_built_in_and_live_runs_only_reads_in_scope",
+        "each_reconcile_option_and_the_default_on_expiry_apply_through_the_journaled_path",
+        "each_unknown_site_records_its_reason_and_the_card_shows_it",
+        "instance_dry_run_uses_bound_values_owner_grants_and_approved_version",
+        "journaled_sink_intent_is_byte_identical_after_a_cut",
+        "live_mode_runs_only_query_ops_and_only_for_the_operator",
+        "omitted_digest_action_in_dry_runs_is_the_recipient_digest_max",
+        "operator_keyed_tools_retry_but_unfenceable_tools_do_not",
+        "paging_reads_all_boards_and_prunes_disappeared_agents_lanes_items_and_conditions",
+        "reconciled_as_applied_is_journaled_and_replays_the_same_rejection",
+        "routing_host_runs_install_decision_facts_ops_and_sinks_end_to_end",
+        "template_dry_run_captures_self_end_with_values_and_bound_instance",
+        "template_dry_run_uses_canonical_values_effective_grants_and_capture",
+        "transport_failures_reach_journal_with_safe_retries_only"
+      ],
+      "collateral_targets": [
+        "board_hygiene",
+        "decisions",
+        "dry_run",
+        "e2e",
+        "flow_templates",
+        "hosts",
+        "templates"
+      ]
+    },
+    {
+      "id": "decision-cards-action-options-carry-an-effect-core-does-not-take",
+      "platform": "macos",
+      "primary_guards": [
+        "a_run_in_needs_reconcile_raises_one_card_per_unknown_call_to_the_operator_only"
+      ],
+      "collateral_tests": [
+        "a_changed_decision_updates_its_card_and_another_unknown_call_gets_its_own",
+        "a_crash_between_receiving_an_answer_and_applying_it_applies_it_exactly_once",
+        "a_crash_between_the_intent_and_core_accepting_still_shows_exactly_one_card",
+        "a_duplicate_answer_changes_nothing",
+        "an_answer_after_the_decision_was_settled_another_way_is_stale",
+        "an_auto_disabled_flow_raises_one_reenable_card_and_each_option_applies",
+        "an_expiry_is_the_decline_whatever_choice_it_names",
+        "decision_requests_follow_core_rules_and_the_fake_core_refuses_any_other",
+        "each_reconcile_option_and_the_default_on_expiry_apply_through_the_journaled_path",
+        "each_unknown_site_records_its_reason_and_the_card_shows_it",
+        "reconciled_as_applied_is_journaled_and_replays_the_same_rejection",
+        "repeated_grant_loss_raises_one_card_and_enable_retracts_it_after_restart",
+        "requester_vectors_are_pinned_and_all_three_requests_match_bytes",
+        "the_request_builder_reproduces_core_vectors_byte_for_byte"
+      ],
+      "collateral_targets": [
+        "consent_paths",
+        "decisions"
+      ]
+    },
+    {
+      "id": "a-card-s-approval-is-applied-as-a-rejection",
+      "platform": "macos",
+      "primary_guards": [
+        "install_raises_one_card_per_version_and_its_decision_approves_or_rejects"
+      ],
+      "collateral_tests": [
+        "a_bound_worker_is_retired_after_its_activation_count_and_its_idle_period",
+        "a_broca_llm_suspends_survives_module_kill_and_settles_after_restart",
+        "a_caught_memory_failure_completes_and_reuses_the_worker",
+        "a_host_completion_resumes_a_suspended_run_without_the_fallback",
+        "a_killed_worker_is_replaced_and_the_run_continues",
+        "a_schedule_flow_survives_a_catch_up_a_worker_kill_and_a_module_kill_with_each_write_once",
+        "a_storage_error_stops_the_engine_and_raises_the_fatal_latch",
+        "a_store_error_ends_the_process_non_zero_and_the_restart_recovers",
+        "a_worker_is_never_reused_across_flows",
+        "activations_are_bounded_across_flows",
+        "activity_not_later_than_item_skips_stale_items_and_facts_are_once_per_owner",
+        "an_activation_uses_a_warm_spare",
+        "an_agent_cannot_act_on_a_flow_it_does_not_own",
+        "an_operator_disable_takes_over_the_owners_disable",
+        "an_owner_authorized_core_scope_names_the_agent_and_its_scope",
+        "audience_op_reads_approved_version_not_pending",
+        "audience_op_requires_verified_unscoped_module_route",
+        "audience_recipient_and_core_refusal_reach_script_unchanged",
+        "audience_reply_matches_documented_shape",
+        "authorization_matrix",
+        "changed_items_drop_memory_without_sending_on_that_run",
+        "completing_a_run_and_returning_pool_capacity_start_the_next_flow",
+        "copied_renderer_data_with_large_follow_up_and_own_text_stays_bounded",
+        "digest_data_is_exact_and_escaped_large_text_stays_within_core_limits",
+        "drain_stops_admission_until_resumed",
+        "each_dry_run_has_its_own_scratch_store_and_the_real_kv_and_runs_are_untouched",
+        "eta_first_at_eta_and_repeats_after_two_hours",
+        "flow_health_decodes_as_core_decodes_it",
+        "global_audience_facts_core_unknown_agent_refusal_is_unchanged",
+        "health_lists_a_flow_with_no_approved_version_as_unapproved",
+        "health_reports_flows_runs_and_the_module",
+        "health_uses_the_same_owner_disable_kind_as_list",
+        "item_wait_copies_only_the_first_target_eta_nudge_to_each_waiting_owner",
+        "js_time_exhaustion_retires_the_worker_before_the_next_handout",
+        "kv_limit_refusal_does_not_stop_other_rate_limited_nudges",
+        "lane_done_first_at_thirty_minutes_and_repeats_after_two_hours_with_fallback",
+        "list_declined_card_and_reconciliation",
+        "list_reply_decodes_against_documented_shape_and_health_state",
+        "memory_exhaustion_retires_the_worker_before_the_next_handout",
+        "paging_reads_all_boards_and_prunes_disappeared_agents_lanes_items_and_conditions",
+        "plain_peer_wait_copies_first_eta_once_with_own_item_data_and_replanning_choices",
+        "plain_peer_wait_nudges_the_peer_and_nonpeer_wait_nudges_owner",
+        "reconcile_resolves_an_unknown_call_for_the_operator",
+        "refused_digest_is_logged_and_does_not_stop_later_nudges",
+        "replacement_key_over_two_hundred_bytes_is_omitted_without_refusal",
+        "replacement_keys_are_sent_for_items_lanes_copies_and_repeats",
+        "self_end_outside_a_template_instance_is_a_journaled_refusal",
+        "stack_exhaustion_retires_the_worker_before_the_next_handout",
+        "stale_active_first_at_six_hours_and_repeats_after_six_hours",
+        "the_owner_disables_and_enables_its_flow",
+        "the_run_deadline_starts_after_the_worker_answers_its_handshake",
+        "the_unconfigured_host_refuses_every_dispatch_as_never_sent",
+        "unknown_activity_skips_stale_items",
+        "unsupported_replacement_retries_without_key_and_logs_once_per_run",
+        "wait_ended_does_not_fire_after_owner_reacted",
+        "wait_ended_first_at_thirty_minutes_and_repeats_after_thirty_minutes"
+      ],
+      "collateral_targets": [
+        "audience",
+        "board_hygiene",
+        "caller_binding",
+        "dry_run",
+        "e2e",
+        "engine",
+        "health_contract",
+        "idle_wake",
+        "list_contract",
+        "module_lifecycle",
+        "ops",
+        "pool",
+        "templates"
+      ]
+    },
+    {
+      "id": "flow-list-agent-sees-another-agent-s-flow",
+      "platform": "macos",
+      "primary_guards": [
+        "list_agent_cannot_see_another_agents_flow"
+      ],
+      "collateral_tests": [
+        "list_authorization_rows",
+        "list_exposes_template_values_version_expiry_and_remains_owner_scoped",
+        "list_invisible_requested_ids_are_absent"
+      ],
+      "collateral_targets": [
+        "list_contract",
+        "templates"
+      ]
+    },
+    {
+      "id": "the-owner-may-not-re-enable-even-a-disable-it-made-itself",
+      "platform": "macos",
+      "primary_guards": [
+        "authorization_matrix"
+      ],
+      "collateral_tests": [
+        "an_agent_cannot_act_on_a_flow_it_does_not_own",
+        "an_owner_authorized_core_scope_names_the_agent_and_its_scope",
+        "idempotent_creation_moves_version_extends_never_shortens_and_keeps_state",
+        "the_owner_disables_and_enables_its_flow"
+      ],
+      "collateral_targets": [
+        "caller_binding",
+        "ops",
+        "templates"
+      ]
+    },
+    {
+      "id": "a-local-caller-refused-an-operator-action-is-told-not-permitted-not-operator-attestation-required",
+      "platform": "macos",
+      "primary_guards": [
+        "authorization_matrix"
+      ],
+      "collateral_tests": [
+        "a_route_without_a_scope_is_never_an_agent",
+        "instantiate_caller_version_and_reply_are_stamped_without_cards",
+        "local_package_operations_require_operator_attestation",
+        "package_callers_are_core_only_except_operator_registration"
+      ],
+      "collateral_targets": [
+        "caller_binding",
+        "module_lifecycle",
+        "packages",
+        "templates"
+      ]
+    },
+    {
+      "id": "hosts-answer-acknowledged-despite-failed-decision-commit",
+      "platform": "macos",
+      "primary_guards": [
+        "decisions_ack_only_after_sink_commit_and_survive_restart"
+      ],
+      "collateral_tests": [
+        "a_crash_between_receiving_an_answer_and_applying_it_applies_it_exactly_once"
+      ],
+      "collateral_targets": [
+        "decisions"
+      ]
+    },
+    {
+      "id": "integration-model-store-initialization-omitted",
+      "platform": "macos",
+      "primary_guards": [
+        "routing_host_model_selection_and_digest_sink_share_the_journal_store"
+      ],
+      "collateral_tests": [
+        "a_bound_worker_is_retired_after_its_activation_count_and_its_idle_period",
+        "a_broca_llm_suspends_survives_module_kill_and_settles_after_restart",
+        "a_captured_call_the_script_uses_marks_the_trace_partial",
+        "a_caught_memory_failure_completes_and_reuses_the_worker",
+        "a_core_revoke_raises_no_reenable_card_and_a_new_approval_brings_the_flow_back",
+        "a_host_completion_resumes_a_suspended_run_without_the_fallback",
+        "a_killed_worker_is_replaced_and_the_run_continues",
+        "a_local_caller_installs_only_its_own_flows_with_a_digest_sink",
+        "a_route_without_a_scope_is_never_an_agent",
+        "a_scope_owned_by_another_module_names_no_agent",
+        "a_scope_without_owner_authorization_names_no_agent",
+        "a_storage_error_stops_the_engine_and_raises_the_fatal_latch",
+        "a_template_run_ends_only_itself_after_finishing_even_when_it_fails",
+        "a_wait_deadline_stops_and_reaps_its_workers",
+        "a_worker_is_never_reused_across_flows",
+        "activation_uses_effective_grants_and_journaled_self_and_params",
+        "activations_are_bounded_across_flows",
+        "active_with_another_code_hash_is_revoked",
+        "active_with_the_runs_code_hash_activates",
+        "activity_not_later_than_item_skips_stale_items_and_facts_are_once_per_owner",
+        "agent_owned_manifests_reject_foreign_targets_before_install_and_dry_run",
+        "all_four_templates_dry_run_successfully_in_capture_mode",
+        "an_activation_uses_a_warm_spare",
+        "an_agent_cannot_act_on_a_flow_it_does_not_own",
+        "an_operator_disable_takes_over_the_owners_disable",
+        "an_owner_authorized_core_scope_names_the_agent_and_its_scope",
+        "an_unconfigured_selector_has_no_default_model",
+        "an_undecodable_reply_defers_the_run",
+        "audience_facts_install_refusals_are_typed",
+        "audience_op_reads_approved_version_not_pending",
+        "audience_op_requires_verified_unscoped_module_route",
+        "audience_op_unknown_and_unapproved_have_same_refusal",
+        "audience_recipient_and_core_refusal_reach_script_unchanged",
+        "audience_reply_matches_documented_shape",
+        "authorization_matrix",
+        "capture_mode_executes_no_host_call_and_replays_the_schedule_window",
+        "card_author_is_scope_operator_or_local_and_nothing_else",
+        "card_raised_without_elicitation_id_is_keyed_on_the_triple",
+        "catalog_changes_cannot_execute_mutations_under_a_query_retry_policy",
+        "catalog_events_require_an_acknowledged_daemon_capability",
+        "catalog_generation_tracks_content_and_schema_pins_refuse_changes",
+        "catalog_install_refuses_missing_ops_and_events_and_marks_mutations",
+        "changed_items_drop_memory_without_sending_on_that_run",
+        "codemode_engine_budgets_still_apply_end_to_end",
+        "codemode_pool_retires_even_an_unused_lease",
+        "codemode_workers_are_separate_from_flow_pool_and_never_shared",
+        "completing_a_run_and_returning_pool_capacity_start_the_next_flow",
+        "copied_renderer_data_with_large_follow_up_and_own_text_stays_bounded",
+        "core_op_install_requires_catalog_capability_for_every_author",
+        "core_refusing_the_author_scope_is_a_clear_install_error",
+        "core_scope_shapes_and_stamp_mismatch_prevent_worker_start",
+        "daemon_schema_not_program_arguments_governs_dispatch_and_result_renders",
+        "decided_hint_confirms_card_or_policy_provenance_in_the_shared_transaction",
+        "decided_hint_requires_active_status_with_the_local_hash",
+        "declared_catalog_event_is_accepted_by_install_and_dry_run",
+        "declined_and_expired_hints_settle_unapproved_cards_and_are_visible",
+        "delivered_body_flow_mismatch_fails_run_before_script",
+        "digest_data_is_exact_and_escaped_large_text_stays_within_core_limits",
+        "digest_helper_bounds_escaped_note_long_metadata_and_links_on_every_platform",
+        "digest_replace_key_is_top_level_when_core_catalog_capability_is_present",
+        "digest_replace_key_requires_core_catalog_capability",
+        "digest_replace_key_validation_refuses_invalid_values_unsent",
+        "digest_status_tag_is_top_level_and_absence_preserves_wire_bytes",
+        "drain_stops_admission_until_resumed",
+        "dry_run_multibyte_windows_are_typed_refusals",
+        "dry_run_rechecks_core_op_catalog_capability",
+        "dry_runs_capture_every_built_in_and_live_runs_only_reads_in_scope",
+        "duplicate_and_unknown_hints_are_harmless",
+        "each_dry_run_has_its_own_scratch_store_and_the_real_kv_and_runs_are_untouched",
+        "end_is_owner_scoped_repeatable_kept_and_reopened_by_same_values",
+        "eta_first_at_eta_and_repeats_after_two_hours",
+        "exact_file_and_git_template_roots_refuse_values_outside_work",
+        "existing_parameter_root_cannot_be_retargeted_within_its_bound",
+        "expiry_blocks_admission_at_deadline_and_stops_kept_schedule",
+        "expiry_wakes_without_schedule_at_deadline_and_carries_canonical_params",
+        "file_conditions_wait_then_notify_once_and_end",
+        "file_empty_content_condition_is_stopped_as_misconfigured",
+        "file_lost_parameter_authority_stops_and_ends",
+        "file_transient_and_current_content_failures_retry_without_ending",
+        "fixture_releases_its_store_before_removing_the_directory",
+        "flow_health_decodes_as_core_decodes_it",
+        "forwarded_bind_identity_is_configuration_not_agent_authority",
+        "future_parameter_path_cannot_escape_through_a_later_symlink",
+        "generations_fence_stale_calls_and_record_absent_removals",
+        "generations_resend_identical_replies_and_conflicts_record_nothing",
+        "git_disappeared_repository_writes_stopped_and_ends",
+        "git_existing_match_is_baselined_and_complete_nonmatches_advance_it",
+        "git_full_scan_cap_stops_but_a_match_at_the_cap_still_fires",
+        "git_ref_waits_for_branch_then_notifies_once",
+        "git_rewritten_history_stops_instead_of_matching_older_commits",
+        "git_transient_failure_retries_without_setting_a_baseline",
+        "github_closed_pr_or_issue_and_any_change_notify_once",
+        "github_issue_cannot_merge_stops_on_its_first_subscribed_event",
+        "github_pr_filters_headers_number_kind_and_state_before_notifying",
+        "github_release_waits_for_its_repository_and_ignores_number_and_state",
+        "global_audience_facts_core_unknown_agent_refusal_is_unchanged",
+        "health_and_list_show_grant_loss_and_retirement_evidence",
+        "health_lists_a_flow_with_no_approved_version_as_unapproved",
+        "health_reports_flows_runs_and_the_module",
+        "health_uses_the_same_owner_disable_kind_as_list",
+        "idempotent_creation_moves_version_extends_never_shortens_and_keeps_state",
+        "idle_policy_install_has_zero_status_calls_after_confirmation",
+        "install_and_dry_run_apply_audience_authorship_and_resolution",
+        "install_card_is_byte_exact_and_scope_comes_from_the_route_stamp",
+        "install_cards_only_use_core_install_request_and_never_wake_answer_polling",
+        "install_decided_refuses_every_non_core_caller",
+        "install_keeps_the_version_when_the_consent_plane_is_down_and_raises_on_retry",
+        "install_raises_one_card_per_version_and_its_decision_approves_or_rejects",
+        "install_refuses_what_an_agent_may_not_do",
+        "instance_dry_run_refuses_params_including_null",
+        "instance_dry_run_uses_bound_values_owner_grants_and_approved_version",
+        "instance_limits_cover_agent_and_template_and_exclude_ended_expired",
+        "instantiate_caller_version_and_reply_are_stamped_without_cards",
+        "item_wait_copies_only_the_first_target_eta_nudge_to_each_waiting_owner",
+        "js_time_exhaustion_retires_the_worker_before_the_next_handout",
+        "keyless_calls_run_twice_have_no_withdrawal_or_late_result_and_warn",
+        "kv_limit_refusal_does_not_stop_other_rate_limited_nudges",
+        "lane_done_first_at_thirty_minutes_and_repeats_after_two_hours_with_fallback",
+        "late_parameter_ancestor_symlink_escape_is_refused_by_the_host",
+        "late_parameter_root_symlink_escape_is_refused_by_the_host",
+        "late_repo_root_symlink_escape_is_refused_and_static_grants_still_apply",
+        "lifecycle::body_lookup_hides_unknown_keys_and_non_core_callers_identically",
+        "lifecycle::captured_lifecycle_notices_bodies_and_snapshot_match_vectors",
+        "lifecycle::core_body_lookup_reports_stored_event_name_mismatch",
+        "lifecycle::self_end_and_one_shot_publish_ended",
+        "lifecycle_change_rolls_back_if_outbox_insert_fails",
+        "lifecycle_sequence_changes_only_for_committed_changes_across_kinds",
+        "lifetime_limit_refuses_without_creating",
+        "list_agent_cannot_see_another_agents_flow",
+        "list_authorization_rows",
+        "list_declined_card_and_reconciliation",
+        "list_exposes_template_values_version_expiry_and_remains_owner_scoped",
+        "list_invisible_requested_ids_are_absent",
+        "list_local_cannot_see_an_agents_flow",
+        "list_reply_decodes_against_documented_shape_and_health_state",
+        "live_mode_runs_only_query_ops_and_only_for_the_operator",
+        "live_snapshot_is_core_only_and_keeps_expired_not_ended_instances",
+        "local_package_operations_require_operator_attestation",
+        "malformed_status_tag_is_refused_before_send",
+        "management_fixture_starts_no_worker",
+        "matching_policy_reply_and_active_status_approve_on_both_consent_paths",
+        "memory_exhaustion_retires_the_worker_before_the_next_handout",
+        "mismatched_policy_reply_hash_never_asks_status_or_approves",
+        "missing_empty_or_unmatched_catalog_events_are_refused",
+        "missing_stat_with_an_escaped_ancestor_is_refused_not_reported_absent",
+        "null_optional_at_does_not_end_a_recurring_instance",
+        "omitted_digest_action_in_dry_runs_is_the_recipient_digest_max",
+        "omitted_digest_action_uses_each_recipient_approved_cap",
+        "one_shot_fires_once_after_downtime_and_ends_on_success_failure_or_cancel",
+        "operator_keyed_tools_retry_but_unfenceable_tools_do_not",
+        "ordinary_flow_dry_run_still_refuses_self_end",
+        "ordinary_installs_refuse_self_in_every_agent_field",
+        "overdue_expiry_is_recorded_before_renewal_or_end_without_scheduler_tick",
+        "package_callers_are_core_only_except_operator_registration",
+        "package_length_and_unknown_agent_refusals_do_not_write",
+        "package_template_exclusion_and_ordinary_install_dry_run_refusals",
+        "packages_require_self_in_every_agent_field",
+        "paging_reads_all_boards_and_prunes_disappeared_agents_lanes_items_and_conditions",
+        "parameter_roots_must_exist_at_registration",
+        "past_or_too_distant_timestamp_is_refused_at_every_creation",
+        "path_and_repo_values_resolve_symlinks_and_future_ancestors_before_bounds",
+        "placement_is_sent_only_when_the_manifest_states_one",
+        "plain_install_cannot_occupy_package_instance_ids",
+        "plain_peer_wait_copies_first_eta_once_with_own_item_data_and_replanning_choices",
+        "plain_peer_wait_nudges_the_peer_and_nonpeer_wait_nudges_owner",
+        "policy_approval_uses_card_version_schedule_and_core_disable_rules",
+        "policy_provenance_and_approval_roll_back_in_one_transaction",
+        "policy_status_must_be_active_with_the_local_hash",
+        "reconcile_resolves_an_unknown_call_for_the_operator",
+        "recorded_live_plexus_catalog_accepts_github_pr_changed_v1",
+        "refused_digest_is_logged_and_does_not_stop_later_nudges",
+        "refused_open_preserves_core_code_and_detail_without_worker",
+        "registered_versions_are_immutable_and_get_returns_exact_bytes",
+        "reminder_past_invalid_or_over_ceiling_timestamp_is_refused_at_creation",
+        "reminder_waits_until_due_then_catches_up_once_and_ends",
+        "removal_and_reensure_never_change_enable_state_or_actor",
+        "replacement_key_over_two_hundred_bytes_is_omitted_without_refusal",
+        "replacement_keys_are_sent_for_items_lanes_copies_and_repeats",
+        "repo_creation_checks_layout_and_git_reads_validate_its_contents",
+        "repository_layout_pointer_reads_are_bounded_during_creation",
+        "retired_flow_enable_has_a_typed_retirement_not_permission_denied",
+        "retried_key_attaches_to_running_run_and_finished_result",
+        "revoked_in_core_the_next_scheduled_run_never_activates",
+        "routing_host_runs_install_decision_facts_ops_and_sinks_end_to_end",
+        "script_model_or_provider_is_rejected_before_selection_even_if_it_matches",
+        "selections_freeze_at_intent_commit_and_only_uncommitted_calls_reselect",
+        "selector_refusals_are_journaled_with_each_code_and_never_send_broca",
+        "self_end_outside_a_template_instance_is_a_journaled_refusal",
+        "self_only_agents_and_global_and_local_manifests_still_install",
+        "sigkill_deaths_are_not_confinement_violations",
+        "sigsys_deaths_are_counted_in_flow_health",
+        "stack_exhaustion_retires_the_worker_before_the_next_handout",
+        "stale_active_first_at_six_hours_and_repeats_after_six_hours",
+        "startup_binds_the_model_store_before_host_recovery",
+        "startup_checks_every_undecided_card_and_pending_policy_once",
+        "startup_recovers_declined_expired_and_pending_cards_once",
+        "status_group_is_validated_at_install_and_dry_run",
+        "status_tag_without_group_is_refused_before_send",
+        "target_grants_and_audience_run_bounds_are_validated_by_install_and_dry_run",
+        "template_dry_run_at_fires_once_immediately_with_canonical_timestamp",
+        "template_dry_run_bounds_preserve_integer_and_timestamp_rules",
+        "template_dry_run_captures_self_end_with_values_and_bound_instance",
+        "template_dry_run_creates_no_rows_and_uses_no_quota",
+        "template_dry_run_param_missing_matches_instantiate",
+        "template_dry_run_param_unknown_matches_instantiate",
+        "template_dry_run_path_and_repo_canonicalization_and_bounds_match_instances",
+        "template_dry_run_requires_agent_and_capture_instance_requires_owner_or_operator",
+        "template_dry_run_uses_canonical_values_effective_grants_and_capture",
+        "template_stat_of_a_missing_target_reports_absence_then_appearance",
+        "the_owner_disables_and_enables_its_flow",
+        "the_run_deadline_starts_after_the_worker_answers_its_handshake",
+        "tool_manifest_description_and_schema_are_pinned_and_old_entries_are_gone",
+        "transport_failures_reach_journal_with_safe_retries_only",
+        "unapproved_core_states_close_the_activation_gate_like_unknown",
+        "unhandled_rejections_warn_but_handled_rejections_and_logs_do_not",
+        "unknown_activity_skips_stale_items",
+        "unknown_in_core_cancels_the_run",
+        "unknown_install_outcome_is_an_error_even_with_a_valid_hash_or_card_id",
+        "unreachable_core_keeps_the_run_pending_without_a_hot_loop",
+        "unreachable_selector_retries_boundedly_then_journals_route_unavailable",
+        "unreadable_registries_refuse_install_and_dry_run",
+        "unsupported_replacement_retries_without_key_and_logs_once_per_run",
+        "wait_ended_does_not_fire_after_owner_reacted",
+        "wait_ended_first_at_thirty_minutes_and_repeats_after_thirty_minutes",
+        "worker_preamble_supplies_verified_json_and_synthetic_capture_calls_nothing_live"
+      ],
+      "collateral_targets": [
+        "agent_targets",
+        "audience",
+        "board_hygiene",
+        "caller_binding",
+        "catalog_events",
+        "codemode",
+        "dry_run",
+        "e2e",
+        "engine",
+        "event_preamble",
+        "fixture_teardown",
+        "flow_scope_capabilities",
+        "flow_templates",
+        "health_contract",
+        "hosts",
+        "idle_wake",
+        "install_gate",
+        "install_policy",
+        "list_contract",
+        "module_events",
+        "module_lifecycle",
+        "ops",
+        "packages",
+        "pool",
+        "templates",
+        "unicode_dry_run"
+      ]
+    },
+    {
+      "id": "windows-allowlist-skips-alpc-close",
+      "platform": "windows",
+      "primary_guards": [
+        "confinement::windows::allowlist::tests::startup_closes_ports_and_private_files_only"
+      ],
+      "collateral_tests": [
+        "a_real_named_pipe_is_denied_with_plain_control",
+        "all_rejected_any_replays_in_order",
+        "an_activation_completes_under_the_full_confinement",
+        "blocked_only_on_long_calls_suspends_and_resumes",
+        "catastrophic_regex_is_stopped_by_the_js_time_budget",
+        "caught_rejection_replays_as_a_rejection",
+        "child_creation_and_parent_process_opens_are_denied_with_plain_controls",
+        "clock_and_random_are_journaled_and_replayed",
+        "closing_the_channel_ends_the_worker_cleanly",
+        "code_from_strings_is_unreachable",
+        "codemode_caught_memory_exhaustion_is_sticky",
+        "codemode_caught_stack_exhaustion_is_sticky",
+        "codemode_clock_and_random_are_worker_native",
+        "codemode_console_formats_and_sends_lines_without_host_calls",
+        "codemode_dates_are_utc_only",
+        "codemode_exposes_only_tools_console_and_frozen_intrinsics",
+        "codemode_js_cpu_budget_stops_loops",
+        "codemode_rejects_the_wrong_profile_prelude_hash",
+        "codemode_tool_arguments_cap_is_inclusive_and_cannot_be_caught",
+        "codemode_tool_input_crosses_as_json_and_unawaited_calls_drain",
+        "cpu_bound_loop_is_stopped_by_the_js_time_budget",
+        "create_thread_succeeds_inside_full_confinement",
+        "date_constructor_cannot_be_recovered",
+        "deeply_nested_payload_fails_typed",
+        "divergent_call_fails_with_a_typed_error",
+        "early_all_rejection_replays_with_calls_in_flight",
+        "excluded_inheritable_handle_is_fatal_only_after_readiness_and_plain_dropped_list_writes",
+        "executable_allocation_and_rw_to_x_are_denied_with_lpac_controls",
+        "fatal_exit_before_readiness_is_not_a_denial",
+        "forced_pool_work_wait_timer_and_legacy_work_complete",
+        "forged_memory_errors_are_script_failures_and_description_does_not_invoke_getters",
+        "fresh_clock_read_after_a_gap_returns_the_new_time",
+        "fuzzed_payloads_end_typed_and_the_worker_survives",
+        "global_inventory_is_exactly_the_allowlist",
+        "handshake_reports_version_engine_and_confinement",
+        "intrinsics_are_frozen",
+        "local_time_and_locale_are_removed",
+        "long_host_waits_do_not_consume_the_js_time_budget",
+        "malformed_frames_are_refused_and_the_worker_survives",
+        "memory_limit_holds",
+        "native_package_hive_write_is_denied_with_lpac_control",
+        "native_winsock_tcp_udp_and_loopback_are_denied_and_parent_observes_controls",
+        "new_alpc_epmapper_and_package_section_are_denied_with_lpac_controls",
+        "out_of_order_frames_are_refused",
+        "oversized_frame_is_refused_and_the_worker_exits_cleanly",
+        "package_folder_create_is_denied_with_lpac_control",
+        "payloads_arrive_as_plain_data",
+        "race_and_any_keep_their_winner_on_replay",
+        "recorded_outcomes_are_released_in_delivery_order",
+        "removed_globals_are_absent",
+        "replay_crosses_the_channel_only_for_new_calls",
+        "sh_is_unreachable_in_the_flow_profile",
+        "stack_limit_holds",
+        "stack_trace_hooks_cannot_recover_private_prelude_functions",
+        "stalled_promise_is_reported_as_stalled",
+        "system_image_data_read_and_stat_are_denied_with_lpac_controls",
+        "thread_barrier_checks_every_thread_before_and_during_held_pool_callbacks",
+        "top_level_wrapper_code_has_activation_budgets",
+        "top_level_wrapper_code_is_locked_down_journaled_and_replayed",
+        "unreplayed_journal_entries_are_detected",
+        "wrapper_level_function_declarations_cannot_extend_the_frozen_global_object"
+      ],
+      "collateral_targets": [
+        "budgets",
+        "clock",
+        "codemode",
+        "fuzz",
+        "ipc",
+        "lockdown",
+        "profile",
+        "replay",
+        "sandbox_integrity",
+        "windows_probes",
+        "windows_startup"
+      ]
+    },
+    {
+      "id": "windows-creation-drops-child-process-policy",
+      "platform": "windows",
+      "primary_guards": [
+        "an_activation_completes_under_the_full_confinement"
+      ],
+      "collateral_tests": [
+        "a_real_named_pipe_is_denied_with_plain_control",
+        "all_rejected_any_replays_in_order",
+        "an_inherited_handle_beyond_the_pipes_is_refused_as_handle_not_allowed",
+        "blocked_only_on_long_calls_suspends_and_resumes",
+        "catastrophic_regex_is_stopped_by_the_js_time_budget",
+        "caught_rejection_replays_as_a_rejection",
+        "child_creation_and_parent_process_opens_are_denied_with_plain_controls",
+        "clock_and_random_are_journaled_and_replayed",
+        "closing_the_channel_ends_the_worker_cleanly",
+        "code_from_strings_is_unreachable",
+        "codemode_caught_memory_exhaustion_is_sticky",
+        "codemode_caught_stack_exhaustion_is_sticky",
+        "codemode_clock_and_random_are_worker_native",
+        "codemode_console_formats_and_sends_lines_without_host_calls",
+        "codemode_dates_are_utc_only",
+        "codemode_exposes_only_tools_console_and_frozen_intrinsics",
+        "codemode_js_cpu_budget_stops_loops",
+        "codemode_rejects_the_wrong_profile_prelude_hash",
+        "codemode_tool_arguments_cap_is_inclusive_and_cannot_be_caught",
+        "codemode_tool_input_crosses_as_json_and_unawaited_calls_drain",
+        "cpu_bound_loop_is_stopped_by_the_js_time_budget",
+        "create_thread_succeeds_inside_full_confinement",
+        "date_constructor_cannot_be_recovered",
+        "deeply_nested_payload_fails_typed",
+        "divergent_call_fails_with_a_typed_error",
+        "early_all_rejection_replays_with_calls_in_flight",
+        "excluded_inheritable_handle_is_fatal_only_after_readiness_and_plain_dropped_list_writes",
+        "executable_allocation_and_rw_to_x_are_denied_with_lpac_controls",
+        "fatal_exit_before_readiness_is_not_a_denial",
+        "forced_pool_work_wait_timer_and_legacy_work_complete",
+        "forged_memory_errors_are_script_failures_and_description_does_not_invoke_getters",
+        "fresh_clock_read_after_a_gap_returns_the_new_time",
+        "fuzzed_payloads_end_typed_and_the_worker_survives",
+        "global_inventory_is_exactly_the_allowlist",
+        "handshake_reports_version_engine_and_confinement",
+        "intrinsics_are_frozen",
+        "local_time_and_locale_are_removed",
+        "long_host_waits_do_not_consume_the_js_time_budget",
+        "malformed_frames_are_refused_and_the_worker_survives",
+        "memory_limit_holds",
+        "native_package_hive_write_is_denied_with_lpac_control",
+        "native_winsock_tcp_udp_and_loopback_are_denied_and_parent_observes_controls",
+        "new_alpc_epmapper_and_package_section_are_denied_with_lpac_controls",
+        "out_of_order_frames_are_refused",
+        "oversized_frame_is_refused_and_the_worker_exits_cleanly",
+        "package_folder_create_is_denied_with_lpac_control",
+        "payloads_arrive_as_plain_data",
+        "planted_handle_startup_refuses_and_the_allowlist_mutant_writes_the_fixture",
+        "race_and_any_keep_their_winner_on_replay",
+        "recorded_outcomes_are_released_in_delivery_order",
+        "removed_globals_are_absent",
+        "replay_crosses_the_channel_only_for_new_calls",
+        "sh_is_unreachable_in_the_flow_profile",
+        "stack_limit_holds",
+        "stack_trace_hooks_cannot_recover_private_prelude_functions",
+        "stalled_promise_is_reported_as_stalled",
+        "system_image_data_read_and_stat_are_denied_with_lpac_controls",
+        "thread_barrier_checks_every_thread_before_and_during_held_pool_callbacks",
+        "top_level_wrapper_code_has_activation_budgets",
+        "top_level_wrapper_code_is_locked_down_journaled_and_replayed",
+        "unreplayed_journal_entries_are_detected",
+        "wrapper_level_function_declarations_cannot_extend_the_frozen_global_object"
+      ],
+      "collateral_targets": [
+        "budgets",
+        "clock",
+        "codemode",
+        "fuzz",
+        "ipc",
+        "lockdown",
+        "profile",
+        "replay",
+        "sandbox_integrity",
+        "windows_probes",
+        "windows_startup"
+      ]
+    },
+    {
+      "id": "windows-creation-drops-prohibit-dynamic-code",
+      "platform": "windows",
+      "primary_guards": [
+        "windows::launch::tests::the_mitigation_policy_is_the_eight_always_on_bits"
+      ],
+      "collateral_tests": [
+        "full_confinement_starts_the_child_reads_back_its_token_and_job_and_kills_it"
+      ],
+      "collateral_targets": [
+        "windows_launch"
+      ]
+    },
+    {
+      "id": "windows-worker-skips-capabilities-present",
+      "platform": "windows",
+      "primary_guards": [
+        "a_primary_with_a_capability_is_refused_as_capabilities_present"
+      ],
+      "collateral_tests": [
+        "confinement::windows::attest::tests::each_broken_property_is_refused_with_its_reason",
+        "confinement::windows::attest::tests::the_first_failing_check_in_order_is_reported"
+      ],
+      "collateral_targets": [
+        "basal_worker"
+      ]
+    },
+    {
+      "id": "windows-worker-skips-handle-not-allowed",
+      "platform": "windows",
+      "primary_guards": [
+        "an_inherited_handle_beyond_the_pipes_is_refused_as_handle_not_allowed"
+      ],
+      "collateral_tests": [
+        "planted_handle_startup_refuses_and_the_allowlist_mutant_writes_the_fixture"
+      ],
+      "collateral_targets": [
+        "windows_probes"
+      ]
+    },
+    {
+      "id": "windows-worker-skips-integrity-not-untrusted",
+      "platform": "windows",
+      "primary_guards": [
+        "a_skipped_lowering_is_refused_as_integrity_not_untrusted"
+      ],
+      "collateral_tests": [
+        "confinement::windows::attest::tests::each_broken_property_is_refused_with_its_reason",
+        "confinement::windows::attest::tests::the_first_failing_check_in_order_is_reported"
+      ],
+      "collateral_targets": [
+        "basal_worker"
+      ]
+    },
+    {
+      "id": "windows-worker-skips-not-lpac",
+      "platform": "windows",
+      "primary_guards": [
+        "a_primary_without_the_lpac_claim_is_refused_as_not_lpac"
+      ],
+      "collateral_tests": [
+        "confinement::windows::attest::tests::each_broken_property_is_refused_with_its_reason"
+      ],
+      "collateral_targets": [
+        "basal_worker"
+      ]
+    },
+    {
+      "id": "windows-worker-skips-restricting-sid-mismatch",
+      "platform": "windows",
+      "primary_guards": [
+        "a_second_restricting_sid_is_refused_as_restricting_sid_mismatch"
+      ],
+      "collateral_tests": [
+        "confinement::windows::attest::tests::each_broken_property_is_refused_with_its_reason",
+        "confinement::windows::attest::tests::the_first_failing_check_in_order_is_reported"
+      ],
+      "collateral_targets": [
+        "basal_worker"
+      ]
+    },
+    {
+      "id": "windows-allowlist-skips-private-file-close",
+      "platform": "windows",
+      "primary_guards": [
+        "confinement::windows::allowlist::tests::startup_closes_ports_and_private_files_only"
+      ],
+      "collateral_tests": [
+        "a_real_named_pipe_is_denied_with_plain_control",
+        "all_rejected_any_replays_in_order",
+        "an_activation_completes_under_the_full_confinement",
+        "blocked_only_on_long_calls_suspends_and_resumes",
+        "catastrophic_regex_is_stopped_by_the_js_time_budget",
+        "caught_rejection_replays_as_a_rejection",
+        "child_creation_and_parent_process_opens_are_denied_with_plain_controls",
+        "clock_and_random_are_journaled_and_replayed",
+        "closing_the_channel_ends_the_worker_cleanly",
+        "code_from_strings_is_unreachable",
+        "codemode_caught_memory_exhaustion_is_sticky",
+        "codemode_caught_stack_exhaustion_is_sticky",
+        "codemode_clock_and_random_are_worker_native",
+        "codemode_console_formats_and_sends_lines_without_host_calls",
+        "codemode_dates_are_utc_only",
+        "codemode_exposes_only_tools_console_and_frozen_intrinsics",
+        "codemode_js_cpu_budget_stops_loops",
+        "codemode_rejects_the_wrong_profile_prelude_hash",
+        "codemode_tool_arguments_cap_is_inclusive_and_cannot_be_caught",
+        "codemode_tool_input_crosses_as_json_and_unawaited_calls_drain",
+        "cpu_bound_loop_is_stopped_by_the_js_time_budget",
+        "create_thread_succeeds_inside_full_confinement",
+        "date_constructor_cannot_be_recovered",
+        "deeply_nested_payload_fails_typed",
+        "divergent_call_fails_with_a_typed_error",
+        "early_all_rejection_replays_with_calls_in_flight",
+        "excluded_inheritable_handle_is_fatal_only_after_readiness_and_plain_dropped_list_writes",
+        "executable_allocation_and_rw_to_x_are_denied_with_lpac_controls",
+        "fatal_exit_before_readiness_is_not_a_denial",
+        "forced_pool_work_wait_timer_and_legacy_work_complete",
+        "forged_memory_errors_are_script_failures_and_description_does_not_invoke_getters",
+        "fresh_clock_read_after_a_gap_returns_the_new_time",
+        "fuzzed_payloads_end_typed_and_the_worker_survives",
+        "global_inventory_is_exactly_the_allowlist",
+        "handshake_reports_version_engine_and_confinement",
+        "intrinsics_are_frozen",
+        "local_time_and_locale_are_removed",
+        "long_host_waits_do_not_consume_the_js_time_budget",
+        "malformed_frames_are_refused_and_the_worker_survives",
+        "memory_limit_holds",
+        "native_package_hive_write_is_denied_with_lpac_control",
+        "native_winsock_tcp_udp_and_loopback_are_denied_and_parent_observes_controls",
+        "new_alpc_epmapper_and_package_section_are_denied_with_lpac_controls",
+        "out_of_order_frames_are_refused",
+        "oversized_frame_is_refused_and_the_worker_exits_cleanly",
+        "package_folder_create_is_denied_with_lpac_control",
+        "payloads_arrive_as_plain_data",
+        "race_and_any_keep_their_winner_on_replay",
+        "recorded_outcomes_are_released_in_delivery_order",
+        "removed_globals_are_absent",
+        "replay_crosses_the_channel_only_for_new_calls",
+        "sh_is_unreachable_in_the_flow_profile",
+        "stack_limit_holds",
+        "stack_trace_hooks_cannot_recover_private_prelude_functions",
+        "stalled_promise_is_reported_as_stalled",
+        "system_image_data_read_and_stat_are_denied_with_lpac_controls",
+        "thread_barrier_checks_every_thread_before_and_during_held_pool_callbacks",
+        "top_level_wrapper_code_has_activation_budgets",
+        "top_level_wrapper_code_is_locked_down_journaled_and_replayed",
+        "unreplayed_journal_entries_are_detected",
+        "wrapper_level_function_declarations_cannot_extend_the_frozen_global_object"
+      ],
+      "collateral_targets": [
+        "budgets",
+        "clock",
+        "codemode",
+        "fuzz",
+        "ipc",
+        "lockdown",
+        "profile",
+        "replay",
+        "sandbox_integrity",
+        "windows_probes",
+        "windows_startup"
+      ]
+    },
+    {
+      "id": "windows-launcher-context-names-are-predictable",
+      "platform": "windows",
+      "primary_guards": [
+        "windows::context::tests::context_names_are_random_and_never_repeat"
+      ],
+      "collateral_tests": [
+        "leftover_directories_with_pid_based_names_do_not_block_a_launch"
+      ],
+      "collateral_targets": [
+        "windows_launch"
+      ]
+    },
+    {
+      "id": "windows-worker-missing-package-sid-is-not-refused",
+      "platform": "windows",
+      "primary_guards": [
+        "a_missing_package_sid_exits_70_package_sid_argument_missing"
+      ],
+      "collateral_tests": [
+        "confinement::windows::tests::a_missing_package_sid_is_its_own_error"
+      ],
+      "collateral_targets": [
+        "basal_worker"
+      ]
+    },
+    {
+      "id": "windows-worker-skips-group-not-deny-only",
+      "platform": "windows",
+      "primary_guards": [
+        "an_enabled_logon_group_is_refused_as_group_not_deny_only"
+      ],
+      "collateral_tests": [
+        "confinement::windows::attest::tests::each_broken_property_is_refused_with_its_reason",
+        "confinement::windows::attest::tests::the_first_failing_check_in_order_is_reported"
+      ],
+      "collateral_targets": [
+        "basal_worker"
+      ]
+    },
+    {
+      "id": "windows-worker-skips-privileges-present",
+      "platform": "windows",
+      "primary_guards": [
+        "a_primary_with_privileges_is_refused_as_privileges_present"
+      ],
+      "collateral_tests": [
+        "confinement::windows::attest::tests::each_broken_property_is_refused_with_its_reason",
+        "confinement::windows::attest::tests::the_first_failing_check_in_order_is_reported"
+      ],
+      "collateral_targets": [
+        "basal_worker"
+      ]
+    }
+  ]
+}
