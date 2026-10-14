@@ -6,7 +6,7 @@ mod common;
 use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use basal_core::{Admission, NoHooks, RunState};
@@ -22,7 +22,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 const OWNER: &str = "agent_47120287c700722b";
-const TEMPLATES: [(&str, &str, &str); 4] = [
+const TEMPLATES: [(&str, &str, &str); 5] = [
     (
         "watch-file",
         include_str!("../../../templates/watch-file/manifest.json"),
@@ -43,10 +43,17 @@ const TEMPLATES: [(&str, &str, &str); 4] = [
         include_str!("../../../templates/remind-at/manifest.json"),
         include_str!("../../../templates/remind-at/flow.js"),
     ),
+    (
+        "github-ci-watch",
+        include_str!("../../../templates/github-ci-watch/manifest.json"),
+        include_str!("../../../templates/github-ci-watch/flow.js"),
+    ),
 ];
 const PR: &str = include_str!("data/template-pr-v1.json");
 const ISSUE: &str = include_str!("data/template-issue-v1.json");
 const RELEASE: &str = include_str!("data/template-release-v1.json");
+const CI_JOB: &str = include_str!("data/template-ci-job-v2.json");
+const CI_RUN: &str = include_str!("data/template-ci-run-v2.json");
 
 fn text(value: Value) -> JsonText {
     JsonText::new(value.to_string()).unwrap()
@@ -71,6 +78,7 @@ struct TemplateHost {
     overrides: Mutex<VecDeque<(Primitive, HostOutcome)>>,
     bodies: Mutex<BTreeMap<String, Value>>,
     resolved: AtomicUsize,
+    replacement_unsupported: AtomicBool,
 }
 
 impl TemplateHost {
@@ -121,6 +129,11 @@ impl TemplateHost {
 }
 
 impl Host for TemplateHost {
+    fn supports_core_capability(&self, capability: &str) -> bool {
+        capability == basal_host::core_host::FLOW_DIGEST_REPLACE_KEY_V1
+            && !self.replacement_unsupported.load(Ordering::Relaxed)
+    }
+
     fn classify(&self, kind: &CallKind) -> CallClass {
         self.mock.classify(kind)
     }
@@ -209,6 +222,22 @@ impl Test {
                 1,
                 EventDecl {
                     headers: vec!["repo".into()],
+                    origin: EventOrigin::External,
+                    body: EventBody::Resolved {
+                        resolve_op: "events_get".into(),
+                    },
+                },
+            );
+        }
+        for name in ["github_ci_job_failed", "github_ci_run_completed"] {
+            catalog.set_event(
+                "plexus",
+                name,
+                2,
+                EventDecl {
+                    headers: ["kind", "repo", "project", "pr", "branch", "conclusion"]
+                        .map(str::to_owned)
+                        .into(),
                     origin: EventOrigin::External,
                     body: EventBody::Resolved {
                         resolve_op: "events_get".into(),
@@ -343,6 +372,67 @@ impl Test {
         assert_eq!((report.filtered_out, report.admitted), (1, 0));
         assert!(self.f.module.rt.startable().unwrap().is_empty());
         assert_eq!(self.host.resolved.load(Ordering::Relaxed), resolved);
+    }
+
+    fn ci_notice(
+        &self,
+        instance: &Value,
+        mut body: Value,
+        repo: &str,
+        branch: &str,
+        admitted: bool,
+    ) -> Option<String> {
+        let name = if body["kind"] == "ci_job" {
+            "github_ci_job_failed"
+        } else {
+            "github_ci_run_completed"
+        };
+        let key = format!("{:064x}", self.host.bodies.lock().unwrap().len() + 1);
+        body["event_key"] = json!(key);
+        let bytes = body.to_string();
+        let conclusion = body["conclusion"].as_str().unwrap_or("").to_owned();
+        self.host.bodies.lock().unwrap().insert(key.clone(), body);
+        let resolved = self.host.resolved.load(Ordering::Relaxed);
+        let report = self
+            .f
+            .module
+            .rt
+            .admit_events(&[basal_core::events::Notice {
+                published_at_ms: self.f.clock.now_ms(),
+                subject: format!("ck.account.event.plexus.{name}.v2"),
+                event_key: key,
+                digest: format!("{:x}", Sha256::digest(bytes.as_bytes())),
+                headers: [
+                    ("kind".into(), name.into()),
+                    ("repo".into(), repo.into()),
+                    ("branch".into(), branch.into()),
+                    ("conclusion".into(), conclusion),
+                ]
+                .into(),
+            }])
+            .unwrap();
+        let startable = self.f.module.rt.startable().unwrap();
+        if !admitted {
+            assert_eq!((report.filtered_out, report.admitted), (1, 0));
+            assert!(startable.is_empty());
+            assert_eq!(self.host.resolved.load(Ordering::Relaxed), resolved);
+            return None;
+        }
+        assert_eq!(report.admitted, 1);
+        assert_eq!(startable.len(), 1);
+        let run = startable[0].0.clone();
+        assert_eq!(
+            self.f.module.rt.run(&run).unwrap().flow_id,
+            instance["flow_id"].as_str().unwrap()
+        );
+        self.finish(&run);
+        self.live(instance, true);
+        Some(run)
+    }
+
+    fn ci(&self, instance: &Value, body: Value) -> String {
+        self.ci_notice(instance, body, "example/project", "main", true)
+            .unwrap()
     }
 
     fn items(&self) -> Vec<Value> {
@@ -503,9 +593,32 @@ fn published_templates_declare_exact_bounds_and_self_only_grants() {
                 assert_eq!(event["match"], json!({"repo":"$params.repo"}));
             }
         }
+        if name == "github-ci-watch" {
+            assert_eq!(m["ops"], json!([{"module":"plexus","op":"events_get"}]));
+            let events = m["trigger"]["events"].as_array().unwrap();
+            assert_eq!(events.len(), 2);
+            for (event, expected) in events
+                .iter()
+                .zip(["github_ci_job_failed", "github_ci_run_completed"])
+            {
+                assert_eq!(event["module"], "plexus");
+                assert_eq!(event["name"], expected);
+                assert_eq!(event["version"], 2);
+                assert_eq!(
+                    event["match"],
+                    json!({"repo":"$params.repo", "branch":"$params.branch"})
+                );
+            }
+            for (param, max) in [("repo", 200), ("branch", 256), ("main_branch", 256)] {
+                assert_eq!(
+                    m["params"][param],
+                    json!({"type":"string", "max_bytes":max})
+                );
+            }
+        }
         assert_eq!(
             m["params"]["note"],
-            json!({"type":"string","max_bytes":4096})
+            json!({"type":"string","max_bytes":if name == "github-ci-watch" { 1024 } else { 4096 }})
         );
         assert_eq!(
             m["template"],
@@ -986,7 +1099,7 @@ fn reminder_past_invalid_or_over_ceiling_timestamp_is_refused_at_creation() {
 }
 
 #[test]
-fn all_four_templates_dry_run_successfully_in_capture_mode() {
+fn all_five_templates_dry_run_successfully_in_capture_mode() {
     let t = Test::new();
     let repo = repo(&t);
     t.dry(
@@ -1015,6 +1128,16 @@ fn all_four_templates_dry_run_successfully_in_capture_mode() {
         json!({"at":at,"note":"Preview reminder"}),
         json!({}),
     );
+    let dry = t.dry(
+        "github-ci-watch",
+        ci_params(),
+        json!({"event":{
+            "module":"plexus", "name":"github_ci_job_failed", "version":2,
+            "event_key":"0".repeat(64), "headers":{"repo":"example/project", "branch":"main"},
+            "body":ci_job(101),
+        }}),
+    );
+    assert!(dry.to_string().contains("test names unavailable"));
     assert!(t.items().is_empty());
     assert_eq!(
         t.f.module.rt.live_instances().unwrap()["instances"],
@@ -1131,4 +1254,367 @@ fn digest_helper_bounds_escaped_note_long_metadata_and_links_on_every_platform()
     );
     assert!(path.starts_with(item["data"]["params"]["path"].as_str().unwrap()));
     assert_eq!(item["links"], json!([]));
+}
+
+fn ci_params() -> Value {
+    json!({"note":"Check the CI shards", "repo":"example/*", "branch":"*", "main_branch":"main"})
+}
+
+fn ci_job(id: u64) -> Value {
+    let mut body: Value = serde_json::from_str(CI_JOB).unwrap();
+    body["id"] = json!(id);
+    body["name"] = json!(format!("linux shard {id}"));
+    body["url"] = json!(format!(
+        "https://github.com/example/project/actions/runs/42/job/{id}"
+    ));
+    body
+}
+
+fn ci_run(conclusion: &str) -> Value {
+    let mut body: Value = serde_json::from_str(CI_RUN).unwrap();
+    body["conclusion"] = json!(conclusion);
+    body
+}
+
+#[test]
+fn github_ci_three_jobs_update_one_attempt_immediately_then_finish_red() {
+    let t = Test::new();
+    let instance = t.create("github-ci-watch", ci_params());
+    for id in 101..=103 {
+        let mut body = ci_job(id);
+        if id == 103 {
+            body["conclusion"] = json!("timed_out");
+        }
+        t.ci(&instance, body);
+        let items = t.items();
+        assert_eq!(items.len(), (id - 100) as usize);
+        let write = items.last().unwrap();
+        assert_eq!(write["replace_key"], "ci:example/project:42:1");
+        assert_eq!(write["action"], "wake");
+        assert_eq!(write["agent"], OWNER);
+        let item = &write["item"];
+        let expected = (101..=id)
+            .map(|n| format!("linux shard {n}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        assert_eq!(
+            item["title"],
+            format!("example/project run 42 (attempt 1) on main: failed jobs {expected}")
+        );
+        assert_eq!(item["links"].as_array().unwrap().len(), (id - 100) as usize);
+        for n in 101..=id {
+            assert_eq!(item["links"][(n - 101) as usize]["url"], ci_job(n)["url"]);
+        }
+        assert!(item["body"].as_str().unwrap().contains("0123456789ab"));
+        assert!(
+            item["body"]
+                .as_str()
+                .unwrap()
+                .contains("test names unavailable")
+        );
+        assert!(
+            item["body"]
+                .as_str()
+                .unwrap()
+                .contains("Check the CI shards")
+        );
+    }
+    t.ci(&instance, ci_run("failure"));
+    let items = t.items();
+    assert_eq!(items.len(), 4);
+    assert!(
+        items
+            .iter()
+            .all(|write| write["replace_key"] == items[0]["replace_key"])
+    );
+    let last = &items[3]["item"];
+    assert!(
+        last["title"]
+            .as_str()
+            .unwrap()
+            .contains("run finished red (failure)")
+    );
+    assert_eq!(last["links"].as_array().unwrap().len(), 4);
+    assert_eq!(last["links"][3]["url"], ci_run("failure")["url"]);
+}
+
+#[test]
+fn github_ci_duplicate_job_id_adds_no_digest_write() {
+    let t = Test::new();
+    let instance = t.create("github-ci-watch", ci_params());
+    t.ci(&instance, ci_job(101));
+    // Give the second notice a different event_key so basal admits it instead
+    // of suppressing it before the script runs. The unchanged job id must then
+    // prevent the script from writing another digest item.
+    let duplicate = t.ci(&instance, ci_job(101));
+    assert_eq!(t.items().len(), 1);
+    assert_eq!(t.host.resolved.load(Ordering::Relaxed), 2);
+    assert!(
+        !t.f.module
+            .rt
+            .calls(&duplicate)
+            .unwrap()
+            .iter()
+            .any(|call| call.kind == CallKind::Primitive(Primitive::SinkDigest))
+    );
+}
+
+#[test]
+fn github_ci_rerun_attempt_has_its_own_item_and_job_ids() {
+    let t = Test::new();
+    let instance = t.create("github-ci-watch", ci_params());
+    t.ci(&instance, ci_job(101));
+    let mut rerun = ci_job(101);
+    rerun["run_attempt"] = json!(2);
+    t.ci(&instance, rerun);
+    let items = t.items();
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0]["replace_key"], "ci:example/project:42:1");
+    assert_eq!(items[1]["replace_key"], "ci:example/project:42:2");
+    assert!(
+        items[1]["item"]["title"]
+            .as_str()
+            .unwrap()
+            .contains("attempt 2")
+    );
+}
+
+#[test]
+fn github_ci_red_run_without_jobs_covers_startup_failure_and_cancelled() {
+    for conclusion in ["startup_failure", "failure", "cancelled"] {
+        let t = Test::new();
+        let instance = t.create("github-ci-watch", ci_params());
+        t.ci(&instance, ci_run(conclusion));
+        let items = t.items();
+        assert_eq!(items.len(), 1);
+        assert!(
+            items[0]["item"]["title"]
+                .as_str()
+                .unwrap()
+                .contains(&format!(
+                    "run failed with no failed job reported ({conclusion})"
+                ))
+        );
+        assert_eq!(items[0]["action"], "wake");
+        assert_eq!(items[0]["replace_key"], "ci:example/project:42:1");
+        assert_eq!(
+            items[0]["item"]["links"][0]["url"],
+            ci_run(conclusion)["url"]
+        );
+    }
+}
+
+#[test]
+fn github_ci_reported_red_then_green_replaces_silently() {
+    let t = Test::new();
+    let instance = t.create("github-ci-watch", ci_params());
+    t.ci(&instance, ci_job(101));
+    t.ci(&instance, ci_run("success"));
+    let items = t.items();
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[1]["replace_key"], items[0]["replace_key"]);
+    assert_eq!(items[1]["action"], "silent");
+    assert!(
+        items[1]["item"]["title"]
+            .as_str()
+            .unwrap()
+            .ends_with("now green")
+    );
+    assert_eq!(
+        items[1]["item"]["data"]["observed"]["conclusion"],
+        "success"
+    );
+}
+
+#[test]
+fn github_ci_unreported_green_and_unrelated_attempt_green_write_nothing() {
+    let t = Test::new();
+    let instance = t.create("github-ci-watch", ci_params());
+    t.ci(&instance, ci_run("success"));
+    assert!(t.items().is_empty());
+    t.ci(&instance, ci_job(101));
+    let mut green = ci_run("success");
+    green["run_attempt"] = json!(2);
+    t.ci(&instance, green);
+    assert_eq!(t.items().len(), 1);
+}
+
+#[test]
+fn github_ci_non_main_branch_piggybacks() {
+    let t = Test::new();
+    let instance = t.create("github-ci-watch", ci_params());
+    let mut body = ci_job(101);
+    body["head_branch"] = json!("feature/new-ci");
+    t.ci_notice(&instance, body, "example/project", "feature/new-ci", true);
+    let items = t.items();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["action"], "piggyback");
+    assert!(
+        items[0]["item"]["title"]
+            .as_str()
+            .unwrap()
+            .contains("on feature/new-ci")
+    );
+}
+
+#[test]
+fn github_ci_filters_headers_and_rechecks_verified_body_patterns() {
+    let t = Test::new();
+    let mut params = ci_params();
+    params["branch"] = json!("release/*");
+    let instance = t.create("github-ci-watch", params);
+    for body in [ci_job(101), ci_run("failure")] {
+        for (repo, branch) in [
+            ("other/project", "release/next"),
+            ("example/project", "main"),
+            ("", "release/next"),
+            ("example/project", ""),
+        ] {
+            t.ci_notice(&instance, body.clone(), repo, branch, false);
+        }
+        let mut wrong_repo = body.clone();
+        wrong_repo["repo"] = json!("other/project");
+        wrong_repo["head_branch"] = json!("release/next");
+        t.ci_notice(
+            &instance,
+            wrong_repo,
+            "example/project",
+            "release/next",
+            true,
+        );
+        t.ci_notice(&instance, body, "example/project", "release/next", true);
+    }
+    assert!(t.items().is_empty());
+    let mut matching = ci_job(102);
+    matching["head_branch"] = json!("release/a/b");
+    t.ci_notice(&instance, matching, "EXAMPLE/project", "release/a/b", true);
+    assert_eq!(t.items().len(), 1);
+}
+
+#[test]
+fn github_ci_null_conclusion_and_branch_are_unknown_never_green() {
+    let t = Test::new();
+    let instance = t.create("github-ci-watch", ci_params());
+    let mut job = ci_job(101);
+    job["conclusion"] = Value::Null;
+    job["head_branch"] = Value::Null;
+    t.ci(&instance, job);
+    let mut run = ci_run("failure");
+    run["conclusion"] = Value::Null;
+    run["head_branch"] = Value::Null;
+    t.ci(&instance, run);
+    let items = t.items();
+    assert_eq!(items.len(), 2);
+    for write in &items {
+        assert_ne!(write["action"], "silent");
+        assert!(
+            write["item"]["body"]
+                .as_str()
+                .unwrap()
+                .contains("on unknown")
+        );
+        assert!(
+            !write["item"]["title"]
+                .as_str()
+                .unwrap()
+                .contains("now green")
+        );
+        assert_eq!(write["item"]["data"]["observed"]["conclusion"], "unknown");
+        assert_eq!(write["item"]["data"]["observed"]["branch"], "unknown");
+    }
+    assert!(
+        items[1]["item"]["body"]
+            .as_str()
+            .unwrap()
+            .contains("(unknown)")
+    );
+}
+
+#[test]
+fn github_ci_unsupported_replace_key_retries_a_plain_digest() {
+    let t = Test::new();
+    t.host
+        .replacement_unsupported
+        .store(true, Ordering::Relaxed);
+    let instance = t.create("github-ci-watch", ci_params());
+    let run = t.ci(&instance, ci_job(101));
+    let items = t.items();
+    assert_eq!(items.len(), 1);
+    assert!(items[0].get("replace_key").is_none());
+    assert_eq!(items[0]["action"], "wake");
+    let calls = t.f.module.rt.calls(&run).unwrap();
+    let sink_calls: Vec<_> = calls
+        .iter()
+        .filter(|call| call.kind == CallKind::Primitive(Primitive::SinkDigest))
+        .collect();
+    assert_eq!(sink_calls.len(), 2);
+    assert!(format!("{:?}", sink_calls[0]).contains("digest_replace_key_unsupported"));
+}
+
+#[test]
+fn github_ci_prunes_attempts_by_completed_at_and_ignores_stale_deliveries() {
+    let t = Test::new();
+    let instance = t.create("github-ci-watch", ci_params());
+    t.ci(&instance, ci_job(101));
+    let mut fresh = ci_job(102);
+    fresh["run_id"] = json!(43);
+    fresh["completed_at"] = json!("2027-01-16T12:00:00Z");
+    let run = t.ci(&instance, fresh.clone());
+    let calls = t.f.module.rt.calls(&run).unwrap();
+    let stored = calls
+        .iter()
+        .rev()
+        .find(|call| call.kind == CallKind::Primitive(Primitive::KvSet))
+        .unwrap();
+    let args: Value = serde_json::from_str(stored.args.as_str()).unwrap();
+    let state = &args["value"];
+    assert_eq!(state["runs"].as_object().unwrap().len(), 1, "{args}");
+    assert!(state["runs"].get("ci:example/project:42:1").is_none());
+    assert!(state["runs"].get("ci:example/project:43:1").is_some());
+    t.ci(&instance, ci_job(101));
+    assert_eq!(t.items().len(), 2);
+}
+
+#[test]
+fn github_ci_max_note_long_metadata_and_eight_job_links_fit_core_limits() {
+    let t = Test::new();
+    let mut params = ci_params();
+    let note = "é".repeat(512);
+    params["note"] = json!(note);
+    let instance = t.create("github-ci-watch", params);
+    let repo = format!("example/{}", "r".repeat(100));
+    let branch = "b".repeat(256);
+    for id in 101..=108 {
+        let mut job = ci_job(id);
+        job["repo"] = json!(repo);
+        job["head_branch"] = json!(branch);
+        job["name"] = json!(format!("shard {id} {}", "é🦀".repeat(40)));
+        t.ci_notice(&instance, job, &repo, &branch, true);
+    }
+    let items = t.items();
+    assert_eq!(items.len(), 8);
+    let item = &items[7]["item"];
+    limits(item);
+    assert!(item["body"].as_str().unwrap().starts_with(&note));
+    assert!(
+        item["body"]
+            .as_str()
+            .unwrap()
+            .contains("Head sha: 0123456789ab")
+    );
+    assert!(
+        item["body"]
+            .as_str()
+            .unwrap()
+            .contains("test names unavailable")
+    );
+    assert_eq!(item["links"].as_array().unwrap().len(), 8);
+    t.ci_notice(
+        &instance,
+        ci_run("failure"),
+        "example/project",
+        "main",
+        true,
+    );
+    limits(&t.items().last().unwrap()["item"]);
 }

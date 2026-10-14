@@ -127,3 +127,51 @@ timeout_s = 600
 file = "flows/board-hygiene/flow.js"
 old = "        await sink.digest(agent, item, action);"
 new = "        return false; // NON-VACUITY BREAK: omit the unsent digest retry"
+
+[[control]]
+id = "github-ci-watch-job-dedup"
+guards = "a repeated failed job id produces no additional digest write"
+test_file = "crates/basal-module/tests/flow_templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test flow_templates"
+expect_red = ["github_ci_duplicate_job_id_adds_no_digest_write"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "templates/github-ci-watch/flow.js"
+old = "if (jobEvent && Object.hasOwn(run.jobs, String(body.id ?? event.event_key))) {"
+new = "if (false && Object.hasOwn(run.jobs, String(body.id ?? event.event_key))) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "github-ci-watch-branch-action"
+guards = "failures outside the main branch piggyback rather than waking the owner"
+test_file = "crates/basal-module/tests/flow_templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test flow_templates"
+expect_red = ["github_ci_non_main_branch_piggybacks"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "templates/github-ci-watch/flow.js"
+old = "body.head_branch === params.main_branch ? 'wake' : 'piggyback'"
+new = "true ? 'wake' : 'piggyback' /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "github-ci-watch-unknown-not-green"
+guards = "a null run conclusion stays unknown and is never reported as green"
+test_file = "crates/basal-module/tests/flow_templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test flow_templates"
+expect_red = ["github_ci_null_conclusion_and_branch_are_unknown_never_green"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "templates/github-ci-watch/flow.js"
+old = "const green = !jobEvent && body.conclusion === 'success';"
+new = "const green = !jobEvent && (body.conclusion ?? 'success') === 'success'; // NON-VACUITY BREAK"
