@@ -33,11 +33,37 @@ use std::process::Child;
 #[cfg(windows)]
 use windows::{Child, start_server};
 
+/// Arguments for a test server that picks its own free port (`-p -1`) and
+/// writes the address it bound to a ports file in `dir`. Reserving a port in
+/// the test and passing it on would leave a window in which another process
+/// takes the port first, and the server then fails with "address already in use".
+fn server_args(dir: &std::path::Path) -> Vec<std::ffi::OsString> {
+    let mut args: Vec<std::ffi::OsString> =
+        ["-js", "-a", "127.0.0.1", "-p", "-1", "--ports_file_dir"]
+            .map(Into::into)
+            .into();
+    args.push(dir.into());
+    args.push("-sd".into());
+    args.push(dir.join("jetstream").into());
+    args
+}
+
+/// The client address the server wrote to its ports file, once it exists.
+/// Each server has its own directory, so the one `.ports` file is this server's.
+fn bound_client_url(dir: &std::path::Path) -> Option<String> {
+    let entry = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(Result::ok)
+        .find(|e| e.path().extension().is_some_and(|x| x == "ports"))?;
+    let ports: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(entry.path()).ok()?).ok()?;
+    ports["nats"][0].as_str().map(str::to_owned)
+}
+
 #[cfg(unix)]
-fn start_server(dir: &std::path::Path, port: u16, log: std::fs::File) -> Child {
+fn start_server(dir: &std::path::Path, log: std::fs::File) -> Child {
     std::process::Command::new("nats-server")
-        .args(["-js", "-a", "127.0.0.1", "-p", &port.to_string(), "-sd"])
-        .arg(dir.join("jetstream"))
+        .args(server_args(dir))
         .stdout(log.try_clone().unwrap())
         .stderr(log)
         .spawn()
@@ -64,15 +90,28 @@ impl Server {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        drop(listener);
         let log = std::fs::File::create(dir.join("server.log")).unwrap();
-        let mut child = start_server(&dir, port, log);
+        let mut child = start_server(&dir, log);
         let until = Instant::now() + Duration::from_secs(10);
+        let fail = |child: &mut Child, error: &dyn std::fmt::Display| -> ! {
+            let _ = child.kill();
+            panic!(
+                "real NATS server failed to start: {error}; log {}",
+                dir.join("server.log").display()
+            );
+        };
+        let url = loop {
+            if let Some(url) = bound_client_url(&dir) {
+                break url;
+            }
+            if Instant::now() >= until || child.try_wait().unwrap().is_some() {
+                fail(&mut child, &"no ports file was written");
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        };
         let bus = loop {
             match NatsConnection::connect(
-                format!("nats://127.0.0.1:{port}"),
+                url.clone(),
                 async_nats::ConnectOptions::new().connection_timeout(Duration::from_millis(200)),
                 ConnectConfig::new("TEST").unwrap(),
             )
@@ -81,11 +120,7 @@ impl Server {
                 Ok(bus) => break bus,
                 Err(error) => {
                     if Instant::now() >= until || child.try_wait().unwrap().is_some() {
-                        let _ = child.kill();
-                        panic!(
-                            "real NATS server failed to start: {error}; log {}",
-                            dir.join("server.log").display()
-                        );
+                        fail(&mut child, &error);
                     }
                     tokio::time::sleep(Duration::from_millis(25)).await;
                 }
@@ -115,7 +150,7 @@ impl Server {
             child,
             dir,
             bus,
-            url: format!("nats://127.0.0.1:{port}"),
+            url,
         }
     }
     async fn publish(&self, n: u64, subject: &str) {
