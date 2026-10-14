@@ -6,7 +6,7 @@ import json
 
 
 RUNNERS = {"linux": "ubuntu-latest", "macos": "macos-latest", "windows": "windows-2022"}
-REGULAR_SHARDS = {"linux": 2, "macos": 5, "windows": 2}
+REGULAR_SHARDS = {"linux": 8, "macos": 5, "windows": 2}
 # Broad replays exceed the six-hour hosted-job limit at the regular counts.
 # Timing estimates and the censored Linux measurements are recorded in
 # evidence/mutation-nightly-breadth-repair.md.
