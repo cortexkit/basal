@@ -1153,7 +1153,8 @@ fn reminder_dry_run_text_matches_its_committed_fixture() {
         .unwrap()
         .to_string();
     let params = json!({"at":at,"note":"Check the rollout"});
-    // No trigger: a one-shot reminder then runs once, as at its time.
+    // Without a synthetic trigger, the dry run of a one-shot reminder runs it
+    // once, as its scheduled time would.
     let reply = t.dry("remind-at", params.clone(), Value::Null);
     // The same effective manifest the template dry run replays.
     let (_, manifest, _) = TEMPLATES[3];

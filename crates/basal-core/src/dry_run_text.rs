@@ -583,8 +583,9 @@ fn text_field(args: &Value, path: &[&str]) -> Option<String> {
 // ---- Problems -----------------------------------------------------------
 
 /// Real failures, one sentence each, in run order. A captured call's
-/// rejection is the dry run's own doing and never one of them; neither is a
-/// script error after the script saw one, which may only follow from it.
+/// rejection is the dry run's own doing and is never listed. Nor is a script
+/// error raised after the script received a captured rejection, because the
+/// fake rejection may be what caused it.
 fn problems(manifest: &Manifest, runs: &[Value]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut push = |line: String| {
@@ -617,7 +618,8 @@ fn problems(manifest: &Manifest, runs: &[Value]) -> Vec<String> {
         match (run["state"].as_str(), run["error"]["kind"].as_str()) {
             (Some("succeeded"), _) => {}
             (Some("failed"), _) if capture_stop(run).is_some() => {}
-            // A host error from a refused call is that refusal, already named.
+            // The script threw the refused call's own rejection, and the refusal is
+            // already listed above as this run's problem.
             (Some("failed"), Some("script")) if refused && first_line.starts_with("HostError:") => {
             }
             (Some("failed"), Some("script")) if run["partial"] == true => {}

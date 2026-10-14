@@ -75,7 +75,8 @@ fn summary(window: Value, runs: Vec<Value>) -> Value {
     json!({"mode":"capture","window":window,"partial":partial,"runs":runs})
 }
 
-/// Every string a text holds satisfies the bounds core and cingulate rely on.
+/// Every line of a `DryRunText` is within the published byte and line-count
+/// limits and holds no control characters.
 fn assert_bounded(text: &DryRunText) {
     assert!(text.summary.len() <= SUMMARY_MAX_BYTES, "{text:#?}");
     assert!(text.would.len() <= WOULD_MAX_ITEMS, "{text:#?}");

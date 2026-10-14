@@ -831,7 +831,8 @@ impl Consent for CoreConsent {
             self.state.transport.as_ref(),
             FLOW_INSTALL_DRY_RUN_TEXT_V1,
         );
-        // The request in the form the core connected now accepts.
+        // Include the plain-language dry run only if the connected core says it
+        // accepts one; an older core refuses the unknown key.
         let request = |card| request_for(card, dry_run_text);
         let reply = self
             .state
