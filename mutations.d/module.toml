@@ -1997,7 +1997,10 @@ package = "basal-module"
 platforms = ["linux"]
 target = "--test module_events"
 expect_red = ["per_flow_fanout_rolls_back_before_ack_on_commit_failure"]
-only = true
+# Acknowledging before the commit also stalls the reader tests in this file,
+# which then time out waiting for health, not because of the ordering this
+# row guards. Only the fan-out test's verdict is meaningful here.
+select = "expected"
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-module/src/events.rs"

@@ -550,14 +550,17 @@ jobs:
         if: failure() && steps.check.outcome == 'failure'
         timeout-minutes: 40
         run: cargo check --workspace --all-targets --locked --keep-going 2>&1 | tee "$RUNNER_TEMP/windows-baseline/check-keep-going.log"
+      # The rest of the workspace: every package not already tested by its own
+      # step above. Testing those again doubled the job's time, and on a slow
+      # runner pushed this step past its limit.
       - name: Test the workspace
         id: test
         timeout-minutes: 40
-        run: cargo test --workspace --locked 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test.log"
+        run: cargo test --workspace --exclude basal-launch --exclude basal-worker --exclude basal-module --exclude basal-core --exclude basal-testkit --exclude basal-rig --locked 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test.log"
       - name: Test the workspace, continuing past failed tests
         if: failure() && steps.test.outcome == 'failure'
         timeout-minutes: 40
-        run: cargo test --workspace --locked --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-no-fail-fast.log"
+        run: cargo test --workspace --exclude basal-launch --exclude basal-worker --exclude basal-module --exclude basal-core --exclude basal-testkit --exclude basal-rig --locked --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/windows-baseline/test-no-fail-fast.log"
       # Separate host suites retain filesystem and Git failure logs so a failing
       # built-in can be diagnosed without searching the full workspace log.
       - name: Test basal-host on its own
