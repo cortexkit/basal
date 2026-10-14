@@ -35,18 +35,18 @@ result body:
 ## Model text and program data
 
 Consumers build model input from ordered `content` parts only, never from
-`structuredContent`. Codemode emits one text part, byte-for-byte the previous
-rendered text for a run that fits: status/duration/call-count/person-wait line,
-error if present, JSON return value if present, console output, call-summary
-table, then warnings. The JSON return value is capped at 16 KiB and console
-output at 64 KiB by the worker. No text is synthesized from the machine fields
-by the consumer.
+`structuredContent`. Codemode emits one text part. For a run that fits the
+size bound it holds, in order: the status/duration/call-count/person-wait line,
+the error if present, the JSON return value if present, console output, the
+call-summary table, then warnings. The JSON return value is capped at 16 KiB and
+console output at 64 KiB by the worker. No text is synthesized from the machine
+fields by the consumer.
 
-`structuredContent` retains the previous machine-readable fields, including
-status, return value, console output, call summaries, warnings, optional error
-and provider detail. It adds the run id and `termination_reason` (the terminal
-status, including any budget suffix). Duration, call count and person-wait time
-are the existing budget accounting fields, not a new CPU/token measurement.
+`structuredContent` carries the machine-readable fields: status, return value,
+console output, call summaries, warnings, optional error and provider detail,
+the run id, and `termination_reason` (the terminal status, including any budget
+suffix). Duration, call count and person-wait time are the run's budget
+accounting fields, not a separate CPU or token measurement.
 
 A keyed call that exceeds the foreground wait returns a valid content result
 with `structuredContent: {"status": "running", "run_id": "codemode:..."}` and the
