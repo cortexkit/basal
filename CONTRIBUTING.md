@@ -12,7 +12,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo clippy --workspace --all-targets --features basal-module/rig-kill-hook -- -D warnings
 ```
 
-Tests, with and without the rig kill hook. Portable production-mode tests run on both Linux architectures; their hook-enabled pass runs on x86_64 Linux only. Worker packages run in production mode on every Linux, macOS and Windows image. The hook-enabled worker pass runs on x86_64 Linux and macOS, where the rig uses the hook; hook-enabled clippy still runs on all three platforms in the `checks` job (x86_64 Linux, Linux aarch64 and macOS):
+Tests, with and without the rig kill hook. Portable production-mode tests run on both Linux architectures; their hook-enabled pass runs on x86_64 Linux only. Worker packages run in production mode on every Linux, macOS and Windows image. The hook-enabled worker pass runs on macOS (where the rig uses the hook) and x86_64 Linux (for Linux coverage); hook-enabled clippy still runs on all three platforms in the `checks` job (x86_64 Linux, Linux aarch64 and macOS):
 
 ```sh
 cargo test --locked -p basal-proto -p basal-core -p basal-host
