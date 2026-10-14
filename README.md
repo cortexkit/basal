@@ -28,6 +28,11 @@ cargo build --workspace
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo clippy --workspace --all-targets --features basal-module/rig-kill-hook -- -D warnings
+```
+
+The portable crates' tests also need `git` on `PATH`, because the git built-ins' tests run it:
+
+```sh
 cargo test --locked -p basal-proto -p basal-core -p basal-host
 cargo test --locked -p basal-proto -p basal-core -p basal-host --features basal-host/rig-kill-hook
 ```

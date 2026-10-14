@@ -52,7 +52,7 @@ python3 .github/workflows/check_mutation_coverage.py
 ## Commits
 
 - Author commits with your GitHub no-reply address (`<id>+<user>@users.noreply.github.com`), not a personal or work address.
-- Keep local paths out of tracked files. `script/check-local-paths.py` refuses absolute user-home paths; also leave out scratch directories, machine names and anything else that only exists on one machine.
+- Keep local paths out of tracked files. `script/check-local-paths.py` refuses absolute user-home paths; also leave out machine names and other paths that exist only on your machine.
 - Don't commit raw logs or generated machine output. Mutation reports stay under the git-ignored `target/mutations/`, and CI uploads its own reports as artifacts. Measurements that back a performance claim belong in [`evidence/`](evidence/README.md), with the command that produced them.
 - Commit a safety guard together with the source it guards and its catalogue row.
 
