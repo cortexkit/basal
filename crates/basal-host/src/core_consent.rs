@@ -831,14 +831,12 @@ impl Consent for CoreConsent {
             self.state.transport.as_ref(),
             FLOW_INSTALL_DRY_RUN_TEXT_V1,
         );
+        // The request in the form the core connected now accepts.
+        let request = |card| request_for(card, dry_run_text);
         let reply = self
             .state
             .transport
-            .management(
-                CORE,
-                "flow.install_request",
-                request_for(card, dry_run_text)?,
-            )
+            .management(CORE, "flow.install_request", request(card)?)
             .map_err(error)?;
         let outcome = decode_install_outcome(&reply)?;
         if let InstallOutcome::CardRaised {

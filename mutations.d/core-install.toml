@@ -1445,3 +1445,27 @@ old = '''self.settle_install_card_with_details(
                 disposition,
             )?'''
 new = '''() /* NON-VACUITY BREAK */'''
+
+[[control]]
+id = "dry-run-text-captured-rejection-is-a-problem"
+guards = "a captured call's rejection in a dry run is never listed as a problem on the install card"
+file = "crates/basal-core/src/dry_run_text.rs"
+old = "if let Some(code) = rejection(call).filter(|code| *code != CAPTURED_CODE) {"
+new = "if let Some(code) = rejection(call) { // NON-VACUITY BREAK"
+test_file = "crates/basal-core/src/dry_run_text_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = [
+    "dry_run_text::tests::cron_runs_that_all_stop_at_their_first_read_say_so_and_report_no_problem",
+    "dry_run_text::tests::only_some_runs_stopping_at_a_read_says_some",
+    "dry_run_text::tests::a_flow_that_completes_and_wakes_an_agent_lists_each_thing_once",
+    "dry_run_text::tests::refused_calls_and_real_failures_are_problems_but_captured_ones_are_not",
+    "dry_run_text::tests::a_captured_rejection_alone_never_becomes_a_problem",
+    "dry_run_text::tests::long_script_text_is_quoted_cut_on_a_char_boundary_and_bounded",
+    "dry_run_text::tests::control_characters_and_quotes_in_script_text_are_sanitized",
+]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
