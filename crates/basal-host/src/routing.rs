@@ -1,7 +1,7 @@
 //! Send module ops to their providers and grant-checked facts and sinks to
 //! core. Model calls use a separate host that can be replaced independently.
 use crate::builtins::BuiltinHost;
-use crate::core_host::outcome;
+use crate::core_host::{is_core_carrier_op, outcome};
 use crate::subc_catalog::{SubcCatalog, Surface};
 use crate::transport::{Transport, WireError};
 use crate::{CallClass, CallRequest, CompletionSink, Dispatched, Host, OpKind, TransportError};
@@ -85,7 +85,9 @@ impl ModuleOpsHost {
                 self.catalog.resolve_for_dispatch(module, op).map_err(|e| {
                     WireError::NeverSent(format!("catalog lookup before dispatch: {e:?}"))
                 })?;
-            if module == crate::subc_catalog::CORE && !flow_capable {
+            let carrier =
+                is_core_carrier_op(module, op) && matches!(request.kind, CallKind::Op { .. });
+            if module == crate::subc_catalog::CORE && !carrier && !flow_capable {
                 return Err(WireError::Refused {
                     code: "basal_scope_bug".into(),
                     message: format!("core flow op {op} cannot use the carrier route"),
@@ -130,6 +132,7 @@ impl ModuleOpsHost {
                 (request.flow_id.clone(), args)
             };
             match decl.surface {
+                Surface::Management if carrier => self.transport.management(module, op, args),
                 Surface::Management => self.transport.management_for_flow(&flow, module, op, args),
                 Surface::Tool => {
                     self.transport
@@ -171,7 +174,11 @@ impl Host for ModuleOpsHost {
         kind: &CallKind,
     ) -> Result<(), crate::flow_refusal::FlowRefusal> {
         if let CallKind::Op { module, op } = kind {
-            self.transport.provider_ready(flow_id, module, op)
+            if is_core_carrier_op(module, op) {
+                Ok(())
+            } else {
+                self.transport.provider_ready(flow_id, module, op)
+            }
         } else {
             Ok(())
         }

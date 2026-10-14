@@ -11,6 +11,16 @@ use std::sync::Arc;
 
 pub const FLOW_DIGEST_REPLACE_KEY_V1: &str = "flow-digest-replace-key/v1";
 
+/// Manifest-declared ops that core accepts from `reserved:basal`, checking a
+/// `{flow_id, flow_version, code_hash}` stamp against the approved install.
+/// These use basal's own management route, not a provider route bound to the
+/// flow's scope selector.
+pub const CORE_CARRIER_OPS: &[&str] = &["board.read"];
+
+pub fn is_core_carrier_op(module: &str, op: &str) -> bool {
+    module == CORE && CORE_CARRIER_OPS.contains(&op)
+}
+
 /// The call's identity and times, fixed when its intent is built.
 pub struct IntentContext<'a> {
     pub flow_id: &'a str,
