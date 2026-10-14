@@ -31,3 +31,32 @@ in both modes.
 Item nudges carry current state and wait metadata; one-time copies also carry
 `own_*` identifiers for the waiting owner's item so the renderer targets the
 item to re-plan rather than the peer's item whose ETA passed.
+
+## CI failure router
+
+`ci-failure-router/` is one operator-installed global flow for Plexus v2
+`github_ci_job_failed` and `github_ci_run_completed` notices in `cortexkit/*`.
+It wakes the repository's owner on every failed job, on any branch, and on failed,
+cancelled or startup-failed runs even without job events. Success only silently
+updates an already-reported attempt. A null conclusion is reported as unknown,
+never as a successful (green) run.
+Titles identify the repo, run attempt and failing jobs; test names are unavailable.
+
+The clearly marked `OWNERS` block maps lowercase repositories to stable agent IDs
+(display names are comments, not runtime recipients). Update the map and publish
+a new flow version when ownership changes. Repositories absent from the map have
+no fallback recipient and write no digest. A single KV counter counts unmapped
+notices and saturates at JavaScript's maximum safe integer instead of growing a
+per-repository diagnostic index.
+Core checks recipients at delivery time, and refusal codes are logged in the run
+result without failing the run. Replacement support is required to maintain one
+item per attempt: keyed writes refused by core are logged, not retried unkeyed.
+
+The script adapts `templates/github-ci-watch/flow.js`, rechecks verified body repo
+and branch fields instead of trusting notice headers, deduplicates job IDs within
+each attempt, and uses `ci:<repo>:<run_id>:<run_attempt>` replacement keys.
+One shared KV aggregate retains repo-namespaced attempts for fourteen days with a
+48,000-byte cap across the whole fleet, not a separate quota per repository.
+Offline worker tests and a dry run with a synthetic CI trigger live in
+`crates/basal-module/tests/ci_failure_router.rs`. The dry run captures sink calls
+without delivering notifications. No per-agent watcher is needed.

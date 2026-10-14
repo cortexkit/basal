@@ -175,3 +175,54 @@ timeout_s = 600
 file = "templates/github-ci-watch/flow.js"
 old = "const green = !jobEvent && body.conclusion === 'success';"
 new = "const green = !jobEvent && (body.conclusion ?? 'success') === 'success'; // NON-VACUITY BREAK"
+
+[[control]]
+id = "ci-failure-router-owner-routing"
+guards = "different repos route to their distinct stable owner ids"
+test_file = "crates/basal-module/tests/ci_failure_router.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test ci_failure_router"
+select = { tests = ["two_repos_route_to_distinct_stable_owners", "rerun_attempt_gets_a_new_item_with_the_same_job_id"] }
+expect_red = ["two_repos_route_to_distinct_stable_owners"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/ci-failure-router/flow.js"
+old = "const owner = OWNERS[repo];"
+new = "const owner = OWNERS['cortexkit/basal']; // NON-VACUITY BREAK"
+
+[[control]]
+id = "ci-failure-router-unmapped-no-write"
+guards = "unmapped repos write nothing instead of using a fallback owner"
+test_file = "crates/basal-module/tests/ci_failure_router.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test ci_failure_router"
+select = { tests = ["unmapped_repos_write_nothing_without_a_fallback", "two_repos_route_to_distinct_stable_owners"] }
+expect_red = ["unmapped_repos_write_nothing_without_a_fallback"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/ci-failure-router/flow.js"
+old = "const owner = OWNERS[repo];"
+new = "const owner = OWNERS[repo] ?? OWNERS['cortexkit/basal']; // NON-VACUITY BREAK"
+
+[[control]]
+id = "ci-failure-router-unknown-not-green"
+guards = "an unknown run conclusion must never turn a red attempt green"
+test_file = "crates/basal-module/tests/ci_failure_router.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test ci_failure_router"
+select = { tests = ["unknown_conclusion_and_branch_are_never_green", "completed_red_updates_the_existing_item_then_green_updates_silently"] }
+expect_red = ["unknown_conclusion_and_branch_are_never_green"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/ci-failure-router/flow.js"
+old = "const green = !jobEvent && body.conclusion === 'success';"
+new = "const green = !jobEvent && (body.conclusion ?? 'success') === 'success'; // NON-VACUITY BREAK"
