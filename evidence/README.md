@@ -4,7 +4,7 @@ Benchmark output that backs basal's performance claims. The measurement JSON fil
 
 ## Mutation controls
 
-Safety proofs are checked in as the [`mutations.d/`](../mutations.d) catalogue, one file per crate or area, not as stale machine output. The pinned shared `ckdev-mutate` runner applies each edit, builds the mutant, requires the exact named test to fail, and restores source bytes. Other tests in the target may also fail: the original proofs tested one named guard, not target-wide exclusivity. See the [README](../README.md#mutation-proofs) for installation, replay and `ckdev-mutate prove` commands.
+Safety proofs are checked in as the [`mutations.d/`](../mutations.d) catalogue, one file per crate or area, not as stale machine output. The pinned shared `ckdev-mutate` runner applies each edit, builds the mutant, requires the exact named test to fail, and restores source bytes. Other tests in the target may also fail: the original proofs tested one named guard, not target-wide exclusivity. See [docs/mutations.md](../docs/mutations.md) for installation, replay and `ckdev-mutate prove` commands.
 
 The catalogue is the source of truth for control counts; `ckdev-mutate check` validates and counts the current rows. One control changes dependencies. `worker-depends-on-a-subc-crate` adds an older subc-protocol, the daemon's wire-protocol crate, to the worker's manifest, to prove the worker's dependency fence catches any subc crate linked into the worker. CI builds with `--locked`, so the control also carries the exact `Cargo.lock` edit Cargo resolves for its mutant, and the runner restores and byte-verifies that file too.
 

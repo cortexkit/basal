@@ -75,7 +75,7 @@ After placement, basal checks that `ck --json provenance basal` names the commit
 
 ## The rig run before a handover
 
-Before staging, run the formatting, both clippy configurations, workspace tests and shell checks listed in the [README](../README.md), then validate and replay the safety catalogue with the pinned `ckdev-mutate` 0.12.0 runner:
+Before staging, run the formatting, both clippy configurations, workspace tests and shell checks listed in [CONTRIBUTING.md](../CONTRIBUTING.md#the-gate), then validate and replay the safety catalogue with the pinned `ckdev-mutate` 0.12.0 runner:
 
 ```sh
 cargo install --locked --git https://github.com/cortexkit/commons --rev be120e9254c4972191b39b2e6814987918206afc cortexkit-mutate
@@ -84,9 +84,9 @@ ckdev-mutate check
 ckdev-mutate run --all --report target/mutations/handover.json
 ```
 
-Every row must be `CAUGHT`; a build failure or a red test other than the named guard is not proof of that guard. Keep the JSON report with the handover evidence rather than committing machine output. New safety guards belong in the file for their area under `mutations.d/`: resolve the full libtest path, use `ckdev-mutate prove` to record only a caught edit, and commit the guard with its proof as described in the README. These source-level proofs complement, rather than replace, the signed-binary and live rig checks below.
+Every row must be `CAUGHT`; a build failure or a red test other than the named guard is not proof of that guard. Keep the JSON report with the handover evidence rather than committing machine output. New safety guards belong in the file for their area under `mutations.d/`: resolve the full libtest path, use `ckdev-mutate prove` to record only a caught edit, and commit the guard with its proof as described in [mutations.md](mutations.md). These source-level proofs complement, rather than replace, the signed-binary and live rig checks below.
 
-Run the staged bytes on the ckdev-flows rig, basal's isolated test stack ([`script/flows-rig.sh`](../script/flows-rig.sh) documents it in its header). Its root defaults to `~/Work/Projects/CortexKit-scratch/ckdev-flows`; set `BASAL_RIG_ROOT` to an absolute path to override it. The guard refuses roots under `~/.local/share/cortexkit/` or `/Volumes/`.
+Run the staged bytes on the ckdev-flows rig, basal's isolated test stack ([`script/flows-rig.sh`](../script/flows-rig.sh) documents it in its header; see also [testing.md](testing.md#the-ckdev-flows-rig)). Its root defaults to `~/Work/Projects/CortexKit-scratch/ckdev-flows`; set `BASAL_RIG_ROOT` to an absolute path to override it. The guard refuses roots under `~/.local/share/cortexkit/` or `/Volumes/`.
 
 The head agent with access to production staging runs `copy-stage` first. It copies `ck-basal`, `ck-basal-worker`, their two `.sha256` sidecars, `card.md` and `revision` into the rig, and verifies both binary digests. Workers place from that rig-local copy, never from `~/.local/share/cortexkit/staging`:
 

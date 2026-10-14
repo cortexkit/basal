@@ -4,9 +4,10 @@ A flow script runs in `ck-basal-worker`, a separate process that confines
 itself before it reads anything from basal. The script reaches the world only
 through host calls: `sink.*`, `facts`, `ops.call`, `llm`, `classify`, `kv` and
 the built-ins. basal checks each one against the approved manifest, in the
-parent process, and journals it there. This note documents the digest item
-shape, then two behaviours of the script runtime that are deliberate limits,
-not guarantees.
+parent process, and journals it there. This page documents module-event
+triggers, module calls for a target agent and the digest item shape, then two
+behaviours of the script runtime that are deliberate limits, not guarantees,
+and public facts across a global audience.
 
 ## Module-event triggers
 

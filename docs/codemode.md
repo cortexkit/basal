@@ -1,4 +1,10 @@
-# Codemode results
+# Codemode
+
+Basal provides one agent-facing tool, `codemode({code, description?, limits?})`, on its tool route, where the daemon verifies the caller's principal and stamps its agent and scope identities. A short JavaScript program can await the agent's own tools, capture console output and return one JSON result. prefrontal-core, which manages agents and their tool grants, grants access to codemode and opens the run scope; basal owns the description, run records, budgets and rendered result. Tool schemas come from the daemon catalog, and each provider decides allow, ask and deny using the daemon-recorded agent identity and run scope, just as for a direct call. Model tools are a later extension.
+
+A keyed call derives its run ID from the stamped agent and call key; retries attach without replay. A keyless call executes once under an OS-random ID and warns that its reply cannot be recovered. Basal's parent process (outside the confined worker) caps wall time at 30 minutes plus a separate cumulative 10 minutes waiting only on people: the worker must be blocked and every in-flight tool call waiting for a person's approval or decision. It closes the scope before cancellation kills its worker, and interrupts leftover runs at startup. Long keyed calls can return before the program finishes; `late_results` lets the caller retrieve the finished result later, and `tool.withdraw` cancels the run. Codemode runs on macOS, Linux and Windows under each OS's full worker confinement. See [the tool and role operations](ops.md#codemode).
+
+## Results
 
 `codemode` opts into the fleet tool-provider `content/v1` contract through its
 catalog entry's `result_format: "content/v1"`. Basal validates every result with
@@ -29,18 +35,18 @@ result body:
 ## Model text and program data
 
 Consumers build model input from ordered `content` parts only, never from
-`structuredContent`. Codemode emits one text part, byte-for-byte the previous
-rendered text for a run that fits: status/duration/call-count/person-wait line,
-error if present, JSON return value if present, console output, call-summary
-table, then warnings. The JSON return value is capped at 16 KiB and console
-output at 64 KiB by the worker. No text is synthesized from the machine fields
-by the consumer.
+`structuredContent`. Codemode emits one text part. For a run that fits the
+size bound it holds, in order: the status/duration/call-count/person-wait line,
+the error if present, the JSON return value if present, console output, the
+call-summary table, then warnings. The JSON return value is capped at 16 KiB and
+console output at 64 KiB by the worker. No text is synthesized from the machine
+fields by the consumer.
 
-`structuredContent` retains the previous machine-readable fields, including
-status, return value, console output, call summaries, warnings, optional error
-and provider detail. It adds the run id and `termination_reason` (the terminal
-status, including any budget suffix). Duration, call count and person-wait time
-are the existing budget accounting fields, not a new CPU/token measurement.
+`structuredContent` carries the machine-readable fields: status, return value,
+console output, call summaries, warnings, optional error and provider detail,
+the run id, and `termination_reason` (the terminal status, including any budget
+suffix). Duration, call count and person-wait time are the run's budget
+accounting fields, not a separate CPU or token measurement.
 
 A keyed call that exceeds the foreground wait returns a valid content result
 with `structuredContent: {"status": "running", "run_id": "codemode:..."}` and the
