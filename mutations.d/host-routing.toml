@@ -1478,3 +1478,25 @@ expect_red = ["transport::tests::workspace_registry_reads_the_real_decoded_manag
 only = true
 timeout_s = 600
 build_timeout_s = 3600
+
+[[control]]
+id = "unknown-install-status-stays-pending"
+guards = "an unknown install-status state remains unreadable and leaves the card pending"
+test_file = "crates/basal-module/tests/install_policy.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test install_policy"
+expect_red = ["unknown_install_status_keeps_card_pending"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_host.rs"
+old = '_ => Err(format!("unrecognised install status: {value}")),'
+new = '''Some(_) => Ok(InstallStatus::Rejected {
+            code_hash: hash.and_then(Value::as_str).map(str::to_owned),
+            attempt: value.get("attempt").and_then(Value::as_i64),
+            rejected_reason: None,
+            disposition: None,
+        }), // NON-VACUITY BREAK
+        _ => Err(format!("unrecognised install status: {value}")),'''

@@ -355,6 +355,13 @@ CREATE TABLE state_resets (
 );
 "#,
     },
+    Migration {
+        version: 30,
+        statements: r#"
+ALTER TABLE install_cards ADD COLUMN rejected_reason TEXT;
+ALTER TABLE install_cards ADD COLUMN disposition TEXT;
+"#,
+    },
 ];
 
 const TEMPLATE_EVENTS: &str = r#"

@@ -388,6 +388,14 @@ pub enum InstallStatus {
     Declined { code_hash: String },
     /// The install card expired without approval.
     Expired { code_hash: String },
+    /// Core could not execute an approved install request. This is terminal
+    /// but never evidence of approval.
+    Rejected {
+        code_hash: Option<String>,
+        attempt: Option<i64>,
+        rejected_reason: Option<String>,
+        disposition: Option<String>,
+    },
     /// Core holds no install of the version.
     Unknown,
 }
