@@ -1,0 +1,68 @@
+{
+  "implementation_commit": "d148203",
+  "platform": "linux",
+  "tool_versions": {
+    "cargo": "1.99.0 (5f94df478 2026-08-27)",
+    "rustfmt": "1.10.0-stable (b940084d7e 2026-09-28)",
+    "clippy": "0.1.99 (b940084d7e 2026-09-28)",
+    "ckdev-mutate": "0.12.0",
+    "python": "3.14.4"
+  },
+  "gates": [
+    {"command": "cargo test -p basal-core -p basal-host -p basal-module --locked", "result": "passed", "tests_passed": 887},
+    {"command": "cargo test -p basal-core --locked", "result": "passed after final driver edits", "tests_passed": 311},
+    {"command": "cargo test -p basal-module --test install_revoked --test install_gate --locked", "result": "passed after final driver edits", "tests_passed": 21},
+    {"command": "cargo clippy --workspace --all-targets --locked -- -D warnings", "result": "passed"},
+    {"command": "cargo clippy --workspace --all-targets --locked --features basal-module/rig-kill-hook -- -D warnings", "result": "passed"},
+    {"command": "cargo fmt --all --check", "result": "passed"},
+    {"command": "ckdev-mutate check", "result": "catalogue anchors and exact test names verified"},
+    {"command": "python3 .github/workflows/check_mutation_coverage.py", "result": "passed", "catalogue_rows": 1180, "linux": 608, "macos": 504, "windows": 68},
+    {"command": "python3 script/check-ckdev-names.py", "result": "passed before this evidence file was added", "files_checked": 156, "violations": 0},
+    {"command": "python3 script/check-local-paths.py", "result": "passed before this evidence file was added", "files_checked": 596, "violations": 0}
+  ],
+  "mutation_replays": [
+    {
+      "command": "ckdev-mutate run --only revoked-version-dispatch-fence-is-bypassed",
+      "outcome": "CAUGHT",
+      "red": ["template_and_package_instances_stop_every_call_family_without_changing_enablement"],
+      "green": ["an_unrevoked_run_dispatches_local_and_remote_calls"],
+      "failure": "assertion left == right failed: left Succeeded, right Failed",
+      "baseline_failures": {},
+      "collateral_count": 0,
+      "breadth_observed": false,
+      "manual_applied_diff_stat": "crates/basal-core/src/revocation.rs | 2 +-; 1 insertion(+), 1 deletion(-)",
+      "manual_restored_diff_stat": "empty"
+    },
+    {
+      "command": "ckdev-mutate run --only revocation-hint-is-trusted-without-status-read",
+      "outcome": "CAUGHT",
+      "red": ["revocation_hint_checks_status_and_ignores_active"],
+      "green": ["revocation_hint_never_approved_is_a_noop"],
+      "failure": "assertion left == right failed: left 0 status reads, right 1",
+      "baseline_failures": {},
+      "collateral_count": 0,
+      "breadth_observed": false,
+      "manual_applied_diff_stat": "crates/basal-core/src/revocation.rs | 8 +-------; 1 insertion(+), 7 deletions(-)",
+      "manual_restored_diff_stat": "empty"
+    },
+    {
+      "command": "ckdev-mutate run --only revoked-run-counts-as-a-health-failure",
+      "outcome": "CAUGHT",
+      "red": ["push_mid_script_stops_the_next_call_and_health_does_not_count_a_failure"],
+      "green": ["an_unrevoked_run_dispatches_local_and_remote_calls"],
+      "failure": "assertion left == right failed: left Number(1), right 0 consecutive failures",
+      "baseline_failures": {},
+      "collateral_count": 0,
+      "breadth_observed": false,
+      "manual_applied_diff_stat": "crates/basal-core/src/ops.rs | 2 +-; 1 insertion(+), 1 deletion(-)",
+      "manual_restored_diff_stat": "empty"
+    }
+  ],
+  "mutation_scope_note": "Each replay selects the expected red witness plus an unaffected positive witness. Whole-package breadth was not audited. A separate manual full-target dispatch-fence mutation also failed push_between_journal_and_send_refuses_the_dispatch_attempt, push_mid_script_stops_the_next_call_and_health_does_not_count_a_failure and sent_call_settles_before_the_next_call_is_refused; the unrevoked positive witness stayed green.",
+  "comment_review": "Sidekick examined 10 code-comment blocks (64 lines) in the uncommitted diff and flagged none. An earlier review request failed from routing quota/cooldown; the replacement review completed.",
+  "decisions": [
+    "The parent approved SQLite-serialized attempt authorization as the in-flight linearization point; do not hold a lock across synchronous host calls, and recheck every retry.",
+    "The parent confirmed per-instance flow_id hints. Core sends one hint per package/template instance; activation checks cover missed hints.",
+    "Stop local built-ins and kv too: local effects belong to the revoked code. Instance enable switches remain unchanged."
+  ]
+}

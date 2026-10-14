@@ -776,6 +776,28 @@ impl Runtime {
         let mut maybe_sent: Option<UnknownReason> =
             (!prior_unsent && class != StoredClass::Query).then_some(UnknownReason::BasalRestarted);
         let answer = loop {
+            // The store serializes attempt authorization with revocation. Do not
+            // hold its lock across the host call: an authorized attempt is already
+            // in flight, and its eventual outcome remains an obligation.
+            let revoked = self
+                .store()
+                .write(|tx| crate::revocation::dispatch_check(tx, &run_id))?;
+            if let Some(reason) = revoked {
+                if let Some(last) = maybe_sent.filter(|_| class != StoredClass::Query) {
+                    self.store()
+                        .write(|tx| journal::record_unknown(tx, &run_id, position, last))?;
+                } else {
+                    self.accept(
+                        &run_id,
+                        position,
+                        None,
+                        &crate::kv::rejection("version_revoked", &reason),
+                        Source::Host,
+                    )?;
+                }
+                self.shared.signal.bump();
+                return Ok(());
+            }
             let expected_class = match class {
                 StoredClass::Query => basal_host::CallClass::Query,
                 _ => basal_host::CallClass::Mutation {

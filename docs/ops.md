@@ -60,6 +60,18 @@ Reply: `{}`. Core sends this at-least-once hint after an install card decision c
 
 The activation gate still accepts only a matching `active` hash. `pending`, `declined` and `expired` are treated like `unknown` there: none means approved.
 
+## flow.install_revoked
+
+Prefrontal-core only; every other caller receives `not_permitted`. Params are exactly:
+```json
+{"flow_id":"string","version":"positive integer","code_hash":"64 lowercase hex SHA-256 digits"}
+```
+Reply: `{}`. Core sends this at-least-once hint after revoking a version. A hint names one flow; for a package or template version, core sends one hint per instance flow id. Unknown flows, versions basal never approved, and already-recorded revocations are acknowledged without a status read. Repeated hints are idempotent.
+
+The hint's hash carries no authority. For a known approved version basal reads `flow.install_status` once, outside the SQLite write lock, and compares core's hash with the locally approved code. A matching `active` reply changes nothing. `revoked`, `unknown`, or a different active hash record revocation through the same path as the activation gate; `pending`, `declined` and `expired` also count as unknown approval, as in that gate. An unreachable core, refusal or undecodable status returns `core_unavailable` with detail `{"retryable":true}` and changes nothing. Core may retry the hint; the existing per-activation status check remains the backstop for missed hints.
+
+Recorded revocation fences every later dispatch attempt on that flow's pinned version, including built-ins, clock/random reads and local `kv`. The next call is refused with `version_revoked` and the run ends as failed with that kind, visible in health but excluded from consecutive-failure and auto-disable counting. Calls authorized before the revocation was recorded may still be sent and settle; none is authorized after. Every retry passes the same fence. An earlier mutation with an unknown outcome still requires reconciliation. Instance enable switches are unchanged. No new task or polling runs while basal is idle.
+
 ## flow.dry_run
 
 Params:

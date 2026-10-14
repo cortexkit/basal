@@ -356,6 +356,51 @@ impl Activation<'_> {
         ))
     }
 
+    fn end_revoked(&self, detail: String) -> Result<Flow> {
+        let unknown = self.rt.store().write(|tx| {
+            let unknown = journal::unknown_positions(tx, &self.lease.run_id)?;
+            let exit = if unknown.is_empty() {
+                Exit::Failed {
+                    kind: "version_revoked".into(),
+                    detail: detail.clone(),
+                }
+            } else {
+                Exit::NeedsReconcile {
+                    positions: unknown.clone(),
+                }
+            };
+            runs::exit(tx, &self.lease, &exit)?;
+            Ok(unknown)
+        })?;
+        self.at(Boundary::Exited)?;
+        if !unknown.is_empty() {
+            return Ok(done(
+                ActivationEnd::NeedsReconcile { positions: unknown },
+                false,
+            ));
+        }
+        Ok(done(
+            ActivationEnd::Failed {
+                kind: "version_revoked".into(),
+                detail,
+            },
+            false,
+        ))
+    }
+
+    fn finish_revoked_call(&mut self, call: &HostCall, reason: String) -> Result<Flow> {
+        let (outcome, _) = self
+            .rt
+            .store()
+            .write(|tx| journal::release_next(tx, &self.lease, &[call.position]))?;
+        if let Some(outcome) = outcome {
+            // Commit the typed refusal before ending the run. A script catching
+            // this reply cannot dispatch again because its worker is retired.
+            let _ = self.send(&ParentMessage::Deliver(outcome));
+        }
+        self.end_revoked(reason)
+    }
+
     fn send(&mut self, message: &ParentMessage) -> std::result::Result<(), ChannelError> {
         self.worker.send(message)
     }
@@ -373,13 +418,10 @@ impl Activation<'_> {
     fn run(&mut self) -> Result<Flow> {
         // The install gate (`crate::gate`): the lease is held and nothing
         // has reached the worker or the host yet, not even a resend of a
-        // call an earlier activation left open. A revoke that lands after
-        // this check is deliberately not looked for again during this
-        // activation. Core itself refuses a revoked version's sink writes
-        // (digest items and status lines, the only way a flow reaches an
-        // agent), and the next activation asks again, so what a revoked
-        // version can still do is bounded by this one activation. The
-        // worker was handed nothing, so it stays reusable.
+        // call an earlier activation left open. Verified pushes can record
+        // revocation afterward; each dispatch attempt checks that durable
+        // record without another network read. The worker was handed nothing
+        // when this gate closes, so it stays reusable.
         if let Gate::Closed(end) = self.rt.check_install(&self.lease, &self.run)? {
             return Ok(done(end, true));
         }
@@ -610,7 +652,10 @@ impl Activation<'_> {
                     // If only the row remains, recovery completes that intent.
                     let flow_id = self.run.flow_id.clone();
                     let limits = self.rt.config.kv;
-                    self.rt.store().write(|tx| {
+                    let revoked = self.rt.store().write(|tx| {
+                        if let Some(reason) = crate::revocation::dispatch_check(tx, &run_id)? {
+                            return Ok(Some(reason));
+                        }
                         let outcome =
                             if matches!(row.kind, CallKind::Primitive(Primitive::InstanceEnd)) {
                                 crate::templates::request_end(tx, &run_id, &row.args)?
@@ -624,8 +669,12 @@ impl Activation<'_> {
                             None,
                             &outcome,
                             Source::Local,
-                        )
+                        )?;
+                        Ok(None)
                     })?;
+                    if let Some(reason) = revoked {
+                        return self.end_revoked(reason);
+                    }
                     self.at(Boundary::LocalCommitted {
                         position: row.position,
                     })?;
@@ -721,6 +770,36 @@ impl Activation<'_> {
     }
 
     fn on_host_call(&mut self, call: HostCall) -> Result<Flow> {
+        if let Some(reason) = self
+            .rt
+            .store()
+            .read(|c| crate::revocation::dispatch_check(c, &self.lease.run_id))?
+        {
+            if call.position == self.next_position {
+                self.refuse(
+                    &call,
+                    &self.run.flow_id.clone(),
+                    &Refusal::new("version_revoked", &reason),
+                )?;
+            } else if call.position < self.next_position {
+                self.rt.store().write(|tx| {
+                    if journal::row(tx, &self.lease.run_id, call.position)?
+                        .is_some_and(|r| r.class == StoredClass::Sync && r.outcome.is_none())
+                    {
+                        journal::accept_outcome(
+                            tx,
+                            &self.lease.run_id,
+                            call.position,
+                            None,
+                            &kv::rejection("version_revoked", &reason),
+                            Source::Local,
+                        )?;
+                    }
+                    Ok(())
+                })?;
+            }
+            return self.finish_revoked_call(&call, reason);
+        }
         if matches!(call.kind, CallKind::Tool { .. }) {
             return self.fail(
                 "profile_violation",
@@ -810,6 +889,13 @@ impl Activation<'_> {
                             position: call.position,
                         })?;
                         self.rt.shared.signal.bump();
+                        if let Some(reason) = self
+                            .rt
+                            .store()
+                            .read(|c| crate::revocation::dispatch_check(c, &run_id))?
+                        {
+                            return self.finish_revoked_call(&call, reason);
+                        }
                         return Ok(Flow::Continue);
                     }
                     Err(e) => {
@@ -848,6 +934,10 @@ impl Activation<'_> {
     ) -> Result<Flow> {
         let limits = self.rt.config.kv;
         let refused = self.rt.store().write(|tx| {
+            if let Some(reason) = crate::revocation::dispatch_check(tx, &self.lease.run_id)? {
+                self.record_refusal(tx, flow_id, call, &Refusal::new("version_revoked", reason))?;
+                return Ok(true);
+            }
             if install::is_disabled(tx, flow_id)? {
                 self.record_refusal(tx, flow_id, call, &disabled_refusal())?;
                 return Ok(true);
@@ -891,6 +981,13 @@ impl Activation<'_> {
             }
         })?;
         self.rt.shared.signal.bump();
+        if let Some(reason) = self
+            .rt
+            .store()
+            .read(|c| crate::revocation::dispatch_check(c, &self.lease.run_id))?
+        {
+            return self.finish_revoked_call(call, reason);
+        }
         Ok(Flow::Continue)
     }
 
@@ -901,8 +998,12 @@ impl Activation<'_> {
         new: &NewCall<'_>,
         audited_at: i64,
     ) -> Result<Flow> {
-        let (settlement, value, clock) = self.sync_value(&call.kind)?;
         let outcome = self.rt.store().write(|tx| {
+            if let Some(reason) = crate::revocation::dispatch_check(tx, &self.lease.run_id)? {
+                self.record_refusal(tx, flow_id, call, &Refusal::new("version_revoked", &reason))?;
+                return Ok(Err(reason));
+            }
+            let (settlement, value, clock) = self.sync_value(&call.kind)?;
             journal::insert_call(tx, &self.lease, flow_id, new)?;
             audit::record(
                 tx,
@@ -921,9 +1022,13 @@ impl Activation<'_> {
                 (c, _) => c,
             };
             let value = clock.map_or(value.clone(), number_text);
-            journal::record_sync(tx, &self.lease, call.position, settlement, &value, clock)
+            journal::record_sync(tx, &self.lease, call.position, settlement, &value, clock).map(Ok)
         })?;
         self.next_position += 1;
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(reason) => return self.finish_revoked_call(call, reason),
+        };
         self.at(Boundary::SyncCommitted {
             position: call.position,
         })?;
@@ -1290,6 +1395,10 @@ impl Activation<'_> {
         prepared: &Prepared,
         now_ms: i64,
     ) -> Result<Option<String>> {
+        if let Some(reason) = crate::revocation::dispatch_check(tx, &self.lease.run_id)? {
+            self.record_refusal(tx, flow_id, call, &Refusal::new("version_revoked", reason))?;
+            return Ok(None);
+        }
         let rate = self.rt.config.rate;
         if install::is_disabled(tx, flow_id)? {
             self.record_refusal(tx, flow_id, call, &disabled_refusal())?;
@@ -1383,8 +1492,19 @@ impl Activation<'_> {
                 call.position
             ));
         }
-        let (settlement, value, clock) = self.sync_value(&call.kind)?;
         let outcome = self.rt.store().write(|tx| {
+            if let Some(reason) = crate::revocation::dispatch_check(tx, &self.lease.run_id)? {
+                journal::accept_outcome(
+                    tx,
+                    &self.lease.run_id,
+                    call.position,
+                    None,
+                    &kv::rejection("version_revoked", &reason),
+                    Source::Local,
+                )?;
+                return Ok(Err(reason));
+            }
+            let (settlement, value, clock) = self.sync_value(&call.kind)?;
             // Recovery must use the same monotonic clock rule as a new call.
             let clock = match clock {
                 Some(sample) => {
@@ -1393,8 +1513,12 @@ impl Activation<'_> {
                 None => None,
             };
             let value = clock.map_or(value.clone(), number_text);
-            journal::record_sync(tx, &self.lease, call.position, settlement, &value, clock)
+            journal::record_sync(tx, &self.lease, call.position, settlement, &value, clock).map(Ok)
         })?;
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(reason) => return self.finish_revoked_call(&call, reason),
+        };
         self.at(Boundary::SyncCommitted {
             position: call.position,
         })?;
@@ -1431,6 +1555,14 @@ impl Activation<'_> {
             self.readiness_seen = readiness;
             if let Some(outcome) = outcome {
                 let position = outcome.position;
+                if outcome.settlement == Settlement::Rejected
+                    && serde_json::from_str::<Value>(outcome.value.as_str())
+                        .ok()
+                        .is_some_and(|v| v["code"] == "version_revoked")
+                {
+                    let _ = self.send(&ParentMessage::Deliver(outcome));
+                    return self.end_revoked("version revoked before dispatch".into());
+                }
                 self.at(Boundary::OrderCommitted {
                     position,
                     order: outcome.delivery_order,
@@ -1484,6 +1616,13 @@ impl Activation<'_> {
     }
 
     fn on_finished(&self, result: ActivationResult) -> Result<Flow> {
+        if let Some(reason) = self
+            .rt
+            .store()
+            .read(|c| crate::revocation::dispatch_check(c, &self.lease.run_id))?
+        {
+            return self.end_revoked(reason);
+        }
         match result {
             ActivationResult::Completed { value } => {
                 let exit = Exit::Succeeded {

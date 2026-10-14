@@ -13,6 +13,7 @@ static NEXT: AtomicUsize = AtomicUsize::new(0);
 struct TestHost {
     replies: Mutex<VecDeque<std::result::Result<Dispatched, TransportError>>>,
     refusals: Mutex<Vec<CallRequest>>,
+    on_dispatch: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl Host for TestHost {
@@ -22,6 +23,9 @@ impl Host for TestHost {
         }
     }
     fn dispatch(&self, _: &CallRequest) -> std::result::Result<Dispatched, TransportError> {
+        if let Some(action) = lock(&self.on_dispatch).take() {
+            action();
+        }
         lock(&self.replies).pop_front().expect("scripted reply")
     }
     fn refusal_committed(&self, request: &CallRequest, _: &FlowRefusal) {
@@ -34,6 +38,67 @@ impl Host for TestHost {
     fn random(&self) -> f64 {
         0.5
     }
+}
+
+#[test]
+fn a_retry_after_revocation_is_not_sent_and_an_ambiguous_mutation_needs_reconcile() {
+    let f = Fixture::new(100);
+    let lease = f.call("revoked-retry", StoredClass::KeyedMutation);
+    f.approve("revoked-retry");
+    f.rt.store()
+        .write(|tx| {
+            tx.execute(
+                "UPDATE runs SET flow_version=1 WHERE run_id='revoked-retry'",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    lock(&f.host.replies).extend([
+        Err(TransportError::maybe_sent(
+            UnknownReason::ConnectionLost,
+            "lost reply",
+        )),
+        Ok(Dispatched::Completed(HostOutcome::fulfilled(
+            JsonText::null(),
+        ))),
+    ]);
+    let rt = f.rt.clone();
+    *lock(&f.host.on_dispatch) = Some(Box::new(move || {
+        rt.store()
+            .write(|tx| crate::install::revoke(tx, "flow", 1, "core revoked", 100))
+            .unwrap();
+    }));
+    f.rt.dispatch(f.request("revoked-retry"), StoredClass::KeyedMutation, true)
+        .unwrap();
+    assert_eq!(
+        lock(&f.host.replies).len(),
+        1,
+        "a later retry reached the host"
+    );
+    assert_eq!(
+        f.rt.unknown_reason("revoked-retry", 0).unwrap(),
+        Some(UnknownReason::ConnectionLost)
+    );
+    f.rt.store()
+        .write(|tx| {
+            runs::exit(
+                tx,
+                &lease,
+                &crate::runs::Exit::Failed {
+                    kind: "version_revoked".into(),
+                    detail: "revoked".into(),
+                },
+            )
+        })
+        .unwrap();
+    f.rt.store()
+        .write(|tx| journal::record_unknown(tx, "revoked-retry", 0, UnknownReason::ConnectionLost))
+        .unwrap();
+    assert_eq!(
+        f.rt.run("revoked-retry").unwrap().state,
+        RunState::NeedsReconcile
+    );
 }
 
 struct Fixture {

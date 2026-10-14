@@ -152,6 +152,7 @@ pub fn flow_health(conn: &Connection, now_ms: i64) -> Result<Vec<FlowHealth>> {
                 match run.state.as_str() {
                     "failed" if readiness_failure => {}
                     "failed" if run.error_kind.as_deref() == Some("agent_retired") => {}
+                    "failed" if run.error_kind.as_deref() == Some("version_revoked") => {}
                     "failed" | "engine_mismatch" => consecutive_failures += 1,
                     "succeeded" => counting = false,
                     _ => {}

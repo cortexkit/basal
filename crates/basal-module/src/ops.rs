@@ -120,6 +120,11 @@ impl Module {
             CoreError::NoSuchRun(r) => OpError::new("not_found", format!("no run {r}")),
             CoreError::WrongState { .. } => OpError::new("wrong_state", e.to_string()),
             CoreError::Invalid(m) => OpError::new("invalid_params", m),
+            CoreError::Unavailable(m) => OpError {
+                code: "core_unavailable".into(),
+                message: m,
+                detail: Some(json!({"retryable": true})),
+            },
             other => OpError::new("internal", other.to_string()),
         }
     }
@@ -233,6 +238,7 @@ impl Module {
             "events_get" => self.op_events_get(caller, params),
             "flow.install" => self.op_install(caller, params),
             "flow.install_decided" => self.op_install_decided(caller, params),
+            "flow.install_revoked" => self.op_install_revoked(caller, params),
             "flow.dry_run" => self.op_dry_run(caller, params),
             "flow.health" => self.op_health(caller, params),
             "flow.audience" => self.op_audience(caller, params),
@@ -821,6 +827,43 @@ impl Module {
         }
         self.rt
             .install_decided(&p.flow_id, p.version, p.attempt)
+            .map_err(|e| self.core_error(e))?;
+        Ok(json!({}))
+    }
+
+    fn op_install_revoked(&self, caller: &Caller, params: Value) -> OpResult {
+        if !matches!(caller, Caller::Core) {
+            return Err(OpError::new(
+                "not_permitted",
+                format!(
+                    "flow.install_revoked is core-only; caller is {}",
+                    caller.label()
+                ),
+            ));
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Params {
+            flow_id: String,
+            version: u32,
+            code_hash: String,
+        }
+        let p: Params = serde_json::from_value(params).map_err(invalid_params)?;
+        if p.flow_id.is_empty()
+            || p.version == 0
+            || p.code_hash.len() != 64
+            || !p
+                .code_hash
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(OpError::new(
+                "invalid_params",
+                "flow_id, positive version and lowercase SHA-256 code_hash are required",
+            ));
+        }
+        self.rt
+            .install_revoked(&p.flow_id, p.version, &p.code_hash)
             .map_err(|e| self.core_error(e))?;
         Ok(json!({}))
     }
