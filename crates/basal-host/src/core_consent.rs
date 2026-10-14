@@ -76,7 +76,23 @@ fn field<'a>(v: &'a Value, name: &str) -> Result<&'a str, ConsentError> {
         .and_then(Value::as_str)
         .ok_or_else(|| ConsentError::Refused(format!("card is missing {name}")))
 }
+/// The `flow.install_request` for an install card, without the dry run's
+/// plain-language text: see [`request_for`].
 pub fn request(card: &InstallCard) -> Result<Value, ConsentError> {
+    request_for(card, false)
+}
+
+/// The capability core lists in the daemon catalog when its install request
+/// accepts `flow_install.dry_run_text`.
+pub const FLOW_INSTALL_DRY_RUN_TEXT_V1: &str = "flow-install-dry-run-text/v1";
+
+/// The `flow.install_request` for an install card. With `dry_run_text`, and
+/// when the card holds one, the body also carries the dry run in plain words
+/// (`{summary, would, problems}`) beside the raw `dry_run_summary`; core
+/// refuses keys it does not know, so this is set only when core lists
+/// [`FLOW_INSTALL_DRY_RUN_TEXT_V1`]. Without it the request is exactly what
+/// an older core expects.
+pub fn request_for(card: &InstallCard, dry_run_text: bool) -> Result<Value, ConsentError> {
     let f = &card.fields;
     let hash = field(f, "code_hash")?;
     let script = field(&f["code"], "script")?;
@@ -103,6 +119,9 @@ pub fn request(card: &InstallCard) -> Result<Value, ConsentError> {
     let mut result = result;
     if let Some(placement) = placement {
         result["flow_install"]["placement"] = json!(placement);
+    }
+    if dry_run_text && f["dry_run_text"].is_object() {
+        result["flow_install"]["dry_run_text"] = f["dry_run_text"].clone();
     }
     Ok(result)
 }
@@ -808,6 +827,13 @@ impl Consent for CoreConsent {
         Ok(())
     }
     fn raise(&self, card: &InstallCard) -> Result<InstallOutcome, ConsentError> {
+        let dry_run_text = crate::core_host::core_provides(
+            self.state.transport.as_ref(),
+            FLOW_INSTALL_DRY_RUN_TEXT_V1,
+        );
+        // Include the plain-language dry run only if the connected core says it
+        // accepts one; an older core refuses the unknown key.
+        let request = |card| request_for(card, dry_run_text);
         let reply = self
             .state
             .transport

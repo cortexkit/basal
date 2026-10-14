@@ -22,6 +22,8 @@
 //!   approving it.
 //! - [`decisions`]: the operator decision cards basal raises itself, for
 //!   reconciling an unknown call and re-enabling an auto-disabled flow.
+//! - [`dry_run_text`]: a dry run's result in plain words, for the install
+//!   card.
 //! - [`schedule`]: schedule triggers, due times in a named zone, missed
 //!   fires, and their admission.
 //! - [`codemode`]: codemode runs and calls, stored apart from flow runs,
@@ -41,6 +43,7 @@ pub mod clock;
 pub mod codemode;
 pub mod decisions;
 pub mod driver;
+pub mod dry_run_text;
 pub mod error;
 pub mod events;
 mod flow_scope;

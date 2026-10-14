@@ -693,3 +693,19 @@ expect_red = ["install_answers_are_ignored_in_the_decision_feed"]
 only = true
 build_timeout_s = 3600
 timeout_s = 600
+
+[[control]]
+id = "dry-run-text-sent-without-core-capability"
+guards = "flow.install_request carries dry_run_text only when core's catalog lists flow-install-dry-run-text/v1"
+test_file = "crates/basal-module/tests/hosts.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+file = "crates/basal-host/src/core_consent.rs"
+old = 'if dry_run_text && f["dry_run_text"].is_object() {'
+new = 'if f["dry_run_text"].is_object() { // NON-VACUITY BREAK'
+target = "--test hosts"
+expect_red = ["install_request_carries_dry_run_text_only_when_core_lists_the_capability"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600

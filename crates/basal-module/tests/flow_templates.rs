@@ -1146,6 +1146,28 @@ fn all_five_templates_dry_run_successfully_in_capture_mode() {
 }
 
 #[test]
+fn reminder_dry_run_text_matches_its_committed_fixture() {
+    let t = Test::new();
+    let now = t.f.clock.now_ms();
+    let at = jiff::Timestamp::from_millisecond(now + 3_600_000)
+        .unwrap()
+        .to_string();
+    let params = json!({"at":at,"note":"Check the rollout"});
+    // Without a synthetic trigger, the dry run of a one-shot reminder runs it
+    // once, as its scheduled time would.
+    let reply = t.dry("remind-at", params.clone(), Value::Null);
+    // The same effective manifest the template dry run replays.
+    let (_, manifest, _) = TEMPLATES[3];
+    let mut manifest = basal_core::Manifest::parse(manifest).unwrap();
+    let values = basal_core::templates::validate_values(&manifest, &params, now).unwrap();
+    basal_core::templates::effective(&mut manifest, &values);
+    basal_core::authorize::resolve_self(&mut manifest, OWNER);
+    let text = basal_core::dry_run_text::render(&manifest, &reply["summary"]);
+    assert!(text.problems.is_empty(), "{text:#?}");
+    common::assert_dry_run_text_fixture("remind-at.json", &serde_json::to_value(text).unwrap());
+}
+
+#[test]
 fn exact_file_and_git_template_roots_refuse_values_outside_work() {
     let t = Test::new();
     let outside = t.f.dir.join("outside");

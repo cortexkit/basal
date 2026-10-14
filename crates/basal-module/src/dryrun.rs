@@ -55,7 +55,7 @@ use crate::metrics::Metrics;
 use crate::pool::{Binding, Lease, Pool};
 
 /// The rejection code of a captured call.
-pub const CAPTURED: &str = "captured";
+pub const CAPTURED: &str = basal_core::dry_run_text::CAPTURED_CODE;
 
 #[derive(Debug, Clone)]
 pub struct DryRunConfig {
@@ -833,7 +833,9 @@ fn captured(detail: &str) -> HostOutcome {
     HostOutcome::rejected(
         JsonText::new(
             json!({
-                "message": "captured by a dry run: not executed",
+                // The install card's plain-language text tells a run stopped
+                // by this rejection from a real failure by this message.
+                "message": basal_core::dry_run_text::CAPTURED_MESSAGE,
                 "code": CAPTURED,
                 "detail": detail,
             })

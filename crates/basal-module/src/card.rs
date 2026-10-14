@@ -117,6 +117,10 @@ pub fn fields(input: &CardInput<'_>) -> Value {
         "code_hash": code_hash_hex(&input.installed.code_hash),
         // The exact bytes the hash covers; the card shows them collapsed.
         "code": { "script": input.script, "manifest": input.manifest_text },
+        // The raw summary stays for audits; the plain-language text is what
+        // core and cingulate show the operator, when core accepts it.
+        "dry_run_text": serde_json::to_value(basal_core::dry_run_text::render(m, &input.dry_run))
+            .unwrap_or(Value::Null),
         "dry_run_summary": input.dry_run,
     })
 }
