@@ -111,6 +111,7 @@ package = "basal-testkit"
 target = "--lib"
 expect_red = ["binaries::tests::pre_existing_complete_copy_is_reused_without_rewriting"]
 only = true
+select = { tests = ["binaries::tests::pre_existing_complete_copy_is_reused_without_rewriting", "binaries::tests::changed_binary_bytes_use_a_different_directory"] }
 platforms = ["linux"]
 timeout_s = 600
 build_timeout_s = 3600

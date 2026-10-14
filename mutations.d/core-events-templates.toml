@@ -364,7 +364,9 @@ package = "basal-module"
 platforms = ["linux"]
 target = "--test templates"
 expect_red = ["path_and_repo_values_resolve_symlinks_and_future_ancestors_before_bounds", "template_dry_run_path_and_repo_canonicalization_and_bounds_match_instances"]
-only = true
+only = false
+hub = "Template path and repo values must resolve within their declared canonical bounds at creation and preview; published file and git templates explicitly refuse values outside the Work root"
+hub_targets = ["flow_templates"]
 file = "crates/basal-core/src/templates.rs"
 old = "inside && (!matches!(decl, Parameter::Repo { .. }) || is_repository(&real))"
 new = "(inside || true) /* NON-VACUITY BREAK */ && (!matches!(decl, Parameter::Repo { .. }) || is_repository(&real))"
@@ -462,7 +464,9 @@ package = "basal-module"
 platforms = ["linux"]
 target = "--test templates"
 expect_red = ["one_shot_fires_once_after_downtime_and_ends_on_success_failure_or_cancel", "a_template_run_ends_only_itself_after_finishing_even_when_it_fails"]
-only = true
+only = false
+hub = "A terminal one-shot or self-ending template run ends its own live instance and closes further admission; published-template live snapshots and ended-event tests require that same terminal transition"
+hub_targets = ["flow_templates", "module_events"]
 file = "crates/basal-core/src/templates.rs"
 old = "end(tx, &flow, at)?;"
 new = "let _ = (tx, &flow, at); // NON-VACUITY BREAK"
@@ -533,6 +537,8 @@ platforms = ["linux"]
 target = "--test templates"
 expect_red = ["lifecycle_sequence_changes_only_for_committed_changes_across_kinds"]
 only = false
+hub = "Each committed lifecycle transition allocates a strictly increasing per-instance sequence, giving repeated outbox rows distinct flow_id/seq keys; create, extend, expire, end and epoch-preview witnesses require those transitions to commit without duplicate keys"
+hub_targets = ["basal_module", "flow_templates", "module_events", "state_epoch"]
 file = "crates/basal-core/src/template_events.rs"
 old = "UPDATE template_instances SET seq=seq+1 WHERE flow_id=?1"
 new = "UPDATE template_instances SET seq=1 WHERE flow_id=?1 /* NON-VACUITY BREAK */"
@@ -575,6 +581,8 @@ platforms = ["linux"]
 target = "--test templates"
 expect_red = ["expiry_wakes_without_schedule_at_deadline_and_carries_canonical_params"]
 only = false
+hub = "Instance expiry commits and publishes its canonical lifecycle event at the deadline itself, not after it; engine wake, lifecycle vectors and transactional expiry tests observe that same boundary"
+hub_targets = ["basal_module", "module_events"]
 file = "crates/basal-core/src/templates.rs"
 old = "t.expires_at<=?1 AND t.expiry_notified=0"
 new = "t.expires_at<?1 AND t.expiry_notified=0 /* NON-VACUITY BREAK */"
@@ -589,6 +597,8 @@ platforms = ["linux"]
 target = "--test module_events"
 expect_red = ["lifecycle::self_end_and_one_shot_publish_ended"]
 only = false
+hub = "Ending a live instance atomically enqueues flow_instance_ended and advances its lifecycle sequence; lifecycle vectors, ordered transitions and rollback-on-outbox-failure tests require the same ended outbox write"
+hub_targets = ["templates"]
 file = "crates/basal-core/src/templates.rs"
 old = '''crate::template_events::enqueue(tx, flow_id, "flow_instance_ended", now)?;'''
 new = '''// NON-VACUITY BREAK: omit the ended outbox row.'''

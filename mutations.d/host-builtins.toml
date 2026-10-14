@@ -989,7 +989,9 @@ package = "basal-module"
 platforms = ["linux"]
 target = "--test templates"
 expect_red = ["template_stat_of_a_missing_target_reports_absence_then_appearance", "missing_stat_with_an_escaped_ancestor_is_refused_not_reported_absent"]
-only = true
+only = false
+hub = "Stat of a bounded missing template target reports exists=false rather than a permission refusal; published file watches use that same absence result to wait without ending or sending a stopped notification"
+hub_targets = ["flow_templates"]
 file = "crates/basal-host/src/builtins/mod.rs"
 old = 'return Some(json!({"exists":false}));'
 new = 'return None; // NON-VACUITY BREAK'
