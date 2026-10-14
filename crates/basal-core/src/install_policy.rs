@@ -128,6 +128,17 @@ impl Runtime {
             if !eligible {
                 return Ok(());
             }
+            if let Some(InstallApproval::Policy { rule }) = &approval {
+                let manifest: String = tx.query_row("SELECT manifest FROM installs WHERE flow_id=?1 AND version=?2", params![flow_id, version], |r| r.get(0))?;
+                let manifest = crate::manifest::Manifest::parse(&manifest)
+                    .map_err(|e| CoreError::Corrupt(format!("installed manifest: {e}")))?;
+                // Global reach always needs a card answer, even if core reports
+                // a matching active version approved by a configurable policy.
+                if matches!(manifest.audience, Some(crate::manifest::Audience::Global {})) {
+                    tracing::error!(target: "consent", flow_id, version, rule, "refusing policy approval: global audience requires a card approval");
+                    return Err(CoreError::Invalid(format!("global audience requires a card approval; policy rule {rule} cannot approve flow {flow_id} version {version}")));
+                }
+            }
             let reference = match &approval {
                 Some(InstallApproval::Policy { rule }) => format!("policy:{rule}"),
                 Some(InstallApproval::Card) => "core:card".into(),

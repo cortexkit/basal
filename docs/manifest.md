@@ -63,10 +63,12 @@ match a workspace returned by Entorhinal's management query `enumerate` with
 `workspace_registry_unavailable`.
 
 An agent-authored agent audience must resolve to that author, or installation
-and dry run return `foreign_agent_target`. An agent-authored workspace or global
-audience returns `audience_requires_operator`. Operator and local authors may
-request any audience; installing in an agent's name still applies that agent's
-authorship rules. An agent-authored flow may claim sources or read named facts
+and dry run return `foreign_agent_target`. Any author may request a workspace or
+global audience through core's install approval flow. Self installs are allowed
+by default, workspace installs ask by default (configurable), and global installs
+always require a card answer: basal refuses global policy approvals, including
+during startup recovery. Installing in an agent's name still applies that agent's
+static target authorship rules. An agent-authored flow may claim sources or read named facts
 targets only for its own stable agent id; operator-authored flows may name other agents.
 
 With an audience, every digest sink must declare `agent: "$audience"` and every

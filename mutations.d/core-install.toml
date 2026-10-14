@@ -1045,24 +1045,58 @@ new = '''} else if agent == AUDIENCE_TARGET {
                 Ok(()) // NON-VACUITY BREAK'''
 
 [[control]]
-id = "audience-agent-authors-can-request-broad-reach"
-guards = "broad audience requires operator or local authorship"
+id = "audience-agent-authors-cannot-request-broad-reach"
+guards = "agents may request workspace and global audiences for core approval"
 test_file = "crates/basal-core/tests/audience.rs"
 runner = "cargo"
 package = "basal-core"
 platforms = ["linux"]
 target = "--test audience"
-expect_red = ["broad_audience_requires_operator_authorship"]
-only = false
+expect_red = ["all_authors_may_request_broad_audiences"]
+only = true
+select = { tests = ["all_authors_may_request_broad_audiences", "agent_audience_resolves_to_same_stable_author"] }
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/install.rs"
-old = '''fn agent_may_request_broad_audience() -> bool {
-    false
-}'''
-new = '''fn agent_may_request_broad_audience() -> bool {
-    true // NON-VACUITY BREAK
-}'''
+old = 'validate_audience(manifest, catalog)?;'
+new = '''if author == "SYNAPSE" && matches!(manifest.audience, Some(Audience::Global {} | Audience::Workspace { .. })) {
+        return Err(InstallError::ForeignAgentTarget { field: "audience", agent: "$audience".into(), author: author.into() }); // NON-VACUITY BREAK
+    }
+    validate_audience(manifest, catalog)?;'''
+
+[[control]]
+id = "policy-global-live-approval-allowed"
+guards = "global reach refuses live policy replies and policy status approvals regardless of author"
+test_file = "crates/basal-module/tests/install_policy.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test install_policy"
+expect_red = ["global_policy_approval_is_refused_live"]
+only = true
+select = { tests = ["global_policy_approval_is_refused_live", "self_and_workspace_audiences_accept_policy_approval"] }
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/install_policy.rs"
+old = 'if matches!(manifest.audience, Some(crate::manifest::Audience::Global {})) {'
+new = 'if false && matches!(manifest.audience, Some(crate::manifest::Audience::Global {})) { // NON-VACUITY BREAK'
+
+[[control]]
+id = "policy-global-startup-approval-allowed"
+guards = "startup never approves global reach from policy status with or without a saved card"
+test_file = "crates/basal-module/tests/install_policy.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test install_policy"
+expect_red = ["global_policy_approval_is_refused_at_startup"]
+only = true
+select = { tests = ["global_policy_approval_is_refused_at_startup", "self_and_workspace_audiences_accept_policy_approval"] }
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/install_policy.rs"
+old = 'if matches!(manifest.audience, Some(crate::manifest::Audience::Global {})) {'
+new = 'if false && matches!(manifest.audience, Some(crate::manifest::Audience::Global {})) { // NON-VACUITY BREAK'
 
 [[control]]
 id = "audience-agent-target-escapes-author"

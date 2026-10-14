@@ -164,10 +164,6 @@ impl Module {
             InstallError::Manifest(ManifestError::AudiencePlaceholderWithoutAudience) => {
                 OpError::new("audience_placeholder_without_audience", e.to_string())
             }
-            InstallError::AudienceRequiresOperator => OpError::new(
-                "audience_requires_operator",
-                "only operator and local authors may request workspace or global delivery",
-            ),
             InstallError::UnknownWorkspace(id) => {
                 OpError::new("unknown_workspace", format!("no workspace {id}"))
             }
