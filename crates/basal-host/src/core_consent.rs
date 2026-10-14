@@ -118,23 +118,25 @@ pub const DECISION_DECLINE_EFFECT: &str = "decline";
 /// default: core's maximum, a day.
 pub const DECISION_EXPIRES_IN_MS: u64 = 86_400_000;
 
-/// The `elicitation.request` for an operator decision card, built only
-/// here. Given the inputs of core's test vectors
-/// (`test-vectors/flow-decision-card-v2/` at prefrontal tag
-/// `flow-decision-card-v2`) it produces their bytes exactly; basal's own
-/// cards differ only in values and in two optional fields core accepts,
-/// `dedup_key` and `args_digest`.
+// Cingulate's consent service limits the complete request envelope to
+// 1,310,720 bytes but imposes no per-fact caps. These local limits keep basal's
+// phone rows readable.
+const DECISION_FACTS_MAX_COUNT: usize = 4;
+const DECISION_FACT_LABEL_MAX_BYTES: usize = 32;
+const DECISION_FACT_VALUE_MAX_BYTES: usize = 200;
+const CONSENT_REQUEST_ENVELOPE_MAX_BYTES: usize = 1_310_720;
+
+/// Builds the consent request for a basal decision card shown to the operator.
+/// prefrontal-core (core) validates the v2 request envelope and typed decision
+/// body; its pinned examples define those core-owned fields. Basal derives the
+/// phone's plain-text facts from that same body and may add durable
+/// `dedup_key` or `args_digest` keys when a production record has them.
 ///
-/// The card goes to the operator alone, so the request carries no
-/// `session_ref` or `parent_session_ref` key at all (core refuses either,
-/// even as null) and no author or subject. `scope` names the flow, which
-/// core requires when there is no `args_digest`. The typed `flow_decision`
-/// body (see [`flow_decision_body`]) states what the card is about; core
-/// writes the card's facts from it and never authorizes anything with it,
-/// so basal sends no facts of its own. A card that breaks core's rules is
-/// refused here rather than sent: 2 to 4 options with distinct, non-empty
-/// ids and labels, exactly one declining option, a positive expiry of at
-/// most a day, and a valid body (see [`body_problem`]).
+/// These cards are operator-only, so the request has no `author` or `subject`;
+/// core also refuses `session_ref` and `parent_session_ref`, even when null.
+/// `scope` names the flow for core's scope check when no `args_digest` exists.
+/// The builder refuses invalid options, expiry, facts, or typed decision bodies
+/// before sending them.
 pub fn decision_request(card: &DecisionCard) -> Result<Value, ConsentError> {
     let refused = |why: &str| {
         Err(ConsentError::Refused(format!(
@@ -196,18 +198,31 @@ pub fn decision_request(card: &DecisionCard) -> Result<Value, ConsentError> {
             json!({"id":o.id,"label":o.label,"effect":effect})
         })
         .collect();
+    let flow_decision = flow_decision_body(card);
+    let facts = decision_facts(&flow_decision);
+    if let Some(problem) = facts_problem(&facts) {
+        return refused(problem);
+    }
     let mut request = json!({"kind":"flow_decision","title":card.title,"prompt":card.prompt,
         "options":options,"default":default,"urgency":"normal","on_expiry":"deny",
         "material_damage":false,"late_execution":"notify_only",
         "scope":{"flow_id":card.flow_id},"target":{"kind":"flow","label":card.flow_id},
-        "expires_in_ms":card.expires_in_ms,"flow_decision":flow_decision_body(card)});
+        "expires_in_ms":card.expires_in_ms,"flow_decision":flow_decision});
+    request["facts"] = json!(facts);
     if let Some(key) = &card.dedup_key {
         request["dedup_key"] = json!(key);
     }
     if let Some(digest) = &card.args_digest {
         request["args_digest"] = json!(digest);
     }
-    Ok(request)
+    let envelope = json!({"method":"consent.request","params":request});
+    if serde_json::to_vec(&envelope)
+        .map(|bytes| bytes.len() > CONSENT_REQUEST_ENVELOPE_MAX_BYTES)
+        .unwrap_or(true)
+    {
+        return refused("a consent request fits within the 1,310,720-byte envelope limit");
+    }
+    Ok(envelope["params"].clone())
 }
 
 /// What core would refuse in a card's body, if anything: a blank flow id or
@@ -334,6 +349,163 @@ pub fn flow_decision_body(card: &DecisionCard) -> Value {
         }
     }
     body
+}
+
+/// Plain-text facts for display on the phone, derived only from the typed body.
+fn decision_facts(body: &Value) -> Vec<Value> {
+    let mut facts = Vec::with_capacity(DECISION_FACTS_MAX_COUNT);
+    match body["decision"].as_str() {
+        Some("reconcile") => {
+            push_fact(
+                &mut facts,
+                "Run",
+                format_fact_time(body["run_admitted_at_ms"].as_i64()),
+            );
+            push_fact(&mut facts, "Step", body["step"].as_str().map(str::to_owned));
+            let call = body["op"]
+                .as_str()
+                .zip(body["attempts"].as_u64())
+                .map(|(op, attempt)| format!("{op}, attempt {attempt}"));
+            push_fact(&mut facts, "Call in doubt", call);
+            let why = body["unknown_reason"]
+                .as_str()
+                .and_then(unknown_reason_fact)
+                .map(str::to_owned);
+            push_fact(&mut facts, "Why unknown", why);
+        }
+        Some("reenable") => {
+            push_fact(
+                &mut facts,
+                "Disabled at",
+                format_fact_time(body["disabled_at_ms"].as_i64()),
+            );
+            let why = body["disabled_reason"]
+                .as_str()
+                .zip(body["limit"].as_u64())
+                .zip(body["window_ms"].as_u64())
+                .zip(body["saturated_windows"].as_u64())
+                .and_then(|(((reason, limit), window_ms), windows)| {
+                    let (singular, plural) = match reason {
+                        "dispatch_limit_saturated" => ("call", "calls"),
+                        "run_limit_saturated" => ("run", "runs"),
+                        _ => return None,
+                    };
+                    let limit_unit = counted_word(limit, singular, plural);
+                    let window_unit = counted_word(windows, "window", "windows");
+                    Some(format!(
+                        "It hit its limit of {limit} {limit_unit} per {} window in {windows} {window_unit} in a row.",
+                        format_window(window_ms)
+                    ))
+                });
+            push_fact(&mut facts, "Why disabled", why);
+        }
+        Some("grant_lost") => {
+            push_fact(
+                &mut facts,
+                "Provider",
+                body["provider"].as_str().map(str::to_owned),
+            );
+            push_fact(
+                &mut facts,
+                "Grant",
+                body["grant_label"].as_str().map(str::to_owned),
+            );
+            push_fact(
+                &mut facts,
+                "Refused at",
+                format_fact_time(body["refused_at_ms"].as_i64()),
+            );
+        }
+        _ => {}
+    }
+    facts
+}
+
+fn push_fact(facts: &mut Vec<Value>, label: &str, value: Option<String>) {
+    if let Some(value) = fact_value(value.as_deref()) {
+        facts.push(json!({"label":label,"value":value}));
+    }
+}
+
+fn fact_value(value: Option<&str>) -> Option<String> {
+    let value = value?;
+    let trimmed = value.trim();
+    if trimmed.is_empty()
+        || trimmed.eq_ignore_ascii_case("null")
+        || trimmed.eq_ignore_ascii_case("none")
+    {
+        return None;
+    }
+    if value.len() <= DECISION_FACT_VALUE_MAX_BYTES {
+        return Some(value.to_owned());
+    }
+    let mut end = DECISION_FACT_VALUE_MAX_BYTES - '…'.len_utf8();
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    Some(format!("{}…", &value[..end]))
+}
+
+fn facts_problem(facts: &[Value]) -> Option<&'static str> {
+    if facts.len() > DECISION_FACTS_MAX_COUNT {
+        return Some("a decision request has at most four phone facts");
+    }
+    for fact in facts {
+        let Some(object) = fact.as_object() else {
+            return Some("a phone fact is an object");
+        };
+        if object.len() != 2 {
+            return Some("a phone fact has only label and value");
+        }
+        let (Some(label), Some(value)) = (fact["label"].as_str(), fact["value"].as_str()) else {
+            return Some("a phone fact label and value are strings");
+        };
+        if label.trim().is_empty()
+            || label.len() > DECISION_FACT_LABEL_MAX_BYTES
+            || label.ends_with(':')
+            || value.trim().is_empty()
+            || value.eq_ignore_ascii_case("null")
+            || value.eq_ignore_ascii_case("none")
+            || value.len() > DECISION_FACT_VALUE_MAX_BYTES
+        {
+            return Some("a phone fact fits basal's display bounds");
+        }
+    }
+    None
+}
+
+fn format_fact_time(ms: Option<i64>) -> Option<String> {
+    let timestamp = jiff::Timestamp::from_millisecond(ms?).ok()?;
+    Some(
+        timestamp
+            .to_zoned(jiff::tz::TimeZone::UTC)
+            .strftime("%Y-%m-%d %H:%M UTC")
+            .to_string(),
+    )
+}
+
+fn format_window(ms: u64) -> String {
+    if ms.is_multiple_of(1000) {
+        format!("{}-second", ms / 1000)
+    } else {
+        format!("{ms}-millisecond")
+    }
+}
+
+fn counted_word(count: u64, singular: &'static str, plural: &'static str) -> &'static str {
+    if count == 1 { singular } else { plural }
+}
+
+fn unknown_reason_fact(reason: &str) -> Option<&'static str> {
+    Some(match reason {
+        "connection_lost" => "The connection closed before a reply came.",
+        "reply_timeout" => "No reply came before the call's deadline.",
+        "reply_unreadable" => "The reply could not be read.",
+        "basal_restarted" => "Basal restarted before the reply was saved.",
+        "retries_exhausted" => "The retries ended without a clear answer.",
+        "provider_lost_run" => "The provider lost track of the run.",
+        _ => return None,
+    })
 }
 
 /// Reads an answer record of a `flow_decision` card. Core answers an

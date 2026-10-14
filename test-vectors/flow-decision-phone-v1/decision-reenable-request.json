@@ -2,6 +2,16 @@
   "dedup_key": "flow_decision:reenable:host-flow:1",
   "default": "keep",
   "expires_in_ms": 86400000,
+  "facts": [
+    {
+      "label": "Disabled at",
+      "value": "2026-05-01 00:00 UTC"
+    },
+    {
+      "label": "Why disabled",
+      "value": "It hit its limit of 1 call per 60-second window in 1 window in a row."
+    }
+  ],
   "flow_decision": {
     "decision": "reenable",
     "disabled_at_ms": 1777593600000,

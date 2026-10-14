@@ -2,6 +2,20 @@
   "dedup_key": "flow_decision:grant_lost:5faa4591e5f04ed6bc726abd59953a7bde7da9480b253a5cb32bd9b70f715de1",
   "default": "keep_disabled",
   "expires_in_ms": 86400000,
+  "facts": [
+    {
+      "label": "Provider",
+      "value": "plexus"
+    },
+    {
+      "label": "Grant",
+      "value": "Read GitHub for cortexkit/basal"
+    },
+    {
+      "label": "Refused at",
+      "value": "2026-05-01 00:00 UTC"
+    }
+  ],
   "flow_decision": {
     "decision": "grant_lost",
     "flow_id": "host-flow",

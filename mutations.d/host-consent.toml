@@ -176,7 +176,7 @@ runner = "cargo"
 package = "basal-module"
 platforms = ["macos"]
 target = "--test decisions"
-expect_red = ["the_request_builder_reproduces_core_vectors_byte_for_byte"]
+expect_red = ["the_request_builder_preserves_core_vector_fields_and_adds_facts"]
 only = false
 build_timeout_s = 3600
 timeout_s = 600
@@ -210,7 +210,7 @@ runner = "cargo"
 package = "basal-module"
 platforms = ["macos"]
 target = "--test decisions"
-expect_red = ["the_request_builder_reproduces_core_vectors_byte_for_byte"]
+expect_red = ["the_request_builder_preserves_core_vector_fields_and_adds_facts"]
 only = false
 build_timeout_s = 3600
 timeout_s = 600
@@ -228,7 +228,7 @@ runner = "cargo"
 package = "basal-module"
 platforms = ["macos"]
 target = "--test decisions"
-expect_red = ["the_request_builder_reproduces_core_vectors_byte_for_byte"]
+expect_red = ["the_request_builder_preserves_core_vector_fields_and_adds_facts"]
 only = false
 build_timeout_s = 3600
 timeout_s = 600
@@ -693,3 +693,21 @@ expect_red = ["install_answers_are_ignored_in_the_decision_feed"]
 only = true
 build_timeout_s = 3600
 timeout_s = 600
+
+
+[[control]]
+id = "decision-phone-request-omits-facts"
+guards = "flow decision requests preserve bounded body-derived phone facts"
+test_file = "crates/basal-module/tests/decisions.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test decisions"
+expect_red = ["the_phone_fixture_vectors_are_generated_by_the_engine_card_builders"]
+select = { tests = ["the_phone_fixture_vectors_are_generated_by_the_engine_card_builders", "grant_lost_phone_vector_and_production_prompt_are_pinned"] }
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = 'request["facts"] = json!(facts);'
+new = 'request["facts"] = json!([]); // NON-VACUITY BREAK'

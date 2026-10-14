@@ -321,13 +321,21 @@ fn a_run_in_needs_reconcile_raises_one_card_per_unknown_call_to_the_operator_onl
     assert_eq!(request["dedup_key"], key);
     assert_eq!(request["scope"], json!({"flow_id":FLOW}));
     assert_eq!(request["target"], json!({"kind":"flow","label":FLOW}));
-    // The typed body core writes the card's facts from; basal sends no
-    // facts and no step of its own.
+    // The typed body core writes the card's facts from; basal renders the
+    // relevant fields as plain text and omits Step because this card has none.
     assert_eq!(
         request["flow_decision"],
         json!({"flow_id":FLOW,"version":1,"decision":"reconcile","run_id":run,
             "run_admitted_at_ms":common::T0,"call_key":call.idempotency_key,"op":"mock.post",
             "attempts":1,"unknown_reason":"connection_lost"})
+    );
+    assert_eq!(
+        request["facts"],
+        json!([
+            {"label":"Run","value":"2026-05-01 00:00 UTC"},
+            {"label":"Call in doubt","value":"mock.post, attempt 1"},
+            {"label":"Why unknown","value":"The connection closed before a reply came."}
+        ])
     );
     for absent in [
         "session_ref",
@@ -335,7 +343,6 @@ fn a_run_in_needs_reconcile_raises_one_card_per_unknown_call_to_the_operator_onl
         "author",
         "subject",
         "preview",
-        "facts",
     ] {
         assert!(request.get(absent).is_none(), "{absent} in {request}");
     }
@@ -1096,17 +1103,13 @@ const VECTORS: &str = concat!(
     "/tests/vectors/flow-decision-card-v2"
 );
 
-/// The request files in prefrontal's test-vectors/flow-decision-card-v2:
-/// reconcile and re-enable from that repository's flow-decision-card-v2 tag,
-/// and grant-loss from its GrantLost extension. The grant hashes are published
-/// in prefrontal-core-module/tests/fixtures/consent_surface/SHA256SUMS.
-/// Each copy is checked against a pinned SHA-256; basal's builder
-/// produces each byte for byte from the vector's inputs. The vectors fix
-/// the shape; basal's own cards carry their own title, prompt, option ids,
-/// labels and expiry, plus `dedup_key` and `args_digest`, which core's
-/// decoder accepts.
+/// The pinned prefrontal-core consent-service examples, identified by their
+/// SHA-256 hashes, define the v2 request envelope and typed decision body.
+/// Basal adds its phone `facts` separately, so the test removes that array when
+/// comparing the core-defined fields, then checks the full request with the
+/// fake decoder.
 #[test]
-fn the_request_builder_reproduces_core_vectors_byte_for_byte() {
+fn the_request_builder_preserves_core_vector_fields_and_adds_facts() {
     use sha2::{Digest, Sha256};
     for (file, sha256, card) in [
         (
@@ -1132,9 +1135,13 @@ fn the_request_builder_reproduces_core_vectors_byte_for_byte() {
             "{file} is the pinned vector"
         );
         let built = decision_request(&card).unwrap();
-        let text = serde_json::to_string_pretty(&built).unwrap() + "\n";
+        assert!(built["facts"].is_array());
+        let mut core_shape = built.clone();
+        core_shape.as_object_mut().unwrap().remove("facts");
+        let text = serde_json::to_string_pretty(&core_shape).unwrap() + "\n";
         assert_eq!(text, String::from_utf8(bytes).unwrap(), "{file}");
-        // The fake core accepts the built request.
+        // The fake checks the closed v2 envelope/body, declining default,
+        // option effects, and that fact labels and values are strings.
         let fake = Fake::new();
         assert!(
             fake.management("prefrontal-core", "elicitation.request", built)
@@ -1266,6 +1273,37 @@ fn the_phone_fixture_vectors_are_generated_by_the_engine_card_builders() {
         assert_eq!(card.title, expected_title);
         assert!(card.title.chars().count() <= 80);
         assert_eq!(request["prompt"], card.prompt);
+        let expected_facts = match record.kind {
+            DecisionKind::Reconcile => json!([
+                {"label":"Run","value":"2026-05-01 00:00 UTC"},
+                {"label":"Call in doubt","value":"mock.post, attempt 1"},
+                {"label":"Why unknown","value":"The connection closed before a reply came."}
+            ]),
+            DecisionKind::Reenable => json!([
+                {"label":"Disabled at","value":"2026-05-01 00:00 UTC"},
+                {"label":"Why disabled","value":"It hit its limit of 1 call per 60-second window in 1 window in a row."}
+            ]),
+            DecisionKind::GrantLost => json!([
+                {"label":"Provider","value":"plexus"},
+                {"label":"Grant","value":"Read GitHub for cortexkit/basal"},
+                {"label":"Refused at","value":"2026-05-01 00:00 UTC"}
+            ]),
+        };
+        assert_eq!(request["facts"], expected_facts);
+        assert!(request["facts"].as_array().unwrap().len() <= 4);
+        for fact in request["facts"].as_array().unwrap() {
+            assert!(fact["label"].as_str().unwrap().len() <= 32);
+            let value = fact["value"].as_str().unwrap();
+            assert!(value.len() <= 200);
+            assert!(!fact["label"].as_str().unwrap().ends_with(':'));
+            assert!(!matches!(value, "null" | "none"));
+        }
+        assert!(
+            Fake::new()
+                .management("prefrontal-core", "elicitation.request", request.clone())
+                .is_ok(),
+            "the fake core accepts {file}"
+        );
         assert_eq!(request["scope"], json!({"flow_id":card.flow_id}));
         assert_eq!(
             request["target"],
@@ -1280,8 +1318,8 @@ fn the_phone_fixture_vectors_are_generated_by_the_engine_card_builders() {
         assert!(request["options"].is_array());
         assert!(request["flow_decision"].is_object());
         assert!(
-            request.get("facts").is_none(),
-            "basal leaves facts for core"
+            request["facts"].is_array(),
+            "basal supplies the phone's text facts"
         );
         assert_eq!(
             request.get("args_digest").is_some(),
@@ -1335,7 +1373,7 @@ fn decision_requests_follow_core_rules_and_the_fake_core_refuses_any_other() {
     let sent = decision_request(&good).unwrap();
     assert_eq!(sent["dedup_key"], "flow_decision:test");
     assert_eq!(sent["args_digest"], "00".repeat(32));
-    assert!(sent.get("facts").is_none(), "core writes the facts");
+    assert!(sent["facts"].is_array(), "basal supplies phone facts");
     // basal refuses to send a card that breaks core's rules.
     let with = |list: &[(&str, &str, bool)]| DecisionCard {
         options: options(list),

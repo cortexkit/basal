@@ -3,6 +3,20 @@
   "dedup_key": "flow_decision:reconcile:host-flow:run-phone-decision-fixture-v1-1:0",
   "default": "leave",
   "expires_in_ms": 86400000,
+  "facts": [
+    {
+      "label": "Run",
+      "value": "2026-05-01 00:00 UTC"
+    },
+    {
+      "label": "Call in doubt",
+      "value": "mock.post, attempt 1"
+    },
+    {
+      "label": "Why unknown",
+      "value": "The connection closed before a reply came."
+    }
+  ],
   "flow_decision": {
     "attempts": 1,
     "call_key": "bk1-95bc6e45fe42cf687c3ac7e3247e9fcac9f38552",
