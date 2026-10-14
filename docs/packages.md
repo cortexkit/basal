@@ -144,7 +144,21 @@ Reply:
 {"flow_id":"string","generation":"integer","removed":"boolean"}
 ```
 
-The call marks the instance removed. No new run of a removed instance is admitted, and a run already admitted ends at its next activation, as for a flow core has revoked. The instance's enable state is left as it is. Nothing is deleted: its `kv`, journal and audit stay, and a later `flow.instance.ensure` clears the mark and the same instance runs again with its state. `removed` is false when the instance doesn't exist or is already removed. Refusals: `generation_stale` and `generation_conflict`.
+The call marks the instance removed. No new run of a removed instance is admitted, and a run already admitted ends at its next activation. The instance's enable state is left as it is. Nothing is deleted: its `kv`, journal and audit stay, and a later `flow.instance.ensure` clears the mark and the same instance runs again with its state. `removed` is false when the instance doesn't exist or is already removed. Refusals: `generation_stale` and `generation_conflict`.
+
+### Revoking an instance version
+
+For a revoked package or template version, core sends `flow.install_revoked` once
+per instance flow id, with its version and code hash. Basal verifies each hint
+with a single status read. Once recorded, revocation blocks every later
+host-call attempt on that instance/version, including built-ins and local `kv`.
+The next call is refused with `version_revoked` and ends the run; health reports
+that kind without counting it towards auto-disable. Calls authorized before the
+revocation was recorded may still be sent and settle; none is authorized after.
+Retries pass the fence again, and unknown mutation outcomes still require
+reconciliation. The instance's enable switch, state and history remain unchanged.
+The existing per-activation check covers instances core did not notify, without
+idle revocation polling.
 
 ## flow.instantiate
 

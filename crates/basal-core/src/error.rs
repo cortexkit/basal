@@ -37,6 +37,8 @@ pub enum CoreError {
     Worker(String),
     /// A request to the core was malformed.
     Invalid(String),
+    /// Core could not answer a status read; retrying the operation is safe.
+    Unavailable(String),
     /// The run cannot start yet: an earlier run of its flow has not reached
     /// a terminal state and holds the flow's concurrency slot.
     SlotBusy {
@@ -68,6 +70,7 @@ impl fmt::Display for CoreError {
             Self::Corrupt(e) => write!(f, "corrupt store value: {e}"),
             Self::Worker(e) => write!(f, "worker: {e}"),
             Self::Invalid(e) => write!(f, "invalid request: {e}"),
+            Self::Unavailable(e) => write!(f, "core unavailable: {e}"),
             Self::SlotBusy { run_id, holder } => {
                 write!(
                     f,

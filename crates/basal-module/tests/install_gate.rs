@@ -100,6 +100,131 @@ fn status_calls(fake: &Fake) -> Vec<Value> {
     fake.calls("flow.install_status")
 }
 
+fn revoke_hint(
+    f: &common::Fixture,
+    caller: &Caller,
+    flow: &str,
+) -> Result<Value, basal_module::ops::OpError> {
+    f.module.handle(caller, "flow.install_revoked", json!({
+        "flow_id":flow, "version":1,
+        "code_hash":basal_core::ids::hex(&basal_core::ids::code_hash(SCRIPT, &manifest().to_string()))
+    }))
+}
+
+#[test]
+fn revocation_hint_checks_status_and_ignores_active() {
+    let fake = Fake::new();
+    let (f, consent) = gated(&fake, "revoke-active");
+    install_approved(&f, &fake, &consent, true);
+    assert_eq!(revoke_hint(&f, &Caller::Core, FLOW).unwrap(), json!({}));
+    assert_eq!(status_calls(&fake).len(), 1);
+    assert_eq!(health_entry(&f)["state"], "enabled");
+    assert!(
+        f.module
+            .rt
+            .store()
+            .read(|c| basal_core::install::revocation(c, FLOW, 1))
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn revocation_hint_is_core_only_and_strictly_decoded() {
+    let fake = Fake::new();
+    let (f, _) = gated(&fake, "revoke-caller");
+    assert_eq!(
+        revoke_hint(&f, &Caller::Operator, FLOW).unwrap_err().code,
+        "not_permitted"
+    );
+    assert_eq!(
+        f.module
+            .handle(
+                &Caller::Core,
+                "flow.install_revoked",
+                json!({"flow_id":FLOW,"version":0,"code_hash":"bad"})
+            )
+            .unwrap_err()
+            .code,
+        "invalid_params"
+    );
+    assert!(status_calls(&fake).is_empty());
+}
+
+#[test]
+fn revocation_hint_unknown_and_repeated_are_noops() {
+    let fake = Fake::new();
+    let (f, consent) = gated(&fake, "revoke-repeat");
+    assert_eq!(
+        revoke_hint(&f, &Caller::Core, "missing").unwrap(),
+        json!({})
+    );
+    assert!(status_calls(&fake).is_empty());
+    install_approved(&f, &fake, &consent, true);
+    fake.revoke_install(FLOW, 1);
+    assert_eq!(revoke_hint(&f, &Caller::Core, FLOW).unwrap(), json!({}));
+    assert_eq!(revoke_hint(&f, &Caller::Core, FLOW).unwrap(), json!({}));
+    assert_eq!(status_calls(&fake).len(), 1);
+    assert_eq!(health_entry(&f)["state"], "unapproved");
+}
+
+#[test]
+fn revocation_hint_never_approved_is_a_noop() {
+    let fake = Fake::new();
+    let (f, _) = gated(&fake, "revoke-unapproved");
+    common::install(&f, &Caller::Operator, SCRIPT, &manifest());
+    assert_eq!(revoke_hint(&f, &Caller::Core, FLOW).unwrap(), json!({}));
+    assert!(status_calls(&fake).is_empty());
+    assert!(
+        f.module
+            .rt
+            .store()
+            .read(|c| basal_core::install::revocation(c, FLOW, 1))
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn revocation_hint_unknown_status_and_mismatched_core_hash_revoke() {
+    for status in [
+        json!({"state":"unknown","code_hash":null}),
+        json!({"state":"active","code_hash":"cd".repeat(32)}),
+    ] {
+        let fake = Fake::new();
+        let (f, consent) = gated(&fake, "revoke-status");
+        install_approved(&f, &fake, &consent, true);
+        fake.enqueue("flow.install_status", vec![Ok(status)]);
+        assert_eq!(revoke_hint(&f, &Caller::Core, FLOW).unwrap(), json!({}));
+        assert_eq!(status_calls(&fake).len(), 1);
+        assert_eq!(health_entry(&f)["state"], "unapproved");
+    }
+}
+
+#[test]
+fn revocation_hint_unreachable_is_retryable_and_changes_nothing() {
+    let fake = Fake::new();
+    let (f, consent) = gated(&fake, "revoke-offline");
+    install_approved(&f, &fake, &consent, true);
+    fake.enqueue(
+        "flow.install_status",
+        vec![Err(WireError::NeverSent("offline".into()))],
+    );
+    let error = revoke_hint(&f, &Caller::Core, FLOW).unwrap_err();
+    assert_eq!(error.code, "core_unavailable");
+    assert_eq!(error.detail, Some(json!({"retryable":true})));
+    assert_eq!(status_calls(&fake).len(), 1);
+    assert_eq!(health_entry(&f)["state"], "enabled");
+    assert!(
+        f.module
+            .rt
+            .store()
+            .read(|c| basal_core::install::revocation(c, FLOW, 1))
+            .unwrap()
+            .is_none()
+    );
+}
+
 /// Asserts the run never activated and was cancelled, and that `flow.health`
 /// lists the flow as no longer enabled: `unapproved`, disabled by core.
 fn assert_cancelled_and_unapproved(f: &common::Fixture, run_id: &str) {

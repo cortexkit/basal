@@ -781,8 +781,9 @@ pub fn record_unknown(
     }
     tx.execute(
         "UPDATE runs SET state = 'needs_reconcile', awaited = NULL, \
-         error_kind = 'unknown_outcome', error_detail = ?2 \
-         WHERE run_id = ?1 AND state IN ('pending', 'suspended')",
+         error_kind = 'unknown_outcome', error_detail = ?2, ended_at = NULL \
+          WHERE run_id = ?1 AND (state IN ('pending', 'suspended') \
+          OR (state='failed' AND error_kind='version_revoked'))",
         params![run_id, format!("unknown outcome at position {position}")],
     )?;
     tx.execute(
@@ -801,8 +802,9 @@ pub fn record_unknown(
 /// repeated report is `Duplicate`, and a report for a cancelled run is
 /// `Refused`. Otherwise the call is marked unknown and a pending or
 /// suspended run goes to `needs_reconcile` naming the detail; a run already
-/// there gets the detail appended to its error. A run that has ended keeps
-/// its state, with the call left visible as an unknown obligation.
+/// there gets the detail appended to its error. A revoked run also goes to
+/// `needs_reconcile`: stopping dispatch cannot resolve an earlier mutation.
+/// Other ended runs keep their state and the unknown obligation.
 ///
 /// Returns `None` while the run is `running`: an activation owns its state
 /// then, so the host must report again later.
@@ -852,8 +854,9 @@ pub fn record_host_unknown(
     )?;
     tx.execute(
         "UPDATE runs SET state = 'needs_reconcile', awaited = NULL, \
-         error_kind = 'unknown_outcome', error_detail = ?2 \
-         WHERE run_id = ?1 AND state IN ('pending', 'suspended')",
+         error_kind = 'unknown_outcome', error_detail = ?2, ended_at = NULL \
+          WHERE run_id = ?1 AND (state IN ('pending', 'suspended') \
+          OR (state='failed' AND error_kind='version_revoked'))",
         params![run_id, detail],
     )?;
     // Another call of the run may already have put it in needs_reconcile;

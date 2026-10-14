@@ -8,6 +8,23 @@ parent process, and journals it there. This note documents the digest item
 shape, then two behaviours of the script runtime that are deliberate limits,
 not guarantees.
 
+## Revocation during a run
+
+Core pushes `flow.install_revoked` when it revokes an approved version. Basal
+verifies the hint with one status read before recording it. After that record,
+every later host-call attempt on the run's pinned version is refused with typed
+`version_revoked`, and the run ends even if the script would catch the rejection.
+This includes ops, sinks, facts, llm, classify, built-ins, clock/random reads and
+local `kv`: local effects are still effects of the revoked code.
+
+Calls authorized before the revocation was recorded may still be sent and settle;
+none is authorized after. Retries are checked again, and an earlier mutation
+whose outcome is unknown follows the normal reconciliation rules. Health reports
+the failed run's `version_revoked` kind without counting it towards auto-disable.
+Template and package instances retain their enable switches. The existing
+per-activation status check catches missed pushes; basal never polls for
+revocations while idle.
+
 ## Module-event triggers
 
 An event-triggered script receives `trigger` in this shape:

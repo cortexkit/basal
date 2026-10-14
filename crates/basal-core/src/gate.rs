@@ -2,7 +2,7 @@
 //! still stands behind the run's flow version.
 //!
 //! When the operator revokes a flow version in core, core refuses that
-//! version's sink writes, but nothing else would tell basal. So before every
+//! version's sink writes and sends basal a verified revocation hint. Before every
 //! activation (a run's first, and every resume after a suspension or a
 //! restart) the activation asks core's `flow.install_status` through the
 //! host, and goes on only when core answers `active` with the code hash of
@@ -24,11 +24,10 @@
 //!   turns into a loop of questions.
 //!
 //! The check runs after the activation's lease is taken and before the
-//! worker is handed anything. A revoke that lands after the check is not
-//! seen until the next activation asks again; until then core's own refusal
-//! of the revoked version's sink writes (digest items and status lines, the
-//! only way a flow reaches an agent) still holds, so the window is
-//! deliberately bounded by one activation.
+//! worker is handed anything. A verified push can record revocation during an
+//! activation: later dispatch attempts are refused, including local calls.
+//! Attempts authorized before that record may still be sent and settle.
+//! No revocation polling runs while idle; this gate also covers missed pushes.
 
 use std::time::Duration;
 

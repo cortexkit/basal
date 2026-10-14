@@ -68,6 +68,11 @@ pub const OPERATIONS: &[(&str, ManagementOperationKind, &str)] = &[
         "Recheck core's install status after a card decision; prefrontal-core only, idempotent.",
     ),
     (
+        "flow.install_revoked",
+        ManagementOperationKind::Mutate,
+        "Verify a revocation hint with core and stop later calls on that version; prefrontal-core only, idempotent.",
+    ),
+    (
         "flow.dry_run",
         ManagementOperationKind::Query,
         "Run a flow against a schedule window or a synthetic trigger in an isolated scratch store and return the trace of every call and sink write.",
