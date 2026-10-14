@@ -2660,3 +2660,39 @@ edits = [
     { file = "crates/basal-module/src/events.rs", old = "let _stopped = ReaderStopped(health.clone());", new = "let _stopped = (); // NON-VACUITY BREAK" },
     { file = "crates/basal-module/src/events.rs", old = "h.connected = false;\n            h.error = Some(reason);", new = "h.connected = true; // NON-VACUITY BREAK\n            h.error = None;\n            let _ = reason;" },
 ]
+
+[[control]]
+id = "event-reader-backlog-error-stops-session"
+guards = "a failed consumer-info metric poll preserves reader session health and the last backlog"
+test_file = "crates/basal-module/src/events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["events::tests::backlog_poll_error_keeps_reader_session_health"]
+select = { tests = ["events::tests::backlog_poll_error_keeps_reader_session_health", "events::tests::backlog_poll_success_updates_metric_only"] }
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/events.rs"
+old = '''tracing::debug!(target: "events", %error, "event backlog poll failed; retaining last value");
+            return;'''
+new = 'panic!("backlog poll failed: {error}"); // NON-VACUITY BREAK'
+
+[[control]]
+id = "event-reader-backlog-timeout-stops-session"
+guards = "a timed-out consumer-info metric poll preserves reader session health and the last backlog"
+test_file = "crates/basal-module/src/events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["events::tests::backlog_poll_timeout_keeps_reader_session_health"]
+select = { tests = ["events::tests::backlog_poll_timeout_keeps_reader_session_health", "events::tests::backlog_poll_success_updates_metric_only"] }
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/events.rs"
+old = '''tracing::debug!(target: "events", %error, "event backlog poll timed out; retaining last value");
+            return;'''
+new = 'panic!("backlog poll timed out: {error}"); // NON-VACUITY BREAK'

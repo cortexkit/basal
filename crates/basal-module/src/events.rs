@@ -1,6 +1,7 @@
 //! Read the JetStream pull consumer `m_basal`, which ck-bus provisions on the
 //! event stream. This reader never creates or modifies the stream or consumer.
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{
     Arc, Mutex,
@@ -468,6 +469,21 @@ pub async fn publish_outbox(
     Ok(published)
 }
 
+async fn refresh_backlog(health: &Mutex<Health>, poll: impl Future<Output = Result<u64, String>>) {
+    let backlog = match tokio::time::timeout(Duration::from_secs(2), poll).await {
+        Ok(Ok(backlog)) => backlog,
+        Ok(Err(error)) => {
+            tracing::debug!(target: "events", %error, "event backlog poll failed; retaining last value");
+            return;
+        }
+        Err(error) => {
+            tracing::debug!(target: "events", %error, "event backlog poll timed out; retaining last value");
+            return;
+        }
+    };
+    health.lock().unwrap_or_else(|p| p.into_inner()).backlog = backlog;
+}
+
 async fn reader_loop(
     rt: Runtime,
     transport: Arc<dyn Transport>,
@@ -494,9 +510,11 @@ async fn reader_loop(
                 publish_outbox(&rt, &connection, &credential.acct).await?;
                 let start = Instant::now();
                 let messages = pull(&consumer).await?;
-                let info = tokio::time::timeout(Duration::from_secs(2), consumer.info())
-                    .await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
-                health.lock().unwrap_or_else(|p| p.into_inner()).backlog = info.num_pending.saturating_add(u64::try_from(info.num_ack_pending).unwrap_or(u64::MAX));
+                refresh_backlog(&health, async {
+                    consumer.info().await
+                        .map(|info| info.num_pending.saturating_add(u64::try_from(info.num_ack_pending).unwrap_or(u64::MAX)))
+                        .map_err(|e| e.to_string())
+                }).await;
                 if messages.is_empty() { continue; }
                 let oldest = messages.iter().filter_map(|m| m.info().ok()).map(|i| now_ms().saturating_sub(i.published.unix_timestamp_nanos().div_euclid(1_000_000) as i64)).max();
                 let (report, malformed) = commit_batch_report(rt.clone(), &messages, true).await?;
@@ -539,6 +557,54 @@ async fn reader_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn backlog_poll_error_keeps_reader_session_health() {
+        check_failed_backlog_poll(async { Err("consumer info unavailable".into()) }).await;
+    }
+
+    #[tokio::test]
+    async fn backlog_poll_timeout_keeps_reader_session_health() {
+        check_failed_backlog_poll(std::future::pending()).await;
+    }
+
+    async fn check_failed_backlog_poll(poll: impl Future<Output = Result<u64, String>>) {
+        let health = Mutex::new(Health {
+            connected: true,
+            backlog: 7,
+            batches: 1,
+            ..Default::default()
+        });
+        let before = serde_json::to_value(health.lock().unwrap().clone()).unwrap();
+        refresh_backlog(&health, poll).await;
+        assert_eq!(
+            serde_json::to_value(health.lock().unwrap().clone()).unwrap(),
+            before
+        );
+        refresh_backlog(&health, async { Ok(3) }).await;
+        let h = health.lock().unwrap();
+        assert_eq!(h.backlog, 3);
+        assert!(h.connected);
+        assert!(h.error.is_none());
+        assert_eq!(h.retry_in_ms, 0);
+    }
+
+    #[tokio::test]
+    async fn backlog_poll_success_updates_metric_only() {
+        let health = Mutex::new(Health {
+            connected: true,
+            backlog: 7,
+            batches: 1,
+            ..Default::default()
+        });
+        let mut expected = serde_json::to_value(health.lock().unwrap().clone()).unwrap();
+        expected["backlog"] = json!(11);
+        refresh_backlog(&health, async { Ok(11) }).await;
+        assert_eq!(
+            serde_json::to_value(health.lock().unwrap().clone()).unwrap(),
+            expected
+        );
+    }
 
     #[test]
     fn reader_supervisor_reports_panic_and_restarts() {
