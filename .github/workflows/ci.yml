@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, ci/faster-ci-bench]
   pull_request:
   # The nightly breadth audit: the full catalogue with `--broad`, which runs
   # each mutant against every test target in its package. That reveals a
@@ -376,7 +376,7 @@ jobs:
   # always() lets the scheduled matrix proceed past the skipped checks job;
   # push and manual runs still require those checks to succeed.
   mutation-matrix:
-    if: always() && ((github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.checks.result == 'success' && needs.lint.result == 'success') || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && needs.checks.result == 'success' && needs.lint.result == 'success'))
+    if: always() && ((github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/ci/faster-ci-bench') && needs.checks.result == 'success' && needs.lint.result == 'success') || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && needs.checks.result == 'success' && needs.lint.result == 'success'))
     needs: [checks, lint]
     runs-on: ubuntu-latest
     outputs:
