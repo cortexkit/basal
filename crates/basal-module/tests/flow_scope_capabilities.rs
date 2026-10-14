@@ -9,7 +9,7 @@ fn core_op_install_requires_catalog_capability_for_every_author() {
     let f = fixture("core-op-cap", Options::default());
     f.catalog.set_op(
         "prefrontal-core",
-        "board.read",
+        "board.write",
         OpDecl {
             kind: Some(OpKind::Query),
             cause_echo: false,
@@ -22,14 +22,14 @@ fn core_op_install_requires_catalog_capability_for_every_author() {
         } else {
             "flow-op-owned"
         });
-        manifest["ops"] = json!([{"module":"prefrontal-core","op":"board.read"}]);
+        manifest["ops"] = json!([{"module":"prefrontal-core","op":"board.write"}]);
         let params = json!({"script":"return 7;","manifest":manifest.to_string()});
         let error = f
             .module
             .handle(&caller, "flow.install", params.clone())
             .unwrap_err();
         assert!(
-            error.message.contains("prefrontal-core") && error.message.contains("board.read"),
+            error.message.contains("prefrontal-core") && error.message.contains("board.write"),
             "{error:?}"
         );
         f.catalog.set_flow_capable("prefrontal-core", true);
@@ -43,7 +43,7 @@ fn dry_run_rechecks_core_op_catalog_capability() {
     let f = fixture("dry-core-cap", Options::default());
     f.catalog.set_op(
         "prefrontal-core",
-        "board.read",
+        "board.write",
         OpDecl {
             kind: Some(OpKind::Query),
             cause_echo: false,
@@ -51,7 +51,7 @@ fn dry_run_rechecks_core_op_catalog_capability() {
         },
     );
     let mut manifest = events_manifest("flow-dry-core");
-    manifest["ops"] = json!([{"module":"prefrontal-core","op":"board.read"}]);
+    manifest["ops"] = json!([{"module":"prefrontal-core","op":"board.write"}]);
     f.catalog.set_flow_capable("prefrontal-core", true);
     f.module
         .handle(
@@ -72,7 +72,39 @@ fn dry_run_rechecks_core_op_catalog_capability() {
         .handle(&Caller::Operator, "flow.dry_run", params)
         .unwrap_err();
     assert!(
-        error.message.contains("prefrontal-core") && error.message.contains("board.read"),
+        error.message.contains("prefrontal-core") && error.message.contains("board.write"),
         "{error:?}"
     );
+}
+
+#[test]
+fn board_hygiene_manifest_installs_without_core_flow_scopes() {
+    let f = fixture("board-carrier-cap", Options::default());
+    f.catalog.set_flow_capable("prefrontal-core", false);
+    f.catalog.set_op(
+        "prefrontal-core",
+        "board.read",
+        OpDecl {
+            kind: Some(OpKind::Query),
+            cause_echo: false,
+            shell_capable: false,
+        },
+    );
+    f.module
+        .handle(
+            &Caller::Operator,
+            "flow.install",
+            json!({
+                "script": include_str!("../../../flows/board-hygiene/flow.js"),
+                "manifest": include_str!("../../../flows/board-hygiene/manifest.json"),
+            }),
+        )
+        .unwrap();
+    f.module
+        .handle(
+            &Caller::Operator,
+            "flow.dry_run",
+            json!({"flow_id":"board-hygiene","trigger":{}}),
+        )
+        .unwrap();
 }
