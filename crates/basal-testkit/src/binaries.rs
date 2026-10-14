@@ -89,19 +89,38 @@ impl DevBinaries {
 /// so macOS raises a privacy prompt for every new build, and the volume's
 /// directory listings stall until it's answered.
 ///
-/// On macOS the folder is `/tmp/basal-exec-<uid>`, not the per-user temporary
-/// directory under /var/folders: macOS can hold a freshly copied executable
-/// there for 30 seconds or more while it assesses it, and under /tmp it starts
-/// at once. Because /tmp is shared, the folder must belong to this user and be
-/// private, or no copy is placed. Old digests stay for reuse until the system
-/// clears its temporary files.
+/// In worker shells, use `$TMPDIR` when it is an absolute path outside either
+/// `/var/folders` or `/private/var/folders`; the worker's internal-disk temp
+/// folder is writable and executable in the shell sandbox. Head shells and CI
+/// keep copies under `/tmp/basal-exec-<uid>`: macOS can hold a freshly copied
+/// executable in the per-user `/var/folders` temporary directory for 30 seconds or more while it
+/// assesses it. Because `/tmp` is shared, the folder must belong to this user
+/// and be private, or no copy is placed. Old digests stay for reuse until the
+/// system clears its temporary files.
 #[cfg(target_os = "macos")]
-fn exec_root() -> io::Result<PathBuf> {
+fn worker_exec_root(temp_dir: Option<&std::ffi::OsStr>, uid: u32) -> Option<PathBuf> {
+    let temp_dir = temp_dir
+        .map(Path::new)
+        .filter(|path| path.is_absolute())
+        .filter(|path| {
+            !path.starts_with("/var/folders") && !path.starts_with("/private/var/folders")
+        })?;
+    Some(temp_dir.join(format!("basal-exec-{uid}")))
+}
+
+#[cfg(target_os = "macos")]
+fn macos_exec_root(temp_dir: Option<&std::ffi::OsStr>, uid: u32) -> PathBuf {
+    let root = PathBuf::from(format!("/tmp/basal-exec-{uid}"));
+    worker_exec_root(temp_dir, uid).unwrap_or(root)
+}
+
+#[cfg(target_os = "macos")]
+fn exec_root_at(temp_dir: Option<&std::ffi::OsStr>) -> io::Result<PathBuf> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 
     // SAFETY: getuid has no preconditions and cannot fail.
     let uid = unsafe { libc::getuid() };
-    let root = PathBuf::from(format!("/tmp/basal-exec-{uid}"));
+    let root = macos_exec_root(temp_dir, uid);
     match fs::DirBuilder::new().mode(0o700).create(&root) {
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
@@ -116,6 +135,11 @@ fn exec_root() -> io::Result<PathBuf> {
         )));
     }
     Ok(root)
+}
+
+#[cfg(target_os = "macos")]
+fn exec_root() -> io::Result<PathBuf> {
+    exec_root_at(std::env::var_os("TMPDIR").as_deref())
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -363,13 +387,44 @@ mod tests {
     fn macos_copies_live_in_a_private_folder_under_tmp() {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
+        let fallback_root = exec_root_at(None).unwrap();
+        assert!(
+            fallback_root.starts_with("/tmp"),
+            "{}",
+            fallback_root.display()
+        );
         let root = exec_root().unwrap();
-        assert!(root.starts_with("/tmp"), "{}", root.display());
         let metadata = fs::symlink_metadata(&root).unwrap();
         assert!(metadata.is_dir());
         // SAFETY: getuid has no preconditions and cannot fail.
         assert_eq!(metadata.uid(), unsafe { libc::getuid() });
         assert_eq!(metadata.permissions().mode() & 0o077, 0);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn worker_exec_root_uses_only_an_ordinary_absolute_tmpdir() {
+        use std::ffi::OsStr;
+
+        let cases = [
+            (None, None),
+            (Some(OsStr::new("")), None),
+            (Some(OsStr::new("relative/tmp")), None),
+            (Some(OsStr::new("/var/folders/ab/cd/T")), None),
+            (Some(OsStr::new("/private/var/folders/ab/cd/T")), None),
+            (
+                Some(OsStr::new("/Users/test/aft-task-tmp")),
+                Some(PathBuf::from("/Users/test/aft-task-tmp/basal-exec-42")),
+            ),
+        ];
+
+        for (temp_dir, expected) in cases {
+            assert_eq!(
+                worker_exec_root(temp_dir, 42),
+                expected,
+                "TMPDIR={temp_dir:?}"
+            );
+        }
     }
 
     #[test]
