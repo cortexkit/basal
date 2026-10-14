@@ -84,10 +84,31 @@ Params:
 
 Reply:
 ```json
-{"package":"string","version":"integer","script":"string","manifest":"string","code_hash":"string"}
+{"package":"string","version":"integer","script":"string","manifest":"string","code_hash":"string","state_epoch":"integer","instance_state_epochs?":{"instance-flow-id":"integer"}}
 ```
 
 This returns the exact registered bytes, so core can render the package card from them and check the code hash itself. Refusal: `package_unknown`.
+
+`state_epoch` is the requested version's declared stored-value layout: an optional
+manifest integer from 1 to 2147483647, default 1, included in the hashed bytes.
+`instance_state_epochs` maps every retained instance flow id to the epoch its
+`kv` currently belongs to. It includes removed/ended/expired instances with
+retained state, and is omitted when there are no instances. Core compares this
+map to the declaration and renders "Upgrading clears this flow's stored values
+(every instance)" when they differ. Approving the version approves the reset;
+there is no separate reset card.
+
+Each instance resets independently at its first admitted run with a differing
+epoch: only its `kv` is cleared, and the new epoch and run admission commit in
+one transaction after older runs finish. Approval alone resets nothing. A
+rollback to a different epoch resets again; equality, not ordering, is the rule.
+Token/rate windows, schedule positions, event receipts/backlog, deduplication,
+journals and decision cards are never reset. Existing state records epoch 1.
+`flow.list` and `flow.health` expose each instance's recorded `state_epoch`;
+health also reports `last_state_reset_at` (RFC 3339 UTC or null). A flow or
+template `flow.dry_run` always returns boolean `state_reset`, true when that
+flow or any template instance has a recorded epoch different from the selected
+version, false otherwise. Dry run changes no real state. See [ops](ops.md).
 
 ## Ordering: the generation
 

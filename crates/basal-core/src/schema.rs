@@ -339,6 +339,22 @@ ALTER TABLE installs ADD COLUMN revoked_reason TEXT;
         version: 28,
         statements: "ALTER TABLE event_flow_health ADD COLUMN filtered_out INTEGER NOT NULL DEFAULT 0;",
     },
+    Migration {
+        version: 29,
+        statements: r#"
+ALTER TABLE flows ADD COLUMN state_epoch INTEGER NOT NULL DEFAULT 1
+    CHECK (state_epoch BETWEEN 1 AND 2147483647);
+ALTER TABLE flows ADD COLUMN last_state_reset_at INTEGER;
+CREATE TABLE state_resets (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    flow_id TEXT NOT NULL,
+    old_epoch INTEGER NOT NULL,
+    new_epoch INTEGER NOT NULL,
+    keys_cleared INTEGER NOT NULL,
+    at INTEGER NOT NULL
+);
+"#,
+    },
 ];
 
 const TEMPLATE_EVENTS: &str = r#"

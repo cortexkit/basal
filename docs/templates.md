@@ -149,6 +149,32 @@ Caller: prefrontal-core only; anyone else is refused with `not_permitted`. Reque
 
 It lists every template instance that hasn't ended, including expired ones that haven't been ended, with each instance's current `seq` (see the events below).
 
+### Stored-value compatibility and listing
+
+A template version may declare optional `state_epoch`, an integer from 1 to
+2147483647, default 1. It is in the hashed manifest and on the approval card;
+instances share that declaration but record their epochs independently per flow
+id. Existing state starts at epoch 1. At each instance's first admitted run of a
+version with a different epoch, only that instance's `kv` is cleared and its
+recorded epoch changes in the same transaction as admission. Earlier admitted
+runs finish on their own version first. Approval is approval of the reset; there
+is no separate card, and approval alone resets nothing. Rolling back to a
+different epoch resets again. Token/rate windows, schedule positions, event
+receipts/backlog, deduplication, journals and decision cards survive the reset.
+
+`flow.list` and `flow.health` include each instance's recorded integer
+`state_epoch`. Health adds `last_state_reset_at` (RFC 3339 UTC or null when never
+reset). Core-only `package.get` includes declared `state_epoch` and, if instances
+exist, `instance_state_epochs`, a map of retained instance flow id to recorded
+integer epoch (including ended and expired instances). Without instances the
+map is omitted. Core uses differing epochs to render "Upgrading clears this
+flow's stored values (every instance)" on the version's card.
+
+`flow.dry_run` always returns boolean `state_reset` alongside `summary`: true
+when any retained instance differs from the selected template version's epoch,
+or when the named instance differs; otherwise false, including templates with
+no instances. This is a preview only and never resets real state.
+
 ### Listing, disabling and enabling
 
 `flow.list` (scoped to the caller as for every flow) shows instances with `template`, `version`, `params` and `expires_at`. `flow.disable` and `flow.enable` work on an agent's own instances as on any of its flows.

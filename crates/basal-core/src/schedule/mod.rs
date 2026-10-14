@@ -217,7 +217,8 @@ impl Scheduler {
     }
 
     /// Admits planned fires oldest first, one commit each, until none is
-    /// left or admission is draining.
+    /// left or admission is draining. A waiting epoch change blocks only its
+    /// own flow for this pass; the next pass checks that flow again.
     fn admit_planned(&self, now: Timestamp, out: &mut Vec<AdmittedFire>) -> Result<()> {
         let store_id = self.store.store_id().to_owned();
         let ctx = AdmitContext {
@@ -225,15 +226,20 @@ impl Scheduler {
             rate: self.limits.rate,
             default_deadline_ms: self.limits.default_deadline_ms,
         };
+        let mut blocked = std::collections::BTreeSet::new();
         loop {
             let Some(fire) = self
                 .store
-                .write(|tx| tick::admit_next(tx, &store_id, &ctx))?
+                .write(|tx| tick::admit_next_unblocked(tx, &store_id, &ctx, &blocked))?
             else {
                 return Ok(());
             };
             if fire.admission == Admission::Draining {
                 return Ok(());
+            }
+            if fire.admission == Admission::StateBusy {
+                blocked.insert(fire.flow_id);
+                continue;
             }
             let point = TickPoint::Admitted {
                 flow_id: fire.flow_id.clone(),

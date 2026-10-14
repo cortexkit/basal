@@ -65,6 +65,7 @@ pub mod runs;
 pub mod runtime;
 pub mod schedule;
 pub mod schema;
+pub mod state_epoch;
 pub mod store;
 pub mod template_events;
 pub mod templates;

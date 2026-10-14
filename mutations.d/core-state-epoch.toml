@@ -1,0 +1,86 @@
+# Stored-value epochs: admission atomicity, window preservation and rollback.
+
+[[control]]
+id = "state-epoch-reset-outside-admission"
+guards = "the stored-value reset commits in the transaction that admits the run"
+test_file = "crates/basal-core/src/state_epoch_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["state_epoch::tests::epoch_reset_commits_with_admission_and_rolls_back_with_it"]
+select = { tests = ["state_epoch::tests::epoch_reset_commits_with_admission_and_rolls_back_with_it", "state_epoch::tests::absent_epoch_upgrade_keeps_existing_values"] }
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/admission.rs"
+old = "crate::state_epoch::reset(tx, &spec.flow_id, &spec.manifest, now)?;"
+new = "// NON-VACUITY BREAK: reset is absent from the admitting transaction."
+
+[[control]]
+id = "state-epoch-clears-token-windows"
+guards = "a stored-value reset preserves token windows"
+test_file = "crates/basal-core/src/state_epoch_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["state_epoch::tests::epoch_reset_preserves_token_rate_and_runtime_records"]
+select = { tests = ["state_epoch::tests::epoch_reset_preserves_token_rate_and_runtime_records", "state_epoch::tests::absent_epoch_upgrade_keeps_existing_values"] }
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/state_epoch.rs"
+old = 'let keys_cleared = tx.execute("DELETE FROM kv WHERE flow_id=?1", [flow_id])?;'
+new = 'let keys_cleared = tx.execute("DELETE FROM kv WHERE flow_id=?1", [flow_id])?; tx.execute("DELETE FROM token_windows WHERE flow_id=?1", [flow_id])?; // NON-VACUITY BREAK'
+
+[[control]]
+id = "state-epoch-clears-rate-windows"
+guards = "a stored-value reset preserves rate windows"
+test_file = "crates/basal-core/src/state_epoch_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["state_epoch::tests::epoch_reset_preserves_token_rate_and_runtime_records"]
+select = { tests = ["state_epoch::tests::epoch_reset_preserves_token_rate_and_runtime_records", "state_epoch::tests::absent_epoch_upgrade_keeps_existing_values"] }
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/state_epoch.rs"
+old = 'let keys_cleared = tx.execute("DELETE FROM kv WHERE flow_id=?1", [flow_id])?;'
+new = 'let keys_cleared = tx.execute("DELETE FROM kv WHERE flow_id=?1", [flow_id])?; tx.execute("DELETE FROM rate_windows WHERE flow_id=?1", [flow_id])?; // NON-VACUITY BREAK'
+
+[[control]]
+id = "state-epoch-only-resets-on-increase"
+guards = "epoch equality, not ordering, decides whether stored values reset"
+test_file = "crates/basal-core/src/state_epoch_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["state_epoch::tests::epoch_rollback_resets_on_difference_not_order"]
+select = { tests = ["state_epoch::tests::epoch_rollback_resets_on_difference_not_order", "state_epoch::tests::absent_epoch_upgrade_keeps_existing_values"] }
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/state_epoch.rs"
+old = "if old_epoch != new_epoch {"
+new = "if old_epoch < new_epoch { // NON-VACUITY BREAK"
+
+[[control]]
+id = "state-busy-flow-blocks-other-scheduled-flows"
+guards = "an epoch-busy flow leaves its own fires planned but cannot block another flow in the same scheduler pass"
+test_file = "crates/basal-core/src/state_epoch_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["state_epoch::tests::scheduler_skips_only_state_busy_flow_for_this_pass"]
+select = { tests = ["state_epoch::tests::scheduler_skips_only_state_busy_flow_for_this_pass", "state_epoch::tests::absent_epoch_upgrade_keeps_existing_values"] }
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/schedule/mod.rs"
+old = "if fire.admission == Admission::StateBusy {\n                blocked.insert(fire.flow_id);\n                continue;\n            }"
+new = "if fire.admission == Admission::StateBusy { // NON-VACUITY BREAK\n                return Ok(());\n            }"
