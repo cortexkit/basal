@@ -1,1 +1,3 @@
 93bd12a5229588f0d320ebba422b03d035f9f73a:docs/script.md:generic-api-key:21
+# flow-decision-phone-v1 reconcile vector: call_key is a deterministic hash of a fixture call, not a credential
+40ecd644b4ecad9c2bb8db4d04fce55792f63f37:test-vectors/flow-decision-phone-v1/decision-reconcile-request.json:generic-api-key:8
