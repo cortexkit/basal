@@ -118,9 +118,8 @@ pub const DECISION_DECLINE_EFFECT: &str = "decline";
 /// default: core's maximum, a day.
 pub const DECISION_EXPIRES_IN_MS: u64 = 86_400_000;
 
-// Cingulate's consent service limits the complete request envelope to
-// 1,310,720 bytes but imposes no per-fact caps. These local limits keep basal's
-// phone rows readable.
+// Local caps keep each phone fact row readable. Separately, the consent
+// service limits the complete request envelope to 1,310,720 bytes.
 const DECISION_FACTS_MAX_COUNT: usize = 4;
 const DECISION_FACT_LABEL_MAX_BYTES: usize = 32;
 const DECISION_FACT_VALUE_MAX_BYTES: usize = 200;

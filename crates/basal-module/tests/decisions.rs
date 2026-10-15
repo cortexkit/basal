@@ -1103,10 +1103,10 @@ const VECTORS: &str = concat!(
     "/tests/vectors/flow-decision-card-v2"
 );
 
-/// The pinned prefrontal-core consent-service examples, identified by their
-/// SHA-256 hashes, define the v2 request envelope and typed decision body.
-/// Basal adds its phone `facts` separately, so the test removes that array when
-/// comparing the core-defined fields, then checks the full request with the
+/// The prefrontal-core service publishes v2 consent-request examples that
+/// define the request envelope and typed decision body it accepts. Basal adds
+/// phone `facts` as separate display rows; this test removes only that array
+/// when comparing core-defined fields, then checks the full request with the
 /// fake decoder.
 #[test]
 fn the_request_builder_preserves_core_vector_fields_and_adds_facts() {
