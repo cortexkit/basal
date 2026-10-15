@@ -324,8 +324,8 @@ new = "false && (interrupt.halted.get()\n            || interrupt.clock.over_bud
 
 [[control]]
 id = "interrupt-handler-never-stops-the-engine-catastrophic-regex"
-hub = "The JS CPU budget interrupts unbounded scripts, including loops, regex payloads and top-level wrapper code, asserted by fuzz, budgets and sandbox integrity tests"
-hub_targets = ["budgets", "sandbox_integrity"]
+hub = "The JS CPU budget interrupts unbounded scripts, including loops, regex payloads and top-level wrapper code, asserted by fuzz, budgets, codemode and sandbox integrity tests"
+hub_targets = ["budgets", "codemode", "sandbox_integrity"]
 guards = "interrupt handler never stops the engine (catastrophic regex)"
 test_file = "crates/basal-worker/tests/fuzz.rs"
 runner = "cargo"
@@ -1248,6 +1248,8 @@ new = "let _ = native::set_untrusted(token.0); // NON-VACUITY BREAK"
 
 [[control]]
 id = "windows-worker-skips-not-lpac"
+hub = "Worker startup requires the LPAC claim; live startup and pure primary-token attestation require the same not-lpac refusal"
+hub_targets = ["basal_worker"]
 guards = "Worker refuses startup with not-lpac before reading its first frame"
 test_file = "crates/basal-worker/tests/windows_startup.rs"
 runner = "cargo"
@@ -1264,6 +1266,8 @@ new = "if false && !matches!(claim, Claim::Unsigned(values) if values.as_slice()
 
 [[control]]
 id = "windows-worker-skips-capabilities-present"
+hub = "A worker primary token with capabilities is refused as capabilities-present; live startup and pure attestation require the same refusal and check order"
+hub_targets = ["basal_worker"]
 guards = "Worker refuses startup with capabilities-present before reading its first frame"
 test_file = "crates/basal-worker/tests/windows_startup.rs"
 runner = "cargo"
@@ -1280,6 +1284,8 @@ new = "if false && !capabilities.is_empty() { // NON-VACUITY BREAK"
 
 [[control]]
 id = "windows-worker-skips-restricting-sid-mismatch"
+hub = "A worker primary token must have exactly the expected restricting SID; live startup and pure attestation require the same restricting-sid-mismatch refusal and check order"
+hub_targets = ["basal_worker"]
 guards = "Worker refuses startup with restricting-sid-mismatch before reading its first frame"
 test_file = "crates/basal-worker/tests/windows_startup.rs"
 runner = "cargo"
@@ -1296,6 +1302,8 @@ new = "if false && sids.as_slice() != [NULL_SID] { // NON-VACUITY BREAK"
 
 [[control]]
 id = "windows-worker-skips-group-not-deny-only"
+hub = "Enabled logon groups on the worker primary token are refused as group-not-deny-only; live startup and pure attestation require the same refusal and check order"
+hub_targets = ["basal_worker"]
 guards = "Worker refuses startup with group-not-deny-only before reading its first frame"
 test_file = "crates/basal-worker/tests/windows_startup.rs"
 runner = "cargo"
@@ -1312,6 +1320,8 @@ new = "if false && !enabled.is_empty() { // NON-VACUITY BREAK"
 
 [[control]]
 id = "windows-worker-skips-privileges-present"
+hub = "A worker primary token with privileges is refused as privileges-present; live startup and pure attestation require the same refusal and check order"
+hub_targets = ["basal_worker"]
 guards = "Worker refuses startup with privileges-present before reading its first frame"
 test_file = "crates/basal-worker/tests/windows_startup.rs"
 runner = "cargo"
@@ -1328,6 +1338,8 @@ new = "if false && privileges != 0 { // NON-VACUITY BREAK"
 
 [[control]]
 id = "windows-worker-skips-integrity-not-untrusted"
+hub = "Worker startup requires untrusted primary-token integrity; live startup and pure attestation require the same integrity-not-untrusted refusal and check order"
+hub_targets = ["basal_worker"]
 guards = "Worker refuses startup with integrity-not-untrusted before reading its first frame"
 test_file = "crates/basal-worker/tests/windows_startup.rs"
 runner = "cargo"
@@ -1361,6 +1373,8 @@ new = "let _ = mitigation::validate(&words); // NON-VACUITY BREAK"
 
 [[control]]
 id = "windows-worker-skips-handle-not-allowed"
+hub = "Worker startup refuses inherited handles outside the three allowed pipes; startup and named-pipe probes require the same handle-not-allowed refusal"
+hub_targets = ["windows_probes"]
 guards = "Worker refuses startup with handle-not-allowed before reading its first frame"
 test_file = "crates/basal-worker/tests/windows_startup.rs"
 runner = "cargo"
@@ -1384,7 +1398,8 @@ package = "basal-worker"
 platforms = ["windows"]
 target = "--lib"
 expect_red = ["confinement::windows::allowlist::tests::startup_closes_ports_and_private_files_only"]
-only = false
+select = { tests = ["confinement::windows::allowlist::tests::startup_closes_ports_and_private_files_only", "confinement::windows::allowlist::tests::an_inheritable_handle_that_is_not_stdio_is_refused"] }
+only = true
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-worker/src/confinement/windows/allowlist.rs"
@@ -1400,7 +1415,8 @@ package = "basal-worker"
 platforms = ["windows"]
 target = "--lib"
 expect_red = ["confinement::windows::allowlist::tests::startup_closes_ports_and_private_files_only"]
-only = false
+select = { tests = ["confinement::windows::allowlist::tests::startup_closes_ports_and_private_files_only", "confinement::windows::allowlist::tests::an_inheritable_handle_that_is_not_stdio_is_refused"] }
+only = true
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-worker/src/confinement/windows/allowlist.rs"
@@ -1553,6 +1569,8 @@ new = "if false && forbidden.policy.word(words) & forbidden.mask != 0 { // NON-V
 
 [[control]]
 id = "windows-worker-missing-package-sid-is-not-refused"
+hub = "A missing package SID is refused before confinement rather than replaced by a default; live startup and the argument parser require the same package-sid-argument-missing refusal"
+hub_targets = ["basal_worker"]
 guards = "A missing package SID is refused before worker confinement starts"
 test_file = "crates/basal-worker/tests/windows_startup.rs"
 runner = "cargo"

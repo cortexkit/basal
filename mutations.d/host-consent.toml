@@ -9,7 +9,8 @@ package = "basal-module"
 platforms = ["linux"]
 target = "--test install_policy"
 expect_red = ["card_raised_without_elicitation_id_is_keyed_on_the_triple"]
-only = false
+select = { tests = ["card_raised_without_elicitation_id_is_keyed_on_the_triple", "unknown_install_outcome_is_an_error_even_with_a_valid_hash_or_card_id"] }
+only = true
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/core_consent.rs"
@@ -159,7 +160,8 @@ package = "basal-module"
 platforms = ["macos"]
 target = "--test decisions"
 expect_red = ["a_run_in_needs_reconcile_raises_one_card_per_unknown_call_to_the_operator_only"]
-only = false
+select = { tests = ["a_run_in_needs_reconcile_raises_one_card_per_unknown_call_to_the_operator_only", "grant_lost_phone_vector_and_production_prompt_are_pinned"] }
+only = true
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/core_consent.rs"
@@ -325,16 +327,18 @@ package = "basal-module"
 platforms = ["macos"]
 target = "--test hosts"
 expect_red = ["install_card_is_byte_exact_and_scope_comes_from_the_route_stamp"]
-only = false
+select = { tests = ["install_card_is_byte_exact_and_scope_comes_from_the_route_stamp", "consent_refusal_codes_and_unknown_transport_are_typed"] }
+only = true
 build_timeout_s = 3600
 timeout_s = 600
-edits = [
-  { file = "crates/basal-host/src/core_consent.rs", old = "let result = json!({\"kind\":\"flow_install\"", new = "let mut result = json!({\"kind\":\"flow_install\"" },
-  { file = "crates/basal-host/src/core_consent.rs", old = "    Ok(result)\n}", new = "    result[\"session_ref\"] = f.get(\"session_ref\").cloned().unwrap_or(json!(\"ses-from-the-bind\"));\n    Ok(result)\n}" },
-]
+file = "crates/basal-host/src/core_consent.rs"
+old = "    Ok(result)\n}"
+new = "    if result[\"flow_install\"][\"author\"].get(\"scope\").is_some() { // NON-VACUITY BREAK\n        result[\"session_ref\"] = f.get(\"session_ref\").cloned().unwrap_or(json!(\"ses-from-the-bind\"));\n    }\n    Ok(result)\n}"
 
 [[control]]
 id = "hosts-answer-acknowledged-despite-failed-decision-commit"
+hub = "Consent answers are acknowledged only after their decision commits durably, so a failed commit remains replayable after restart"
+hub_targets = ["decisions"]
 guards = "hosts: answer acknowledged despite failed decision commit"
 test_file = "crates/basal-module/tests/hosts.rs"
 runner = "cargo"
@@ -690,7 +694,8 @@ package = "basal-module"
 platforms = ["linux"]
 target = "--test install_policy"
 expect_red = ["install_cards_only_use_core_install_request_and_never_wake_answer_polling"]
-only = false
+select = { tests = ["install_cards_only_use_core_install_request_and_never_wake_answer_polling", "unknown_install_outcome_is_an_error_even_with_a_valid_hash_or_card_id"] }
+only = true
 build_timeout_s = 3600
 timeout_s = 600
 
