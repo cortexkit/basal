@@ -116,6 +116,22 @@ fn board_runs() -> Vec<Value> {
 }
 
 #[test]
+fn an_empty_cron_schedule_summary_does_not_nest_parentheses() {
+    let scheduled = manifest(json!({
+        "id":"annual",
+        "version":1,
+        "purpose":"Run annually",
+        "trigger":{"schedule":{"cron":"0 0 1 1 *"}}
+    }));
+    let text = render(&scheduled, &summary(day_window(0, 0), vec![]));
+    assert_bounded(&text);
+    assert_eq!(
+        text.summary,
+        "In the last 24 hours it would not have run on its cron schedule '0 0 1 1 *' (UTC), so the dry run had nothing to try."
+    );
+}
+
+#[test]
 fn cron_runs_that_all_stop_at_their_first_read_say_so_and_report_no_problem() {
     let text = render(
         &board_manifest(),

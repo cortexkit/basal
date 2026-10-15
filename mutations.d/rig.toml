@@ -728,3 +728,37 @@ expect_red = ["tests::report_builder_fails_unmarked_zero_check_cases"]
 only = true
 timeout_s = 600
 build_timeout_s = 3600
+
+[[control]]
+id = "rig-install-card-plain-flow-fact-is-checked"
+guards = "A flow install card must render the exact flow id as a plain-text fact"
+file = "crates/basal-rig/src/bin/basal-rig-contract.rs"
+old = 'fact(card, "Flow") == manifest["id"].as_str()'
+new = 'true /* NON-VACUITY BREAK: ignore the rendered flow id */'
+edits = []
+test_file = "crates/basal-rig/src/bin/basal-rig-contract/tests.rs"
+runner = "cargo"
+package = "basal-rig"
+platforms = ["linux"]
+target = "--bin basal-rig-contract"
+expect_red = ["tests::install_card_checks_match_cingulate_request_fixture"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "rig-install-card-source-text-is-byte-exact"
+guards = "A flow install card source must preserve the exact script bytes basal sent"
+file = "crates/basal-rig/src/bin/basal-rig-contract.rs"
+old = 'card["source"]["text"].as_str() == Some(flow.script.as_str())'
+new = 'true /* NON-VACUITY BREAK: accept changed source text */'
+edits = []
+test_file = "crates/basal-rig/src/bin/basal-rig-contract/tests.rs"
+runner = "cargo"
+package = "basal-rig"
+platforms = ["linux"]
+target = "--bin basal-rig-contract"
+expect_red = ["tests::install_card_checks_match_cingulate_request_fixture"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600

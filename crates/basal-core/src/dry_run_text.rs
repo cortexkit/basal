@@ -164,9 +164,12 @@ fn schedule_sentence(manifest: &Manifest, window: &Value, runs: &[Value]) -> Str
     let replayed = window["replayed"].as_u64().unwrap_or(runs.len() as u64);
     let often = how_often(manifest, runs);
     if count == 0 {
-        return format!(
-            "{span} it would not have run ({often}), so the dry run had nothing to try."
-        );
+        let often = if let Some(schedule) = often.strip_prefix("on the cron schedule") {
+            format!("on its cron schedule{schedule}")
+        } else {
+            often
+        };
+        return format!("{span} it would not have run {often}, so the dry run had nothing to try.");
     }
     let at_least = if window["due_times_is_lower_bound"].as_bool() == Some(true) {
         "at least "

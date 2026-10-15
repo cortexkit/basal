@@ -29,6 +29,7 @@ path = "src/bin/basal-rig-contract.rs"
 test = true
 
 [dependencies]
+basal-core.workspace = true
 basal-proto.workspace = true
 async-trait.workspace = true
 blake3.workspace = true

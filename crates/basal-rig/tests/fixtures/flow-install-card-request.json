@@ -1,0 +1,26 @@
+{
+  "kind": "flow_install",
+  "facts": [
+    { "label": "Code hash", "value": "6d669d2b51b4457d9a6678a226442c6069b19bc3dece7823a42e24a57e088bab" },
+    { "label": "Flow", "value": "fixture-cron-flow" },
+    { "label": "Version", "value": "1" },
+    { "label": "Purpose", "value": "Exercise the install card contract." },
+    { "label": "Runs", "value": "On cron schedule 0 0 1 1 * (UTC); a missed run catches up once" }
+  ],
+  "flow_install": {
+    "flow_id": "fixture-cron-flow",
+    "version": 1,
+    "script": "return 42;",
+    "manifest_json": "{\"audience\":{\"id\":\"rig-fixture\",\"kind\":\"workspace\"},\"format\":1,\"id\":\"fixture-cron-flow\",\"purpose\":\"Exercise the install card contract.\",\"trigger\":{\"schedule\":{\"cron\":\"0 0 1 1 *\"}},\"version\":1}",
+    "code_hash": "6d669d2b51b4457d9a6678a226442c6069b19bc3dece7823a42e24a57e088bab"
+  },
+  "source": {
+    "language": "typescript",
+    "text": "return 42;"
+  },
+  "dry_run_text": {
+    "summary": "In the last 24 hours it would not have run (on the cron schedule '0 0 1 1 *' (UTC)), so the dry run had nothing to try.",
+    "would": [],
+    "problems": []
+  }
+}
