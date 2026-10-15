@@ -15,6 +15,8 @@ const SCRIPT: &str = "return 1;";
 fn self_manifest(id: &str) -> Value {
     let mut m = events_manifest(id);
     m["status"] = json!([OWNER_NAME]);
+    m["ops"] = json!([{"module":"prefrontal-core","op":"board.read"}]);
+    m["board_read"] = json!([OWNER_NAME]);
     m["claims"] = json!([{ "agent": OWNER_NAME, "source_kind": "idleness" }]);
     m["facts"] = json!({ "targets": [OWNER_NAME], "text": false });
     m
@@ -33,11 +35,14 @@ fn foreign_manifests() -> Vec<(&'static str, Value)> {
     }));
     let mut facts = self_manifest("foreign-facts");
     facts["facts"]["targets"] = json!([OWNER_NAME, FOREIGN]);
+    let mut boards = self_manifest("foreign-board-read");
+    boards["board_read"] = json!([OWNER_NAME, FOREIGN]);
     vec![
         ("sinks", sinks),
         ("status", status),
         ("claims", claims),
         ("facts.targets", facts),
+        ("board_read", boards),
     ]
 }
 
@@ -67,6 +72,15 @@ fn assert_no_install(f: &Fixture, id: &str) {
 fn agent_owned_manifests_reject_foreign_targets_before_install_and_dry_run() {
     let f = fixture("agent-target-refusals", Options::default());
     f.catalog.add_named_agent(OWNER, OWNER_NAME);
+    f.catalog.set_op(
+        "prefrontal-core",
+        "board.read",
+        basal_host::OpDecl {
+            kind: Some(basal_host::OpKind::Query),
+            cause_echo: false,
+            shell_capable: false,
+        },
+    );
     f.catalog.add_named_agent("agent_d1e7002e2c9b9f43", FOREIGN);
     for (field, m) in foreign_manifests() {
         let id = m["id"].as_str().unwrap();
@@ -143,6 +157,15 @@ fn agent_owned_manifests_reject_foreign_targets_before_install_and_dry_run() {
 fn self_only_agents_and_global_and_local_manifests_still_install() {
     let f = fixture("agent-target-allowed", Options::default());
     f.catalog.add_named_agent(OWNER, OWNER_NAME);
+    f.catalog.set_op(
+        "prefrontal-core",
+        "board.read",
+        basal_host::OpDecl {
+            kind: Some(basal_host::OpKind::Query),
+            cause_echo: false,
+            shell_capable: false,
+        },
+    );
     f.catalog.add_named_agent("agent_d1e7002e2c9b9f43", FOREIGN);
     for caller in [agent(OWNER), Caller::Operator] {
         let id = if caller == Caller::Operator {
@@ -175,6 +198,7 @@ fn self_only_agents_and_global_and_local_manifests_still_install() {
     let mut by_id = self_manifest("self-by-id");
     by_id["sinks"][0]["agent"] = json!(OWNER);
     by_id["status"] = json!([OWNER]);
+    by_id["board_read"] = json!([OWNER]);
     by_id["claims"][0]["agent"] = json!(OWNER);
     by_id["facts"]["targets"] = json!([OWNER]);
     let reply = install(&f, &agent(OWNER), SCRIPT, &by_id);

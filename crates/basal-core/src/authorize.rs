@@ -150,6 +150,9 @@ pub fn resolve_self(manifest: &mut Manifest, agent_id: &str) {
     for agent in &mut manifest.status {
         resolve(agent);
     }
+    for agent in &mut manifest.board_read {
+        resolve(agent);
+    }
     for claim in &mut manifest.claims {
         resolve(&mut claim.agent);
     }

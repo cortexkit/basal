@@ -1,0 +1,56 @@
+# Board-read manifest authority and the carrier operation must be approved together.
+
+[[control]]
+id = "board-read-audience-coupling"
+guards = "board_read references use $audience exactly when an audience exists"
+test_file = "crates/basal-core/src/board_read_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["manifest::board_read_tests::board_read_audience_references_must_match_audience_presence", "manifest::board_read_tests::board_read_parses_and_preserves_string_references"] }
+expect_red = ["manifest::board_read_tests::board_read_audience_references_must_match_audience_presence"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/manifest.rs"
+old = 'check_sink("board_read", agent)?;'
+new = '''if agent != AUDIENCE_TARGET { // NON-VACUITY BREAK
+                check_agent("board_read", agent)?;
+            }'''
+
+[[control]]
+id = "board-read-op-requires-grant"
+guards = "declaring prefrontal-core board.read requires a nonempty board_read grant"
+test_file = "crates/basal-core/src/board_read_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["manifest::board_read_tests::board_read_op_requires_a_nonempty_grant", "manifest::board_read_tests::board_read_parses_and_preserves_string_references"] }
+expect_red = ["manifest::board_read_tests::board_read_op_requires_a_nonempty_grant"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/manifest.rs"
+old = 'if reads_boards && self.board_read.is_empty() {'
+new = 'if false && reads_boards && self.board_read.is_empty() { // NON-VACUITY BREAK'
+
+[[control]]
+id = "board-read-field-parsing"
+guards = "board_read is parsed as a string list and survives manifest serialization"
+test_file = "crates/basal-core/src/board_read_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["manifest::board_read_tests::board_read_parses_and_preserves_string_references", "manifest::tests::digest_actions_order_from_silent_to_wake"] }
+expect_red = ["manifest::board_read_tests::board_read_parses_and_preserves_string_references"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/manifest.rs"
+old = '''#[serde(default)]
+    pub board_read: Vec<String>,'''
+new = '''#[serde(skip)] // NON-VACUITY BREAK
+    pub board_read: Vec<String>,'''

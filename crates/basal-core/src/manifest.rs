@@ -88,6 +88,9 @@ pub struct Manifest {
     /// Agents whose status line the flow may set.
     #[serde(default)]
     pub status: Vec<String>,
+    /// Agents whose boards the flow may read with prefrontal-core's `board.read`.
+    #[serde(default)]
+    pub board_read: Vec<String>,
     #[serde(default)]
     pub claims: Vec<Claim>,
     #[serde(default)]
@@ -436,7 +439,12 @@ impl std::fmt::Display for ManifestError {
                 write!(f, "invalid template placeholder in {field}")
             }
             Self::TemplateBoundInvalid { field, reason } => write!(f, "{field}: {reason}"),
-            Self::AudienceSinkNamed => write!(f, "audience sinks and status must name $audience"),
+            Self::AudienceSinkNamed => {
+                write!(
+                    f,
+                    "audience sinks, status and board_read must name $audience"
+                )
+            }
             Self::AudienceFactsRequiresGlobal => {
                 write!(f, "$audience facts require a global audience")
             }
@@ -451,10 +459,7 @@ impl std::fmt::Display for ManifestError {
                 write!(f, "audience run deadlines may not exceed 12h")
             }
             Self::AudiencePlaceholderWithoutAudience => {
-                write!(
-                    f,
-                    "$audience requires an audience and is only a sink target"
-                )
+                write!(f, "$audience requires an audience in the manifest")
             }
             Self::Invalid { field, reason } => write!(f, "{field}: {reason}"),
             Self::Duplicate { field, value } => write!(f, "{field}: {value} is listed twice"),
@@ -738,6 +743,23 @@ impl Manifest {
             check_sink("status", a)?;
         }
         check_list("status", self.status.iter().cloned())?;
+        for agent in &self.board_read {
+            check_sink("board_read", agent)?;
+        }
+        check_list("board_read", self.board_read.iter().cloned())?;
+        let reads_boards = self.lists_op("prefrontal-core", "board.read");
+        if reads_boards && self.board_read.is_empty() {
+            return Err(invalid(
+                "board_read",
+                "required by prefrontal-core board.read",
+            ));
+        }
+        if !reads_boards && !self.board_read.is_empty() {
+            return Err(invalid(
+                "board_read",
+                "requires prefrontal-core board.read in ops",
+            ));
+        }
         for c in &self.claims {
             check_agent("claims.agent", &c.agent)?;
             check_name(
@@ -1019,6 +1041,12 @@ impl Manifest {
                 .map(|a| ("status", a.as_str())),
         );
         out.extend(self.claims.iter().map(|c| ("claims", c.agent.as_str())));
+        out.extend(
+            self.board_read
+                .iter()
+                .filter(|a| a.as_str() != AUDIENCE_TARGET)
+                .map(|a| ("board_read", a.as_str())),
+        );
         if let Some(f) = &self.facts {
             out.extend(
                 f.targets
@@ -1030,6 +1058,10 @@ impl Manifest {
         out
     }
 }
+
+#[cfg(test)]
+#[path = "board_read_tests.rs"]
+mod board_read_tests;
 
 #[cfg(test)]
 mod tests {

@@ -46,6 +46,8 @@ use basal_rig::stores::{
 use serde_json::{Map, Value, json};
 use subc_protocol::BindIdentity;
 
+#[path = "basal-rig-contract/board_cases.rs"]
+mod board_cases;
 #[path = "basal-rig-contract/codemode_cases.rs"]
 mod codemode_cases;
 #[path = "basal-rig-contract/ownership.rs"]
@@ -2318,6 +2320,8 @@ async fn suite(
     }
     cases.extend(codemode_cases::run(&rig, &agent, args, &tag).await);
     cases.extend(policy_cases::run(&rig, &agent, &tag).await?);
+    let board_flow = flows::board_read(&format!("rig-board-read-{tag}"));
+    cases.extend(board_cases::run(&rig, &board_flow).await);
 
     let sinks_flow = flows::sinks(&format!("rig-sinks-{tag}"), &agent.name, "NoSuchAgent");
     let scope_flow = flows::writer(
@@ -2390,6 +2394,7 @@ async fn suite(
     // Without the kill switch the crash flow is never installed, so it is
     // not among the other callers' flows the operator's list must show.
     let mut others = vec![sinks_flow.id.as_str(), declined_flow.id.as_str()];
+    others.push(board_flow.id.as_str());
     let policy_self_id = format!("rig-policy-self-{tag}");
     let policy_workspace_id = format!("rig-policy-workspace-{tag}");
     let policy_global_id = format!("rig-policy-global-{tag}");
@@ -2426,6 +2431,7 @@ async fn suite(
     cases.extend(package_cases::lifecycle(&rig, &agent, args, &tag).await);
 
     let mut cleanup_ids = vec![
+        board_flow.id.clone(),
         format!("rig-policy-self-{tag}"),
         format!("rig-policy-workspace-{tag}"),
         format!("rig-policy-global-{tag}"),

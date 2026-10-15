@@ -108,3 +108,65 @@ fn board_hygiene_manifest_installs_without_core_flow_scopes() {
         )
         .unwrap();
 }
+
+#[test]
+fn board_read_op_and_target_grants_are_required_at_install_dry_run_and_package_registration() {
+    let f = fixture("board-read-required", Options::default());
+    for missing in ["board_read", "ops"] {
+        let mut manifest: serde_json::Value =
+            serde_json::from_str(include_str!("../../../flows/board-hygiene/manifest.json"))
+                .unwrap();
+        manifest["id"] = json!(format!("missing-{missing}"));
+        let parsed = basal_core::Manifest::parse(&manifest.to_string()).unwrap();
+        manifest.as_object_mut().unwrap().remove(missing);
+        for method in ["flow.install", "package.register"] {
+            let error = f
+                .module
+                .handle(
+                    &Caller::Operator,
+                    method,
+                    json!({"script":"return 7;","manifest":manifest.to_string()}),
+                )
+                .unwrap_err();
+            assert!(error.message.contains("board_read"), "{method}: {error}");
+        }
+        let mut template = manifest.clone();
+        template["params"] = json!({"count":{"type":"integer","min":1,"max":2}});
+        template["template"] = json!({"max_per_agent":1,"max_lifetime":"1h"});
+        let error = f
+            .module
+            .handle(
+                &Caller::Operator,
+                "package.register",
+                json!({"script":"return 7;","manifest":template.to_string()}),
+            )
+            .unwrap_err();
+        assert!(error.message.contains("board_read"), "template: {error}");
+
+        // Seed a legacy stored version without revalidating its manifest, so
+        // dry run must independently reject an unusable board-read grant.
+        let request = basal_core::InstallRequest {
+            script: "return 7;".into(),
+            manifest: manifest.to_string(),
+            author: "operator".into(),
+            loop_override: false,
+        };
+        f.module
+            .rt
+            .store()
+            .write(|tx| {
+                basal_core::install::record(tx, &parsed, &request, Vec::new(), common::T0).unwrap();
+                Ok(())
+            })
+            .unwrap();
+        let error = f
+            .module
+            .handle(
+                &Caller::Operator,
+                "flow.dry_run",
+                json!({"flow_id":manifest["id"],"trigger":{}}),
+            )
+            .unwrap_err();
+        assert!(error.message.contains("board_read"), "dry run: {error}");
+    }
+}

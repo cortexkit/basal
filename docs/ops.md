@@ -60,7 +60,7 @@ At startup basal checks every undecided card and pending policy request once, in
 
 A manifest carrying `params` or `template` is refused with `params_require_package`, naming the field. Those fields belong to [templates](templates.md), registered as packages, rather than ordinary installs. A manifest containing `$self` in any agent field is refused with `self_requires_package`: `$self` is available only in [package manifests](packages.md).
 
-An agent-owned flow may name only its author in static `sinks[].agent`, `status[]`, `claims[].agent` and `facts.targets[]`, even if the operator installs it in that agent's name. Manifest agents resolve through the catalog from display names or stable ids; each must resolve to the author's stable `agent_id`. A foreign target is refused with code `foreign_agent_target` and a message naming the field, target agent and author; no version or card is recorded or raised. Operator-authored flows and local installs may name any known agent. Audience-based sinks use `$audience` instead of static recipients and may request broader reach regardless of author. Ids ending in `_` and exactly 16 lowercase hex characters are refused with `flow_id_reserved` before basal records a version or asks core to raise its install card, because that namespace is reserved for package instances.
+An agent-owned flow may name only its author in static `sinks[].agent`, `status[]`, `board_read[]`, `claims[].agent` and `facts.targets[]`, even if the operator installs it in that agent's name. Manifest agents resolve through the catalog from display names or stable ids; each must resolve to the author's stable `agent_id`. A foreign target is refused with code `foreign_agent_target` and a message naming the field, target agent and author; no version or card is recorded or raised. Operator-authored flows and local installs may name any known agent. Audience-based sinks use `$audience` instead of static recipients and may request broader reach regardless of author. Ids ending in `_` and exactly 16 lowercase hex characters are refused with `flow_id_reserved` before basal records a version or asks core to raise its install card, because that namespace is reserved for package instances.
 
 ## flow.install_decided
 
@@ -268,8 +268,15 @@ call is a lost reply, never evidence that a mutation was unsent.
 ## Core carrier operations: `board.read`
 
 The explicit core carrier-op list contains only `prefrontal-core` / `board.read`.
-Keep the manifest grant `{"module":"prefrontal-core","op":"board.read"}` and
-call it with `ops.call('prefrontal-core', 'board.read', args)`. Basal sends this
+Declare `{"module":"prefrontal-core","op":"board.read"}` in `ops` and a
+nonempty `board_read` string array in the manifest, for example
+`"board_read": ["$audience"]` with `"audience": {"kind":"global"}`. Basal
+refuses either declaration without the other, naming `board_read`. With an
+audience every board-read reference must be exactly `$audience`; without one,
+use known static agents (or `$self` in packages), following the same self-only
+rules as sinks and status. Core checks each entry's separate live, revocable
+grant as well as audience membership. See [the manifest](manifest.md).
+Call it with `ops.call('prefrontal-core', 'board.read', args)`. Basal sends this
 query on its own reserved route (principal `reserved:basal`), not a flow-scoped
 provider route; it does not require core to advertise `flow-scopes/v1`. Other
 declared core ops still require that capability. The normal grant, catalog and
@@ -290,7 +297,7 @@ types in `crates/prefrontal-core-store/src/flow_install.rs`.
 
 ```json
 {
-  "stamp": {"flow_id":"board-hygiene","flow_version":1,"code_hash":"<approved code hash>"},
+  "stamp": {"flow_id":"board-hygiene","flow_version":2,"code_hash":"<approved code hash>"},
   "limit": 16,
   "cursor": "<previous next_cursor>"
 }
