@@ -1,5 +1,10 @@
 # macOS responsibility calibration needs a live originator
 
+The stress results below cover the initial live-originator implementation at
+`16eceb11`. They do not cover the subsequent removable-volume correction
+described at the end of this record; that correction awaits the owner's native
+macOS gate.
+
 ## Finding and limits
 
 macOS can use a **responsible process** to choose whose privacy (TCC) grants
@@ -181,3 +186,38 @@ changes do not alter the privacy test or worker-launch implementation.
 After integration, the portable e2e target passed in both modes (four tests
 without the rig hook, five with it), and both macOS e2e clippy configurations
 passed. No stress or privacy test execution ran on the shared Mac.
+
+## Follow-up: executable placement and bounded process waits
+
+The initial delivery hung in the owner's native gate for three hours, with an
+empty `probe.log`. The disclaimed test executable had been launched directly
+from Cargo's build directory, which was on a removable volume on that machine.
+A fresh responsible identity can require a removable-volume privacy prompt
+before libtest starts. The GitHub runners did not exercise this environment.
+The original outer `Child::wait()` also had no deadline, so it could not report
+that startup failure.
+
+The parent now uses `DevBinaries` to copy the test executable, module and worker
+together before creating the new privacy identity. It retains the test
+executable's filename, including Cargo's content-addressed suffix. The parent
+passes the copied module and worker paths to the ignored helper explicitly;
+the helper no longer calls Cargo-path discovery functions that could themselves
+read the removable volume. The real module's relative worker/trampoline lookup
+still sees the copied module and worker side by side.
+
+One 300-second deadline covers exec confirmation and the probe's exit wait.
+Expiry kills and reaps the child; the failure includes the copied executable
+path, log path, and log contents, with an explicit marker for an empty log.
+Only process completion is polled, not responsibility attribution. The existing
+harness exit wait uses the same helper. Reader joins are bounded in case a
+descendant retains a pipe writer, and fixture git commands have 60-second
+deadlines. The existing cat echo and module socket/startup deadlines remain.
+
+Portable regressions execute the copied libtest with `--exact`, `--ignored` and
+`--nocapture`, verify its actual executable path and copied sibling inputs,
+check timeout killing/reaping with a live child, and check a reader blocked on
+a real open pipe. The copied binary's native link inspection found only system
+libraries/frameworks (Security, CoreFoundation, libiconv and libSystem), with
+no executable-relative or build-directory dynamic-library dependency. The
+privacy helper itself is intentionally left for the owner's macOS gate rather
+than executed on the shared Mac.
