@@ -39,6 +39,11 @@ const OWNERS = {
 };
 // END OWNERS
 
+// Ignore workflows that generate routine failures without actionable owner work.
+const IGNORED_WORKFLOWS = {
+  'cortexkit/aft': ['Design gate'],
+};
+
 // Adapted from templates/github-ci-watch: bounded digest metadata, per-job
 // deduplication and fourteen-day, byte-capped retention of run attempts.
 function boundedDigest(title, observed, links = []) {
@@ -141,6 +146,11 @@ const owner = OWNERS[repo];
 // A single aggregate caps retained attempts across the entire fleet. Run keys
 // include the repo so identical job/run ids in different repos cannot collide.
 const memory = await kv.get('ci-router') ?? { newest: 0, runs: {}, unmapped: 0 };
+const workflowName = jobEvent ? body.workflow_name : body.name;
+if ((IGNORED_WORKFLOWS[repo] ?? []).includes(workflowName)) {
+  await saveMemory(memory);
+  return;
+}
 if (!owner) {
   memory.unmapped = Math.min(Number.MAX_SAFE_INTEGER, (memory.unmapped ?? 0) + 1);
   await saveMemory(memory);
@@ -164,6 +174,10 @@ if (Number.isFinite(completed) && completed < cutoff) {
   return;
 }
 const existing = memory.runs[key];
+if (!jobEvent && body.conclusion === 'cancelled' && Object.keys(existing?.jobs ?? {}).length === 0) {
+  await saveMemory(memory);
+  return;
+}
 const green = !jobEvent && body.conclusion === 'success';
 if (green && !existing) {
   await saveMemory(memory);
@@ -213,7 +227,11 @@ const item = boundedDigest(summary + status, {
 // boundedDigest records any metadata truncation in data.truncated.
 item.body = `${short(summary + status, 1400)}\nHead sha: ${run.sha}\nConclusion: ${run.conclusion}\ntest names unavailable`;
 while (item.links.length && bytes(JSON.stringify(item)) > 16384) item.links.pop();
-const action = green ? 'silent' : 'wake';
+// Plexus v2 run-completed bodies expose only an aggregate conclusion, not job
+// identities or per-job conclusions. After a job notice, a run update cannot
+// identify additional failures, so it wakes only if no job was reported yet.
+const runHasReportedJob = Object.keys(run.jobs).length > 0;
+const action = green || (!jobEvent && runHasReportedJob) ? 'silent' : 'wake';
 const refusals = [];
 try {
   await sink.digest(owner, item, action, identified && bytes(key) <= 200 ? { replace_key: key } : undefined);

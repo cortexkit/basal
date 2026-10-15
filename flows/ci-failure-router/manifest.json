@@ -1,8 +1,8 @@
 {
   "format": 1,
   "id": "ci-failure-router",
-  "version": 2,
-  "purpose": "Wake repository owners for GitHub CI failures on any branch, updating one digest item per run attempt.",
+  "version": 3,
+  "purpose": "Wake owners for actionable GitHub CI failures, reporting new jobs and otherwise-unreported failed runs while ignoring configured workflows.",
   "trigger": {
     "events": [
       {"module": "plexus", "name": "github_ci_job_failed", "version": 2, "match": {"repo": "cortexkit/*"}},

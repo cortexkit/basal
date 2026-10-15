@@ -267,6 +267,7 @@ fn published_manifest_is_global_with_only_ci_v2_repo_filters_and_minimal_grants(
     Manifest::parse(MANIFEST).unwrap();
     let value: Value = serde_json::from_str(MANIFEST).unwrap();
     assert_eq!(value["audience"], json!({"kind":"global"}));
+    assert_eq!(value["version"], 3);
     assert_eq!(
         value["sinks"],
         json!([{"agent":"$audience", "digest_max":"wake"}])
@@ -316,6 +317,89 @@ fn unmapped_repos_write_nothing_without_a_fallback() {
     assert!(t.writes().is_empty());
     assert_eq!(t.memory()["unmapped"], 8);
     assert!(t.memory()["runs"].as_object().unwrap().is_empty());
+}
+
+#[test]
+fn ignored_workflow_run_is_dropped() {
+    let t = Test::new();
+    let mut body = run("cortexkit/aft", "failure");
+    body["name"] = json!("Design gate");
+    t.ci(body);
+    assert!(t.writes().is_empty());
+    assert!(t.memory()["runs"].as_object().unwrap().is_empty());
+}
+
+#[test]
+fn ignored_workflow_job_with_workflow_name_is_dropped() {
+    let t = Test::new();
+    let mut body = job("cortexkit/aft", 101);
+    body["workflow_name"] = json!("Design gate");
+    t.ci(body);
+    assert!(t.writes().is_empty());
+    assert!(t.memory()["runs"].as_object().unwrap().is_empty());
+}
+
+#[test]
+fn job_without_workflow_name_from_ignored_repo_still_wakes() {
+    let t = Test::new();
+    let body = job("cortexkit/aft", 101);
+    assert!(body.get("workflow_name").is_none());
+    t.ci(body);
+    assert_eq!(t.writes().len(), 1);
+    assert_eq!(t.writes()[0]["action"], "wake");
+    assert_eq!(t.writes()[0]["agent"], "agent_ab64ea0873bbee0c");
+}
+
+#[test]
+fn cancelled_run_without_failed_jobs_sends_nothing() {
+    let t = Test::new();
+    t.ci(run("cortexkit/basal", "cancelled"));
+    assert!(t.writes().is_empty());
+    assert!(t.memory()["runs"].as_object().unwrap().is_empty());
+}
+
+#[test]
+fn cancelled_run_after_a_failure_updates_silently() {
+    let t = Test::new();
+    t.ci(job("cortexkit/basal", 101));
+    t.ci(run("cortexkit/basal", "cancelled"));
+    let writes = t.writes();
+    assert_eq!(writes.len(), 2);
+    assert_eq!(writes[0]["action"], "wake");
+    assert_eq!(writes[1]["action"], "silent");
+    assert_eq!(writes[1]["replace_key"], "ci:cortexkit/basal:42:1");
+}
+
+#[test]
+fn second_distinct_failed_job_of_a_run_wakes() {
+    let t = Test::new();
+    t.ci(job("cortexkit/basal", 101));
+    t.ci(job("cortexkit/basal", 102));
+    let writes = t.writes();
+    assert_eq!(writes.len(), 2);
+    assert_eq!(writes[0]["action"], "wake");
+    assert_eq!(writes[1]["action"], "wake");
+    assert_eq!(writes[0]["replace_key"], writes[1]["replace_key"]);
+}
+
+#[test]
+fn tests_failures_on_land_branches_in_aft_still_wake() {
+    let t = Test::new();
+    let mut body = job("cortexkit/aft", 101);
+    body["name"] = json!("Tests");
+    body["head_branch"] = json!("land/123");
+    t.ci(body);
+    let mut merge_group = job("cortexkit/aft", 102);
+    merge_group["run_id"] = json!(43);
+    merge_group["name"] = json!("Tests");
+    merge_group["head_branch"] = json!("gh-readonly-queue/main/pr-123-1");
+    t.ci(merge_group);
+    let writes = t.writes();
+    assert_eq!(writes.len(), 2);
+    assert_eq!(writes[0]["action"], "wake");
+    assert_eq!(writes[0]["agent"], "agent_ab64ea0873bbee0c");
+    assert_eq!(writes[1]["action"], "wake");
+    assert_eq!(writes[1]["agent"], "agent_ab64ea0873bbee0c");
 }
 
 #[test]
@@ -384,11 +468,13 @@ fn rerun_attempt_gets_a_new_item_with_the_same_job_id() {
     assert_eq!(writes.len(), 2);
     assert_eq!(writes[0]["replace_key"], "ci:cortexkit/basal:42:1");
     assert_eq!(writes[1]["replace_key"], "ci:cortexkit/basal:42:2");
+    assert_eq!(writes[0]["action"], "wake");
+    assert_eq!(writes[1]["action"], "wake");
 }
 
 #[test]
 fn red_run_without_jobs_including_startup_failure_creates_exactly_one_item() {
-    for conclusion in ["startup_failure", "failure", "cancelled"] {
+    for conclusion in ["startup_failure", "failure"] {
         let t = Test::new();
         t.ci(run("cortexkit/basal", conclusion));
         let writes = t.writes();
@@ -426,7 +512,7 @@ fn completed_red_updates_the_existing_item_then_green_updates_silently() {
             .iter()
             .all(|w| w["replace_key"] == "ci:cortexkit/basal:42:1")
     );
-    assert_eq!(writes[1]["action"], "wake");
+    assert_eq!(writes[1]["action"], "silent");
     assert!(
         writes[1]["item"]["title"]
             .as_str()
@@ -455,8 +541,8 @@ fn unknown_conclusion_and_branch_are_never_green() {
     t.ci(body);
     let writes = t.writes();
     assert_eq!(writes.len(), 2);
-    for write in writes {
-        assert_eq!(write["action"], "wake");
+    for (index, write) in writes.into_iter().enumerate() {
+        assert_eq!(write["action"], if index == 0 { "wake" } else { "silent" });
         assert!(
             !write["item"]["title"]
                 .as_str()

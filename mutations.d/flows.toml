@@ -226,3 +226,54 @@ timeout_s = 600
 file = "flows/ci-failure-router/flow.js"
 old = "const green = !jobEvent && body.conclusion === 'success';"
 new = "const green = !jobEvent && (body.conclusion ?? 'success') === 'success'; // NON-VACUITY BREAK"
+
+[[control]]
+id = "ci-failure-router-ignore-workflows"
+guards = "configured workflow names are ignored without suppressing unknown job workflow names"
+test_file = "crates/basal-module/tests/ci_failure_router.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test ci_failure_router"
+select = { tests = ["ignored_workflow_run_is_dropped", "ignored_workflow_job_with_workflow_name_is_dropped", "job_without_workflow_name_from_ignored_repo_still_wakes"] }
+expect_red = ["ignored_workflow_run_is_dropped", "ignored_workflow_job_with_workflow_name_is_dropped"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/ci-failure-router/flow.js"
+old = "if ((IGNORED_WORKFLOWS[repo] ?? []).includes(workflowName)) {"
+new = "if (false && (IGNORED_WORKFLOWS[repo] ?? []).includes(workflowName)) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "ci-failure-router-bare-cancellation"
+guards = "a cancelled run without a reported failed job sends no item"
+test_file = "crates/basal-module/tests/ci_failure_router.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test ci_failure_router"
+select = { tests = ["cancelled_run_without_failed_jobs_sends_nothing", "cancelled_run_after_a_failure_updates_silently"] }
+expect_red = ["cancelled_run_without_failed_jobs_sends_nothing"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/ci-failure-router/flow.js"
+old = "if (!jobEvent && body.conclusion === 'cancelled' && Object.keys(existing?.jobs ?? {}).length === 0) {"
+new = "if (false && !jobEvent && body.conclusion === 'cancelled' && Object.keys(existing?.jobs ?? {}).length === 0) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "ci-failure-router-run-finish-silent-after-job"
+guards = "a red run completion updates silently after job failures were reported"
+test_file = "crates/basal-module/tests/ci_failure_router.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test ci_failure_router"
+select = { tests = ["completed_red_updates_the_existing_item_then_green_updates_silently", "red_run_without_jobs_including_startup_failure_creates_exactly_one_item"] }
+expect_red = ["completed_red_updates_the_existing_item_then_green_updates_silently"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/ci-failure-router/flow.js"
+old = "const action = green || (!jobEvent && runHasReportedJob) ? 'silent' : 'wake';"
+new = "const action = green ? 'silent' : 'wake'; // NON-VACUITY BREAK"
