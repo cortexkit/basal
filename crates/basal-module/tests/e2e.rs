@@ -285,6 +285,63 @@ mod privacy {
     #[tokio::test]
     async fn production_worker_is_its_own_responsible_process() {
         wait_for_originator_exit().await;
+        // A self result alone does not establish a live responsibility originator:
+        // after an inherited originator exits, both parent and plain child can
+        // report themselves. Give the probe an explicit, live identity instead.
+        // Keep it alive through all observations so a plain worker must inherit
+        // this identity and cannot masquerade as a disclaimed worker.
+        let source = basal_testkit::dev_binary(env!("CARGO_BIN_EXE_ck-basal"));
+        let binaries = basal_testkit::DevBinaries::new(&[&source]).expect("probe trampoline");
+        let dir = Directory(scratch("privacy-originator"));
+        std::fs::create_dir_all(&dir.0).expect("probe log directory");
+        let log_path = dir.0.join("probe.log");
+        let log = std::fs::File::create(&log_path).expect("probe log");
+        let mut builder = subc_os::privacy_identity::DisclaimedCommand::new(
+            binaries.path(&source).expect("trampoline path"),
+            std::env::current_exe().expect("test executable"),
+        );
+        builder
+            .args([
+                "--exact",
+                "privacy::worker_privacy_probe_with_live_originator",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env_remove("DYLD_INSERT_LIBRARIES")
+            .stdin(Stdio::null())
+            .stdout(log.try_clone().expect("probe stdout"))
+            .stderr(log);
+        let (mut command, confirmation) = builder.into_command().expect("disclaimed probe");
+        let mut probe = ReapedChild(command.spawn().expect("start responsibility probe"));
+        drop(command);
+        confirmation
+            .confirm(Instant::now() + Duration::from_secs(300))
+            .expect("probe must exec with an explicit responsibility identity");
+        let status = probe.0.wait().expect("wait for responsibility probe");
+        for line in std::fs::read_to_string(log_path)
+            .expect("probe output")
+            .lines()
+        {
+            eprintln!("anchored privacy probe: {line}");
+        }
+        assert!(status.success(), "responsibility probe failed: {status}");
+    }
+
+    #[tokio::test]
+    #[ignore = "run by production_worker_is_its_own_responsible_process with an explicit originator"]
+    async fn worker_privacy_probe_with_live_originator() {
+        wait_for_originator_exit().await;
+        assert_eq!(responsible_pid(std::process::id()), std::process::id());
+        let source = basal_testkit::dev_binary(env!("CARGO_BIN_EXE_ck-basal"));
+        let source_worker = worker_binary();
+        // Use production bytes side by side, under development file names.
+        // Only `ck-basal` implements the trampoline mode that launches workers
+        // disclaimed; the harness and this test binary don't.
+        let binaries =
+            basal_testkit::DevBinaries::new(&[&source, &source_worker]).expect("development pair");
+        let binary = binaries.path(&source).expect("module path");
+        let worker = binaries.path(&source_worker).expect("worker path");
+        let worker = worker.canonicalize().expect("worker path");
         // A control: a plainly launched child, held alive by its open stdin
         // rather than a timer. It must report its parent's responsible process,
         // so the measurement below can tell a disclaimed worker from a plain one.
@@ -321,16 +378,6 @@ mod privacy {
         assert_ne!(responsible_pid(control.0.id()), control.0.id());
 
         let dir = Directory(scratch("privacy"));
-        let source = basal_testkit::dev_binary(env!("CARGO_BIN_EXE_ck-basal"));
-        let source_worker = worker_binary();
-        // Use production bytes side by side, under development file names.
-        // Only `ck-basal` implements the trampoline mode that launches workers
-        // disclaimed; the harness and this test binary don't.
-        let binaries =
-            basal_testkit::DevBinaries::new(&[&source, &source_worker]).expect("development pair");
-        let binary = binaries.path(&source).expect("module path");
-        let worker = binaries.path(&source_worker).expect("worker path");
-        let worker = worker.canonicalize().expect("worker path");
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
             .expect("listen");

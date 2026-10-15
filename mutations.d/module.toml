@@ -1294,6 +1294,30 @@ timeout_s = 600
 build_timeout_s = 3600
 
 [[control]]
+id = "plain-privacy-calibration-disclaims-child"
+guards = "the live-originator calibration rejects a genuinely self-responsible cat instead of accepting it as inherited"
+file = "crates/basal-module/tests/e2e.rs"
+scope = { after = "async fn worker_privacy_probe_with_live_originator() {" }
+old = 'Command::new("/bin/cat")'
+new = '''{
+                // NON-VACUITY BREAK: give the calibration child its own identity.
+                subc_os::privacy_identity::DisclaimedCommand::new(&binary, "/bin/cat")
+                    .into_command()
+                    .expect("disclaimed calibration mutant")
+                    .0
+            }'''
+edits = []
+test_file = "crates/basal-module/tests/e2e.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test e2e"
+expect_red = ["privacy::production_worker_is_its_own_responsible_process"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
 id = "production-worker-inherits-parent-privacy-identity"
 hub = "Production workers disclaim the module's privacy identity, asserted by the live responsible-process probe and production trampoline configuration"
 hub_targets = ["privacy_launch"]

@@ -26,7 +26,8 @@ int main(int argc, char **argv) {
     }
     const char *target = argv[1];
     char **args = argv + 1;
-    if (strcmp(argv[1], "--orphan") == 0) {
+    int inherited = strcmp(argv[1], "--orphan-inherited") == 0;
+    if (strcmp(argv[1], "--orphan") == 0 || inherited) {
         if (argc < 3) return 2;
         argv[1] = "--originator";
         target = argv[0];
@@ -38,7 +39,7 @@ int main(int argc, char **argv) {
     int result = posix_spawnattr_init(&attr);
     if (result) return result;
     result = posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETEXEC);
-    if (!result) result = disclaim(&attr, 1);
+    if (!result && !inherited) result = disclaim(&attr, 1);
     if (!result) result = posix_spawn(NULL, target, NULL, &attr, args, environ);
     fprintf(stderr, "self-responsible test launch failed: %d\n", result);
     posix_spawnattr_destroy(&attr);
