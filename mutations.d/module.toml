@@ -1294,6 +1294,54 @@ timeout_s = 600
 build_timeout_s = 3600
 
 [[control]]
+id = "privacy-probe-borrows-inherited-originator"
+guards = "the responsibility probe must create its own live originator rather than depend on the test runner ancestry"
+file = "crates/basal-module/tests/e2e.rs"
+scope = { after = "async fn production_worker_is_its_own_responsible_process() {", before = "async fn worker_privacy_probe_with_live_originator() {" }
+old = 'let mut builder = subc_os::privacy_identity::DisclaimedCommand::new(&binary, &probe_binary);'
+new = '''// NON-VACUITY BREAK: leave the probe with its caller's inherited originator.
+        let mut builder = Command::new(&probe_binary);'''
+edits = [
+  { old = 'let (mut command, confirmation) = builder.into_command().expect("disclaimed probe");', new = 'let mut command = builder;' },
+  { old = '''let confirmed = confirmation
+            .confirm(deadline)
+            .map_err(|error| error.to_string());''', new = 'let confirmed: Result<(), String> = Ok(());' },
+]
+test_file = "crates/basal-module/tests/e2e.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test e2e"
+expect_red = ["privacy::production_worker_is_its_own_responsible_process"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "plain-privacy-calibration-disclaims-child"
+guards = "the live-originator calibration rejects a genuinely self-responsible cat instead of accepting it as inherited"
+file = "crates/basal-module/tests/e2e.rs"
+scope = { after = "async fn worker_privacy_probe_with_live_originator() {", before = "\n}\n" }
+old = 'Command::new("/bin/cat")'
+new = '''{
+                // NON-VACUITY BREAK: give the calibration child its own identity.
+                subc_os::privacy_identity::DisclaimedCommand::new(&binary, "/bin/cat")
+                    .into_command()
+                    .expect("disclaimed calibration mutant")
+                    .0
+            }'''
+edits = []
+test_file = "crates/basal-module/tests/e2e.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["macos"]
+target = "--test e2e"
+expect_red = ["privacy::production_worker_is_its_own_responsible_process"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
 id = "production-worker-inherits-parent-privacy-identity"
 hub = "Production workers disclaim the module's privacy identity, asserted by the live responsible-process probe and production trampoline configuration"
 hub_targets = ["privacy_launch"]

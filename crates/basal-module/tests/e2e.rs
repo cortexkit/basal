@@ -30,6 +30,72 @@ use serde_json::{Value, json};
 const T0: i64 = 1_777_593_600_000;
 const HOUR: i64 = 3_600_000;
 
+#[cfg(unix)]
+const PROBE_MODULE: &str = "BASAL_E2E_PRIVACY_MODULE_BINARY";
+#[cfg(unix)]
+const PROBE_WORKER: &str = "BASAL_E2E_PRIVACY_WORKER_BINARY";
+
+#[cfg(unix)]
+fn placed_probe_binaries() -> (basal_testkit::DevBinaries, PathBuf, PathBuf, PathBuf) {
+    let module = basal_testkit::dev_binary(env!("CARGO_BIN_EXE_ck-basal"));
+    let worker = worker_binary();
+    let executable = std::env::current_exe().expect("test executable");
+    // Copy the probe and its inputs before giving the probe its own macOS
+    // privacy identity. That child must not execute or read the original build
+    // artifacts on a removable volume, where access may require a TCC prompt.
+    let binaries = basal_testkit::DevBinaries::new(&[&module, &worker, &executable])
+        .expect("probe executable copies");
+    let probe = binaries.path(&executable).expect("copied test executable");
+    let module = binaries.path(&module).expect("copied module");
+    let worker = binaries.path(&worker).expect("copied worker");
+    (binaries, probe, module, worker)
+}
+
+#[cfg(unix)]
+fn probe_fixture_binaries() -> (PathBuf, PathBuf) {
+    // These are placed paths supplied by the parent, not paths rediscovered
+    // from Cargo or from the copied test executable's directory.
+    let module = std::env::var_os(PROBE_MODULE).expect("parent supplied copied module");
+    let worker = std::env::var_os(PROBE_WORKER).expect("parent supplied copied worker");
+    (PathBuf::from(module), PathBuf::from(worker))
+}
+
+// Poll process completion only; responsibility observations are never retried.
+// Retain the Child so expiry can kill and reap it instead of detaching a wait.
+fn wait_for_exit(child: &mut Child, deadline: Instant) -> std::io::Result<ExitStatus> {
+    loop {
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            child.kill()?;
+            child.wait()?;
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "child exit deadline elapsed; child killed and reaped",
+            ));
+        };
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        std::thread::sleep(remaining.min(Duration::from_millis(10)));
+    }
+}
+
+// A descendant can keep a pipe open after the direct child exits. Bound reader
+// cleanup as well, rather than letting join hide a stalled process indefinitely.
+fn join_reader_until<T>(
+    reader: std::thread::JoinHandle<T>,
+    deadline: Instant,
+) -> Result<T, &'static str> {
+    loop {
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            return Err("reader deadline elapsed after child exit");
+        };
+        if reader.is_finished() {
+            return reader.join().map_err(|_| "reader thread panicked");
+        }
+        std::thread::sleep(remaining.min(Duration::from_millis(10)));
+    }
+}
+
 #[cfg(target_os = "macos")]
 mod privacy {
     use super::*;
@@ -197,6 +263,69 @@ mod privacy {
 
     #[tokio::test]
     async fn production_worker_is_its_own_responsible_process() {
+        // A self result alone does not establish a live responsibility originator:
+        // after an inherited originator exits, both parent and plain child can
+        // report themselves. Give the probe an explicit, live identity instead.
+        // Keep it alive through all observations so a plain worker must inherit
+        // this identity and cannot masquerade as a disclaimed worker.
+        let (_binaries, probe_binary, binary, worker) = placed_probe_binaries();
+        let dir = Directory(scratch("privacy-originator"));
+        std::fs::create_dir_all(&dir.0).expect("probe log directory");
+        let log_path = dir.0.join("probe.log");
+        let log = std::fs::File::create(&log_path).expect("probe log");
+        let mut builder = subc_os::privacy_identity::DisclaimedCommand::new(&binary, &probe_binary);
+        builder
+            .args([
+                "--exact",
+                "privacy::worker_privacy_probe_with_live_originator",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(PROBE_MODULE, &binary)
+            .env(PROBE_WORKER, &worker)
+            .stdin(Stdio::null())
+            .stdout(log.try_clone().expect("probe stdout"))
+            .stderr(log);
+        let (mut command, confirmation) = builder.into_command().expect("disclaimed probe");
+        let deadline = Instant::now() + Duration::from_secs(300);
+        let mut probe = ReapedChild(command.spawn().expect("start responsibility probe"));
+        drop(command);
+        let confirmed = confirmation
+            .confirm(deadline)
+            .map_err(|error| error.to_string());
+        let outcome = confirmed.and_then(|()| {
+            wait_for_exit(&mut probe.0, deadline).map_err(|error| error.to_string())
+        });
+        if outcome.is_err() {
+            let _ = probe.0.kill();
+            let _ = probe.0.wait();
+        }
+        let output = std::fs::read_to_string(&log_path)
+            .unwrap_or_else(|error| format!("cannot read probe log: {error}"));
+        let diagnostics = if output.is_empty() {
+            "anchored privacy probe: <empty log>".to_owned()
+        } else {
+            output
+                .lines()
+                .map(|line| format!("anchored privacy probe: {line}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        eprintln!("{diagnostics}");
+        assert!(
+            outcome.as_ref().is_ok_and(|status| status.success()),
+            "responsibility probe {} failed: {outcome:?}; log {}:\n{diagnostics}",
+            probe_binary.display(),
+            log_path.display()
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "run by production_worker_is_its_own_responsible_process with an explicit originator"]
+    async fn worker_privacy_probe_with_live_originator() {
+        assert_eq!(responsible_pid(std::process::id()), std::process::id());
+        let (binary, worker) = probe_fixture_binaries();
+        let worker = worker.canonicalize().expect("worker path");
         // A control: a plainly launched child, held alive by its open stdin
         // rather than a timer. It must report its parent's responsible process,
         // so the measurement below can tell a disclaimed worker from a plain one.
@@ -221,16 +350,6 @@ mod privacy {
         assert_ne!(responsible_pid(control.0.id()), control.0.id());
 
         let dir = Directory(scratch("privacy"));
-        let source = basal_testkit::dev_binary(env!("CARGO_BIN_EXE_ck-basal"));
-        let source_worker = worker_binary();
-        // Use production bytes side by side, under development file names.
-        // Only `ck-basal` implements the trampoline mode that launches workers
-        // disclaimed; the harness and this test binary don't.
-        let binaries =
-            basal_testkit::DevBinaries::new(&[&source, &source_worker]).expect("development pair");
-        let binary = binaries.path(&source).expect("module path");
-        let worker = binaries.path(&source_worker).expect("worker path");
-        let worker = worker.canonicalize().expect("worker path");
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
             .expect("listen");
@@ -418,24 +537,13 @@ impl Harness {
 
     fn wait(mut self) -> ExitStatus {
         drop(self.stdin.take());
-        let deadline = Instant::now() + Duration::from_secs(60);
-        let status = loop {
-            if let Some(status) = self.child.try_wait().expect("wait") {
-                break status;
-            }
-            if Instant::now() >= deadline {
-                self.child.kill().expect("kill stalled harness");
-                let _ = self.child.wait();
-                panic!("timed out waiting for harness exit");
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        };
-        let stderr = self
-            .stderr
-            .take()
-            .unwrap()
-            .join()
-            .expect("harness diagnostics thread");
+        let status = wait_for_exit(&mut self.child, Instant::now() + Duration::from_secs(60))
+            .expect("harness exit deadline");
+        let stderr = join_reader_until(
+            self.stderr.take().unwrap(),
+            Instant::now() + Duration::from_secs(60),
+        )
+        .expect("harness diagnostics thread");
         if !stderr.is_empty() {
             eprintln!("{}", String::from_utf8_lossy(&stderr));
         }
@@ -454,11 +562,24 @@ impl Drop for Harness {
         drop(self.stdin.take());
         let _ = self.child.kill();
         let _ = self.child.wait();
-        if let Some(reader) = self.stdout_reader.take() {
-            let _ = reader.join();
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut errors = Vec::new();
+        if let Some(reader) = self.stdout_reader.take()
+            && let Err(error) = join_reader_until(reader, deadline)
+        {
+            errors.push(format!("stdout: {error}"));
         }
-        if let Some(reader) = self.stderr.take() {
-            let _ = reader.join();
+        if let Some(reader) = self.stderr.take()
+            && let Err(error) = join_reader_until(reader, deadline)
+        {
+            errors.push(format!("stderr: {error}"));
+        }
+        if !errors.is_empty() {
+            if std::thread::panicking() {
+                eprintln!("harness reader cleanup: {errors:?}");
+            } else {
+                panic!("harness reader cleanup: {errors:?}");
+            }
         }
     }
 }
@@ -472,6 +593,96 @@ impl Drop for Directory {
 
 fn scratch(tag: &str) -> PathBuf {
     basal_testkit::harness::scratch(&format!("e2e-{tag}"))
+}
+
+#[cfg(unix)]
+#[test]
+fn copied_test_executable_accepts_exact_ignored_arguments() {
+    let original = std::env::current_exe().expect("test executable");
+    let (binaries, executable, module, worker) = placed_probe_binaries();
+    assert_eq!(executable.file_name(), original.file_name());
+    assert_eq!(
+        executable,
+        binaries.path(&original).expect("placed test path")
+    );
+    let dir = Directory(scratch("copied-libtest"));
+    let log_path = dir.0.join("libtest.log");
+    let log = std::fs::File::create(&log_path).expect("copied libtest log");
+    let mut child = Command::new(&executable)
+        .args([
+            "--exact",
+            "copied_test_executable_entrypoint",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env(
+            "BASAL_E2E_EXPECTED_PROBE",
+            executable.canonicalize().unwrap(),
+        )
+        .env(PROBE_MODULE, module)
+        .env(PROBE_WORKER, worker)
+        .stdin(Stdio::null())
+        .stdout(log.try_clone().unwrap())
+        .stderr(log)
+        .spawn()
+        .expect("copied libtest executable");
+    let outcome = wait_for_exit(&mut child, Instant::now() + Duration::from_secs(300));
+    let output = std::fs::read_to_string(log_path).expect("copied libtest output");
+    assert!(
+        outcome.as_ref().is_ok_and(|status| status.success()),
+        "copied test {} failed: {outcome:?}; log:\n{output}",
+        executable.display()
+    );
+    assert!(output.contains("copied e2e entrypoint reached"), "{output}");
+}
+
+#[cfg(unix)]
+#[test]
+#[ignore = "selected by copied_test_executable_accepts_exact_ignored_arguments"]
+fn copied_test_executable_entrypoint() {
+    let executable = std::env::current_exe().unwrap().canonicalize().unwrap();
+    let expected = std::env::var_os("BASAL_E2E_EXPECTED_PROBE").expect("expected copy path");
+    assert_eq!(executable, PathBuf::from(expected));
+    let (module, worker) = probe_fixture_binaries();
+    for binary in [module, worker] {
+        let binary = binary.canonicalize().expect("placed fixture binary");
+        assert_eq!(binary.parent(), executable.parent());
+        assert!(binary.metadata().unwrap().len() > 0);
+    }
+    println!("copied e2e entrypoint reached");
+}
+
+#[cfg(unix)]
+#[test]
+fn child_exit_deadline_kills_and_reaps_a_stalled_child() {
+    let mut child = Command::new("/bin/cat")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("stalled child");
+    let pid = child.id() as libc::pid_t;
+    let error = wait_for_exit(&mut child, Instant::now()).expect_err("live child must time out");
+    assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+    let mut status = 0;
+    // SAFETY: this test owns the child and the status buffer is valid.
+    assert_eq!(
+        unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) },
+        -1
+    );
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ECHILD)
+    );
+}
+
+#[test]
+fn reader_deadline_does_not_wait_for_an_open_pipe() {
+    let (mut read, write) = std::io::pipe().expect("reader pipe");
+    let reader = std::thread::spawn(move || read.read(&mut [0u8; 1]).expect("pipe read"));
+    let error = join_reader_until(reader, Instant::now()).expect_err("reader must time out");
+    drop(write);
+    assert_eq!(error, "reader deadline elapsed after child exit");
 }
 
 /// Whether the module ended the way an outside kill ends it. On Unix that is
@@ -578,12 +789,15 @@ fn git_repo(dir: &Path) {
         &["add", "CHANGELOG.md"],
         &["commit", "-q", "-m", "release v1"],
     ] {
-        let status = git_command()
-            .current_dir(dir)
-            .args(args)
-            .status()
-            .expect("git");
-        assert!(status.success(), "git {args:?}");
+        let mut command = git_command();
+        command.current_dir(dir).args(args);
+        let output = basal_testkit::process::output_until(&mut command, Duration::from_secs(60))
+            .expect("git fixture command deadline");
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }
 
