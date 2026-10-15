@@ -62,4 +62,4 @@ change to what the module returns. After such a change, update `SHA256SUMS`, its
 pinned manifest hash in the integrity test, and the corpus version tag. Tests
 compare all 44 JSON files byte-for-byte, check directory/hash coverage, and pin
 the manifest hash and the three unchanged upstream input hashes. See the
-[requester contract](../../docs/contracts/consent-requester-v1.md).
+[requester contract](https://github.com/cortexkit/cingulate/blob/962594d/docs/contracts/consent-requester-v1.md).

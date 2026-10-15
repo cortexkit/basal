@@ -428,7 +428,7 @@ fn requester_vectors_are_pinned_and_all_three_requests_match_bytes() {
     let manifest = std::fs::read(dir.join("SHA256SUMS")).unwrap();
     assert_eq!(
         format!("{:x}", Sha256::digest(&manifest)),
-        "e4eb488651dbd1e3c3164644a4e4bc0ba3d39f81cb4f3e1f09cc7913564a3248"
+        "debc4ca40807fae5ad26cf1448f2ff4b062af7ebd0914244b08c9d3efb015642"
     );
     let entries: Vec<_> = String::from_utf8(manifest)
         .unwrap()
@@ -469,7 +469,9 @@ fn requester_vectors_are_pinned_and_all_three_requests_match_bytes() {
             bytes,
             std::fs::read(dir.join(format!("{}-request.json", kind.as_str()))).unwrap()
         );
-        let body = serde_json::to_string_pretty(params).unwrap() + "\n";
+        let mut core_body = params.clone();
+        core_body.as_object_mut().unwrap().remove("facts");
+        let body = serde_json::to_string_pretty(&core_body).unwrap() + "\n";
         assert_eq!(
             body.as_bytes(),
             std::fs::read(dir.join(format!("{}-body.json", kind.as_str()))).unwrap()

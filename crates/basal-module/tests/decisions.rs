@@ -91,6 +91,10 @@ struct Rig {
 
 impl Rig {
     fn new(tag: &str, rate: Option<RateLimits>) -> Self {
+        Self::with_store_id(tag, rate, None)
+    }
+
+    fn with_store_id(tag: &str, rate: Option<RateLimits>, store_id: Option<&str>) -> Self {
         let dir = common::scratch(tag);
         let pool = PoolConfig::new(
             basal_testkit::channel::worker_binary(),
@@ -111,6 +115,18 @@ impl Rig {
             engine: EngineConfig::default(),
             dry_run: DryRunConfig::new(dir.join("dry")),
         };
+        if let Some(store_id) = store_id {
+            // Run IDs include the store identity, so seed it before module startup for stable vectors.
+            let store = basal_core::Store::open(&config.store_path, Durability::throwaway())
+                .expect("open deterministic fixture store");
+            store
+                .write(|tx| {
+                    tx.execute("UPDATE meta SET value=?1 WHERE key='store_id'", [store_id])?;
+                    Ok(())
+                })
+                .expect("set deterministic fixture store id");
+            drop(store);
+        }
         let fake = Fake::new();
         let consent = Arc::new(CoreConsent::new(fake.clone()));
         let mut rig = Self {
@@ -167,11 +183,15 @@ impl Rig {
 
     /// Installs `script` as the operator and approves its install card.
     fn install(&self, script: &str) {
+        self.install_with_manifest(script, manifest());
+    }
+
+    fn install_with_manifest(&self, script: &str, manifest: Value) {
         self.m()
             .handle(
                 &Caller::Operator,
                 "flow.install",
-                json!({"script":script,"manifest":manifest().to_string()}),
+                json!({"script":script,"manifest":manifest.to_string()}),
             )
             .expect("install");
         let flow = self.fake.calls("flow.install_request")[0]["params"]["flow_install"].clone();
@@ -234,7 +254,10 @@ impl Rig {
             .into_iter()
             .filter(|c| c.dedup_key == key)
             .collect();
-        cards.last().cloned().expect("a card under the key")
+        cards
+            .last()
+            .cloned()
+            .unwrap_or_else(|| panic!("no decision card under {key}; found {} cards", cards.len()))
     }
 
     /// The audit rows written through the card with this elicitation id,
@@ -298,13 +321,21 @@ fn a_run_in_needs_reconcile_raises_one_card_per_unknown_call_to_the_operator_onl
     assert_eq!(request["dedup_key"], key);
     assert_eq!(request["scope"], json!({"flow_id":FLOW}));
     assert_eq!(request["target"], json!({"kind":"flow","label":FLOW}));
-    // The typed body core writes the card's facts from; basal sends no
-    // facts and no step of its own.
+    // The typed body core writes the card's facts from; basal renders the
+    // relevant fields as plain text and omits Step because this card has none.
     assert_eq!(
         request["flow_decision"],
         json!({"flow_id":FLOW,"version":1,"decision":"reconcile","run_id":run,
             "run_admitted_at_ms":common::T0,"call_key":call.idempotency_key,"op":"mock.post",
             "attempts":1,"unknown_reason":"connection_lost"})
+    );
+    assert_eq!(
+        request["facts"],
+        json!([
+            {"label":"Run","value":"2026-05-01 00:00 UTC"},
+            {"label":"Call in doubt","value":"mock.post, attempt 1"},
+            {"label":"Why unknown","value":"The connection closed before a reply came."}
+        ])
     );
     for absent in [
         "session_ref",
@@ -312,7 +343,6 @@ fn a_run_in_needs_reconcile_raises_one_card_per_unknown_call_to_the_operator_onl
         "author",
         "subject",
         "preview",
-        "facts",
     ] {
         assert!(request.get(absent).is_none(), "{absent} in {request}");
     }
@@ -853,6 +883,26 @@ fn auto_disabled(tag: &str) -> Rig {
     rig
 }
 
+/// Exceeds the call budget during a run so the engine records a re-enable
+/// card for a dispatch-limit auto-disable, rather than a run-limit one.
+fn dispatch_disabled(tag: &str, store_id: &str) -> Rig {
+    let mut rate = tight();
+    rate.max_runs = 10;
+    rate.max_dispatches = 1;
+    let rig = Rig::with_store_id(tag, Some(rate), Some(store_id));
+    rig.install(
+        "await ops.call('mock','echo',{n:1}); await ops.call('mock','echo',{n:2}); return 1;",
+    );
+    rig.admit("dispatch-limit")
+        .expect("run admitted before call limit");
+    rig.pass();
+    assert!(
+        !rig.m().rt.flow(FLOW).unwrap().unwrap().enabled,
+        "the dispatch limit disables the flow"
+    );
+    rig
+}
+
 #[test]
 fn an_auto_disabled_flow_raises_one_reenable_card_and_each_option_applies() {
     let key = decisions::reenable_key(FLOW, 1);
@@ -877,8 +927,8 @@ fn an_auto_disabled_flow_raises_one_reenable_card_and_each_option_applies() {
     assert_eq!(
         request["prompt"],
         format!(
-            "basal disabled {FLOW} at 2026-05-01 00:00 UTC: it reached its limit of 1 runs per \
-             60-second window in 1 windows in a row."
+            "basal disabled {FLOW} at 2026-05-01 00:00 UTC: it reached its limit of 1 run per \
+             60-second window in 1 window in a row."
         )
     );
     // The rule's numbers as they were when it tripped, kept with the
@@ -1053,17 +1103,13 @@ const VECTORS: &str = concat!(
     "/tests/vectors/flow-decision-card-v2"
 );
 
-/// The request files in prefrontal's test-vectors/flow-decision-card-v2:
-/// reconcile and re-enable from that repository's flow-decision-card-v2 tag,
-/// and grant-loss from its GrantLost extension. The grant hashes are published
-/// in prefrontal-core-module/tests/fixtures/consent_surface/SHA256SUMS.
-/// Each copy is checked against a pinned SHA-256; basal's builder
-/// produces each byte for byte from the vector's inputs. The vectors fix
-/// the shape; basal's own cards carry their own title, prompt, option ids,
-/// labels and expiry, plus `dedup_key` and `args_digest`, which core's
-/// decoder accepts.
+/// The prefrontal-core service publishes v2 consent-request examples that
+/// define the request envelope and typed decision body it accepts. Basal adds
+/// phone `facts` as separate display rows; this test removes only that array
+/// when comparing core-defined fields, then checks the full request with the
+/// fake decoder.
 #[test]
-fn the_request_builder_reproduces_core_vectors_byte_for_byte() {
+fn the_request_builder_preserves_core_vector_fields_and_adds_facts() {
     use sha2::{Digest, Sha256};
     for (file, sha256, card) in [
         (
@@ -1089,9 +1135,13 @@ fn the_request_builder_reproduces_core_vectors_byte_for_byte() {
             "{file} is the pinned vector"
         );
         let built = decision_request(&card).unwrap();
-        let text = serde_json::to_string_pretty(&built).unwrap() + "\n";
+        assert!(built["facts"].is_array());
+        let mut core_shape = built.clone();
+        core_shape.as_object_mut().unwrap().remove("facts");
+        let text = serde_json::to_string_pretty(&core_shape).unwrap() + "\n";
         assert_eq!(text, String::from_utf8(bytes).unwrap(), "{file}");
-        // The fake core accepts the built request.
+        // The fake checks the closed v2 envelope/body, declining default,
+        // option effects, and that fact labels and values are strings.
         let fake = Fake::new();
         assert!(
             fake.management("prefrontal-core", "elicitation.request", built)
@@ -1102,6 +1152,220 @@ fn the_request_builder_reproduces_core_vectors_byte_for_byte() {
 }
 
 #[test]
+fn the_phone_fixture_vectors_are_generated_by_the_engine_card_builders() {
+    use basal_host::flow_refusal::{FlowRefusal, RefusalReason};
+    use sha2::{Digest, Sha256};
+
+    const STORE_ID: &str = "phone-decision-fixture-v1";
+    const GRANT: &str = "grant:github:read:cortexkit/basal";
+    const GRANT_LABEL: &str = "Read GitHub for cortexkit/basal";
+    const DIRECTORY: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../test-vectors/flow-decision-phone-v1"
+    );
+
+    let reconcile = Rig::with_store_id("phone-decision-reconcile", None, Some(STORE_ID));
+    let run = reconcile.lost_post(POST);
+    assert_eq!(run, format!("run-{STORE_ID}-1"));
+    let reconcile_record = reconcile.card(&decisions::reconcile_key(FLOW, &run, 0));
+    assert_eq!(reconcile_record.kind, DecisionKind::Reconcile);
+    assert_eq!(reconcile_record.version, 1);
+    let DecisionContext::Reconcile {
+        run_id: card_run,
+        run_admitted_at_ms,
+        call_key,
+        op,
+        attempts,
+        unknown_reason,
+        ..
+    } = reconcile_record.context().unwrap()
+    else {
+        panic!("expected reconcile context");
+    };
+    assert_eq!(card_run, run);
+    assert_eq!(call_key, basal_core::ids::idempotency_key(FLOW, &run, 0));
+    assert_eq!(run_admitted_at_ms, common::T0);
+    assert_eq!(op, "mock.post");
+    assert_eq!(attempts, 1);
+    assert_eq!(unknown_reason, UnknownReason::ConnectionLost);
+
+    let reenable = dispatch_disabled("phone-decision-reenable", STORE_ID);
+    let reenable_record = reenable.card(&decisions::reenable_key(FLOW, 1));
+    assert_eq!(reenable_record.kind, DecisionKind::Reenable);
+    assert_eq!(reenable_record.version, 1);
+    assert_eq!(
+        reenable_record.context().unwrap(),
+        DecisionContext::Reenable {
+            disabled_at_ms: common::T0,
+            disabled_reason: DisabledReason::DispatchLimitSaturated,
+            limit: 1,
+            window_ms: 60_000,
+            saturated_windows: 1,
+        }
+    );
+
+    let grant_lost = Rig::with_store_id("phone-decision-grant-lost", None, Some(STORE_ID));
+    grant_lost.fake.catalog.lock().unwrap()["modules"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"module_id":"plexus","roles":[{"role":"management_surface","operations":[{"name":"read","kind":"query"}],"config_schema":{},"observability":[],"identity_scope":[],"concurrency":"serial"}],"control_ops":[]}));
+    let mut grant_manifest = manifest();
+    grant_manifest["ops"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"module":"plexus","op":"read"}));
+    grant_lost.install_with_manifest(
+        "return await ops.call('plexus','read',{n:1});",
+        grant_manifest,
+    );
+    let mut refusal = FlowRefusal::new(RefusalReason::ModuleGrantAbsent, "plexus", "read");
+    refusal.detail = Some(json!({"grant":GRANT,"grant_label":GRANT_LABEL}));
+    grant_lost
+        .fake
+        .enqueue("read", vec![Err(WireError::Typed(refusal))]);
+    let grant_lost_run = grant_lost.admit("grant-loss").expect("run admitted");
+    grant_lost.pass();
+    let grant_record = grant_lost
+        .m()
+        .rt
+        .decision_cards()
+        .unwrap()
+        .into_iter()
+        .find(|record| record.kind == DecisionKind::GrantLost)
+        .unwrap_or_else(|| {
+            panic!(
+                "grant loss was not recorded for run {grant_lost_run}; state: {:?}",
+                grant_lost.m().rt.run(&grant_lost_run).unwrap().state
+            )
+        });
+    assert_eq!(grant_record.kind, DecisionKind::GrantLost);
+    assert_eq!(grant_record.version, 1);
+    assert_eq!(
+        grant_record.context().unwrap(),
+        DecisionContext::GrantLost {
+            provider: "plexus".into(),
+            grant: GRANT.into(),
+            grant_label: GRANT_LABEL.into(),
+            refused_at_ms: common::T0,
+        }
+    );
+
+    let write_vectors = std::env::var("BASAL_WRITE_VECTORS").as_deref() == Ok("1");
+    if write_vectors {
+        std::fs::create_dir_all(DIRECTORY).expect("create phone vector directory");
+    }
+
+    let records = [
+        ("decision-reconcile-request.json", reconcile_record),
+        ("decision-reenable-request.json", reenable_record),
+        ("decision-grant-lost-request.json", grant_record),
+    ];
+    let mut generated = Vec::new();
+    for (file, record) in records {
+        let card = record.to_card().expect("production decision card");
+        let request = decision_request(&card).expect("production consent request");
+        assert_eq!(request["title"], card.title);
+        let expected_title = match record.kind {
+            DecisionKind::Reconcile => "A run of host-flow may not have finished",
+            DecisionKind::Reenable => "host-flow was disabled",
+            DecisionKind::GrantLost => "host-flow lost a permission",
+        };
+        assert_eq!(card.title, expected_title);
+        assert!(card.title.chars().count() <= 80);
+        assert_eq!(request["prompt"], card.prompt);
+        let expected_facts = match record.kind {
+            DecisionKind::Reconcile => json!([
+                {"label":"Run","value":"2026-05-01 00:00 UTC"},
+                {"label":"Call in doubt","value":"mock.post, attempt 1"},
+                {"label":"Why unknown","value":"The connection closed before a reply came."}
+            ]),
+            DecisionKind::Reenable => json!([
+                {"label":"Disabled at","value":"2026-05-01 00:00 UTC"},
+                {"label":"Why disabled","value":"It hit its limit of 1 call per 60-second window in 1 window in a row."}
+            ]),
+            DecisionKind::GrantLost => json!([
+                {"label":"Provider","value":"plexus"},
+                {"label":"Grant","value":"Read GitHub for cortexkit/basal"},
+                {"label":"Refused at","value":"2026-05-01 00:00 UTC"}
+            ]),
+        };
+        assert_eq!(request["facts"], expected_facts);
+        assert!(request["facts"].as_array().unwrap().len() <= 4);
+        for fact in request["facts"].as_array().unwrap() {
+            assert!(fact["label"].as_str().unwrap().len() <= 32);
+            let value = fact["value"].as_str().unwrap();
+            assert!(value.len() <= 200);
+            assert!(!fact["label"].as_str().unwrap().ends_with(':'));
+            assert!(!matches!(value, "null" | "none"));
+        }
+        assert!(
+            Fake::new()
+                .management("prefrontal-core", "elicitation.request", request.clone())
+                .is_ok(),
+            "the fake core accepts {file}"
+        );
+        assert_eq!(request["scope"], json!({"flow_id":card.flow_id}));
+        assert_eq!(
+            request["target"],
+            json!({"kind":"flow","label":card.flow_id})
+        );
+        assert_eq!(
+            request["expires_in_ms"],
+            basal_host::core_consent::DECISION_EXPIRES_IN_MS
+        );
+        assert!(request["dedup_key"].is_string());
+        assert!(request["default"].is_string());
+        assert!(request["options"].is_array());
+        assert!(request["flow_decision"].is_object());
+        assert!(
+            request["facts"].is_array(),
+            "basal supplies the phone's text facts"
+        );
+        assert_eq!(
+            request.get("args_digest").is_some(),
+            record.kind == DecisionKind::Reconcile
+        );
+
+        let text = serde_json::to_string_pretty(&request).expect("pretty JSON") + "\n";
+        let bytes = text.into_bytes();
+        if write_vectors {
+            std::fs::write(format!("{DIRECTORY}/{file}"), &bytes)
+                .expect("write generated phone request");
+        }
+        let committed = std::fs::read(format!("{DIRECTORY}/{file}")).unwrap_or_else(|_| {
+            panic!(
+                "missing {file}; generated bytes:\n{}",
+                String::from_utf8_lossy(&bytes)
+            )
+        });
+        assert_eq!(
+            committed,
+            bytes,
+            "{file} differs from the production builder; generated bytes:\n{}",
+            String::from_utf8_lossy(&bytes)
+        );
+        generated.push((file, bytes));
+    }
+
+    let readme = std::fs::read(format!("{DIRECTORY}/README.md")).expect("phone vector README");
+    let mut sums = String::new();
+    sums.push_str(&format!("{}  README.md\n", hex(&Sha256::digest(&readme))));
+    for (file, bytes) in &generated {
+        sums.push_str(&format!("{}  {file}\n", hex(&Sha256::digest(bytes))));
+    }
+    if write_vectors {
+        std::fs::write(format!("{DIRECTORY}/SHA256SUMS"), &sums)
+            .expect("write phone vector checksums");
+    }
+    let committed_sums = std::fs::read_to_string(format!("{DIRECTORY}/SHA256SUMS"))
+        .unwrap_or_else(|_| panic!("missing SHA256SUMS; generated contents:\n{sums}"));
+    assert_eq!(
+        committed_sums, sums,
+        "SHA256SUMS differs from generated bytes:\n{sums}"
+    );
+}
+
+#[test]
 fn decision_requests_follow_core_rules_and_the_fake_core_refuses_any_other() {
     let mut good = vector_card(reconcile_context("run-1", "key-1"));
     good.dedup_key = Some("flow_decision:test".into());
@@ -1109,7 +1373,7 @@ fn decision_requests_follow_core_rules_and_the_fake_core_refuses_any_other() {
     let sent = decision_request(&good).unwrap();
     assert_eq!(sent["dedup_key"], "flow_decision:test");
     assert_eq!(sent["args_digest"], "00".repeat(32));
-    assert!(sent.get("facts").is_none(), "core writes the facts");
+    assert!(sent["facts"].is_array(), "basal supplies phone facts");
     // basal refuses to send a card that breaks core's rules.
     let with = |list: &[(&str, &str, bool)]| DecisionCard {
         options: options(list),
@@ -1280,7 +1544,7 @@ fn grant_lost_phone_vector_and_production_prompt_are_pinned() {
     assert!(request["flow_decision"].get("version").is_none());
     assert_eq!(
         basal_core::decisions::prompt("flow-x", &grant_lost_context()),
-        phone["prompt"].as_str().unwrap()
+        "flow-x was disabled after github refused its grant at 2026-06-02 14:05 UTC. Check now re-checks the permission. Keep disabled stops checking. If you don't answer, basal keeps checking in the background and changes nothing."
     );
     assert_eq!(phone["facts"][4]["value"], "2026-06-02 14:05 UTC");
 }

@@ -241,7 +241,7 @@ impl DecisionRecord {
             dedup_key: Some(self.dedup_key.clone()),
             flow_id: self.flow_id.clone(),
             version: self.version,
-            title: title(&self.flow_id),
+            title: title(&self.flow_id, self.kind),
             prompt: prompt(&self.flow_id, &context),
             context,
             args_digest,
@@ -332,17 +332,33 @@ fn what_happened(reason: UnknownReason) -> &'static str {
     }
 }
 
-/// The unit of a per-window limit.
-fn unit(reason: DisabledReason) -> &'static str {
-    match reason {
-        DisabledReason::RunLimitSaturated => "runs",
-        DisabledReason::DispatchLimitSaturated => "calls",
+/// The correctly inflected unit for the limit that was reached.
+fn unit(reason: DisabledReason, limit: u32) -> &'static str {
+    match (reason, limit) {
+        (DisabledReason::RunLimitSaturated, 1) => "run",
+        (DisabledReason::RunLimitSaturated, _) => "runs",
+        (DisabledReason::DispatchLimitSaturated, 1) => "call",
+        (DisabledReason::DispatchLimitSaturated, _) => "calls",
     }
 }
 
-/// The card's title, as core's test vectors write it.
-fn title(flow_id: &str) -> String {
-    format!("Decide about {flow_id}")
+/// A short title that names the decision and fits on an operator's phone.
+fn title(flow_id: &str, kind: DecisionKind) -> String {
+    const MAX_CHARS: usize = 80;
+    let (prefix, suffix) = match kind {
+        DecisionKind::Reconcile => ("A run of ", " may not have finished"),
+        DecisionKind::Reenable => ("", " was disabled"),
+        DecisionKind::GrantLost => ("", " lost a permission"),
+    };
+    let available = MAX_CHARS - prefix.chars().count() - suffix.chars().count();
+    let flow_id = if flow_id.chars().count() <= available {
+        flow_id.to_owned()
+    } else {
+        let mut shortened: String = flow_id.chars().take(available - 1).collect();
+        shortened.push('…');
+        shortened
+    };
+    format!("{prefix}{flow_id}{suffix}")
 }
 
 /// The card's prompt: one readable sentence written from its context.
@@ -353,7 +369,7 @@ pub fn prompt(flow_id: &str, context: &DecisionContext) -> String {
             refused_at_ms,
             ..
         } => format!(
-            "{flow_id} was disabled after {provider} refused its grant at {}. Check now re-checks the existing grant; keep disabled stops polling. No answer keeps background polling without applying a choice.",
+            "{flow_id} was disabled after {provider} refused its grant at {}. Check now re-checks the permission. Keep disabled stops checking. If you don't answer, basal keeps checking in the background and changes nothing.",
             clock(*refused_at_ms, "%Y-%m-%d %H:%M UTC")
         ),
         DecisionContext::Reconcile {
@@ -372,13 +388,80 @@ pub fn prompt(flow_id: &str, context: &DecisionContext) -> String {
             limit,
             window_ms,
             saturated_windows,
-        } => format!(
-            "basal disabled {flow_id} at {}: it reached its limit of {limit} {} per {} window \
-             in {saturated_windows} windows in a row.",
-            clock(*disabled_at_ms, "%Y-%m-%d %H:%M UTC"),
-            unit(*disabled_reason),
-            window(*window_ms)
-        ),
+        } => {
+            let limit_unit = unit(*disabled_reason, *limit);
+            let window_unit = if *saturated_windows == 1 {
+                "window"
+            } else {
+                "windows"
+            };
+            format!(
+                "basal disabled {flow_id} at {}: it reached its limit of {limit} {limit_unit} per {} window in {saturated_windows} {window_unit} in a row.",
+                clock(*disabled_at_ms, "%Y-%m-%d %H:%M UTC"),
+                window(*window_ms)
+            )
+        }
+    }
+}
+
+#[cfg(test)]
+mod presentation_tests {
+    use super::*;
+
+    #[test]
+    fn decision_titles_name_each_situation_and_fit_the_phone_limit() {
+        for (kind, expected) in [
+            (
+                DecisionKind::Reconcile,
+                "A run of flow-x may not have finished",
+            ),
+            (DecisionKind::Reenable, "flow-x was disabled"),
+            (DecisionKind::GrantLost, "flow-x lost a permission"),
+        ] {
+            assert_eq!(title("flow-x", kind), expected);
+            assert!(title(&"x".repeat(256), kind).chars().count() <= 80);
+        }
+    }
+
+    #[test]
+    fn reenable_prompts_pluralize_run_call_and_window_counts() {
+        for (reason, limit, saturated_windows, limit_unit, window_unit) in [
+            (DisabledReason::RunLimitSaturated, 1, 1, "run", "window"),
+            (DisabledReason::RunLimitSaturated, 2, 2, "runs", "windows"),
+            (
+                DisabledReason::DispatchLimitSaturated,
+                1,
+                1,
+                "call",
+                "window",
+            ),
+            (
+                DisabledReason::DispatchLimitSaturated,
+                2,
+                2,
+                "calls",
+                "windows",
+            ),
+            (
+                DisabledReason::DispatchLimitSaturated,
+                3,
+                1,
+                "calls",
+                "window",
+            ),
+        ] {
+            let context = DecisionContext::Reenable {
+                disabled_at_ms: 1_777_593_600_000,
+                disabled_reason: reason,
+                limit,
+                window_ms: 60_000,
+                saturated_windows,
+            };
+            let expected = format!(
+                "basal disabled flow-x at 2026-05-01 00:00 UTC: it reached its limit of {limit} {limit_unit} per 60-second window in {saturated_windows} {window_unit} in a row."
+            );
+            assert_eq!(prompt("flow-x", &context), expected);
+        }
     }
 }
 

@@ -29,6 +29,7 @@ rig-kill-hook = []
 basal-proto.workspace = true
 cortexkit-resource-busy.workspace = true
 httparse.workspace = true
+jiff.workspace = true
 libc.workspace = true
 rustls.workspace = true
 serde_json.workspace = true
