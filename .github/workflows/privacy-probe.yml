@@ -34,13 +34,12 @@ jobs:
           tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/nats-server-v2.15.0-$platform" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/nats-server-v2.15.0-$platform/nats-server" --version
-      - name: Build workspace tests and spawn-path interposer
+      - name: Build workspace tests and originator launcher
         run: |
           cargo test --locked --workspace --no-run --message-format=json > "$RUNNER_TEMP/build.jsonl"
           clang --version
-          clang -Wall -Wextra -Werror -dynamiclib script/privacy-spawn-probe.c -o "$RUNNER_TEMP/privacy-spawn-probe.dylib"
           clang -Wall -Wextra -Werror script/privacy-launch.c -o "$RUNNER_TEMP/privacy-launch"
-      - name: Prove both responsibility mutation controls
+      - name: Prove all three responsibility mutation controls
         run: |
           python3 --version
           cargo --version
@@ -52,8 +51,6 @@ jobs:
           cargo test --locked -p basal-module --test e2e
           cargo test --locked --workspace --no-run --message-format=json > "$RUNNER_TEMP/build.jsonl"
       - name: Reproduce under CPU and concurrent e2e load
-        env:
-          BASAL_PRIVACY_TRACE: '1'
         run: python3 script/privacy-probe.py
       - name: Upload every run, including failures
         if: always()

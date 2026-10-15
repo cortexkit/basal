@@ -4,7 +4,6 @@
 #include <dlfcn.h>
 #include <spawn.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -14,13 +13,15 @@ int main(int argc, char **argv) {
     if (argc < 2) return 2;
     if (strcmp(argv[1], "--originator") == 0) {
         if (argc < 3) return 2;
-        char owner[32];
-        snprintf(owner, sizeof(owner), "%d", getpid());
-        if (setenv("BASAL_PRIVACY_ORIGINATOR", owner, 1) != 0) return 5;
         int (*responsible)(pid_t) = dlsym(RTLD_DEFAULT, "responsibility_get_pid_responsible_for_pid");
         fprintf(stderr, "ORIGINATOR_PROBE pid=%d responsible=%d\n", getpid(), responsible ? responsible(getpid()) : -1);
         pid_t child;
-        int result = posix_spawn(&child, argv[2], NULL, NULL, argv + 2, environ);
+        posix_spawnattr_t stopped;
+        int result = posix_spawnattr_init(&stopped);
+        if (result) return result;
+        result = posix_spawnattr_setflags(&stopped, POSIX_SPAWN_START_SUSPENDED);
+        if (!result) result = posix_spawn(&child, argv[2], NULL, &stopped, argv + 2, environ);
+        posix_spawnattr_destroy(&stopped);
         fprintf(stderr, "ORIGINATOR_PROBE child=%d result=%d\n", result ? -1 : child, result);
         return result;
     }

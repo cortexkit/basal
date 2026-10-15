@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import select
 import signal
 import subprocess
 import time
@@ -21,13 +22,6 @@ def main():
                 and a.get("target", {}).get("name") == "e2e" and a.get("executable")
                 and "basal-module" in a.get("package_id", "")]
     assert len(binaries) == 1, binaries
-    env = dict(os.environ, DYLD_INSERT_LIBRARIES=str(tmp / "privacy-spawn-probe.dylib"))
-    for label, child_env in [("injected", env), ("plain", os.environ)]:
-        cat = subprocess.run(["/bin/cat"], input=b"R", stdout=subprocess.PIPE,
-                             stderr=subprocess.PIPE, env=child_env)
-        (out / f"cat-preflight-{label}.json").write_text(json.dumps({
-            "status": cat.returncode, "stdout": cat.stdout.decode(errors="replace"),
-            "stderr": cat.stderr.decode(errors="replace")}) + "\n")
     cores = os.cpu_count() or 2
     results = []
     loads = []
@@ -42,6 +36,21 @@ def main():
                                            start_new_session=True)
                 if orphan:
                     process.wait(timeout=360)
+                    prefix = b""
+                    while True:
+                        ready, _, _ = select.select([process.stdout], [], [],
+                            max(0.1, 360 - (time.monotonic() - before)))
+                        if not ready:
+                            raise subprocess.TimeoutExpired(args, 360)
+                        chunk = os.read(process.stdout.fileno(), 65536)
+                        if not chunk:
+                            raise RuntimeError("originator exited without a suspended child")
+                        prefix += chunk
+                        child = re.search(rb"ORIGINATOR_PROBE child=(\d+) result=0", prefix)
+                        if child:
+                            os.kill(int(child[1]), signal.SIGCONT)
+                            break
+                    log.write(prefix.decode(errors="replace"))
                 output, _ = process.communicate(timeout=max(0.1, 360 - (time.monotonic() - before)))
                 log.write(output.decode(errors="replace"))
                 status = process.returncode
@@ -67,11 +76,11 @@ def main():
             args.insert(1, f"--{mode}")
         if not full:
             args += ["--exact", "privacy::production_worker_is_its_own_responsible_process"]
-        return execute(name, args, os.environ if full else env, mode != "self")
+        return execute(name, args, os.environ, mode != "self")
 
-    def raw_pressure(mode):
+    def raw_probe(mode):
         args = [str(tmp / "privacy-launch"), binaries[0], "--nocapture", "--ignored",
-                "--exact", "privacy::calibration_pressure_probe"]
+                "--exact", "privacy::worker_privacy_probe_with_live_originator"]
         if mode != "self":
             args.insert(1, f"--{mode}")
         return execute(f"raw-{mode}", args, os.environ, mode != "self")
@@ -87,7 +96,7 @@ def main():
 
                 with concurrent.futures.ThreadPoolExecutor(max_workers=cores * 2) as pool:
                     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as raw_pool:
-                        raw = raw_pool.map(raw_pressure, ["self", "orphan", "orphan-inherited"])
+                        raw = raw_pool.map(raw_probe, ["self", "orphan", "orphan-inherited"])
                         for lane_results in pool.map(lane, range(cores * 2)):
                             results.extend(lane_results)
                         mechanism_results = list(raw)

@@ -126,97 +126,10 @@ mod privacy {
         );
     }
 
-    async fn trace_responsibility(pid: u32, phase: &str, started: Instant, first: u32) {
-        if std::env::var_os("BASAL_PRIVACY_TRACE").is_none() {
-            return;
-        }
-        eprintln!(
-            "PRIVACY_PROBE {}",
-            json!({"phase": phase, "pid": pid, "observer": std::process::id(),
-                "elapsed_us": started.elapsed().as_micros(), "responsible": first,
-                "observer_responsible": responsible_pid(std::process::id())})
-        );
-        for delay_ms in [1, 10, 100, 1000] {
-            // Diagnostic sampling only: the assertion uses the value captured before this loop.
-            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-            eprintln!(
-                "PRIVACY_PROBE {}",
-                json!({"phase": phase, "pid": pid, "observer": std::process::id(),
-                    "elapsed_us": started.elapsed().as_micros(), "responsible": responsible_pid(pid),
-                    "observer_responsible": responsible_pid(std::process::id())})
-            );
-        }
-    }
-
-    async fn wait_for_originator_exit() {
-        let Ok(owner) = std::env::var("BASAL_PRIVACY_ORIGINATOR") else {
-            return;
-        };
-        let owner: libc::pid_t = owner.parse().expect("originator pid");
-        tokio::time::timeout(Duration::from_secs(300), async {
-            loop {
-                // SAFETY: signal zero observes whether the diagnostic originator still exists.
-                if unsafe { libc::kill(owner, 0) } == -1 {
-                    assert_eq!(
-                        std::io::Error::last_os_error().raw_os_error(),
-                        Some(libc::ESRCH)
-                    );
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("originator must exit and be reaped before calibration");
-        eprintln!(
-            "ORPHAN_PROBE observer={} responsible={} originator={owner}",
-            std::process::id(),
-            responsible_pid(std::process::id())
-        );
-    }
-
-    #[tokio::test]
-    #[ignore = "temporary GitHub-only calibration pressure probe"]
-    async fn calibration_pressure_probe() {
-        use std::os::unix::process::CommandExt;
-        wait_for_originator_exit().await;
-        for iteration in 0..5000 {
-            let started = Instant::now();
-            let mut command = Command::new("/bin/cat");
-            command
-                .env_remove("DYLD_INSERT_LIBRARIES")
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::inherit());
-            let fork = iteration % 2 == 1;
-            if fork {
-                // SAFETY: the diagnostic hook performs no operations in the forked child.
-                unsafe { command.pre_exec(|| Ok(())) };
-            }
-            let mut control = ReapedChild(command.spawn().expect("pressure control"));
-            let at_spawn = responsible_pid(control.0.id());
-            cat_exec_barrier(&mut control).await;
-            let at_echo = responsible_pid(control.0.id());
-            let parent = responsible_pid(std::process::id());
-            eprintln!(
-                "PRIVACY_PRESSURE {}",
-                json!({"iteration": iteration, "fork": fork, "pid": control.0.id(),
-                    "observer": std::process::id(), "parent_responsible": parent,
-                    "spawn_responsible": at_spawn, "echo_responsible": at_echo,
-                    "elapsed_us": started.elapsed().as_micros()})
-            );
-            if at_spawn != parent || at_echo != parent {
-                trace_responsibility(control.0.id(), "pressure_echo", started, at_echo).await;
-            }
-            assert_eq!(at_echo, parent, "pressure plain control inheritance");
-        }
-    }
-
     #[tokio::test]
     async fn plain_control_exec_barrier_drains_its_ack() {
         let mut control = ReapedChild(
             Command::new("/bin/cat")
-                .env_remove("DYLD_INSERT_LIBRARIES")
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
@@ -284,7 +197,6 @@ mod privacy {
 
     #[tokio::test]
     async fn production_worker_is_its_own_responsible_process() {
-        wait_for_originator_exit().await;
         // A self result alone does not establish a live responsibility originator:
         // after an inherited originator exits, both parent and plain child can
         // report themselves. Give the probe an explicit, live identity instead.
@@ -307,7 +219,6 @@ mod privacy {
                 "--ignored",
                 "--nocapture",
             ])
-            .env_remove("DYLD_INSERT_LIBRARIES")
             .stdin(Stdio::null())
             .stdout(log.try_clone().expect("probe stdout"))
             .stderr(log);
@@ -330,7 +241,6 @@ mod privacy {
     #[tokio::test]
     #[ignore = "run by production_worker_is_its_own_responsible_process with an explicit originator"]
     async fn worker_privacy_probe_with_live_originator() {
-        wait_for_originator_exit().await;
         assert_eq!(responsible_pid(std::process::id()), std::process::id());
         let source = basal_testkit::dev_binary(env!("CARGO_BIN_EXE_ck-basal"));
         let source_worker = worker_binary();
@@ -345,29 +255,17 @@ mod privacy {
         // A control: a plainly launched child, held alive by its open stdin
         // rather than a timer. It must report its parent's responsible process,
         // so the measurement below can tell a disclaimed worker from a plain one.
-        let started = Instant::now();
         let mut control = ReapedChild(
             Command::new("/bin/cat")
-                .env_remove("DYLD_INSERT_LIBRARIES")
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
                 .spawn()
                 .expect("plain control child"),
         );
-        if std::env::var_os("BASAL_PRIVACY_TRACE").is_some() {
-            eprintln!(
-                "PRIVACY_PROBE {}",
-                json!({"phase": "control_spawn", "pid": control.0.id(),
-                    "observer": std::process::id(), "elapsed_us": started.elapsed().as_micros(),
-                    "responsible": responsible_pid(control.0.id()),
-                    "observer_responsible": responsible_pid(std::process::id())})
-            );
-        }
         cat_exec_barrier(&mut control).await;
         let parent_responsible = responsible_pid(std::process::id());
         let control_responsible = responsible_pid(control.0.id());
-        trace_responsibility(control.0.id(), "control_echo", started, control_responsible).await;
         assert_eq!(
             control_responsible,
             parent_responsible,
@@ -475,7 +373,6 @@ mod privacy {
             };
             for pid in pids {
                 let responsible = responsible_pid(pid);
-                trace_responsibility(pid, "worker_image", Instant::now(), responsible).await;
                 assert_eq!(
                     responsible, pid,
                     "worker must be its own responsible process"
