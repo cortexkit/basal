@@ -202,7 +202,7 @@ impl Runtime {
     pub fn get_package(&self, package: &str, version: u32) -> Result<Value, PackageError> {
         self.store().read(|c| {
             let Some(p) = get(c, package, version)? else { return Ok(None); };
-            let epoch = Manifest::parse(&p.manifest).map_err(|e| CoreError::Corrupt(e.to_string()))?.state_epoch;
+            let epoch = Manifest::parse_stored(&p.manifest).map_err(|e| CoreError::Corrupt(e.to_string()))?.state_epoch;
             let epochs = c.prepare("SELECT flow_id,state_epoch FROM flows WHERE package=?1 ORDER BY flow_id")?
                 .query_map([package], |r| Ok((r.get::<_,String>(0)?,r.get::<_,u32>(1)?)))?
                 .collect::<rusqlite::Result<std::collections::BTreeMap<_,_>>>()?;
@@ -241,8 +241,8 @@ impl Runtime {
                 return Ok(reply);
             }
             let p = get(tx, package, version)?.ok_or_else(|| refused("package_unknown"))?;
-            let manifest =
-                Manifest::parse(&p.manifest).map_err(|e| CoreError::Corrupt(e.to_string()))?;
+            let manifest = Manifest::parse_stored(&p.manifest)
+                .map_err(|e| CoreError::Corrupt(e.to_string()))?;
             if manifest.params.is_some() {
                 return Err(refused("package_has_params"));
             }
@@ -265,8 +265,8 @@ impl Runtime {
             // A same-version generation changes only ordering and removal.
             // In particular, a disabled schedule must not be reset by a resend.
             if previous != Some(version) {
-                let manifest =
-                    Manifest::parse(&p.manifest).map_err(|e| CoreError::Corrupt(e.to_string()))?;
+                let manifest = Manifest::parse_stored(&p.manifest)
+                    .map_err(|e| CoreError::Corrupt(e.to_string()))?;
                 if let Some(spec) = manifest.trigger.schedule {
                     let now = jiff::Timestamp::from_millisecond(self.config().clock.now_ms())
                         .map_err(|e| CoreError::Invalid(e.to_string()))?;

@@ -624,7 +624,7 @@ fn schedule_approved(
         params![flow_id, version_i64(version)],
         |r| r.get(0),
     )?;
-    let manifest = Manifest::parse(&manifest_text)
+    let manifest = Manifest::parse_stored(&manifest_text)
         .map_err(|e| CoreError::Corrupt(format!("installed manifest of {flow_id}: {e}")))?;
     match manifest.trigger.schedule {
         Some(spec) => {

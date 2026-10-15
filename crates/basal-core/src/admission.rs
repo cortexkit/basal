@@ -133,8 +133,8 @@ fn approved_deadline(text: &str, default_ms: i64) -> Result<i64> {
     {
         return Ok(*deadline);
     }
-    let manifest =
-        Manifest::parse(text).map_err(|e| CoreError::Corrupt(format!("approved manifest: {e}")))?;
+    let manifest = Manifest::parse_stored(text)
+        .map_err(|e| CoreError::Corrupt(format!("approved manifest: {e}")))?;
     let deadline = manifest.deadline_ms(default_ms);
     // Exact bytes validated by this process need not be decoded and checked
     // again on every trigger. Invalid bytes never enter the bounded cache.
@@ -184,7 +184,7 @@ fn gate(
         return Ok(Err(Admission::NotApproved));
     }
     let deadline_ms = approved_deadline(&spec.manifest, ctx.default_deadline_ms)?;
-    let epoch = Manifest::parse(&spec.manifest)
+    let epoch = Manifest::parse_stored(&spec.manifest)
         .map_err(|e| CoreError::Corrupt(e.to_string()))?
         .state_epoch;
     if crate::state_epoch::recorded(tx, &spec.flow_id)? != epoch

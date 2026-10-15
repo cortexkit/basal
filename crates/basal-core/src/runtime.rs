@@ -1211,7 +1211,7 @@ impl Runtime {
             let Some(approved) = crate::install::approved(c, flow_id)? else {
                 return Ok(None);
             };
-            let manifest = crate::manifest::Manifest::parse(&approved.manifest)
+            let manifest = crate::manifest::Manifest::parse_stored(&approved.manifest)
                 .map_err(|e| CoreError::Corrupt(e.to_string()))?;
             let Some(window_ms) = manifest.token_window_ms() else {
                 return Ok(None);

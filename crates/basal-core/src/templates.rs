@@ -576,7 +576,7 @@ impl crate::Runtime {
             .store()
             .read(|conn| crate::packages::get(conn, template, version))?
             .ok_or_else(|| refused("package_unknown", Value::Null))?;
-        let manifest = Manifest::parse(&package.manifest)
+        let manifest = Manifest::parse_stored(&package.manifest)
             .map_err(|e| crate::CoreError::Corrupt(e.to_string()))?;
         if manifest.params.is_none() {
             return Err(refused("package_not_template", Value::Null));

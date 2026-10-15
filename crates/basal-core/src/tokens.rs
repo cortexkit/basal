@@ -526,7 +526,7 @@ pub(crate) fn window_usage_many(
             crate::model::digest(row.get(2)?)?;
             let _: String = row.get(3)?;
             let manifest: String = row.get(4)?;
-            let manifest = crate::manifest::Manifest::parse(&manifest)
+            let manifest = crate::manifest::Manifest::parse_stored(&manifest)
                 .map_err(|e| CoreError::Corrupt(e.to_string()))?;
             windows.insert(
                 flow_id.clone(),

@@ -923,7 +923,7 @@ impl Module {
         let template_manifest = package_version
             .as_ref()
             .map(|(_, _, text)| {
-                basal_core::Manifest::parse(text)
+                basal_core::Manifest::parse_stored(text)
                     .map_err(|e| OpError::new("internal", e.to_string()))
             })
             .transpose()?
@@ -1048,14 +1048,14 @@ impl Module {
         };
         let summary = match &template {
             Some(template) => self.dry.run_template(&request, template),
-            None => self.dry.run(&request),
+            None => self.dry.run_stored(&request),
         }
         .map_err(|e| match e {
             DryRunError::InstallRefused(e) => self.install_error(e),
             DryRunError::Invalid(m) => invalid_params(m),
             DryRunError::Failed(m) => OpError::new("dry_run_failed", m),
         })?;
-        let epoch = basal_core::Manifest::parse(&request.manifest)
+        let epoch = basal_core::Manifest::parse_stored(&request.manifest)
             .map_err(|e| OpError::new("internal", e.to_string()))?
             .state_epoch;
         let state_reset = self
@@ -1150,7 +1150,7 @@ impl Module {
                 "no approved flow audience",
             ));
         };
-        let parsed = Manifest::parse(&manifest)
+        let parsed = Manifest::parse_stored(&manifest)
             .map_err(|e| OpError::new("internal", format!("approved manifest: {e}")))?;
         Ok(json!({"audience": parsed.audience}))
     }

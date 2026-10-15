@@ -130,7 +130,7 @@ impl Runtime {
             }
             if let Some(InstallApproval::Policy { rule }) = &approval {
                 let manifest: String = tx.query_row("SELECT manifest FROM installs WHERE flow_id=?1 AND version=?2", params![flow_id, version], |r| r.get(0))?;
-                let manifest = crate::manifest::Manifest::parse(&manifest)
+                let manifest = crate::manifest::Manifest::parse_stored(&manifest)
                     .map_err(|e| CoreError::Corrupt(format!("installed manifest: {e}")))?;
                 // Global reach always needs a card answer, even if core reports
                 // a matching active version approved by a configurable policy.

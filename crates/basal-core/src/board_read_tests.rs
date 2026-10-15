@@ -131,6 +131,45 @@ fn board_read_grants_require_the_exact_core_op() {
 }
 
 #[test]
+fn stored_manifests_skip_only_intake_coupling() {
+    let mut legacy = manifest();
+    legacy.as_object_mut().unwrap().remove("board_read");
+    assert!(
+        Manifest::parse_stored(&legacy.to_string())
+            .unwrap()
+            .board_read
+            .is_empty()
+    );
+    let mut without_op = manifest();
+    without_op.as_object_mut().unwrap().remove("ops");
+    assert_eq!(
+        Manifest::parse_stored(&without_op.to_string())
+            .unwrap()
+            .board_read,
+        ["SYNAPSE"]
+    );
+    for bad in [
+        json!(null),
+        json!([{}]),
+        json!([""]),
+        json!(["SYNAPSE", "SYNAPSE"]),
+        json!(["$audience"]),
+    ] {
+        let mut value = legacy.clone();
+        value["board_read"] = bad;
+        assert!(
+            Manifest::parse_stored(&value.to_string()).is_err(),
+            "{value}"
+        );
+    }
+    legacy["unknown"] = json!(true);
+    assert!(Manifest::parse_stored(&legacy.to_string()).is_err());
+    legacy.as_object_mut().unwrap().remove("unknown");
+    legacy["version"] = json!(0);
+    assert!(Manifest::parse_stored(&legacy.to_string()).is_err());
+}
+
+#[test]
 fn board_read_self_is_enumerated_for_package_resolution() {
     let mut value = manifest();
     value["board_read"] = json!(["$self"]);

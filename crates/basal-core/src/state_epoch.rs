@@ -34,7 +34,7 @@ pub fn would_reset(
 
 /// Durable reset history is the log: it cannot describe a rolled-back reset.
 pub(crate) fn reset(tx: &Transaction, flow_id: &str, manifest: &str, now: i64) -> Result<()> {
-    let new_epoch = Manifest::parse(manifest)
+    let new_epoch = Manifest::parse_stored(manifest)
         .map_err(|e| CoreError::Corrupt(e.to_string()))?
         .state_epoch;
     let old_epoch = recorded(tx, flow_id)?;

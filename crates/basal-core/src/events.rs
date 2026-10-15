@@ -162,7 +162,8 @@ fn header_matches(key: &str, pattern: &str, value: &str) -> bool {
 }
 
 fn effective_manifest(conn: &rusqlite::Connection, text: &str, flow: &str) -> Result<Manifest> {
-    let mut manifest = Manifest::parse(text).map_err(|e| CoreError::Corrupt(e.to_string()))?;
+    let mut manifest =
+        Manifest::parse_stored(text).map_err(|e| CoreError::Corrupt(e.to_string()))?;
     if manifest.params.is_some() {
         let text: String = conn.query_row(
             "SELECT params FROM template_instances WHERE flow_id=?1",

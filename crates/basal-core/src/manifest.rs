@@ -571,10 +571,17 @@ fn check_agent(field: &'static str, agent: &str) -> Result<(), ManifestError> {
 }
 
 impl Manifest {
-    /// Decodes and checks a manifest's exact bytes.
+    /// Decodes and validates new manifest bytes for intake.
     pub fn parse(text: &str) -> Result<Self, ManifestError> {
         let manifest = Self::decode(text)?;
         manifest.check()?;
+        Ok(manifest)
+    }
+
+    /// Decodes a stored manifest without reapplying current intake policy.
+    pub fn parse_stored(text: &str) -> Result<Self, ManifestError> {
+        let manifest = Self::decode(text)?;
+        manifest.check_stored()?;
         Ok(manifest)
     }
 
@@ -629,8 +636,32 @@ impl Manifest {
         serde_json::from_str(text).map_err(|e| ManifestError::Decode(e.to_string()))
     }
 
-    /// Everything that can be checked without the catalog.
+    /// Validates a new manifest without the catalog, including intake policy.
     pub fn check(&self) -> Result<(), ManifestError> {
+        self.check_stored()?;
+        self.check_intake()
+    }
+
+    fn check_intake(&self) -> Result<(), ManifestError> {
+        // Never apply intake policy to stored rows: older approved manifests
+        // may predate a required grant and must remain readable.
+        let reads_boards = self.lists_op("prefrontal-core", "board.read");
+        if reads_boards && self.board_read.is_empty() {
+            return Err(invalid(
+                "board_read",
+                "required by prefrontal-core board.read",
+            ));
+        }
+        if !reads_boards && !self.board_read.is_empty() {
+            return Err(invalid(
+                "board_read",
+                "requires prefrontal-core board.read in ops",
+            ));
+        }
+        Ok(())
+    }
+
+    fn check_stored(&self) -> Result<(), ManifestError> {
         crate::templates::check(self)?;
         if self.format != MANIFEST_FORMAT {
             return Err(ManifestError::UnsupportedFormat(self.format));
@@ -747,19 +778,6 @@ impl Manifest {
             check_sink("board_read", agent)?;
         }
         check_list("board_read", self.board_read.iter().cloned())?;
-        let reads_boards = self.lists_op("prefrontal-core", "board.read");
-        if reads_boards && self.board_read.is_empty() {
-            return Err(invalid(
-                "board_read",
-                "required by prefrontal-core board.read",
-            ));
-        }
-        if !reads_boards && !self.board_read.is_empty() {
-            return Err(invalid(
-                "board_read",
-                "requires prefrontal-core board.read in ops",
-            ));
-        }
         for c in &self.claims {
             check_agent("claims.agent", &c.agent)?;
             check_name(

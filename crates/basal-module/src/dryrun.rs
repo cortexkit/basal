@@ -135,6 +135,7 @@ pub struct DryRunRequest {
 struct BorrowedRequest<'a> {
     install: &'a InstallRequest,
     template: Option<&'a TemplateDryRun>,
+    stored: bool,
     mode: Mode,
     trigger: &'a DryTrigger,
     now_ms: i64,
@@ -219,6 +220,24 @@ impl DryRunner {
         self.run_install(&install, request.mode, &request.trigger, request.now_ms)
     }
 
+    /// Replays immutable installed bytes without applying new intake policy.
+    pub(crate) fn run_stored(&self, request: &DryRunRequest) -> Result<Value, DryRunError> {
+        let install = InstallRequest {
+            script: request.script.clone(),
+            manifest: request.manifest.clone(),
+            author: request.author.clone(),
+            loop_override: request.loop_override,
+        };
+        self.run_prepared(
+            &install,
+            request.mode,
+            &request.trigger,
+            request.now_ms,
+            None,
+            true,
+        )
+    }
+
     /// The install path already owns exact source bytes; borrow them for both
     /// the capture and scratch install instead of copying whole scripts again.
     pub(crate) fn run_install(
@@ -228,7 +247,7 @@ impl DryRunner {
         trigger: &DryTrigger,
         now_ms: i64,
     ) -> Result<Value, DryRunError> {
-        self.run_prepared(install, mode, trigger, now_ms, None)
+        self.run_prepared(install, mode, trigger, now_ms, None, false)
     }
 
     pub(crate) fn run_template(
@@ -248,6 +267,7 @@ impl DryRunner {
             &request.trigger,
             request.now_ms,
             Some(template),
+            true,
         )
     }
 
@@ -258,15 +278,19 @@ impl DryRunner {
         trigger: &DryTrigger,
         now_ms: i64,
         template: Option<&TemplateDryRun>,
+        stored: bool,
     ) -> Result<Value, DryRunError> {
         let request = &BorrowedRequest {
             install,
             template,
+            stored,
             mode,
             trigger,
             now_ms,
         };
-        let parsed = if request.template.is_some() {
+        let parsed = if request.stored {
+            Manifest::parse_stored(&request.install.manifest)
+        } else if request.template.is_some() {
             Manifest::parse(&request.install.manifest)
         } else {
             Manifest::parse_ordinary(&request.install.manifest)
@@ -479,6 +503,40 @@ impl DryRunner {
                     Ok(installed)
                 })
                 .map_err(basal_core::InstallError::from)
+        } else if request.stored {
+            // Replay still checks current catalog authority, but these exact
+            // manifest bytes were accepted when the version was installed.
+            let cap = basal_proto::MAX_SCRIPT_BYTES;
+            if request.install.script.len() > cap {
+                return Err(DryRunError::Invalid(format!(
+                    "install into the scratch store: {}",
+                    basal_core::InstallError::ScriptTooLarge {
+                        bytes: request.install.script.len(),
+                        cap,
+                    }
+                )));
+            }
+            basal_core::install::validate(
+                manifest,
+                &request.install.author,
+                self.catalog.as_ref(),
+                &self.base.shell_denylist,
+                request.install.loop_override,
+            )
+            .and_then(|warnings| {
+                rt.store()
+                    .write(|tx| {
+                        basal_core::install::record(
+                            tx,
+                            manifest,
+                            request.install,
+                            warnings,
+                            request.now_ms,
+                        )
+                        .map_err(|e| basal_core::CoreError::Invalid(e.to_string()))
+                    })
+                    .map_err(basal_core::InstallError::from)
+            })
         } else {
             rt.install(request.install)
         };

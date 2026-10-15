@@ -54,3 +54,37 @@ old = '''#[serde(default)]
     pub board_read: Vec<String>,'''
 new = '''#[serde(skip)] // NON-VACUITY BREAK
     pub board_read: Vec<String>,'''
+
+[[control]]
+id = "stored-manifest-excludes-intake-policy"
+guards = "legacy approved manifests remain readable and upgradeable after intake rules tighten"
+test_file = "crates/basal-module/tests/stored_manifests.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test stored_manifests"
+select = { tests = ["legacy_approved_manifest_remains_readable_and_upgradeable", "new_install_still_requires_board_read_coupling"] }
+expect_red = ["legacy_approved_manifest_remains_readable_and_upgradeable"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/manifest.rs"
+old = 'manifest.check_stored()?;'
+new = 'manifest.check()?; // NON-VACUITY BREAK'
+
+[[control]]
+id = "new-manifest-retains-intake-policy"
+guards = "new installs, package registrations and dry runs still enforce board_read coupling"
+test_file = "crates/basal-module/tests/stored_manifests.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test stored_manifests"
+select = { tests = ["legacy_approved_manifest_remains_readable_and_upgradeable", "new_install_still_requires_board_read_coupling"] }
+expect_red = ["new_install_still_requires_board_read_coupling"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/manifest.rs"
+old = 'self.check_intake()'
+new = 'Ok(()) // NON-VACUITY BREAK'

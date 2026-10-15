@@ -428,7 +428,7 @@ impl Activation<'_> {
         if let Flow::Done { end, idle } = self.check_identity()? {
             return Ok(done(end, idle));
         }
-        match Manifest::parse(&self.run.manifest) {
+        match Manifest::parse_stored(&self.run.manifest) {
             Ok(mut manifest) => {
                 self.input = serde_json::from_str(self.run.self_input.as_str())
                     .map_err(|e| CoreError::Corrupt(e.to_string()))?;

@@ -83,8 +83,8 @@ pub(crate) fn retirement_cleared_by(
     let Some(retired) = retirement.agent_id.as_deref() else {
         return Ok(false);
     };
-    let manifest: crate::Manifest =
-        serde_json::from_str(manifest).map_err(|e| CoreError::Corrupt(e.to_string()))?;
+    let manifest =
+        crate::Manifest::parse_stored(manifest).map_err(|e| CoreError::Corrupt(e.to_string()))?;
     let agent_owned = author != crate::decisions::OPERATOR_ACTOR && author != "local:unverified";
     let different_owner = !agent_owned || author != retired;
     let no_target = manifest.agents().into_iter().all(|(_, target)| {

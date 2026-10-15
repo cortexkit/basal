@@ -117,7 +117,6 @@ fn board_read_op_and_target_grants_are_required_at_install_dry_run_and_package_r
             serde_json::from_str(include_str!("../../../flows/board-hygiene/manifest.json"))
                 .unwrap();
         manifest["id"] = json!(format!("missing-{missing}"));
-        let parsed = basal_core::Manifest::parse(&manifest.to_string()).unwrap();
         manifest.as_object_mut().unwrap().remove(missing);
         for method in ["flow.install", "package.register"] {
             let error = f
@@ -143,30 +142,16 @@ fn board_read_op_and_target_grants_are_required_at_install_dry_run_and_package_r
             .unwrap_err();
         assert!(error.message.contains("board_read"), "template: {error}");
 
-        // Seed a legacy stored version without revalidating its manifest, so
-        // dry run must independently reject an unusable board-read grant.
-        let request = basal_core::InstallRequest {
+        let request = basal_module::dryrun::DryRunRequest {
             script: "return 7;".into(),
             manifest: manifest.to_string(),
             author: "operator".into(),
             loop_override: false,
+            mode: basal_module::dryrun::Mode::Capture,
+            trigger: basal_module::dryrun::DryTrigger::Synthetic(json!({})),
+            now_ms: common::T0,
         };
-        f.module
-            .rt
-            .store()
-            .write(|tx| {
-                basal_core::install::record(tx, &parsed, &request, Vec::new(), common::T0).unwrap();
-                Ok(())
-            })
-            .unwrap();
-        let error = f
-            .module
-            .handle(
-                &Caller::Operator,
-                "flow.dry_run",
-                json!({"flow_id":manifest["id"],"trigger":{}}),
-            )
-            .unwrap_err();
-        assert!(error.message.contains("board_read"), "dry run: {error}");
+        let error = f.module.dry.run(&request).unwrap_err();
+        assert!(error.to_string().contains("board_read"), "dry run: {error}");
     }
 }
