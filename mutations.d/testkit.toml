@@ -220,3 +220,20 @@ expect_red = ["subprocess_deadline_reaps_descendants_holding_output_pipes"]
 only = true
 timeout_s = 600
 build_timeout_s = 3600
+
+[[control]]
+id = "race-cut-requires-long-call-acceptance"
+guards = "the replay-barrier cut waits for position 0 to be accepted even when position 1 answers first"
+file = "crates/basal-testkit/tests/journal_races.rs"
+old = "if matches!(b, Boundary::HostAnswered { position: 1 }) {"
+new = "if false && matches!(b, Boundary::HostAnswered { position: 1 }) { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-testkit/tests/journal_races.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test journal_races"
+expect_red = ["race_cut_late_outcome_waits_for_the_barrier"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600

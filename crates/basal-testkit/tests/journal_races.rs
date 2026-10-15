@@ -4,11 +4,11 @@
 
 mod common;
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
-use basal_core::{ActivationEnd, Boundary, RunState, Step};
+use basal_core::{ActivationEnd, Boundary, Hooks, RunState, Step};
 use basal_host::HostOutcome;
 use basal_proto::JsonText;
 use basal_testkit::harness::{FnHooks, Point, Probe, World, run_with_cuts};
@@ -31,7 +31,7 @@ fn race_cut_late_outcome_waits_for_the_barrier() {
     let world = World::new("race-cut");
     let script = r#"
         const w = await Promise.race([
-            ops.call('mock', 'long', { tag: 'slow' }),
+            ops.call('mock', 'long', { tag: 'slow', gate: 'slow-dispatch' }),
             ops.call('mock', 'echo', { tag: 'fast' }),
         ]);
         const next = await ops.call('mock', 'echo', { after: w.tag });
@@ -39,11 +39,37 @@ fn race_cut_late_outcome_waits_for_the_barrier() {
     "#;
     let cut = Point::parse("OrderCommitted { position: 1 }#1").expect("point");
     let probe = Arc::new(Probe::crash_at(cut));
-    let rt = runtime_with(&world, probe.clone());
+    let cut_probe = probe.clone();
+    let mock = world.mock.clone();
+    let (accepted, acceptance) = mpsc::channel();
+    let acceptance = Mutex::new(acceptance);
+    let hooks = FnHooks(move |run_id: &str, b: &Boundary| {
+        if matches!(b, Boundary::AcceptedCommitted { position: 0 }) {
+            accepted.send(()).expect("acceptance receiver");
+        }
+        // Force the echo to answer before the long call reaches the mock,
+        // then hold its outcome until the long call's acceptance is durable.
+        // The recovery completion needs an accepted call, not an unsent row.
+        if matches!(b, Boundary::HostAnswered { position: 1 }) {
+            mock.open_gate("slow-dispatch");
+            acceptance
+                .lock()
+                .expect("acceptance lock")
+                .recv_timeout(Duration::from_secs(30))
+                .expect("position 0 accepted before position 1's outcome");
+        }
+        cut_probe.at(run_id, b)
+    });
+    let rt = runtime_with(&world, Arc::new(hooks));
     let run_id = admit(&rt, &world, script);
     let _ = rt.run_to_rest(&run_id, Duration::from_secs(30));
+    let accepted_at_cut = world.mock.handle_for(&run_id, 0).is_some();
+    // Unblock dispatch even if the acceptance gate is broken, so quiesce
+    // cannot hide a failed precondition behind a stuck dispatch thread.
+    world.mock.open_gate("slow-dispatch");
     rt.quiesce();
     assert!(probe.fired(), "the cut was not reached");
+    assert!(accepted_at_cut, "position 0 was accepted before the cut");
     drop(rt);
     world.mock.detach();
 
