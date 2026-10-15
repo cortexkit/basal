@@ -103,6 +103,99 @@ fn install_card_matching_uses_the_exact_intent_not_the_latest_pending_card() {
 }
 
 #[test]
+fn install_card_checks_match_cingulate_request_fixture() {
+    let request: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/flow-install-card-request.json"
+    ))
+    .unwrap();
+    // Cingulate records the request in snake_case but serves the live card in camelCase.
+    let mut card = request.clone();
+    let install_payload = card
+        .as_object_mut()
+        .unwrap()
+        .remove("flow_install")
+        .unwrap();
+    card["flowInstall"] = install_payload;
+    let install = &request["flow_install"];
+    let flow = Flow {
+        id: install["flow_id"].as_str().unwrap().into(),
+        version: install["version"].as_i64().unwrap(),
+        manifest: install["manifest_json"].as_str().unwrap().into(),
+        script: install["script"].as_str().unwrap().into(),
+    };
+    let calculated_hash =
+        basal_core::ids::hex(&basal_core::ids::code_hash(&flow.script, &flow.manifest));
+    assert_eq!(install["code_hash"], calculated_hash);
+    assert_eq!(
+        request["facts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|fact| fact["label"] == "Code hash")
+            .unwrap()["value"],
+        calculated_hash
+    );
+
+    let mut case = Case::new("install card request fixture");
+    check_rendered(&mut case, &card, &flow, &request);
+    assert!(case.passed(), "{:#?}", case.to_json());
+
+    let failed_check = |case: &Case, name: &str| {
+        case.checks
+            .iter()
+            .any(|check| check["check"] == name && check["passed"] == false)
+    };
+    let mut wrong_flow = card.clone();
+    wrong_flow["facts"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|fact| fact["label"] == "Flow")
+        .unwrap()["value"] = json!("different-flow");
+    let mut wrong_flow_case = Case::new("wrong flow fact");
+    check_rendered(&mut wrong_flow_case, &wrong_flow, &flow, &request);
+    assert!(failed_check(
+        &wrong_flow_case,
+        "card fact 'Flow' matches the manifest as plain text"
+    ));
+
+    let mut changed_source = card.clone();
+    changed_source["source"]["text"] = json!("return 42; ");
+    let mut changed_source_case = Case::new("changed source text");
+    check_rendered(&mut changed_source_case, &changed_source, &flow, &request);
+    assert!(failed_check(
+        &changed_source_case,
+        "source.text is byte-equal to the script basal sent"
+    ));
+
+    let mut placeholder = card.clone();
+    placeholder["facts"].as_array_mut().unwrap().push(json!({
+        "label": "Optional fact",
+        "value": "not stated"
+    }));
+    let mut placeholder_case = Case::new("fact without a value");
+    check_rendered(&mut placeholder_case, &placeholder, &flow, &request);
+    assert!(failed_check(
+        &placeholder_case,
+        "facts without a value are omitted instead of shown as a placeholder"
+    ));
+
+    let mut changed_dry_run_text = card.clone();
+    changed_dry_run_text["dry_run_text"]["summary"] = json!("different by one byte ");
+    let mut changed_dry_run_case = Case::new("changed dry-run text");
+    check_rendered(
+        &mut changed_dry_run_case,
+        &changed_dry_run_text,
+        &flow,
+        &request,
+    );
+    assert!(failed_check(
+        &changed_dry_run_case,
+        "dry_run_text is byte-equal at the request's top level"
+    ));
+}
+
+#[test]
 fn report_builder_fails_unmarked_zero_check_cases() {
     let mut empty = Case::new("empty");
     empty.finish();

@@ -548,53 +548,73 @@ fn fact<'a>(card: &'a Value, label: &str) -> Option<&'a str> {
         .and_then(|f| f["value"].as_str())
 }
 
-/// Checks that core rendered the card's capability rows from the manifest:
-/// each row parses to exactly the manifest's value for its key.
-fn check_rendered(case: &mut Case, card: &Value, flow: &Flow) {
+/// Checks the plain-text facts and exact install bytes in core's consent card.
+fn check_rendered(case: &mut Case, card: &Value, flow: &Flow, sent_request: &Value) {
     let manifest = flow.manifest_value();
-    for (label, key) in [
-        ("Flow", "id"),
-        ("Version", "version"),
-        ("Purpose", "purpose"),
-        ("Sinks", "sinks"),
-        ("Status targets", "status"),
-        ("Claims", "claims"),
-        ("Facts access", "facts"),
-    ] {
-        let rendered = fact(card, label).and_then(|v| serde_json::from_str::<Value>(v).ok());
-        let expected = manifest.get(key).cloned().unwrap_or(Value::Null);
+    let expected_version = manifest["version"]
+        .as_i64()
+        .map(|version| version.to_string());
+    case.check(
+        "card fact 'Flow' matches the manifest as plain text",
+        fact(card, "Flow") == manifest["id"].as_str(),
+        json!({ "rendered": fact(card, "Flow"), "expected": manifest["id"] }),
+    );
+    case.check(
+        "card fact 'Version' matches the manifest as plain text",
+        fact(card, "Version") == expected_version.as_deref(),
+        json!({ "rendered": fact(card, "Version"), "expected": expected_version }),
+    );
+    case.check(
+        "card fact 'Purpose' matches the manifest as plain text",
+        fact(card, "Purpose") == manifest["purpose"].as_str(),
+        json!({ "rendered": fact(card, "Purpose"), "expected": manifest["purpose"] }),
+    );
+
+    let calculated_hash =
+        basal_core::ids::hex(&basal_core::ids::code_hash(&flow.script, &flow.manifest));
+    case.check(
+        "card fact 'Code hash' matches basal's computed code hash",
+        fact(card, "Code hash") == Some(calculated_hash.as_str()),
+        json!({ "rendered": fact(card, "Code hash"), "expected": &calculated_hash }),
+    );
+
+    let facts_have_values = card["facts"].as_array().is_some_and(|facts| {
+        !facts.is_empty()
+            && facts.iter().all(|fact| {
+                fact["value"].as_str().is_some_and(|value| {
+                    !value.trim().is_empty() && !value.trim().eq_ignore_ascii_case("not stated")
+                })
+            })
+    });
+    case.check(
+        "facts without a value are omitted instead of shown as a placeholder",
+        facts_have_values,
+        card["facts"].clone(),
+    );
+
+    if let Some(schedule) = manifest["trigger"]["schedule"].as_object() {
+        let runs = fact(card, "Runs");
         case.check(
-            &format!("card row '{label}' renders the manifest's {key}"),
-            rendered.as_ref() == Some(&expected),
-            json!({ "rendered": fact(card, label), "manifest": expected }),
+            "scheduled flows have a 'Runs' fact",
+            runs.is_some(),
+            json!({ "rendered": runs }),
         );
+        if let Some(cron) = schedule.get("cron").and_then(Value::as_str) {
+            let timezone = schedule
+                .get("tz")
+                .and_then(Value::as_str)
+                .filter(|timezone| !timezone.is_empty())
+                .unwrap_or("UTC");
+            case.check(
+                "card fact 'Runs' mentions the cron expression and timezone",
+                runs.is_some_and(|text| text.contains(cron) && text.contains(timezone)),
+                json!({ "rendered": runs, "cron": cron, "timezone": timezone }),
+            );
+        }
     }
-    // basal leaves `placement` out of the request when the manifest states
-    // none, and core then renders the row as "not stated".
-    let placement = match manifest.get("placement") {
-        Some(stated) => fact(card, "Placement")
-            .and_then(|v| serde_json::from_str::<Value>(v).ok())
-            .is_some_and(|v| v == *stated),
-        None => fact(card, "Placement") == Some("not stated"),
-    };
-    case.check(
-        "card row 'Placement' renders the manifest's placement, or 'not stated' when it has none",
-        placement,
-        json!({ "rendered": fact(card, "Placement"), "manifest": manifest.get("placement") }),
-    );
-    // Core fills the schedule's defaults into the trigger row.
-    let mut trigger = manifest["trigger"].clone();
-    if let Some(schedule) = trigger.get_mut("schedule").and_then(Value::as_object_mut) {
-        schedule.entry("tz").or_insert(json!("UTC"));
-        schedule.entry("missed").or_insert(json!("once"));
-    }
-    let label = "Trigger (zone, missed policy, event origin)";
-    let rendered = fact(card, label).and_then(|v| serde_json::from_str::<Value>(v).ok());
-    case.check(
-        "card row 'Trigger' renders the manifest's schedule with core's defaults",
-        rendered.as_ref() == Some(&trigger),
-        json!({ "rendered": fact(card, label), "expected": trigger }),
-    );
+
+    let sent_install = &sent_request["flow_install"];
+    let computed_hash_matches_request = sent_install["code_hash"] == calculated_hash;
     case.check(
         "the card is a flow_install card for this flow version",
         card["kind"] == "flow_install"
@@ -603,10 +623,36 @@ fn check_rendered(case: &mut Case, card: &Value, flow: &Flow) {
         json!({ "kind": card["kind"], "flowInstall.flow_id": card["flowInstall"]["flow_id"] }),
     );
     case.check(
-        "core recorded the exact manifest bytes basal sent",
-        card["flowInstall"]["manifest_json"] == flow.manifest.as_str(),
-        json!({ "manifest_json": card["flowInstall"]["manifest_json"] }),
+        "flow_install.script is byte-equal to what basal sent",
+        card["flowInstall"]["script"].as_str() == sent_install["script"].as_str()
+            && sent_install["script"].as_str() == Some(flow.script.as_str()),
+        json!({ "card": card["flowInstall"]["script"], "sent": sent_install["script"] }),
     );
+    case.check(
+        "source.text is byte-equal to the script basal sent",
+        card["source"]["text"].as_str() == Some(flow.script.as_str())
+            && sent_install["script"].as_str() == Some(flow.script.as_str()),
+        json!({ "source": card["source"]["text"], "sent": sent_install["script"] }),
+    );
+    case.check(
+        "flow_install.manifest_json is byte-equal to what basal sent",
+        card["flowInstall"]["manifest_json"].as_str() == sent_install["manifest_json"].as_str()
+            && sent_install["manifest_json"].as_str() == Some(flow.manifest.as_str()),
+        json!({ "card": card["flowInstall"]["manifest_json"], "sent": sent_install["manifest_json"] }),
+    );
+    case.check(
+        "flow_install.code_hash is byte-equal to the computed hash basal sent",
+        computed_hash_matches_request
+            && card["flowInstall"]["code_hash"].as_str() == sent_install["code_hash"].as_str(),
+        json!({ "card": card["flowInstall"]["code_hash"], "sent": sent_install["code_hash"], "computed": &calculated_hash }),
+    );
+    if let Some(dry_run_text) = sent_request.get("dry_run_text") {
+        case.check(
+            "dry_run_text is byte-equal at the request's top level",
+            card.get("dry_run_text") == Some(dry_run_text),
+            json!({ "card": card.get("dry_run_text"), "sent": dry_run_text }),
+        );
+    }
 }
 
 /// The choice id of the card option with `id`, if the card offers it.
@@ -922,7 +968,7 @@ async fn install_with_route(
         json!({"summary":summary,"pages":pages}),
     );
     case.record("card", card.clone());
-    check_rendered(case, &card, flow);
+    check_rendered(case, &card, flow, &intent["request"]);
     let pending = rig.health(&flow.id).await;
     case.check(
         "while its card is open, flow.health lists the flow as unapproved",

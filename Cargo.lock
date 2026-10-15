@@ -194,6 +194,7 @@ name = "basal-rig"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "basal-core",
  "basal-host",
  "basal-launch",
  "basal-proto",
