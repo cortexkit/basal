@@ -453,7 +453,7 @@ new = "        Ok((found.or_else(|| Some(CatalogOp { // NON-VACUITY BREAK\n     
 [[control]]
 id = "hosts-undeclared-events-fabricated"
 hub = "Install and dry-run admission require the requested event name and version to have a published declaration, including missing or empty declarations and recorded live catalogs"
-hub_targets = ["catalog_events"]
+hub_targets = ["catalog_events", "module_events"]
 guards = "hosts: undeclared events fabricated"
 test_file = "crates/basal-module/tests/hosts.rs"
 runner = "cargo"
@@ -1294,6 +1294,8 @@ new = ".find(|e| e.version == version) // NON-VACUITY BREAK"
 
 [[control]]
 id = "audience-workspace-compares-display-name"
+hub = "Workspace membership matches the exact workspace ID, never its display name; registry-query and transport tests enforce the same identity comparison"
+hub_targets = ["basal_host"]
 guards = "workspace membership resolves the exact workspace id not its display name"
 test_file = "crates/basal-host/tests/audience.rs"
 runner = "cargo"
@@ -1483,6 +1485,8 @@ build_timeout_s = 3600
 
 [[control]]
 id = "unknown-install-status-stays-pending"
+hub = "Unknown install-status states are unreadable rather than rejected; strict status decoding and pending-card polling require the same fail-closed interpretation"
+hub_targets = ["install_gate"]
 guards = "an unknown install-status state remains unreadable and leaves the card pending"
 test_file = "crates/basal-module/tests/install_policy.rs"
 runner = "cargo"

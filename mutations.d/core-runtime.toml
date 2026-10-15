@@ -294,7 +294,7 @@ new = "(StoredClass::KeyedMutation, _) => resend.push(row.clone()),"
 [[control]]
 id = "recovery-does-not-resend-keyed-mutations-parent-kill-9"
 hub = "Recovery resends unresolved keyed mutations under their original key and request, including built-in writes, KV, models and temporary-file recovery, instead of requiring reconciliation"
-hub_targets = ["builtins_dispatch", "dispatch_kv", "dispatch_tokens", "fs_write_temps", "journal_cut", "journal_unknown"]
+hub_targets = ["builtins_dispatch", "dispatch_kv", "dispatch_tokens", "fs_write_temps", "journal_cut", "journal_races", "journal_unknown"]
 guards = "recovery does not resend keyed mutations (parent kill -9)"
 test_file = "crates/basal-testkit/tests/journal_kill.rs"
 runner = "cargo"

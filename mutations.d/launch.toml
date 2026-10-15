@@ -122,6 +122,8 @@ new = "pub const MITIGATION_EXTENSION_POINT_DISABLE: u64 = 0; // NON-VACUITY BRE
 
 [[control]]
 id = "windows-creation-drops-prohibit-dynamic-code"
+hub = "The confined child's creation mitigation policy prohibits dynamic code; the pure mitigation-bit assertion and live child-policy readback require the same bit"
+hub_targets = ["windows_launch"]
 guards = "windows creation drops prohibit dynamic code"
 test_file = "crates/basal-launch/src/windows/launch.rs"
 runner = "cargo"
@@ -250,6 +252,8 @@ new = "// NON-VACUITY BREAK: no creation job list"
 
 [[control]]
 id = "windows-launcher-context-names-are-predictable"
+hub = "Launcher context names are unpredictable and unique so leftover or attacker-planted names cannot be reused; pure name generation and live launch require the same random naming rule"
+hub_targets = ["windows_launch"]
 guards = "windows launcher context names are predictable"
 test_file = "crates/basal-launch/src/windows/context.rs"
 runner = "cargo"
@@ -322,7 +326,8 @@ package = "basal-worker"
 platforms = ["windows"]
 target = "--test windows_startup"
 expect_red = ["an_activation_completes_under_the_full_confinement"]
-only = false
+select = { tests = ["an_activation_completes_under_the_full_confinement", "a_primary_without_the_lpac_claim_is_refused_as_not_lpac"] }
+only = true
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-launch/src/windows/launch.rs"

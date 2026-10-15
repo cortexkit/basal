@@ -82,6 +82,8 @@ new = 'AND i.revoked_at IS NULL AND NOT EXISTS (SELECT 1 FROM install_cards rais
 
 [[control]]
 id = "policy-shared-approval-skipped"
+hub = "Policy approval approves the selected version with the shared schedule and disable rules; host dispatch and decision recovery require that same approved, admissible version"
+hub_targets = ["decisions", "hosts"]
 guards = "policy approval uses the card approval function for version, schedule and disable rules"
 test_file = "crates/basal-module/tests/install_policy.rs"
 runner = "cargo"
@@ -432,8 +434,8 @@ new = "            Ok(None)"
 
 [[control]]
 id = "the-owner-may-not-re-enable-even-a-disable-it-made-itself"
-hub = "The owning agent may re-enable a flow it disabled itself, asserted by owner binding tests and the authorization matrix"
-hub_targets = ["caller_binding"]
+hub = "The owning agent may re-enable a flow it disabled itself, including an idempotently re-ensured template instance; owner binding and authorization require that same ownership rule"
+hub_targets = ["caller_binding", "templates"]
 guards = "the owner may not re-enable even a disable it made itself"
 test_file = "crates/basal-module/tests/ops.rs"
 runner = "cargo"

@@ -69,6 +69,8 @@ new = "let pool = PoolConfig::beside_current_exe(); drop(pool); // NON-VACUITY B
 
 [[control]]
 id = "flow-list-agent-sees-another-agent-s-flow"
+hub = "Flow list visibility is owner-scoped for both ordinary flows and template instances"
+hub_targets = ["templates"]
 guards = "flow.list agent sees another agent's flow"
 test_file = "crates/basal-module/tests/list_contract.rs"
 runner = "cargo"
@@ -117,8 +119,8 @@ new = "AND (?1 IS NOT NULL OR ?2 IS NULL OR f.owner=?2 OR (f.owner IS NULL /* NO
 
 [[control]]
 id = "flow-list-state-diverges-from-flow-health"
-hub = "Flow list preserves the same approved/enabled state as health, including unapproved and core-revoked flows, asserted by list and gate tests"
-hub_targets = ["install_gate"]
+hub = "Flow list preserves the same approved/enabled state as health, including unapproved and core-revoked flows; install gates and policy decisions require that same reported state"
+hub_targets = ["install_gate", "install_policy"]
 guards = "flow.list state diverges from flow.health"
 test_file = "crates/basal-module/tests/list_contract.rs"
 runner = "cargo"
@@ -365,7 +367,7 @@ new = "Some(Principal::Reserved { .. }) => Caller::Operator,"
 [[control]]
 id = "a-local-caller-refused-an-operator-action-is-told-not-permitted-not-operator-attestation-required"
 hub = "A local caller refused an operator-only action, including package and instance operations, receives operator_attestation_required, asserted by binding, authorization, lifecycle and package tests"
-hub_targets = ["caller_binding", "module_lifecycle", "packages"]
+hub_targets = ["caller_binding", "module_lifecycle", "packages", "templates"]
 guards = "a local caller refused an operator action is told not_permitted, not operator_attestation_required"
 test_file = "crates/basal-module/tests/ops.rs"
 runner = "cargo"
@@ -485,7 +487,7 @@ new = "scope_ref: agent.clone(),"
 [[control]]
 id = "an-agent-s-card-author-names-its-agent-id-instead-of-the-scope-ref-it-was-stamped-with"
 hub = "An agent's install card author names its attested scope reference, not the agent ID, asserted by card encoding and binding tests"
-hub_targets = ["caller_binding"]
+hub_targets = ["caller_binding", "install_policy"]
 guards = "an agent's card author names its agent id instead of the scope_ref it was stamped with"
 test_file = "crates/basal-module/tests/hosts.rs"
 runner = "cargo"
@@ -706,7 +708,7 @@ new = "let recovered: Vec<String> = Vec::new();"
 [[control]]
 id = "a-card-s-approval-is-applied-as-a-rejection"
 hub = "An approved install card approves its version and admits its flow; flow-running fixtures install through approval, so applying that approval as rejection leaves no approved audience, owner or admissible run"
-hub_targets = ["audience", "caller_binding", "dry_run", "e2e", "engine", "health_contract", "idle_wake", "list_contract", "module_lifecycle", "ops", "pool", "templates"]
+hub_targets = ["audience", "board_hygiene", "caller_binding", "dry_run", "e2e", "engine", "health_contract", "idle_wake", "install_revoked", "list_contract", "module_lifecycle", "pool", "state_epoch", "templates"]
 guards = "a card's approval is applied as a rejection"
 test_file = "crates/basal-module/tests/ops.rs"
 runner = "cargo"
@@ -723,8 +725,8 @@ new = "CardDecision::Approve => Decision::Reject,"
 
 [[control]]
 id = "capture-mode-sends-calls-to-the-host"
-hub = "Capture dry runs execute no host effects, including install previews; decision, host and end-to-end tests assert no extra effects from those previews"
-hub_targets = ["decisions", "e2e", "hosts"]
+hub = "Capture dry runs execute no host effects, including install, board, audience and template previews; their captured calls must not reach live host sinks"
+hub_targets = ["audience", "board_hygiene", "decisions", "e2e", "flow_templates", "hosts", "templates"]
 guards = "capture mode sends calls to the host"
 test_file = "crates/basal-module/tests/dry_run.rs"
 runner = "cargo"
@@ -773,8 +775,8 @@ new = ".is_some() /* NON-VACUITY BREAK */"
 
 [[control]]
 id = "an-owning-agent-may-ask-for-a-live-dry-run"
-hub = "Only the operator can request a live dry run, asserted by the dry-run target and authorization matrix"
-hub_targets = ["ops"]
+hub = "Only the operator can request a live dry run; owning agents are refused at both the dry-run authorization and audience boundaries"
+hub_targets = ["audience", "ops"]
 guards = "an owning agent may ask for a live dry run"
 test_file = "crates/basal-module/tests/dry_run.rs"
 runner = "cargo"
@@ -791,6 +793,8 @@ new = "(Caller::Agent { agent_id: agent, .. }, _) if self.owns(agent, &p.flow_id
 
 [[control]]
 id = "dry-runs-share-one-scratch-store-that-is-never-removed"
+hub = "Each dry run uses a fresh disposable scratch store; repeated state-epoch previews must not inherit an earlier preview's approved flow version"
+hub_targets = ["state_epoch"]
 guards = "dry runs share one scratch store that is never removed"
 test_file = "crates/basal-module/tests/dry_run.rs"
 runner = "cargo"
@@ -798,7 +802,7 @@ package = "basal-module"
 platforms = ["macos"]
 target = "--test dry_run"
 expect_red = ["each_dry_run_has_its_own_scratch_store_and_the_real_kv_and_runs_are_untouched", "dry_runs_capture_every_built_in_and_live_runs_only_reads_in_scope"]
-only = true
+only = false
 build_timeout_s = 3600
 timeout_s = 600
 edits = [
@@ -1010,7 +1014,7 @@ new = "\"overflow\": f.event_overflow > 0,"
 [[control]]
 id = "health-s-auto-disabled-is-null-when-false"
 hub = "Health's auto_disabled field is always a boolean, including false, asserted by strict decoding and ops health tests"
-hub_targets = ["ops"]
+hub_targets = ["install_revoked", "ops"]
 guards = "health's auto_disabled is null when false"
 test_file = "crates/basal-module/tests/health_contract.rs"
 runner = "cargo"
@@ -1149,8 +1153,6 @@ new = "                Err(e) => {\n                    inner.rt.decision_raised
 
 [[control]]
 id = "integration-model-store-initialization-omitted"
-hub = "The module binds its durable model-call store before host recovery or dispatch; model-journal, restart and eager-attachment tests all require that initialized store"
-hub_targets = ["e2e", "module_lifecycle"]
 guards = "integration: model store initialization omitted"
 test_file = "crates/basal-module/tests/hosts.rs"
 runner = "cargo"
@@ -1158,6 +1160,7 @@ package = "basal-module"
 platforms = ["macos"]
 target = "--test hosts"
 expect_red = ["routing_host_model_selection_and_digest_sink_share_the_journal_store"]
+select = "expected"
 only = false
 build_timeout_s = 3600
 timeout_s = 600
@@ -1250,8 +1253,8 @@ build_timeout_s = 3600
 
 [[control]]
 id = "package-core-only-callers"
-hub = "Package and instance operations refuse every caller but core, and the operator only for registration, including the local caller, asserted by package and module lifecycle tests"
-hub_targets = ["module_lifecycle"]
+hub = "Package and instance operations refuse every caller but core, and the operator only for registration; package, module lifecycle and state-epoch instance previews require the same caller boundary"
+hub_targets = ["module_lifecycle", "state_epoch"]
 guards = "package get and instance management admit only unscoped core"
 file = "crates/basal-module/src/ops.rs"
 old = "if !permitted {"
@@ -2396,6 +2399,8 @@ new = """let guards = basal_core::templates::grant_guards(&manifest, &values);
 
 [[control]]
 id = "template-dry-run-at-immediate"
+hub = "A future one-shot template preview fires once immediately; the published reminder's dry-run fixture requires that same captured activation"
+hub_targets = ["flow_templates"]
 guards = "future one-shot previews run once immediately rather than replaying zero fires"
 test_file = "crates/basal-module/tests/templates.rs"
 runner = "cargo"
@@ -2403,7 +2408,7 @@ package = "basal-module"
 platforms = ["linux"]
 target = "--test templates"
 expect_red = ["template_dry_run_at_fires_once_immediately_with_canonical_timestamp"]
-only = true
+only = false
 file = "crates/basal-module/src/dryrun.rs"
 old = "if request.template.is_some() && spec.at.is_some() {"
 new = "if false && request.template.is_some() && spec.at.is_some() { // NON-VACUITY BREAK"
@@ -2757,6 +2762,8 @@ new = 'panic!("backlog poll timed out: {error}"); // NON-VACUITY BREAK'
 # Production durability is checked independently from fixture-only helpers.
 [[control]]
 id = "production-source-uses-throwaway-durability"
+hub = "Production store construction uses FULL durability rather than throwaway durability, checked by both the production-source boundary and the binary's SQLite pragma readback"
+hub_targets = ["ck_basal"]
 guards = "throwaway durability never appears in production Rust code"
 file = "crates/basal-module/src/main.rs"
 scope = { after = "fn production_config(", before = "\n/// The runtime's hooks" }
@@ -2768,6 +2775,6 @@ runner = "cargo"
 target = "--test durability_boundary"
 platforms = ["linux"]
 expect_red = ["production_sources_never_use_throwaway"]
-only = true
+only = false
 timeout_s = 600
 build_timeout_s = 3600
