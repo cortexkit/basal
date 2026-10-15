@@ -1,0 +1,126 @@
+name: Install pinned nats-server
+
+description: Restore or download, verify, and install the pinned nats-server archive.
+
+runs:
+  using: composite
+  steps:
+    - name: Select pinned NATS archive
+      id: archive
+      shell: bash
+      run: |
+        case "$RUNNER_OS:$RUNNER_ARCH" in
+          Linux:X64) platform=linux-amd64; extension=tar.gz; sha=5d2c51caca950333aba84911df7d377f826f3a59ec36061c6539105084f65c92 ;;
+          Linux:ARM64) platform=linux-arm64; extension=tar.gz; sha=cdc208f5a3f42963a52b6ab06ef65626bb870315dc936e26ba571780c6351112 ;;
+          macOS:X64) platform=darwin-amd64; extension=tar.gz; sha=5bd8b59ca5bf93fab3da2c5843cf564cd6e2e291e22ae3b861746e7ebe259b95 ;;
+          macOS:ARM64) platform=darwin-arm64; extension=tar.gz; sha=e1c4e22d70bd44abfa0bcb3c16f7cf0c66f648c2e728c58924e8a1ce88913cc8 ;;
+          Windows:X64) platform=windows-amd64; extension=zip; sha=2d0861dc2ca3567d17f7d19611d7b346cc2ccbd7086a0a77cc957a2c71663200 ;;
+          Windows:ARM64) platform=windows-arm64; extension=zip; sha=d468fa3f0ac953bed2219e37a2b5977d87cb8d705d5bbdc70b9f960e12fb7c38 ;;
+          *) echo "No pinned NATS archive for $RUNNER_OS:$RUNNER_ARCH" >&2; exit 1 ;;
+        esac
+        archive="nats-server-v2.15.0-$platform.$extension"
+        printf 'platform=%s\nextension=%s\nsha256=%s\nurl=https://github.com/nats-io/nats-server/releases/download/v2.15.0/%s\n' \
+          "$platform" "$extension" "$sha" "$archive" >> "$GITHUB_OUTPUT"
+
+    - name: Restore pinned NATS archive
+      id: nats-cache
+      uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+      with:
+        path: ${{ runner.temp }}/nats-server-v2.15.0-${{ steps.archive.outputs.platform }}.${{ steps.archive.outputs.extension }}
+        key: nats-server-v2.15.0-${{ steps.archive.outputs.platform }}-${{ steps.archive.outputs.sha256 }}
+
+    - name: Download pinned NATS archive with retries
+      if: runner.os != 'Windows' && steps.nats-cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        NATS_PLATFORM: ${{ steps.archive.outputs.platform }}
+        NATS_EXTENSION: ${{ steps.archive.outputs.extension }}
+        NATS_URL: ${{ steps.archive.outputs.url }}
+      run: |
+        archive="$RUNNER_TEMP/nats-server-v2.15.0-$NATS_PLATFORM.$NATS_EXTENSION"
+        for attempt in 1 2 3; do
+          if status=$(curl --fail --location --silent --show-error --output "$archive" --write-out '%{http_code}' "$NATS_URL"); then
+            exit 0
+          else
+            curl_status=$?
+            status=${status:-000}
+            printf 'NATS download attempt %s/3 failed (HTTP status %s, curl exit %s)\n' \
+              "$attempt" "$status" "$curl_status" >&2
+            rm -f "$archive"
+            if [[ "$attempt" -eq 3 ]]; then
+              exit "$curl_status"
+            fi
+            sleep 2
+          fi
+        done
+
+    - name: Download pinned NATS archive with retries (Windows)
+      if: runner.os == 'Windows' && steps.nats-cache.outputs.cache-hit != 'true'
+      shell: pwsh
+      env:
+        NATS_PLATFORM: ${{ steps.archive.outputs.platform }}
+        NATS_EXTENSION: ${{ steps.archive.outputs.extension }}
+        NATS_URL: ${{ steps.archive.outputs.url }}
+      run: |
+        $archive = "nats-server-v2.15.0-$env:NATS_PLATFORM.$env:NATS_EXTENSION"
+        $path = Join-Path $env:RUNNER_TEMP $archive
+        for ($attempt = 1; $attempt -le 3; $attempt++) {
+          try {
+            Invoke-WebRequest -Uri $env:NATS_URL -OutFile $path -ErrorAction Stop
+            break
+          } catch {
+            $status = '000'
+            $response = $_.Exception.Response
+            if ($null -ne $response -and $null -ne $response.StatusCode) {
+              $status = [int]$response.StatusCode
+            }
+            Write-Host "NATS download attempt $attempt/3 failed (HTTP status $status): $($_.Exception.Message)"
+            Remove-Item $path -ErrorAction SilentlyContinue
+            if ($attempt -eq 3) { throw }
+            Start-Sleep -Seconds 2
+          }
+        }
+
+    - name: Verify checksum and install nats-server
+      if: runner.os != 'Windows'
+      shell: bash
+      env:
+        NATS_PLATFORM: ${{ steps.archive.outputs.platform }}
+        NATS_SHA256: ${{ steps.archive.outputs.sha256 }}
+        NATS_EXTENSION: ${{ steps.archive.outputs.extension }}
+      run: |
+        archive="$RUNNER_TEMP/nats-server-v2.15.0-$NATS_PLATFORM.$NATS_EXTENSION"
+        if [[ "$RUNNER_OS" == Linux ]]; then
+          echo "$NATS_SHA256  $archive" | sha256sum --check -
+        else
+          echo "$NATS_SHA256  $archive" | shasum -a 256 --check -
+        fi
+        tar -xzf "$archive" -C "$RUNNER_TEMP"
+        bin="$RUNNER_TEMP/nats-server-v2.15.0-$NATS_PLATFORM"
+        echo "$bin" >> "$GITHUB_PATH"
+        "$bin/nats-server" --version
+
+    - name: Verify checksum and install nats-server (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      env:
+        NATS_PLATFORM: ${{ steps.archive.outputs.platform }}
+        NATS_SHA256: ${{ steps.archive.outputs.sha256 }}
+        NATS_EXTENSION: ${{ steps.archive.outputs.extension }}
+      run: |
+        $archive = "nats-server-v2.15.0-$env:NATS_PLATFORM.$env:NATS_EXTENSION"
+        $path = Join-Path $env:RUNNER_TEMP $archive
+        if ((Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:NATS_SHA256) {
+          throw 'NATS archive SHA256 mismatch'
+        }
+        Expand-Archive $path -DestinationPath $env:RUNNER_TEMP
+        $bin = Join-Path $env:RUNNER_TEMP "nats-server-v2.15.0-$env:NATS_PLATFORM"
+        $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        & (Join-Path $bin 'nats-server.exe') --version
+
+    - name: Save pinned NATS archive
+      if: steps.nats-cache.outputs.cache-hit != 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+      uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+      with:
+        path: ${{ runner.temp }}/nats-server-v2.15.0-${{ steps.archive.outputs.platform }}.${{ steps.archive.outputs.extension }}
+        key: nats-server-v2.15.0-${{ steps.archive.outputs.platform }}-${{ steps.archive.outputs.sha256 }}

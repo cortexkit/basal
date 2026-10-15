@@ -18,6 +18,7 @@ from mutation_matrix import matrix_for
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = Path(__file__).with_name("ci.yml")
+NATS_ACTION = ROOT / ".github" / "actions" / "install-nats-server" / "action.yml"
 
 
 def workflow_job(name):
@@ -93,6 +94,32 @@ class MutationMatrixChecks(unittest.TestCase):
 
 
 class WorkflowSchedulingChecks(unittest.TestCase):
+    def test_every_nats_install_uses_a_checksum_keyed_cache(self):
+        workflow = WORKFLOW.read_text()
+        self.assertIn("uses: ./.github/actions/install-nats-server", workflow_job("checks"))
+        for job in ("checks", "mutations-pr", "mutations-main", "windows-baseline"):
+            with self.subTest(job=job):
+                install = [step for step in workflow_steps(job) if "install-nats" in step]
+                self.assertEqual(len(install), 1)
+                self.assertTrue("*install-nats" in install[0] or
+                                "uses: ./.github/actions/install-nats-server" in install[0])
+
+        action = NATS_ACTION.read_text()
+        action_steps = re.split(r"(?m)^    - ", action)[1:]
+        restore_index = next(index for index, step in enumerate(action_steps)
+                             if "actions/cache/restore@" in step)
+        restore = action_steps[restore_index]
+        self.assertIn(
+            "key: nats-server-v2.15.0-${{ steps.archive.outputs.platform }}-${{ steps.archive.outputs.sha256 }}",
+            restore,
+        )
+        checksum_indexes = [
+            index for index, step in enumerate(action_steps)
+            if "sha256sum --check -" in step or "Get-FileHash" in step
+        ]
+        self.assertEqual(len(checksum_indexes), 2)
+        self.assertTrue(all(index > restore_index for index in checksum_indexes))
+
     def test_cache_saves_only_on_main_push(self):
         workflow = WORKFLOW.read_text()
         self.assertNotIn("actions/cache@", workflow)
@@ -104,6 +131,12 @@ class WorkflowSchedulingChecks(unittest.TestCase):
                     self.assertIn("if: github.event_name == 'push' && github.ref == 'refs/heads/main'", step)
                     self.assertNotIn("github.sha", step)
         self.assertEqual(len(saves), 6)
+
+        action_steps = re.split(r"(?m)^    - ", NATS_ACTION.read_text())[1:]
+        nats_saves = [step for step in action_steps if "actions/cache/save@" in step]
+        self.assertEqual(len(nats_saves), 1)
+        self.assertIn("if: steps.nats-cache.outputs.cache-hit != 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'", nats_saves[0])
+        self.assertNotIn("github.sha", nats_saves[0])
 
     def test_main_build_cache_namespace_and_run_handoff(self):
         for job, namespace in (("checks", "checks"), ("minimum-rust", "minimum")):
