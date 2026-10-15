@@ -9,10 +9,11 @@ fn manifest(value: Value) -> Manifest {
 
 fn board_manifest() -> Manifest {
     manifest(
-        json!({"id":"board-hygiene","version":1,"purpose":"Nudge board owners",
+        json!({"id":"board-hygiene","version":2,"purpose":"Nudge board owners",
         "trigger":{"schedule":{"cron":"*/5 * * * *","tz":"UTC","missed":"skip"}},
         "audience":{"kind":"global"},
         "ops":[{"module":"prefrontal-core","op":"board.read"}],
+        "board_read":["$audience"],
         "facts":{"targets":["$audience"]},
         "sinks":[{"agent":"$audience","digest_max":"wake"}]}),
     )

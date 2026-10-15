@@ -66,12 +66,16 @@ fn instance_ids_match_all_shared_vectors() {
 #[test]
 fn packages_require_self_in_every_agent_field() {
     let f = setup("pkg-self-only");
-    for field in ["sinks", "status", "claims", "facts"] {
+    for field in ["sinks", "status", "claims", "facts", "board_read"] {
         let mut m = manifest(1);
         match field {
             "sinks" => m["sinks"][0]["agent"] = json!("SYNAPSE"),
             "status" => m["status"] = json!(["SYNAPSE"]),
             "claims" => m["claims"][0]["agent"] = json!("SYNAPSE"),
+            "board_read" => {
+                m["board_read"] = json!(["SYNAPSE"]);
+                m["ops"] = json!([{"module":"prefrontal-core","op":"board.read"}]);
+            }
             _ => m["facts"]["targets"] = json!(["SYNAPSE"]),
         }
         let e = f
@@ -90,12 +94,16 @@ fn packages_require_self_in_every_agent_field() {
 #[test]
 fn ordinary_installs_refuse_self_in_every_agent_field() {
     let f = setup("pkg-install-self");
-    for field in ["sinks", "status", "claims", "facts"] {
+    for field in ["sinks", "status", "claims", "facts", "board_read"] {
         let mut m = events_manifest("ordinary");
         match field {
             "sinks" => m["sinks"][0]["agent"] = json!("$self"),
             "status" => m["status"] = json!(["$self"]),
             "claims" => m["claims"] = json!([{"agent":"$self","source_kind":"idleness"}]),
+            "board_read" => {
+                m["board_read"] = json!(["$self"]);
+                m["ops"] = json!([{"module":"prefrontal-core","op":"board.read"}]);
+            }
             _ => m["facts"] = json!({"targets":["$self"]}),
         }
         assert_eq!(
@@ -111,6 +119,50 @@ fn ordinary_installs_refuse_self_in_every_agent_field() {
         );
     }
     assert!(f.module.rt.flow("ordinary").unwrap().is_none());
+}
+
+#[test]
+fn board_read_package_and_template_preserve_self_grants() {
+    let f = setup("pkg-board-read");
+    f.catalog.set_op(
+        "prefrontal-core",
+        "board.read",
+        basal_host::OpDecl {
+            kind: Some(basal_host::OpKind::Query),
+            cause_echo: false,
+            shell_capable: false,
+        },
+    );
+    for template in [false, true] {
+        let mut m = manifest(1);
+        m["id"] = json!(if template {
+            "board-template"
+        } else {
+            "board-package"
+        });
+        m["board_read"] = json!(["$self"]);
+        m["ops"] = json!([{"module":"prefrontal-core","op":"board.read"}]);
+        if template {
+            m["params"] = json!({"count":{"type":"integer","min":1,"max":2}});
+            m["template"] = json!({"max_per_agent":1,"max_lifetime":"1h"});
+        }
+        f.module
+            .handle(
+                &Caller::Core,
+                "package.register",
+                json!({"script":"return 1;","manifest":m.to_string()}),
+            )
+            .unwrap();
+        let stored = f
+            .module
+            .handle(
+                &Caller::Core,
+                "package.get",
+                json!({"package":m["id"],"version":1}),
+            )
+            .unwrap();
+        assert_eq!(stored["manifest"], m.to_string());
+    }
 }
 
 #[test]

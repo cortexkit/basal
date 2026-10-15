@@ -118,6 +118,22 @@ pub fn quiet(id: &str, agent: &str, purpose: &str) -> Flow {
     }
 }
 
+/// A global flow that pages live boards through core's carrier route.
+pub fn board_read(id: &str) -> Flow {
+    Flow {
+        id: id.into(),
+        version: 1,
+        manifest: json!({"format":1,"id":id,"version":1,
+            "purpose":"Basal rig contract: read a page of boards with an approved audience grant.",
+            "trigger":{"schedule":{"cron":EVERY_MINUTE}},
+            "audience":{"kind":"global"},
+            "ops":[{"module":"prefrontal-core","op":"board.read"}],
+            "board_read":["$audience"]})
+        .to_string(),
+        script: "return await ops.call('prefrontal-core', 'board.read', {limit:16});".into(),
+    }
+}
+
 /// A persona package exercises both the activation identity and literal `$self` grants.
 pub fn package(id: &str) -> Flow {
     Flow {

@@ -1028,6 +1028,7 @@ fn board_read_fixture(tag: &str, script: &str) -> Fixture {
     );
     install_target_manifest(&f, |manifest| {
         manifest["ops"] = json!([{"module":"prefrontal-core","op":"board.read"}]);
+        manifest["board_read"] = json!(["$audience"]);
     });
     f
 }

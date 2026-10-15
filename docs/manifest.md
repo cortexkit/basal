@@ -23,6 +23,7 @@ A flow is a script plus a manifest. The manifest says everything the flow may do
 | `max_targets` | integer | no | `64` | Maximum distinct agents a run may make `for:` module calls for; 1 to 1024. Shown on the card. Repeated calls for the same stable id use one slot. |
 | `sinks` | list of sink grants | no | `[]` | Agents whose digest the flow may write. |
 | `status` | list of agent names | no | `[]` | Agents whose status line the flow may set. |
+| `board_read` | list of agent references (strings) | no | `[]` | Agents whose boards the flow may read. Requires `prefrontal-core` / `board.read` in `ops`, and that op requires a nonempty `board_read`. |
 | `claims` | list of claims | no | `[]` | Source kinds the flow takes over from core for an agent. |
 | `ops` | list of op references | no | `[]` | Every module op the flow may call. Anything else is refused at run time. |
 | `facts` | facts grant | no | none | Whose facts the flow may read. Without it, `facts()` is refused. |
@@ -71,7 +72,7 @@ reports boolean `state_reset` without changing stored values.
 
 Agent fields also accept the literal `$self` in [package manifests](packages.md). Registration permits only `$self`; activation resolves it to the instance's stable owner id. Ordinary `flow.install` refuses `$self` with `self_requires_package`.
 
-Every agent named by `sinks[].agent`, `status[]`, `claims[].agent` and `facts.targets[]` must be known to the catalog. Fields may use a display name or a stable `agent_id`; the catalog resolves both to that id. For an agent-owned flow, every resolved id must equal its author's stable id: the flow acts only for its owner. Install and dry run refuse a foreign target with `foreign_agent_target`, naming the field and agent, before recording an install or raising a consent card. The author's id comes from the daemon-stamped caller scope for an agent install, not the manifest. An operator installing in an agent's name uses that agent's stable id as the author and follows the same rule. Global flows authored as `operator` and local-caller installs authored as `local:unverified` may still name any known agent.
+Every agent named by `sinks[].agent`, `status[]`, `board_read[]`, `claims[].agent` and `facts.targets[]` must be known to the catalog. Fields may use a display name or a stable `agent_id`; the catalog resolves both to that id. For an agent-owned flow, every resolved id must equal its author's stable id: the flow acts only for its owner. Install and dry run refuse a foreign target with `foreign_agent_target`, naming the field and agent, before recording an install or raising a consent card. The author's id comes from the daemon-stamped caller scope for an agent install, not the manifest. An operator installing in an agent's name uses that agent's stable id as the author and follows the same rule. Global flows authored as `operator` and local-caller installs authored as `local:unverified` may still name any known agent.
 
 ### `audience`
 
@@ -100,7 +101,7 @@ static target authorship rules. An agent-authored flow may claim sources or read
 targets only for its own stable agent id; operator-authored flows may name other agents.
 
 With an audience, every digest sink must declare `agent: "$audience"` and every
-status entry must be `"$audience"`. A named sink or status target returns
+status or `board_read` entry must be `"$audience"`. A named sink, status or board-read target returns
 `audience_sink_named`; static and audience targets cannot mix. Without an
 audience, `$audience` is refused with `audience_placeholder_without_audience`.
 It is not valid in claims or an agent audience id. Facts may use it only with a
@@ -109,8 +110,13 @@ absent or false. Workspace and agent audiences return `audience_facts_requires_g
 until core supports checking facts membership. Mixing named facts targets returns
 `audience_facts_mixed_targets`; granting private text returns `audience_facts_private_text`.
 Without any audience the placeholder returns `audience_placeholder_without_audience`.
-A declaration grants only
-its sink kind, not another kind. Scripts still pass a recipient on each write;
+`board_read` is a plain array of strings, for example `["$audience"]`, not
+objects with an `agent` field. Without an audience it may name static agents,
+or `$self` in packages, under the same owner restrictions as sinks and status.
+Duplicates and empty references are refused. Core also requires a separate live,
+revocable `board_read` grant for each entry; audience membership alone is not
+authority to read a board. A declaration grants only
+its own kind, not another kind. Scripts still pass a recipient on each write;
 core checks current audience membership at delivery time and refuses an outside
 recipient with `sink_target_not_in_audience`. Basal passes that code through
 unchanged. An omitted audience keeps all existing static-target behavior.

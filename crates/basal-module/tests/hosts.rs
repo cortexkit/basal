@@ -428,6 +428,50 @@ fn install_card_is_byte_exact_and_scope_comes_from_the_route_stamp() {
 }
 
 #[test]
+fn board_read_install_request_preserves_manifest_bytes_and_hash() {
+    let fake = Fake::new();
+    fake.catalog.lock().unwrap()["modules"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({
+            "module_id":"prefrontal-core", "roles":[{"role":"management_surface",
+                "operations":[{"name":"board.read","kind":"query"}],
+                "config_schema":{},"observability":[],"identity_scope":[],"concurrency":"serial"}],
+            "control_ops":[]
+        }));
+    let consent = Arc::new(CoreConsent::new(fake.clone()));
+    let f = fixture(fake.clone(), consent, "board-read-bytes");
+    let script = "return 1;\n";
+    let manifest = include_str!("../../../flows/board-hygiene/manifest.json");
+    let reply = f
+        .module
+        .handle(
+            &Caller::Operator,
+            "flow.install",
+            json!({
+                "script":script,"manifest":manifest
+            }),
+        )
+        .unwrap();
+    assert_eq!(reply["state"], "pending");
+    let calls = fake.calls("flow.install_request");
+    assert_eq!(calls.len(), 1);
+    let install = &calls[0]["params"]["flow_install"];
+    assert_eq!(install["manifest_json"], manifest);
+    let parsed: Value = serde_json::from_str(install["manifest_json"].as_str().unwrap()).unwrap();
+    assert_eq!(parsed["board_read"], json!(["$audience"]));
+    let expected = basal_core::ids::hex(&basal_core::ids::code_hash(script, manifest));
+    assert_eq!(install["code_hash"], expected);
+    assert_eq!(reply["code_hash"], expected);
+    let without = manifest.replace("  \"board_read\": [\"$audience\"],\n", "");
+    assert_ne!(without, manifest);
+    assert_ne!(
+        expected,
+        basal_core::ids::hex(&basal_core::ids::code_hash(script, &without))
+    );
+}
+
+#[test]
 fn install_request_carries_dry_run_text_only_when_core_lists_the_capability() {
     use basal_host::InstallCard;
     use basal_host::core_consent::{FLOW_INSTALL_DRY_RUN_TEXT_V1, request};
