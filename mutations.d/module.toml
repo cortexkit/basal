@@ -1296,14 +1296,12 @@ build_timeout_s = 3600
 [[control]]
 id = "privacy-probe-borrows-inherited-originator"
 guards = "the responsibility probe must create its own live originator rather than depend on the test runner ancestry"
-file = "crates/basal-module/tests/e2e.rs"
-scope = { after = "async fn production_worker_is_its_own_responsible_process() {", before = "async fn worker_privacy_probe_with_live_originator() {" }
-old = 'let mut builder = subc_os::privacy_identity::DisclaimedCommand::new(&binary, &probe_binary);'
-new = '''// NON-VACUITY BREAK: leave the probe with its caller's inherited originator.
-        let mut builder = Command::new(&probe_binary);'''
+# Each anchor occurs once in e2e.rs, so the edits need no scope.
 edits = [
-  { old = 'let (mut command, confirmation) = builder.into_command().expect("disclaimed probe");', new = 'let mut command = builder;' },
-  { old = '''let confirmed = confirmation
+  { file = "crates/basal-module/tests/e2e.rs", old = 'let mut builder = subc_os::privacy_identity::DisclaimedCommand::new(&binary, &probe_binary);', new = '''// NON-VACUITY BREAK: leave the probe with its caller's inherited originator.
+        let mut builder = Command::new(&probe_binary);''' },
+  { file = "crates/basal-module/tests/e2e.rs", old = 'let (mut command, confirmation) = builder.into_command().expect("disclaimed probe");', new = 'let mut command = builder;' },
+  { file = "crates/basal-module/tests/e2e.rs", old = '''let confirmed = confirmation
             .confirm(deadline)
             .map_err(|error| error.to_string());''', new = 'let confirmed: Result<(), String> = Ok(());' },
 ]
