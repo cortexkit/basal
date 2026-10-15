@@ -1117,7 +1117,54 @@ impl Activation<'_> {
                 })?;
         }
         let prepared: std::result::Result<Prepared, Refusal> = match &call.kind {
+            CallKind::Op { module, op }
+                if basal_host::core_host::is_core_carrier_op(module, op) =>
+            {
+                let object = args.as_object_mut().ok_or_else(|| {
+                    Refusal::new(
+                        codes::INVALID_ARGUMENTS,
+                        "core carrier arguments must be an object",
+                    )
+                })?;
+                if ["stamp", "flow_id", "flow_version", "code_hash"]
+                    .iter()
+                    .any(|field| object.contains_key(*field))
+                {
+                    return Err(Refusal::new(
+                        codes::INVALID_ARGUMENTS,
+                        "scripts cannot supply an approved-install stamp",
+                    ));
+                }
+                let version = self
+                    .run
+                    .flow_version
+                    .ok_or_else(|| Refusal::denied("core calls require an installed version"))?;
+                // Journal the trusted stamp with the request so a replay uses
+                // the same approved install, even after a newer version exists.
+                object.insert(
+                    "stamp".into(),
+                    serde_json::json!({
+                        "flow_id": self.run.flow_id,
+                        "flow_version": version,
+                        "code_hash": crate::ids::hex(&self.run.code_hash),
+                    }),
+                );
+                let request = JsonText::new(args.to_string())
+                    .map_err(|e| Refusal::new(codes::TOO_LARGE, e.to_string()))?;
+                Ok(Prepared {
+                    request: Some(request),
+                    ..Prepared::default()
+                })
+            }
             CallKind::OpFor { .. } => {
+                if let CallKind::OpFor { module, op } = &call.kind
+                    && basal_host::core_host::is_core_carrier_op(module, op)
+                {
+                    return Err(Refusal::new(
+                        codes::INVALID_ARGUMENTS,
+                        "core carrier ops select their audience in arguments, not the for option",
+                    ));
+                }
                 let name = args
                     .get("for")
                     .and_then(Value::as_str)

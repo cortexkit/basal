@@ -1,0 +1,16 @@
+[[control]]
+id = "core-carrier-board-read-exemption-removed"
+guards = "board hygiene installs without core advertising flow-scopes/v1"
+test_file = "crates/basal-module/tests/flow_scope_capabilities.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test flow_scope_capabilities"
+select = { tests = ["board_hygiene_manifest_installs_without_core_flow_scopes", "core_op_install_requires_catalog_capability_for_every_author"] }
+expect_red = ["board_hygiene_manifest_installs_without_core_flow_scopes"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_host.rs"
+old = 'pub const CORE_CARRIER_OPS: &[&str] = &["board.read"];'
+new = 'pub const CORE_CARRIER_OPS: &[&str] = &[]; // NON-VACUITY BREAK'

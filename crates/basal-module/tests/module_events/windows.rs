@@ -22,7 +22,7 @@ impl Child {
     }
 }
 
-pub fn start_server(dir: &Path, port: u16, log: File) -> Child {
+pub fn start_server(dir: &Path, log: File) -> Child {
     let program = std::env::var_os("PATH")
         .and_then(|path| {
             std::env::split_paths(&path)
@@ -35,10 +35,7 @@ pub fn start_server(dir: &Path, port: u16, log: File) -> Child {
         .canonicalize()
         .unwrap();
     let mut command = PlainCommand::new(program);
-    command.args = ["-js", "-a", "127.0.0.1", "-p", &port.to_string(), "-sd"]
-        .map(Into::into)
-        .into();
-    command.args.push(dir.join("jetstream").into());
+    command.args = super::server_args(dir);
     command.env = std::env::vars_os().collect();
     command.stdout = PlainStdio::Piped;
     command.stderr = PlainStdio::Piped;

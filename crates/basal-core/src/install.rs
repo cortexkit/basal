@@ -265,12 +265,7 @@ pub(crate) fn validate_inner(
     }
     let reads_text = manifest.facts.as_ref().is_some_and(|f| f.text);
     for OpRef { module, op, .. } in &manifest.ops {
-        if module == basal_host::subc_catalog::CORE && !catalog.supports_flow_scopes(module) {
-            return Err(InstallError::FlowScopeUnsupported {
-                module: module.clone(),
-                op: op.clone(),
-            });
-        }
+        validate_flow_scope_support(catalog, module, op)?;
         let pair = || (module.clone(), op.clone());
         if denylist.contains(module, op) {
             let (module, op) = pair();
@@ -374,6 +369,23 @@ pub(crate) fn validate_inner(
         }
     }
     Ok(warnings)
+}
+
+fn validate_flow_scope_support(
+    catalog: &dyn Catalog,
+    module: &str,
+    op: &str,
+) -> std::result::Result<(), InstallError> {
+    if basal_host::core_host::is_core_carrier_op(module, op) {
+        return Ok(());
+    }
+    if module == basal_host::subc_catalog::CORE && !catalog.supports_flow_scopes(module) {
+        return Err(InstallError::FlowScopeUnsupported {
+            module: module.to_owned(),
+            op: op.to_owned(),
+        });
+    }
+    Ok(())
 }
 
 /// Validate audience references; core decides whether the requested reach is approved.

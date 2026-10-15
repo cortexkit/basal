@@ -1,0 +1,7 @@
+{
+  "summary": "In the last 24 hours it would have run 288 times, every 5 minutes (cron '*/5 * * * *' UTC); the dry run tried the newest 10. Each run stopped at its first read, because a flow that isn't approved yet doesn't read live data.",
+  "would": [
+    "Read every board in its audience"
+  ],
+  "problems": []
+}

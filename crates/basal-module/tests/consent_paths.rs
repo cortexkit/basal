@@ -254,6 +254,10 @@ impl Rig {
             .find(|c| c.flow_id == flow)
             .unwrap()
     }
+    fn select_path(&self, flow: &str, path: DecisionPath) {
+        let seq = self.record(flow).seq;
+        assert_eq!(self.m().rt.select_decision_path(seq, &path).unwrap(), path);
+    }
     fn install(&self, flow: &str) {
         let installed = self.m().rt.install(&basal_core::InstallRequest {
             script: "return 1;".into(), manifest: json!({"id":flow,"version":1,"purpose":"Consent path test","trigger":{"events":[{"module":"plexus","name":"pull_request_review","version":1}]}}).to_string(),
@@ -474,7 +478,7 @@ fn requester_vectors_are_pinned_and_all_three_requests_match_bytes() {
 }
 
 #[test]
-fn new_cards_choose_only_an_advertised_consent_capability() {
+fn new_cards_require_an_advertised_consent_capability() {
     let rig = Rig::new();
     rig.wire.listed(true);
     rig.reenable("modern");
@@ -486,20 +490,20 @@ fn new_cards_choose_only_an_advertised_consent_capability() {
     assert_eq!(rig.wire.calls("consent.request").len(), 1);
     assert!(rig.wire.calls("elicitation.request").is_empty());
     rig.wire.listed(false);
-    rig.reenable("legacy");
+    rig.reenable("unavailable");
     rig.pass();
-    assert_eq!(
-        rig.record("legacy").consent_path,
-        Some(DecisionPath::Legacy)
-    );
-    assert_eq!(rig.wire.calls("elicitation.request").len(), 1);
-    assert_eq!(rig.wire.calls("elicitation.request")[0].0, CORE);
+    let unavailable = rig.record("unavailable");
+    assert_eq!(unavailable.consent_path, None);
+    assert_eq!(unavailable.raised_revision, None);
+    assert_eq!(rig.wire.calls("consent.request").len(), 1);
+    assert!(rig.wire.calls("elicitation.request").is_empty());
 }
 
 #[test]
 fn answers_on_both_paths_apply_once_and_ack_their_own_owner() {
     let rig = Rig::new();
     rig.reenable("legacy");
+    rig.select_path("legacy", DecisionPath::Legacy);
     rig.pass();
     rig.wire.listed(true);
     rig.reenable("modern");
@@ -540,6 +544,9 @@ fn updates_and_withdrawals_use_the_raising_path_and_replacement_id() {
         let mut rig = Rig::new();
         rig.wire.listed(listed);
         rig.grant("grant-flow");
+        if !listed {
+            rig.select_path("grant-flow", DecisionPath::Legacy);
+        }
         rig.pass();
         let original = rig.record("grant-flow");
         let path = if listed {
@@ -595,7 +602,7 @@ fn updates_and_withdrawals_use_the_raising_path_and_replacement_id() {
 }
 
 #[test]
-fn provider_disappearance_falls_back_but_keeps_reading_old_answers() {
+fn provider_disappearance_keeps_old_answers_and_leaves_new_cards_pending() {
     let rig = Rig::new();
     rig.wire.listed(true);
     rig.reenable("before");
@@ -604,16 +611,17 @@ fn provider_disappearance_falls_back_but_keeps_reading_old_answers() {
     rig.reenable("after");
     rig.pass();
     rig.wire.settle(PROVIDER, "el_1", Some("reenable"));
-    rig.wire.settle(CORE, "el_1", Some("reenable"));
     rig.consent.poll_once().unwrap();
     assert_eq!(rig.record("before").state, CardState::Applied);
-    assert_eq!(rig.record("after").state, CardState::Applied);
+    assert_eq!(rig.record("after").state, CardState::Open);
+    assert_eq!(rig.record("after").consent_path, None);
+    assert_eq!(rig.record("after").elicitation_id, None);
     assert_eq!(
         rig.wire.calls("consent.answers"),
         [(PROVIDER.into(), json!({"since":0}))]
     );
     assert_eq!(rig.wire.calls("consent.request").len(), 1);
-    assert_eq!(rig.wire.calls("elicitation.request").len(), 1);
+    assert!(rig.wire.calls("elicitation.request").is_empty());
 }
 
 #[test]
@@ -701,6 +709,7 @@ fn paged_cursor_is_durable_and_empty_withdrawal_pages_are_acked() {
 fn poison_page_is_not_acked_and_other_path_still_progresses() {
     let rig = Rig::new();
     rig.reenable("legacy");
+    rig.select_path("legacy", DecisionPath::Legacy);
     rig.pass();
     rig.wire.listed(true);
     rig.reenable("poison");
@@ -743,6 +752,7 @@ fn poison_page_is_not_acked_and_other_path_still_progresses() {
 fn retention_tombstone_closes_only_its_owned_card_without_action() {
     let rig = Rig::new();
     rig.reenable("legacy");
+    rig.select_path("legacy", DecisionPath::Legacy);
     rig.pass();
     rig.wire.listed(true);
     rig.reenable("retained");
@@ -861,6 +871,7 @@ fn old_context_and_recorded_superseded_ids_cannot_answer_an_outstanding_revision
 fn legacy_path_never_recovers_a_differing_id_even_with_current_grant_context() {
     let rig = Rig::new();
     rig.grant("grant-flow");
+    rig.select_path("grant-flow", DecisionPath::Legacy);
     rig.pass();
     rig.repeat_grant("grant-flow");
     let latest = rig.record("grant-flow");

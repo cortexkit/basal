@@ -352,3 +352,23 @@ impl Spawn for GatedSpawner {
         self.inner.spawn()
     }
 }
+
+/// Checks a dry run's plain-language text against its committed fixture in
+/// `test-vectors/dry-run-text/`, which core and the phone client read as
+/// examples of real output. On a mismatch the message holds the whole new
+/// file, so an intended change is copied into the fixture by hand.
+pub fn assert_dry_run_text_fixture(name: &str, text: &Value) {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../test-vectors/dry-run-text")
+        .join(name);
+    let expected = std::fs::read_to_string(&path).unwrap_or_default();
+    // Through the struct, so the file keeps the fields in their documented
+    // order and holds nothing else.
+    let text: basal_core::dry_run_text::DryRunText = serde_json::from_value(text.clone()).unwrap();
+    let actual = serde_json::to_string_pretty(&text).unwrap() + "\n";
+    assert!(
+        expected == actual,
+        "{} differs from this run's dry_run_text; the new contents are:\n{actual}",
+        path.display()
+    );
+}

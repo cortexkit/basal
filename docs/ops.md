@@ -38,6 +38,16 @@ Reply:
 
 Installation records a version and asks prefrontal-core to authorize it through `flow.install_request`, with a `flow_install` consent body containing the exact code, manifest and attested author. Core owns the install record and files its card through cingulate when available, otherwise through its own provider. basal never sends install cards through `elicitation.request` or directly to cingulate. The reply `outcome: card_raised` names `flow_id`, `version` and `attempt`, not an elicitation id; basal saves that triple. Generic elicitation replies are not accepted. Decision cards (`flow_decision`, including `grant_lost`) still use the catalogued consent provider and its answer feed.
 
+When core's daemon catalog entry lists the capability `flow-install-dry-run-text/v1`, the `flow_install` body also carries `dry_run_text`: the install dry run in plain words, which core and cingulate show as written. Without the capability basal sends exactly the body above, without the key. The raw `dry_run_summary` is sent either way, unchanged, for audits. The card basal records always holds both. The shape is:
+```json
+{"summary":"string","would":["string"],"problems":["string"]}
+```
+- `summary`, at most 300 bytes, says when the flow runs. For a schedule that is how many runs the replayed window would have had and how often. For an event trigger it names the events and says that none were replayed. When runs stopped at a read the dry run captured, it adds "Each run stopped at its first read, because a flow that isn't approved yet doesn't read live data." (or "Some runs stopped at their first read, …" when only some did).
+- `would` lists at most 8 lines of at most 200 bytes, one for each distinct thing the flow did, in the order it first did each: for example "Wake 'ag_x': 'Wait ended: deploy'", "Read every board in its audience" or "Store 3 values". When there are more, the eighth line is "and N more".
+- `problems` lists at most 8 lines of at most 200 bytes, each naming a run by its due time and what went wrong. Only real failures count: a refused call (outside the manifest, or a size or validation refusal), a script error before the script saw any captured call, passing the deadline, or running out of a CPU, memory or stack budget. A captured call's rejection is the dry run's own doing and is never a problem, and neither is a script error that follows one. When there are more, the eighth line is "and N more". If the dry run itself could not run, the only problem says so.
+
+All of it is UTF-8 with control and direction-changing characters removed, cut on a character boundary with "…". Text the script supplied (agent names, titles, error messages, paths) is always in single quotes and at most 80 bytes; a straight quote inside it becomes ’. Committed examples of real output, for `flows/board-hygiene` and the `remind-at` template, are in [`test-vectors/dry-run-text/`](../test-vectors/dry-run-text).
+
 Any author, including an agent, may request a self, workspace or global audience. Workspace ids must still exist (`unknown_workspace`). Core's default ladder allows self installs, asks for workspace installs, and always asks for global installs; workspace policy is configurable. The authority for broad reach is core's card answer or permitted policy decision, not the requester's identity. A global audience requires a card answer: basal refuses policy approval for it, logs an error naming the flow, version and policy rule, and leaves the version pending with an `install_checks` error. This applies to synchronous install replies, decision hints and startup recovery alike; a synchronous refusal returns `install_policy_unconfirmed`.
 
 basal declares `flow-install-policy/v1` in its daemon capabilities so core may approve synchronously under its configured installation policy. A policy reply (`outcome: approved_by_policy`, `rule`, `code_hash`) is not sufficient by itself: basal first checks its hash against the installed version, then calls `flow.install_status` once and requires `active` with that same hash. Unknown outcomes are errors. A failed hash or status check returns `install_policy_unconfirmed`, leaves the version pending, and logs and records the failure in `flow.health` and `flow.list` under `install_checks`.
@@ -255,6 +265,80 @@ an install ends every target scope for the flow. Provider route opens use these
 selectors exactly as they use the flow's own selector. A scope close during a
 call is a lost reply, never evidence that a mutation was unsent.
 
+## Core carrier operations: `board.read`
+
+The explicit core carrier-op list contains only `prefrontal-core` / `board.read`.
+Keep the manifest grant `{"module":"prefrontal-core","op":"board.read"}` and
+call it with `ops.call('prefrontal-core', 'board.read', args)`. Basal sends this
+query on its own reserved route (principal `reserved:basal`), not a flow-scoped
+provider route; it does not require core to advertise `flow-scopes/v1`. Other
+declared core ops still require that capability. The normal grant, catalog and
+shell checks remain in force.
+
+Basal adds the approved run's install stamp and journals the entire prepared
+request before dispatch. Scripts cannot supply `stamp`, `flow_id`,
+`flow_version`, or `code_hash`, even as `null`: basal refuses those arguments
+with `invalid_arguments`. The targeted-call `for` option is not supported for
+carrier ops; select boards using the read arguments instead. Core rechecks installation, the code
+hash, board-read authorization and the audience; the carrier route is not a
+grant bypass.
+
+The core wire contract below was read at prefrontal revision
+`1b5853b6656bf7f13101e2d90986fa889e13a044` in
+`crates/prefrontal-core-module/src/flow_sinks.rs`, with stamp and authorization
+types in `crates/prefrontal-core-store/src/flow_install.rs`.
+
+```json
+{
+  "stamp": {"flow_id":"board-hygiene","flow_version":1,"code_hash":"<approved code hash>"},
+  "limit": 16,
+  "cursor": "<previous next_cursor>"
+}
+```
+
+`stamp` is required on the wire, and all three stamp fields are required.
+`flow_id` is 1–128 characters with no control characters; `flow_version` must
+be positive. Requests reject unknown fields. The only optional top-level
+fields are `agent`, `agents`, `limit`, and `cursor`:
+
+- With `agent`, core reads one board. This form cannot include `agents`,
+  `limit`, or `cursor` and returns the board object directly.
+- Without `agent`, core pages boards in sorted agent-ID order. `agents` may
+  explicitly select at most 64 IDs; if omitted, core enumerates board agents
+  and filters them by the installed audience. An explicit out-of-audience ID
+  is refused rather than silently filtered.
+- `limit` defaults to 16 and must be between 1 and 16. `cursor` is the exclusive
+  after-agent ID: use the previous reply's `next_cursor`, or omit it for the
+  first page. It must be nonempty, at most 256 bytes, and contain no control
+  characters. A paged read requires an audience on the approved install.
+
+The paged reply is
+`{"boards":[{"agent_id":"...","board":{...}}],"next_cursor":null,"page_cap":16}`.
+`next_cursor` is the last returned agent ID if another item exists, otherwise
+`null`. A board is core's `BoardState` JSON object, with fields `roomId`,
+`sessionId`, `vocabulary`, `servedSeq`, `lanes`, `laneBlocks`, `blocks`,
+`servedBlocks`, `totalBlocks`, and `health`.
+
+Core's refusal codes are:
+
+| Code | Meaning |
+|---|---|
+| `sink_principal_refused` | Caller is not `reserved:basal`. |
+| `sink_item_invalid` | Strict request decoding or validation failed, including incompatible single/paged arguments, invalid limit/cursor, or more than 64 explicit agents. The message identifies the invalid field and reason. |
+| `sink_flow_not_installed` | No active approved install for the stamp. |
+| `sink_flow_hash_mismatch` | Stamp hash differs from the installed code hash. |
+| `sink_audience_check_required` | Paged read has no installed audience (also used when the lower-level single-board dispatcher is called without an agent). |
+| `sink_audience_unavailable` | Audience membership cannot be checked. |
+| `sink_target_not_in_audience` | Explicit target is outside the approved audience. |
+| `board_read_target_not_granted` | Target is unresolved/ungranted, board-read manifest authorization or a separate live grant is missing, owner restriction fails, or the board room is absent. Audience membership alone does not grant a read. |
+
+Core normally sets the refusal message to the refusal code identifier itself.
+`sink_item_invalid` instead identifies the invalid field and decoding or
+validation reason. `sink_target_not_in_audience` names the flow, target and
+audience; `sink_audience_unavailable` may include those names and the lookup
+failure detail. Basal exposes core refusals to the script as ordinary query
+rejections and journals them like other replies.
+
 ## Codemode
 
 Basal is a `tool-provider/v1` provider with one agent tool, `codemode`. Core grants access and owns each ephemeral run scope; it does not carry the tool or provide its input schemas. The daemon verifies the caller's principal and stamps the incoming route with scope owner, ref, epoch and authoritative attributes including `agent_id`; basal takes its agent and invoking scope only from that stamp. Arguments cannot override either. Each child provider route carries the invoking route's `BindIdentity` unchanged. Its project root configures where relative paths and shell commands run; its harness and session configure the provider's client and session context. A registered project ID is also copied unchanged when present. These values preserve the configuration of the agent's direct calls, never authority: basal identifies the agent and scope only from the daemon's recorded principal and scope.
@@ -380,19 +464,26 @@ Digest: `d53d18c23212ea7b6300594bb89bce60218f6eff2b9d628b8cc42d3e79bbd5ab`
 ## Operator decision cards
 
 Basal raises `flow_decision` cards for reconciliation, re-enabling an
-auto-disabled flow, and lost grants. For each new card it reads the daemon
+auto-disabled flow, and lost grants. Each initial raise reads the daemon
 catalog: a provider advertising `consent/v1` receives `consent.request` on
-basal's attested `reserved:basal` route; with no such provider, core receives
-the legacy `elicitation.request`. Install cards still go through core.
+basal's attested `reserved:basal` route. If no provider advertises that
+capability, selection returns `Unavailable` naming `consent/v1`; no path is
+committed and the card stays pending for retry. Core rejects new-card raises on
+its legacy `elicitation.request` endpoint with `elicitation_frozen`, so basal
+reports the missing provider instead of sending a request that core will refuse.
+Install cards still go through core.
 
-The chosen path and provider are committed before sending, including requests
-whose replies may be lost. A card never changes paths. Updates use its original
-endpoint and `dedup_key`; withdrawals use that endpoint and the current card id.
-Cingulate refreshes identical content in place, but changed content replaces the
-pending card with a new id. Basal records that replacement id and rejects answers
-to older bodies or known superseded ids. If a replacement reply is lost, only an
-outstanding cingulate grant-loss revision with an exact current context can learn
-its new id from an answer; legacy cards retain their existing id checks.
+The selected path is committed before sending, including requests whose replies
+may be lost. A card never changes paths. Updates use its original endpoint and
+`dedup_key`; older cards already recorded on the legacy path keep using core's
+`elicitation.request` for updates. Withdrawals use the original
+endpoint and current card id. Cingulate refreshes identical content in place,
+but changed content replaces the pending card with a new id. Basal records that
+replacement id and rejects answers to older bodies or known superseded ids. If a
+replacement request reply is lost, an answer can supply the new id only for an
+outstanding cingulate grant-loss card whose answer body exactly matches the
+current revision. This prevents an answer to older or unrelated content from
+claiming the replacement id. Legacy cards retain their existing id checks.
 
 Both answer feeds remain active while they have open cards. Basal applies each
 answer durably and idempotently before acknowledging it on its own path. The
@@ -402,11 +493,14 @@ cover withdrawals. A failed apply keeps the page unacknowledged; a failed ack
 is retried even after the last card closes or basal restarts. Retention
 tombstones close only their matching owned card and never apply a choice.
 
-No switch-window timing is required: removing the capability sends new cards
-back to legacy while cingulate-raised cards keep using their recorded provider
-whenever it is reachable. A listed but unreachable consent provider delays its
-cards rather than duplicating them on core. Catalog read failures also delay
-selection rather than guessing a path.
+Adding or removing a `consent/v1` provider does not require changing the daemon
+catalog and basal's card state at the same time. If the provider is absent, new
+cards wait for retry; adding one later lets basal select it on a later pass.
+Previously recorded cingulate cards keep using their provider when it is
+reachable, while cards recorded as legacy by older builds keep their core
+answer, acknowledgement, update and withdrawal path. A listed but unreachable
+consent provider delays its cards rather than duplicating them on core. Catalog
+read failures also delay selection rather than guessing a path.
 
 The decision body remains core's validated v2 body on either endpoint;
 cingulate checks the envelope but stores that body opaquely. Flow decisions

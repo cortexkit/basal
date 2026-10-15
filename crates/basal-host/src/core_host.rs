@@ -11,6 +11,16 @@ use std::sync::Arc;
 
 pub const FLOW_DIGEST_REPLACE_KEY_V1: &str = "flow-digest-replace-key/v1";
 
+/// Manifest-declared ops that core accepts from `reserved:basal`, checking a
+/// `{flow_id, flow_version, code_hash}` stamp against the approved install.
+/// These use basal's own management route, not a provider route bound to the
+/// flow's scope selector.
+pub const CORE_CARRIER_OPS: &[&str] = &["board.read"];
+
+pub fn is_core_carrier_op(module: &str, op: &str) -> bool {
+    module == CORE && CORE_CARRIER_OPS.contains(&op)
+}
+
 /// The call's identity and times, fixed when its intent is built.
 pub struct IntentContext<'a> {
     pub flow_id: &'a str,
@@ -98,21 +108,28 @@ impl CoreHost {
     /// Read the current catalog for each gated write; a stale catalog cannot
     /// authorize a field that an older core may refuse.
     pub fn supports_capability(&self, capability: &str) -> bool {
-        self.transport
-            .catalog()
-            .ok()
-            .and_then(|catalog| {
-                catalog["modules"].as_array().map(|modules| {
-                    modules.iter().any(|module| {
-                        module["module_id"] == CORE
-                            && module["capabilities"]["provides"].as_array().is_some_and(
-                                |provided| provided.iter().any(|item| item == capability),
-                            )
-                    })
+        core_provides(self.transport.as_ref(), capability)
+    }
+}
+
+/// Whether core's entry in the daemon's current catalog lists `capability`
+/// among what it provides. A catalog that cannot be read provides nothing,
+/// so a field an older core would refuse is never sent on a guess.
+pub fn core_provides(transport: &dyn Transport, capability: &str) -> bool {
+    transport
+        .catalog()
+        .ok()
+        .and_then(|catalog| {
+            catalog["modules"].as_array().map(|modules| {
+                modules.iter().any(|module| {
+                    module["module_id"] == CORE
+                        && module["capabilities"]["provides"]
+                            .as_array()
+                            .is_some_and(|provided| provided.iter().any(|item| item == capability))
                 })
             })
-            .unwrap_or(false)
-    }
+        })
+        .unwrap_or(false)
 }
 
 pub fn validate_reply(kind: Primitive, value: Value) -> Result<Value, WireError> {
