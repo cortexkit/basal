@@ -4,6 +4,7 @@ import concurrent.futures
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import time
 
@@ -32,17 +33,33 @@ def main():
     started = time.monotonic()
 
     def run(slot, iteration, full):
-        name = f"{'full' if full else 'single'}-{slot}-{iteration}"
+        orphan = slot < cores
+        name = f"{'orphan' if orphan else 'self'}-{'full' if full else 'single'}-{slot}-{iteration}"
         args = [str(tmp / "privacy-launch"), binaries[0], "--nocapture"]
+        if orphan:
+            args.insert(1, "--orphan")
         if not full:
             args += ["--exact", "privacy::production_worker_is_its_own_responsible_process"]
         before = time.monotonic()
         with (out / f"{name}.log").open("w") as log:
             try:
-                status = subprocess.run(args, env=os.environ if full else env,
-                                        stdout=log, stderr=subprocess.STDOUT,
-                                        timeout=360).returncode
+                process = subprocess.Popen(args, env=os.environ if full else env,
+                                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                           start_new_session=True)
+                if orphan:
+                    process.wait(timeout=360)
+                output, _ = process.communicate(timeout=max(0.1, 360 - (time.monotonic() - before)))
+                log.write(output.decode(errors="replace"))
+                status = process.returncode
+                if orphan and b"test result: ok." not in output:
+                    status = 101
             except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                output, _ = process.communicate(timeout=30)
+                log.write(output.decode(errors="replace"))
                 status = "timeout"
         return {"name": name, "status": status, "seconds": time.monotonic() - before}
 

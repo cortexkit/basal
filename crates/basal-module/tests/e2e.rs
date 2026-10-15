@@ -148,10 +148,38 @@ mod privacy {
         }
     }
 
+    async fn wait_for_originator_exit() {
+        let Ok(owner) = std::env::var("BASAL_PRIVACY_ORIGINATOR") else {
+            return;
+        };
+        let owner: libc::pid_t = owner.parse().expect("originator pid");
+        tokio::time::timeout(Duration::from_secs(300), async {
+            loop {
+                // SAFETY: signal zero observes whether the diagnostic originator still exists.
+                if unsafe { libc::kill(owner, 0) } == -1 {
+                    assert_eq!(
+                        std::io::Error::last_os_error().raw_os_error(),
+                        Some(libc::ESRCH)
+                    );
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("originator must exit and be reaped before calibration");
+        eprintln!(
+            "ORPHAN_PROBE observer={} responsible={} originator={owner}",
+            std::process::id(),
+            responsible_pid(std::process::id())
+        );
+    }
+
     #[tokio::test]
     #[ignore = "temporary GitHub-only calibration pressure probe"]
     async fn calibration_pressure_probe() {
         use std::os::unix::process::CommandExt;
+        wait_for_originator_exit().await;
         for iteration in 0..5000 {
             let started = Instant::now();
             let mut command = Command::new("/bin/cat");
@@ -256,6 +284,7 @@ mod privacy {
 
     #[tokio::test]
     async fn production_worker_is_its_own_responsible_process() {
+        wait_for_originator_exit().await;
         // A control: a plainly launched child, held alive by its open stdin
         // rather than a timer. It must report its parent's responsible process,
         // so the measurement below can tell a disclaimed worker from a plain one.
