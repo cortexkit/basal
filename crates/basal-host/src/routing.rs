@@ -288,6 +288,12 @@ impl Host for RoutingHost {
     fn supports_core_capability(&self, capability: &str) -> bool {
         self.core.supports_core_capability(capability)
     }
+    fn on_catalog_change(&self, notify: Arc<dyn Fn() + Send + Sync>) {
+        self.core.on_catalog_change(notify);
+    }
+    fn owner_notice(&self, request: serde_json::Value) -> Result<serde_json::Value, WireError> {
+        self.core.owner_notice(request)
+    }
     fn refusal_committed(&self, request: &CallRequest, refusal: &crate::flow_refusal::FlowRefusal) {
         self.target(&request.kind)
             .refusal_committed(request, refusal);

@@ -18,8 +18,32 @@ struct Source {
     replies: Mutex<Vec<std::result::Result<Dispatched, TransportError>>>,
     calls: Mutex<Vec<CallRequest>>,
     on_call: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    notice_capability: std::sync::atomic::AtomicBool,
+    notices: Mutex<Vec<serde_json::Value>>,
+    on_notice: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    notice_replies:
+        Mutex<Vec<std::result::Result<serde_json::Value, basal_host::transport::WireError>>>,
 }
 impl Host for Source {
+    fn supports_core_capability(&self, capability: &str) -> bool {
+        capability == basal_host::core_host::FLOW_OWNER_NOTICE_V1
+            && self.notice_capability.load(Ordering::SeqCst)
+    }
+    fn owner_notice(
+        &self,
+        request: serde_json::Value,
+    ) -> std::result::Result<serde_json::Value, basal_host::transport::WireError> {
+        self.notices.lock().unwrap().push(request);
+        if let Some(on_notice) = self.on_notice.lock().unwrap().take() {
+            on_notice();
+        }
+        let mut replies = self.notice_replies.lock().unwrap();
+        if replies.is_empty() {
+            Ok(json!({"accepted":true}))
+        } else {
+            replies.remove(0)
+        }
+    }
     fn classify(&self, _: &CallKind) -> CallClass {
         CallClass::Query
     }
@@ -56,6 +80,10 @@ impl Fixture {
             replies: Mutex::new(Vec::new()),
             calls: Mutex::new(Vec::new()),
             on_call: Mutex::new(None),
+            notice_capability: std::sync::atomic::AtomicBool::new(true),
+            notices: Mutex::new(Vec::new()),
+            on_notice: Mutex::new(None),
+            notice_replies: Mutex::new(Vec::new()),
         });
         let catalog = MockCatalog::new();
         catalog.set_event(
@@ -153,6 +181,9 @@ impl Fixture {
             })));
     }
 }
+
+#[path = "owner_notice_tests.rs"]
+mod owner_notices;
 impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.path);

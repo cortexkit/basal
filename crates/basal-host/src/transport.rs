@@ -55,6 +55,8 @@ impl WireError {
 
 /// Returns decoded provider payloads, not the management response envelope.
 pub trait Transport: Send + Sync {
+    /// Wake durable work when a catalog read observes a different generation.
+    fn on_catalog_change(&self, _notify: Arc<dyn Fn() + Send + Sync>) {}
     /// Returns a route-table key for a core-owned target scope, never an unscoped fallback.
     fn target_flow(
         &self,
@@ -231,6 +233,7 @@ fn outcome_unknown(cause: Option<OutcomeUnknownCause>, message: String) -> WireE
 }
 
 pub struct SubcTransport {
+    catalog_changes: CatalogChanges,
     runtime: Option<tokio::runtime::Runtime>,
     handle: tokio::runtime::Handle,
     consumer: SubcConsumer,
@@ -245,6 +248,32 @@ pub struct SubcTransport {
             std::sync::Weak<tokio::sync::Mutex<()>>,
         >,
     >,
+}
+
+#[derive(Default)]
+struct CatalogChanges {
+    generation: Mutex<Option<Value>>,
+    notify: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+}
+impl CatalogChanges {
+    fn observe(&self, generation: Value) {
+        let changed = {
+            let mut previous = self.generation.lock().unwrap_or_else(|p| p.into_inner());
+            let changed = previous.as_ref() != Some(&generation);
+            *previous = Some(generation);
+            changed
+        };
+        if changed {
+            let notify = self
+                .notify
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone();
+            if let Some(notify) = notify {
+                notify();
+            }
+        }
+    }
 }
 impl Drop for SubcTransport {
     fn drop(&mut self) {
@@ -465,6 +494,7 @@ impl SubcTransport {
             }
         });
         Ok(Arc::new(Self {
+            catalog_changes: CatalogChanges::default(),
             handle: runtime.handle().clone(),
             runtime: Some(runtime),
             consumer,
@@ -816,9 +846,17 @@ impl Transport for SubcTransport {
             .handle
             .block_on(self.consumer.catalog_list())
             .map_err(map_error)?;
+        self.catalog_changes.observe(json!(catalog.generation));
         Ok(
             json!({"generation": catalog.generation, "modules": catalog.modules, "subc_ops": catalog.subc_ops}),
         )
+    }
+    fn on_catalog_change(&self, notify: Arc<dyn Fn() + Send + Sync>) {
+        *self
+            .catalog_changes
+            .notify
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(notify);
     }
     fn management(&self, module: &str, op: &str, params: Value) -> Result<Value, WireError> {
         self.call(
@@ -945,6 +983,21 @@ pub fn management_bytes(op: &str, params: &[u8]) -> Result<Vec<u8>, WireError> {
 mod tests {
     use super::*;
     use crate::UnknownReason;
+
+    #[test]
+    fn observed_catalog_generation_wakes_once_per_change() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let changes = CatalogChanges::default();
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let count = wakes.clone();
+        *changes.notify.lock().unwrap() = Some(Arc::new(move || {
+            count.fetch_add(1, Ordering::SeqCst);
+        }));
+        changes.observe(json!(1));
+        changes.observe(json!(1));
+        changes.observe(json!(2));
+        assert_eq!(wakes.load(Ordering::SeqCst), 2);
+    }
 
     fn registered() -> crate::flow_scope::RegisteredScope {
         crate::flow_scope::RegisteredScope {

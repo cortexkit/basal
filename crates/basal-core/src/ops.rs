@@ -101,20 +101,38 @@ pub struct FlowHealth {
     pub needs_reconcile: Vec<String>,
 }
 
-pub fn flow_health(conn: &Connection, now_ms: i64) -> Result<Vec<FlowHealth>> {
-    let mut flows = Vec::new();
-    // Fetch rejected readiness evidence once, not once per deadline failure.
-    let mut rejections = conn.prepare_cached(
-        "SELECT r.run_id, m.value FROM runs r JOIN mailbox m USING(run_id) WHERE r.state='failed' AND r.error_kind='deadline' AND m.settlement='rejected' \
-         UNION ALL SELECT r.run_id, j.value FROM runs r JOIN journal j USING(run_id) WHERE r.state='failed' AND r.error_kind='deadline' AND j.settlement='rejected'"
-    )?;
-    let mut readiness_failures = std::collections::BTreeSet::new();
-    for row in rejections.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
-        let (run_id, value) = row?;
-        if typed_scope_rejection(&value, false) {
-            readiness_failures.insert(run_id);
+/// Count terminal run failures consistently in the health view and the owner
+/// alert threshold, so a refusal exempt from health cannot trigger an alert.
+pub(crate) fn counted_failure(
+    conn: &Connection,
+    run_id: &str,
+    state: &str,
+    kind: Option<&str>,
+) -> Result<bool> {
+    if state == "engine_mismatch" {
+        return Ok(true);
+    }
+    if state != "failed"
+        || matches!(
+            kind,
+            Some("readiness_rejection" | "agent_retired" | "version_revoked")
+        )
+    {
+        return Ok(false);
+    }
+    if kind == Some("deadline") {
+        let mut stmt = conn.prepare_cached("SELECT value FROM mailbox WHERE run_id=?1 AND settlement='rejected' UNION ALL SELECT value FROM journal WHERE run_id=?1 AND settlement='rejected'")?;
+        for value in stmt.query_map([run_id], |r| r.get::<_, String>(0))? {
+            if typed_scope_rejection(&value?, false) {
+                return Ok(false);
+            }
         }
     }
+    Ok(true)
+}
+
+pub fn flow_health(conn: &Connection, now_ms: i64) -> Result<Vec<FlowHealth>> {
+    let mut flows = Vec::new();
     let ids: Vec<String> = conn
         .prepare("SELECT flow_id FROM flows ORDER BY flow_id")?
         .query_map([], |r| r.get(0))?
@@ -143,21 +161,10 @@ pub fn flow_health(conn: &Connection, now_ms: i64) -> Result<Vec<FlowHealth>> {
         for run in finished {
             let run = run?;
             if counting {
-                let readiness_failure = if run.error_kind.as_deref() == Some("readiness_rejection")
-                {
-                    true
-                } else if run.error_kind.as_deref() == Some("deadline") {
-                    readiness_failures.contains(&run.run_id)
-                } else {
-                    false
-                };
-                match run.state.as_str() {
-                    "failed" if readiness_failure => {}
-                    "failed" if run.error_kind.as_deref() == Some("agent_retired") => {}
-                    "failed" if run.error_kind.as_deref() == Some("version_revoked") => {}
-                    "failed" | "engine_mismatch" => consecutive_failures += 1,
-                    "succeeded" => counting = false,
-                    _ => {}
+                if counted_failure(conn, &run.run_id, &run.state, run.error_kind.as_deref())? {
+                    consecutive_failures += 1;
+                } else if run.state == "succeeded" {
+                    counting = false;
                 }
             }
             if last_run.is_none() {

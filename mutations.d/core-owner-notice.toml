@@ -1,0 +1,69 @@
+# Owner-notice latch and delivery gates, replayed on Linux.
+[[control]]
+id = "owner-notice-threshold"
+guards = "three real event preamble failures enqueue a failing notice"
+test_file = "crates/basal-core/src/owner_notice_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["events::tests::owner_notices::threshold_counts_real_preamble_failures", "owner_notice::tests::codes_are_bounded_ascii_without_detail_text"] }
+expect_red = ["events::tests::owner_notices::threshold_counts_real_preamble_failures"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/owner_notice.rs"
+old = "streak.count >= 3"
+new = "streak.count >= 4 /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "owner-notice-once-per-episode"
+guards = "delivered failing notices remain latched across restart"
+test_file = "crates/basal-core/src/owner_notice_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["events::tests::owner_notices::once_per_episode_survives_delivery_and_restart", "owner_notice::tests::codes_are_bounded_ascii_without_detail_text"] }
+expect_red = ["events::tests::owner_notices::once_per_episode_survives_delivery_and_restart"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/owner_notice.rs"
+old = "&& failing.is_none()"
+new = "&& true /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "owner-notice-recovery-rearm"
+guards = "the first success recovers and re-arms a new failure episode"
+test_file = "crates/basal-core/src/owner_notice_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["events::tests::owner_notices::recovery_rearms_a_new_episode", "owner_notice::tests::codes_are_bounded_ascii_without_detail_text"] }
+expect_red = ["events::tests::owner_notices::recovery_rearms_a_new_episode"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/owner_notice.rs"
+old = "SET failing_episode=NULL WHERE"
+new = "SET failing_episode=failing_episode /* NON-VACUITY BREAK */ WHERE"
+
+[[control]]
+id = "owner-notice-capability-gate"
+guards = "queued notices are not sent before core declares support"
+test_file = "crates/basal-core/src/owner_notice_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["events::tests::owner_notices::capability_gate_holds_queued_rows_without_a_timer", "owner_notice::tests::codes_are_bounded_ascii_without_detail_text"] }
+expect_red = ["events::tests::owner_notices::capability_gate_holds_queued_rows_without_a_timer"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/owner_notice.rs"
+scope = { after = "pub fn drain_owner_notices(&self)", before = "pub(crate) fn owner_notice_next_wake" }
+old = "if !self\n            .shared\n            .host\n            .supports_core_capability(FLOW_OWNER_NOTICE_V1)"
+new = "if false && !self /* NON-VACUITY BREAK */\n            .shared\n            .host\n            .supports_core_capability(FLOW_OWNER_NOTICE_V1)"

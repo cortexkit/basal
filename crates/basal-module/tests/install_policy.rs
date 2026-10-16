@@ -404,10 +404,7 @@ fn decided_hint_confirms_card_or_policy_provenance_in_the_shared_transaction() {
             })
             .unwrap();
         assert_eq!(schedules, 1);
-        assert_eq!(
-            f.module.rt.outbox().unwrap().last().unwrap().kind,
-            "flow.install_approved"
-        );
+        assert!(f.module.rt.outbox().unwrap().is_empty());
     }
 }
 
@@ -434,10 +431,7 @@ fn declined_and_expired_hints_settle_unapproved_cards_and_are_visible() {
                 json!([{"version":1,"attempt":7,"state":state,"rejected_reason":null,"disposition":null}])
             );
         }
-        assert_eq!(
-            f.module.rt.outbox().unwrap().last().unwrap().kind,
-            format!("flow.install_{state}")
-        );
+        assert!(f.module.rt.outbox().unwrap().is_empty());
     }
 }
 
@@ -490,7 +484,7 @@ fn duplicate_and_unknown_hints_are_harmless() {
         }
         assert_eq!(fake.calls("flow.install_status").len(), 1);
         assert_eq!(f.module.rt.outbox().unwrap().len(), before);
-        assert_eq!(before, 1);
+        assert_eq!(before, 0);
     }
 }
 
@@ -564,10 +558,7 @@ fn matching_policy_reply_and_active_status_approve_on_both_consent_paths() {
             assert_eq!(row["approval"], json!({"kind":"policy","rule":RULE}));
             assert_eq!(row["install_checks"], json!([]));
         }
-        assert_eq!(
-            f.module.rt.outbox().unwrap().last().unwrap().kind,
-            "flow.install_approved"
-        );
+        assert!(f.module.rt.outbox().unwrap().is_empty());
     }
 }
 
@@ -960,19 +951,14 @@ fn startup_rejected_install_status_settles_once_and_stays_settled() {
         assert_eq!(row["state"], "unapproved");
         assert_eq!(row["install_cards"], expected);
     }
-    let outbox = f.module.rt.outbox().unwrap();
-    assert_eq!(outbox.len(), 1);
-    assert_eq!(outbox[0].kind, "flow.install_rejected");
-    let body: Value = serde_json::from_str(&outbox[0].body).unwrap();
-    assert_eq!(body["rejected_reason"], reason);
-    assert_eq!(body["disposition"], disposition);
+    assert!(f.module.rt.outbox().unwrap().is_empty());
     assert_eq!(fake.calls("flow.install_status").len(), 1);
 
     // Startup recovery only asks about pending cards, even on another restart.
     f.module.rt.recover_cardless_installs().unwrap();
     f.module.engine.run_until_idle(10).unwrap();
     assert_eq!(fake.calls("flow.install_status").len(), 1);
-    assert_eq!(f.module.rt.outbox().unwrap().len(), 1);
+    assert!(f.module.rt.outbox().unwrap().is_empty());
 }
 
 #[test]

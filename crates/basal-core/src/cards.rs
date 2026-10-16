@@ -226,26 +226,6 @@ pub fn decide(
          WHERE card_id = ?1 AND state = 'pending'",
         params![card_id, state.as_str(), decided_by, now_ms],
     )?;
-    let body = serde_json::json!({
-        "flow_id": card.flow_id,
-        "version": card.version,
-        "card_id": card_id,
-        "decision": state.as_str(),
-        "by": decided_by,
-    });
-    // The author may not own the flow yet (a first version has no owner
-    // until it is approved), so the recipient is named here rather than
-    // looked up from the flow.
-    tx.execute(
-        "INSERT INTO outbox (at, kind, flow_id, recipient, body) VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![
-            now_ms,
-            format!("flow.install_{}", state.as_str()),
-            card.flow_id,
-            card.author,
-            body.to_string()
-        ],
-    )?;
     Ok(Decided::Applied(state))
 }
 

@@ -795,8 +795,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/ops.rs"
-old = "\"failed\" | \"engine_mismatch\" => consecutive_failures += 1,"
-new = "\"engine_mismatch\" => consecutive_failures += 1,"
+old = "if counted_failure(conn, &run.run_id, &run.state, run.error_kind.as_deref())? {"
+new = "if run.state == \"engine_mismatch\" && counted_failure(conn, &run.run_id, &run.state, run.error_kind.as_deref())? { // NON-VACUITY BREAK"
 
 [[control]]
 id = "decision-cards-an-auto-disable-writes-no-re-enable-card-intent"

@@ -255,6 +255,7 @@ pub(crate) struct Shared {
     threads: Mutex<Vec<JoinHandle<()>>>,
     pub(crate) retention_next: Mutex<Option<i64>>,
     pub(crate) refusal_flush: Mutex<()>,
+    pub(crate) owner_notice_drain: Mutex<()>,
     /// The `fs.write` temporary files this process is writing now.
     pub(crate) fs_temps: crate::retention::FsTemps,
 }
@@ -348,9 +349,16 @@ impl Runtime {
             threads: Mutex::new(Vec::new()),
             retention_next: Mutex::new(None),
             refusal_flush: Mutex::new(()),
+            owner_notice_drain: Mutex::new(()),
             fs_temps: crate::retention::FsTemps::default(),
         });
         let config = Arc::new(config);
+        let work = Arc::downgrade(&shared);
+        shared.host.on_catalog_change(Arc::new(move || {
+            if let Some(shared) = work.upgrade() {
+                shared.signal.bump();
+            }
+        }));
         shared
             .host
             .scope_checks(config.install_gate == crate::gate::InstallGate::Core);

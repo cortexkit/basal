@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 pub const FLOW_DIGEST_REPLACE_KEY_V1: &str = "flow-digest-replace-key/v1";
+pub const FLOW_OWNER_NOTICE_V1: &str = "flow-owner-notice/v1";
 
 /// Manifest-declared ops that core accepts from `reserved:basal`, checking a
 /// `{flow_id, flow_version, code_hash}` stamp against the approved install.
@@ -268,6 +269,13 @@ pub fn decode_install_status(value: &Value) -> Result<InstallStatus, String> {
 }
 
 impl Host for CoreHost {
+    fn on_catalog_change(&self, notify: Arc<dyn Fn() + Send + Sync>) {
+        self.transport.on_catalog_change(notify);
+    }
+    fn owner_notice(&self, request: Value) -> Result<Value, WireError> {
+        self.transport
+            .management(CORE, "flow.owner_notice", request)
+    }
     fn supports_core_capability(&self, capability: &str) -> bool {
         self.supports_capability(capability)
     }

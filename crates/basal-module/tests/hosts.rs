@@ -2115,3 +2115,34 @@ fn management_envelopes_preserve_frozen_parameter_bytes() {
     ));
     assert!(basal_host::transport::management_bytes("session.send", b"[]").is_err());
 }
+
+#[test]
+fn runtime_owner_notice_uses_the_core_management_carrier() {
+    let fake = Fake::new();
+    let host = CoreHost::new(fake.clone());
+    let capability = basal_host::core_host::FLOW_OWNER_NOTICE_V1;
+    assert!(!host.supports_core_capability(capability));
+    set_core_capability(&fake, capability, true);
+    assert!(host.supports_core_capability(capability));
+    let vectors: Value = serde_json::from_str(include_str!(
+        "../../../test-vectors/owner-notice/vectors.json"
+    ))
+    .unwrap();
+    let request: Value =
+        serde_json::from_str(vectors["cases"][0]["request"].as_str().unwrap()).unwrap();
+    fake.enqueue("flow.owner_notice", vec![Ok(json!({"accepted":true}))]);
+    assert_eq!(
+        host.owner_notice(request.clone()).unwrap(),
+        json!({"accepted":true})
+    );
+    assert_eq!(
+        fake.calls("flow.owner_notice"),
+        vec![json!({"method":"flow.owner_notice","params":request})]
+    );
+    assert!(
+        !basal_host::core_host::is_core_carrier_op("prefrontal-core", "flow.owner_notice"),
+        "runtime notices must not become manifest-declared script carrier calls"
+    );
+    set_core_capability(&fake, capability, false);
+    assert!(!host.supports_core_capability(capability));
+}

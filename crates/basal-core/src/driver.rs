@@ -493,6 +493,16 @@ impl Activation<'_> {
             budgets: self.rt.config.budgets,
             prefix,
         };
+        self.rt.store().write(|tx| {
+            if !self.lease.holds(tx)? {
+                return Err(self.lease.lost());
+            }
+            tx.execute(
+                "UPDATE runs SET script_started=1 WHERE run_id=?1",
+                [&self.lease.run_id],
+            )?;
+            Ok(())
+        })?;
         if let Err(e) = self.send(&ParentMessage::Activate(Box::new(request))) {
             return self.broken(e.to_string());
         }

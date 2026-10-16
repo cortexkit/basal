@@ -41,10 +41,17 @@ impl Runtime {
             .map(|b| b.retry_at_ms)
             .filter(|at| *at > now)
             .min();
-        Ok([durable, retention.or(Some(now)), gate, pool_next]
-            .into_iter()
-            .flatten()
-            .min())
+        let owner_notice = self.owner_notice_next_wake()?;
+        Ok([
+            durable,
+            retention.or(Some(now)),
+            gate,
+            pool_next,
+            owner_notice,
+        ]
+        .into_iter()
+        .flatten()
+        .min())
     }
 
     /// Whether basal has any operator decision card still waiting for an

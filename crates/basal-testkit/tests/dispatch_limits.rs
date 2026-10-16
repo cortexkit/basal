@@ -71,11 +71,10 @@ fn run_rate_limit_and_auto_disable_after_k_saturated_windows() {
     assert_eq!(flow.disabled_by.as_deref(), Some("runtime"));
     let outbox = rt.outbox().expect("outbox");
     assert_eq!(outbox.len(), 1, "{outbox:?}");
-    assert_eq!(outbox[0].kind, "flow.auto_disabled");
+    assert_eq!(outbox[0].kind, "flow.owner_notice");
     assert_eq!(
-        outbox[0].recipient.as_deref(),
-        Some("ALF"),
-        "the owner is told"
+        serde_json::from_str::<serde_json::Value>(&outbox[0].body).unwrap()["kind"],
+        "auto_disabled"
     );
 
     // Disabled: nothing is admitted, in this window or any later one.
@@ -176,9 +175,7 @@ fn disable_fences_a_resumed_run_while_in_flight_calls_settle() {
         spec.map(|s| rt.admit(&with_trigger(&s, "t2"))),
         Ok(Ok(Admission::Disabled)) | Err(_)
     ));
-    let outbox = rt.outbox().expect("outbox");
-    assert_eq!(outbox.len(), 1);
-    assert_eq!(outbox[0].kind, "flow.disabled");
+    assert!(rt.outbox().expect("outbox").is_empty());
 }
 
 #[test]
