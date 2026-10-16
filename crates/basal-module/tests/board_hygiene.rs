@@ -238,7 +238,7 @@ fn published_manifest_has_global_minimal_grants_and_five_minute_schedule() {
     let manifest = Manifest::parse(MANIFEST).unwrap();
     let value = serde_json::to_value(manifest).unwrap();
     assert_eq!(value["id"], "board-hygiene");
-    assert_eq!(value["version"], 9);
+    assert_eq!(value["version"], 10);
     assert_eq!(value["board_read"], json!(["$audience"]));
     assert_eq!(value["audience"], json!({"kind":"global"}));
     assert_eq!(
@@ -291,7 +291,7 @@ fn lane_done_first_at_thirty_minutes_with_timestamp_fallback() {
         first[0]["item"]["data"]["entries"][0],
         json!({"kind":"board_nudge","rule":"lane_done","agent_id":"ag_a","lane_id":"lane1","lane_title":"Release","since_ms":BASE})
     );
-    assert_eq!(t.run(BASE + 3 * HOUR)[0]["action"], "silent");
+    assert!(t.run(BASE + 3 * HOUR).is_empty());
 }
 
 const RULES: [&str; 5] = [
@@ -404,14 +404,19 @@ fn several_members_aggregate_by_owner_and_rule() {
 }
 
 #[test]
-fn unchanged_members_and_edited_fields_never_wake() {
+fn unchanged_lists_are_not_rewritten_and_edits_update_silently() {
+    // Rewriting an unchanged list each run would replace a wake that core
+    // hasn't delivered yet with a silent update, so an unchanged list sends
+    // nothing; an edit to what the list shows updates it without waking.
     for name in RULES {
         let mut t = active_test(vec![candidates(name, 2)]);
-        t.run(BASE + 8 * HOUR);
-        assert_eq!(t.run(BASE + 16 * HOUR)[0]["action"], "silent", "{name}");
-        t.host.boards.lock().unwrap()[0]["board"]["laneBlocks"][0]["items"][0]["text"] =
-            json!("Edited");
-        assert_eq!(t.run(BASE + 24 * HOUR)[0]["action"], "silent", "{name}");
+        assert_eq!(t.run(BASE + 8 * HOUR)[0]["action"], "wake", "{name}");
+        assert!(t.run(BASE + 16 * HOUR).is_empty(), "{name}");
+        t.host.boards.lock().unwrap()[0]["board"]["laneBlocks"][0]["title"] = json!("Edited");
+        let edited = t.run(BASE + 24 * HOUR);
+        assert_eq!(edited.len(), 1, "{name}");
+        assert_eq!(edited[0]["action"], "silent", "{name}");
+        assert!(t.run(BASE + 32 * HOUR).is_empty(), "{name}");
     }
 }
 
@@ -503,11 +508,19 @@ fn oversized_membership_is_refused_instead_of_repeatedly_waking() {
 }
 
 #[test]
-fn wait_ended_does_not_fire_after_owner_reacted() {
-    let mut i = item("blocked", BASE + MIN);
-    i["wait"] = json!({"ref_state":"terminal","ref_terminal_at_ms":BASE});
+fn an_item_still_blocked_on_an_ended_wait_nudges_after_its_last_change() {
+    // The owner touched the item after the wait ended, or set the wait on
+    // something already finished; it is still blocked on an ended wait.
+    let mut i = item("blocked", BASE + HOUR);
+    i["wait"] =
+        json!({"on":"work","ref":"work:wi_done","ref_state":"terminal","ref_terminal_at_ms":BASE});
     let mut t = Test::new(vec![board("ag_a", vec![i])]);
-    assert!(t.run(BASE + HOUR).is_empty());
+    assert!(rule(&t.run(BASE + HOUR + 30 * MIN - 1), "wait_ended").is_empty());
+    let writes = rule(&t.run(BASE + HOUR + 30 * MIN), "wait_ended");
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0]["action"], "wake");
+    // The body still dates the end of the wait, not the edit.
+    assert_eq!(writes[0]["item"]["data"]["entries"][0]["since_ms"], BASE);
 }
 
 #[test]
@@ -565,10 +578,7 @@ fn item_wait_never_copies_peer_commitments_to_waiting_owners() {
             .get("own_item_id")
             .is_none()
     );
-    let repeated = t.run(BASE + 3 * HOUR);
-    assert_eq!(repeated.len(), 1);
-    assert_eq!(repeated[0]["agent"], "ag_b");
-    assert_eq!(repeated[0]["action"], "silent");
+    assert!(t.run(BASE + 3 * HOUR).is_empty());
 }
 
 #[test]
@@ -647,8 +657,10 @@ fn paging_reads_all_boards_and_prunes_disappeared_agents_lanes_items_and_conditi
             .unwrap()
             .remove("eta_ms");
     }
+    // Only the four changed owners get a (silent) update; the other 29 lists
+    // are unchanged and are not rewritten.
     let updated = t.run(BASE + MIN);
-    assert_eq!(updated.len(), 33);
+    assert_eq!(updated.len(), 4);
     assert!(updated.iter().all(|write| write["action"] == "silent"));
     let keys = t.keys();
     for agent in ["ag_00", "ag_01", "ag_02", "ag_03"] {
@@ -697,6 +709,8 @@ fn kv_limit_refusal_does_not_stop_other_digest_updates() {
         }
         Ok(())
     }).unwrap();
+    // ag_b's list changes too, so it has an update to send despite ag_a's refusal.
+    t.host.boards.lock().unwrap()[1]["board"]["laneBlocks"][0]["title"] = json!("Edited");
     let writes = t.run(BASE + 2 * HOUR);
     assert_eq!(writes.len(), 1);
     assert_eq!(writes[0]["agent"], "ag_b");
@@ -715,11 +729,11 @@ fn refused_digest_is_logged_and_does_not_stop_later_nudges() {
         "sink_target_not_in_audience"
     );
     assert!(!t.keys().contains(&"nudge:ag_a:eta_passed".into()));
+    // The refused list is retried as a wake; ag_b's delivered list is unchanged.
     let next = t.run(BASE + MIN);
-    assert_eq!(next.len(), 2);
+    assert_eq!(next.len(), 1);
     assert_eq!(next[0]["agent"], "ag_a");
     assert_eq!(next[0]["action"], "wake");
-    assert_eq!(next[1]["action"], "silent");
 }
 
 #[test]
@@ -920,7 +934,7 @@ fn peer_waits_fold_into_peers_eta_list_without_waiting_owner_copies() {
         let body = first[0]["item"]["body"].as_str().unwrap();
         assert!(body.contains("ag_a is waiting on you"));
         assert!(body.contains("own board, or decline"));
-        assert_eq!(t.run(BASE + 3 * HOUR)[0]["action"], "silent");
+        assert!(rule(&t.run(BASE + 3 * HOUR), "eta_passed").is_empty());
         t.host.boards.lock().unwrap()[0]["board"]["laneBlocks"][0]["items"][0]["state"] =
             json!("done");
         let leaving = rule(&t.run(BASE + 4 * HOUR), "eta_passed");
@@ -971,6 +985,12 @@ fn unsupported_replacement_retries_without_key_and_logs_once_per_run() {
         t.result["refusals"],
         json!([{"message":"board hygiene digest replacement unsupported","code":"digest_replace_key_unsupported"}])
     );
+    {
+        let mut boards = t.host.boards.lock().unwrap();
+        for board in boards.iter_mut() {
+            board["board"]["laneBlocks"][0]["title"] = json!("Edited");
+        }
+    }
     let repeated = t.run(BASE + 2 * HOUR);
     assert_eq!(repeated.len(), 2);
     assert!(
@@ -996,7 +1016,7 @@ fn long_item_ids_do_not_expand_owner_replacement_keys() {
     );
     assert_eq!(first[0]["agent"], agent);
     assert_eq!(t.result["refusals"], json!([]));
-    assert_eq!(t.run(BASE + 2 * HOUR)[0]["action"], "silent");
+    assert!(t.run(BASE + 2 * HOUR).is_empty());
 }
 
 #[test]
@@ -1029,7 +1049,7 @@ fn overflowing_lists_keep_oldest_entries_and_track_hidden_membership() {
             .unwrap()
             .ends_with(&format!("and {} more", 100 - entries.len()))
     );
-    assert_eq!(t.run(BASE + 9 * HOUR)[0]["action"], "silent");
+    assert!(t.run(BASE + 9 * HOUR).is_empty());
     t.host.boards.lock().unwrap()[0]["board"]["laneBlocks"][0]["items"]
         .as_array_mut()
         .unwrap()
@@ -1133,7 +1153,13 @@ fn local_board_read_pages_complete_without_throwing() {
     }
     assert_eq!(boards.len(), 31, "the two pages should contain 31 boards");
     let mut t = Test::new(boards);
-    let writes = t.run(BASE + 8 * HOUR);
+    // Run at the time the pages were read: the test clock's BASE lies months
+    // after any real board, which would make every ETA and wait look overdue.
+    let now = std::env::var("BOARD_HYGIENE_LIVE_NOW_MS")
+        .expect("set BOARD_HYGIENE_LIVE_NOW_MS to the Unix ms time the pages were read")
+        .parse()
+        .expect("BOARD_HYGIENE_LIVE_NOW_MS is a Unix ms time");
+    let writes = t.run(now);
     assert_eq!(t.result["boards_scanned"], 31);
     let mut by_owner_rule =
         std::collections::BTreeMap::<(String, String), (usize, usize, u64)>::new();

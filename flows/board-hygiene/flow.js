@@ -169,6 +169,21 @@ function entry(rule, agent, lane, item, since, now) {
   return bounded({title, body, data}, 3600, 7000);
 }
 
+// What a list shows apart from its ages: an edit to an item's text, lane or
+// start time changes it, while time passing does not. FNV-1a, 32 bits.
+function contentFingerprint(entries) {
+  const parts = entries.map(({member, lane, item, since}) =>
+    JSON.stringify([member, lane.id, lane.title, item?.text ?? null, item?.state ?? null,
+      item?.eta_ms ?? null, item?.wait?.ref ?? null, since]));
+  parts.sort();
+  let hash = 0x811c9dc5;
+  for (const ch of parts.join('\n')) {
+    hash ^= ch.codePointAt(0);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
+}
+
 function memoryKey(agent, rule) {
   const key = `nudge:${agent}:${rule}`;
   // Refuse an oversized owner key rather than aliasing two owners.
@@ -334,11 +349,16 @@ async function run() {
     for (const lane of lanes) {
       if (lane.status === 'retired') continue;
       for (const item of lane.items) {
+        // An item still blocked on a wait that has ended is the owner's to move,
+        // even when it changed after the end or the wait was set on something
+        // already finished. The 30 minutes count from the later of the end and
+        // the item's last change, so an owner mid-update isn't nudged.
         const terminal = item.wait?.ref_terminal_at_ms;
         await check('wait_ended', agent, lane, item,
           item.state === 'blocked' && item.wait?.ref_state === 'terminal' &&
-            Number.isFinite(terminal) && item.changed_at_ms < terminal,
-          terminal, 30 * MINUTE, agent);
+            Number.isFinite(terminal) &&
+            now >= Math.max(terminal, Number.isFinite(item.changed_at_ms) ? item.changed_at_ms : terminal) + 30 * MINUTE,
+          terminal, 0, agent);
         await check('eta_passed', agent, lane, item,
           item.state !== 'done' && Number.isFinite(item.eta_ms) && !itemRef(item.wait),
           item.eta_ms, 0, peerWait(item.wait) ? item.wait.on : agent);
@@ -386,7 +406,11 @@ async function run() {
       const previousMembers = new Set(previous?.members ?? []);
       const joined = members.some(member => !previousMembers.has(member));
       const action = joined ? 'wake' : 'silent';
-      const value = {agent, rule, members};
+      const fingerprint = contentFingerprint([...group.entries.values()]);
+      // Write only when the list changed. Rewriting an unchanged list every
+      // five minutes replaced a still-undelivered wake with a silent update.
+      if (!joined && members.length === previousMembers.size && previous?.fingerprint === fingerprint) continue;
+      const value = {agent, rule, members, fingerprint};
       // Never save partial membership: omitted members would look new on every scan.
       if (utf8Bytes(JSON.stringify(value)) > 65536) {
         log('board hygiene membership too large', {agent, rule});
