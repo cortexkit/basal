@@ -275,7 +275,19 @@ fn published_manifest_is_global_with_only_ci_v2_repo_filters_and_minimal_grants(
     Manifest::parse(MANIFEST).unwrap();
     let value: Value = serde_json::from_str(MANIFEST).unwrap();
     assert_eq!(value["audience"], json!({"kind":"global"}));
-    assert_eq!(value["version"], 3);
+    assert_eq!(value["version"], 4);
+    assert!(
+        value["purpose"]
+            .as_str()
+            .unwrap()
+            .contains("cortexkit/cerebellum")
+    );
+    assert!(
+        value["purpose"]
+            .as_str()
+            .unwrap()
+            .contains("CI off by owner decision")
+    );
     assert_eq!(
         value["sinks"],
         json!([{"agent":"$audience", "digest_max":"wake"}])
@@ -359,6 +371,36 @@ fn job_without_workflow_name_from_ignored_repo_still_wakes() {
 }
 
 #[test]
+fn quiet_repo_updates_silently_while_other_repos_still_wake() {
+    let t = Test::new();
+    t.ci(job("cortexkit/cerebellum", 101));
+    let writes = t.writes();
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0]["action"], "silent");
+    assert_eq!(writes[0]["agent"], "agent_b1a9c546c33b84c9");
+    assert_eq!(writes[0]["replace_key"], "ci:cortexkit/cerebellum:42:1");
+    assert!(
+        writes[0]["item"]["title"]
+            .as_str()
+            .unwrap()
+            .contains("linux shard 101")
+    );
+    assert_eq!(
+        t.memory()["runs"]["ci:cortexkit/cerebellum:42:1"]["jobs"]
+            .as_object()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    t.ci(job("cortexkit/basal", 102));
+    let writes = t.writes();
+    assert_eq!(writes.len(), 2);
+    assert_eq!(writes[1]["action"], "wake");
+    assert_eq!(writes[1]["agent"], BASAL);
+}
+
+#[test]
 fn stale_job_completion_sends_nothing_and_creates_no_run_entry() {
     let t = Test::new();
     let mut body = job("cortexkit/basal", 101);
@@ -424,15 +466,30 @@ fn cancelled_run_after_a_failure_updates_silently() {
 }
 
 #[test]
-fn second_distinct_failed_job_of_a_run_wakes() {
+fn first_failed_job_wakes_and_later_jobs_are_silent() {
     let t = Test::new();
-    t.ci(job("cortexkit/basal", 101));
-    t.ci(job("cortexkit/basal", 102));
-    let writes = t.writes();
-    assert_eq!(writes.len(), 2);
-    assert_eq!(writes[0]["action"], "wake");
-    assert_eq!(writes[1]["action"], "wake");
-    assert_eq!(writes[0]["replace_key"], writes[1]["replace_key"]);
+    for id in 101..=107 {
+        t.ci(job("cortexkit/basal", id));
+        let writes = t.writes();
+        assert_eq!(writes.len(), (id - 100) as usize);
+        assert_eq!(
+            writes.last().unwrap()["action"],
+            if id == 101 { "wake" } else { "silent" }
+        );
+        assert_eq!(
+            writes.last().unwrap()["replace_key"],
+            "ci:cortexkit/basal:42:1"
+        );
+        assert!(
+            writes.last().unwrap()["item"]["data"]["observed"]["failed_jobs"]
+                .as_str()
+                .unwrap()
+                .contains(&format!("linux shard {id}"))
+        );
+    }
+    let run = &t.memory()["runs"]["ci:cortexkit/basal:42:1"];
+    assert_eq!(run["firstWakeJobIds"], json!(["101"]));
+    assert_eq!(run["jobs"].as_object().unwrap().len(), 7);
 }
 
 #[test]
@@ -456,7 +513,7 @@ fn tests_failures_on_land_branches_in_aft_still_wake() {
 }
 
 #[test]
-fn three_failed_jobs_update_one_item_and_wake_on_any_branch() {
+fn failed_jobs_grow_one_silent_item_on_any_branch() {
     let t = Test::new();
     for id in 101..=103 {
         let mut body = job("cortexkit/basal", id);
@@ -469,7 +526,7 @@ fn three_failed_jobs_update_one_item_and_wake_on_any_branch() {
         assert_eq!(writes.len(), (id - 100) as usize);
         let last = writes.last().unwrap();
         assert_eq!(last["agent"], BASAL);
-        assert_eq!(last["action"], "wake");
+        assert_eq!(last["action"], if id == 101 { "wake" } else { "silent" });
         assert_eq!(last["replace_key"], "ci:cortexkit/basal:42:1");
         let names = (101..=id)
             .map(|n| format!("linux shard {n}"))
@@ -491,6 +548,49 @@ fn three_failed_jobs_update_one_item_and_wake_on_any_branch() {
         );
     }
     assert_eq!(t.memory()["runs"].as_object().unwrap().len(), 1);
+}
+
+#[test]
+fn run_finished_after_new_jobs_wakes_and_names_only_jobs_since_first_notice() {
+    let t = Test::new();
+    for id in 101..=107 {
+        t.ci(job("cortexkit/basal", id));
+    }
+    t.ci(run("cortexkit/basal", "failure"));
+    t.ci(run("cortexkit/basal", "failure"));
+
+    let writes = t.writes();
+    assert_eq!(writes.len(), 9);
+    assert_eq!(writes[0]["action"], "wake");
+    assert!(writes[1..7].iter().all(|write| write["action"] == "silent"));
+    let finished = &writes[7];
+    assert_eq!(finished["action"], "wake");
+    assert_eq!(finished["replace_key"], "ci:cortexkit/basal:42:1");
+    assert!(
+        finished["item"]["title"]
+            .as_str()
+            .unwrap()
+            .contains("failed jobs since first notice:")
+    );
+    assert!(
+        !finished["item"]["body"]
+            .as_str()
+            .unwrap()
+            .contains("linux shard 101")
+    );
+    assert!(finished["item"]["body"].as_str().unwrap().contains(
+        "failed jobs since first notice: linux shard 102, linux shard 103, linux shard 104, linux shard 105, linux shard 106, linux shard 107"
+    ));
+    assert_eq!(
+        finished["item"]["data"]["observed"]["failed_jobs_since_first_notice"],
+        "linux shard 102, linux shard 103, linux shard 104, linux shard 105, linux shard 106, linux shard 107"
+    );
+    assert!(
+        t.memory()["runs"]["ci:cortexkit/basal:42:1"]["completionWoke"]
+            .as_bool()
+            .unwrap()
+    );
+    assert_eq!(writes[8]["action"], "silent");
 }
 
 #[test]
@@ -630,9 +730,19 @@ fn unknown_agent_refusal_is_logged_and_later_runs_continue() {
         result["refusals"],
         json!([{"repo":"cortexkit/basal", "owner":BASAL, "code":"sink_target_not_in_audience"}])
     );
+    assert_eq!(
+        t.memory()["runs"]["ci:cortexkit/basal:42:1"]["firstWakeJobIds"],
+        Value::Null
+    );
+    t.ci(job("cortexkit/basal", 102));
+    assert_eq!(t.writes()[1]["action"], "wake");
+    assert_eq!(
+        t.memory()["runs"]["ci:cortexkit/basal:42:1"]["firstWakeJobIds"],
+        json!(["101", "102"])
+    );
     t.ci(job("cortexkit/plexus", 102));
-    assert_eq!(t.writes().len(), 2);
-    assert_eq!(t.writes()[1]["agent"], PLEX);
+    assert_eq!(t.writes().len(), 3);
+    assert_eq!(t.writes()[2]["agent"], PLEX);
 }
 
 #[test]

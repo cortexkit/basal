@@ -280,7 +280,7 @@ new = "if (false && !jobEvent && body.conclusion === 'cancelled' && Object.keys(
 
 [[control]]
 id = "ci-failure-router-run-finish-silent-after-job"
-guards = "a red run completion updates silently after job failures were reported"
+guards = "a red run completion without new jobs since first notice updates silently"
 test_file = "crates/basal-module/tests/ci_failure_router.rs"
 runner = "cargo"
 package = "basal-module"
@@ -292,8 +292,42 @@ only = true
 build_timeout_s = 3600
 timeout_s = 600
 file = "flows/ci-failure-router/flow.js"
-old = "const action = green || (!jobEvent && runHasReportedJob) ? 'silent' : 'wake';"
-new = "const action = green ? 'silent' : 'wake'; // NON-VACUITY BREAK"
+old = "jobsSinceFirstNotice.length > 0 && !run.completionWoke"
+new = "!run.completionWoke // NON-VACUITY BREAK"
+
+[[control]]
+id = "ci-failure-router-run-finish-wakes-for-new-jobs"
+guards = "run completion wakes once when new failed jobs arrived after the first notice"
+test_file = "crates/basal-module/tests/ci_failure_router.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test ci_failure_router"
+select = { tests = ["run_finished_after_new_jobs_wakes_and_names_only_jobs_since_first_notice", "completed_red_updates_the_existing_item_then_green_updates_silently"] }
+expect_red = ["run_finished_after_new_jobs_wakes_and_names_only_jobs_since_first_notice"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/ci-failure-router/flow.js"
+old = "jobsSinceFirstNotice.length > 0 && !run.completionWoke"
+new = "false && jobsSinceFirstNotice.length > 0 && !run.completionWoke // NON-VACUITY BREAK"
+
+[[control]]
+id = "ci-failure-router-quiet-repos-stay-silent"
+guards = "a quiet repository keeps its digest up to date without waking its owner"
+test_file = "crates/basal-module/tests/ci_failure_router.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test ci_failure_router"
+select = { tests = ["quiet_repo_updates_silently_while_other_repos_still_wake", "red_run_without_jobs_including_startup_failure_creates_exactly_one_item"] }
+expect_red = ["quiet_repo_updates_silently_while_other_repos_still_wake"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/ci-failure-router/flow.js"
+old = "const quiet = Object.hasOwn(QUIET_REPOS, repo);"
+new = "const quiet = false; // NON-VACUITY BREAK"
 
 [[control]]
 id = "ci-failure-router-stale-completions"

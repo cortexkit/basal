@@ -44,6 +44,11 @@ const IGNORED_WORKFLOWS = {
   'cortexkit/aft': ['Design gate'],
 };
 
+const QUIET_REPOS = {
+  'cortexkit/cerebellum': 'CI is off by owner decision: GitHub billing refuses its jobs',
+};
+// Remove an entry when that repository's CI is back on.
+
 // Plexus rescans can republish old completions; real CI notices arrive within minutes.
 const MAX_COMPLETION_AGE_MS = 6 * 60 * 60 * 1000;
 
@@ -217,7 +222,13 @@ if (jobEvent) {
     `run finished red (${run.conclusion})`;
 }
 const names = Object.values(run.jobs);
-const result = green ? 'now green' : names.length ? `failed jobs ${names.join(', ')}` :
+const hasFirstNotice = Array.isArray(run.firstWakeJobIds);
+const firstWakeJobIds = new Set(hasFirstNotice ? run.firstWakeJobIds : []);
+const jobsSinceFirstNotice = hasFirstNotice ?
+  Object.keys(run.jobs).filter(id => !firstWakeJobIds.has(id)) : [];
+const newNames = jobsSinceFirstNotice.map(id => run.jobs[id]);
+const result = green ? 'now green' : !jobEvent && newNames.length ?
+  `failed jobs since first notice: ${newNames.join(', ')}` : names.length ? `failed jobs ${names.join(', ')}` :
   run.conclusion === 'unknown' ? 'run conclusion unknown; no failed job reported' :
     `run failed with no failed job reported (${run.conclusion})`;
 const summary = `${repo} run ${runId ?? 'unknown'} (attempt ${attempt ?? 'unknown'}) on ${run.branch}: ${result}`;
@@ -229,26 +240,43 @@ if (run.url && !links.includes(run.url)) {
 }
 const item = boundedDigest(summary + status, {
   repo, run_id: runId, run_attempt: attempt, branch: run.branch, head_sha: body.head_sha,
-  conclusion: run.conclusion, failed_jobs: names.join(', '), status: run.finished ?? 'jobs arriving',
+  conclusion: run.conclusion, failed_jobs: names.join(', '),
+  failed_jobs_since_first_notice: !jobEvent && hasFirstNotice ? newNames.join(', ') : '',
+  status: run.finished ?? 'jobs arriving',
 }, links.map(url => ({ kind: 'url', url })));
 // data.observed.failed_jobs retains the job list beyond the short body summary;
 // boundedDigest records any metadata truncation in data.truncated.
 item.body = `${short(summary + status, 1400)}\nHead sha: ${run.sha}\nConclusion: ${run.conclusion}\ntest names unavailable`;
 while (item.links.length && bytes(JSON.stringify(item)) > 16384) item.links.pop();
-// Plexus v2 run-completed bodies expose only an aggregate conclusion, not job
-// identities or per-job conclusions. After a job notice, a run update cannot
-// identify additional failures, so it wakes only if no job was reported yet.
+// A run completion can compare its accumulated job IDs with the first notice,
+// even though Plexus v2 does not include per-job conclusions in that event.
 const runHasReportedJob = Object.keys(run.jobs).length > 0;
-const action = green || (!jobEvent && runHasReportedJob) ? 'silent' : 'wake';
+const needsFirstWake = !hasFirstNotice;
+const runFinishedNeedsWake = !jobEvent && runHasReportedJob &&
+  hasFirstNotice &&
+  jobsSinceFirstNotice.length > 0 && !run.completionWoke;
+const quiet = Object.hasOwn(QUIET_REPOS, repo);
+const action = quiet || green ? 'silent' :
+  jobEvent ? (needsFirstWake ? 'wake' : 'silent') :
+    runHasReportedJob ? (runFinishedNeedsWake ? 'wake' : 'silent') :
+      (needsFirstWake ? 'wake' : 'silent');
 const refusals = [];
+let digestSucceeded = false;
 try {
   await sink.digest(owner, item, action, identified && bytes(key) <= 200 ? { replace_key: key } : undefined);
+  digestSucceeded = true;
 } catch (error) {
   // Audience recipients are checked by core at delivery time. A retired or
   // unknown owner must not fail the run; retain the refusal code for operators.
-  if (error.data?.code !== 'captured') {
+  if (error.data?.code === 'captured') {
+    digestSucceeded = true;
+  } else {
     refusals.push({repo, owner, code: error.data?.code ?? String(error)});
   }
+}
+if (digestSucceeded && action === 'wake') {
+  if (needsFirstWake) run.firstWakeJobIds = Object.keys(run.jobs);
+  if (!jobEvent) run.completionWoke = true;
 }
 memory.runs[key] = run;
 await saveMemory(memory);
