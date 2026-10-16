@@ -84,3 +84,24 @@ timeout_s = 600
 file = "crates/basal-core/src/schedule/mod.rs"
 old = "if fire.admission == Admission::StateBusy {\n                blocked.insert(fire.flow_id);\n                continue;\n            }"
 new = "if fire.admission == Admission::StateBusy { // NON-VACUITY BREAK\n                return Ok(());\n            }"
+
+[[control]]
+id = "manifest-absent-state-epoch-default-is-one"
+guards = "an absent state_epoch defaults to one for install and dry-run behavior"
+test_file = "crates/basal-module/tests/state_epoch_vectors.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test state_epoch_vectors"
+expect_red = ["state_epoch_vector_cases_match_basal_install_and_dry_run"]
+select = { tests = ["state_epoch_vector_cases_match_basal_install_and_dry_run", "explicit_epoch_is_not_affected_by_the_absent_epoch_default"] }
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/manifest.rs"
+old = """
+    #[serde(default = \"one\")]
+    pub state_epoch: u32,"""
+new = """
+    #[serde(default = \"default_max_targets\")]
+    pub state_epoch: u32, // NON-VACUITY BREAK: use a different default to prove the vector check detects the change."""
