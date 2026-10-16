@@ -35,47 +35,79 @@
       "manifest": "{\"id\":\"epoch-template\",\"version\":2,\"purpose\":\"Pin template instance epochs.\",\"trigger\":{\"schedule\":{\"interval\":\"1m\"}},\"sinks\":[{\"agent\":\"$self\",\"digest_max\":\"piggyback\"}],\"params\":{\"note\":{\"type\":\"string\",\"max_bytes\":32}},\"template\":{\"max_per_agent\":2,\"max_live\":2,\"max_lifetime\":\"1d\"},\"state_epoch\":2}",
       "previous_manifest": "{\"id\":\"epoch-template\",\"version\":1,\"purpose\":\"Pin template instance epochs.\",\"trigger\":{\"schedule\":{\"interval\":\"1m\"}},\"sinks\":[{\"agent\":\"$self\",\"digest_max\":\"piggyback\"}],\"params\":{\"note\":{\"type\":\"string\",\"max_bytes\":32}},\"template\":{\"max_per_agent\":2,\"max_live\":2,\"max_lifetime\":\"1d\"},\"state_epoch\":1}",
       "instances": [
-        {"name": "current", "params": {"note": "a"}, "admit_version": 2},
-        {"name": "old", "params": {"note": "b"}, "admit_version": 1}
+        {
+          "name": "current",
+          "params": {
+            "note": "a"
+          },
+          "admit_version": 2
+        },
+        {
+          "name": "old",
+          "params": {
+            "note": "b"
+          },
+          "admit_version": 1
+        }
       ],
       "reset": true,
-      "instance_state_epochs": {"current": 2, "old": 1},
-      "reset_instances": ["old"]
+      "instance_state_epochs": {
+        "current": 2,
+        "old": 1
+      },
+      "reset_instances": [
+        "old"
+      ]
     },
     {
       "name": "epoch-zero-is-refused",
       "kind": "refusal",
       "manifest": "{\"id\":\"epoch-reject-zero\",\"version\":1,\"purpose\":\"Pin state epoch behavior.\",\"trigger\":{\"schedule\":{\"interval\":\"1m\"}},\"sinks\":[{\"agent\":\"SYNAPSE\",\"digest_max\":\"piggyback\"}],\"state_epoch\":0}",
       "previous_manifest": null,
-        "refusal": {"code": "install_refused", "message": "the manifest is invalid: state_epoch: must be from 1 to 2147483647"}
+      "refusal": {
+        "code": "install_refused",
+        "message": "the manifest is invalid: state_epoch: must be from 1 to 2147483647"
+      }
     },
     {
       "name": "epoch-above-maximum-is-refused",
       "kind": "refusal",
       "manifest": "{\"id\":\"epoch-reject-above-max\",\"version\":1,\"purpose\":\"Pin state epoch behavior.\",\"trigger\":{\"schedule\":{\"interval\":\"1m\"}},\"sinks\":[{\"agent\":\"SYNAPSE\",\"digest_max\":\"piggyback\"}],\"state_epoch\":2147483648}",
       "previous_manifest": null,
-        "refusal": {"code": "install_refused", "message": "the manifest is invalid: state_epoch: must be from 1 to 2147483647"}
+      "refusal": {
+        "code": "install_refused",
+        "message": "the manifest is invalid: state_epoch: must be from 1 to 2147483647"
+      }
     },
     {
       "name": "fractional-epoch-is-refused",
       "kind": "refusal",
       "manifest": "{\"id\":\"epoch-reject-fraction\",\"version\":1,\"purpose\":\"Pin state epoch behavior.\",\"trigger\":{\"schedule\":{\"interval\":\"1m\"}},\"sinks\":[{\"agent\":\"SYNAPSE\",\"digest_max\":\"piggyback\"}],\"state_epoch\":1.5}",
       "previous_manifest": null,
-        "refusal": {"code": "install_refused", "message": "the manifest is invalid: manifest does not decode: invalid type: floating point `1.5`, expected u32 at line 1 column 193"}
+      "refusal": {
+        "code": "install_refused",
+        "message": "the manifest is invalid: manifest does not decode: invalid type: floating point `1.5`, expected u32 at line 1 column 193"
+      }
     },
     {
       "name": "string-epoch-is-refused",
       "kind": "refusal",
       "manifest": "{\"id\":\"epoch-reject-string\",\"version\":1,\"purpose\":\"Pin state epoch behavior.\",\"trigger\":{\"schedule\":{\"interval\":\"1m\"}},\"sinks\":[{\"agent\":\"SYNAPSE\",\"digest_max\":\"piggyback\"}],\"state_epoch\":\"2\"}",
       "previous_manifest": null,
-        "refusal": {"code": "install_refused", "message": "the manifest is invalid: manifest does not decode: invalid type: string \"2\", expected u32 at line 1 column 191"}
+      "refusal": {
+        "code": "install_refused",
+        "message": "the manifest is invalid: manifest does not decode: invalid type: string \"2\", expected u32 at line 1 column 191"
+      }
     },
     {
       "name": "negative-epoch-is-refused",
       "kind": "refusal",
       "manifest": "{\"id\":\"epoch-reject-negative\",\"version\":1,\"purpose\":\"Pin state epoch behavior.\",\"trigger\":{\"schedule\":{\"interval\":\"1m\"}},\"sinks\":[{\"agent\":\"SYNAPSE\",\"digest_max\":\"piggyback\"}],\"state_epoch\":-1}",
       "previous_manifest": null,
-        "refusal": {"code": "install_refused", "message": "the manifest is invalid: manifest does not decode: invalid value: integer `-1`, expected u32 at line 1 column 192"}
+      "refusal": {
+        "code": "install_refused",
+        "message": "the manifest is invalid: manifest does not decode: invalid value: integer `-1`, expected u32 at line 1 column 192"
+      }
     }
   ]
 }
