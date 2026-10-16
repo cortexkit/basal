@@ -110,8 +110,8 @@ runner = "cargo"
 package = "basal-module"
 platforms = ["linux"]
 target = "--test board_hygiene"
-select = { tests = ["unchanged_members_and_edited_fields_never_wake", "install_card_dry_run_text_matches_its_committed_fixture"] }
-expect_red = ["unchanged_members_and_edited_fields_never_wake"]
+select = { tests = ["unchanged_lists_are_not_rewritten_and_edits_update_silently", "install_card_dry_run_text_matches_its_committed_fixture"] }
+expect_red = ["unchanged_lists_are_not_rewritten_and_edits_update_silently"]
 only = true
 build_timeout_s = 3600
 timeout_s = 600
