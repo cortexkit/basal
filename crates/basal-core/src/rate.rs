@@ -204,6 +204,7 @@ pub fn check(
             other => CoreError::Invalid(other.to_string()),
         })?;
     if disabled {
+        crate::owner_notice::auto_disabled(tx, flow_id, now_ms)?;
         // The operator decides whether the flow runs again, on a re-enable
         // card. The card's row, holding the limit that tripped, the window
         // and the saturated-window count as they are now, is written in

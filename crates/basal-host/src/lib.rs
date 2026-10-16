@@ -476,6 +476,16 @@ pub trait CompletionSink: Send + Sync {
 /// The hosts a flow reaches. Implementations must be safe to call from
 /// several threads at once: the runtime runs a run's calls concurrently.
 pub trait Host: Send + Sync {
+    fn on_catalog_change(&self, _notify: Arc<dyn Fn() + Send + Sync>) {}
+    /// Runtime-owned notices use basal's management identity, not a flow grant.
+    fn owner_notice(
+        &self,
+        _request: serde_json::Value,
+    ) -> Result<serde_json::Value, transport::WireError> {
+        Err(transport::WireError::NeverSent(
+            "owner notices unavailable".into(),
+        ))
+    }
     /// Registers where finished codemode model calls are delivered. Codemode
     /// runs are never retried, so their completions go to the codemode
     /// supervisor rather than the flow driver's recipient.

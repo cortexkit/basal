@@ -55,8 +55,7 @@ fn activations_sent(world: &World) -> usize {
 /// Asserts what the gate leaves behind when core does not stand behind the
 /// run's version (revoked, unknown, or another code hash): the run cancelled
 /// before any activation, the version recorded as revoked, and the flow left
-/// with no approved version and disabled by core, with a `flow.disabled`
-/// notification for its owner naming the reason.
+/// with no approved version and disabled by core, recording the reason.
 fn assert_refused(rt: &Runtime, world: &World, run_id: &str, end: &ActivationEnd) -> String {
     let ActivationEnd::Revoked {
         version, detail, ..
@@ -79,13 +78,8 @@ fn assert_refused(rt: &Runtime, world: &World, run_id: &str, end: &ActivationEnd
     assert_eq!(flow.approved_version, None, "{flow:#?}");
     assert!(!flow.enabled, "{flow:#?}");
     assert_eq!(flow.disabled_by.as_deref(), Some("core"), "{flow:#?}");
-    let told = rt.outbox().expect("outbox");
-    assert!(
-        told.iter().any(|n| n.kind == "flow.disabled"
-            && n.body.contains("\"by\":\"core\"")
-            && n.body.contains(&reason)),
-        "{told:#?}"
-    );
+    assert_eq!(flow.disabled_reason.as_deref(), Some(reason.as_str()));
+    assert!(rt.outbox().expect("outbox").is_empty());
     // Core's disable is not the runtime's auto-disable: it raises no
     // re-enable card. A newer approved version is how the flow comes back.
     assert!(

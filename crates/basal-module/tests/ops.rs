@@ -356,13 +356,7 @@ fn install_raises_one_card_per_version_and_its_decision_approves_or_rejects() {
             .approved_version,
         Some(1)
     );
-    // The author is told.
-    let outbox = f.module.rt.outbox().expect("outbox");
-    assert!(
-        outbox
-            .iter()
-            .any(|n| n.kind == "flow.install_approved" && n.recipient.as_deref() == Some(OWNER))
-    );
+    assert!(f.module.rt.outbox().expect("outbox").is_empty());
 
     // A rejected version is not approved, and installing it again does not
     // raise it again.
@@ -673,8 +667,8 @@ fn an_operator_disable_takes_over_the_owners_disable() {
     assert_eq!(record.disabled_reason.as_deref(), Some("stop"));
     assert_eq!(
         f.module.rt.outbox().expect("outbox").len(),
-        notified + 1,
-        "the owner is told"
+        notified,
+        "manual disables do not enqueue runtime health notices"
     );
     // So the owner can no longer undo it.
     let r = call(&f, &owner, "flow.enable", flow.clone());

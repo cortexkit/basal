@@ -158,7 +158,6 @@ impl Runtime {
             };
             tx.execute("UPDATE installs SET approval_kind=?3, approval_rule=?4, install_check_error=NULL WHERE flow_id=?1 AND version=?2", params![flow_id, version, kind, rule])?;
             tx.execute("UPDATE install_cards SET state='approved', decided_by=?3, decided_at=?4 WHERE flow_id=?1 AND version=?2 AND state='pending'", params![flow_id, version, reference, now])?;
-            tx.execute("INSERT INTO outbox(at,kind,flow_id,recipient,body) SELECT ?3,'flow.install_approved',flow_id,author,?4 FROM installs WHERE flow_id=?1 AND version=?2", params![flow_id, version, now, json!({"flow_id":flow_id,"version":version,"decision":"approved","approval":{"kind":kind,"rule":rule}}).to_string()])?;
             Ok(())
         });
         match result {
@@ -246,12 +245,6 @@ impl Runtime {
             let changed = tx.execute("UPDATE install_cards SET state=?2, decided_by='core:card', decided_at=?3, rejected_reason=?5, disposition=?6 WHERE card_id=?1 AND state='pending' AND attempt IS ?4", params![card.card_id, state, now, card.attempt, rejected_reason.as_deref(), disposition.as_deref()])?;
             if changed == 0 { return Ok(()); }
             tx.execute("UPDATE installs SET install_check_error=NULL WHERE flow_id=?1 AND version=?2", params![card.flow_id, card.version])?;
-            let mut body = json!({"flow_id":card.flow_id,"version":card.version,"attempt":card.attempt,"decision":state});
-            if state == "rejected" {
-                body["rejected_reason"] = json!(rejected_reason);
-                body["disposition"] = json!(disposition);
-            }
-            tx.execute("INSERT INTO outbox(at,kind,flow_id,recipient,body) VALUES (?1,?2,?3,?4,?5)", params![now, format!("flow.install_{state}"), card.flow_id, card.author, body.to_string()])?;
             Ok(())
         })?;
         self.shared.signal.bump();

@@ -1,6 +1,6 @@
 # Agent-facing basal operations
 
-Core's scoped relay exposes `flow.install`, `flow.dry_run`, `flow.disable`, `flow.enable`, `flow.list`, `flow.instantiate` and `flow.instance.end`. Caller identity comes from the daemon's route stamp, never request parameters. `flow.health` is not relayed: core uses it to decide whether a flow's claim to replace a source remains healthy, and the operator uses its runtime-wide figures.
+Core's scoped relay exposes `flow.install`, `flow.dry_run`, `flow.disable`, `flow.enable`, `flow.list`, `flow.instantiate` and `flow.instance.end`. Caller identity comes from the daemon's route stamp, never request parameters. `flow.health` is an operator/core pull view, not relayed to agents. Core does not poll it; basal pushes durable owner notices for failure episodes and rate auto-disables.
 
 The daemon delivers agent-facing `codemode` calls directly to basal; prefrontal-core does not forward them. See [codemode](#codemode).
 
@@ -208,6 +208,53 @@ Reply (machine-checked by `list_contract`):
 Template instance entries additionally contain `template`, `version`, canonical `params` and `expires_at` in Unix milliseconds. Persona and ordinary entries omit those keys. Expired and ended instances remain visible to their owner and the operator. The enable state is independent of ending and expiry; enabling cannot reopen an ended or expired instance.
 
 `install_cards` is always an array of `{version, attempt, state, rejected_reason, disposition}` records, including declined, expired and rejected requests; `rejected_reason` and `disposition` are null unless core reported a rejected status, and each is limited to 256 bytes. An attempt is null when no core card key was received. Both `flow.list` and `flow.health` also report `approval` for the current approved version: null when none is approved, `{kind: card}`, `{kind: policy, rule: string}`, or `{kind: unknown}` for approval whose provenance core did not supply. `install_checks` is always an array of `{version: integer, error: string}` records for pending versions whose last confirmation failed; a successful card raise or approval clears that version's error.
+
+## Health and owner notices
+
+`flow.health.consecutive_failures` counts finished failed and engine-mismatch
+runs in admission order since the latest success. Cancelled runs neither count
+nor reset it. Readiness rejections, `agent_retired`, `version_revoked`, and
+deadlines backed by recognized typed scope rejections are exempt. Event-body
+fetch refusals such as `event_not_visible` count, even though no script started.
+The flow stays enabled: failure counting is not a new auto-disable policy.
+
+Basal enqueues `failing` once when that streak reaches three, then `recovered`
+on the first succeeded run after that alert was enqueued. Recovery re-arms the
+latch; successes before three produce no notice. The independent rate breaker
+enqueues `auto_disabled` and still raises its operator re-enable decision card.
+The run finish (or rate disable), episode latch and notice enqueue commit in
+one transaction. Episodes use a persistent, per-flow increasing integer;
+auto-disable gets its own episode without clearing an outstanding failing latch.
+
+The background engine hands notices to `prefrontal-core.flow.owner_notice` on
+basal's unscoped `reserved:basal` management route, not a script call or flow
+grant. It sends only when core's current daemon catalog provides
+`flow-owner-notice/v1`. Until then rows remain queued. Enqueues, observed catalog
+generation changes, retry deadlines and the engine's existing 30-second fallback
+wake delivery; there is no additional polling loop. A core deploy can therefore
+take up to the fallback interval to become visible without another catalog read.
+
+Requests contain exactly `notice_id` (`<flow_id>:<episode>:<kind>`), `flow_id`,
+`version`, `kind` (`failing|auto_disabled|recovered`), `consecutive_failures`,
+`error_kind`, `phase`, `failing_since_ms`, `run_id` and `at_ms`. Times are Unix
+milliseconds. Only the latest counted error **code** is sent, never failure
+detail text: it is truncated to 128 bytes and bytes outside `[a-z0-9_.:-]` become
+`_`. `phase` is `preamble` before script activation or `script` afterward; it is
+null for recovery and auto-disable. Recovery has null `error_kind` and zero
+failures, and retains the episode's first-failure time. Without any counted
+failure, auto-disable has null error/time and an empty run id, using the approved
+version. Exact JSON request-byte vectors live in
+[`test-vectors/owner-notice/vectors.json`](../test-vectors/owner-notice/vectors.json).
+
+The existing outbox stores these notices with durable backoff metadata. Only
+the oldest undelivered notice per flow is sent. SQLite is unlocked during the
+network call. `{accepted:true}` means core durably owns delivery, not that an
+owner has read it. `flow_not_installed` and `owner_unknown` are final refusals:
+basal warns and marks the row done. All other refusals, malformed replies and
+transport errors retry exponentially (1 second up to 256 seconds), preserving
+the exact request and notice id so core can deduplicate after a lost response.
+Obsolete install/disable owner-outbox rows without a consumer are discarded;
+install card status and operator decision cards remain authoritative.
 
 ## Stored-value epochs in management replies
 

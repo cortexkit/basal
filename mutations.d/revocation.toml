@@ -52,5 +52,5 @@ only = true
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/ops.rs"
-old = '''"failed" if run.error_kind.as_deref() == Some("version_revoked") => {}'''
-new = '''"failed" if run.error_kind.as_deref() == Some("version_revoked") => { consecutive_failures += 1; } // NON-VACUITY BREAK'''
+old = '''Some("readiness_rejection" | "agent_retired" | "version_revoked")'''
+new = '''Some("readiness_rejection" | "agent_retired") /* NON-VACUITY BREAK */'''

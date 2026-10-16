@@ -362,6 +362,24 @@ ALTER TABLE install_cards ADD COLUMN rejected_reason TEXT;
 ALTER TABLE install_cards ADD COLUMN disposition TEXT;
 "#,
     },
+    Migration {
+        version: 31,
+        statements: r#"
+ALTER TABLE runs ADD COLUMN script_started INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE flow_owner_notice_latches (
+    flow_id TEXT PRIMARY KEY,
+    episode INTEGER NOT NULL DEFAULT 0,
+    failing_episode INTEGER,
+    failing_since_ms INTEGER
+);
+ALTER TABLE outbox ADD COLUMN retry_at INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE outbox ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;
+DELETE FROM outbox WHERE kind IN ('flow.disabled','flow.auto_disabled',
+    'flow.install_approved','flow.install_rejected','flow.install_stale',
+    'flow.install_declined','flow.install_expired');
+CREATE INDEX owner_notice_pending ON outbox(retry_at) WHERE delivered_at IS NULL AND kind='flow.owner_notice';
+"#,
+    },
 ];
 
 const TEMPLATE_EVENTS: &str = r#"

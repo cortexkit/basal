@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "name": "failing-preamble",
+      "request": "{\"at_ms\":3000,\"consecutive_failures\":3,\"error_kind\":\"event_not_visible\",\"failing_since_ms\":1000,\"flow_id\":\"flow-example\",\"kind\":\"failing\",\"notice_id\":\"flow-example:1:failing\",\"phase\":\"preamble\",\"run_id\":\"run-3\",\"version\":2}"
+    },
+    {
+      "name": "failing-script",
+      "request": "{\"at_ms\":3000,\"consecutive_failures\":3,\"error_kind\":\"script\",\"failing_since_ms\":1000,\"flow_id\":\"flow-example\",\"kind\":\"failing\",\"notice_id\":\"flow-example:1:failing\",\"phase\":\"script\",\"run_id\":\"run-3\",\"version\":2}"
+    },
+    {
+      "name": "auto-disabled",
+      "request": "{\"at_ms\":3000,\"consecutive_failures\":3,\"error_kind\":\"script\",\"failing_since_ms\":1000,\"flow_id\":\"flow-example\",\"kind\":\"auto_disabled\",\"notice_id\":\"flow-example:1:auto_disabled\",\"phase\":null,\"run_id\":\"run-3\",\"version\":2}"
+    },
+    {
+      "name": "recovered",
+      "request": "{\"at_ms\":3000,\"consecutive_failures\":0,\"error_kind\":null,\"failing_since_ms\":1000,\"flow_id\":\"flow-example\",\"kind\":\"recovered\",\"notice_id\":\"flow-example:1:recovered\",\"phase\":null,\"run_id\":\"run-4\",\"version\":2}"
+    }
+  ]
+}

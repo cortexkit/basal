@@ -977,41 +977,17 @@ impl Actor {
 }
 
 /// A notification for a flow's owner, waiting in the outbox.
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Notification {
-    /// `flow.disabled` or `flow.auto_disabled`.
+    /// `flow.owner_notice` for runtime failure and rate-disable notices.
     pub kind: String,
     pub flow_id: String,
-    /// The flow's owner when it was written; none if it had none.
-    pub recipient: Option<String>,
     /// JSON with the details.
     pub body: String,
 }
 
-/// Writes a notification for the flow's owner.
-pub fn notify_owner(
-    tx: &Transaction,
-    flow_id: &str,
-    kind: &str,
-    body: &str,
-    now_ms: i64,
-) -> Result<()> {
-    let owner: Option<String> = tx
-        .query_row(
-            "SELECT owner FROM flows WHERE flow_id = ?1",
-            [flow_id],
-            |r| r.get(0),
-        )
-        .optional()?
-        .flatten();
-    tx.execute(
-        "INSERT INTO outbox (at, kind, flow_id, recipient, body) VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![now_ms, kind, flow_id, owner, body],
-    )?;
-    Ok(())
-}
-
-/// Disables a flow and tells its owner. Returns false when it was already
+/// Disables a flow. Returns false when it was already
 /// disabled (nothing is written then), with one exception: the operator
 /// takes over a disable made by anyone else (see below).
 pub fn disable(
@@ -1072,17 +1048,6 @@ pub fn disable(
         // admitted go.
         schedule::table::disable(tx, flow_id, timestamp(now_ms)?)?;
     }
-    let kind = match actor {
-        Actor::Runtime => "flow.auto_disabled",
-        _ => "flow.disabled",
-    };
-    notify_owner(
-        tx,
-        flow_id,
-        kind,
-        &serde_json::json!({"flow_id": flow_id, "by": actor.label(), "reason": reason}).to_string(),
-        now_ms,
-    )?;
     Ok(true)
 }
 
@@ -1199,11 +1164,12 @@ impl Runtime {
         self.store().read(|c| flow(c, flow_id))
     }
 
-    /// Owner notifications not yet delivered, oldest first.
+    /// Undelivered owner notices for tests, oldest first; internal refusal hints are excluded.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn outbox(&self) -> Result<Vec<Notification>> {
         self.store().read(|c| {
             let mut stmt = c.prepare(
-                "SELECT kind, flow_id, recipient, body FROM outbox \
+                "SELECT kind, flow_id, body FROM outbox \
                  WHERE delivered_at IS NULL AND kind <> 'refusal_committed' ORDER BY seq",
             )?;
             let rows = stmt
@@ -1211,8 +1177,7 @@ impl Runtime {
                     Ok(Notification {
                         kind: r.get(0)?,
                         flow_id: r.get(1)?,
-                        recipient: r.get(2)?,
-                        body: r.get(3)?,
+                        body: r.get(2)?,
                     })
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
