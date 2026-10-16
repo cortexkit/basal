@@ -30,15 +30,56 @@ struct CiHost {
     writes: Mutex<Vec<Value>>,
     resolved: AtomicUsize,
     refuse: AtomicBool,
+    reads: Mutex<Vec<Value>>,
+    supersession: Mutex<Option<HostOutcome>>,
 }
 
 fn text(value: Value) -> JsonText {
     JsonText::new(value.to_string()).unwrap()
 }
 
+fn supersession_reply(repository: &str, run_id: u64, superseded: bool) -> HostOutcome {
+    let newer = superseded.then(|| json!({
+        "id":run_id + 1, "run_number":8, "status":"queued", "conclusion":null,
+        "created_at":"2027-01-01T12:01:00Z",
+        "url":format!("https://github.com/{repository}/actions/runs/{}", run_id + 1)
+    }));
+    HostOutcome::fulfilled(text(json!({
+        "result":{
+            "repository":repository, "superseded":superseded,
+            "run":{"id":run_id, "run_number":7, "status":"completed", "conclusion":"failure",
+                "created_at":"2027-01-01T12:00:00Z"},
+            "newer":newer
+        }
+    })))
+}
+
 impl CiHost {
     fn answer(&self, request: &CallRequest) -> Option<HostOutcome> {
         let args: Value = serde_json::from_str(request.args.as_str()).unwrap();
+        if request.kind
+            == (CallKind::Op {
+                module: "plexus".into(),
+                op: "github_read".into(),
+            })
+        {
+            assert_eq!(args["action"], "github.actions.run.superseded");
+            assert_eq!(args.as_object().unwrap().len(), 3);
+            let repository = args["repository"].as_str().unwrap().to_owned();
+            assert!(repository.starts_with("cortexkit/"));
+            assert_eq!(repository, repository.to_ascii_lowercase());
+            assert_eq!(args["args"].as_object().unwrap().len(), 1);
+            let run_id = args["args"]["run_id"].as_u64().unwrap();
+            assert!(run_id > 0);
+            self.reads.lock().unwrap().push(args);
+            return Some(
+                self.supersession
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .unwrap_or_else(|| supersession_reply(&repository, run_id, false)),
+            );
+        }
         if request.kind == CallKind::Primitive(Primitive::SinkDigest) {
             let item = &args["item"];
             assert!(item["title"].as_str().unwrap().chars().count() < 200);
@@ -122,6 +163,15 @@ impl Test {
         catalog.set_op(
             "plexus",
             "events_get",
+            OpDecl {
+                kind: Some(OpKind::Query),
+                cause_echo: false,
+                shell_capable: false,
+            },
+        );
+        catalog.set_op(
+            "plexus",
+            "github_read",
             OpDecl {
                 kind: Some(OpKind::Query),
                 cause_echo: false,
@@ -224,6 +274,12 @@ impl Test {
     fn writes(&self) -> Vec<Value> {
         self.host.writes.lock().unwrap().clone()
     }
+    fn reads(&self) -> Vec<Value> {
+        self.host.reads.lock().unwrap().clone()
+    }
+    fn supersession(&self, outcome: HostOutcome) {
+        *self.host.supersession.lock().unwrap() = Some(outcome);
+    }
     fn memory(&self) -> Value {
         let stored: String = self
             .f
@@ -275,7 +331,7 @@ fn published_manifest_is_global_with_only_ci_v2_repo_filters_and_minimal_grants(
     Manifest::parse(MANIFEST).unwrap();
     let value: Value = serde_json::from_str(MANIFEST).unwrap();
     assert_eq!(value["audience"], json!({"kind":"global"}));
-    assert_eq!(value["version"], 4);
+    assert_eq!(value["version"], 5);
     assert!(
         value["purpose"]
             .as_str()
@@ -294,7 +350,7 @@ fn published_manifest_is_global_with_only_ci_v2_repo_filters_and_minimal_grants(
     );
     assert_eq!(
         value["ops"],
-        json!([{"module":"plexus", "op":"events_get"}])
+        json!([{"module":"plexus", "op":"events_get"}, {"module":"plexus", "op":"github_read"}])
     );
     assert_eq!(
         value["trigger"]["events"],
@@ -623,6 +679,219 @@ fn rerun_attempt_gets_a_new_item_with_the_same_job_id() {
     assert_eq!(writes[1]["replace_key"], "ci:cortexkit/basal:42:2");
     assert_eq!(writes[0]["action"], "wake");
     assert_eq!(writes[1]["action"], "wake");
+}
+
+#[test]
+fn superseded_attempt_and_later_events_send_nothing() {
+    for repo in ["cortexkit/aft", "cortexkit/magic-context"] {
+        let t = Test::new();
+        t.supersession(supersession_reply(repo, 42, true));
+        t.ci(job(repo, 101));
+        assert!(t.writes().is_empty());
+        assert_eq!(t.memory()["runs"][format!("ci:{repo}:42:1")]["superseded"], true);
+        t.supersession(supersession_reply(repo, 42, false));
+        t.ci(job(repo, 102));
+        t.ci(run(repo, "failure"));
+        t.ci(run(repo, "success"));
+        assert!(t.writes().is_empty());
+        assert_eq!(t.reads(), vec![json!({
+            "action":"github.actions.run.superseded", "repository":repo, "args":{"run_id":42}
+        })]);
+    }
+}
+
+#[test]
+fn nonsuperseded_attempt_wakes_and_reads_only_once_per_attempt() {
+    let t = Test::new();
+    t.ci(job("CortexKit/Basal", 101));
+    t.ci(job("cortexkit/basal", 102));
+    t.ci(run("cortexkit/basal", "failure"));
+    assert_eq!(t.reads(), vec![json!({
+        "action":"github.actions.run.superseded", "repository":"cortexkit/basal", "args":{"run_id":42}
+    })]);
+    assert_eq!(t.writes()[0]["action"], "wake");
+    assert_eq!(t.writes()[1]["action"], "silent");
+    assert_eq!(t.writes()[2]["action"], "wake");
+    let mut retry = job("cortexkit/basal", 101);
+    retry["run_attempt"] = json!(2);
+    t.ci(retry);
+    assert_eq!(t.reads().len(), 2);
+    assert_eq!(t.writes()[3]["action"], "wake");
+}
+
+#[test]
+fn supersession_refusals_and_unreadable_replies_fail_open_and_are_logged() {
+    for code in [
+        "github_actions_quota_exhausted",
+        "run_not_found",
+        "repository_not_visible",
+        "unreadable",
+    ] {
+        let t = Test::new();
+        t.supersession(if code == "unreadable" {
+            HostOutcome::fulfilled(text(json!({"result":{"superseded":"true"}})))
+        } else {
+            HostOutcome::fulfilled(text(json!({"error":{"code":code, "detail":{"retry_after_ms":60000}}})))
+        });
+        let id = t.ci(job("cortexkit/basal", 101));
+        let done = t.f.module.rt.run(&id).unwrap();
+        let result: Value = serde_json::from_str(done.result.as_ref().unwrap()).unwrap();
+        assert!(result["refusals"][0]["code"].as_str().unwrap().contains(code));
+        assert_eq!(t.writes()[0]["action"], "wake");
+        t.ci(job("cortexkit/basal", 102));
+        t.ci(run("cortexkit/basal", "failure"));
+        assert_eq!(t.writes()[2]["action"], "wake");
+        assert_eq!(t.reads().len(), 1);
+    }
+}
+
+#[test]
+fn supersession_answer_is_reused_after_sink_refusal() {
+    let t = Test::new();
+    t.host.refuse.store(true, Ordering::Relaxed);
+    t.ci(job("cortexkit/basal", 101));
+    t.ci(job("cortexkit/basal", 102));
+    assert_eq!(t.reads().len(), 1);
+    assert!(t.writes().iter().all(|write| write["action"] == "wake"));
+}
+
+#[test]
+fn rejected_supersession_reads_fail_open_with_the_refusal_code() {
+    for refusal in [
+        json!({"code":"module_grant_absent", "message":"no grant"}),
+        json!({"error":{"code":"read_dispatch_failed", "message":"read failed"}}),
+    ] {
+        let t = Test::new();
+        t.supersession(HostOutcome::rejected(text(refusal.clone())));
+        let id = t.ci(job("cortexkit/basal", 101));
+        let done = t.f.module.rt.run(&id).unwrap();
+        let result: Value = serde_json::from_str(done.result.as_ref().unwrap()).unwrap();
+        let expected = refusal.get("error").unwrap_or(&refusal);
+        assert_eq!(result["refusals"][0]["code"], expected["code"]);
+        assert_eq!(t.writes()[0]["action"], "wake");
+    }
+}
+
+#[test]
+fn green_quiet_ignored_and_stale_events_never_read_supersession() {
+    let t = Test::new();
+    t.ci(run("cortexkit/basal", "success"));
+    t.ci(job("cortexkit/cerebellum", 101));
+    t.ci(run("cortexkit/cerebellum", "failure"));
+    let mut ignored = job("cortexkit/aft", 101);
+    ignored["workflow_name"] = json!("Design gate");
+    t.ci(ignored);
+    let mut ignored = job("cortexkit/aft", 102);
+    ignored["name"] = json!("design-gate");
+    t.ci(ignored);
+    let mut stale = job("cortexkit/basal", 101);
+    stale["completed_at"] = json!(completed_at(&t, 7 * common::HOUR));
+    t.ci(stale);
+    assert!(t.reads().is_empty());
+}
+
+#[test]
+fn merge_queue_repeats_are_silent_until_main_workflow_goes_green() {
+    for (branch, default_branch) in [("main", None), ("master", None), ("trunk", Some("trunk"))] {
+        let t = Test::new();
+        let mut main = job("cortexkit/aft", 101);
+        main["workflow_name"] = json!("CI");
+        main["name"] = json!("Tests");
+        main["head_branch"] = json!(branch);
+        main["default_branch"] = json!(default_branch);
+        t.ci(main);
+        let mut queued = job("cortexkit/aft", 102);
+        queued["run_id"] = json!(43);
+        queued["workflow_name"] = json!("CI");
+        queued["name"] = json!("Tests");
+        queued["head_branch"] = json!("gh-readonly-queue/main/pr-123-1");
+        t.ci(queued.clone());
+        let mut finished = run("cortexkit/aft", "failure");
+        finished["run_id"] = json!(43);
+        finished["head_branch"] = queued["head_branch"].clone();
+        t.ci(finished);
+        assert_eq!(t.writes()[0]["action"], "wake");
+        assert_eq!(t.writes()[1]["action"], "silent");
+        assert_eq!(t.writes()[2]["action"], "silent");
+        assert_eq!(t.reads().len(), 1);
+
+        let mut green = run("cortexkit/aft", "success");
+        green["id"] = json!(44);
+        green["run_id"] = json!(44);
+        green["head_branch"] = json!(branch);
+        green["default_branch"] = json!(default_branch);
+        t.ci(green);
+        assert!(t.memory()["mainFailures"].as_object().unwrap().is_empty());
+        queued["run_id"] = json!(45);
+        t.ci(queued);
+        assert_eq!(t.writes()[3]["action"], "wake");
+        assert_eq!(t.reads().len(), 2);
+    }
+}
+
+#[test]
+fn merge_queue_failure_flags_are_scoped_to_repo_workflow_and_job() {
+    let t = Test::new();
+    let mut main = job("cortexkit/aft", 101);
+    main["workflow_name"] = json!("CI");
+    t.ci(main);
+    for (repo, workflow, id) in [
+        ("cortexkit/basal", "CI", 101),
+        ("cortexkit/aft", "Release", 101),
+        ("cortexkit/aft", "CI", 102),
+    ] {
+        let mut queued = job(repo, id);
+        queued["run_id"] = json!(id + 100);
+        queued["workflow_name"] = json!(workflow);
+        queued["head_branch"] = json!("gh-readonly-queue/main/pr-123-1");
+        t.ci(queued);
+    }
+    assert_eq!(t.writes().len(), 4);
+    assert!(t.writes().iter().all(|write| write["action"] == "wake"));
+}
+
+#[test]
+fn main_failure_flags_share_the_memory_byte_cap_and_age_pruning() {
+    let t = Test::new();
+    for id in 1..=60 {
+        t.f.clock.advance(3_600_000);
+        let mut main = job("cortexkit/aft", id);
+        main["run_id"] = json!(id);
+        main["workflow_name"] = json!("CI");
+        main["name"] = json!(format!("{} {id}", "é🦀".repeat(200)));
+        t.ci(main);
+    }
+    let memory = t.memory();
+    assert!(serde_json::to_vec(&memory).unwrap().len() <= 48000);
+    let failures = memory["mainFailures"].as_object().unwrap();
+    assert!(!failures.is_empty());
+    assert!(failures.len() < 60);
+    let mut fresh = job("cortexkit/basal", 200);
+    fresh["run_id"] = json!(200);
+    fresh["completed_at"] = json!("2027-01-16T12:00:00Z");
+    t.ci(fresh);
+    assert!(t.memory()["mainFailures"].as_object().unwrap().is_empty());
+}
+
+#[test]
+fn ignored_job_names_and_completions_with_only_ignored_failures_send_nothing() {
+    let t = Test::new();
+    let mut ignored = job("cortexkit/aft", 101);
+    ignored["name"] = json!("design-gate");
+    t.ci(ignored.clone());
+    t.ci(ignored.clone());
+    assert!(t.writes().is_empty());
+    t.ci(run("cortexkit/aft", "failure"));
+    assert!(t.writes().is_empty());
+    assert!(t.reads().is_empty());
+
+    t.ci(job("cortexkit/aft", 102));
+    t.ci(ignored);
+    t.ci(run("cortexkit/aft", "failure"));
+    assert_eq!(t.writes().len(), 2);
+    assert_eq!(t.writes()[0]["action"], "wake");
+    assert_eq!(t.writes()[1]["action"], "silent");
+    assert_eq!(t.writes()[1]["item"]["data"]["observed"]["failed_jobs"], "linux shard 102");
 }
 
 #[test]

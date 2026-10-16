@@ -43,6 +43,9 @@ const OWNERS = {
 const IGNORED_WORKFLOWS = {
   'cortexkit/aft': ['Design gate'],
 };
+const IGNORED_JOBS = {
+  'cortexkit/aft': ['design-gate'],
+};
 
 const QUIET_REPOS = {
   'cortexkit/cerebellum': 'CI is off by owner decision: GitHub billing refuses its jobs',
@@ -135,8 +138,10 @@ async function saveMemory(memory) {
   // Age pruning handles ordinary traffic; a byte cap also bounds bursts and
   // unknown timestamps, including growth of the unmapped-notice counter.
   while (bytes(JSON.stringify(memory)) > 48000) {
-    const oldest = Object.keys(memory.runs).sort((a, b) => memory.runs[a].completed - memory.runs[b].completed)[0];
-    delete memory.runs[oldest];
+    const entries = [memory.runs, memory.mainFailures].flatMap(store =>
+      Object.entries(store).map(([id, value]) => ({ store, id, completed: value.completed })));
+    const oldest = entries.sort((a, b) => a.completed - b.completed)[0];
+    delete oldest.store[oldest.id];
   }
   await kv.set('ci-router', memory);
 }
@@ -156,6 +161,7 @@ const owner = OWNERS[repo];
 // A single aggregate caps retained attempts across the entire fleet. Run keys
 // include the repo so identical job/run ids in different repos cannot collide.
 const memory = await kv.get('ci-router') ?? { newest: 0, runs: {}, unmapped: 0 };
+memory.mainFailures ??= {};
 if (stale) {
   await saveMemory(memory);
   return;
@@ -181,17 +187,29 @@ const cutoff = memory.newest - 14 * 86400000;
 for (const [id, run] of Object.entries(memory.runs)) {
   if (run.completed < cutoff) delete memory.runs[id];
 }
+for (const [id, failure] of Object.entries(memory.mainFailures)) {
+  if (failure.completed < cutoff) delete memory.mainFailures[id];
+}
 // Ignore late deliveries outside the retained deduplication window.
 if (Number.isFinite(completed) && completed < cutoff) {
   await saveMemory(memory);
   return;
 }
 const existing = memory.runs[key];
+const green = !jobEvent && body.conclusion === 'success';
+const defaultBranch = body.default_branch;
+const mainBranch = typeof defaultBranch === 'string' && defaultBranch.length ?
+  body.head_branch === defaultBranch : ['main', 'master'].includes(body.head_branch);
+const knownWorkflow = typeof workflowName === 'string' && workflowName.length > 0;
+if (green && mainBranch && knownWorkflow) {
+  for (const [id, failure] of Object.entries(memory.mainFailures)) {
+    if (failure.repo === repo && failure.workflow === workflowName) delete memory.mainFailures[id];
+  }
+}
 if (!jobEvent && body.conclusion === 'cancelled' && Object.keys(existing?.jobs ?? {}).length === 0) {
   await saveMemory(memory);
   return;
 }
-const green = !jobEvent && body.conclusion === 'success';
 if (green && !existing) {
   await saveMemory(memory);
   return;
@@ -201,6 +219,10 @@ if (!jobEvent && !green && !['failure', 'cancelled', 'startup_failure', null].in
   return;
 }
 const run = existing ?? { jobs: {}, links: [], completed: Number.isFinite(completed) ? completed : memory.newest };
+if (run.superseded) {
+  await saveMemory(memory);
+  return;
+}
 if (jobEvent && Object.hasOwn(run.jobs, String(body.id ?? event.event_key))) {
   await saveMemory(memory);
   return;
@@ -211,6 +233,21 @@ run.completed = Math.max(run.completed, Number.isFinite(completed) ? completed :
 run.branch = body.head_branch ?? 'unknown';
 run.sha = typeof body.head_sha === 'string' ? body.head_sha.slice(0, 12) : 'unknown';
 run.conclusion = body.conclusion ?? 'unknown';
+if (jobEvent && (IGNORED_JOBS[repo] ?? []).includes(body.name)) {
+  // Run completions have no job list; retain ignored failures so they cannot
+  // later masquerade as a red run whose failed jobs have not arrived yet.
+  run.ignoredFailures = true;
+  memory.runs[key] = run;
+  await saveMemory(memory);
+  return;
+}
+if (!jobEvent && run.ignoredFailures && Object.keys(run.jobs).length === 0) {
+  await saveMemory(memory);
+  return;
+}
+const mainFailureKey = JSON.stringify([repo, workflowName, body.name]);
+const mergeQueueRepeat = jobEvent && body.head_branch?.startsWith('gh-readonly-queue/') &&
+  knownWorkflow && Object.hasOwn(memory.mainFailures, mainFailureKey);
 const validUrl = url => typeof url === 'string' && bytes(url) <= 1024 && /^https:\/\/[A-Za-z0-9.-]+(?:[/?#]|$)/.test(url);
 if (jobEvent) {
   delete run.finished;
@@ -258,11 +295,35 @@ const runFinishedNeedsWake = !jobEvent && runHasReportedJob &&
   hasFirstNotice &&
   jobsSinceFirstNotice.length > 0 && !run.completionWoke;
 const quiet = Object.hasOwn(QUIET_REPOS, repo);
-const action = quiet || green ? 'silent' :
+const action = quiet || green || mergeQueueRepeat ? 'silent' :
   jobEvent ? (needsFirstWake ? 'wake' : 'silent') :
     runHasReportedJob ? (runFinishedNeedsWake ? 'wake' : 'silent') :
       (needsFirstWake ? 'wake' : 'silent');
 const refusals = [];
+if (action === 'wake' && !run.supersessionChecked && !hasFirstNotice) {
+  // Check only before the first wake, including when an earlier sink refused
+  // delivery. An unreadable answer must never discard an actionable alert.
+  run.supersessionChecked = true;
+  try {
+    if (runId == null) throw new Error('github_actions_supersession_unreadable');
+    const answer = await ops.call('plexus', 'github_read', {
+      action: 'github.actions.run.superseded', repository: repo, args: { run_id: runId },
+    });
+    if (answer?.error) throw { data: answer.error };
+    if (typeof answer?.result?.superseded !== 'boolean') throw new Error('github_actions_supersession_unreadable');
+    run.superseded = answer.result.superseded;
+  } catch (error) {
+    refusals.push({repo, owner, code: error.data?.code ?? error.data?.error?.code ?? String(error)});
+  }
+  if (run.superseded) {
+    memory.runs[key] = run;
+    await saveMemory(memory);
+    return {repo, owner, refusals};
+  }
+}
+if (jobEvent && mainBranch && knownWorkflow) {
+  memory.mainFailures[mainFailureKey] = { repo, workflow: workflowName, completed: run.completed };
+}
 let digestSucceeded = false;
 try {
   await sink.digest(owner, item, action, identified && bytes(key) <= 200 ? { replace_key: key } : undefined);

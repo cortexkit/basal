@@ -348,3 +348,71 @@ timeout_s = 600
 file = "flows/ci-failure-router/flow.js"
 old = "if (stale) {"
 new = "if (false && stale) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "ci-failure-router-superseded-attempts"
+guards = "superseded attempts send no digest now or on later events"
+test_file = "crates/basal-module/tests/ci_failure_router.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test ci_failure_router"
+select = { tests = ["superseded_attempt_and_later_events_send_nothing", "nonsuperseded_attempt_wakes_and_reads_only_once_per_attempt"] }
+expect_red = ["superseded_attempt_and_later_events_send_nothing"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/ci-failure-router/flow.js"
+old = "run.superseded = answer.result.superseded;"
+new = "run.superseded = false; // NON-VACUITY BREAK"
+
+[[control]]
+id = "ci-failure-router-merge-queue-repeats"
+guards = "merge-queue repeats of main failures stay silent until a green main completion"
+test_file = "crates/basal-module/tests/ci_failure_router.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test ci_failure_router"
+select = { tests = ["merge_queue_repeats_are_silent_until_main_workflow_goes_green", "merge_queue_failure_flags_are_scoped_to_repo_workflow_and_job"] }
+expect_red = ["merge_queue_repeats_are_silent_until_main_workflow_goes_green"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/ci-failure-router/flow.js"
+old = "const mergeQueueRepeat = jobEvent &&"
+new = "const mergeQueueRepeat = false && jobEvent && // NON-VACUITY BREAK"
+
+[[control]]
+id = "ci-failure-router-ignore-job-names"
+guards = "configured job names send no digest"
+test_file = "crates/basal-module/tests/ci_failure_router.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test ci_failure_router"
+select = { tests = ["ignored_job_names_and_completions_with_only_ignored_failures_send_nothing", "job_without_workflow_name_from_ignored_repo_still_wakes"] }
+expect_red = ["ignored_job_names_and_completions_with_only_ignored_failures_send_nothing"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/ci-failure-router/flow.js"
+old = "if (jobEvent && (IGNORED_JOBS[repo] ?? []).includes(body.name)) {"
+new = "if (false && jobEvent && (IGNORED_JOBS[repo] ?? []).includes(body.name)) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "ci-failure-router-ignore-only-completions"
+guards = "a completion with only ignored job failures cannot report missing failed jobs"
+test_file = "crates/basal-module/tests/ci_failure_router.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test ci_failure_router"
+select = { tests = ["ignored_job_names_and_completions_with_only_ignored_failures_send_nothing", "red_run_without_jobs_including_startup_failure_creates_exactly_one_item"] }
+expect_red = ["ignored_job_names_and_completions_with_only_ignored_failures_send_nothing"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/ci-failure-router/flow.js"
+old = "if (!jobEvent && run.ignoredFailures && Object.keys(run.jobs).length === 0) {"
+new = "if (false && !jobEvent && run.ignoredFailures && Object.keys(run.jobs).length === 0) { // NON-VACUITY BREAK"
