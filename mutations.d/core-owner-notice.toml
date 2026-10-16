@@ -30,8 +30,8 @@ only = true
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/owner_notice.rs"
-old = "&& failing.is_none()"
-new = "&& true /* NON-VACUITY BREAK */"
+old = "} else if failing.is_none() && ops::counted_failure("
+new = "} else if /* NON-VACUITY BREAK */ ops::counted_failure("
 
 [[control]]
 id = "owner-notice-recovery-rearm"
