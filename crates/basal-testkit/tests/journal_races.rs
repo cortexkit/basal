@@ -45,8 +45,10 @@ fn race_cut_late_outcome_waits_for_the_barrier() {
     // Open the gate independently of dispatch: an inline position 0 would
     // otherwise block the activation before position 1 could answer. A
     // deadline releases the stuck call but fails the ordering precondition.
+    // Concurrent dispatch answers in milliseconds; the generous deadline only
+    // bounds how long a serial driver takes to fail, so host load can't trip it.
     let gate_watchdog = std::thread::spawn(move || {
-        let answered_first = answer.recv_timeout(Duration::from_secs(5)).is_ok();
+        let answered_first = answer.recv_timeout(Duration::from_secs(30)).is_ok();
         mock.open_gate("slow-dispatch");
         answered_first
     });
@@ -84,7 +86,7 @@ fn race_cut_late_outcome_waits_for_the_barrier() {
     assert!(accepted_at_cut, "position 0 was accepted before the cut");
     assert!(
         answered_first,
-        "position 1 did not answer within 5 seconds before position 0's dispatch gate opened; dispatch may be serial"
+        "position 1 did not answer within 30 seconds before position 0's dispatch gate opened; dispatch may be serial"
     );
     drop(rt);
     world.mock.detach();
