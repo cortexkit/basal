@@ -238,7 +238,7 @@ fn published_manifest_has_global_minimal_grants_and_five_minute_schedule() {
     let manifest = Manifest::parse(MANIFEST).unwrap();
     let value = serde_json::to_value(manifest).unwrap();
     assert_eq!(value["id"], "board-hygiene");
-    assert_eq!(value["version"], 8);
+    assert_eq!(value["version"], 9);
     assert_eq!(value["board_read"], json!(["$audience"]));
     assert_eq!(value["audience"], json!({"kind":"global"}));
     assert_eq!(
@@ -818,7 +818,23 @@ fn a_wait_unchanged_for_a_day_without_an_eta_nudges_the_owner() {
     assert_eq!(writes[0]["agent"], "ag_a");
     assert_eq!(writes[0]["action"], "wake");
     let body = writes[0]["item"]["body"].as_str().unwrap();
-    assert!(body.contains("work:wi_silent"), "{body}");
+    assert!(body.contains("has waited 24 h on work:wi_silent"), "{body}");
+    assert!(!body.contains("ago"), "{body}");
+
+    // Long waits read in days.
+    let mut t = Test::new(vec![board("ag_a", vec![blocked()])]);
+    let writes = rule(&t.run(BASE + 106 * HOUR), "stale_wait");
+    let body = writes[0]["item"]["body"].as_str().unwrap();
+    assert!(body.contains("has waited 4 days on"), "{body}");
+
+    // An older wait on the user with no ask asks the owner to file one.
+    let mut legacy = blocked();
+    legacy["wait"] = json!({"on":"user","since_ms":BASE});
+    let mut t = Test::new(vec![board("ag_a", vec![legacy])]);
+    let writes = rule(&t.run(BASE + 30 * HOUR), "stale_wait");
+    let body = writes[0]["item"]["body"].as_str().unwrap();
+    assert!(body.contains("on the user with no ask"), "{body}");
+    assert!(body.contains("File an ask"), "{body}");
 
     // An ETA, an ended wait or a declined wait each take the item off this rule.
     let mut with_eta = blocked();

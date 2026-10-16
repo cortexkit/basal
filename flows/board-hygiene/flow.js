@@ -99,9 +99,18 @@ function peerWait(wait) {
     (wait.ref == null || (typeof wait.ref === 'string' && wait.ref.startsWith('peer:')));
 }
 
-function age(now, since) {
+// A duration for prose: minutes under an hour, hours under two days, then days.
+function span(now, since) {
   const minutes = Math.max(0, Math.floor((now - since) / MINUTE));
-  return minutes < 60 ? `${minutes} min ago` : `${Math.floor(minutes / 60)} h ago`;
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours} h`;
+  const days = Math.floor(hours / 24);
+  return `${days} days`;
+}
+
+function age(now, since) {
+  return `${span(now, since)} ago`;
 }
 
 function entry(rule, agent, lane, item, since, now) {
@@ -139,8 +148,14 @@ function entry(rule, agent, lane, item, since, now) {
     }
   } else if (rule === 'stale_wait') {
     title = `Wait unchanged: ${text}`;
-    const target = cut(item.wait?.ref ?? item.wait?.on ?? 'its wait', 200);
-    body = `Your item has waited ${age(now, since)} on ${target} with no ETA. Check the wait and update your item: ${call}; or extend: set an ETA on your item.`;
+    if (item.wait?.on === 'user' && item.wait?.ref == null) {
+      // An older wait on the user from before the board required an ask: the
+      // user never received a question, so the owner should file one.
+      body = `Your item has waited ${span(now, since)} on the user with no ask and no ETA. File an ask so the question reaches the user, or update your item: ${call}; or extend: set an ETA on your item.`;
+    } else {
+      const target = cut(item.wait?.ref ?? item.wait?.on ?? 'its wait', 200);
+      body = `Your item has waited ${span(now, since)} on ${target} with no ETA. Check the wait and update your item: ${call}; or extend: set an ETA on your item.`;
+    }
   } else if (rule === 'stale_active') {
     title = `Active item unchanged: ${text}`;
     body = `Your active item last changed ${age(now, since)}, although you have been active since. Update your item: ${call}; or extend: set a new ETA on your item.`;
