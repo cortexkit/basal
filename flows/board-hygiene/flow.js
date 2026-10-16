@@ -5,19 +5,19 @@ const INDEX_CAP = 128;
 let boardOwners = new Set();
 
 function utf8Bytes(value) {
-  let size = 0;
-  for (const char of value) {
-    const code = char.codePointAt(0);
-    size += code <= 0x7f ? 1 : code <= 0x7ff ? 2 : code <= 0xffff ? 3 : 4;
-  }
-  return size;
+  // Native regexp scanning skips ASCII without running JavaScript per character.
+  return value.replace(/[\u0080-\u07ff]|[\ud800-\udbff][\udc00-\udfff]|[\u0800-\uffff]/g,
+    char => char.length === 2 ? 'xxxx' : char.charCodeAt(0) <= 0x7ff ? 'xx' : 'xxx').length;
 }
 
 function cut(value, bytes) {
+  value = String(value);
+  if (value.length <= bytes && utf8Bytes(value) <= bytes) return value;
   let out = '';
   let size = 0;
-  for (const char of String(value)) {
-    const next = utf8Bytes(char);
+  for (const char of value) {
+    const code = char.codePointAt(0);
+    const next = code <= 0x7f ? 1 : code <= 0x7ff ? 2 : code <= 0xffff ? 3 : 4;
     if (size + next > bytes) break;
     out += char;
     size += next;
@@ -28,22 +28,36 @@ function cut(value, bytes) {
 function bounded(item, bodyLimit = 4096, dataLimit = 8192) {
   item.title = cut(item.title, 200).slice(0, 200);
   item.body = cut(item.body, bodyLimit);
-  // Escaping can make JSON much larger than the original strings.
-  while (utf8Bytes(JSON.stringify(item.data)) > dataLimit) {
+  // Cache JSON string sizes; replacing a string leaves keys and punctuation unchanged.
+  const size = value => utf8Bytes(JSON.stringify(value));
+  let dataBytes = size(item.data);
+  if (dataBytes > dataLimit) {
     const fields = [];
     function strings(object) {
       for (const key of Object.keys(object)) {
-        if (typeof object[key] === 'string') fields.push([object, key]);
+        if (typeof object[key] === 'string') fields.push({object, key, bytes: utf8Bytes(object[key]), jsonBytes: size(object[key])});
         else if (object[key] && typeof object[key] === 'object') strings(object[key]);
       }
     }
     strings(item.data);
-    fields.sort(([a, ka], [b, kb]) => utf8Bytes(b[kb]) - utf8Bytes(a[ka]));
-    const [object, key] = fields[0];
-    object[key] = cut(object[key], Math.floor(utf8Bytes(object[key]) / 2));
+    while (dataBytes > dataLimit) {
+      let longest = fields[0];
+      for (const field of fields) if (field.bytes > longest.bytes) longest = field;
+      const {object, key} = longest;
+      object[key] = cut(object[key], Math.floor(longest.bytes / 2));
+      const next = size(object[key]);
+      dataBytes += next - longest.jsonBytes;
+      longest.bytes = utf8Bytes(object[key]);
+      longest.jsonBytes = next;
+    }
   }
-  while (utf8Bytes(JSON.stringify(item)) > 16384) {
+  let itemBytes = size(item);
+  let bodyBytes = size(item.body);
+  while (itemBytes > 16384) {
     item.body = cut(item.body, Math.floor(utf8Bytes(item.body) / 2));
+    const next = size(item.body);
+    itemBytes += next - bodyBytes;
+    bodyBytes = next;
   }
   return item;
 }
@@ -139,7 +153,7 @@ function memoryKey(agent, rule) {
   return utf8Bytes(key) <= 256 ? key : null;
 }
 
-function digest(agent, rule, entries) {
+function digest(agent, rule, entries, now) {
   const count = entries.length;
   const noun = count === 1 ? 'board item' : 'board items';
   const title = rule === 'eta_passed' ? `${count} ${noun} ${count === 1 ? 'is' : 'are'} past ${count === 1 ? 'its' : 'their'} ETA.` :
@@ -148,20 +162,34 @@ function digest(agent, rule, entries) {
   const result = {title, body: '', data: {kind: 'board_nudge', rule, agent_id: agent,
     entries: [], total_count: count, more_count: count}};
   const lines = [];
-  entries.sort((a, b) => a.data.since_ms - b.data.since_ms || (a.member < b.member ? -1 : a.member > b.member ? 1 : 0));
-  for (const entry of entries) {
-    const nextLines = [...lines, entry.body];
-    const remaining = count - nextLines.length;
-    const body = [...nextLines, ...(remaining ? [`and ${remaining} more`] : [])].join('\n\n');
-    const data = {...result.data, entries: [...result.data.entries, entry.data], more_count: remaining};
-    if (utf8Bytes(body) > 4096 || utf8Bytes(JSON.stringify(data)) > 8192 ||
-        utf8Bytes(JSON.stringify({title, body, data})) > 16384) break;
-    lines.push(entry.body);
-    result.body = body;
-    result.data = data;
+  const size = value => utf8Bytes(JSON.stringify(value));
+  const emptyDataBytes = size(result.data);
+  const envelopeBytes = size(result) - emptyDataBytes - size('');
+  let bodyBytes = 0;
+  let bodyJsonBytes = 0;
+  let entryBytes = 0;
+  entries.sort((a, b) => a.since - b.since || (a.member < b.member ? -1 : a.member > b.member ? 1 : 0));
+  for (const candidate of entries) {
+    const next = entry(rule, candidate.agent, candidate.lane, candidate.item, candidate.since, now);
+    const remaining = count - lines.length - 1;
+    const suffix = remaining ? `\n\nand ${remaining} more` : '';
+    const separator = lines.length ? 2 : 0;
+    const nextBodyBytes = bodyBytes + separator + utf8Bytes(next.body);
+    const nextBodyJsonBytes = bodyJsonBytes + 2 * separator + size(next.body) - 2;
+    const nextEntryBytes = entryBytes + (lines.length ? 1 : 0) + size(next.data);
+    const dataBytes = emptyDataBytes + nextEntryBytes + String(remaining).length - String(count).length;
+    if (nextBodyBytes + utf8Bytes(suffix) > 4096 || dataBytes > 8192 ||
+        envelopeBytes + dataBytes + nextBodyJsonBytes + size(suffix) > 16384) break;
+    lines.push(next.body);
+    result.data.entries.push(next.data);
+    result.data.more_count = remaining;
+    bodyBytes = nextBodyBytes;
+    bodyJsonBytes = nextBodyJsonBytes;
+    entryBytes = nextEntryBytes;
   }
-  if (!lines.length) result.body = count ? `and ${count} more` : 'Nothing is outstanding.';
-  return bounded(result);
+  result.body = lines.length ? [...lines, ...(result.data.more_count ? [`and ${result.data.more_count} more`] : [])].join('\n\n') :
+    count ? `and ${count} more` : 'Nothing is outstanding.';
+  return result;
 }
 
 function shardFor(key) {
@@ -253,7 +281,9 @@ async function run() {
     }
     if (!groups.has(key)) groups.set(key, {agent: recipient, rule, entries: new Map()});
     const member = JSON.stringify([agent, item?.id ?? lane.id]);
-    groups.get(key).entries.set(member, {...entry(rule, agent, lane, item, since, now), member});
+    // Delay rendering until the group's complete membership fits in KV (64 KiB).
+    // digest() renders candidates only until the first one exceeds its size limits.
+    groups.get(key).entries.set(member, {agent, lane, item, since, member});
   }
 
   function check(rule, agent, lane, item, condition, since, firstDelay, recipient) {
@@ -320,7 +350,7 @@ async function run() {
       }
       // Reserve memory before delivery so exhausted KV cannot create repeated wakes.
       if (!await remember(key, value)) continue;
-      if (!await send(agent, digest(agent, rule, [...group.entries.values()]), action)) {
+      if (!await send(agent, digest(agent, rule, [...group.entries.values()], now), action)) {
         if (previous) await kv.set(key, previous);
         else await forget(key);
       }

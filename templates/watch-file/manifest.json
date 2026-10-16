@@ -1,7 +1,7 @@
 {
   "format": 1,
   "id": "watch-file",
-  "version": 1,
+  "version": 2,
   "purpose": "Wake the creating agent once when a file exists, contains text, or lacks text.",
   "trigger": { "schedule": { "interval": "$params.every" } },
   "sinks": [{ "agent": "$self", "digest_max": "wake" }],

@@ -1,7 +1,7 @@
 {
   "format": 1,
   "id": "watch-git",
-  "version": 1,
+  "version": 2,
   "purpose": "Wake the creating agent once when a Git ref exists or a new commit subject matches text.",
   "trigger": { "schedule": { "interval": "$params.every" } },
   "sinks": [{ "agent": "$self", "digest_max": "wake" }],
