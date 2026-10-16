@@ -299,6 +299,23 @@ old = "if (!jobEvent && body.conclusion === 'cancelled' && Object.keys(existing?
 new = "if (false && !jobEvent && body.conclusion === 'cancelled' && Object.keys(existing?.jobs ?? {}).length === 0) { // NON-VACUITY BREAK"
 
 [[control]]
+id = "ci-failure-router-jobless-red-run-wakes"
+guards = "a red run with no failed job wakes only for startup_failure; fork runs closed unapproved stay silent"
+test_file = "crates/basal-module/tests/ci_failure_router.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test ci_failure_router"
+select = { tests = ["red_run_without_jobs_creates_one_item_and_only_startup_failure_wakes", "a_job_arriving_after_a_silent_red_run_still_wakes_once", "completed_red_updates_the_existing_item_then_green_updates_silently"] }
+expect_red = ["red_run_without_jobs_creates_one_item_and_only_startup_failure_wakes", "a_job_arriving_after_a_silent_red_run_still_wakes_once"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/ci-failure-router/flow.js"
+old = "const runAloneWakes = run.conclusion === 'startup_failure';"
+new = "const runAloneWakes = true; // NON-VACUITY BREAK"
+
+[[control]]
 id = "ci-failure-router-run-finish-silent-after-job"
 guards = "a red run completion without new jobs since first notice updates silently"
 test_file = "crates/basal-module/tests/ci_failure_router.rs"
@@ -306,7 +323,7 @@ runner = "cargo"
 package = "basal-module"
 platforms = ["linux"]
 target = "--test ci_failure_router"
-select = { tests = ["completed_red_updates_the_existing_item_then_green_updates_silently", "red_run_without_jobs_including_startup_failure_creates_exactly_one_item"] }
+select = { tests = ["completed_red_updates_the_existing_item_then_green_updates_silently", "red_run_without_jobs_creates_one_item_and_only_startup_failure_wakes"] }
 expect_red = ["completed_red_updates_the_existing_item_then_green_updates_silently"]
 only = true
 build_timeout_s = 3600
@@ -340,7 +357,7 @@ runner = "cargo"
 package = "basal-module"
 platforms = ["linux"]
 target = "--test ci_failure_router"
-select = { tests = ["quiet_repo_updates_silently_while_other_repos_still_wake", "red_run_without_jobs_including_startup_failure_creates_exactly_one_item"] }
+select = { tests = ["quiet_repo_updates_silently_while_other_repos_still_wake", "red_run_without_jobs_creates_one_item_and_only_startup_failure_wakes"] }
 expect_red = ["quiet_repo_updates_silently_while_other_repos_still_wake"]
 only = true
 build_timeout_s = 3600
@@ -425,7 +442,7 @@ runner = "cargo"
 package = "basal-module"
 platforms = ["linux"]
 target = "--test ci_failure_router"
-select = { tests = ["ignored_job_names_and_completions_with_only_ignored_failures_send_nothing", "red_run_without_jobs_including_startup_failure_creates_exactly_one_item"] }
+select = { tests = ["ignored_job_names_and_completions_with_only_ignored_failures_send_nothing", "red_run_without_jobs_creates_one_item_and_only_startup_failure_wakes"] }
 expect_red = ["ignored_job_names_and_completions_with_only_ignored_failures_send_nothing"]
 only = true
 build_timeout_s = 3600

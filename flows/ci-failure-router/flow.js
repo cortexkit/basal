@@ -314,10 +314,15 @@ const runFinishedNeedsWake = !jobEvent && runHasReportedJob &&
   hasFirstNotice &&
   jobsSinceFirstNotice.length > 0 && !run.completionWoke;
 const quiet = Object.hasOwn(QUIET_REPOS, repo);
+// A red run with no failed job in hand records its item silently: either its
+// job events are still arriving (the first one wakes), or no job ever ran,
+// as when GitHub closes runs that waited for a maintainer's approval. Only
+// startup_failure wakes on the run alone, because no job can run there.
+const runAloneWakes = run.conclusion === 'startup_failure';
 const action = quiet || green || mergeQueueRepeat ? 'silent' :
   jobEvent ? (needsFirstWake ? 'wake' : 'silent') :
     runHasReportedJob ? (runFinishedNeedsWake ? 'wake' : 'silent') :
-      (needsFirstWake ? 'wake' : 'silent');
+      (needsFirstWake && runAloneWakes ? 'wake' : 'silent');
 const refusals = [];
 if (action === 'wake' && !run.supersessionChecked && !hasFirstNotice) {
   // Check only before the first wake, including when an earlier sink refused

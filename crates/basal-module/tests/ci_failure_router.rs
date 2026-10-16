@@ -333,7 +333,7 @@ fn published_manifest_is_global_with_only_ci_v2_repo_filters_and_minimal_grants(
     Manifest::parse(MANIFEST).unwrap();
     let value: Value = serde_json::from_str(MANIFEST).unwrap();
     assert_eq!(value["audience"], json!({"kind":"global"}));
-    assert_eq!(value["version"], 6);
+    assert_eq!(value["version"], 7);
     assert!(
         value["purpose"]
             .as_str()
@@ -957,14 +957,17 @@ fn ignored_job_names_and_completions_with_only_ignored_failures_send_nothing() {
 }
 
 #[test]
-fn red_run_without_jobs_including_startup_failure_creates_exactly_one_item() {
-    for conclusion in ["startup_failure", "failure"] {
+fn red_run_without_jobs_creates_one_item_and_only_startup_failure_wakes() {
+    // A plain red run with no failed job either has job events still arriving
+    // or never ran a job (a fork run closed while awaiting approval), so it is
+    // recorded silently; startup_failure can never produce a job, so it wakes.
+    for (conclusion, action) in [("startup_failure", "wake"), ("failure", "silent")] {
         let t = Test::new();
         t.ci(run("cortexkit/basal", conclusion));
         let writes = t.writes();
         assert_eq!(writes.len(), 1);
         assert_eq!(writes[0]["agent"], BASAL);
-        assert_eq!(writes[0]["action"], "wake");
+        assert_eq!(writes[0]["action"], action, "{conclusion}");
         assert_eq!(writes[0]["replace_key"], "ci:cortexkit/basal:42:1");
         assert!(
             writes[0]["item"]["title"]
@@ -981,6 +984,16 @@ fn red_run_without_jobs_including_startup_failure_creates_exactly_one_item() {
                 .contains("test names unavailable")
         );
     }
+}
+
+#[test]
+fn a_job_arriving_after_a_silent_red_run_still_wakes_once() {
+    let t = Test::new();
+    t.ci(run("cortexkit/basal", "failure"));
+    t.ci(job("cortexkit/basal", 101));
+    t.ci(job("cortexkit/basal", 102));
+    let actions: Vec<_> = t.writes().iter().map(|w| w["action"].clone()).collect();
+    assert_eq!(actions, [json!("silent"), json!("wake"), json!("silent")]);
 }
 
 #[test]
