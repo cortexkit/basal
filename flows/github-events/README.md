@@ -1,0 +1,102 @@
+# GitHub events: silent comparison shadow
+
+Version 1 resolves Plexus v2 issue, PR and release notices, computes the proposed
+owner delivery, and sends accepted items **only to ALF
+(`agent_fff43bb5f4bea20b`), always with `silent`**. It never reacts to GitHub or
+performs another external write. KV stores local observation history, not vendor
+comment text. This flow does not disable core's existing consumer; install it
+alongside that consumer for comparison, not as a live replacement yet.
+
+Each run returns `events`, a compact comparison list, plus `delivered` and
+`unmapped` counts. Each comparison has `repo`, `kind`, `number`, `event_key`,
+`would_owner`, `would_action`, `suppressed_reason` and `rule`. Accepted items copy
+these fields to digest `data`, along with state, observation counts/times and
+modeled debounce timestamps. Suppressed events appear in the run result only.
+Malformed/nonmatching transport bodies are ignored before routing.
+
+## Core rules and source references
+
+References below are to the sibling **prefrontal** repository, inspected on
+2026-10-16. Full source paths (not copies of private store contents):
+
+- **consumers.rs**: `crates/prefrontal-core-module/src/wake_external_events/consumers.rs`
+- **commands.rs**: `crates/prefrontal-core-module/src/wake_external_events/commands.rs`
+- **runtime.rs**: `crates/prefrontal-core-module/src/wake_external_events/runtime.rs`
+- **external_events.rs**: `crates/prefrontal-core-store/src/external_events.rs`
+
+| Implemented rule | Core source |
+| --- | --- |
+| A nonempty repository/kind and item number earn an item; no kind/action whitelist. | commands.rs:866-891,934-939; runtime.rs:111-155 |
+| Ignore reliably empty actor lists on closed PRs, merged or not; unknown enrichment is not empty. | consumers.rs:1227-1253,1437-1451,1661-1666 |
+| Drop events marked `suppressed_own_echo`. | consumers.rs:124,1214-1216; commands.rs:1030-1032,2001 |
+| `reopened` forces state open, even over a stale closed body. | consumers.rs:1121-1128 |
+| Own subject authorship is separate from comment authorship. Own-bot-authored subjects need a human comment/review to pass; a human login is nonempty and does not end in `[bot]`. This exception also bypasses the actor-set gate. | consumers.rs:1282-1327,1673-1701 |
+| Operator, project and own-agent logins form one case-insensitive set. Suppress only if every listed actor belongs to it; absent/empty actor lists never match. | consumers.rs:1350-1435,1681-1701 |
+| Opened issues/PRs are new (`wake`); everything else is an update (`piggyback`). | commands.rs:424-491,751-815 |
+| Model rolling update debounce at 30 minutes, capped at 60 minutes from the first update in that window. New items bypass debounce. | commands.rs:424-491,751-815 |
+| Repeated observations become one item with the first six times, an overflow count and the newest summary. | commands.rs:1501-1618,1712-1762 |
+| Use fixed action words: opened, new comment, edit, closed, reopened, otherwise update; never interpolate arbitrary vendor action text. | commands.rs:965-1010 |
+| Quote vendor titles; replace `<` with `‹` (U+2039), double quote with apostrophe, and each CR/LF with a space. Apostrophes themselves are unchanged. | commands.rs:1420-1433,1456-1498 |
+| Observation clocks use local HH:MM. | commands.rs:955-963 |
+| Seen event IDs do not earn another pending item. | external_events.rs:287-324,329-373,709-742 |
+
+Routing deliberately uses the exact `OWNERS` map from
+`flows/ci-failure-router/flow.js:3-39`, rather than core's stamped subscription
+project IDs (consumers.rs:1597-1639), because those IDs are not in the v2 body.
+Flow scripts cannot import another script, so a regression test compares copies.
+
+The bot map comes from Plexus `bindings.read`, which lists the GitHub App bound
+to each repository's agent; `repo_binding_generation 32` identifies that snapshot.
+MOTOR and CLOUD are owners but have no bound bot: their repos have **no own-bot
+rule**, while operator/project actor suppression still applies.
+
+Operator logins (`ualtinok`, `alfonso-aft`, `MC-Alfonso`) mirror core's
+`module_config` key `events_suppress_actors` as of 2026-10-16, supplied by ALF.
+The only project-specific row is AFT's `events_suppress_actors:<project_id>`:
+`cubic-dev-ai` and `greptile-apps`, represented by lowercase repo
+`cortexkit/aft`. No other project rows were reported. These are login identifiers
+only; no private configuration records or real comment text are included.
+
+## Explicit shadow differences and assumptions
+
+- **Immediate silent writes, modeled timing.** Event-triggered scripts have no
+  timers/continuations and cannot combine schedule and event triggers
+  (`docs/manifest.md:163-180`, `crates/basal-worker/src/prelude.js:219-224,361-371`).
+  Every accepted update is therefore sent immediately. KV and digest `data`
+  carry `first_seen_ms`, `latest_ms`, `due_ms = min(latest + 30 min, first +
+  60 min)` for update windows. An opened item has `due_ms = latest_ms`; its
+  first update starts an update window. An update arriving after the modeled
+  due time starts another window. These timestamps are observations, not
+  vendor `updated_at` values. ALF can compare them to the timestamps when core's
+  delivery planner releases its real deliveries.
+- **Action policy.** The one `WOULD_ACTION` constant is the proposed live mapping.
+  ALF confirmed flow sinks go through core's delivery planner: manifest
+  `digest_max` and the recipient's wake policy may downgrade the live action.
+  No proposed action is executed during the shadow.
+- **Rescan age.** Preserve the router's six-hour guard on
+  `completed_at ?? updated_at`. Every stale drop is visible with
+  `suppressed_reason: "stale"`. Core does not age-drop otherwise deliverable
+  events; its pruning targets undeliverable rows
+  (runtime.rs:904-915; external_events.rs:778-799). This is intentional.
+- **Clock zone.** The operator's core host is Europe/Madrid. `madridHHMM`
+  computes the EU last-Sunday March/October 01:00 UTC transitions using UTC
+  getters because local Date getters are removed from the deterministic
+  sandbox. Tests cover both sides of both 2026 transitions and summer/winter.
+- **Human activity.** Plexus v2 has no `type` field or separate review event.
+  Its identified `comment_author` is the available human-comment/review evidence;
+  `actor_logins` alone does not prove a comment on an own-bot-authored subject.
+- **Releases.** No release body schema was found in this repository's docs.
+  Assume `tag_name` (or `tag`) is the release identity, put it in `number`, and
+  use kind `release`. Releases are updates, not new issues/PRs. Missing tags
+  do not earn an item. This is the explicit exception to core's numeric identity.
+- **Bounded history.** `replace_key` is `github:<repo>:<kind>:<number>` and
+  replaces an undelivered item within this flow (docs/script.md:145-155).
+  The flow cannot observe core delivery acknowledgements, so observation history
+  spans shadow runs rather than resetting upon delivery. It remembers the last
+  64 event keys per item and caps fleet KV at 48,000 serialized bytes, evicting
+  oldest histories first. Replays beyond retained history can be observed anew.
+  Identities exceeding the sink's 200-byte key limit or containing control
+  characters are reported as `invalid_identity`, never silently truncated into
+  a colliding key. Digest bounding reuses the incremental helper from
+  `templates/github-ci-watch/flow.js:3-69,83-101`: title under 200 characters,
+  body at most 4096 bytes, data at most 8192 bytes, item at most 16 KiB.

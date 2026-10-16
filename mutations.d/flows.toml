@@ -416,3 +416,53 @@ timeout_s = 600
 file = "flows/ci-failure-router/flow.js"
 old = "if (!jobEvent && run.ignoredFailures && Object.keys(run.jobs).length === 0) {"
 new = "if (false && !jobEvent && run.ignoredFailures && Object.keys(run.jobs).length === 0) { // NON-VACUITY BREAK"
+[[control]]
+id = "github-events-own-bot-suppression"
+guards = "own-bot-authored subjects suppress automated activity unless a human comment is present"
+test_file = "crates/basal-module/tests/github_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test github_events"
+select = { tests = ["own_bot_authored_pr_with_only_automated_activity_is_suppressed", "own_bot_subject_with_human_comment_is_delivered"] }
+expect_red = ["own_bot_authored_pr_with_only_automated_activity_is_suppressed"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/github-events/flow.js"
+old = "if (ownAuthored && !humanComment) return drop('own_bot_automated');"
+new = "if (false && ownAuthored && !humanComment) return drop('own_bot_automated'); // NON-VACUITY BREAK"
+
+[[control]]
+id = "github-events-all-actors-match"
+guards = "one suppressed actor cannot hide a different human actor in the same event"
+test_file = "crates/basal-module/tests/github_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test github_events"
+select = { tests = ["operator_plus_another_human_is_delivered", "sole_operator_and_all_suppressed_actors_are_dropped_case_insensitively"] }
+expect_red = ["operator_plus_another_human_is_delivered"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/github-events/flow.js"
+old = "actors.every(login => suppressed.includes(login.toLowerCase()))"
+new = "actors.some(login => suppressed.includes(login.toLowerCase())) /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "github-events-item-dedupe-key"
+guards = "opened and update events for one repo kind and number replace one digest item"
+test_file = "crates/basal-module/tests/github_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test github_events"
+select = { tests = ["updates_replace_one_item_and_accumulate_times_with_newest_summary", "operator_plus_another_human_is_delivered"] }
+expect_red = ["updates_replace_one_item_and_accumulate_times_with_newest_summary"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/github-events/flow.js"
+old = "const key = `github:${repo}:${kind}:${number}`;"
+new = "const key = `github:${repo}:${kind}:${number}:${body.action}`; // NON-VACUITY BREAK"

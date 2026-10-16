@@ -1,4 +1,5 @@
-// BEGIN OWNERS: copied from ci-failure-router; flow scripts cannot import it.
+// BEGIN OWNERS: repository -> owning agent, copied from the CI failure router
+// (flows/ci-failure-router/flow.js); flow scripts cannot import shared constants.
 const OWNERS = {
   'cortexkit/aft': 'agent_ab64ea0873bbee0c', // AFT
   'cortexkit/prefrontal': 'agent_fff43bb5f4bea20b', // ALF
@@ -38,8 +39,9 @@ const OWNERS = {
 };
 // END OWNERS
 
-// Plexus bindings.read, repo_binding_generation 32. A missing slug (MOTOR,
-// CLOUD) means no own-bot rule, not an invented bot identity.
+// GitHub App slugs from Plexus's repository-to-agent bindings query (bindings.read),
+// snapshot repo_binding_generation 32. The motor and cloud owners have no bound bot:
+// a missing slug means no own-bot rule, not an invented bot identity.
 const BOT_SLUGS = {
   agent_ab64ea0873bbee0c: 'aft-alfonso',
   agent_16013c86: 'ckdesk-alfonso',
@@ -69,14 +71,17 @@ const BOT_SLUGS = {
   agent_20dabecd80549388: 'werni-alfonso',
 };
 
-// Mirrors core module_config events_suppress_actors as of 2026-10-16.
+// Operator-suppressed GitHub logins: mirrors prefrontal-core's module_config
+// setting events_suppress_actors as of 2026-10-16.
 const SUPPRESS_ACTORS = ['ualtinok', 'alfonso-aft', 'MC-Alfonso'];
-// Mirrors events_suppress_actors:<project_id> as of 2026-10-16. The only
-// project row is AFT; key by repo because v2 bodies have no project id.
+// Project-suppressed logins: mirrors events_suppress_actors:<project_id> as of
+// 2026-10-16. Only cortexkit/aft has a row; key by repo because v2 event bodies
+// have no project id.
 const SUPPRESS_ACTORS_BY_REPO = { 'cortexkit/aft': ['cubic-dev-ai', 'greptile-apps'] };
 
 const ALF = 'agent_fff43bb5f4bea20b';
-// Keep the proposed live policy separate from this shadow's unconditional silent sink.
+// Proposed owner actions are comparison data only: this shadow always sends
+// to ALF silently, without waking any agent.
 const WOULD_ACTION = { opened: 'wake', update: 'piggyback' };
 const MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const ROLLING_MS = 30 * 60 * 1000;
@@ -163,8 +168,9 @@ function short(text, maxBytes) {
   return result + '...';
 }
 
-// prefrontal/.../wake_external_events/commands.rs:1426-1433: double quotes,
-// not apostrophes, become apostrophes; '<' becomes U+2039, CR/LF become spaces.
+// Keep vendor titles inside one quoted line: replace double quotes (not
+// apostrophes), '<', and CR/LF exactly as core does (commands.rs:1426-1433).
+// README.md identifies the full paths of the cited core source files.
 function sanitize(text) {
   return String(text ?? '').replace(/</g, '\u2039').replace(/"/g, "'").replace(/[\r\n]/g, ' ');
 }
@@ -186,7 +192,8 @@ function render(repo, kind, number, action, history, summary) {
   const labels = new Map([['issue', 'Issue'], ['pull_request', 'PR'], ['release', 'Release']]);
   const label = labels.get(kind) ?? sanitize(kind);
   const subject = `${repo} ${label} #${sanitize(number)}`;
-  // commands.rs:997-1004: vendor actions never enter trusted prose verbatim.
+  // Map known actions to fixed words: vendor-supplied action text must not
+  // enter trusted prose verbatim (commands.rs:997-1004).
   const words = new Map([['opened', 'opened'], ['created', 'new comment'], ['edited', 'edit'],
     ['closed', 'closed'], ['reopened', 'reopened']]);
   const word = words.get(action) ?? 'update';
@@ -194,7 +201,8 @@ function render(repo, kind, number, action, history, summary) {
   if (history.count === 1) {
     prefix = `- ${subject} ${word} observed at ${madridHHMM(history.times[0])}. `;
   } else {
-    // commands.rs:1567-1617: first six observations, overflow, newest summary.
+    // Repeated observations show the first six times, an overflow count, and
+    // only the newest summary (commands.rs:1567-1617).
     const times = history.times.map(madridHHMM);
     if (history.count > 6) times.push(`${history.count - 6} more`);
     const last = times.pop();
@@ -238,13 +246,15 @@ const drop = reason => {
   comparison.rule = reason;
   return result;
 };
-// commands.rs:866-891: no kind/action whitelist; identity alone earns an item.
+// A repository, nonempty kind and item number earn a digest item; there is no
+// kind/action whitelist (commands.rs:866-891).
 if (typeof kind !== 'string' || !kind || number == null ||
     (release ? typeof number !== 'string' || !number : !Number.isSafeInteger(number))) return drop('missing_identity');
 const key = `github:${repo}:${kind}:${number}`;
 if (bytes(key) > 200 || /[\u0000-\u001f\u007f]/.test(key)) return drop('invalid_identity');
-// Deliberate shadow difference: core has no six-hour deliverable-event cutoff
-// (runtime.rs:904-915); retain ci-failure-router's rescan guard, but report drops.
+// Deliberate shadow difference: drop rescan events older than six hours, as
+// the CI router does, and expose each drop in the comparison result. Core has
+// no corresponding deliverable-event cutoff (runtime.rs:904-915).
 const timestamp = Date.parse(body.completed_at ?? body.updated_at);
 if (Number.isFinite(timestamp) && Date.now() - timestamp > MAX_AGE_MS) return drop('stale');
 const memory = await kv.get('github-events') ?? { items: {}, unmapped: 0 };
@@ -254,11 +264,14 @@ if (!owner) {
   await save(memory);
   return drop('unmapped_repo');
 }
-// consumers.rs:1121-1128: a reopen wins over a stale closed state.
+// A reopened action forces open even if the body still says closed
+// (consumers.rs:1121-1128).
 const state = body.action === 'reopened' ? 'open' : body.state;
 const actors = body.actor_logins;
-// consumers.rs:1227-1253,1437-1451: null/unknown is not reliably empty.
-if (kind === 'pull_request' && (state === 'closed' || body.merged === true) &&
+// Drop closed/merged PRs only with an explicit empty actor array: missing or
+// unknown actor enrichment is not evidence of no activity
+// (consumers.rs:1227-1253,1437-1451).
+if (kind === 'pull_request' && state === 'closed' &&
     Array.isArray(actors) && actors.length === 0) return drop('closed_pr_empty_actors');
 if (body.action === 'suppressed_own_echo') return drop('own_echo');
 const slug = BOT_SLUGS[owner];
@@ -271,16 +284,19 @@ const humanComment = typeof body.comment_author === 'string' && body.comment_aut
 if (ownAuthored && !humanComment) return drop('own_bot_automated');
 const suppressed = [...SUPPRESS_ACTORS, ...(SUPPRESS_ACTORS_BY_REPO[repo] ?? []), ...(bot ? [bot] : [])]
   .map(login => login.toLowerCase());
-// consumers.rs:1397-1411,1696-1701: every actor must match; empty never matches.
-// A human comment on an own-authored subject bypasses this actor-set gate too.
+// Suppress only when every listed actor is in the suppressed-login set; an
+// empty actor list never matches. A human comment on an own-authored subject
+// bypasses this gate too (consumers.rs:1397-1411,1696-1701).
 if (!(ownAuthored && humanComment) && Array.isArray(actors) && actors.length > 0 &&
     actors.every(login => suppressed.includes(login.toLowerCase()))) return drop('suppressed_actor_set');
 
 const now = Date.now();
 const prior = memory.items[key];
 if (prior?.event_keys.includes(comparison.event_key)) return drop('duplicate_event');
-// commands.rs:424-491,751-815: opened bypasses update debounce. Event-only flows
-// cannot schedule trailing-edge runs; send the shadow now and model release time.
+// Opened issues/PRs bypass update debounce. Updates would become due 30 minutes
+// after the latest observation, capped at 60 minutes after the first update.
+// Event-only flows cannot schedule trailing-edge runs: send this silent shadow
+// now, but record the modeled due time (commands.rs:424-491,751-815).
 const first = !prior || prior.is_new || prior.due_ms <= now || isNew ? now : prior.first_seen_ms;
 const history = prior ?? { count: 0, times: [], event_keys: [] };
 history.count = Math.min(Number.MAX_SAFE_INTEGER, history.count + 1);
@@ -295,7 +311,7 @@ Object.assign(comparison, { state: state ?? null, first_seen_ms: first, latest_m
   due_ms: history.due_ms, observation_count: history.count, observation_times: history.times,
   overflow: Math.max(0, history.count - 6) });
 const summary = String(body.title ?? '');
-const item = boundedDigest(`${repo} ${kind} #${number}`, render(repo, kind, number, body.action, history, summary),
+const item = boundedDigest(sanitize(`${repo} ${kind} #${number}`), render(repo, kind, number, body.action, history, summary),
   comparison, { summary }, [{ kind: 'url', url: body.url }]);
 await sink.digest(ALF, item, 'silent', { replace_key: key });
 memory.items[key] = history;
