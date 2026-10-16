@@ -41,6 +41,15 @@ fn race_cut_late_outcome_waits_for_the_barrier() {
     let probe = Arc::new(Probe::crash_at(cut));
     let cut_probe = probe.clone();
     let mock = world.mock.clone();
+    let (answered, answer) = mpsc::channel();
+    // Open the gate independently of dispatch: an inline position 0 would
+    // otherwise block the activation before position 1 could answer. A
+    // deadline releases the stuck call but fails the ordering precondition.
+    let gate_watchdog = std::thread::spawn(move || {
+        let answered_first = answer.recv_timeout(Duration::from_secs(5)).is_ok();
+        mock.open_gate("slow-dispatch");
+        answered_first
+    });
     let (accepted, acceptance) = mpsc::channel();
     let acceptance = Mutex::new(acceptance);
     let hooks = FnHooks(move |run_id: &str, b: &Boundary| {
@@ -51,7 +60,9 @@ fn race_cut_late_outcome_waits_for_the_barrier() {
         // then hold its outcome until the long call's acceptance is durable.
         // The recovery completion needs an accepted call, not an unsent row.
         if matches!(b, Boundary::HostAnswered { position: 1 }) {
-            mock.open_gate("slow-dispatch");
+            // A late answer can arrive after the watchdog's deadline; report
+            // that failure on the test thread, not inside the dispatch hook.
+            let _ = answered.send(());
             acceptance
                 .lock()
                 .expect("acceptance lock")
@@ -68,8 +79,13 @@ fn race_cut_late_outcome_waits_for_the_barrier() {
     // cannot hide a failed precondition behind a stuck dispatch thread.
     world.mock.open_gate("slow-dispatch");
     rt.quiesce();
+    let answered_first = gate_watchdog.join().expect("gate watchdog");
     assert!(probe.fired(), "the cut was not reached");
     assert!(accepted_at_cut, "position 0 was accepted before the cut");
+    assert!(
+        answered_first,
+        "position 1 did not answer within 5 seconds before position 0's dispatch gate opened; dispatch may be serial"
+    );
     drop(rt);
     world.mock.detach();
 
