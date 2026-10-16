@@ -297,7 +297,13 @@ async function run() {
     let activity;
     if (staleCandidate) {
       try {
-        activity = (await facts(agent, {fields: ['activity']})).activity?.last_activity_at;
+        const group = (await facts(agent, {fields: ['activity']})).activity;
+        // primary_turn_end_at is stored by core and survives its restarts;
+        // last_activity_at lives only in core's memory, so it is unknown after a
+        // restart until core observes the head again. Use the later known value.
+        activity = [group?.primary_turn_end_at, group?.last_activity_at]
+          .filter(fact => fact?.status === 'ok' && Number.isFinite(fact.value))
+          .reduce((latest, fact) => (latest && latest.value >= fact.value ? latest : fact), undefined);
       } catch (error) {
         log('board hygiene activity unavailable', {agent, code: error.data?.code ?? String(error)});
       }

@@ -26,6 +26,7 @@ struct BoardHost {
     mock: MockHost,
     boards: Mutex<Vec<Value>>,
     activity: Mutex<Value>,
+    primary_turn_end: Mutex<Value>,
     facts_calls: AtomicUsize,
     reads: Mutex<Vec<Value>>,
     writes: Mutex<Vec<Value>>,
@@ -57,7 +58,10 @@ impl BoardHost {
                 // private text, which this flow's grant doesn't cover.
                 assert_eq!(args["fields"], json!(["activity"]));
                 assert_eq!(args["include"], json!([]));
-                json!({"activity":{"last_activity_at":self.activity.lock().unwrap().clone()}})
+                json!({"activity":{
+                    "last_activity_at":self.activity.lock().unwrap().clone(),
+                    "primary_turn_end_at":self.primary_turn_end.lock().unwrap().clone(),
+                }})
             }
             CallKind::Primitive(Primitive::SinkDigest) => {
                 let item = &args["item"];
@@ -234,7 +238,7 @@ fn published_manifest_has_global_minimal_grants_and_five_minute_schedule() {
     let manifest = Manifest::parse(MANIFEST).unwrap();
     let value = serde_json::to_value(manifest).unwrap();
     assert_eq!(value["id"], "board-hygiene");
-    assert_eq!(value["version"], 5);
+    assert_eq!(value["version"], 6);
     assert_eq!(value["board_read"], json!(["$audience"]));
     assert_eq!(value["audience"], json!({"kind":"global"}));
     assert_eq!(
@@ -560,6 +564,38 @@ fn unknown_activity_skips_stale_items() {
     *t.host.activity.lock().unwrap() = json!({"status":"unknown","value":BASE + MIN});
     assert!(t.run(BASE + 6 * HOUR).is_empty());
     assert_eq!(t.host.facts_calls.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn stored_turn_end_counts_when_in_memory_activity_is_unknown() {
+    // After a core restart last_activity_at is unknown until core observes the
+    // head again; the stored primary_turn_end_at must still show activity.
+    let mut t = Test::new(vec![board("ag_a", vec![item("active", BASE)])]);
+    *t.host.activity.lock().unwrap() = json!({"status":"unknown","value":null});
+    *t.host.primary_turn_end.lock().unwrap() = json!({"status":"ok","value":BASE + MIN});
+    let writes = t.run(BASE + 6 * HOUR);
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0]["item"]["data"]["rule"], "stale_active");
+}
+
+#[test]
+fn the_later_of_the_two_activity_facts_decides() {
+    // Either fact alone may lag the other; the owner was active after the item
+    // changed if either known value is later.
+    for (primary, memory) in [(BASE - 1, BASE + MIN), (BASE + MIN, BASE - 1)] {
+        let mut t = Test::new(vec![board("ag_a", vec![item("active", BASE)])]);
+        *t.host.primary_turn_end.lock().unwrap() = json!({"status":"ok","value":primary});
+        *t.host.activity.lock().unwrap() = json!({"status":"ok","value":memory});
+        assert_eq!(
+            t.run(BASE + 6 * HOUR).len(),
+            1,
+            "primary {primary} memory {memory}"
+        );
+    }
+    let mut t = Test::new(vec![board("ag_a", vec![item("active", BASE)])]);
+    *t.host.primary_turn_end.lock().unwrap() = json!({"status":"ok","value":BASE - 1});
+    *t.host.activity.lock().unwrap() = json!({"status":"ok","value":BASE});
+    assert!(t.run(BASE + 6 * HOUR).is_empty());
 }
 
 #[test]

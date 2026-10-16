@@ -1,6 +1,23 @@
 # Operator-installed board flows, exercised offline through basal-module.
 
 [[control]]
+id = "board-hygiene-stale-active-ignores-the-stored-turn-end"
+guards = "stale-active also reads core's stored primary_turn_end_at, so a core restart does not silence it"
+test_file = "crates/basal-module/tests/board_hygiene.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test board_hygiene"
+select = { tests = ["stored_turn_end_counts_when_in_memory_activity_is_unknown", "unknown_activity_skips_stale_items"] }
+expect_red = ["stored_turn_end_counts_when_in_memory_activity_is_unknown"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/board-hygiene/flow.js"
+old = "activity = [group?.primary_turn_end_at, group?.last_activity_at]"
+new = "activity = [group?.last_activity_at] // NON-VACUITY BREAK"
+
+[[control]]
 id = "board-hygiene-read-lane-blocks"
 guards = "board hygiene processes laneBlocks rather than projected lane names"
 test_file = "crates/basal-module/tests/board_hygiene.rs"
