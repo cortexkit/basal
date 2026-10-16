@@ -142,9 +142,13 @@ pub(crate) fn finish_run(tx: &Transaction, run_id: &str, now: i64) -> Result<()>
                 [&flow],
             )?;
         }
-    } else if ops::counted_failure(tx, run_id, &state, kind.as_deref())? {
+    } else if failing.is_none() && ops::counted_failure(tx, run_id, &state, kind.as_deref())? {
+        // Once this episode's notice is queued nothing more is sent until a
+        // success, so later failures skip the history scan. A flow that keeps
+        // failing would otherwise rescan its whole streak on every run, inside
+        // the write transaction.
         let streak = streak(tx, &flow)?;
-        if streak.count >= 3 && failing.is_none() {
+        if streak.count >= 3 {
             let episode = next_episode(tx, &flow)?;
             enqueue(
                 tx,
