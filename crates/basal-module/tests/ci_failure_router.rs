@@ -262,6 +262,14 @@ fn run(repo: &str, conclusion: &str) -> Value {
     body
 }
 
+fn completed_at(t: &Test, age_ms: i64) -> String {
+    jiff::Timestamp::from_millisecond(t.host.now_ms() as i64 - age_ms)
+        .unwrap()
+        .to_zoned(jiff::tz::TimeZone::UTC)
+        .strftime("%Y-%m-%dT%H:%M:%SZ")
+        .to_string()
+}
+
 #[test]
 fn published_manifest_is_global_with_only_ci_v2_repo_filters_and_minimal_grants() {
     Manifest::parse(MANIFEST).unwrap();
@@ -348,6 +356,51 @@ fn job_without_workflow_name_from_ignored_repo_still_wakes() {
     assert_eq!(t.writes().len(), 1);
     assert_eq!(t.writes()[0]["action"], "wake");
     assert_eq!(t.writes()[0]["agent"], "agent_ab64ea0873bbee0c");
+}
+
+#[test]
+fn stale_job_completion_sends_nothing_and_creates_no_run_entry() {
+    let t = Test::new();
+    let mut body = job("cortexkit/basal", 101);
+    body["completed_at"] = json!(completed_at(&t, 7 * common::HOUR));
+    t.ci(body);
+
+    assert!(t.writes().is_empty());
+    assert!(t.memory()["runs"].as_object().unwrap().is_empty());
+}
+
+#[test]
+fn recent_job_completion_wakes() {
+    let t = Test::new();
+    let mut body = job("cortexkit/basal", 101);
+    body["completed_at"] = json!(completed_at(&t, 30 * 60 * 1000));
+    t.ci(body);
+
+    let writes = t.writes();
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0]["action"], "wake");
+}
+
+#[test]
+fn job_without_completion_timestamp_still_wakes() {
+    let t = Test::new();
+    let mut body = job("cortexkit/basal", 101);
+    body.as_object_mut().unwrap().remove("completed_at");
+    t.ci(body);
+
+    let writes = t.writes();
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0]["action"], "wake");
+}
+
+#[test]
+fn stale_run_completion_sends_nothing() {
+    let t = Test::new();
+    let mut body = run("cortexkit/basal", "failure");
+    body["completed_at"] = json!(completed_at(&t, 7 * common::HOUR));
+    t.ci(body);
+
+    assert!(t.writes().is_empty());
 }
 
 #[test]

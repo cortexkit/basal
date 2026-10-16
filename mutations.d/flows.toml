@@ -277,3 +277,20 @@ timeout_s = 600
 file = "flows/ci-failure-router/flow.js"
 old = "const action = green || (!jobEvent && runHasReportedJob) ? 'silent' : 'wake';"
 new = "const action = green ? 'silent' : 'wake'; // NON-VACUITY BREAK"
+
+[[control]]
+id = "ci-failure-router-stale-completions"
+guards = "old CI completions are ignored while recent and timestamp-free notices still route"
+test_file = "crates/basal-module/tests/ci_failure_router.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test ci_failure_router"
+select = { tests = ["stale_job_completion_sends_nothing_and_creates_no_run_entry", "recent_job_completion_wakes", "job_without_completion_timestamp_still_wakes", "stale_run_completion_sends_nothing"] }
+expect_red = ["stale_job_completion_sends_nothing_and_creates_no_run_entry", "stale_run_completion_sends_nothing"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/ci-failure-router/flow.js"
+old = "if (stale) {"
+new = "if (false && stale) { // NON-VACUITY BREAK"

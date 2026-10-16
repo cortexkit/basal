@@ -44,6 +44,9 @@ const IGNORED_WORKFLOWS = {
   'cortexkit/aft': ['Design gate'],
 };
 
+// Plexus rescans can republish old completions; real CI notices arrive within minutes.
+const MAX_COMPLETION_AGE_MS = 6 * 60 * 60 * 1000;
+
 // Adapted from templates/github-ci-watch: bounded digest metadata, per-job
 // deduplication and fourteen-day, byte-capped retention of run attempts.
 function boundedDigest(title, observed, links = []) {
@@ -141,11 +144,17 @@ const body = event.body;
 if (!body || body.kind !== (jobEvent ? 'ci_job' : 'ci_run') ||
     !matches('cortexkit/*', body.repo, true) || !matches('*', body.head_branch)) return;
 
+const completed = Date.parse(body.completed_at);
+const stale = Number.isFinite(completed) && Date.now() - completed > MAX_COMPLETION_AGE_MS;
 const repo = body.repo.replace(/[A-Z]/g, ch => ch.toLowerCase());
 const owner = OWNERS[repo];
 // A single aggregate caps retained attempts across the entire fleet. Run keys
 // include the repo so identical job/run ids in different repos cannot collide.
 const memory = await kv.get('ci-router') ?? { newest: 0, runs: {}, unmapped: 0 };
+if (stale) {
+  await saveMemory(memory);
+  return;
+}
 const workflowName = jobEvent ? body.workflow_name : body.name;
 if ((IGNORED_WORKFLOWS[repo] ?? []).includes(workflowName)) {
   await saveMemory(memory);
@@ -162,7 +171,6 @@ const attempt = body.run_attempt;
 // Omit replace_key so unrelated unknown runs cannot overwrite one another.
 const identified = runId != null && attempt != null;
 const key = identified ? `ci:${repo}:${runId}:${attempt}` : `ci-event:${repo}:${event.event_key}`;
-const completed = Date.parse(body.completed_at);
 if (Number.isFinite(completed)) memory.newest = Math.max(memory.newest, completed);
 const cutoff = memory.newest - 14 * 86400000;
 for (const [id, run] of Object.entries(memory.runs)) {
