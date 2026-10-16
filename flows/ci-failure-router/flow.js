@@ -229,8 +229,10 @@ const jobsSinceFirstNotice = hasFirstNotice ?
 const newNames = jobsSinceFirstNotice.map(id => run.jobs[id]);
 const result = green ? 'now green' : !jobEvent && newNames.length ?
   `failed jobs since first notice: ${newNames.join(', ')}` : names.length ? `failed jobs ${names.join(', ')}` :
-  run.conclusion === 'unknown' ? 'run conclusion unknown; no failed job reported' :
-    `run failed with no failed job reported (${run.conclusion})`;
+  // Plexus's run event carries no job list, so a red run with no job in hand
+  // only means its job events haven't arrived; they update this item later.
+  run.conclusion === 'unknown' ? 'run conclusion unknown; failed jobs not yet reported' :
+    `run failed (${run.conclusion}); failed jobs not yet reported`;
 const summary = `${repo} run ${runId ?? 'unknown'} (attempt ${attempt ?? 'unknown'}) on ${run.branch}: ${result}`;
 const status = run.finished && !green ? `; ${run.finished}` : '';
 const links = [...run.links];

@@ -640,7 +640,7 @@ fn red_run_without_jobs_including_startup_failure_creates_exactly_one_item() {
                 .as_str()
                 .unwrap()
                 .contains(&format!(
-                    "run failed with no failed job reported ({conclusion})"
+                    "run failed ({conclusion}); failed jobs not yet reported"
                 ))
         );
         assert!(
