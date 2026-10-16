@@ -609,10 +609,14 @@ async fn notices_before_first_approval_are_acked_and_reported() {
 async fn notices_published_after_first_approval_are_admitted() {
     let server = Server::start().await;
     let rt = runtime(&server.dir.join("basal.db"));
+    // The NATS server stamps publish times with its own clock. On Windows that
+    // clock can read a few milliseconds behind this process's, so approve a
+    // second earlier to keep the publish strictly after the approval.
     let approval = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
-        .as_millis() as i64;
+        .as_millis() as i64
+        - 1000;
     rt.config().clock.set(approval);
     approve(&rt, "flow");
     server.publish(0, SUBJECT).await;
