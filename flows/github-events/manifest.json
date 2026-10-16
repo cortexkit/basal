@@ -1,0 +1,17 @@
+{
+  "format": 1,
+  "id": "github-events",
+  "version": 1,
+  "purpose": "Shadow GitHub issue, PR and release deliveries, sending everything silently to ALF only for comparison with core; no reactions or other writes.",
+  "trigger": {
+    "events": [
+      {"module": "plexus", "name": "github_issue_changed", "version": 2, "match": {"repo": "cortexkit/*"}},
+      {"module": "plexus", "name": "github_pr_changed", "version": 2, "match": {"repo": "cortexkit/*"}},
+      {"module": "plexus", "name": "github_release_published", "version": 2, "match": {"repo": "cortexkit/*"}}
+    ]
+  },
+  "audience": {"kind": "global"},
+  "sinks": [{"agent": "$audience", "digest_max": "wake"}],
+  "ops": [{"module": "plexus", "op": "events_get"}],
+  "deadline": "2m"
+}
