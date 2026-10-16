@@ -209,14 +209,14 @@ impl Test {
             .unwrap()
     }
     fn item(&self, item: Value) {
-        self.host.boards.lock().unwrap()[0]["board"]["lanes"][0]["items"][0] = item;
+        self.host.boards.lock().unwrap()[0]["board"]["laneBlocks"][0]["items"][0] = item;
     }
 }
 fn item(state: &str, changed: u64) -> Value {
     json!({"id":"item1","text":"Ship","state":state,"changed_at_ms":changed})
 }
 fn board(agent: &str, items: Vec<Value>) -> Value {
-    json!({"agent_id":agent,"board":{"lanes":[{"id":"lane1","title":"Release","status":"active","updated_at_ms":BASE,"items":items}]}})
+    json!({"agent_id":agent,"board":{"lanes":["work"],"laneBlocks":[{"id":"lane1","title":"Release","status":"active","updated_at_ms":BASE,"items":items}]}})
 }
 fn rule(writes: &[Value], name: &str) -> Vec<Value> {
     writes
@@ -231,7 +231,7 @@ fn published_manifest_has_global_minimal_grants_and_five_minute_schedule() {
     let manifest = Manifest::parse(MANIFEST).unwrap();
     let value = serde_json::to_value(manifest).unwrap();
     assert_eq!(value["id"], "board-hygiene");
-    assert_eq!(value["version"], 2);
+    assert_eq!(value["version"], 3);
     assert_eq!(value["board_read"], json!(["$audience"]));
     assert_eq!(value["audience"], json!({"kind":"global"}));
     assert_eq!(
@@ -422,9 +422,9 @@ fn item_wait_copies_only_the_first_target_eta_nudge_to_each_waiting_owner() {
     waiting["id"] = json!("waiting1");
     waiting["text"] = json!("Publish");
     let mut a = board("ag_a", vec![waiting.clone()]);
-    a["board"]["lanes"][0]["id"] = json!("waiting-lane");
+    a["board"]["laneBlocks"][0]["id"] = json!("waiting-lane");
     let mut c = board("ag_c", vec![waiting]);
-    c["board"]["lanes"][0]["id"] = json!("waiting-lane");
+    c["board"]["laneBlocks"][0]["id"] = json!("waiting-lane");
     let mut t = Test::new(vec![a, board("ag_b", vec![target]), c]);
     let first = t.run(BASE + HOUR);
     assert_eq!(first.len(), 3);
@@ -487,8 +487,9 @@ fn paging_reads_all_boards_and_prunes_disappeared_agents_lanes_items_and_conditi
         let mut boards = t.host.boards.lock().unwrap();
         boards.remove(0);
         boards[0]["board"]["lanes"] = json!([]);
-        boards[1]["board"]["lanes"][0]["items"] = json!([]);
-        boards[2]["board"]["lanes"][0]["items"][0]
+        boards[0]["board"]["laneBlocks"] = json!([]);
+        boards[1]["board"]["laneBlocks"][0]["items"] = json!([]);
+        boards[2]["board"]["laneBlocks"][0]["items"][0]
             .as_object_mut()
             .unwrap()
             .remove("eta_ms");
@@ -731,4 +732,108 @@ fn copied_renderer_data_with_large_follow_up_and_own_text_stays_bounded() {
         json!({"on":"ag_b","ref":"item:ag_b/item1"})
     );
     assert!(writes[1]["item"]["data"]["own_item_text"].is_string());
+}
+
+#[test]
+fn real_board_lane_blocks_shape_runs_without_throwing() {
+    let mut waiting = item("blocked", BASE - MIN);
+    waiting["wait"] = json!({"on":"work","ref":"work:task","ref_state":"terminal",
+        "since_ms":BASE,"last_idle_transition_ms":BASE-MIN,"agent_id":"ag_owner",
+        "display_name":"Synthetic owner","ref_terminal_at_ms":BASE});
+    let mut eta = item("pending", BASE);
+    eta["id"] = json!("eta-item");
+    eta["eta_ms"] = json!(BASE + MIN);
+    eta["follow_up"] = json!("Synthetic follow-up");
+    let mut active = item("active", BASE);
+    active["id"] = json!("active-item");
+    let boards = vec![
+        json!({"agent_id":"ag_shape","board":{
+            "lanes":["asks","status","artifacts","work"],
+            "laneBlocks":[
+                {"id":"lane-empty","title":"Empty","status":"active","updated_at_ms":BASE,"items":[]},
+                {"id":"lane-work","title":"Work","status":"active","updated_at_ms":BASE,"items":[waiting,eta,active]}
+            ]
+        }}),
+        json!({"agent_id":"ag_empty","board":{"lanes":["asks","work"],"laneBlocks":[]}}),
+    ];
+    let mut t = Test::new(boards);
+    *t.host.activity.lock().unwrap() = json!({"status":"ok","value":BASE + MIN});
+    let writes = t.run(BASE + 8 * HOUR);
+    assert_eq!(t.result["boards_scanned"], 2);
+    assert_eq!(writes.len(), 3);
+    assert_eq!(rule(&writes, "wait_ended").len(), 1);
+    assert_eq!(rule(&writes, "eta_passed").len(), 1);
+    assert_eq!(rule(&writes, "stale_active").len(), 1);
+    assert_eq!(rule(&writes, "lane_done").len(), 0);
+    assert_eq!(t.result["skipped_lane_blocks"], 0);
+    assert_eq!(t.result["skipped_lane_items"], 0);
+}
+
+#[test]
+fn malformed_lane_blocks_and_items_are_skipped_while_valid_lanes_nudge() {
+    let mut missing_id = item("pending", BASE);
+    missing_id.as_object_mut().unwrap().remove("id");
+    let mut first = item("pending", BASE);
+    first["id"] = json!("valid-first");
+    first["eta_ms"] = json!(BASE);
+    let mut second = item("pending", BASE);
+    second["id"] = json!("valid-second");
+    second["eta_ms"] = json!(BASE);
+    let boards = vec![json!({"agent_id":"ag_malformed","board":{
+        "lanes":["asks","work"],
+        "laneBlocks":[
+            "opaque lane element",
+            {"id":"missing-items","title":"Invalid","status":"active","updated_at_ms":BASE},
+            {"id":"lane-one","title":"First","status":"active","updated_at_ms":BASE,"items":[missing_id,first]},
+            {"id":"lane-two","title":"Second","status":"active","updated_at_ms":BASE,"items":[second]}
+        ]
+    }})];
+    let mut t = Test::new(boards);
+    let writes = t.run(BASE);
+    assert_eq!(writes.len(), 2);
+    assert_eq!(
+        writes
+            .iter()
+            .map(|write| write["item"]["data"]["item_id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["valid-first", "valid-second"]
+    );
+    assert_eq!(t.result["skipped_lane_blocks"], 2);
+    assert_eq!(t.result["skipped_lane_items"], 1);
+}
+
+#[test]
+#[ignore = "requires private board.read pages and a locally runnable worker"]
+fn local_board_read_pages_complete_without_throwing() {
+    let directory = std::env::var_os("BOARD_HYGIENE_LIVE_PAGES")
+        .map(std::path::PathBuf::from)
+        .expect(
+            "set BOARD_HYGIENE_LIVE_PAGES to the directory containing the private page JSON files",
+        );
+    let mut boards = Vec::new();
+    for name in ["board-read-page1.json", "board-read-page2.json"] {
+        let page: Value = serde_json::from_str(
+            &std::fs::read_to_string(directory.join(name))
+                .unwrap_or_else(|error| panic!("cannot read {name}: {error}")),
+        )
+        .unwrap_or_else(|error| panic!("cannot parse {name}: {error}"));
+        boards.extend(page["boards"].as_array().unwrap().iter().cloned());
+    }
+    assert_eq!(boards.len(), 31, "the two pages should contain 31 boards");
+    let mut t = Test::new(boards);
+    let writes = t.run(BASE + 8 * HOUR);
+    assert_eq!(t.result["boards_scanned"], 31);
+    let count = |rule: &str| {
+        writes
+            .iter()
+            .filter(|write| write["item"]["data"]["rule"] == rule)
+            .count()
+    };
+    println!(
+        "private pages completed; boards=31, nudges by rule: wait_ended={}, eta_passed={}, stale_active={}, lane_done={}",
+        count("wait_ended"),
+        count("eta_passed"),
+        count("stale_active"),
+        count("lane_done")
+    );
 }

@@ -1,7 +1,7 @@
 {
   "format": 1,
   "id": "board-hygiene",
-  "version": 2,
+  "version": 3,
   "purpose": "Nudge board owners and waited-on peers about ended waits, overdue ETAs, stale active items and completed lanes.",
   "trigger": {"schedule": {"cron": "*/5 * * * *", "tz": "UTC", "missed": "skip"}},
   "audience": {"kind": "global"},

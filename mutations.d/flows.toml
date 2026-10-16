@@ -1,6 +1,23 @@
 # Operator-installed board flows, exercised offline through basal-module.
 
 [[control]]
+id = "board-hygiene-read-lane-blocks"
+guards = "board hygiene processes laneBlocks rather than projected lane names"
+test_file = "crates/basal-module/tests/board_hygiene.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test board_hygiene"
+select = { tests = ["real_board_lane_blocks_shape_runs_without_throwing", "install_card_dry_run_text_matches_its_committed_fixture"] }
+expect_red = ["real_board_lane_blocks_shape_runs_without_throwing"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/board-hygiene/flow.js"
+old = "const blocks = Array.isArray(board.laneBlocks) ? board.laneBlocks : [];"
+new = "const blocks = Array.isArray(board.lanes) ? board.lanes : []; // NON-VACUITY BREAK"
+
+[[control]]
 id = "board-hygiene-stop-on-change"
 guards = "a moved item timestamp drops old nudge memory without sending"
 test_file = "crates/basal-module/tests/board_hygiene.rs"

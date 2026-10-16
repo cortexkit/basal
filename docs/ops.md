@@ -297,7 +297,7 @@ types in `crates/prefrontal-core-store/src/flow_install.rs`.
 
 ```json
 {
-  "stamp": {"flow_id":"board-hygiene","flow_version":2,"code_hash":"<approved code hash>"},
+  "stamp": {"flow_id":"board-hygiene","flow_version":3,"code_hash":"<approved code hash>"},
   "limit": 16,
   "cursor": "<previous next_cursor>"
 }

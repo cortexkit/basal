@@ -57,6 +57,26 @@ function itemRef(wait) {
   return typeof wait?.ref === 'string' ? /^item:([^/]+)\/(.+)$/.exec(wait.ref) : null;
 }
 
+function boardLanes(board, skipped) {
+  const blocks = Array.isArray(board.laneBlocks) ? board.laneBlocks : [];
+  const lanes = [];
+  for (const lane of blocks) {
+    if (lane === null || typeof lane !== 'object' || Array.isArray(lane) ||
+        typeof lane.id !== 'string' || !Array.isArray(lane.items)) {
+      skipped.lane_blocks++;
+      continue;
+    }
+    const items = lane.items.filter(item => {
+      if (item !== null && typeof item === 'object' && !Array.isArray(item) &&
+          typeof item.id === 'string' && typeof item.state === 'string') return true;
+      skipped.lane_items++;
+      return false;
+    });
+    lanes.push({...lane, items});
+  }
+  return lanes;
+}
+
 function peerWait(wait) {
   return typeof wait?.on === 'string' && (boardOwners.has(wait.on) || /^(ag_|agent_)/.test(wait.on)) &&
     (wait.ref == null || (typeof wait.ref === 'string' && wait.ref.startsWith('peer:')));
@@ -150,12 +170,16 @@ async function run() {
   } while (cursor != null);
 
   boardOwners = new Set(boards.map(board => board.agent_id));
+  const skipped = {lane_blocks: 0, lane_items: 0};
+  const owners = boards.map(({agent_id, board}) => ({
+    agent_id, lanes: boardLanes(board, skipped),
+  }));
   const indexes = [];
   for (let i = 0; i < INDEX_SHARDS; i++) indexes.push(await kv.get(`index:${i}`) ?? []);
   const seen = new Set();
   const reverse = new Map();
-  for (const {agent_id: agent, board} of boards) {
-    for (const lane of board.lanes) {
+  for (const {agent_id: agent, lanes} of owners) {
+    for (const lane of lanes) {
       for (const item of lane.items) {
         const ref = itemRef(item.wait);
         if (item.state === 'done' || !ref) continue;
@@ -259,8 +283,8 @@ async function run() {
 
   // Prune before adding memory, allowing disappeared boards to free quota this run.
   const live = new Set();
-  for (const {agent_id: agent, board} of boards) {
-    for (const lane of board.lanes) {
+  for (const {agent_id: agent, lanes} of owners) {
+    for (const lane of lanes) {
       live.add(memoryKey(agent, lane.id, 'lane_done'));
       for (const item of lane.items) {
         for (const rule of ['wait_ended', 'eta_passed', 'stale_active']) live.add(memoryKey(agent, item.id, rule));
@@ -271,8 +295,8 @@ async function run() {
     for (const key of [...index]) if (!live.has(key)) await forget(key);
   }
 
-  for (const {agent_id: agent, board} of boards) {
-    const staleCandidate = board.lanes.some(lane => lane.items.some(item =>
+  for (const {agent_id: agent, lanes} of owners) {
+    const staleCandidate = lanes.some(lane => lane.items.some(item =>
       item.state === 'active' && Number.isFinite(item.changed_at_ms) && now - item.changed_at_ms >= 6 * HOUR));
     let activity;
     if (staleCandidate) {
@@ -282,7 +306,7 @@ async function run() {
         log('board hygiene activity unavailable', {agent, code: error.data?.code ?? String(error)});
       }
     }
-    for (const lane of board.lanes) {
+    for (const lane of lanes) {
       for (const item of lane.items) {
         const terminal = item.wait?.ref_terminal_at_ms;
         await check('wait_ended', agent, lane, item,
@@ -307,7 +331,8 @@ async function run() {
   for (const index of indexes) {
     for (const key of [...index]) if (!seen.has(key)) await forget(key);
   }
-  return {boards_scanned: boards.length, refusals};
+  return {boards_scanned: boards.length, refusals, skipped_lane_blocks: skipped.lane_blocks,
+    skipped_lane_items: skipped.lane_items};
 }
 
 return await run();
