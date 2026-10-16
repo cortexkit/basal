@@ -45,7 +45,17 @@ cancellation with no recorded failed job is ignored; cancellation after a failed
 job silently updates its item. Success only silently updates an already-reported
 attempt. A null conclusion is reported as unknown, never as a successful (green)
 run. Exact workflow names can be ignored per repository; a job event without
-`workflow_name` remains reportable. Repositories in `QUIET_REPOS` still update
+`workflow_name` remains reportable. Version 5 also ignores configured job names
+(AFT's `design-gate`), remembering their failures so a completion with only ignored
+failures sends nothing rather than reporting missing jobs. Before an attempt's
+first wake it checks Plexus `github_read` action `github.actions.run.superseded`
+once: superseded attempts send nothing, including later events, while refusals or
+unreadable replies fail open and log the refusal code in the run result. Green,
+quiet, ignored and stale events never make this read.
+Merge-queue jobs on `gh-readonly-queue/` branches silently update the digest when
+the same repo, workflow and job name is already failing on the default branch
+(`default_branch` in the body, otherwise `main` or `master`). A green completion
+on that branch clears the workflow's failing-job flags. Repositories in `QUIET_REPOS` still update
 their digest items silently, and their entries should be removed when CI returns.
 Titles identify the repo, run attempt and failing jobs; test names are unavailable.
 
@@ -63,7 +73,8 @@ The script adapts `templates/github-ci-watch/flow.js`, rechecks verified body re
 and branch fields instead of trusting notice headers, deduplicates job IDs within
 each attempt, and uses `ci:<repo>:<run_id>:<run_attempt>` replacement keys.
 One shared KV aggregate retains repo-namespaced attempts for fourteen days with a
-48,000-byte cap across the whole fleet, not a separate quota per repository.
+48,000-byte cap across the whole fleet, not a separate quota per repository;
+default-branch failure flags share that cap and fourteen-day retention.
 Offline worker tests and a dry run with a synthetic CI trigger live in
 `crates/basal-module/tests/ci_failure_router.rs`. The dry run captures sink calls
 without delivering notifications. No per-agent watcher is needed.
