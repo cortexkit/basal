@@ -290,7 +290,7 @@ impl Test {
                 &agent(OWNER),
                 "flow.instantiate",
                 json!({
-                    "template":template,"version":if template == "watch-github" { 2 } else { 1 },"params":params,"expires_in":"365d",
+                    "template":template,"version":if template == "watch-github" { 3 } else { 2 },"params":params,"expires_in":"365d",
                 }),
             )
             .unwrap()
@@ -587,7 +587,7 @@ fn published_templates_declare_exact_bounds_and_self_only_grants() {
     for (name, manifest, _) in TEMPLATES {
         let m: Value = serde_json::from_str(manifest).unwrap();
         assert_eq!(m["id"], name);
-        assert_eq!(m["version"], if name == "watch-github" { 2 } else { 1 });
+        assert_eq!(m["version"], if name == "watch-github" { 3 } else { 2 });
         if name == "watch-github" {
             for event in m["trigger"]["events"].as_array().unwrap() {
                 assert_eq!(event["match"], json!({"repo":"$params.repo"}));
@@ -1086,7 +1086,7 @@ fn reminder_past_invalid_or_over_ceiling_timestamp_is_refused_at_creation() {
             .to_string(),
     ] {
         let error = t.f.module.handle(&agent(OWNER), "flow.instantiate", json!({
-            "template":"remind-at","version":1,"params":{"at":at,"note":"Never delivered"},"expires_in":"365d",
+            "template":"remind-at","version":2,"params":{"at":at,"note":"Never delivered"},"expires_in":"365d",
         })).unwrap_err();
         assert_eq!(error.code, "param_out_of_bounds");
         assert_eq!(error.detail.unwrap()["param"], "at");
@@ -1191,7 +1191,7 @@ fn exact_file_and_git_template_roots_refuse_values_outside_work() {
                     &agent(OWNER),
                     "flow.instantiate",
                     json!({
-                        "template":template,"version":if template == "watch-github" { 2 } else { 1 },"params":values,"expires_in":"1d",
+                        "template":template,"version":if template == "watch-github" { 3 } else { 2 },"params":values,"expires_in":"1d",
                     }),
                 )
                 .unwrap_err();
@@ -1250,7 +1250,7 @@ fn digest_helper_bounds_escaped_note_long_metadata_and_links_on_every_platform()
         json!(url),
     );
     let manifest = json!({
-        "id":"digest-helper","version":1,"purpose":"Exercise the published digest helper",
+        "id":"digest-helper","version":2,"purpose":"Exercise the published digest helper",
         "trigger":{"schedule":{"interval":"1h"}},"sinks":[{"agent":"$self","digest_max":"wake"}],
         "params":{"note":{"type":"string","max_bytes":4096}},
         "template":{"max_per_agent":100,"max_lifetime":"365d"},
@@ -1274,8 +1274,26 @@ fn digest_helper_bounds_escaped_note_long_metadata_and_links_on_every_platform()
         item["data"]["truncated"]["link_url"]["original_bytes"],
         url.len()
     );
-    assert!(path.starts_with(item["data"]["params"]["path"].as_str().unwrap()));
     assert_eq!(item["links"], json!([]));
+    // Recompute whole JSON values as an independent oracle for the incremental
+    // byte counters, including the truncation markers added after dropping a URL.
+    let mut expected = json!({
+        "title":"File appeared", "body":note, "links":[],
+        "data":{"params":{"path":path},"observed":{"exists":true},
+            "truncated":{"link_url":{"original_bytes":url.len()}}}
+    });
+    while serde_json::to_vec(&expected["data"]).unwrap().len() > 8192
+        || serde_json::to_vec(&expected).unwrap().len() > 16384
+    {
+        expected["data"]["truncated"]["params.path"] = json!({"original_bytes":path.len()});
+        let text = expected["data"]["params"]["path"].as_str().unwrap();
+        expected["data"]["params"]["path"] = json!(
+            text.chars()
+                .take(text.chars().count() / 2)
+                .collect::<String>()
+        );
+    }
+    assert_eq!(item, expected);
 }
 
 fn ci_params() -> Value {

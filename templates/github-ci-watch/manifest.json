@@ -1,7 +1,7 @@
 {
   "format": 1,
   "id": "github-ci-watch",
-  "version": 1,
+  "version": 2,
   "purpose": "Watch GitHub CI failures for the creating agent, updating one digest item per run attempt.",
   "trigger": {
     "events": [

@@ -1,7 +1,7 @@
 {
   "format": 1,
   "id": "remind-at",
-  "version": 1,
+  "version": 2,
   "purpose": "Wake the creating agent once at a requested time, including one catch-up after downtime.",
   "trigger": { "schedule": { "at": "$params.at", "missed": "once" } },
   "sinks": [{ "agent": "$self", "digest_max": "wake" }],

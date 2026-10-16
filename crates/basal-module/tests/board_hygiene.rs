@@ -231,7 +231,7 @@ fn published_manifest_has_global_minimal_grants_and_five_minute_schedule() {
     let manifest = Manifest::parse(MANIFEST).unwrap();
     let value = serde_json::to_value(manifest).unwrap();
     assert_eq!(value["id"], "board-hygiene");
-    assert_eq!(value["version"], 3);
+    assert_eq!(value["version"], 4);
     assert_eq!(value["board_read"], json!(["$audience"]));
     assert_eq!(value["audience"], json!({"kind":"global"}));
     assert_eq!(
@@ -700,6 +700,53 @@ fn digest_data_is_exact_and_escaped_large_text_stays_within_core_limits() {
             .as_str()
             .unwrap()
             .contains("Follow-up:")
+    );
+}
+
+#[test]
+fn digest_greedily_fills_limits_in_oldest_first_order_with_exact_more_count() {
+    let mut items: Vec<_> = (0..80)
+        .map(|n| {
+            let mut i = candidate("eta_passed", &format!("item{n:03}"), BASE);
+            i["text"] = json!("Quote \" and é🦀\n".repeat(6));
+            i
+        })
+        .collect();
+    let mut single = Test::new(vec![board("ag_a", vec![items[0].clone()])]);
+    let example = single.run(BASE).remove(0);
+    let line = example["item"]["body"].as_str().unwrap();
+    // Digests order equally old entries by member ID, regardless of traversal order.
+    items.reverse();
+    let mut t = Test::new(vec![board("ag_a", items)]);
+    let writes = t.run(BASE);
+    let digest = &writes[0]["item"];
+    let entries = digest["data"]["entries"].as_array().unwrap();
+    let included = entries.len();
+    assert!((1..80).contains(&included));
+    assert_eq!(digest["data"]["total_count"], 80);
+    assert_eq!(digest["data"]["more_count"], 80 - included);
+    for (n, entry) in entries.iter().enumerate() {
+        assert_eq!(entry["item_id"], format!("item{n:03}"));
+    }
+    let mut lines = vec![line; included];
+    let expected = format!("{}\n\nand {} more", lines.join("\n\n"), 80 - included);
+    assert_eq!(digest["body"], expected);
+    let mut next = digest.clone();
+    let mut entry = example["item"]["data"]["entries"][0].clone();
+    entry["item_id"] = json!(format!("item{included:03}"));
+    next["data"]["entries"].as_array_mut().unwrap().push(entry);
+    next["data"]["more_count"] = json!(79 - included);
+    lines.push(line);
+    next["body"] = json!(format!(
+        "{}\n\nand {} more",
+        lines.join("\n\n"),
+        79 - included
+    ));
+    assert!(
+        next["body"].as_str().unwrap().len() > 4096
+            || serde_json::to_vec(&next["data"]).unwrap().len() > 8192
+            || serde_json::to_vec(&next).unwrap().len() > 16384,
+        "the first omitted entry must not fit"
     );
 }
 
