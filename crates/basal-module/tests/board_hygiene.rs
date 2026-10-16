@@ -53,7 +53,10 @@ impl BoardHost {
             }
             CallKind::Primitive(Primitive::Facts) => {
                 self.facts_calls.fetch_add(1, Ordering::Relaxed);
-                assert_eq!(args["include"], json!(["activity"]));
+                // Core selects fact groups by `fields`; `include` only opts into
+                // private text, which this flow's grant doesn't cover.
+                assert_eq!(args["fields"], json!(["activity"]));
+                assert_eq!(args["include"], json!([]));
                 json!({"activity":{"last_activity_at":self.activity.lock().unwrap().clone()}})
             }
             CallKind::Primitive(Primitive::SinkDigest) => {
@@ -231,7 +234,7 @@ fn published_manifest_has_global_minimal_grants_and_five_minute_schedule() {
     let manifest = Manifest::parse(MANIFEST).unwrap();
     let value = serde_json::to_value(manifest).unwrap();
     assert_eq!(value["id"], "board-hygiene");
-    assert_eq!(value["version"], 4);
+    assert_eq!(value["version"], 5);
     assert_eq!(value["board_read"], json!(["$audience"]));
     assert_eq!(value["audience"], json!({"kind":"global"}));
     assert_eq!(

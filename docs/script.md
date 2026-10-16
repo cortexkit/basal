@@ -221,7 +221,9 @@ its own run failed.
 ## Public facts across a global audience
 
 A global flow may declare `facts: {"targets": ["$audience"]}` to call
-`facts(agent, {include: ['activity']})` for board owners discovered at run time.
+`facts(agent, {fields: ['activity']})` for board owners discovered at run time.
+Core selects fact groups by `fields`; `include` accepts only `text`, which opts
+into private-text fields and is refused under this grant.
 Activity values such as `activity.last_activity_at` are Fact envelopes: inspect
 `status` before using `value`. An `unknown` status is not evidence of activity.
 

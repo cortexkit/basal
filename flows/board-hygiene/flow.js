@@ -297,7 +297,7 @@ async function run() {
     let activity;
     if (staleCandidate) {
       try {
-        activity = (await facts(agent, {include: ['activity']})).activity?.last_activity_at;
+        activity = (await facts(agent, {fields: ['activity']})).activity?.last_activity_at;
       } catch (error) {
         log('board hygiene activity unavailable', {agent, code: error.data?.code ?? String(error)});
       }
