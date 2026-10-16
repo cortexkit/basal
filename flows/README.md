@@ -36,16 +36,17 @@ item to re-plan rather than the peer's item whose ETA passed.
 
 `ci-failure-router/` is one operator-installed global flow for Plexus v2
 `github_ci_job_failed` and `github_ci_run_completed` notices in `cortexkit/*`.
-It wakes the repository's owner once for each newly reported failed job, on any
-branch; repeated job IDs within an attempt are deduplicated. A non-cancelled red
-or unknown run with no prior failed-job notice wakes as the only available report.
-The run-completed event has only an aggregate conclusion, so after a failed-job
-notice it silently updates the item; it cannot identify an unreported job or a
-changed per-job conclusion. A cancellation with no recorded failed job is ignored;
-cancellation after a failed job silently updates its item. Success only silently
-updates an already-reported attempt. A null conclusion is reported as unknown,
-never as a successful (green) run. Exact workflow names can be ignored per
-repository; a job event without `workflow_name` remains reportable.
+It wakes the repository's owner for the first newly reported failed job, on any
+branch; later jobs silently update the same item, and repeated job IDs within an
+attempt are deduplicated. At run completion it wakes once more only when additional
+job IDs arrived after the first notice, naming those new jobs. A non-cancelled red
+or unknown run with no reported jobs wakes as the only available report. A
+cancellation with no recorded failed job is ignored; cancellation after a failed
+job silently updates its item. Success only silently updates an already-reported
+attempt. A null conclusion is reported as unknown, never as a successful (green)
+run. Exact workflow names can be ignored per repository; a job event without
+`workflow_name` remains reportable. Repositories in `QUIET_REPOS` still update
+their digest items silently, and their entries should be removed when CI returns.
 Titles identify the repo, run attempt and failing jobs; test names are unavailable.
 
 The clearly marked `OWNERS` block maps lowercase repositories to stable agent IDs
