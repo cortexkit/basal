@@ -20,7 +20,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use crate::authorize::ShellDenylist;
 use crate::error::{CoreError, Result};
 use crate::ids::code_hash;
-use crate::manifest::{Audience, Manifest, ManifestError, OpRef};
+use crate::manifest::{Audience, Manifest, ManifestError, OpRef, TargetAuthority};
 use crate::runtime::Runtime;
 use crate::schedule::{self, Approval, ScheduledFlow, SchedulerConfig};
 
@@ -179,6 +179,13 @@ impl From<rusqlite::Error> for InstallError {
 /// Something the card must show, which does not refuse the install.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Warning {
+    /// The flow's audience-wide scope has no agent identity for an op that is
+    /// not a query; writes through an agent's bot account will be refused.
+    AgentlessAudienceOp {
+        module: String,
+        op: String,
+        audience: String,
+    },
     /// The flow reads private text and holds an op that sends data out.
     PrivateTextWithOutboundOp { module: String, op: String },
     /// The operator overrode the loop install rule for this op; loop
@@ -187,6 +194,102 @@ pub enum Warning {
     /// The flow reads private text and may fetch from this host, which can
     /// carry that text out in a URL, a header or a body.
     PrivateTextWithNetFetch { host: String },
+}
+
+fn agentless_audience_label(manifest: &Manifest) -> Option<&'static str> {
+    match manifest.audience.as_ref() {
+        Some(Audience::Global {}) => Some("global"),
+        Some(Audience::Workspace { .. }) => Some("workspace"),
+        Some(Audience::Agent { .. }) | None => None,
+    }
+}
+
+fn agentless_audience_op_warning(
+    audience: Option<&'static str>,
+    op_ref: &OpRef,
+    kind: Option<OpKind>,
+) -> Option<Warning> {
+    // Sink and status delivery permissions come from the manifest's `sinks` and
+    // `status` fields, not from `ops`. `prefrontal-core.board.read` is the only
+    // op sent through basal's management route instead of an agent's provider
+    // route, so exclude it from this provider-write warning.
+    if let Some(audience) = audience
+        && op_ref.for_target != Some(TargetAuthority::Delegate)
+        && !basal_host::core_host::is_core_carrier_op(&op_ref.module, &op_ref.op)
+        && kind != Some(OpKind::Query)
+    {
+        return Some(Warning::AgentlessAudienceOp {
+            module: op_ref.module.clone(),
+            op: op_ref.op.clone(),
+            audience: audience.to_owned(),
+        });
+    }
+    None
+}
+
+/// Warnings for audience-scoped op grants, including a bound template
+/// manifest that a dry run records without calling the ordinary installer.
+pub fn agentless_audience_warnings(manifest: &Manifest, catalog: &dyn Catalog) -> Vec<Warning> {
+    let audience = agentless_audience_label(manifest);
+    manifest
+        .ops
+        .iter()
+        .filter_map(|op_ref| {
+            let kind = catalog
+                .op(&op_ref.module, &op_ref.op)
+                .and_then(|decl| decl.kind);
+            agentless_audience_op_warning(audience, op_ref, kind)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod agentless_audience_warning_tests {
+    use super::*;
+
+    fn op_ref(module: &str, op: &str, for_target: Option<TargetAuthority>) -> OpRef {
+        OpRef {
+            module: module.to_owned(),
+            op: op.to_owned(),
+            for_target,
+        }
+    }
+
+    #[test]
+    fn unmarked_ops_count_but_queries_delegates_and_core_carriers_do_not_warn() {
+        assert_eq!(
+            agentless_audience_op_warning(Some("global"), &op_ref("plexus", "write", None), None,),
+            Some(Warning::AgentlessAudienceOp {
+                module: "plexus".into(),
+                op: "write".into(),
+                audience: "global".into(),
+            }),
+        );
+        assert_eq!(
+            agentless_audience_op_warning(
+                Some("workspace"),
+                &op_ref("plexus", "read", None),
+                Some(OpKind::Query),
+            ),
+            None,
+        );
+        assert_eq!(
+            agentless_audience_op_warning(
+                Some("global"),
+                &op_ref("plexus", "write", Some(TargetAuthority::Delegate)),
+                Some(OpKind::Mutate),
+            ),
+            None,
+        );
+        assert_eq!(
+            agentless_audience_op_warning(
+                Some("global"),
+                &op_ref("prefrontal-core", "board.read", None),
+                Some(OpKind::Mutate),
+            ),
+            None,
+        );
+    }
 }
 
 /// A recorded version.
@@ -225,6 +328,7 @@ pub(crate) fn validate_inner(
 ) -> std::result::Result<Vec<Warning>, InstallError> {
     validate_audience(manifest, catalog)?;
     let mut warnings = Vec::new();
+    let audience = agentless_audience_label(manifest);
     let mut trigger_modules: Vec<&str> = Vec::new();
     if let Some(events) = &manifest.trigger.events {
         for e in events {
@@ -264,7 +368,8 @@ pub(crate) fn validate_inner(
         }
     }
     let reads_text = manifest.facts.as_ref().is_some_and(|f| f.text);
-    for OpRef { module, op, .. } in &manifest.ops {
+    for op_ref in &manifest.ops {
+        let OpRef { module, op, .. } = op_ref;
         validate_flow_scope_support(catalog, module, op)?;
         let pair = || (module.clone(), op.clone());
         if denylist.contains(module, op) {
@@ -278,6 +383,9 @@ pub(crate) fn validate_inner(
         if decl.shell_capable {
             let (module, op) = pair();
             return Err(InstallError::ShellCapable { module, op });
+        }
+        if let Some(warning) = agentless_audience_op_warning(audience, op_ref, decl.kind) {
+            warnings.push(warning);
         }
         let Some(kind) = decl.kind else {
             let (module, op) = pair();

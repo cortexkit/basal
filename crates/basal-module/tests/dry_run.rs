@@ -20,6 +20,113 @@ fn dry_run(f: &Fixture, caller: &Caller, params: Value) -> Result<Value, String>
         .map_err(|e| format!("{}: {}", e.code, e.message))
 }
 
+fn audience_op_manifest(id: &str, audience: Value, op: &str, delegated: bool) -> Value {
+    let mut manifest = events_manifest(id);
+    manifest["audience"] = audience;
+    manifest["sinks"][0]["agent"] = json!("$audience");
+    manifest["status"] = json!(["$audience"]);
+    manifest["ops"] = if delegated {
+        json!([{ "module": "mock", "op": op, "for_target": "delegate" }])
+    } else {
+        json!([{ "module": "mock", "op": op }])
+    };
+    manifest
+}
+
+#[test]
+fn agentless_audience_non_query_ops_warn_in_install_and_dry_run() {
+    let f = fixture("agentless-audience-warning", Options::default());
+    f.catalog.add_workspace("workspace-1");
+    // Mark board.read as a mutation so the test proves it is skipped because
+    // core dispatches it through basal's management route, not because it is a query.
+    f.catalog.set_op(
+        "prefrontal-core",
+        "board.read",
+        basal_host::OpDecl {
+            kind: Some(basal_host::OpKind::Mutate),
+            cause_echo: false,
+            shell_capable: false,
+        },
+    );
+
+    let mut global =
+        audience_op_manifest("flow-global-write", json!({"kind":"global"}), "send", false);
+    global["board_read"] = json!(["$audience"]);
+    global["ops"] = json!([
+        {"module":"mock", "op":"send"},
+        {"module":"prefrontal-core", "op":"board.read"}
+    ]);
+    let installed = install(&f, &Caller::Operator, "return 1;", &global);
+    assert_eq!(
+        installed["state"], "pending",
+        "the warning is not a refusal"
+    );
+    assert_eq!(installed["warnings"].as_array().unwrap().len(), 1);
+    assert_eq!(installed["warnings"][0]["kind"], "agentless_audience_op");
+    assert_eq!(installed["warnings"][0]["module"], "mock");
+    assert_eq!(installed["warnings"][0]["op"], "send");
+    assert_eq!(installed["warnings"][0]["audience"], "global");
+    assert!(
+        installed["warnings"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("agent's bot account will be refused")
+    );
+
+    let dry_run = f
+        .module
+        .handle(
+            &Caller::Operator,
+            "flow.dry_run",
+            json!({"flow_id":"flow-global-write"}),
+        )
+        .expect("dry run succeeds");
+    assert_eq!(dry_run["warnings"], installed["warnings"]);
+    assert_eq!(dry_run["summary"]["warnings"], installed["warnings"]);
+
+    let workspace = audience_op_manifest(
+        "flow-workspace-write",
+        json!({"kind":"workspace", "id":"workspace-1"}),
+        "send",
+        false,
+    );
+    let installed = install(&f, &Caller::Operator, "return 1;", &workspace);
+    assert_eq!(installed["state"], "pending");
+    assert_eq!(installed["warnings"].as_array().unwrap().len(), 1);
+    assert_eq!(installed["warnings"][0]["audience"], "workspace");
+
+    let mut agent_owned = events_manifest("flow-agent-owned-write");
+    agent_owned["ops"] = json!([{ "module": "mock", "op": "send" }]);
+    assert!(
+        install(&f, &agent("SYNAPSE"), "return 1;", &agent_owned)["warnings"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    let global_query =
+        audience_op_manifest("flow-global-query", json!({"kind":"global"}), "echo", false);
+    assert!(
+        install(&f, &Caller::Operator, "return 1;", &global_query)["warnings"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    let global_delegated = audience_op_manifest(
+        "flow-global-delegated",
+        json!({"kind":"global"}),
+        "send",
+        true,
+    );
+    assert!(
+        install(&f, &Caller::Operator, "return 1;", &global_delegated)["warnings"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
 fn calls(run: &Value) -> Vec<Value> {
     run["calls"].as_array().cloned().unwrap_or_default()
 }

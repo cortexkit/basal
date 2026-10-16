@@ -1070,9 +1070,13 @@ impl Module {
                 )
             })
             .map_err(|e| self.core_error(e))?;
-        Ok(
-            json!({ "flow_id": p.flow_id, "version": version.version, "summary": summary, "state_reset": state_reset }),
-        )
+        Ok(json!({
+            "flow_id": p.flow_id,
+            "version": version.version,
+            "warnings": summary.get("warnings").cloned().unwrap_or_else(|| json!([])),
+            "summary": summary,
+            "state_reset": state_reset,
+        }))
     }
 
     /// The version a dry run runs: the one named, else the approved one,

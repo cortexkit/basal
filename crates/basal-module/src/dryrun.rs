@@ -321,7 +321,7 @@ impl DryRunner {
         let outcome = self.run_in(&dir, &manifest, request, &fires);
         // The scratch store is the dry run's alone; nothing outlives it.
         let _ = std::fs::remove_dir_all(&dir);
-        let runs = outcome?;
+        let (runs, warnings) = outcome?;
         let partial = runs
             .iter()
             .any(|r| r.get("partial").and_then(Value::as_bool) == Some(true));
@@ -329,6 +329,7 @@ impl DryRunner {
             "mode": request.mode.as_str(),
             "window": window,
             "partial": partial,
+            "warnings": warnings.iter().map(crate::card::warning).collect::<Vec<_>>(),
             "runs": runs,
         }))
     }
@@ -438,7 +439,7 @@ impl DryRunner {
         manifest: &Manifest,
         request: &BorrowedRequest<'_>,
         fires: &[(String, Value)],
-    ) -> Result<Vec<Value>, DryRunError> {
+    ) -> Result<(Vec<Value>, Vec<basal_core::Warning>), DryRunError> {
         let store = Store::open(dir.join("scratch.db"), Durability::default()).map_err(failed)?;
         let clock = basal_core::Clock::manual(request.now_ms);
         let host = Arc::new(CaptureHost {
@@ -551,6 +552,11 @@ impl DryRunner {
             }) => DryRunError::InstallRefused(e),
             other => DryRunError::Invalid(format!("install into the scratch store: {other}")),
         })?;
+        let warnings = if request.template.is_some() {
+            basal_core::install::agentless_audience_warnings(manifest, self.catalog.as_ref())
+        } else {
+            installed.warnings.clone()
+        };
         if request.template.is_none() {
             rt.approve(
                 &installed.flow_id,
@@ -629,7 +635,7 @@ impl DryRunner {
             let calls = rt.calls(&run_id).map_err(failed)?;
             runs.push(self.describe_run(manifest, &run, &calls, &events, ending.as_ref(), &host));
         }
-        Ok(runs)
+        Ok((runs, warnings))
     }
 
     fn describe_run(

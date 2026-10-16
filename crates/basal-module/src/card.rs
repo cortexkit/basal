@@ -14,8 +14,19 @@ pub fn code_hash_hex(hash: &[u8; 32]) -> String {
     hex(hash)
 }
 
-fn warning(w: &Warning) -> Value {
+pub(crate) fn warning(w: &Warning) -> Value {
     match w {
+        Warning::AgentlessAudienceOp {
+            module,
+            op,
+            audience,
+        } => json!({
+            "kind": "agentless_audience_op",
+            "module": module,
+            "op": op,
+            "audience": audience,
+            "text": format!("runs without an agent identity ({audience} audience), so writes through an agent's bot account will be refused; use for: with a delegate grant to act for an agent"),
+        }),
         Warning::PrivateTextWithOutboundOp { module, op } => json!({
             "kind": "private_text_with_outbound_op",
             "module": module,

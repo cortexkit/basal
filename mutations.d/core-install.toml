@@ -647,6 +647,23 @@ old = "if module == basal_host::subc_catalog::CORE && !catalog.supports_flow_sco
 new = "if false && module == basal_host::subc_catalog::CORE && !catalog.supports_flow_scopes(module) { // NON-VACUITY BREAK"
 
 [[control]]
+id = "agentless-audience-non-query-op-warning-is-disabled"
+guards = "global and workspace audience writes warn on install and dry run"
+test_file = "crates/basal-module/tests/dry_run.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test dry_run"
+expect_red = ["agentless_audience_non_query_ops_warn_in_install_and_dry_run"]
+only = true
+select = { tests = ["agentless_audience_non_query_ops_warn_in_install_and_dry_run", "status_group_is_validated_at_install_and_dry_run"] }
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/install.rs"
+old = "if let Some(audience) = audience\n        && op_ref.for_target != Some(TargetAuthority::Delegate)"
+new = "if false && let Some(audience) = audience // NON-VACUITY BREAK\n        && op_ref.for_target != Some(TargetAuthority::Delegate)"
+
+[[control]]
 id = "install-agent-owned-foreign-targets"
 hub = "Agent-target, audience-authorship and ops tests assert that an agent's ordinary install can grant only its own identity, never another agent"
 hub_targets = ["audience", "ops"]

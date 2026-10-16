@@ -140,6 +140,15 @@ Replay asks core again, so it cannot reuse authority from an old audience.
 If revalidation fails, catching the refusal does not permit subsequent calls
 to fall back to that run's old cached authority.
 
+For a global or workspace audience, install and dry run warn once for each
+granted op whose catalog kind is not `query` (including an unmarked kind): the
+flow's own scope has no agent identity, so a write through an agent's bot
+account will be refused. Existing install validation may still refuse an
+unmarked op. An op with `for_target: "delegate"` is exempt because a targeted call using `for:`
+runs on the target agent's delegated scope. Sinks and status writes use their
+own audience grants, and `prefrontal-core.board.read` is routed by basal itself,
+so those routes do not produce this warning.
+
 Audience manifests with a run deadline above 12 hours are refused at install
 and dry run with `run_bound_exceeds_audience_limit`. Core registers target scopes
 for twice the maximum run duration, which must fit the daemon's 24-hour scope
