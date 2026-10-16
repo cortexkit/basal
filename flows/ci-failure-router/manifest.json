@@ -1,7 +1,7 @@
 {
   "format": 1,
   "id": "ci-failure-router",
-  "version": 7,
+  "version": 8,
   "purpose": "Wake owners for actionable CortexKit CI failures at most twice per run, skipping superseded attempts and ignored workflows/jobs; merge-queue repeats of jobs already red on the default branch update silently. Quiet (digest only, no wake): cortexkit/cerebellum, CI off by owner decision; unreadable supersession checks fail open.",
   "trigger": {
     "events": [

@@ -333,7 +333,7 @@ fn published_manifest_is_global_with_only_ci_v2_repo_filters_and_minimal_grants(
     Manifest::parse(MANIFEST).unwrap();
     let value: Value = serde_json::from_str(MANIFEST).unwrap();
     assert_eq!(value["audience"], json!({"kind":"global"}));
-    assert_eq!(value["version"], 7);
+    assert_eq!(value["version"], 8);
     assert!(
         value["purpose"]
             .as_str()
@@ -405,6 +405,50 @@ fn ignored_workflow_run_is_dropped() {
     t.ci(body);
     assert!(t.writes().is_empty());
     assert!(t.memory()["runs"].as_object().unwrap().is_empty());
+}
+
+#[test]
+fn magic_context_design_gate_is_ignored_off_master_and_train_branches() {
+    // A contributor PR blocked by the design gate is expected; the same gate
+    // failing on master or a train branch is real breakage and still wakes.
+    for (branch, wakes) in [
+        ("fix/status-threshold-model-fallback", false),
+        ("master", true),
+        ("train/2026-10", true),
+    ] {
+        let t = Test::new();
+        let mut failed = job("cortexkit/magic-context", 101);
+        failed["workflow_name"] = json!("design-gate");
+        failed["name"] = json!("design-gate / design-gate");
+        failed["head_branch"] = json!(branch);
+        t.ci(failed);
+        let mut finished = run("cortexkit/magic-context", "failure");
+        finished["name"] = json!("design-gate");
+        finished["head_branch"] = json!(branch);
+        t.ci(finished);
+        let wakes_seen = t.writes().iter().filter(|w| w["action"] == "wake").count();
+        assert_eq!(wakes_seen > 0, wakes, "{branch}");
+        if !wakes {
+            assert!(t.writes().is_empty(), "{branch}");
+        }
+    }
+}
+
+#[test]
+fn magic_context_design_gate_job_in_another_workflow_is_ignored_off_master() {
+    // The reusable gate also reports as a job inside other workflows.
+    let t = Test::new();
+    let mut failed = job("cortexkit/magic-context", 101);
+    failed["workflow_name"] = json!("CI");
+    failed["name"] = json!("design-gate");
+    failed["head_branch"] = json!("contributor/fix");
+    t.ci(failed);
+    assert!(t.writes().is_empty());
+    let mut other = job("cortexkit/magic-context", 102);
+    other["workflow_name"] = json!("CI");
+    other["head_branch"] = json!("contributor/fix");
+    t.ci(other);
+    assert_eq!(t.writes()[0]["action"], "wake");
 }
 
 #[test]

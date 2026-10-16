@@ -295,8 +295,8 @@ only = true
 build_timeout_s = 3600
 timeout_s = 600
 file = "flows/ci-failure-router/flow.js"
-old = "if ((IGNORED_WORKFLOWS[repo] ?? []).includes(workflowName)) {"
-new = "if (false && (IGNORED_WORKFLOWS[repo] ?? []).includes(workflowName)) { // NON-VACUITY BREAK"
+old = "if (ignoredName(IGNORED_WORKFLOWS[repo], workflowName, body.head_branch)) {"
+new = "if (false && ignoredName(IGNORED_WORKFLOWS[repo], workflowName, body.head_branch)) { // NON-VACUITY BREAK"
 
 [[control]]
 id = "ci-failure-router-bare-cancellation"
@@ -314,6 +314,23 @@ timeout_s = 600
 file = "flows/ci-failure-router/flow.js"
 old = "if (!jobEvent && body.conclusion === 'cancelled' && Object.keys(existing?.jobs ?? {}).length === 0) {"
 new = "if (false && !jobEvent && body.conclusion === 'cancelled' && Object.keys(existing?.jobs ?? {}).length === 0) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "ci-failure-router-branch-scoped-ignore-still-wakes-on-protected-branches"
+guards = "a branch-scoped ignore (magic-context's design gate) still wakes the owner on master and train branches"
+test_file = "crates/basal-module/tests/ci_failure_router.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test ci_failure_router"
+select = { tests = ["magic_context_design_gate_is_ignored_off_master_and_train_branches", "ignored_workflow_run_is_dropped"] }
+expect_red = ["magic_context_design_gate_is_ignored_off_master_and_train_branches"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/ci-failure-router/flow.js"
+old = "entry.name === name && !entry.unless_branch.some(pattern => matches(pattern, branch)));"
+new = "entry.name === name); // NON-VACUITY BREAK"
 
 [[control]]
 id = "ci-failure-router-jobless-red-run-wakes"
@@ -448,8 +465,8 @@ only = true
 build_timeout_s = 3600
 timeout_s = 600
 file = "flows/ci-failure-router/flow.js"
-old = "if (jobEvent && (IGNORED_JOBS[repo] ?? []).includes(body.name)) {"
-new = "if (false && jobEvent && (IGNORED_JOBS[repo] ?? []).includes(body.name)) { // NON-VACUITY BREAK"
+old = "if (jobEvent && ignoredName(IGNORED_JOBS[repo], body.name, body.head_branch)) {"
+new = "if (false && jobEvent && ignoredName(IGNORED_JOBS[repo], body.name, body.head_branch)) { // NON-VACUITY BREAK"
 
 [[control]]
 id = "ci-failure-router-ignore-only-completions"

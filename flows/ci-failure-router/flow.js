@@ -39,13 +39,29 @@ const OWNERS = {
 };
 // END OWNERS
 
-// Ignore workflows that generate routine failures without actionable owner work.
+// Ignore workflows and jobs that generate routine failures without actionable
+// owner work. An entry is a name (ignored on every branch) or
+// {name, unless_branch}: ignored except on branches matching a pattern there,
+// where a failure is real breakage and still wakes the owner.
+// magic-context's design gate blocks contributor PRs until their issue is
+// labelled design-approved, which is expected, not a CI failure.
+const MC_DESIGN_GATE_BRANCHES = ['master', 'train/*'];
 const IGNORED_WORKFLOWS = {
   'cortexkit/aft': ['Design gate'],
+  'cortexkit/magic-context': [{ name: 'design-gate', unless_branch: MC_DESIGN_GATE_BRANCHES }],
 };
 const IGNORED_JOBS = {
   'cortexkit/aft': ['design-gate'],
+  'cortexkit/magic-context': [
+    { name: 'design-gate', unless_branch: MC_DESIGN_GATE_BRANCHES },
+    { name: 'design-gate / design-gate', unless_branch: MC_DESIGN_GATE_BRANCHES },
+  ],
 };
+
+function ignoredName(entries, name, branch) {
+  return (entries ?? []).some(entry => typeof entry === 'string' ? entry === name :
+    entry.name === name && !entry.unless_branch.some(pattern => matches(pattern, branch)));
+}
 
 const QUIET_REPOS = {
   'cortexkit/cerebellum': 'CI is off by owner decision: GitHub billing refuses its jobs',
@@ -186,7 +202,7 @@ if (stale) {
   return;
 }
 const workflowName = jobEvent ? body.workflow_name : body.name;
-if ((IGNORED_WORKFLOWS[repo] ?? []).includes(workflowName)) {
+if (ignoredName(IGNORED_WORKFLOWS[repo], workflowName, body.head_branch)) {
   await saveMemory(memory);
   return;
 }
@@ -252,7 +268,7 @@ run.completed = Math.max(run.completed, Number.isFinite(completed) ? completed :
 run.branch = body.head_branch ?? 'unknown';
 run.sha = typeof body.head_sha === 'string' ? body.head_sha.slice(0, 12) : 'unknown';
 run.conclusion = body.conclusion ?? 'unknown';
-if (jobEvent && (IGNORED_JOBS[repo] ?? []).includes(body.name)) {
+if (jobEvent && ignoredName(IGNORED_JOBS[repo], body.name, body.head_branch)) {
   // Run completions have no job list; retain ignored failures so they cannot
   // later masquerade as a red run whose failed jobs have not arrived yet.
   run.ignoredFailures = true;
