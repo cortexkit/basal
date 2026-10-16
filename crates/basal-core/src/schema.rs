@@ -362,6 +362,10 @@ ALTER TABLE install_cards ADD COLUMN rejected_reason TEXT;
 ALTER TABLE install_cards ADD COLUMN disposition TEXT;
 "#,
     },
+    Migration {
+        version: 31,
+        statements: "CREATE TABLE flow_tool_calls (carrier TEXT NOT NULL, call_key TEXT NOT NULL, agent TEXT NOT NULL, result TEXT, PRIMARY KEY(carrier,call_key));",
+    },
 ];
 
 const TEMPLATE_EVENTS: &str = r#"

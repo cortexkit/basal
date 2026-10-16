@@ -359,7 +359,7 @@ fn tool_manifest_description_and_schema_are_pinned_and_old_entries_are_gone() {
             _ => None,
         })
         .unwrap();
-    assert_eq!(tools.len(), 1);
+    assert_eq!(tools.len(), 2);
     assert_eq!(tools[0].name, "codemode");
     assert_eq!(
         tools[0].description.as_deref().unwrap(),
@@ -666,7 +666,8 @@ fn catalog_generation_tracks_content_and_schema_pins_refuse_changes() {
     assert_eq!(full["tools"][0]["result_format"], "content/v1");
     assert_eq!(full["catalog_digest"], digest["catalog_digest"]);
     let excluded = basal_module::tool::catalog(json!({"params":{"exclude":["codemode"]}})).unwrap();
-    assert_eq!(excluded["tools"], json!([]));
+    assert_eq!(excluded["tools"].as_array().unwrap().len(), 1);
+    assert_eq!(excluded["tools"][0]["name"], "flow");
     assert_ne!(full["generation"], excluded["generation"]);
     let rig = rig("schema-pins", false);
     for (pin, code) in [

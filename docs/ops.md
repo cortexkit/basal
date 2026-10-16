@@ -1,6 +1,6 @@
 # Agent-facing basal operations
 
-Core's scoped relay exposes `flow.install`, `flow.dry_run`, `flow.disable`, `flow.enable`, `flow.list`, `flow.instantiate` and `flow.instance.end`. Caller identity comes from the daemon's route stamp, never request parameters. `flow.health` is not relayed: core uses it to decide whether a flow's claim to replace a source remains healthy, and the operator uses its runtime-wide figures.
+Basal serves the `flow` tool alongside `codemode`. Core selects it with the tool capability tag `basal:flow.manage/v1`; until core selects that tag and retires its wrapper, agents continue using core's relay to the flow management operations. Caller identity comes from `attributes.agent_id` on the daemon's core-owned route scope stamp, never request parameters. `flow.health` remains a management operation: core uses it to decide whether a flow's claim to replace a source remains healthy, and the operator uses its runtime-wide figures.
 
 The daemon delivers agent-facing `codemode` calls directly to basal; prefrontal-core does not forward them. See [codemode](#codemode).
 
@@ -8,9 +8,29 @@ Package management is not agent-relayed: `package.register` is available to the 
 
 Shapes below use type names, `|` for alternatives, and a one-element array to describe each array item. `?` on a request key means optional. Reply keys are always present unless a key is marked optional with `?`. `object` and `any` describe open JSON values.
 
+## flow tool
+
+Use `flow` with an `action` and the fields for that action only:
+
+- `install`: `script_path`, `manifest_path`. Submits your files for approval, including warnings and a capture dry run.
+- `dry_run`: `flow_id`, optional `version`, and `window` (for example `"6h"`) or a sample event in `trigger`. Runs in capture mode, without live effects.
+- `disable`: `flow_id`, optional `reason`.
+- `enable`: `flow_id`. Resumes your flow only if you disabled it yourself, not if the operator or runtime disabled it.
+- `list`: optional `flow_ids`. Lists only your flows, with state, approved version and last run.
+- `instantiate`: `template`, `params`, `expires_in`, optional `version` (defaults to the newest approved, not newest registered).
+- `end`: `flow_id` of your template instance.
+
+Each action invokes the corresponding management operation below as the agent identified by the daemon's stamp. The operation retains its existing authority checks, including flow ownership. Do not pass `agent_id`, `author`, inline code, or a live dry-run mode. Success is `content/v1`: a model-facing text summary and the complete operation JSON in `structuredContent`. Refusals retain the management operation's or upstream provider's typed code, message and detail.
+
+Install reads the script and manifest through the AFT file provider's `file.read_exact` operation. Core registers a short-lived `flow-read/…` scope for the call, and basal uses the scope owner (`reserved:prefrontal-core`), reference and epoch from the daemon's stamp to open the file-provider route. Relative paths resolve at your root in AFT, not basal's working directory. Basal verifies each returned SHA-256 digest and enforces 1 MiB for script and 64 KiB for manifest, then installs the exact UTF-8 bytes. A missing or incorrect read scope is `flow_read_scope_missing`, a changed digest is `flow_read_digest_mismatch`; there is no fallback to basal's own file access. AFT's `file_read_exact_*` refusals pass through unchanged.
+
+If `instantiate.version` is absent, basal asks core's `package.approved_versions` as `reserved:basal`, without borrowing the agent's scope. Core must advertise `package-approved-versions/v1`; otherwise the call returns `version_required` (pass an explicit version). An unknown template or one with no approved versions returns `package_unknown`. Explicit versions go to the operation unchanged; core's run gate still enforces approval and revocation at activation. Registration alone is not approval.
+
+An opaque top-level `call_key` deduplicates flow calls durably per carrier, bound to the stamped agent. Repeating it returns the recorded success or refusal without re-reading files or repeating effects. A key cannot be reused for another agent. If basal stops after admission but before recording a reply, the key returns `outcome_unknown`: inspect the flow before issuing a new key. A cancelled route does not undo an admitted management operation.
+
 ## flow.instantiate
 
-Creates or extends a bounded [template instance](templates.md), without raising an approval card. Caller identity is the daemon-stamped agent; the operator may instead name `agent_id`. The approved `version` is required and filled in by the relay for agents.
+Creates or extends a bounded [template instance](templates.md), without raising an approval card. Caller identity is the daemon-stamped agent; the operator may instead name `agent_id`. The management operation requires `version`; the `flow` tool resolves an omitted version as described above.
 
 `flow.instantiate` parameters:
 ```json

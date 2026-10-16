@@ -48,6 +48,7 @@ libc.workspace = true
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 subc-client-rs.workspace = true
 subc-protocol.workspace = true
 tokio.workspace = true

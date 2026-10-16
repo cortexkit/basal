@@ -8,6 +8,9 @@ use subc_client_rs::consumer::{
 };
 use subc_protocol::{BindIdentity, RouteTarget};
 
+/// Core's catalog capability for the package.approved_versions management read.
+pub const PACKAGE_APPROVED_VERSIONS_CAPABILITY: &str = "package-approved-versions/v1";
+
 /// How a call over the daemon failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WireError {
@@ -55,6 +58,58 @@ impl WireError {
 
 /// Returns decoded provider payloads, not the management response envelope.
 pub trait Transport: Send + Sync {
+    /// Read a caller's file under the short-lived scope core registered for this
+    /// flow-tool call, never with basal's own file grants.
+    fn flow_read_exact(
+        &self,
+        _scope: &subc_protocol::scope::ScopeSelector,
+        _identity: &BindIdentity,
+        _path: &str,
+    ) -> Result<Value, WireError> {
+        Err(WireError::NeverSent("scoped file reads unavailable".into()))
+    }
+
+    fn newest_approved_template_version(&self, package: &str) -> Result<Option<u32>, WireError> {
+        let catalog = self.catalog()?;
+        let supported = catalog["modules"].as_array().is_some_and(|modules| {
+            modules.iter().any(|module| {
+                module["module_id"] == "prefrontal-core"
+                    && module["capabilities"]["provides"]
+                        .as_array()
+                        .is_some_and(|tags| {
+                            tags.iter()
+                                .any(|tag| tag == PACKAGE_APPROVED_VERSIONS_CAPABILITY)
+                        })
+            })
+        });
+        if !supported {
+            return Err(WireError::Refused {
+                code: "version_required".into(),
+                message: "Pass version; this core can't report approved template versions yet"
+                    .into(),
+            });
+        }
+        let reply = self.management(
+            "prefrontal-core",
+            "package.approved_versions",
+            json!({"package":package}),
+        )?;
+        if reply["package"] != package {
+            return Err(WireError::Unreadable(
+                "approved versions package mismatch".into(),
+            ));
+        }
+        match reply.get("newest_approved") {
+            Some(Value::Null) => Ok(None),
+            Some(value) => value
+                .as_u64()
+                .and_then(|v| u32::try_from(v).ok())
+                .filter(|v| *v > 0)
+                .map(Some)
+                .ok_or_else(|| WireError::Unreadable("invalid approved version".into())),
+            None => Err(WireError::Unreadable("missing approved version".into())),
+        }
+    }
     /// Returns a route-table key for a core-owned target scope, never an unscoped fallback.
     fn target_flow(
         &self,
@@ -636,6 +691,56 @@ impl SubcTransport {
     }
 }
 impl Transport for SubcTransport {
+    fn flow_read_exact(
+        &self,
+        scope: &subc_protocol::scope::ScopeSelector,
+        identity: &BindIdentity,
+        path: &str,
+    ) -> Result<Value, WireError> {
+        self.handle.block_on(async {
+            let handle = self
+                .consumer
+                .open_route_scoped(
+                    RouteTarget::ManagementSurface {
+                        module_id: "aft".into(),
+                    },
+                    identity.clone(),
+                    scope.clone(),
+                    CallOptions {
+                        timeout: self.timeout,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .map_err(|error| {
+                    // Route admission is a typed refusal too; do not flatten its code.
+                    if let Some(body) = error.route_open_refusal() {
+                        refusal(body.clone())
+                    } else {
+                        map_error(error)
+                    }
+                })?;
+            let result = self
+                .consumer
+                .request(
+                    &handle,
+                    serde_json::to_vec(&management_body("file.read_exact", json!({"path":path})))
+                        .expect("file read request"),
+                    CallOptions {
+                        timeout: self.timeout,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .map_err(map_error)
+                .and_then(|bytes| decode_response(&bytes, true));
+            let _ = self
+                .consumer
+                .close_handle(&handle, Default::default())
+                .await;
+            result
+        })
+    }
     fn target_flow(
         &self,
         request: &crate::CallRequest,
@@ -1271,6 +1376,46 @@ mod tests {
         drop(transport);
         drop(runtime);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn flow_file_reads_open_aft_on_the_exact_invoking_scope() {
+        with_scoped_transport(|transport, opens, calls, _| {
+            let selector = subc_protocol::scope::ScopeSelector {
+                owner: subc_protocol::Principal::Reserved {
+                    module_id: "prefrontal-core".into(),
+                },
+                scope_ref: "flow-read/call".into(),
+                scope_epoch: Some(1),
+            };
+            let identity = BindIdentity::new("/agent/project", "agent", "session");
+            for path in ["flow.js", "flow.json"] {
+                assert_eq!(
+                    transport
+                        .flow_read_exact(&selector, &identity, path)
+                        .unwrap(),
+                    json!({"path":path})
+                );
+            }
+            let opens = opens.lock().unwrap();
+            assert_eq!(opens.len(), 2);
+            for open in opens.iter() {
+                assert_eq!(
+                    open["target"],
+                    json!({"kind":"management_surface","module_id":"aft"})
+                );
+                assert_eq!(open["scope"], serde_json::to_value(&selector).unwrap());
+                assert_eq!(open["identity"], serde_json::to_value(&identity).unwrap());
+            }
+            let calls = calls.lock().unwrap();
+            let reads: Vec<_> = calls
+                .iter()
+                .filter(|(_, body)| body["method"] == "file.read_exact")
+                .collect();
+            assert_eq!(reads.len(), 2);
+            assert_eq!(reads[0].0, 11);
+            assert_eq!(reads[1].0, 12);
+        });
     }
 
     #[test]

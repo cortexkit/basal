@@ -1,5 +1,5 @@
-//! Basal's provider surface. Only the route stamp supplies caller authority;
-//! the model supplies a program, a one-line description and lower limits.
+//! Basal's provider surface. Only the principal and scope stamped by the daemon
+//! on the inbound route supply caller authority; model arguments never do.
 
 use cortexkit_role_tool_provider::CallMode;
 use cortexkit_role_tool_provider::catalog::{
@@ -44,6 +44,7 @@ pub fn check_call_mode(name: &str, mode: &CallMode) -> Result<(), ErrorBody> {
     // Unknown bind modes still fail closed, even on those operations.
     if matches!(mode, CallMode::Unknown(_))
         || (name == "codemode" && !serves_call_mode(&catalog_tool(), mode))
+        || (name == "flow" && !serves_call_mode(&crate::flow_tool::catalog_tool(), mode))
     {
         let mode = serde_json::to_value(mode).expect("call mode wire spelling");
         let spelling = mode.as_str().expect("call mode is a string");
@@ -69,7 +70,7 @@ pub fn catalog(arguments: Value) -> Result<Value, ErrorBody> {
     if request.system_text.is_some() {
         return Err(invalid("system_text", "basal supplies no system text"));
     }
-    let mut excluded = false;
+    let mut tools = vec![catalog_tool(), crate::flow_tool::catalog_tool()];
     for (key, value) in &request.params {
         if key != "exclude" {
             return Err(invalid(&format!("params.{key}"), "unknown catalog axis"));
@@ -81,14 +82,10 @@ pub fn catalog(arguments: Value) -> Result<Value, ErrorBody> {
             let name = name
                 .as_str()
                 .ok_or_else(|| invalid("params.exclude", "expected tool names"))?;
-            excluded |= name == "codemode";
+            tools.retain(|tool| tool.name != name);
         }
     }
-    let mut answer = CatalogAnswer::new("", "").with_tools(if excluded {
-        vec![]
-    } else {
-        vec![catalog_tool()]
-    });
+    let mut answer = CatalogAnswer::new("", "").with_tools(tools);
     answer
         .capabilities
         .insert("late_results".into(), true.into());
