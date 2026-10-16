@@ -1030,6 +1030,8 @@ new = '#[serde(tag = "kind", rename_all = "snake_case")] // NON-VACUITY BREAK'
 [[control]]
 id = "audience-sinks-allow-named-targets"
 scope = { after = "fn check_targets(", before = "\n    fn " }
+hub = "When an audience is declared, sink, status and board-read target lists cannot mix the $audience placeholder with statically named agents; core manifest tests enforce the same exclusion"
+hub_targets = ["basal_core"]
 guards = "audience sink declarations cannot mix static named targets"
 test_file = "crates/basal-core/tests/audience.rs"
 runner = "cargo"
@@ -1047,6 +1049,8 @@ new = 'if false && agent != AUDIENCE_TARGET { // NON-VACUITY BREAK'
 [[control]]
 id = "audience-placeholder-without-reach"
 scope = { after = "fn check_targets(", before = "\n    fn " }
+hub = "The $audience placeholder requires a declared audience wherever it appears, including sink, status, claim, fact and board-read declarations; core manifest tests enforce the same presence rule"
+hub_targets = ["basal_core"]
 guards = "the audience placeholder requires an audience"
 test_file = "crates/basal-core/tests/audience.rs"
 runner = "cargo"

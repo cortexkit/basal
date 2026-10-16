@@ -708,7 +708,7 @@ new = "let recovered: Vec<String> = Vec::new();"
 [[control]]
 id = "a-card-s-approval-is-applied-as-a-rejection"
 hub = "An approved install card approves its version and admits its flow; flow-running fixtures install through approval, so applying that approval as rejection leaves no approved audience, owner or admissible run"
-hub_targets = ["audience", "board_hygiene", "caller_binding", "dry_run", "e2e", "engine", "health_contract", "idle_wake", "install_revoked", "list_contract", "module_lifecycle", "pool", "state_epoch", "templates"]
+hub_targets = ["audience", "board_hygiene", "caller_binding", "ci_failure_router", "dry_run", "e2e", "engine", "health_contract", "idle_wake", "install_revoked", "list_contract", "module_lifecycle", "ops", "pool", "state_epoch", "templates"]
 guards = "a card's approval is applied as a rejection"
 test_file = "crates/basal-module/tests/ops.rs"
 runner = "cargo"
@@ -1031,8 +1031,8 @@ new = "\"auto_disabled\": f.auto_disabled.then_some(true),"
 
 [[control]]
 id = "health-s-state-is-outside-the-contract-s-enum"
-hub = "An approved enabled flow is reported as enabled, never active, across strict health decoding, ops, list and install-gate tests"
-hub_targets = ["install_gate", "list_contract", "ops"]
+hub = "An approved flow has the contract state `enabled`, never `active`, across strict health decoding, ops, list, install-gate and legacy stored-manifest health tests"
+hub_targets = ["install_gate", "list_contract", "ops", "stored_manifests"]
 guards = "health's state is outside the contract's enum"
 test_file = "crates/basal-module/tests/health_contract.rs"
 runner = "cargo"
