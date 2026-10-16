@@ -67,6 +67,8 @@ pub struct Module {
     pub pool: Pool,
     pub codemode_pool: Pool,
     pub(crate) codemode: crate::codemode::Codemode,
+    pub(crate) flow_transport: Arc<dyn basal_host::transport::Transport>,
+    pub(crate) flow_tool_serial: Mutex<()>,
     pub engine: Engine,
     pub dry: DryRunner,
     pub consent: Arc<dyn Consent>,
@@ -92,6 +94,10 @@ impl Module {
         request: cortexkit_role_tool_provider::call::ToolCallRequest,
         foreground: Duration,
     ) -> Result<serde_json::Value, subc_protocol::ErrorBody> {
+        crate::tool::check_call_mode(&request.name, &context.call_mode)?;
+        if request.name == "flow" {
+            return self.flow_tool(context, &request);
+        }
         if request.name != "codemode" {
             return self.codemode.role(context, &request);
         }
@@ -227,6 +233,8 @@ impl Module {
             pool,
             codemode_pool,
             codemode,
+            flow_transport: hosts.transport,
+            flow_tool_serial: Mutex::new(()),
             engine,
             dry,
             consent: hosts.consent,

@@ -1,0 +1,56 @@
+# Agent flow-tool authority and exact file-read guards.
+
+[[control]]
+id = "flow-tool-read-scope-check-bypassed"
+guards = "flow installs require core's ephemeral flow-read scope before attempting a read"
+test_file = "crates/basal-module/tests/tool_provider_conformance/flow.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test tool_provider_conformance"
+select = { tests = ["flow::install_scope_guard_refuses_without_reading", "flow::flow_catalog_has_exact_capability_tag"] }
+expect_red = ["flow::install_scope_guard_refuses_without_reading"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/flow_tool.rs"
+scope = { after = "fn read_scope(", before = "\nimpl Module" }
+old = 'matches!(&scope.owner, Principal::Reserved { module_id } if module_id == "prefrontal-core")'
+new = 'true || matches!(&scope.owner, Principal::Reserved { module_id } if module_id == "prefrontal-core") // NON-VACUITY BREAK'
+
+[[control]]
+id = "flow-tool-read-digest-check-bypassed"
+guards = "flow installs recompute SHA-256 over the exact bytes returned by AFT"
+test_file = "crates/basal-module/tests/tool_provider_conformance/flow.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test tool_provider_conformance"
+select = { tests = ["flow::install_digest_guard_rechecks_returned_bytes", "flow::flow_catalog_has_exact_capability_tag"] }
+expect_red = ["flow::install_digest_guard_rechecks_returned_bytes"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/flow_tool.rs"
+old = 'if reply["sha256"].as_str() != Some(digest.as_str()) {'
+new = 'if false { // NON-VACUITY BREAK'
+
+[[control]]
+id = "flow-tool-caller-taken-from-arguments"
+guards = "the flow caller is the agent stamped by the daemon, never a model argument"
+test_file = "crates/basal-module/tests/tool_provider_conformance/flow.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test tool_provider_conformance"
+select = { tests = ["flow::flow_caller_guard_uses_stamp_not_arguments", "flow::flow_catalog_has_exact_capability_tag"] }
+expect_red = ["flow::flow_caller_guard_uses_stamp_not_arguments"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/flow_tool.rs"
+old = 'let caller = crate::caller::from_route(Some(&context.principal), context.scope.as_ref());'
+new = '''let caller = Caller::Agent { // NON-VACUITY BREAK
+    agent_id: request.arguments["agent_id"].as_str().unwrap_or("argument-agent").to_owned(),
+    scope_ref: context.scope.as_ref().map(|s| s.scope_ref.clone()).unwrap_or_default(),
+};'''

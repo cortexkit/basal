@@ -62,7 +62,8 @@ fn the_built_binary_prints_a_manifest_subc_protocol_accepts() {
             manifest.provides
         );
     };
-    assert_eq!(tools.len(), 1);
+    assert_eq!(tools.len(), 2);
+    assert_eq!(tools[1].name, "flow");
     assert_eq!(tools[0].name, "codemode");
     assert_eq!(tools[0].schema, basal_module::tool::schema());
     let declared: BTreeSet<(String, bool)> = operations

@@ -119,12 +119,20 @@ pub fn manifest() -> ModuleManifest {
         .protocol_ver(PROTOCOL_VERSION)
         .provides(vec![
             ProviderRole::ToolProvider {
-                tools: vec![subc_protocol::manifest::Tool {
-                    name: "codemode".into(),
-                    description: Some(crate::tool::DESCRIPTION.into()),
-                    execution_mode: subc_protocol::manifest::ExecutionMode::Unfenceable,
-                    schema: crate::tool::schema(),
-                }],
+                tools: vec![
+                    subc_protocol::manifest::Tool {
+                        name: "codemode".into(),
+                        description: Some(crate::tool::DESCRIPTION.into()),
+                        execution_mode: subc_protocol::manifest::ExecutionMode::Unfenceable,
+                        schema: crate::tool::schema(),
+                    },
+                    subc_protocol::manifest::Tool {
+                        name: "flow".into(),
+                        description: Some(crate::flow_tool::DESCRIPTION.into()),
+                        execution_mode: subc_protocol::manifest::ExecutionMode::Unfenceable,
+                        schema: crate::flow_tool::schema(),
+                    },
+                ],
                 identity_scope: vec![],
                 concurrency: Concurrency::ModuleManaged,
                 emits_push: false,

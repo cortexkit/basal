@@ -221,6 +221,11 @@ impl BasalHandler {
                 ));
             }
         };
+        if request.name == "flow" {
+            return tool_outcome(
+                tokio::task::spawn_blocking(move || module.flow_tool(&context, &request)).await,
+            );
+        }
         if request.name != "codemode" {
             let outcome =
                 tokio::task::spawn_blocking(move || module.codemode.role(&context, &request)).await;

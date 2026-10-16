@@ -1,4 +1,6 @@
 mod common;
+#[path = "tool_provider_conformance/flow.rs"]
+mod flow;
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
@@ -37,18 +39,57 @@ struct MockCore {
     scopes: basal_testkit::run_scopes::RunScopes,
     clock: basal_core::Clock,
     marker_root: std::path::PathBuf,
+    files: Mutex<HashMap<String, Result<Value, WireError>>>,
+    reads: Mutex<Vec<(subc_protocol::scope::ScopeSelector, String)>>,
+    approved: Mutex<HashMap<String, Option<u32>>>,
+    approval_capability: std::sync::atomic::AtomicBool,
+    approval_queries: Mutex<Vec<String>>,
+    consent: MockConsent,
 }
 impl Transport for MockCore {
+    fn flow_read_exact(
+        &self,
+        scope: &subc_protocol::scope::ScopeSelector,
+        _: &BindIdentity,
+        path: &str,
+    ) -> Result<Value, WireError> {
+        self.reads
+            .lock()
+            .unwrap()
+            .push((scope.clone(), path.into()));
+        self.files
+            .lock()
+            .unwrap()
+            .get(path)
+            .cloned()
+            .expect("unexpected AFT read")
+    }
     fn catalog(&self) -> Result<Value, WireError> {
-        Ok(
-            json!({"modules":[{"module_id":"mock","capabilities":{"provides":["agent-run-scopes/v1"]},"roles":[{
+        let mut catalog = json!({"modules":[{"module_id":"mock","capabilities":{"provides":["agent-run-scopes/v1"]},"roles":[{
             "role":"tool_provider","identity_scope":[],"concurrency":"module_managed","emits_push":false,"sub_supervises":false,
-            "tools":[{"name":"write_marker","execution_mode":"mutating","schema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}]}]}]}),
-        )
+            "tools":[{"name":"write_marker","execution_mode":"mutating","schema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}]}]}]});
+        if self.approval_capability.load(Ordering::SeqCst) {
+            catalog["modules"].as_array_mut().unwrap().push(json!({"module_id":"prefrontal-core","capabilities":{"provides":[basal_host::transport::PACKAGE_APPROVED_VERSIONS_CAPABILITY]}}));
+        }
+        Ok(catalog)
     }
     fn management(&self, module: &str, op: &str, params: Value) -> Result<Value, WireError> {
         assert_eq!(module, "prefrontal-core");
         match op {
+            "package.approved_versions" => {
+                let package = params["package"].as_str().unwrap();
+                self.approval_queries.lock().unwrap().push(package.into());
+                let newest = self
+                    .approved
+                    .lock()
+                    .unwrap()
+                    .get(package)
+                    .copied()
+                    .flatten();
+                Ok(
+                    json!({"package":package,"versions":newest.into_iter().collect::<Vec<_>>(),"newest_approved":newest}),
+                )
+            }
             "codemode.run_scope.open" => {
                 let request: Open = serde_json::from_value(params).unwrap();
                 self.host.set_scope_description(Principal::Reserved { module_id:"prefrontal-core".into() },&request.run_id,Ok(serde_json::from_value(json!({
@@ -309,6 +350,7 @@ impl Harness for Subject {
         let (ready, prepared) = tokio::sync::oneshot::channel();
         let ready = Arc::new(Mutex::new(Some(ready)));
         let catalog = MockCatalog::standard();
+        catalog.add_named_agent("agent", "Agent");
         catalog.set_op(
             "mock",
             "write_marker",
@@ -340,7 +382,7 @@ impl Harness for Subject {
                 host: Arc::new(host.host.clone()),
                 transport: host.clone(),
                 catalog: Arc::new(catalog.clone()),
-                consent: Arc::new(MockConsent::new()),
+                consent: Arc::new(host.consent.clone()),
                 hooks: Arc::new(basal_core::NoHooks),
             }),
         )
@@ -451,16 +493,34 @@ impl Subject {
         mode: Option<CallMode>,
         attributes: Option<Value>,
     ) -> Result<Route, HarnessError> {
+        self.bind_surface(
+            handle,
+            stamp,
+            mode,
+            attributes,
+            RouteTarget::ToolProvider {
+                module_id: "basal".into(),
+            },
+        )
+        .await
+    }
+
+    async fn bind_surface(
+        &self,
+        handle: &Live,
+        stamp: &RouteStamp,
+        mode: Option<CallMode>,
+        attributes: Option<Value>,
+        target: RouteTarget,
+    ) -> Result<Route, HarnessError> {
         let channel = handle.wire.channel.fetch_add(1, Ordering::SeqCst);
         let scope = stamp.scope.as_ref().map(|scope| serde_json::from_value(json!({
-            "owner":principal(&scope.owner),"ref":scope.scope_ref,"scope_epoch":scope.scope_epoch,"kind":"head",
+            "owner":principal(&scope.owner),"ref":scope.scope_ref,"scope_epoch":scope.scope_epoch,"kind":if scope.scope_ref.starts_with("flow-read/") { "ephemeral" } else { "head" },
             "attributes":attributes.unwrap_or_else(|| json!({"agent_id":"agent"})),"owner_authorized":true})).unwrap());
         let bind = ModuleControlRequest::RouteBind {
             route_channel: channel,
             epoch: 1,
-            target: RouteTarget::ToolProvider {
-                module_id: "basal".into(),
-            },
+            target,
             identity: BindIdentity::new("/work", "test", "session"),
             principal: Some(principal(&stamp.principal)),
             consumer_capabilities: None,
@@ -512,6 +572,7 @@ impl ToolProviderSubject for Subject {
     fn content_v1_calls(&self) -> Vec<CallSpec> {
         vec![
             self.quick_call(),
+            ("flow".into(), json!({"action":"list"})),
             (
                 "codemode".into(),
                 json!({"code":"throw new Error('probe failure');"}),
@@ -929,7 +990,7 @@ fn every_public_tool_declares_its_served_modes() {
             .iter()
             .map(|tool| tool.name.as_str())
             .collect::<Vec<_>>(),
-        ["codemode"]
+        ["codemode", "flow"]
     );
     for tool in &answer.tools {
         assert_eq!(check_modes(tool), Ok(()));

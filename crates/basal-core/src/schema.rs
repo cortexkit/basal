@@ -380,6 +380,10 @@ DELETE FROM outbox WHERE kind IN ('flow.disabled','flow.auto_disabled',
 CREATE INDEX owner_notice_pending ON outbox(retry_at) WHERE delivered_at IS NULL AND kind='flow.owner_notice';
 "#,
     },
+    Migration {
+        version: 32,
+        statements: "CREATE TABLE flow_tool_calls (carrier TEXT NOT NULL, call_key TEXT NOT NULL, agent TEXT NOT NULL, result TEXT, PRIMARY KEY(carrier,call_key));",
+    },
 ];
 
 const TEMPLATE_EVENTS: &str = r#"

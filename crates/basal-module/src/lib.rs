@@ -38,6 +38,7 @@ pub mod pool;
 pub mod process;
 // Exercise evidence capture in ordinary unit tests without enabling a kill
 // switch in deployed binaries, which still require the explicit feature.
+mod flow_tool;
 #[cfg(any(test, feature = "rig-kill-hook"))]
 pub mod rig_kill;
 pub mod scope_connection;
