@@ -18,84 +18,87 @@ old = "const blocks = Array.isArray(board.laneBlocks) ? board.laneBlocks : [];"
 new = "const blocks = Array.isArray(board.lanes) ? board.lanes : []; // NON-VACUITY BREAK"
 
 [[control]]
-id = "board-hygiene-stop-on-change"
-guards = "a moved item timestamp drops old nudge memory without sending"
+id = "board-hygiene-wake-only-on-join"
+guards = "unchanged membership and edited item fields update without a wake"
 test_file = "crates/basal-module/tests/board_hygiene.rs"
 runner = "cargo"
 package = "basal-module"
 platforms = ["linux"]
 target = "--test board_hygiene"
-expect_red = ["changed_items_drop_memory_without_sending_on_that_run"]
-only = false
+select = { tests = ["unchanged_members_and_edited_fields_never_wake", "install_card_dry_run_text_matches_its_committed_fixture"] }
+expect_red = ["unchanged_members_and_edited_fields_never_wake"]
+only = true
 build_timeout_s = 3600
 timeout_s = 600
 file = "flows/board-hygiene/flow.js"
-old = "if (previous && previous.changed_at_ms !== changed) {"
-new = "if (false && previous && previous.changed_at_ms !== changed) { // NON-VACUITY BREAK"
+old = "const joined = members.some(member => !previousMembers.has(member));"
+new = "const joined = members.length > 0; // NON-VACUITY BREAK"
 
 [[control]]
-id = "board-hygiene-wait-ended-interval"
-guards = "ended waits repeat only after thirty minutes"
+id = "board-hygiene-silent-on-leave"
+guards = "removing members or emptying a list never wakes its owner"
 test_file = "crates/basal-module/tests/board_hygiene.rs"
 runner = "cargo"
 package = "basal-module"
 platforms = ["linux"]
 target = "--test board_hygiene"
-expect_red = ["wait_ended_first_at_thirty_minutes_and_repeats_after_thirty_minutes"]
-only = false
+select = { tests = ["leaving_members_and_empty_lists_update_silently", "install_card_dry_run_text_matches_its_committed_fixture"] }
+expect_red = ["leaving_members_and_empty_lists_update_silently"]
+only = true
 build_timeout_s = 3600
 timeout_s = 600
 file = "flows/board-hygiene/flow.js"
-old = "wait_ended: 30 * MINUTE"
-new = "wait_ended: 31 * MINUTE /* NON-VACUITY BREAK */"
+old = "const joined = members.some(member => !previousMembers.has(member));"
+new = "const joined = members.some(member => !previousMembers.has(member)) || members.length < previousMembers.size; // NON-VACUITY BREAK"
 
 [[control]]
-id = "board-hygiene-eta-interval"
-guards = "ETA nudges repeat only after two hours"
+id = "board-hygiene-aggregation-key"
+guards = "multiple items share one digest per recipient and rule"
 test_file = "crates/basal-module/tests/board_hygiene.rs"
 runner = "cargo"
 package = "basal-module"
 platforms = ["linux"]
 target = "--test board_hygiene"
-expect_red = ["eta_first_at_eta_and_repeats_after_two_hours"]
-only = false
+select = { tests = ["several_members_aggregate_by_owner_and_rule", "install_card_dry_run_text_matches_its_committed_fixture"] }
+expect_red = ["several_members_aggregate_by_owner_and_rule"]
+only = true
 build_timeout_s = 3600
 timeout_s = 600
 file = "flows/board-hygiene/flow.js"
-old = "eta_passed: 2 * HOUR"
-new = "eta_passed: 3 * HOUR /* NON-VACUITY BREAK */"
+old = "const key = memoryKey(recipient, rule);"
+new = "const key = memoryKey(recipient, `${rule}:${item?.id ?? lane.id}`); // NON-VACUITY BREAK"
 
 [[control]]
-id = "board-hygiene-stale-interval"
-guards = "stale active nudges repeat only after six hours"
+id = "board-hygiene-initial-age"
+guards = "wait ended and stale active rules retain their initial age thresholds"
 test_file = "crates/basal-module/tests/board_hygiene.rs"
 runner = "cargo"
 package = "basal-module"
 platforms = ["linux"]
 target = "--test board_hygiene"
-expect_red = ["stale_active_first_at_six_hours_and_repeats_after_six_hours"]
+expect_red = ["each_rule_keeps_its_initial_age_threshold"]
 only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "flows/board-hygiene/flow.js"
-old = "stale_active: 6 * HOUR"
-new = "stale_active: 7 * HOUR /* NON-VACUITY BREAK */"
+old = "if (!condition || now < since + firstDelay) return;"
+new = "if (!condition || now < since + firstDelay + MINUTE) return; // NON-VACUITY BREAK"
 
 [[control]]
-id = "board-hygiene-lane-done-interval"
-guards = "completed lanes repeat only after two hours"
+id = "board-hygiene-lane-done-delay"
+guards = "completed lanes wait thirty minutes and use lane timestamps when needed"
 test_file = "crates/basal-module/tests/board_hygiene.rs"
 runner = "cargo"
 package = "basal-module"
 platforms = ["linux"]
 target = "--test board_hygiene"
-expect_red = ["lane_done_first_at_thirty_minutes_and_repeats_after_two_hours_with_fallback"]
+expect_red = ["lane_done_first_at_thirty_minutes_with_timestamp_fallback"]
 only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "flows/board-hygiene/flow.js"
-old = "lane_done: 2 * HOUR"
-new = "lane_done: 3 * HOUR /* NON-VACUITY BREAK */"
+old = "newest, 30 * MINUTE, agent);"
+new = "newest, 31 * MINUTE, agent); // NON-VACUITY BREAK"
 
 [[control]]
 id = "board-hygiene-unknown-activity"
@@ -114,20 +117,20 @@ old = "activity?.status === 'ok'"
 new = "activity?.status !== 'denied' /* NON-VACUITY BREAK */"
 
 [[control]]
-id = "board-hygiene-copy-once"
-guards = "waiting owners receive only the first target ETA nudge"
+id = "board-hygiene-no-item-wait-copy"
+guards = "item references do not create overdue entries on the waiting owner's board"
 test_file = "crates/basal-module/tests/board_hygiene.rs"
 runner = "cargo"
 package = "basal-module"
 platforms = ["linux"]
 target = "--test board_hygiene"
-expect_red = ["item_wait_copies_only_the_first_target_eta_nudge_to_each_waiting_owner", "plain_peer_wait_copies_first_eta_once_with_own_item_data_and_replanning_choices"]
+expect_red = ["item_wait_never_copies_peer_commitments_to_waiting_owners"]
 only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "flows/board-hygiene/flow.js"
-old = "if (rule === 'eta_passed' && count === 1) {"
-new = "if (rule === 'eta_passed' && count >= 1) { // NON-VACUITY BREAK"
+old = "!itemRef(item.wait)"
+new = "true /* NON-VACUITY BREAK */"
 
 [[control]]
 id = "board-hygiene-replacement-fallback"

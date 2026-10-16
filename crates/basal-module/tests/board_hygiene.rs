@@ -269,58 +269,7 @@ fn install_card_dry_run_text_matches_its_committed_fixture() {
 }
 
 #[test]
-fn wait_ended_first_at_thirty_minutes_and_repeats_after_thirty_minutes() {
-    let mut i = item("blocked", BASE - MIN);
-    i["wait"] =
-        json!({"on":"work","ref":"work:x","ref_state":"terminal","ref_terminal_at_ms":BASE});
-    let mut t = Test::new(vec![board("ag_a", vec![i])]);
-    assert!(t.run(BASE + 30 * MIN - 1).is_empty());
-    let first = t.run(BASE + 30 * MIN);
-    assert_eq!(first.len(), 1);
-    assert_eq!(first[0]["action"], "wake");
-    assert_eq!(first[0]["item"]["data"]["since_ms"], BASE);
-    assert!(t.run(BASE + 60 * MIN - 1).is_empty());
-    assert_eq!(t.run(BASE + 60 * MIN).len(), 1);
-}
-
-#[test]
-fn eta_first_at_eta_and_repeats_after_two_hours() {
-    let mut i = item("pending", BASE - MIN);
-    i["eta_ms"] = json!(BASE);
-    let mut t = Test::new(vec![board("ag_a", vec![i])]);
-    assert!(t.run(BASE - 1).is_empty());
-    let first = t.run(BASE);
-    assert_eq!(first.len(), 1);
-    assert_eq!(first[0]["action"], "wake");
-    assert_eq!(
-        first[0]["item"]["data"],
-        json!({"kind":"board_nudge","rule":"eta_passed","agent_id":"ag_a","lane_id":"lane1","lane_title":"Release","item_id":"item1","item_text":"Ship","item_state":"pending","since_ms":BASE,"eta_ms":BASE})
-    );
-    assert!(t.run(BASE + 2 * HOUR - 1).is_empty());
-    let repeated = t.run(BASE + 2 * HOUR);
-    assert_eq!(repeated.len(), 1);
-    assert_eq!(repeated[0]["action"], "piggyback");
-}
-
-#[test]
-fn stale_active_first_at_six_hours_and_repeats_after_six_hours() {
-    let mut t = Test::new(vec![board("ag_a", vec![item("active", BASE)])]);
-    *t.host.activity.lock().unwrap() = json!({"status":"ok","value":BASE + MIN});
-    assert!(t.run(BASE + 6 * HOUR - 1).is_empty());
-    assert_eq!(t.host.facts_calls.load(Ordering::Relaxed), 0);
-    let first = t.run(BASE + 6 * HOUR);
-    assert_eq!(first.len(), 1);
-    assert_eq!(first[0]["action"], "piggyback");
-    assert_eq!(
-        first[0]["item"]["data"],
-        json!({"kind":"board_nudge","rule":"stale_active","agent_id":"ag_a","lane_id":"lane1","lane_title":"Release","item_id":"item1","item_text":"Ship","item_state":"active","since_ms":BASE})
-    );
-    assert!(t.run(BASE + 12 * HOUR - 1).is_empty());
-    assert_eq!(t.run(BASE + 12 * HOUR).len(), 1);
-}
-
-#[test]
-fn lane_done_first_at_thirty_minutes_and_repeats_after_two_hours_with_fallback() {
+fn lane_done_first_at_thirty_minutes_with_timestamp_fallback() {
     let mut missing = item("done", BASE);
     missing.as_object_mut().unwrap().remove("changed_at_ms");
     let mut t = Test::new(vec![board(
@@ -330,48 +279,206 @@ fn lane_done_first_at_thirty_minutes_and_repeats_after_two_hours_with_fallback()
     assert!(t.run(BASE + 30 * MIN - 1).is_empty());
     let first = t.run(BASE + 30 * MIN);
     assert_eq!(first.len(), 1);
-    assert_eq!(first[0]["action"], "piggyback");
+    assert_eq!(first[0]["action"], "wake");
     assert_eq!(
-        first[0]["item"]["data"],
+        first[0]["item"]["data"]["entries"][0],
         json!({"kind":"board_nudge","rule":"lane_done","agent_id":"ag_a","lane_id":"lane1","lane_title":"Release","since_ms":BASE})
     );
-    assert!(t.run(BASE + 30 * MIN + 2 * HOUR - 1).is_empty());
-    assert_eq!(t.run(BASE + 30 * MIN + 2 * HOUR).len(), 1);
+    assert_eq!(t.run(BASE + 3 * HOUR)[0]["action"], "silent");
+}
+
+const RULES: [&str; 4] = ["wait_ended", "eta_passed", "stale_active", "lane_done"];
+
+fn candidate(name: &str, id: &str, since: u64) -> Value {
+    let state = match name {
+        "wait_ended" => "blocked",
+        "stale_active" => "active",
+        "lane_done" => "done",
+        _ => "pending",
+    };
+    let mut i = item(state, since);
+    i["id"] = json!(id);
+    if name == "wait_ended" {
+        i["changed_at_ms"] = json!(since - MIN);
+        i["wait"] = json!({"on":"work","ref_state":"terminal","ref_terminal_at_ms":since});
+    } else if name == "eta_passed" {
+        i["eta_ms"] = json!(since);
+    }
+    i
+}
+
+fn candidates(name: &str, count: usize) -> Value {
+    let mut b = board("ag_a", vec![]);
+    if name == "lane_done" {
+        b["board"]["laneBlocks"] = json!(
+            (0..count)
+                .map(|n| {
+                    let mut lane =
+                        board("ag_a", vec![candidate(name, "item1", BASE)])["board"]["laneBlocks"]
+                            [0]
+                        .clone();
+                    lane["id"] = json!(format!("lane{n}"));
+                    lane
+                })
+                .collect::<Vec<_>>()
+        );
+    } else {
+        b["board"]["laneBlocks"][0]["items"] = json!(
+            (0..count)
+                .map(|n| candidate(name, &format!("item{n}"), BASE))
+                .collect::<Vec<_>>()
+        );
+    }
+    b
+}
+
+fn active_test(boards: Vec<Value>) -> Test {
+    let t = Test::new(boards);
+    *t.host.activity.lock().unwrap() = json!({"status":"ok","value":BASE + MIN});
+    t
 }
 
 #[test]
-fn changed_items_drop_memory_without_sending_on_that_run() {
-    for name in ["wait_ended", "eta_passed", "stale_active", "lane_done"] {
-        let mut i = item(
-            match name {
-                "wait_ended" => "blocked",
-                "stale_active" => "active",
-                "lane_done" => "done",
-                _ => "pending",
-            },
-            BASE,
-        );
-        if name == "wait_ended" {
-            i["wait"] = json!({"on":"work","ref_state":"terminal","ref_terminal_at_ms":BASE + MIN});
+fn each_rule_keeps_its_initial_age_threshold() {
+    for (name, delay) in [
+        ("wait_ended", 30 * MIN),
+        ("eta_passed", 0),
+        ("stale_active", 6 * HOUR),
+    ] {
+        let mut t = active_test(vec![candidates(name, 1)]);
+        assert!(t.run(BASE + delay - 1).is_empty(), "{name}");
+        let writes = t.run(BASE + delay);
+        assert_eq!(writes.len(), 1, "{name}");
+        assert_eq!(writes[0]["item"]["data"]["entries"][0]["since_ms"], BASE);
+        assert_eq!(writes[0]["action"], "wake");
+    }
+}
+
+#[test]
+fn several_members_aggregate_by_owner_and_rule() {
+    for name in RULES {
+        let mut other = candidates(name, 2);
+        other["agent_id"] = json!("ag_b");
+        let mut t = active_test(vec![candidates(name, 3), other]);
+        let writes = t.run(BASE + 8 * HOUR);
+        assert_eq!(writes.len(), 2, "{name}");
+        for (write, count, owner) in [(&writes[0], 3, "ag_a"), (&writes[1], 2, "ag_b")] {
+            assert_eq!(write["agent"], owner);
+            assert_eq!(write["action"], "wake");
+            assert_eq!(write["replace_key"], format!("board_nudge:{owner}:{name}"));
+            assert_eq!(write["item"]["data"]["rule"], name);
+            assert_eq!(write["item"]["data"]["total_count"], count);
+            assert_eq!(
+                write["item"]["data"]["entries"].as_array().unwrap().len(),
+                count
+            );
+            assert!(write["item"]["body"].as_str().unwrap().contains("Release"));
+            assert!(
+                write["item"]["body"]
+                    .as_str()
+                    .unwrap()
+                    .contains("board update:")
+            );
         }
-        if name == "eta_passed" {
-            i["eta_ms"] = json!(BASE);
-        }
-        let mut t = Test::new(vec![board("ag_a", vec![i.clone()])]);
-        *t.host.activity.lock().unwrap() = json!({"status":"ok","value":BASE + 2 * MIN});
-        assert_eq!(rule(&t.run(BASE + 6 * HOUR), name).len(), 1, "{name}");
-        i["changed_at_ms"] = json!(BASE + 1);
-        t.item(i);
-        assert!(rule(&t.run(BASE + 12 * HOUR), name).is_empty(), "{name}");
-        let key = format!(
-            "nudge:ag_a:{}:{name}",
-            if name == "lane_done" {
-                "lane1"
-            } else {
-                "item1"
-            }
+    }
+}
+
+#[test]
+fn unchanged_members_and_edited_fields_never_wake() {
+    for name in RULES {
+        let mut t = active_test(vec![candidates(name, 2)]);
+        t.run(BASE + 8 * HOUR);
+        assert_eq!(t.run(BASE + 16 * HOUR)[0]["action"], "silent", "{name}");
+        t.host.boards.lock().unwrap()[0]["board"]["laneBlocks"][0]["items"][0]["text"] =
+            json!("Edited");
+        assert_eq!(t.run(BASE + 24 * HOUR)[0]["action"], "silent", "{name}");
+    }
+}
+
+#[test]
+fn new_member_wakes_and_is_listed_for_each_rule() {
+    for name in RULES {
+        let mut t = active_test(vec![candidates(name, 2)]);
+        t.run(BASE + 8 * HOUR);
+        *t.host.boards.lock().unwrap() = vec![candidates(name, 3)];
+        let writes = t.run(BASE + 9 * HOUR);
+        assert_eq!(writes.len(), 1, "{name}");
+        assert_eq!(writes[0]["action"], "wake", "{name}");
+        assert_eq!(
+            writes[0]["item"]["data"]["entries"]
+                .as_array()
+                .unwrap()
+                .len(),
+            3
         );
-        assert!(!t.keys().contains(&key), "{name}");
+    }
+    let mut t = Test::new(vec![board(
+        "ag_a",
+        vec![candidate("eta_passed", "later", BASE + HOUR)],
+    )]);
+    assert!(t.run(BASE).is_empty());
+    assert_eq!(t.run(BASE + HOUR)[0]["action"], "wake");
+}
+
+#[test]
+fn leaving_members_and_empty_lists_update_silently() {
+    for name in RULES {
+        let mut t = active_test(vec![candidates(name, 3)]);
+        t.run(BASE + 8 * HOUR);
+        *t.host.boards.lock().unwrap() = vec![candidates(name, 2)];
+        let writes = t.run(BASE + 9 * HOUR);
+        assert_eq!(writes.len(), 1, "{name}");
+        assert_eq!(writes[0]["action"], "silent", "{name}");
+        assert_eq!(writes[0]["item"]["data"]["total_count"], 2);
+        t.host.boards.lock().unwrap().clear();
+        let empty = t.run(BASE + 10 * HOUR);
+        assert_eq!(empty.len(), 1, "{name}");
+        assert_eq!(empty[0]["action"], "silent", "{name}");
+        assert_eq!(empty[0]["item"]["body"], "Nothing is outstanding.");
+        assert_eq!(empty[0]["item"]["data"]["entries"], json!([]));
+        assert!(t.run(BASE + 11 * HOUR).is_empty());
+    }
+}
+
+#[test]
+fn resolved_retired_and_moved_items_do_not_create_cleanup_wakes() {
+    let mut t = Test::new(vec![candidates("eta_passed", 3)]);
+    t.run(BASE + HOUR);
+    {
+        let mut boards = t.host.boards.lock().unwrap();
+        let lane = &mut boards[0]["board"]["laneBlocks"][0];
+        lane["id"] = json!("moved-lane");
+        lane["items"][0]["state"] = json!("done");
+        lane["items"][1]["eta_ms"] = json!(BASE + 4 * HOUR);
+    }
+    let updated = t.run(BASE + 2 * HOUR);
+    assert_eq!(updated.len(), 1);
+    assert_eq!(updated[0]["action"], "silent");
+    assert_eq!(updated[0]["item"]["data"]["total_count"], 1);
+    assert_eq!(
+        updated[0]["item"]["data"]["entries"][0]["lane_id"],
+        "moved-lane"
+    );
+    t.host.boards.lock().unwrap()[0]["board"]["laneBlocks"][0]["status"] = json!("retired");
+    let emptied = t.run(BASE + 3 * HOUR);
+    assert_eq!(emptied.len(), 1);
+    assert_eq!(emptied[0]["action"], "silent");
+    assert_eq!(emptied[0]["item"]["data"]["total_count"], 0);
+}
+
+#[test]
+fn oversized_membership_is_refused_instead_of_repeatedly_waking() {
+    let items = (0..1000)
+        .map(|n| candidate("eta_passed", &format!("item{n:04}{}", "x".repeat(80)), BASE))
+        .collect();
+    let mut t = Test::new(vec![board("ag_a", items)]);
+    for now in [BASE, BASE + HOUR] {
+        assert!(t.run(now).is_empty());
+        assert_eq!(
+            t.result["refusals"][0]["message"],
+            "board hygiene membership too large"
+        );
+        assert!(t.keys().is_empty());
     }
 }
 
@@ -398,9 +505,9 @@ fn plain_peer_wait_nudges_the_peer_and_nonpeer_wait_nudges_owner() {
         }
         let mut t = Test::new(vec![board("ag_a", vec![i])]);
         let writes = t.run(BASE + 6 * HOUR);
-        assert_eq!(writes.len(), if recipient == "ag_a" { 1 } else { 2 });
+        assert_eq!(writes.len(), 1);
         assert_eq!(writes[0]["agent"], recipient);
-        assert_eq!(writes[0]["item"]["data"]["agent_id"], "ag_a");
+        assert_eq!(writes[0]["item"]["data"]["entries"][0]["agent_id"], "ag_a");
         if recipient != "ag_a" {
             assert!(
                 writes[0]["item"]["body"]
@@ -413,41 +520,35 @@ fn plain_peer_wait_nudges_the_peer_and_nonpeer_wait_nudges_owner() {
 }
 
 #[test]
-fn item_wait_copies_only_the_first_target_eta_nudge_to_each_waiting_owner() {
-    let mut target = item("pending", BASE);
-    target["eta_ms"] = json!(BASE + HOUR);
+fn item_wait_never_copies_peer_commitments_to_waiting_owners() {
+    let target = candidate("eta_passed", "item1", BASE);
     let mut waiting = item("blocked", BASE);
-    waiting["eta_ms"] = json!(BASE + HOUR);
     waiting["wait"] = json!({"on":"ag_b","ref":"item:ag_b/item1"});
-    waiting["id"] = json!("waiting1");
-    waiting["text"] = json!("Publish");
-    let mut a = board("ag_a", vec![waiting.clone()]);
-    a["board"]["laneBlocks"][0]["id"] = json!("waiting-lane");
-    let mut c = board("ag_c", vec![waiting]);
-    c["board"]["laneBlocks"][0]["id"] = json!("waiting-lane");
-    let mut t = Test::new(vec![a, board("ag_b", vec![target]), c]);
-    let first = t.run(BASE + HOUR);
-    assert_eq!(first.len(), 3);
+    waiting["eta_ms"] = json!(BASE);
+    let mut t = Test::new(vec![
+        board("ag_a", vec![waiting]),
+        board("ag_b", vec![target]),
+    ]);
+    let first = t.run(BASE);
+    assert_eq!(first.len(), 1);
     assert_eq!(first[0]["agent"], "ag_b");
     assert_eq!(first[0]["action"], "wake");
-    for (copy, owner) in first[1..].iter().zip(["ag_a", "ag_c"]) {
-        assert_eq!(copy["agent"], owner);
-        assert_eq!(copy["action"], "piggyback");
-        assert_eq!(copy["item"]["data"]["agent_id"], "ag_b");
-        assert_eq!(copy["item"]["data"]["copy_of"], owner);
-        assert!(copy["item"]["body"].as_str().unwrap().contains(
-            "Follow up with ag_b, or re-plan your item: set a new ETA or change its wait."
-        ));
-        assert!(!copy["item"]["body"].as_str().unwrap().contains("→ active"));
-        assert_eq!(
-            copy["item"]["data"],
-            json!({"kind":"board_nudge","rule":"eta_passed","agent_id":"ag_b","lane_id":"lane1","lane_title":"Release","item_id":"item1","item_text":"Ship","since_ms":BASE+HOUR,"eta_ms":BASE+HOUR,"copy_of":owner,"own_lane_id":"waiting-lane","own_item_id":"waiting1","own_item_text":"Publish","item_state":"blocked","item_wait":{"on":"ag_b","ref":"item:ag_b/item1"}})
-        );
-    }
+    assert_eq!(
+        first[0]["item"]["data"]["entries"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(
+        first[0]["item"]["data"]["entries"][0]
+            .get("own_item_id")
+            .is_none()
+    );
     let repeated = t.run(BASE + 3 * HOUR);
     assert_eq!(repeated.len(), 1);
     assert_eq!(repeated[0]["agent"], "ag_b");
-    assert!(repeated[0]["item"]["data"].get("copy_of").is_none());
+    assert_eq!(repeated[0]["action"], "silent");
 }
 
 #[test]
@@ -494,7 +595,9 @@ fn paging_reads_all_boards_and_prunes_disappeared_agents_lanes_items_and_conditi
             .unwrap()
             .remove("eta_ms");
     }
-    assert!(t.run(BASE + MIN).is_empty());
+    let updated = t.run(BASE + MIN);
+    assert_eq!(updated.len(), 33);
+    assert!(updated.iter().all(|write| write["action"] == "silent"));
     let keys = t.keys();
     for agent in ["ag_00", "ag_01", "ag_02", "ag_03"] {
         assert!(!keys.iter().any(|key| key.contains(agent)), "{keys:?}");
@@ -504,7 +607,9 @@ fn paging_reads_all_boards_and_prunes_disappeared_agents_lanes_items_and_conditi
         29
     );
     t.host.boards.lock().unwrap().clear();
-    assert!(t.run(BASE + 2 * MIN).is_empty());
+    let emptied = t.run(BASE + 2 * MIN);
+    assert_eq!(emptied.len(), 29);
+    assert!(emptied.iter().all(|write| write["action"] == "silent"));
     assert!(t.keys().iter().all(|key| key.starts_with("index:")));
     let entries: Vec<Value> =
         t.f.module
@@ -522,13 +627,13 @@ fn paging_reads_all_boards_and_prunes_disappeared_agents_lanes_items_and_conditi
 }
 
 #[test]
-fn kv_limit_refusal_does_not_stop_other_rate_limited_nudges() {
+fn kv_limit_refusal_does_not_stop_other_digest_updates() {
     let mut a = item("pending", BASE);
     a["eta_ms"] = json!(BASE);
     let mut t = Test::new(vec![board("ag_a", vec![a.clone()]), board("ag_b", vec![a])]);
     assert_eq!(t.run(BASE).len(), 2);
     t.f.module.rt.store().write(|tx| {
-        tx.execute("DELETE FROM kv WHERE key='nudge:ag_a:item1:eta_passed'", [])?;
+        tx.execute("DELETE FROM kv WHERE key='nudge:ag_a:eta_passed'", [])?;
         let mut total: usize = tx.query_row("SELECT SUM(bytes) FROM kv", [], |r| r.get(0))?;
         for n in 0..32 {
             let key = format!("padding:{n}");
@@ -557,10 +662,12 @@ fn refused_digest_is_logged_and_does_not_stop_later_nudges() {
         t.result["refusals"][0]["code"],
         "sink_target_not_in_audience"
     );
-    assert!(!t.keys().contains(&"nudge:ag_a:item1:eta_passed".into()));
+    assert!(!t.keys().contains(&"nudge:ag_a:eta_passed".into()));
     let next = t.run(BASE + MIN);
-    assert_eq!(next.len(), 1);
+    assert_eq!(next.len(), 2);
     assert_eq!(next[0]["agent"], "ag_a");
+    assert_eq!(next[0]["action"], "wake");
+    assert_eq!(next[1]["action"], "silent");
 }
 
 #[test]
@@ -574,7 +681,7 @@ fn digest_data_is_exact_and_escaped_large_text_stays_within_core_limits() {
     let first = t.run(BASE + 30 * MIN);
     assert_eq!(first.len(), 1);
     assert_eq!(
-        first[0]["item"]["data"],
+        first[0]["item"]["data"]["entries"][0],
         json!({"kind":"board_nudge","rule":"wait_ended","agent_id":"ag_a","lane_id":"lane1","lane_title":"Release","item_id":"item1","item_text":"Ship","item_state":"blocked","item_wait":{"on":"ag_b","ref":"item:ag_b/item2"},"since_ms":BASE,"ref":"item:ag_b/item2","ref_terminal_at_ms":BASE,"eta_ms":BASE+HOUR,"follow_up":"Publish release","note_ref":"mc_note_1"})
     );
     assert!(
@@ -597,7 +704,7 @@ fn digest_data_is_exact_and_escaped_large_text_stays_within_core_limits() {
 }
 
 #[test]
-fn plain_peer_wait_copies_first_eta_once_with_own_item_data_and_replanning_choices() {
+fn peer_waits_fold_into_peers_eta_list_without_waiting_owner_copies() {
     for reference in [None, Some("peer:ag_b")] {
         let mut waiting = item("blocked", BASE);
         waiting["eta_ms"] = json!(BASE + HOUR);
@@ -605,60 +712,58 @@ fn plain_peer_wait_copies_first_eta_once_with_own_item_data_and_replanning_choic
         if let Some(reference) = reference {
             waiting["wait"]["ref"] = json!(reference);
         }
-        let mut t = Test::new(vec![board("ag_a", vec![waiting])]);
-        assert!(t.run(BASE + HOUR - 1).is_empty());
+        let mut t = Test::new(vec![
+            board("ag_a", vec![waiting]),
+            board("ag_b", vec![candidate("eta_passed", "own", BASE)]),
+        ]);
+        assert_eq!(t.run(BASE)[0]["item"]["data"]["total_count"], 1);
         let first = t.run(BASE + HOUR);
-        assert_eq!(first.len(), 2);
+        assert_eq!(first.len(), 1);
         assert_eq!(first[0]["agent"], "ag_b");
         assert_eq!(first[0]["action"], "wake");
-        let mut expected = json!({"kind":"board_nudge","rule":"eta_passed","agent_id":"ag_a","lane_id":"lane1","lane_title":"Release","item_id":"item1","item_text":"Ship","since_ms":BASE+HOUR,"eta_ms":BASE+HOUR,"item_state":"blocked","item_wait":{"on":"ag_b"}});
-        if let Some(reference) = reference {
-            expected["ref"] = json!(reference);
-            expected["item_wait"]["ref"] = json!(reference);
-        }
-        assert_eq!(first[0]["item"]["data"], expected);
-        expected["copy_of"] = json!("ag_a");
-        expected["own_lane_id"] = json!("lane1");
-        expected["own_item_id"] = json!("item1");
-        expected["own_item_text"] = json!("Ship");
-        assert_eq!(first[1]["agent"], "ag_a");
-        assert_eq!(first[1]["action"], "piggyback");
-        assert_eq!(first[1]["item"]["data"], expected);
-        assert_eq!(
-            first[1]["item"]["body"],
-            "ag_b's item you wait on passed its ETA 0 min ago. Follow up with ag_b, or re-plan your item: set a new ETA or change its wait."
-        );
-        assert!(t.run(BASE + 3 * HOUR - 1).is_empty());
-        let repeated = t.run(BASE + 3 * HOUR);
-        assert_eq!(repeated.len(), 1);
-        assert_eq!(repeated[0]["agent"], "ag_b");
-        assert_eq!(repeated[0]["action"], "piggyback");
-        assert!(repeated[0]["item"]["data"].get("copy_of").is_none());
+        assert_eq!(first[0]["replace_key"], "board_nudge:ag_b:eta_passed");
+        let entries = first[0]["item"]["data"]["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[1]["agent_id"], "ag_a");
+        assert_eq!(entries[1]["lane_id"], "lane1");
+        assert_eq!(entries[1]["item_id"], "item1");
+        assert_eq!(entries[1]["item_text"], "Ship");
+        assert_eq!(entries[1]["item_state"], "blocked");
+        assert_eq!(entries[1]["item_wait"]["on"], "ag_b");
+        assert!(entries[1].get("own_item_id").is_none());
+        let body = first[0]["item"]["body"].as_str().unwrap();
+        assert!(body.contains("ag_a is waiting on you"));
+        assert!(body.contains("own board, or decline"));
+        assert_eq!(t.run(BASE + 3 * HOUR)[0]["action"], "silent");
+        t.host.boards.lock().unwrap()[0]["board"]["laneBlocks"][0]["items"][0]["state"] =
+            json!("done");
+        let leaving = rule(&t.run(BASE + 4 * HOUR), "eta_passed");
+        assert_eq!(leaving.len(), 1);
+        assert_eq!(leaving[0]["action"], "silent");
+        assert_eq!(leaving[0]["item"]["data"]["total_count"], 1);
     }
 }
 
 #[test]
-fn replacement_keys_are_sent_for_items_lanes_copies_and_repeats() {
-    let mut target = item("pending", BASE);
-    target["eta_ms"] = json!(BASE);
-    let mut waiting = item("blocked", BASE);
-    waiting["wait"] = json!({"on":"ag_b","ref":"item:ag_b/item1"});
+fn replacement_keys_are_stable_for_owner_rule_updates() {
     let mut t = Test::new(vec![
-        board("ag_a", vec![waiting]),
-        board("ag_b", vec![target]),
+        candidates("eta_passed", 1),
         board("ag_c", vec![item("done", BASE - HOUR)]),
     ]);
     let first = t.run(BASE);
-    assert_eq!(first.len(), 3);
-    assert_eq!(first[0]["replace_key"], "board_nudge:ag_b:item1:eta_passed");
-    assert_eq!(first[1]["replace_key"], "board_nudge:ag_b:item1:eta_passed");
-    assert_eq!(first[0]["agent"], "ag_b");
-    assert_eq!(first[1]["agent"], "ag_a");
-    assert_eq!(first[2]["replace_key"], "board_nudge:ag_c:lane1:lane_done");
-    let repeated = t.run(BASE + 2 * HOUR);
-    assert_eq!(repeated.len(), 2);
-    assert_eq!(repeated[0]["replace_key"], first[0]["replace_key"]);
-    assert_eq!(repeated[1]["replace_key"], first[2]["replace_key"]);
+    assert_eq!(first.len(), 2);
+    assert_eq!(first[0]["replace_key"], "board_nudge:ag_a:eta_passed");
+    assert_eq!(first[1]["replace_key"], "board_nudge:ag_c:lane_done");
+    *t.host.boards.lock().unwrap() = vec![candidates("eta_passed", 2)];
+    let updated = t.run(BASE + 2 * HOUR);
+    assert_eq!(updated.len(), 2);
+    for write in &updated {
+        let old = first
+            .iter()
+            .find(|old| old["agent"] == write["agent"])
+            .unwrap();
+        assert_eq!(write["replace_key"], old["replace_key"]);
+    }
 }
 
 #[test]
@@ -680,58 +785,77 @@ fn unsupported_replacement_retries_without_key_and_logs_once_per_run() {
         t.result["refusals"],
         json!([{"message":"board hygiene digest replacement unsupported","code":"digest_replace_key_unsupported"}])
     );
-    assert!(t.run(BASE + 2 * HOUR - 1).is_empty());
-    assert_eq!(t.result["refusals"], json!([]));
     let repeated = t.run(BASE + 2 * HOUR);
     assert_eq!(repeated.len(), 2);
     assert!(
         repeated
             .iter()
-            .all(|write| write.get("replace_key").is_none() && write["action"] == "piggyback")
+            .all(|write| write.get("replace_key").is_none() && write["action"] == "silent")
     );
     assert_eq!(t.result["refusals"].as_array().unwrap().len(), 1);
 }
 
 #[test]
-fn replacement_key_over_two_hundred_bytes_is_omitted_without_refusal() {
+fn long_item_ids_do_not_expand_owner_replacement_keys() {
     let agent = format!("ag_{}", "a".repeat(125));
     let mut i = item("pending", BASE);
     i["id"] = json!("b".repeat(80));
     i["eta_ms"] = json!(BASE);
     let mut t = Test::new(vec![board(&agent, vec![i])]);
-    t.host.replacement_supported.store(false, Ordering::Relaxed);
     let first = t.run(BASE);
     assert_eq!(first.len(), 1);
-    assert!(first[0].get("replace_key").is_none());
+    assert_eq!(
+        first[0]["replace_key"],
+        format!("board_nudge:{agent}:eta_passed")
+    );
     assert_eq!(first[0]["agent"], agent);
     assert_eq!(t.result["refusals"], json!([]));
-    assert!(t.run(BASE + 2 * HOUR - 1).is_empty());
-    assert_eq!(t.run(BASE + 2 * HOUR).len(), 1);
+    assert_eq!(t.run(BASE + 2 * HOUR)[0]["action"], "silent");
 }
 
 #[test]
-fn copied_renderer_data_with_large_follow_up_and_own_text_stays_bounded() {
-    let mut target = item("pending", BASE);
-    target["eta_ms"] = json!(BASE);
-    target["text"] = json!("🧭".repeat(300));
-    target["follow_up"] = json!("\"".repeat(4096));
-    let mut waiting = item("blocked", BASE);
-    waiting["text"] = json!("🧭".repeat(300));
-    waiting["wait"] = json!({"on":"ag_b","ref":"item:ag_b/item1"});
-    let mut t = Test::new(vec![
-        board("ag_a", vec![waiting]),
-        board("ag_b", vec![target]),
-    ]);
-    let writes = t.run(BASE);
-    assert_eq!(writes.len(), 2);
-    assert_eq!(writes[1]["item"]["data"]["own_lane_id"], "lane1");
-    assert_eq!(writes[1]["item"]["data"]["own_item_id"], "item1");
-    assert_eq!(writes[1]["item"]["data"]["item_state"], "blocked");
-    assert_eq!(
-        writes[1]["item"]["data"]["item_wait"],
-        json!({"on":"ag_b","ref":"item:ag_b/item1"})
+fn overflowing_lists_keep_oldest_entries_and_track_hidden_membership() {
+    let mut items: Vec<_> = (0..100)
+        .map(|n| {
+            let mut i = candidate("eta_passed", &format!("item{n:03}"), BASE + n * MIN);
+            i["text"] = json!(format!("Task {n} {}", "🧭".repeat(20)));
+            i
+        })
+        .collect();
+    items.reverse();
+    let mut t = Test::new(vec![board("ag_a", items)]);
+    let first = t.run(BASE + 8 * HOUR);
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0]["action"], "wake");
+    let data = &first[0]["item"]["data"];
+    let entries = data["entries"].as_array().unwrap();
+    assert!(!entries.is_empty());
+    assert!(entries.len() < 100);
+    assert_eq!(entries[0]["item_id"], "item000");
+    for (n, entry) in entries.iter().enumerate() {
+        assert_eq!(entry["item_id"], format!("item{n:03}"));
+    }
+    assert_eq!(data["total_count"], 100);
+    assert_eq!(data["more_count"], 100 - entries.len());
+    assert!(
+        first[0]["item"]["body"]
+            .as_str()
+            .unwrap()
+            .ends_with(&format!("and {} more", 100 - entries.len()))
     );
-    assert!(writes[1]["item"]["data"]["own_item_text"].is_string());
+    assert_eq!(t.run(BASE + 9 * HOUR)[0]["action"], "silent");
+    t.host.boards.lock().unwrap()[0]["board"]["laneBlocks"][0]["items"]
+        .as_array_mut()
+        .unwrap()
+        .push(candidate("eta_passed", "new-hidden", BASE + 2 * HOUR));
+    let joined = t.run(BASE + 10 * HOUR);
+    assert_eq!(joined[0]["action"], "wake");
+    assert_eq!(joined[0]["item"]["data"]["total_count"], 101);
+    t.host.boards.lock().unwrap()[0]["board"]["laneBlocks"][0]["items"]
+        .as_array_mut()
+        .unwrap()
+        .pop();
+    assert_eq!(t.run(BASE + 11 * HOUR)[0]["action"], "silent");
 }
 
 #[test]
@@ -790,11 +914,13 @@ fn malformed_lane_blocks_and_items_are_skipped_while_valid_lanes_nudge() {
     }})];
     let mut t = Test::new(boards);
     let writes = t.run(BASE);
-    assert_eq!(writes.len(), 2);
+    assert_eq!(writes.len(), 1);
     assert_eq!(
-        writes
+        writes[0]["item"]["data"]["entries"]
+            .as_array()
+            .unwrap()
             .iter()
-            .map(|write| write["item"]["data"]["item_id"].as_str().unwrap())
+            .map(|entry| entry["item_id"].as_str().unwrap())
             .collect::<Vec<_>>(),
         ["valid-first", "valid-second"]
     );
@@ -823,17 +949,36 @@ fn local_board_read_pages_complete_without_throwing() {
     let mut t = Test::new(boards);
     let writes = t.run(BASE + 8 * HOUR);
     assert_eq!(t.result["boards_scanned"], 31);
-    let count = |rule: &str| {
-        writes
-            .iter()
-            .filter(|write| write["item"]["data"]["rule"] == rule)
-            .count()
-    };
+    let mut by_owner_rule =
+        std::collections::BTreeMap::<(String, String), (usize, usize, u64)>::new();
+    for write in &writes {
+        let owner = write["agent"].as_str().unwrap().to_owned();
+        let rule = write["item"]["data"]["rule"].as_str().unwrap().to_owned();
+        let counts = by_owner_rule.entry((owner, rule)).or_default();
+        counts.0 += 1;
+        counts.1 += usize::from(write["action"] == "wake");
+        counts.2 += write["item"]["data"]["total_count"].as_u64().unwrap();
+    }
     println!(
-        "private pages completed; boards=31, nudges by rule: wait_ended={}, eta_passed={}, stale_active={}, lane_done={}",
-        count("wait_ended"),
-        count("eta_passed"),
-        count("stale_active"),
-        count("lane_done")
+        "private pages completed; boards=31, digest_items={}",
+        writes.len()
     );
+    for name in RULES {
+        let selected: Vec<_> = writes
+            .iter()
+            .filter(|write| write["item"]["data"]["rule"] == name)
+            .collect();
+        println!(
+            "rule={name} digest_items={} wakes={}",
+            selected.len(),
+            selected
+                .iter()
+                .filter(|write| write["action"] == "wake")
+                .count()
+        );
+    }
+    for ((owner, rule), (items, wakes, members)) in by_owner_rule {
+        println!("owner={owner} rule={rule} digest_items={items} wakes={wakes} members={members}");
+        assert_eq!(items, 1);
+    }
 }

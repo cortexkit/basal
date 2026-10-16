@@ -1,6 +1,5 @@
 const MINUTE = 60 * 1000;
 const HOUR = 60 * MINUTE;
-const INTERVAL = {wait_ended: 30 * MINUTE, eta_passed: 2 * HOUR, stale_active: 6 * HOUR, lane_done: 2 * HOUR};
 const INDEX_SHARDS = 16;
 const INDEX_CAP = 128;
 let boardOwners = new Set();
@@ -26,18 +25,19 @@ function cut(value, bytes) {
   return out;
 }
 
-function bounded(item) {
+function bounded(item, bodyLimit = 4096, dataLimit = 8192) {
   item.title = cut(item.title, 200).slice(0, 200);
-  item.body = cut(item.body, 4096);
+  item.body = cut(item.body, bodyLimit);
   // Escaping can make JSON much larger than the original strings.
-  while (utf8Bytes(JSON.stringify(item.data)) > 8192) {
+  while (utf8Bytes(JSON.stringify(item.data)) > dataLimit) {
     const fields = [];
-    for (const key of Object.keys(item.data)) {
-      if (typeof item.data[key] === 'string') fields.push([item.data, key]);
+    function strings(object) {
+      for (const key of Object.keys(object)) {
+        if (typeof object[key] === 'string') fields.push([object, key]);
+        else if (object[key] && typeof object[key] === 'object') strings(object[key]);
+      }
     }
-    for (const key of Object.keys(item.data.item_wait ?? {})) {
-      if (typeof item.data.item_wait[key] === 'string') fields.push([item.data.item_wait, key]);
-    }
+    strings(item.data);
     fields.sort(([a, ka], [b, kb]) => utf8Bytes(b[kb]) - utf8Bytes(a[ka]));
     const [object, key] = fields[0];
     object[key] = cut(object[key], Math.floor(utf8Bytes(object[key]) / 2));
@@ -49,7 +49,7 @@ function bounded(item) {
 }
 
 function replacementKey(data) {
-  const key = `board_nudge:${data.agent_id}:${data.item_id ?? data.lane_id}:${data.rule}`;
+  const key = `board_nudge:${data.agent_id}:${data.rule}`;
   return utf8Bytes(key) <= 200 ? key : null;
 }
 
@@ -87,13 +87,13 @@ function age(now, since) {
   return minutes < 60 ? `${minutes} min ago` : `${Math.floor(minutes / 60)} h ago`;
 }
 
-function digest(rule, agent, lane, item, since, now, copyOf, copyPeer, waitingItem, waitingLane) {
+function entry(rule, agent, lane, item, since, now) {
   const data = {kind: 'board_nudge', rule, agent_id: agent, lane_id: lane.id,
     lane_title: lane.title, since_ms: since};
   if (item) {
     data.item_id = item.id;
     data.item_text = item.text;
-    const current = waitingItem ?? item;
+    const current = item;
     data.item_state = current.state;
     if (current.state === 'blocked') {
       data.item_wait = {};
@@ -106,12 +106,6 @@ function digest(rule, agent, lane, item, since, now, copyOf, copyPeer, waitingIt
     if (item.wait?.ref !== undefined) data.ref = item.wait.ref;
     if (item.wait?.ref_terminal_at_ms !== undefined) data.ref_terminal_at_ms = item.wait.ref_terminal_at_ms;
   }
-  if (copyOf !== undefined) {
-    data.copy_of = copyOf;
-    data.own_lane_id = (waitingLane ?? lane).id;
-    data.own_item_id = (waitingItem ?? item).id;
-    data.own_item_text = (waitingItem ?? item).text;
-  }
   const text = cut(item?.text ?? lane.title, 600);
   const call = `board update: item ${JSON.stringify(text)} → done`;
   let title;
@@ -121,10 +115,7 @@ function digest(rule, agent, lane, item, since, now, copyOf, copyPeer, waitingIt
     body = `Your wait ended ${age(now, since)}. Update your item: ${call}.`;
   } else if (rule === 'eta_passed') {
     title = `ETA passed: ${text}`;
-    if (copyOf !== undefined) {
-      const peer = copyPeer ?? agent;
-      body = `${peer}'s item you wait on passed its ETA ${age(now, since)}. Follow up with ${peer}, or re-plan your item: set a new ETA or change its wait.`;
-    } else if (peerWait(item.wait)) {
+    if (peerWait(item.wait)) {
       body = `${agent} is waiting on you; the ETA passed ${age(now, since)}. Commit with an item on your own board, or decline: board update: add item ${JSON.stringify(text)} with an ETA; or tell ${agent} you decline.`;
     } else {
       body = `Your ETA passed ${age(now, since)}. Update your item: ${call}; or extend: set a new ETA on your item.`;
@@ -137,13 +128,40 @@ function digest(rule, agent, lane, item, since, now, copyOf, copyPeer, waitingIt
     body = `Every item in this lane has been done since ${age(now, since)}. Retire the lane: board update: lane ${JSON.stringify(text)} → retired.`;
   }
   if (item?.follow_up) body += ` Follow-up: ${cut(item.follow_up, 2400)}`;
-  return bounded({title, body, data});
+  body = `${JSON.stringify(cut(lane.title ?? lane.id, 200))}: ${JSON.stringify(text)}. ${body}`;
+  // Leave room for the digest envelope and its omitted-entry count.
+  return bounded({title, body, data}, 3600, 7000);
 }
 
-function memoryKey(agent, id, rule) {
-  const key = `nudge:${agent}:${id}:${rule}`;
-  // Core ids are bounded names; refuse an oversized composite instead of aliasing two items.
+function memoryKey(agent, rule) {
+  const key = `nudge:${agent}:${rule}`;
+  // Refuse an oversized owner key rather than aliasing two owners.
   return utf8Bytes(key) <= 256 ? key : null;
+}
+
+function digest(agent, rule, entries) {
+  const count = entries.length;
+  const noun = count === 1 ? 'board item' : 'board items';
+  const title = rule === 'eta_passed' ? `${count} ${noun} ${count === 1 ? 'is' : 'are'} past ${count === 1 ? 'its' : 'their'} ETA.` :
+    rule === 'wait_ended' ? `${count} ${noun} with ended waits.` :
+    rule === 'stale_active' ? `${count} stale active ${noun}.` : `${count} completed board ${count === 1 ? 'lane' : 'lanes'}.`;
+  const result = {title, body: '', data: {kind: 'board_nudge', rule, agent_id: agent,
+    entries: [], total_count: count, more_count: count}};
+  const lines = [];
+  entries.sort((a, b) => a.data.since_ms - b.data.since_ms || (a.member < b.member ? -1 : a.member > b.member ? 1 : 0));
+  for (const entry of entries) {
+    const nextLines = [...lines, entry.body];
+    const remaining = count - nextLines.length;
+    const body = [...nextLines, ...(remaining ? [`and ${remaining} more`] : [])].join('\n\n');
+    const data = {...result.data, entries: [...result.data.entries, entry.data], more_count: remaining};
+    if (utf8Bytes(body) > 4096 || utf8Bytes(JSON.stringify(data)) > 8192 ||
+        utf8Bytes(JSON.stringify({title, body, data})) > 16384) break;
+    lines.push(entry.body);
+    result.body = body;
+    result.data = data;
+  }
+  if (!lines.length) result.body = count ? `and ${count} more` : 'Nothing is outstanding.';
+  return bounded(result);
 }
 
 function shardFor(key) {
@@ -176,19 +194,7 @@ async function run() {
   }));
   const indexes = [];
   for (let i = 0; i < INDEX_SHARDS; i++) indexes.push(await kv.get(`index:${i}`) ?? []);
-  const seen = new Set();
-  const reverse = new Map();
-  for (const {agent_id: agent, lanes} of owners) {
-    for (const lane of lanes) {
-      for (const item of lane.items) {
-        const ref = itemRef(item.wait);
-        if (item.state === 'done' || !ref) continue;
-        const key = JSON.stringify([ref[1], ref[2]]);
-        if (!reverse.has(key)) reverse.set(key, new Map());
-        reverse.get(key).set(agent, {item, lane});
-      }
-    }
-  }
+  const groups = new Map();
 
   async function forget(key) {
     await kv.delete(key);
@@ -203,7 +209,8 @@ async function run() {
   async function remember(key, value) {
     const shard = shardFor(key);
     if (!indexes[shard].includes(key)) {
-      // Agent and item/lane ids contain only name characters. At most 128 keys of 256 bytes plus JSON punctuation fit below 64 KiB.
+      // Core name characters need no JSON escaping: 128 keys of at most 256
+      // UTF-8 bytes, plus array punctuation, fit below the 64 KiB value limit.
       if (indexes[shard].length >= INDEX_CAP) {
         log('board hygiene memory index full', {shard});
         return false;
@@ -238,61 +245,20 @@ async function run() {
     }
   }
 
-  async function check(rule, agent, lane, item, condition, since, firstDelay, recipient) {
-    const key = memoryKey(agent, item?.id ?? lane.id, rule);
+  function collect(rule, agent, lane, item, since, recipient) {
+    const key = memoryKey(recipient, rule);
     if (key === null) {
-      log('board hygiene memory key too long', {agent, rule});
+      log('board hygiene memory key too long', {agent: recipient, rule});
       return;
     }
-    seen.add(key);
-    const changed = item ? item.changed_at_ms ?? null : since;
-    try {
-      const previous = await kv.get(key);
-      if (previous && previous.changed_at_ms !== changed) {
-        await forget(key);
-        return;
-      }
-      if (!condition) {
-        if (previous) await forget(key);
-        return;
-      }
-      if (now < since + firstDelay) return;
-      if (previous && now - previous.last_send_ms < INTERVAL[rule]) return;
-      const count = (previous?.count ?? 0) + 1;
-      // Record before delivery so a full KV store cannot create unthrottled wakes.
-      if (!await remember(key, {changed_at_ms: changed, last_send_ms: now, count})) return;
-      const action = rule === 'wait_ended' || (rule === 'eta_passed' && count === 1) ? 'wake' : 'piggyback';
-      if (!await send(recipient, digest(rule, agent, lane, item, since, now), action)) {
-        if (previous) await kv.set(key, previous);
-        else await forget(key);
-        return;
-      }
-      if (rule === 'eta_passed' && count === 1) {
-        if (peerWait(item.wait)) {
-          await send(agent, digest(rule, agent, lane, item, since, now, agent, item.wait.on), 'piggyback');
-        }
-        for (const [owner, waiting] of reverse.get(JSON.stringify([agent, item.id])) ?? []) {
-          await send(owner, digest(rule, agent, lane, item, since, now, owner, agent, waiting.item, waiting.lane), 'piggyback');
-        }
-      }
-    } catch (error) {
-      if (error.data?.code !== 'kv_limit') throw error;
-      log('board hygiene memory refused', {agent, rule, code: error.data?.code});
-    }
+    if (!groups.has(key)) groups.set(key, {agent: recipient, rule, entries: new Map()});
+    const member = JSON.stringify([agent, item?.id ?? lane.id]);
+    groups.get(key).entries.set(member, {...entry(rule, agent, lane, item, since, now), member});
   }
 
-  // Prune before adding memory, allowing disappeared boards to free quota this run.
-  const live = new Set();
-  for (const {agent_id: agent, lanes} of owners) {
-    for (const lane of lanes) {
-      live.add(memoryKey(agent, lane.id, 'lane_done'));
-      for (const item of lane.items) {
-        for (const rule of ['wait_ended', 'eta_passed', 'stale_active']) live.add(memoryKey(agent, item.id, rule));
-      }
-    }
-  }
-  for (const index of indexes) {
-    for (const key of [...index]) if (!live.has(key)) await forget(key);
+  function check(rule, agent, lane, item, condition, since, firstDelay, recipient) {
+    if (!condition || now < since + firstDelay) return;
+    collect(rule, agent, lane, item, since, recipient);
   }
 
   for (const {agent_id: agent, lanes} of owners) {
@@ -307,6 +273,7 @@ async function run() {
       }
     }
     for (const lane of lanes) {
+      if (lane.status === 'retired') continue;
       for (const item of lane.items) {
         const terminal = item.wait?.ref_terminal_at_ms;
         await check('wait_ended', agent, lane, item,
@@ -327,9 +294,40 @@ async function run() {
         newest, 30 * MINUTE, agent);
     }
   }
-  // A successful full scan is the only authority to remove unvisited rule entries.
+  // Clear empty lists silently before freeing their membership quota. Unsupported
+  // replacement still uses the same silent fallback, so cleanup never wakes an owner.
   for (const index of indexes) {
-    for (const key of [...index]) if (!seen.has(key)) await forget(key);
+    for (const key of [...index]) {
+      if (groups.has(key)) continue;
+      const previous = await kv.get(key);
+      if (previous?.agent && previous?.rule) await send(previous.agent, digest(previous.agent, previous.rule, []), 'silent');
+      await forget(key);
+    }
+  }
+  for (const [key, group] of groups) {
+    const {agent, rule} = group;
+    try {
+      const previous = await kv.get(key);
+      const members = [...group.entries.keys()].sort();
+      const previousMembers = new Set(previous?.members ?? []);
+      const joined = members.some(member => !previousMembers.has(member));
+      const action = joined ? 'wake' : 'silent';
+      const value = {agent, rule, members};
+      // Never save partial membership: omitted members would look new on every scan.
+      if (utf8Bytes(JSON.stringify(value)) > 65536) {
+        log('board hygiene membership too large', {agent, rule});
+        continue;
+      }
+      // Reserve memory before delivery so exhausted KV cannot create repeated wakes.
+      if (!await remember(key, value)) continue;
+      if (!await send(agent, digest(agent, rule, [...group.entries.values()]), action)) {
+        if (previous) await kv.set(key, previous);
+        else await forget(key);
+      }
+    } catch (error) {
+      if (error.data?.code !== 'kv_limit') throw error;
+      log('board hygiene memory refused', {agent, rule, code: error.data?.code});
+    }
   }
   return {boards_scanned: boards.length, refusals, skipped_lane_blocks: skipped.lane_blocks,
     skipped_lane_items: skipped.lane_items};
