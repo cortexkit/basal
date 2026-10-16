@@ -333,7 +333,7 @@ fn published_manifest_is_global_with_only_ci_v2_repo_filters_and_minimal_grants(
     Manifest::parse(MANIFEST).unwrap();
     let value: Value = serde_json::from_str(MANIFEST).unwrap();
     assert_eq!(value["audience"], json!({"kind":"global"}));
-    assert_eq!(value["version"], 5);
+    assert_eq!(value["version"], 6);
     assert!(
         value["purpose"]
             .as_str()
@@ -548,6 +548,47 @@ fn first_failed_job_wakes_and_later_jobs_are_silent() {
     let run = &t.memory()["runs"]["ci:cortexkit/basal:42:1"];
     assert_eq!(run["firstWakeJobIds"], json!(["101"]));
     assert_eq!(run["jobs"].as_object().unwrap().len(), 7);
+}
+
+#[test]
+fn oversized_failed_job_digest_stays_within_core_item_limits() {
+    let t = Test::new();
+    let mut event = job("cortexkit/basal", 108);
+    let url = format!(
+        "https://github.com/cortexkit/basal/actions/runs/42/job/{}",
+        "x".repeat(900)
+    );
+    event["name"] = json!("é🦀".repeat(8000));
+    event["url"] = json!(url);
+    event["head_branch"] = json!(format!("main-{}", "b".repeat(12000)));
+    event["head_sha"] = json!("a".repeat(12000));
+
+    t.ci(event);
+
+    let item = &t.writes()[0]["item"];
+    assert!(item["title"].as_str().unwrap().chars().count() <= 200);
+    assert!(item["body"].as_str().unwrap().len() <= 4096);
+    assert!(serde_json::to_vec(&item["data"]).unwrap().len() <= 8192);
+    assert!(serde_json::to_vec(item).unwrap().len() <= 16 * 1024);
+    assert!(
+        item["data"]["observed"]["failed_jobs"]
+            .as_str()
+            .unwrap()
+            .len()
+            <= 256
+    );
+    assert_eq!(
+        item["data"]["truncated"]["link_url"]["original_bytes"],
+        json!(url.len())
+    );
+    assert_eq!(
+        item["data"]["truncated"]["observed.branch"]["original_bytes"],
+        json!(12005)
+    );
+    assert_eq!(
+        item["data"]["truncated"]["observed.head_sha"]["original_bytes"],
+        json!(12000)
+    );
 }
 
 #[test]

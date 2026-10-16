@@ -58,14 +58,9 @@ const MAX_COMPLETION_AGE_MS = 6 * 60 * 60 * 1000;
 // Adapted from templates/github-ci-watch: bounded digest metadata, per-job
 // deduplication and fourteen-day, byte-capped retention of run attempts.
 function boundedDigest(title, observed, links = []) {
-  const utf8Bytes = text => {
-    let bytes = 0;
-    for (const ch of text) {
-      const cp = ch.codePointAt(0);
-      bytes += cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
-    }
-    return bytes;
-  };
+  // Native regexp scanning skips ASCII without running JavaScript per character.
+  const utf8Bytes = text => text.replace(/[\u0080-\u07ff]|[\ud800-\udbff][\udc00-\udfff]|[\u0800-\uffff]/g,
+    ch => ch.length === 2 ? 'xxxx' : ch.charCodeAt(0) <= 0x7ff ? 'xx' : 'xxx').length;
   // Sorting object keys changes no byte counts. These JSON values contain only
   // strings, booleans, finite integers, nulls, arrays and plain objects.
   const size = value => utf8Bytes(JSON.stringify(value));
@@ -77,49 +72,73 @@ function boundedDigest(title, observed, links = []) {
     links: links.filter(link => link.kind === 'url' &&
       typeof link.url === 'string' && /^https:\/\/[A-Za-z0-9.-]+(?:[/?#]|$)/.test(link.url)),
   };
+  // Serialize data and the complete digest once. Track field-size deltas below;
+  // markers add bytes, and link removal also drops a separator when one remains.
+  let dataBytes = size(data);
+  let itemBytes = size(item);
   const mark = (field, text) => {
-    data.truncated ??= {};
-    data.truncated[field] ??= { original_bytes: utf8Bytes(text) };
+    if (data.truncated?.[field] != null) return;
+    let added = 0;
+    if (!data.truncated) {
+      data.truncated = {};
+      added += ',"truncated":{}'.length;
+    }
+    const marker = { original_bytes: utf8Bytes(text) };
+    added += size({ [field]: marker }) - 2 + (Object.keys(data.truncated).length ? 1 : 0);
+    data.truncated[field] = marker;
+    dataBytes += added;
+    itemBytes += added;
   };
   // Drop oversized links before reducing metadata; a shortened URL would no
   // longer identify the observed item reliably.
-  while (item.links.length && size(item) > 16384) {
+  while (item.links.length && itemBytes > 16384) {
     const link = item.links.pop();
+    itemBytes -= size(link) + (item.links.length ? 1 : 0);
     mark('link_url', link.url);
   }
-  while (size(data) > 8192 || size(item) > 16384) {
-    let longest;
+  if (dataBytes > 8192 || itemBytes > 16384) {
+    const fields = [];
     for (const key of Object.keys(data.observed)) {
       const text = data.observed[key];
-      if (typeof text === 'string' && text.length &&
-          (!longest || size(text) > size(longest.text))) {
-        longest = { key, text };
-      }
+      if (typeof text === 'string' && text.length) fields.push({ key, text, bytes: size(text) });
     }
-    if (!longest) throw new Error('Digest metadata cannot fit');
-    const { key, text } = longest;
-    mark(`observed.${key}`, text);
-    data.observed[key] = Array.from(text).slice(0, Math.floor(Array.from(text).length / 2)).join('');
+    while (dataBytes > 8192 || itemBytes > 16384) {
+      let longest;
+      for (const field of fields) {
+        if (field.text.length && (!longest || field.bytes > longest.bytes)) longest = field;
+      }
+      if (!longest) throw new Error('Digest metadata cannot fit');
+      const { key, text } = longest;
+      mark(`observed.${key}`, text);
+      const chars = Array.from(text);
+      const shortened = chars.slice(0, Math.floor(chars.length / 2)).join('');
+      const next = size(shortened);
+      data.observed[key] = shortened;
+      dataBytes += next - longest.bytes;
+      itemBytes += next - longest.bytes;
+      longest.text = shortened;
+      longest.bytes = next;
+    }
   }
   return item;
 }
 
 function bytes(text) {
-  let size = 0;
-  for (const ch of text) {
-    const cp = ch.codePointAt(0);
-    size += cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
-  }
-  return size;
+  return text.replace(/[\u0080-\u07ff]|[\ud800-\udbff][\udc00-\udfff]|[\u0800-\uffff]/g,
+    ch => ch.length === 2 ? 'xxxx' : ch.charCodeAt(0) <= 0x7ff ? 'xx' : 'xxx').length;
 }
 
 function short(text, maxBytes) {
   text = String(text ?? 'unknown');
   if (bytes(text) <= maxBytes) return text;
   let result = '';
+  let size = 0;
   for (const ch of text) {
-    if (bytes(result + ch) > maxBytes - 3) break;
+    const cp = ch.codePointAt(0);
+    const next = cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
+    if (size + next > maxBytes - 3) break;
     result += ch;
+    size += next;
   }
   return result + '...';
 }
