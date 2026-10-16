@@ -18,6 +18,23 @@ old = "activity = [group?.primary_turn_end_at, group?.last_activity_at]"
 new = "activity = [group?.last_activity_at] // NON-VACUITY BREAK"
 
 [[control]]
+id = "board-hygiene-stale-wait-ignores-an-eta"
+guards = "a silent wait nudges only when the item has no ETA to bound it"
+test_file = "crates/basal-module/tests/board_hygiene.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test board_hygiene"
+select = { tests = ["a_wait_unchanged_for_a_day_without_an_eta_nudges_the_owner", "peer_waits_fold_into_peers_eta_list_without_waiting_owner_copies"] }
+expect_red = ["a_wait_unchanged_for_a_day_without_an_eta_nudges_the_owner"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/board-hygiene/flow.js"
+old = "item.state === 'blocked' && !Number.isFinite(item.eta_ms) &&"
+new = "item.state === 'blocked' && // NON-VACUITY BREAK"
+
+[[control]]
 id = "board-hygiene-nudges-a-peer-who-declined"
 guards = "a peer wait that ended or was declined sends its overdue nudge to the owner, never the peer"
 test_file = "crates/basal-module/tests/board_hygiene.rs"

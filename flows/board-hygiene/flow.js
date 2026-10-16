@@ -137,6 +137,10 @@ function entry(rule, agent, lane, item, since, now) {
     } else {
       body = `Your ETA passed ${age(now, since)}. Update your item: ${call}; or extend: set a new ETA on your item.`;
     }
+  } else if (rule === 'stale_wait') {
+    title = `Wait unchanged: ${text}`;
+    const target = cut(item.wait?.ref ?? item.wait?.on ?? 'its wait', 200);
+    body = `Your item has waited ${age(now, since)} on ${target} with no ETA. Check the wait and update your item: ${call}; or extend: set an ETA on your item.`;
   } else if (rule === 'stale_active') {
     title = `Active item unchanged: ${text}`;
     body = `Your active item last changed ${age(now, since)}, although you have been active since. Update your item: ${call}; or extend: set a new ETA on your item.`;
@@ -161,6 +165,7 @@ function digest(agent, rule, entries, now) {
   const noun = count === 1 ? 'board item' : 'board items';
   const title = rule === 'eta_passed' ? `${count} ${noun} ${count === 1 ? 'is' : 'are'} past ${count === 1 ? 'its' : 'their'} ETA.` :
     rule === 'wait_ended' ? `${count} ${noun} with ended waits.` :
+    rule === 'stale_wait' ? `${count} ${noun} waiting with no ETA.` :
     rule === 'stale_active' ? `${count} stale active ${noun}.` : `${count} completed board ${count === 1 ? 'lane' : 'lanes'}.`;
   const result = {title, body: '', data: {kind: 'board_nudge', rule, agent_id: agent,
     entries: [], total_count: count, more_count: count}};
@@ -322,6 +327,21 @@ async function run() {
         await check('eta_passed', agent, lane, item,
           item.state !== 'done' && Number.isFinite(item.eta_ms) && !itemRef(item.wait),
           item.eta_ms, 0, peerWait(item.wait) ? item.wait.on : agent);
+        // A blocked item whose wait has not changed for a day, with no ETA to
+        // bound it, may be waiting on something that went silent (a worker that
+        // never finished, a peer that never answered). Ended or declined waits
+        // are covered by wait_ended; an ETA hands the item to eta_passed. A wait
+        // on an ask is the user's to answer: the owner can't move it and the ask
+        // already reaches the user, so it is left out.
+        const waitSince = Math.max(
+          Number.isFinite(item.wait?.since_ms) ? item.wait.since_ms : -Infinity,
+          Number.isFinite(item.changed_at_ms) ? item.changed_at_ms : -Infinity);
+        await check('stale_wait', agent, lane, item,
+          item.state === 'blocked' && !Number.isFinite(item.eta_ms) &&
+            item.wait?.ref_state !== 'terminal' && item.wait?.declined_by == null &&
+            !(typeof item.wait?.ref === 'string' && item.wait.ref.startsWith('ask:')) &&
+            Number.isFinite(waitSince),
+          waitSince, 24 * HOUR, agent);
         await check('stale_active', agent, lane, item,
           item.state === 'active' && Number.isFinite(item.changed_at_ms) &&
             activity?.status === 'ok' && Number.isFinite(activity.value) && activity.value > item.changed_at_ms,

@@ -238,7 +238,7 @@ fn published_manifest_has_global_minimal_grants_and_five_minute_schedule() {
     let manifest = Manifest::parse(MANIFEST).unwrap();
     let value = serde_json::to_value(manifest).unwrap();
     assert_eq!(value["id"], "board-hygiene");
-    assert_eq!(value["version"], 7);
+    assert_eq!(value["version"], 8);
     assert_eq!(value["board_read"], json!(["$audience"]));
     assert_eq!(value["audience"], json!({"kind":"global"}));
     assert_eq!(
@@ -294,11 +294,17 @@ fn lane_done_first_at_thirty_minutes_with_timestamp_fallback() {
     assert_eq!(t.run(BASE + 3 * HOUR)[0]["action"], "silent");
 }
 
-const RULES: [&str; 4] = ["wait_ended", "eta_passed", "stale_active", "lane_done"];
+const RULES: [&str; 5] = [
+    "wait_ended",
+    "eta_passed",
+    "stale_active",
+    "stale_wait",
+    "lane_done",
+];
 
 fn candidate(name: &str, id: &str, since: u64) -> Value {
     let state = match name {
-        "wait_ended" => "blocked",
+        "wait_ended" | "stale_wait" => "blocked",
         "stale_active" => "active",
         "lane_done" => "done",
         _ => "pending",
@@ -310,6 +316,13 @@ fn candidate(name: &str, id: &str, since: u64) -> Value {
         i["wait"] = json!({"on":"work","ref_state":"terminal","ref_terminal_at_ms":since});
     } else if name == "eta_passed" {
         i["eta_ms"] = json!(since);
+    } else if name == "stale_wait" {
+        // Already a day old, so the shared tests can run it at the same times
+        // as the other rules.
+        let waited = since - 24 * HOUR;
+        i["changed_at_ms"] = json!(waited);
+        i["wait"] =
+            json!({"on":"work","ref":"work:wi_silent","ref_state":"pending","since_ms":waited});
     }
     i
 }
@@ -787,6 +800,56 @@ fn digest_greedily_fills_limits_in_oldest_first_order_with_exact_more_count() {
             || serde_json::to_vec(&next).unwrap().len() > 16384,
         "the first omitted entry must not fit"
     );
+}
+
+#[test]
+fn a_wait_unchanged_for_a_day_without_an_eta_nudges_the_owner() {
+    // A blocked item can wait on a worker that went silent: its wait never
+    // ends and it has no ETA, so no other rule fires.
+    let blocked = || {
+        let mut i = item("blocked", BASE);
+        i["wait"] = json!({"on":"agent","ref":"work:wi_silent","since_ms":BASE});
+        i
+    };
+    let mut t = Test::new(vec![board("ag_a", vec![blocked()])]);
+    assert!(rule(&t.run(BASE + 24 * HOUR - 1), "stale_wait").is_empty());
+    let writes = rule(&t.run(BASE + 24 * HOUR), "stale_wait");
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0]["agent"], "ag_a");
+    assert_eq!(writes[0]["action"], "wake");
+    let body = writes[0]["item"]["body"].as_str().unwrap();
+    assert!(body.contains("work:wi_silent"), "{body}");
+
+    // An ETA, an ended wait or a declined wait each take the item off this rule.
+    let mut with_eta = blocked();
+    with_eta["eta_ms"] = json!(BASE + 48 * HOUR);
+    let mut ended = blocked();
+    ended["wait"]["ref_state"] = json!("terminal");
+    ended["wait"]["ref_terminal_at_ms"] = json!(BASE + HOUR);
+    let mut declined = blocked();
+    declined["wait"]["declined_by"] = json!("ag_b");
+    // A wait on an ask is the user's to answer; the owner can't move it.
+    let mut on_user = blocked();
+    on_user["wait"] = json!({"on":"user","ref":"ask:ask_0123abcd","since_ms":BASE});
+    for (name, i) in [
+        ("eta", with_eta),
+        ("ended", ended),
+        ("declined", declined),
+        ("ask", on_user),
+    ] {
+        let mut t = Test::new(vec![board("ag_a", vec![i])]);
+        assert!(
+            rule(&t.run(BASE + 30 * HOUR), "stale_wait").is_empty(),
+            "{name}"
+        );
+    }
+
+    // A change to the item restarts the clock.
+    let mut touched = blocked();
+    touched["changed_at_ms"] = json!(BASE + 10 * HOUR);
+    let mut t = Test::new(vec![board("ag_a", vec![touched])]);
+    assert!(rule(&t.run(BASE + 30 * HOUR), "stale_wait").is_empty());
+    assert_eq!(rule(&t.run(BASE + 34 * HOUR), "stale_wait").len(), 1);
 }
 
 #[test]
