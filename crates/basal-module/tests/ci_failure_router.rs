@@ -39,11 +39,13 @@ fn text(value: Value) -> JsonText {
 }
 
 fn supersession_reply(repository: &str, run_id: u64, superseded: bool) -> HostOutcome {
-    let newer = superseded.then(|| json!({
-        "id":run_id + 1, "run_number":8, "status":"queued", "conclusion":null,
-        "created_at":"2027-01-01T12:01:00Z",
-        "url":format!("https://github.com/{repository}/actions/runs/{}", run_id + 1)
-    }));
+    let newer = superseded.then(|| {
+        json!({
+            "id":run_id + 1, "run_number":8, "status":"queued", "conclusion":null,
+            "created_at":"2027-01-01T12:01:00Z",
+            "url":format!("https://github.com/{repository}/actions/runs/{}", run_id + 1)
+        })
+    });
     HostOutcome::fulfilled(text(json!({
         "result":{
             "repository":repository, "superseded":superseded,
@@ -688,15 +690,21 @@ fn superseded_attempt_and_later_events_send_nothing() {
         t.supersession(supersession_reply(repo, 42, true));
         t.ci(job(repo, 101));
         assert!(t.writes().is_empty());
-        assert_eq!(t.memory()["runs"][format!("ci:{repo}:42:1")]["superseded"], true);
+        assert_eq!(
+            t.memory()["runs"][format!("ci:{repo}:42:1")]["superseded"],
+            true
+        );
         t.supersession(supersession_reply(repo, 42, false));
         t.ci(job(repo, 102));
         t.ci(run(repo, "failure"));
         t.ci(run(repo, "success"));
         assert!(t.writes().is_empty());
-        assert_eq!(t.reads(), vec![json!({
-            "action":"github.actions.run.superseded", "repository":repo, "args":{"run_id":42}
-        })]);
+        assert_eq!(
+            t.reads(),
+            vec![json!({
+                "action":"github.actions.run.superseded", "repository":repo, "args":{"run_id":42}
+            })]
+        );
     }
 }
 
@@ -706,9 +714,12 @@ fn nonsuperseded_attempt_wakes_and_reads_only_once_per_attempt() {
     t.ci(job("CortexKit/Basal", 101));
     t.ci(job("cortexkit/basal", 102));
     t.ci(run("cortexkit/basal", "failure"));
-    assert_eq!(t.reads(), vec![json!({
-        "action":"github.actions.run.superseded", "repository":"cortexkit/basal", "args":{"run_id":42}
-    })]);
+    assert_eq!(
+        t.reads(),
+        vec![json!({
+            "action":"github.actions.run.superseded", "repository":"cortexkit/basal", "args":{"run_id":42}
+        })]
+    );
     assert_eq!(t.writes()[0]["action"], "wake");
     assert_eq!(t.writes()[1]["action"], "silent");
     assert_eq!(t.writes()[2]["action"], "wake");
@@ -731,12 +742,19 @@ fn supersession_refusals_and_unreadable_replies_fail_open_and_are_logged() {
         t.supersession(if code == "unreadable" {
             HostOutcome::fulfilled(text(json!({"result":{"superseded":"true"}})))
         } else {
-            HostOutcome::fulfilled(text(json!({"error":{"code":code, "detail":{"retry_after_ms":60000}}})))
+            HostOutcome::fulfilled(text(
+                json!({"error":{"code":code, "detail":{"retry_after_ms":60000}}}),
+            ))
         });
         let id = t.ci(job("cortexkit/basal", 101));
         let done = t.f.module.rt.run(&id).unwrap();
         let result: Value = serde_json::from_str(done.result.as_ref().unwrap()).unwrap();
-        assert!(result["refusals"][0]["code"].as_str().unwrap().contains(code));
+        assert!(
+            result["refusals"][0]["code"]
+                .as_str()
+                .unwrap()
+                .contains(code)
+        );
         assert_eq!(t.writes()[0]["action"], "wake");
         t.ci(job("cortexkit/basal", 102));
         t.ci(run("cortexkit/basal", "failure"));
@@ -891,7 +909,10 @@ fn ignored_job_names_and_completions_with_only_ignored_failures_send_nothing() {
     assert_eq!(t.writes().len(), 2);
     assert_eq!(t.writes()[0]["action"], "wake");
     assert_eq!(t.writes()[1]["action"], "silent");
-    assert_eq!(t.writes()[1]["item"]["data"]["observed"]["failed_jobs"], "linux shard 102");
+    assert_eq!(
+        t.writes()[1]["item"]["data"]["observed"]["failed_jobs"],
+        "linux shard 102"
+    );
 }
 
 #[test]
