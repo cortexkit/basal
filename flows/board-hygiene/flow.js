@@ -91,7 +91,10 @@ function boardLanes(board, skipped) {
   return lanes;
 }
 
+// A wait whose peer declined, or that has otherwise ended, is the owner's to
+// act on: never nudge the peer about it.
 function peerWait(wait) {
+  if (wait?.ref_state === 'terminal' || wait?.declined_by != null) return false;
   return typeof wait?.on === 'string' && (boardOwners.has(wait.on) || /^(ag_|agent_)/.test(wait.on)) &&
     (wait.ref == null || (typeof wait.ref === 'string' && wait.ref.startsWith('peer:')));
 }

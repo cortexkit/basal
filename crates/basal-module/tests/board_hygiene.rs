@@ -238,7 +238,7 @@ fn published_manifest_has_global_minimal_grants_and_five_minute_schedule() {
     let manifest = Manifest::parse(MANIFEST).unwrap();
     let value = serde_json::to_value(manifest).unwrap();
     assert_eq!(value["id"], "board-hygiene");
-    assert_eq!(value["version"], 6);
+    assert_eq!(value["version"], 7);
     assert_eq!(value["board_read"], json!(["$audience"]));
     assert_eq!(value["audience"], json!({"kind":"global"}));
     assert_eq!(
@@ -787,6 +787,27 @@ fn digest_greedily_fills_limits_in_oldest_first_order_with_exact_more_count() {
             || serde_json::to_vec(&next).unwrap().len() > 16384,
         "the first omitted entry must not fit"
     );
+}
+
+#[test]
+fn a_declined_or_ended_peer_wait_nudges_the_owner_never_the_peer() {
+    // When the waited-on peer declines, core makes the wait terminal and adds
+    // declined_by; the overdue item is then the owner's to act on.
+    for declined in [true, false] {
+        let mut waiting = item("blocked", BASE);
+        waiting["eta_ms"] = json!(BASE);
+        waiting["wait"] = json!({"on":"ag_b","ref":"peer:ag_b","since_ms":BASE});
+        if declined {
+            waiting["wait"]["declined_by"] = json!("ag_b");
+        } else {
+            waiting["wait"]["ref_state"] = json!("terminal");
+            waiting["wait"]["ref_terminal_at_ms"] = json!(BASE);
+        }
+        let mut t = Test::new(vec![board("ag_a", vec![waiting]), board("ag_b", vec![])]);
+        let writes = rule(&t.run(BASE + HOUR), "eta_passed");
+        assert_eq!(writes.len(), 1, "declined {declined}");
+        assert_eq!(writes[0]["agent"], "ag_a", "declined {declined}");
+    }
 }
 
 #[test]
