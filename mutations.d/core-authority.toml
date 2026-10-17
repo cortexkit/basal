@@ -652,7 +652,9 @@ package = "basal-core"
 platforms = ["linux"]
 target = "--lib"
 select = { filter = "runtime::grant_loss_tests::" }
-expect_red = ["runtime::grant_loss_tests::retirement_label_lookup_leaves_the_sqlite_writer_available"]
+# The clear-check test records its retirement through this same refusal path
+# before approving, so it catches this mutant too.
+expect_red = ["runtime::grant_loss_tests::retirement_label_lookup_leaves_the_sqlite_writer_available", "runtime::grant_loss_tests::retirement_clear_lookup_leaves_the_sqlite_writer_available"]
 only = true
 build_timeout_s = 3600
 timeout_s = 600
