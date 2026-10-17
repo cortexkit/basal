@@ -790,7 +790,8 @@ fn retirement_clear_lookup_leaves_the_sqlite_writer_available() {
     let labelled = probe.lookups.load(Ordering::SeqCst);
     f.approve("operator", json!(["new-agent"]));
     assert_eq!(probe.lookups.load(Ordering::SeqCst), labelled + 1);
-    // Clearing needed the lookup's answer: an unresolved target keeps the
-    // retirement and the flow stays disabled.
+    // The flow is enabled only because clearing used the lookup's answer; had
+    // the target stayed unresolved, the retirement would remain and the flow
+    // would stay disabled.
     assert!(f.rt.flow("flow").unwrap().unwrap().enabled);
 }
