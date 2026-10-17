@@ -24,7 +24,7 @@ async fn call(route: &Route, arguments: Value) -> Value {
     reply
 }
 
-async fn refusal(route: &Route, arguments: Value) -> subc_protocol::ErrorBody {
+async fn refusal(route: &Route, arguments: Value) -> subc_protocol_v032::ErrorBody {
     let exchange = route
         .request(json!({"name":"flow","arguments":arguments}))
         .await
@@ -33,6 +33,13 @@ async fn refusal(route: &Route, arguments: Value) -> subc_protocol::ErrorBody {
         ObservedFrame::Error(error) => error.clone(),
         other => panic!("expected flow refusal, got {other:?}"),
     }
+}
+
+async fn content_route(subject: &Subject, live: &Live, stamp: &RouteStamp) -> Route {
+    subject
+        .bind_route(live, stamp, None, None, Some(vec!["content/v1".into()]))
+        .await
+        .unwrap()
 }
 
 fn files(live: &Live) -> (String, String) {
@@ -57,6 +64,7 @@ async fn management(subject: &Subject, live: &Live, stamp: &RouteStamp) -> Route
             stamp,
             None,
             None,
+            None,
             RouteTarget::ManagementSurface {
                 module_id: "basal".into(),
             },
@@ -67,7 +75,10 @@ async fn management(subject: &Subject, live: &Live, stamp: &RouteStamp) -> Route
 
 #[test]
 fn flow_catalog_has_exact_capability_tag() {
-    let catalog = basal_module::tool::catalog(json!({})).unwrap();
+    let catalog = basal_module::tool::catalog(json!({
+        "params":{"capabilities":["basal:flow.manage/v1"]}
+    }))
+    .unwrap();
     let flow = catalog["tools"]
         .as_array()
         .unwrap()
@@ -82,8 +93,6 @@ fn flow_catalog_has_exact_capability_tag() {
             .unwrap()
             .contains("newest approved")
     );
-    let excluded = basal_module::tool::catalog(json!({"params":{"exclude":["flow"]}})).unwrap();
-    assert_eq!(excluded["tools"].as_array().unwrap().len(), 1);
     let manifest = serde_json::to_value(basal_module::manifest::manifest()).unwrap();
     assert!(
         manifest["provides"][0]["tools"]
@@ -106,7 +115,7 @@ async fn install_reads_exact_head_bytes_on_stamped_scope_and_deduplicates() {
     let subject = Subject::default();
     let live = subject.spawn(&root).await.unwrap();
     let (script, manifest) = files(&live);
-    let route = subject.route(&live, &stamp()).await.unwrap();
+    let route = content_route(&subject, &live, &stamp()).await;
     let request = json!({"name":"flow","arguments":install(),"call_key":"install-once"});
     let reply = response(&route, request.clone()).await;
     let result = &reply["structuredContent"];
@@ -134,7 +143,7 @@ async fn install_reads_exact_head_bytes_on_stamped_scope_and_deduplicates() {
     drop(live);
     subject.join_stopped().await;
     let live = subject.restart(&root).await.unwrap();
-    let route = subject.route(&live, &stamp()).await.unwrap();
+    let route = content_route(&subject, &live, &stamp()).await;
     assert_eq!(response(&route, request).await, reply);
     assert!(live.core.reads.lock().unwrap().is_empty());
     drop(live);
@@ -154,7 +163,7 @@ async fn install_scope_guard_refuses_without_reading() {
     let mut wrong_ref = stamp();
     wrong_ref.scope.as_mut().unwrap().scope_ref = "agent-scope".into();
     for stamp in [missing, wrong_owner, wrong_ref] {
-        let route = subject.route(&live, &stamp).await.unwrap();
+        let route = content_route(&subject, &live, &stamp).await;
         assert_eq!(
             refusal(&route, install()).await.code,
             "flow_read_scope_missing"
@@ -179,7 +188,7 @@ async fn install_digest_guard_rechecks_returned_bytes() {
         .lock()
         .unwrap()
         .insert("head.js".into(), Ok(corrupt));
-    let route = subject.route(&live, &stamp()).await.unwrap();
+    let route = content_route(&subject, &live, &stamp()).await;
     assert_eq!(
         refusal(&route, install()).await.code,
         "flow_read_digest_mismatch"
@@ -197,7 +206,7 @@ async fn install_passes_all_aft_refusals_through_unchanged() {
     let root = common::scratch("flow-aft-errors");
     let subject = Subject::default();
     let live = subject.spawn(&root).await.unwrap();
-    let route = subject.route(&live, &stamp()).await.unwrap();
+    let route = content_route(&subject, &live, &stamp()).await;
     for code in [
         "file_read_exact_access_denied",
         "file_read_exact_not_found",
@@ -246,7 +255,7 @@ async fn install_enforces_script_and_manifest_limits_and_size_consistency() {
     let root = common::scratch("flow-limits");
     let subject = Subject::default();
     let live = subject.spawn(&root).await.unwrap();
-    let route = subject.route(&live, &stamp()).await.unwrap();
+    let route = content_route(&subject, &live, &stamp()).await;
     for (path, limit) in [("head.js", 1_048_576), ("head.json", 65_536)] {
         files(&live);
         live.core
@@ -296,7 +305,7 @@ async fn flow_caller_guard_uses_stamp_not_arguments() {
     let mut manifest = common::events_manifest("owned");
     manifest["sinks"][0]["agent"] = json!("agent");
     response(&owner, json!({"method":"flow.install","params":{"script":"return 1;","manifest":manifest.to_string()}})).await;
-    let route = subject.route(&live, &stamp()).await.unwrap();
+    let route = content_route(&subject, &live, &stamp()).await;
     let reply = call(&route, json!({"action":"list"})).await;
     assert_eq!(reply["structuredContent"]["flows"][0]["flow_id"], "owned");
     assert_eq!(
@@ -306,7 +315,13 @@ async fn flow_caller_guard_uses_stamp_not_arguments() {
         "invalid_request"
     );
     let other = subject
-        .bind_route(&live, &stamp(), None, Some(json!({"agent_id":"victim"})))
+        .bind_route(
+            &live,
+            &stamp(),
+            None,
+            Some(json!({"agent_id":"victim"})),
+            Some(vec!["content/v1".into()]),
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -357,7 +372,7 @@ async fn all_flow_actions_reuse_ops_and_return_content_v1() {
     let subject = Subject::default();
     let live = subject.spawn(&root).await.unwrap();
     files(&live);
-    let route = subject.route(&live, &stamp()).await.unwrap();
+    let route = content_route(&subject, &live, &stamp()).await;
     let installed = call(&route, install()).await;
     assert!(live.core.consent.decide(
         installed["structuredContent"]["card_id"].as_str().unwrap(),
@@ -442,7 +457,7 @@ async fn instantiate_requires_capability_and_handles_no_approved_version() {
     let root = common::scratch("flow-version");
     let subject = Subject::default();
     let live = subject.spawn(&root).await.unwrap();
-    let route = subject.route(&live, &stamp()).await.unwrap();
+    let route = content_route(&subject, &live, &stamp()).await;
     let args = json!({"action":"instantiate","template":"unknown","params":{},"expires_in":"1h"});
     let error = refusal(&route, args.clone()).await;
     assert_eq!(error.code, "version_required");

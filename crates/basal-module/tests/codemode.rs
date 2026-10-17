@@ -190,7 +190,7 @@ fn rig(tag: &str, missing_worker: bool) -> Rig {
     Rig { fixture, core }
 }
 fn context() -> Context {
-    Context { call_mode: subc_client_rs::CallMode::Classic, bind_identity: subc_protocol::BindIdentity::new("/agent/workspace","agent-harness","agent-session"),principal:Principal::Reserved { module_id:"broca".into() },scope:Some(serde_json::from_value::<ScopeStamp>(json!({
+    Context { call_mode: cortexkit_role_tool_provider::CallMode::Classic, consumer_capabilities: None, bind_identity: subc_protocol::BindIdentity::new("/agent/workspace","agent-harness","agent-session"),principal:Principal::Reserved { module_id:"broca".into() },scope:Some(serde_json::from_value::<ScopeStamp>(json!({
         "owner":{"kind":"reserved","module_id":"prefrontal-core"},"ref":"agent-scope","scope_epoch":7,"kind":"head",
         "attributes":{"agent_id":"agent"},"owner_authorized":true})).unwrap()) }
 }
@@ -661,14 +661,22 @@ fn unhandled_rejections_warn_but_handled_rejections_and_logs_do_not() {
 #[test]
 fn catalog_generation_tracks_content_and_schema_pins_refuse_changes() {
     use cortexkit_role_tool_provider::call::SchemaPin;
-    let full = basal_module::tool::catalog(json!({"params":{}})).unwrap();
-    let digest = basal_module::tool::catalog(json!({"params":{},"digest_only":true})).unwrap();
+    let full = basal_module::tool::catalog(json!({
+        "params":{"capabilities":["basal:flow.manage/v1"]}
+    }))
+    .unwrap();
+    let digest = basal_module::tool::catalog(json!({
+        "params":{"capabilities":["basal:flow.manage/v1"]},"digest_only":true
+    }))
+    .unwrap();
+    let empty = basal_module::tool::catalog(json!({"params":{}})).unwrap();
+    assert_eq!(full["tools"][0]["name"], "flow");
     assert_eq!(full["tools"][0]["result_format"], "content/v1");
     assert_eq!(full["catalog_digest"], digest["catalog_digest"]);
-    let excluded = basal_module::tool::catalog(json!({"params":{"exclude":["codemode"]}})).unwrap();
-    assert_eq!(excluded["tools"].as_array().unwrap().len(), 1);
-    assert_eq!(excluded["tools"][0]["name"], "flow");
-    assert_ne!(full["generation"], excluded["generation"]);
+    assert!(empty["tools"].as_array().unwrap().is_empty());
+    assert_eq!(full["generation"], empty["generation"]);
+    assert_ne!(full["catalog_digest"], empty["catalog_digest"]);
+    let codemode = basal_module::tool::catalog_tool();
     let rig = rig("schema-pins", false);
     for (pin, code) in [
         (
@@ -676,11 +684,7 @@ fn catalog_generation_tracks_content_and_schema_pins_refuse_changes() {
             "tool_schema_changed",
         ),
         (
-            SchemaPin::new(
-                "codemode",
-                full["tools"][0]["schema_digest"].as_str().unwrap(),
-                999,
-            ),
+            SchemaPin::new("codemode", codemode.schema_digest, 999),
             "tool_semantics_changed",
         ),
     ] {

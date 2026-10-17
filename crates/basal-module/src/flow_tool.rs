@@ -88,7 +88,9 @@ impl Module {
         context: &Context,
         request: &ToolCallRequest,
     ) -> Result<Value, ErrorBody> {
-        if let Some(pin) = cortexkit_role_tool_provider::call::check_call(request)? {
+        if let Some(pin) = cortexkit_role_tool_provider::call::check_call(request)
+            .map_err(crate::tool::provider_error)?
+        {
             let tool = catalog_tool();
             if pin.schema_digest != tool.schema_digest {
                 return Err(ErrorBody::new(

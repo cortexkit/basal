@@ -468,7 +468,7 @@ impl Harness for Subject {
         Ok(live)
     }
     async fn route(&self, handle: &Live, stamp: &RouteStamp) -> Result<Route, HarnessError> {
-        self.bind_route(handle, stamp, None, None).await
+        self.bind_route(handle, stamp, None, None, None).await
     }
     async fn kill_at(
         &self,
@@ -492,12 +492,14 @@ impl Subject {
         stamp: &RouteStamp,
         mode: Option<CallMode>,
         attributes: Option<Value>,
+        consumer_capabilities: Option<Vec<String>>,
     ) -> Result<Route, HarnessError> {
         self.bind_surface(
             handle,
             stamp,
             mode,
             attributes,
+            consumer_capabilities,
             RouteTarget::ToolProvider {
                 module_id: "basal".into(),
             },
@@ -511,6 +513,7 @@ impl Subject {
         stamp: &RouteStamp,
         mode: Option<CallMode>,
         attributes: Option<Value>,
+        consumer_capabilities: Option<Vec<String>>,
         target: RouteTarget,
     ) -> Result<Route, HarnessError> {
         let channel = handle.wire.channel.fetch_add(1, Ordering::SeqCst);
@@ -523,11 +526,12 @@ impl Subject {
             target,
             identity: BindIdentity::new("/work", "test", "session"),
             principal: Some(principal(&stamp.principal)),
-            consumer_capabilities: None,
+            consumer_capabilities,
             role_versions: None,
             admission_facts: None,
             scope,
-            call_mode: mode,
+            call_mode: mode
+                .map(|mode| serde_json::from_value(serde_json::to_value(mode).unwrap()).unwrap()),
         };
         let (corr, mut reply) = handle
             .wire
@@ -560,14 +564,29 @@ impl ToolProviderSubject for Subject {
     fn plain_stamp(&self) -> RouteStamp {
         principals().stamp("reserved:broca")
     }
+    async fn route_with_consumer_capabilities(
+        &self,
+        handle: &Live,
+        stamp: &RouteStamp,
+        consumer_capabilities: &[String],
+    ) -> Result<Route, HarnessError> {
+        self.bind_route(
+            handle,
+            stamp,
+            None,
+            None,
+            Some(consumer_capabilities.to_vec()),
+        )
+        .await
+    }
     fn scoped_principals(&self) -> Option<ScopedPrincipals> {
         Some(principals())
     }
     fn catalog_arguments(&self) -> Value {
-        json!({"params":{}})
+        json!({"params":{"capabilities":["basal:flow.manage/v1"]}})
     }
     fn quick_call(&self) -> CallSpec {
-        ("codemode".into(), json!({"code":"return 42;"}))
+        ("flow".into(), json!({"action":"list"}))
     }
     fn content_v1_calls(&self) -> Vec<CallSpec> {
         vec![
@@ -597,7 +616,7 @@ impl ToolProviderSubject for Subject {
             CallMode::Flow => Some(json!({"agent_id":"agent","flow_id":"flow"})),
             CallMode::Classic | CallMode::Unknown(_) => None,
         };
-        self.bind_route(handle, stamp, Some(mode.clone()), attributes)
+        self.bind_route(handle, stamp, Some(mode.clone()), attributes, None)
             .await
     }
     fn slow_call(&self) -> Option<CallSpec> {
@@ -679,6 +698,13 @@ async fn basal_tool_provider_conforms_for_declared_capabilities() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+async fn content_route(subject: &Subject, live: &Live, stamp: RouteStamp) -> Route {
+    subject
+        .route_with_consumer_capabilities(live, &stamp, &["content/v1".into()])
+        .await
+        .unwrap()
+}
+
 async fn response(route: &Route, body: Value) -> Value {
     let exchange = route.request(body).await.unwrap();
     match cortexkit_role_tool_provider_conformance::single_terminal(&exchange).unwrap() {
@@ -706,10 +732,7 @@ async fn real_route_late_cursor_ack_and_custodian_only_serving() {
     let root = common::scratch("late-cursor");
     let subject = Subject::default();
     let live = subject.spawn(&root).await.unwrap();
-    let carrier = subject
-        .route(&live, &principals().stamp("reserved:broca"))
-        .await
-        .unwrap();
+    let carrier = content_route(&subject, &live, principals().stamp("reserved:broca")).await;
     let other = subject
         .route(&live, &principals().stamp("reserved:aft"))
         .await
@@ -759,10 +782,7 @@ async fn real_route_late_retention_and_direct_call_owner_custody() {
     let root = common::scratch("late-retention");
     let subject = Subject::default();
     let live = subject.spawn(&root).await.unwrap();
-    let direct = subject
-        .route(&live, &principals().stamp("direct"))
-        .await
-        .unwrap();
+    let direct = content_route(&subject, &live, principals().stamp("direct")).await;
     let owner = subject
         .route(&live, &principals().stamp("reserved:prefrontal-core"))
         .await
@@ -807,10 +827,7 @@ async fn real_route_late_incarnation_changes_and_event_identity_survives_restart
     let root = common::scratch("late-restart");
     let subject = Subject::default();
     let live = subject.spawn(&root).await.unwrap();
-    let route = subject
-        .route(&live, &principals().stamp("reserved:broca"))
-        .await
-        .unwrap();
+    let route = content_route(&subject, &live, principals().stamp("reserved:broca")).await;
     complete(&route, "restart-event").await;
     let page = response(
         &route,
@@ -819,10 +836,7 @@ async fn real_route_late_incarnation_changes_and_event_identity_survives_restart
     .await;
     drop((route, live));
     let live = subject.restart(&root).await.unwrap();
-    let route = subject
-        .route(&live, &principals().stamp("reserved:broca"))
-        .await
-        .unwrap();
+    let route = content_route(&subject, &live, principals().stamp("reserved:broca")).await;
     let rejected = route
         .request(json!({"name":"late_results","arguments":{"since":page["cursor"]}}))
         .await
@@ -850,10 +864,7 @@ async fn real_route_held_action_reaches_marker_after_core_releases_admission() {
     let root = common::scratch("held-marker-control");
     let subject = Subject::default();
     let live = subject.spawn(&root).await.unwrap();
-    let route = subject
-        .route(&live, &principals().stamp("reserved:broca"))
-        .await
-        .unwrap();
+    let route = content_route(&subject, &live, principals().stamp("reserved:broca")).await;
     let marker = root.join("action.marker");
     let (name, arguments) = subject.held_call(&marker).unwrap();
     let request =
@@ -980,19 +991,126 @@ async fn unknown_bind_mode_is_refused_for_tools_and_role_operations() {
 }
 
 #[test]
-fn every_public_tool_declares_its_served_modes() {
-    use cortexkit_role_tool_provider::catalog::{CatalogAnswer, check_modes, serves_call_mode};
-    let answer: CatalogAnswer =
-        serde_json::from_value(basal_module::tool::catalog(json!({})).unwrap()).unwrap();
+fn role_describe_advertises_catalog_capability_filter() {
+    let describe = basal_module::tool::describe();
+    assert!(describe["capabilities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|capability| capability == cortexkit_role_tool_provider::CATALOG_CAPABILITY_FILTER));
     assert_eq!(
-        answer
-            .tools
+        describe["tool_capabilities"],
+        json!(["basal:flow.manage/v1"])
+    );
+}
+
+#[test]
+fn role_describe_tool_capabilities_match_catalog_tool_union() {
+    let describe = basal_module::tool::describe();
+    let catalog = basal_module::tool::catalog(json!({
+        "params":{"capabilities":["basal:flow.manage/v1"]}
+    }))
+    .unwrap();
+    let union: BTreeSet<String> = catalog["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|tool| {
+            tool["capabilities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|tag| tag.as_str().unwrap().to_owned())
+        })
+        .collect();
+    assert_eq!(
+        describe["tool_capabilities"],
+        serde_json::to_value(&union).unwrap()
+    );
+    assert_eq!(
+        union,
+        ["basal:flow.manage/v1"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    );
+}
+
+#[test]
+fn catalog_capability_filter_selects_flow_and_refuses_invalid_requests() {
+    use cortexkit_role_tool_provider::errors::INVALID_REQUEST;
+
+    let selected = basal_module::tool::catalog(json!({
+        "params":{"capabilities":["basal:flow.manage/v1"]}
+    }))
+    .unwrap();
+    assert_eq!(
+        selected["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["flow"]
+    );
+
+    for request in [json!({"params":{}}), json!({"params":{"capabilities":[]}})] {
+        assert_eq!(
+            basal_module::tool::catalog(request).unwrap()["tools"],
+            json!([])
+        );
+    }
+
+    let unknown = basal_module::tool::catalog(json!({
+        "params":{"capabilities":["other:unknown/v1"]}
+    }))
+    .unwrap_err();
+    assert_eq!(unknown.code, INVALID_REQUEST);
+    assert_eq!(
+        unknown.detail.as_ref().unwrap()["field"],
+        "params.capabilities[0]"
+    );
+    assert_eq!(
+        unknown.detail.as_ref().unwrap()["capability"],
+        "other:unknown/v1"
+    );
+
+    for capabilities in [
+        json!(["other:unknown/v1", "basal:flow.manage/v1"]),
+        json!(["basal:flow.manage/v1", "basal:flow.manage/v1"]),
+    ] {
+        let error = basal_module::tool::catalog(json!({"params":{"capabilities":capabilities}}))
+            .unwrap_err();
+        assert_eq!(error.code, INVALID_REQUEST);
+        assert_eq!(
+            error.detail.as_ref().unwrap()["field"],
+            "params.capabilities"
+        );
+    }
+
+    let exclude = basal_module::tool::catalog(json!({"params":{"exclude":["flow"]}})).unwrap_err();
+    assert_eq!(exclude.code, INVALID_REQUEST);
+    assert_eq!(exclude.detail.as_ref().unwrap()["field"], "params.exclude");
+}
+
+#[test]
+fn every_public_tool_declares_its_served_modes() {
+    use cortexkit_role_tool_provider::catalog::{check_modes, serves_call_mode};
+    let flow_catalog = basal_module::tool::catalog(json!({
+        "params":{"capabilities":["basal:flow.manage/v1"]}
+    }))
+    .unwrap();
+    let flow: cortexkit_role_tool_provider::catalog::CatalogAnswer =
+        serde_json::from_value(flow_catalog).unwrap();
+    let tools = [basal_module::tool::catalog_tool(), flow.tools[0].clone()];
+    assert_eq!(
+        tools
             .iter()
             .map(|tool| tool.name.as_str())
             .collect::<Vec<_>>(),
         ["codemode", "flow"]
     );
-    for tool in &answer.tools {
+    for tool in &tools {
         assert_eq!(check_modes(tool), Ok(()));
         // The tool-provider crate encodes a Classic-only list with no `modes` field.
         assert_eq!(
@@ -1030,7 +1148,7 @@ async fn legacy_daemon_binds_derive_modes_and_missing_run_expiry_still_runs() {
         (json!({"agent_id":"agent","flow_id":"flow"}), "flow"),
     ] {
         let route = subject
-            .bind_route(&live, &subject.plain_stamp(), None, Some(attributes))
+            .bind_route(&live, &subject.plain_stamp(), None, Some(attributes), None)
             .await
             .unwrap();
         let exchange = route
@@ -1039,7 +1157,7 @@ async fn legacy_daemon_binds_derive_modes_and_missing_run_expiry_still_runs() {
             .unwrap();
         assert_mode_refusal(&exchange, spelling);
     }
-    let classic = subject.route(&live, &subject.plain_stamp()).await.unwrap();
+    let classic = content_route(&subject, &live, subject.plain_stamp()).await;
     let result = response(
         &classic,
         json!({"name":"codemode","arguments":{"code":"return 42;"}}),

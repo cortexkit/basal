@@ -1969,8 +1969,9 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-module/src/codemode.rs"
-old = "late_results::check_since(&self.incarnation, head, request.since.as_ref())?;"
-new = "let _ = (&self.incarnation,head,request.since.as_ref()); /* NON-VACUITY BREAK */"
+old = '''late_results::check_since(&self.incarnation, head, request.since.as_ref())
+            .map_err(crate::tool::provider_error)?;'''
+new = "let _ = (&self.incarnation, head, request.since.as_ref()); /* NON-VACUITY BREAK */"
 
 [[control]]
 id = "codemode-tool-withdraw-record-scope"
@@ -1986,7 +1987,7 @@ build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-module/src/codemode.rs"
 old = '''withdraw::check_record_scope(record_scope.as_ref(), scope.as_ref())
-            .map_err(|e| e.error())?;'''
+            .map_err(|e| crate::tool::provider_error(e.error()))?;'''
 new = "let _ = (record_scope.as_ref(),scope.as_ref()); /* NON-VACUITY BREAK */"
 
 [[control]]
@@ -2020,6 +2021,40 @@ timeout_s = 600
 file = "crates/basal-module/src/codemode.rs"
 old = "WHERE expired=1) WHERE n>1000"
 new = "WHERE expired=1) WHERE n>1001 /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "tool-provider-catalog-filter-not-advertised"
+guards = "role.describe advertises the standardized capability-based catalog filter"
+test_file = "crates/basal-module/tests/tool_provider_conformance.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test tool_provider_conformance"
+expect_red = ["role_describe_advertises_catalog_capability_filter"]
+select = { tests = ["role_describe_advertises_catalog_capability_filter", "declares_call_modes_capability"] }
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/tool.rs"
+old = ".with_capabilities(vec![CATALOG_CAPABILITY_FILTER.into()])"
+new = ".with_capabilities(vec![]) /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "tool-provider-tool-capabilities-not-derived"
+guards = "role.describe tool_capabilities are the catalog tools' sorted unique tag union"
+test_file = "crates/basal-module/tests/tool_provider_conformance.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test tool_provider_conformance"
+expect_red = ["role_describe_tool_capabilities_match_catalog_tool_union"]
+select = { tests = ["role_describe_tool_capabilities_match_catalog_tool_union", "declares_call_modes_capability"] }
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/tool.rs"
+old = ".flat_map(|tool| tool.capabilities.iter().cloned()),"
+new = ".flat_map(|_tool| std::iter::empty::<String>()), /* NON-VACUITY BREAK */"
 
 [[control]]
 id = "event-no-match-ack-removed"
