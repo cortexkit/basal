@@ -13,6 +13,9 @@ use subc_protocol::{Flags, Frame, FrameType, PROTOCOL_VERSION, Priority};
 use subc_transport::connection_file::{ConnectionInfo, Endpoint, SCHEMA_VERSION, write_atomic};
 use subc_transport::{authenticate_server, read_frame, write_frame};
 
+#[path = "common/binary_staging.rs"]
+mod binary_staging;
+
 struct ChildGuard(Child);
 impl Drop for ChildGuard {
     fn drop(&mut self) {
@@ -41,9 +44,13 @@ async fn sample(source: &Path, label: &str) -> Value {
         std::env::temp_dir().join(format!("basal-idle-cpu-{}-{label}", std::process::id())),
     );
     std::fs::create_dir_all(&dir.0).unwrap();
-    let worker = basal_testkit::channel::worker_binary();
-    let placed = basal_testkit::DevBinaries::new(&[source, &worker]).unwrap();
-    let binary = placed.path(source).unwrap();
+    let worker_source = basal_testkit::channel::worker_binary();
+    let (binary, worker) = binary_staging::stage_module_worker(source, &worker_source);
+    assert_eq!(
+        binary.parent(),
+        worker.parent(),
+        "the production module locates its worker beside its own executable"
+    );
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
         .unwrap();

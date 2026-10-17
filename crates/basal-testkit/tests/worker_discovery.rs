@@ -43,6 +43,24 @@ fn worker_discovery_uses_cargos_reported_executable() {
 }
 
 #[test]
+fn worker_binary_is_staged_as_a_reusable_ckdev_copy() {
+    let built = std::path::Path::new(env!("BASAL_TEST_WORKER_BIN"));
+    let staged = basal_testkit::worker_binary();
+    assert_ne!(
+        std::fs::canonicalize(&staged).unwrap(),
+        std::fs::canonicalize(built).unwrap(),
+        "tests must not execute the worker from Cargo's build output"
+    );
+    let expected_name = if cfg!(windows) {
+        "ckdev-basal-worker.exe"
+    } else {
+        "ckdev-basal-worker"
+    };
+    assert_eq!(staged.file_name().unwrap().to_string_lossy(), expected_name);
+    assert_eq!(staged, basal_testkit::worker_binary());
+}
+
+#[test]
 fn every_test_process_uses_the_built_worker_without_invoking_cargo() {
     if std::env::var_os("BASAL_DISCOVERY_PROBE").is_some() {
         let binary = basal_testkit::worker_binary();

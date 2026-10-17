@@ -92,106 +92,23 @@ only = true
 timeout_s = 600
 build_timeout_s = 3600
 
+# Content digests, symlink-aware temp-root selection, safe publication, and
+# reuse are owned and tested by cortexkit-test-support 0.1.8.
+# Keep one local control so bypassing the shared staging API in basal fails.
 [[control]]
-id = "content-addressed-copy-is-not-rewritten"
-guards = "An existing executable copy is reused without changing its modification time"
+id = "test-worker-is-staged-through-cortexkit-test-support"
+guards = "Basal's worker entry point returns the shared content-addressed ckdev copy rather than the Cargo artifact"
 file = "crates/basal-testkit/src/binaries.rs"
-old = """
-if destination.is_file() {
-        return Ok(());
-    }"""
-new = """
-if destination.is_file() {
-        fs::remove_file(destination)?; // NON-VACUITY BREAK
-    }"""
+old = "cortexkit_test_support::ckdev_binary(binary)"
+new = "binary.as_ref().to_path_buf() // NON-VACUITY BREAK"
 edits = []
-test_file = "crates/basal-testkit/src/binaries.rs"
+test_file = "crates/basal-testkit/tests/worker_discovery.rs"
 runner = "cargo"
 package = "basal-testkit"
-target = "--lib"
-expect_red = ["binaries::tests::pre_existing_complete_copy_is_reused_without_rewriting"]
-only = true
-select = { tests = ["binaries::tests::pre_existing_complete_copy_is_reused_without_rewriting", "binaries::tests::changed_binary_bytes_use_a_different_directory"] }
 platforms = ["linux"]
-timeout_s = 600
-build_timeout_s = 3600
-
-[[control]]
-id = "content-addressed-directory-uses-path-not-bytes"
-guards = "Changed executable bytes select a different content-addressed directory"
-file = "crates/basal-testkit/src/binaries.rs"
-old = "let digest_name = digest.to_hex().to_string()[..16].to_owned();"
-new = """
-let digest_name = blake3::hash(sources[0].2.as_os_str().as_encoded_bytes())
-            .to_hex()
-            .to_string()[..16]
-            .to_owned(); // NON-VACUITY BREAK"""
-edits = []
-test_file = "crates/basal-testkit/src/binaries.rs"
-runner = "cargo"
-package = "basal-testkit"
-target = "--lib"
-expect_red = ["binaries::tests::changed_binary_bytes_use_a_different_directory"]
+target = "--test worker_discovery"
+expect_red = ["worker_binary_is_staged_as_a_reusable_ckdev_copy"]
 only = true
-platforms = ["linux"]
-timeout_s = 600
-build_timeout_s = 3600
-
-[[control]]
-id = "ckdev-named-binary-runs-from-its-build-folder"
-guards = "Every executable is copied out of its build folder, even one already named ckdev-, so nothing runs from a removable target volume"
-file = "crates/basal-testkit/src/binaries.rs"
-old = """
-    let binary = binary.as_ref();
-    static COPIES"""
-new = """
-    let binary = binary.as_ref();
-    if !binary.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.starts_with("ck-")) {
-        return binary.to_path_buf(); // NON-VACUITY BREAK
-    }
-    static COPIES"""
-edits = []
-test_file = "crates/basal-testkit/src/binaries.rs"
-runner = "cargo"
-package = "basal-testkit"
-target = "--lib"
-expect_red = ["binaries::tests::copies_never_run_from_their_build_folder_whatever_the_name"]
-only = true
-platforms = ["linux"]
-timeout_s = 600
-build_timeout_s = 3600
-
-[[control]]
-id = "macos-copies-use-the-var-folders-temp-dir"
-guards = "On macOS executable copies live in a private, user-owned folder under /tmp, where a fresh copy starts at once"
-file = "crates/basal-testkit/src/binaries.rs"
-old = """let root = PathBuf::from(format!("/tmp/basal-exec-{uid}"));"""
-new = """let root = std::env::temp_dir().join(format!("basal-exec-{uid}")); // NON-VACUITY BREAK"""
-edits = []
-test_file = "crates/basal-testkit/src/binaries.rs"
-runner = "cargo"
-package = "basal-testkit"
-target = "--lib"
-expect_red = ["binaries::tests::macos_copies_live_in_a_private_folder_under_tmp"]
-only = true
-platforms = ["macos"]
-timeout_s = 600
-build_timeout_s = 3600
-
-[[control]]
-id = "macos-worker-exec-root-rejects-var-folders-tempdir"
-guards = "Worker executable copies avoid /var/folders because macOS may delay launching a fresh executable there"
-file = "crates/basal-testkit/src/binaries.rs"
-old = """!path.starts_with("/var/folders") && !path.starts_with("/private/var/folders")"""
-new = """!path.starts_with("/private/var/folders")"""
-edits = []
-test_file = "crates/basal-testkit/src/binaries.rs"
-runner = "cargo"
-package = "basal-testkit"
-target = "--lib"
-expect_red = ["binaries::tests::worker_exec_root_uses_only_an_ordinary_absolute_tmpdir"]
-only = true
-platforms = ["macos"]
 timeout_s = 600
 build_timeout_s = 3600
 

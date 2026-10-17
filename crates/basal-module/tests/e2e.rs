@@ -31,24 +31,24 @@ const T0: i64 = 1_777_593_600_000;
 const HOUR: i64 = 3_600_000;
 
 #[cfg(unix)]
+#[path = "common/binary_staging.rs"]
+mod binary_staging;
+
+#[cfg(unix)]
 const PROBE_MODULE: &str = "BASAL_E2E_PRIVACY_MODULE_BINARY";
 #[cfg(unix)]
 const PROBE_WORKER: &str = "BASAL_E2E_PRIVACY_WORKER_BINARY";
 
 #[cfg(unix)]
-fn placed_probe_binaries() -> (basal_testkit::DevBinaries, PathBuf, PathBuf, PathBuf) {
+fn placed_probe_binaries() -> (PathBuf, PathBuf, PathBuf) {
     let module = basal_testkit::dev_binary(env!("CARGO_BIN_EXE_ck-basal"));
     let worker = worker_binary();
+    let (module, worker) = binary_staging::stage_module_worker(&module, &worker);
     let executable = std::env::current_exe().expect("test executable");
-    // Copy the probe and its inputs before giving the probe its own macOS
-    // privacy identity. That child must not execute or read the original build
-    // artifacts on a removable volume, where access may require a TCC prompt.
-    let binaries = basal_testkit::DevBinaries::new(&[&module, &worker, &executable])
-        .expect("probe executable copies");
-    let probe = binaries.path(&executable).expect("copied test executable");
-    let module = binaries.path(&module).expect("copied module");
-    let worker = binaries.path(&worker).expect("copied worker");
-    (binaries, probe, module, worker)
+    // The probe is also an executable, so stage it before giving it its own
+    // macOS privacy identity. Its build output may live on a removable volume.
+    let probe = cortexkit_test_support::ckdev_binary(executable);
+    (probe, module, worker)
 }
 
 #[cfg(unix)]
@@ -268,7 +268,7 @@ mod privacy {
         // report themselves. Give the probe an explicit, live identity instead.
         // Keep it alive through all observations so a plain worker must inherit
         // this identity and cannot masquerade as a disclaimed worker.
-        let (_binaries, probe_binary, binary, worker) = placed_probe_binaries();
+        let (probe_binary, binary, worker) = placed_probe_binaries();
         let dir = Directory(scratch("privacy-originator"));
         std::fs::create_dir_all(&dir.0).expect("probe log directory");
         let log_path = dir.0.join("probe.log");
@@ -599,12 +599,13 @@ fn scratch(tag: &str) -> PathBuf {
 #[test]
 fn copied_test_executable_accepts_exact_ignored_arguments() {
     let original = std::env::current_exe().expect("test executable");
-    let (binaries, executable, module, worker) = placed_probe_binaries();
-    assert_eq!(executable.file_name(), original.file_name());
+    let (executable, module, worker) = placed_probe_binaries();
+    let expected_name = format!("ckdev-{}", original.file_name().unwrap().to_string_lossy());
     assert_eq!(
-        executable,
-        binaries.path(&original).expect("placed test path")
+        executable.file_name().unwrap().to_string_lossy(),
+        expected_name
     );
+    assert_ne!(executable, original);
     let dir = Directory(scratch("copied-libtest"));
     let log_path = dir.0.join("libtest.log");
     let log = std::fs::File::create(&log_path).expect("copied libtest log");
@@ -644,9 +645,21 @@ fn copied_test_executable_entrypoint() {
     let expected = std::env::var_os("BASAL_E2E_EXPECTED_PROBE").expect("expected copy path");
     assert_eq!(executable, PathBuf::from(expected));
     let (module, worker) = probe_fixture_binaries();
+    assert_eq!(
+        module.parent(),
+        worker.parent(),
+        "the production module locates its worker beside its own executable"
+    );
     for binary in [module, worker] {
         let binary = binary.canonicalize().expect("placed fixture binary");
-        assert_eq!(binary.parent(), executable.parent());
+        assert_ne!(binary, executable);
+        assert!(
+            binary
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("ckdev-")
+        );
         assert!(binary.metadata().unwrap().len() > 0);
     }
     println!("copied e2e entrypoint reached");
