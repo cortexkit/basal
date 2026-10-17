@@ -266,6 +266,11 @@ impl ToolRoute for Route {
 struct Subject {
     core: Mutex<Option<Arc<MockCore>>>,
     stopped: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+    // The provider runs inside this test binary, so the serving process's
+    // exit on a latched store failure would end every test at once, with no
+    // report naming the one that hit it. Record the failure instead, and fail
+    // the test that hit it at teardown.
+    store_failure: Arc<Mutex<Option<String>>>,
 }
 impl Subject {
     // An abort only requests cancellation. Join every dropped provider,
@@ -280,6 +285,9 @@ impl Subject {
             {
                 assert!(error.is_cancelled(), "provider teardown panicked: {error}");
             }
+        }
+        if let Some(why) = self.store_failure.lock().unwrap().take() {
+            panic!("the provider latched a store failure: {why}");
         }
     }
 }
@@ -387,6 +395,12 @@ impl Harness for Subject {
             }),
         )
         .with_tool_foreground(Duration::from_millis(50))
+        .with_store_failure_action({
+            let store_failure = self.store_failure.clone();
+            Box::new(move |why| {
+                store_failure.lock().unwrap().get_or_insert(why);
+            })
+        })
         .with_ready_hosts(Box::new(move || {
             if let Some(ready) = ready.lock().unwrap().take() {
                 let _ = ready.send(());

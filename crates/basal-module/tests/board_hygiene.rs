@@ -37,9 +37,32 @@ struct BoardHost {
     /// Refuse `work.unsettled` reads of this page index and later with this body.
     unsettled_refusal: Mutex<Option<(usize, Value)>>,
     unsettled_reads: Mutex<Vec<Value>>,
+    // The first assertion `answer` failed. It runs on the runtime's dispatch
+    // thread, where a panic only ends that thread: the activation would wait
+    // out its whole deadline for an answer that never comes. So a failed
+    // assertion is answered at once with a rejection, and `Test::run` fails
+    // the test with this message.
+    violation: Mutex<Option<String>>,
 }
 
 impl BoardHost {
+    fn checked_answer(&self, request: &CallRequest) -> Option<HostOutcome> {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.answer(request))) {
+            Ok(outcome) => outcome,
+            Err(panic) => {
+                let message = panic
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| panic.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+                    .unwrap_or_else(|| "non-text panic".to_owned());
+                let message = format!("{:?} {}: {message}", request.kind, request.args.as_str());
+                self.violation.lock().unwrap().get_or_insert(message);
+                Some(HostOutcome::rejected(text(
+                    json!({"code":"test_host_assertion_failed","message":"see the test failure"}),
+                )))
+            }
+        }
+    }
     fn answer(&self, request: &CallRequest) -> Option<HostOutcome> {
         let args: Value = serde_json::from_str(request.args.as_str()).unwrap();
         let value = match &request.kind {
@@ -132,7 +155,7 @@ impl Host for BoardHost {
         self.mock.classify(kind)
     }
     fn dispatch(&self, request: &CallRequest) -> Result<Dispatched, TransportError> {
-        if let Some(outcome) = self.answer(request) {
+        if let Some(outcome) = self.checked_answer(request) {
             return Ok(Dispatched::Completed(outcome));
         }
         self.mock.dispatch(request)
@@ -142,7 +165,7 @@ impl Host for BoardHost {
         request: &CallRequest,
         class: CallClass,
     ) -> Result<Dispatched, TransportError> {
-        if let Some(outcome) = self.answer(request) {
+        if let Some(outcome) = self.checked_answer(request) {
             return Ok(Dispatched::Completed(outcome));
         }
         self.mock.dispatch_classified(request, class)
@@ -226,6 +249,9 @@ impl Test {
         self.runs += 1;
         let run = common::admit(&self.f, "board-hygiene", &format!("run-{}", self.runs));
         self.f.module.engine.run_until_idle(1000).unwrap();
+        if let Some(violation) = self.host.violation.lock().unwrap().take() {
+            panic!("the fake core host rejected a request: {violation}");
+        }
         let done = self.f.module.rt.run(&run).unwrap();
         assert_eq!(done.state, RunState::Succeeded, "{done:#?}");
         self.result = serde_json::from_str(done.result.as_ref().unwrap()).unwrap();

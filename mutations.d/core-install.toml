@@ -434,8 +434,8 @@ new = "            Ok(None)"
 
 [[control]]
 id = "the-owner-may-not-re-enable-even-a-disable-it-made-itself"
-hub = "The owning agent may re-enable a flow it disabled itself, including an idempotently re-ensured template instance; owner binding and authorization require that same ownership rule"
-hub_targets = ["caller_binding", "templates"]
+hub = "The owning agent may re-enable a flow it disabled itself, including an idempotently re-ensured template instance; owner binding, authorization and the flow tool's disable-then-enable action require that same ownership rule"
+hub_targets = ["caller_binding", "templates", "tool_provider_conformance"]
 guards = "the owner may not re-enable even a disable it made itself"
 test_file = "crates/basal-module/tests/ops.rs"
 runner = "cargo"

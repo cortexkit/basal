@@ -69,8 +69,8 @@ new = "let pool = PoolConfig::beside_current_exe(); drop(pool); // NON-VACUITY B
 
 [[control]]
 id = "flow-list-agent-sees-another-agent-s-flow"
-hub = "Flow list visibility is owner-scoped for both ordinary flows and template instances"
-hub_targets = ["templates"]
+hub = "Flow list visibility is owner-scoped for ordinary flows, template instances and the flow tool's list action on a stamped route"
+hub_targets = ["templates", "tool_provider_conformance"]
 guards = "flow.list agent sees another agent's flow"
 test_file = "crates/basal-module/tests/list_contract.rs"
 runner = "cargo"
@@ -293,8 +293,8 @@ new = "let _ = handle;"
 
 [[control]]
 id = "a-vouched-agent-may-run-a-capture-dry-run-of-a-flow-it-does-not-own"
-hub = "An agent may capture-dry-run only a flow it owns, asserted by route binding and the authorization matrix"
-hub_targets = ["ops"]
+hub = "An agent may capture-dry-run only a flow it owns, asserted by route binding, the authorization matrix and the flow tool's stamped-caller guard"
+hub_targets = ["ops", "tool_provider_conformance"]
 guards = "a vouched agent may run a capture dry run of a flow it does not own"
 test_file = "crates/basal-module/tests/caller_binding.rs"
 runner = "cargo"
@@ -311,8 +311,8 @@ new = "(Caller::Agent { .. }, Mode::Capture) => {}"
 
 [[control]]
 id = "a-vouched-agent-may-enable-a-flow-it-does-not-own-the-module-s-ownership-check-and-the-core-s-both-removed"
-hub = "An agent may enable only a flow it owns; both ownership checks protect the binding and authorization-matrix tests"
-hub_targets = ["ops"]
+hub = "An agent may enable only a flow it owns; both ownership checks protect the binding, authorization-matrix and flow-tool stamped-caller tests"
+hub_targets = ["ops", "tool_provider_conformance"]
 guards = "a vouched agent may enable a flow it does not own (the module's ownership check and the core's both removed)"
 test_file = "crates/basal-module/tests/caller_binding.rs"
 runner = "cargo"
@@ -707,8 +707,8 @@ new = "let recovered: Vec<String> = Vec::new();"
 
 [[control]]
 id = "a-card-s-approval-is-applied-as-a-rejection"
-hub = "An approved install card approves its version and admits its flow; flow-running fixtures install through approval, so applying that approval as rejection leaves no approved audience, owner or admissible run"
-hub_targets = ["audience", "board_hygiene", "caller_binding", "ci_failure_router", "dry_run", "e2e", "engine", "health_contract", "idle_wake", "install_revoked", "list_contract", "module_lifecycle", "ops", "pool", "state_epoch", "templates"]
+hub = "An approved install card approves its version and admits its flow; flow-running fixtures, including the GitHub events, state-epoch vector and flow-tool fixtures, install through approval, so applying that approval as rejection leaves no approved audience, owner or admissible run"
+hub_targets = ["audience", "board_hygiene", "caller_binding", "ci_failure_router", "dry_run", "e2e", "engine", "github_events", "health_contract", "idle_wake", "install_revoked", "list_contract", "module_lifecycle", "ops", "pool", "state_epoch", "state_epoch_vectors", "templates", "tool_provider_conformance"]
 guards = "a card's approval is applied as a rejection"
 test_file = "crates/basal-module/tests/ops.rs"
 runner = "cargo"
@@ -793,8 +793,8 @@ new = "(Caller::Agent { agent_id: agent, .. }, _) if self.owns(agent, &p.flow_id
 
 [[control]]
 id = "dry-runs-share-one-scratch-store-that-is-never-removed"
-hub = "Each dry run uses a fresh disposable scratch store; repeated state-epoch previews must not inherit an earlier preview's approved flow version"
-hub_targets = ["state_epoch"]
+hub = "Each dry run uses a fresh disposable scratch store; repeated state-epoch previews must not inherit an earlier preview's approved flow version, and a board-sink live preview must not inherit the capture preview run before it"
+hub_targets = ["hosts", "state_epoch"]
 guards = "dry runs share one scratch store that is never removed"
 test_file = "crates/basal-module/tests/dry_run.rs"
 runner = "cargo"
@@ -812,8 +812,8 @@ edits = [
 
 [[control]]
 id = "any-agent-may-run-a-capture-dry-run-of-another-s-flow"
-hub = "An agent may capture-dry-run only a flow it owns, asserted by the authorization matrix and route binding tests"
-hub_targets = ["caller_binding"]
+hub = "An agent may capture-dry-run only a flow it owns, asserted by the authorization matrix, route binding and the flow tool's stamped-caller guard"
+hub_targets = ["caller_binding", "tool_provider_conformance"]
 guards = "any agent may run a capture dry run of another's flow"
 test_file = "crates/basal-module/tests/ops.rs"
 runner = "cargo"
@@ -878,8 +878,8 @@ new = "        if false {\n            return Err(OpError::not_permitted(\"flow.
 
 [[control]]
 id = "any-agent-may-enable-any-flow-the-module-s-ownership-check-and-the-core-s-both-removed"
-hub = "An agent may enable only a flow it owns; both ownership checks protect the authorization-matrix and binding tests"
-hub_targets = ["caller_binding"]
+hub = "An agent may enable only a flow it owns; both ownership checks protect the authorization-matrix, binding and flow-tool stamped-caller tests"
+hub_targets = ["caller_binding", "tool_provider_conformance"]
 guards = "any agent may enable any flow (the module's ownership check and the core's both removed)"
 test_file = "crates/basal-module/tests/ops.rs"
 runner = "cargo"
@@ -1031,8 +1031,8 @@ new = "\"auto_disabled\": f.auto_disabled.then_some(true),"
 
 [[control]]
 id = "health-s-state-is-outside-the-contract-s-enum"
-hub = "An approved flow has the contract state `enabled`, never `active`, across strict health decoding, ops, list, install-gate and legacy stored-manifest health tests"
-hub_targets = ["install_gate", "list_contract", "ops", "stored_manifests"]
+hub = "An approved flow has the contract state `enabled`, never `active`, across strict health decoding, ops, list, install-gate, legacy stored-manifest health tests and the flow tool's list text"
+hub_targets = ["install_gate", "list_contract", "ops", "stored_manifests", "tool_provider_conformance"]
 guards = "health's state is outside the contract's enum"
 test_file = "crates/basal-module/tests/health_contract.rs"
 runner = "cargo"
@@ -2322,8 +2322,8 @@ test_file = "crates/basal-module/tests/templates.rs"
 runner = "cargo"
 package = "basal-module"
 platforms = ["linux"]
-target = "--test templates"
-expect_red = ["end_is_owner_scoped_repeatable_kept_and_reopened_by_same_values"]
+target = "--test templates --test tool_provider_conformance"
+expect_red = ["end_is_owner_scoped_repeatable_kept_and_reopened_by_same_values", "flow::flow_caller_guard_uses_stamp_not_arguments"]
 only = true
 file = "crates/basal-module/src/ops.rs"
 old = "Caller::Agent { agent_id, .. } if self.owns(agent_id, &p.flow_id)? => {}"
@@ -2554,7 +2554,7 @@ id = "call-modes-codemode-catalog-serves-flow"
 guards = "the public catalog declares only classic for codemode"
 file = "crates/basal-module/src/tool.rs"
 old = 'let tool = tool.with_modes(vec![CallMode::Classic]);'
-new = 'let tool = tool.with_modes(vec![CallMode::Flow]); // NON-VACUITY BREAK'
+new = 'let tool = tool.with_modes(vec![CallMode::Classic, CallMode::Flow]); // NON-VACUITY BREAK'
 test_file = "crates/basal-module/tests/tool_provider_conformance.rs"
 runner = "cargo"
 package = "basal-module"
@@ -2562,8 +2562,6 @@ platforms = ["linux"]
 target = "--test tool_provider_conformance"
 expect_red = ["every_public_tool_declares_its_served_modes"]
 only = false
-hub = "Codemode's public catalog serves classic calls, never flow mode; SDK catalog attestation and classic tool-provider route probes require that same advertised mode before they can invoke codemode"
-hub_targets = ["codemode_scope"]
 build_timeout_s = 3600
 timeout_s = 600
 
