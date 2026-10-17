@@ -24,8 +24,8 @@ cargo test --locked -p basal-worker -p basal-module -p basal-testkit -p basal-ri
 CI also builds every target at the declared minimum Rust version:
 
 ```sh
-cargo +1.88.0 check --workspace --all-targets --locked
-cargo +1.88.0 check --workspace --all-targets --locked --features basal-module/rig-kill-hook
+cargo +1.89.0 check --workspace --all-targets --locked
+cargo +1.89.0 check --workspace --all-targets --locked --features basal-module/rig-kill-hook
 ```
 
 Formatting and the script checks run once in a build-cache-free `lint` job:

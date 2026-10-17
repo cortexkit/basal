@@ -19,7 +19,7 @@ The name comes from the basal ganglia, the part of the brain that selects action
 
 ## Build and test
 
-basal needs Rust 1.88 or newer (edition 2024) on macOS, Linux (x86_64 or aarch64), or Windows. Dependencies are published on crates.io or pinned to an immutable Git revision.
+basal needs Rust 1.89 or newer (edition 2024) on macOS, Linux (x86_64 or aarch64), or Windows. Dependencies are published on crates.io or pinned to an immutable Git revision.
 
 These need only the Rust toolchain:
 

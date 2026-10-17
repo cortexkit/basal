@@ -465,10 +465,10 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Install the declared minimum Rust
-        run: rustup toolchain install 1.88.0 --profile minimal
+        run: rustup toolchain install 1.89.0 --profile minimal
       - name: Record installed Rust version
         id: rust
-        run: echo "version=$(rustc +1.88.0 --version | cut -d ' ' -f 2)" >> "$GITHUB_OUTPUT"
+        run: echo "version=$(rustc +1.89.0 --version | cut -d ' ' -f 2)" >> "$GITHUB_OUTPUT"
       - name: Restore Cargo build cache
         uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
@@ -484,8 +484,8 @@ jobs:
       - *restored-build-size
       - name: Build every target with the declared minimum Rust
         run: |
-          cargo +1.88.0 check --workspace --all-targets --locked
-          cargo +1.88.0 check --workspace --all-targets --locked --features basal-module/rig-kill-hook
+          cargo +1.89.0 check --workspace --all-targets --locked
+          cargo +1.89.0 check --workspace --all-targets --locked --features basal-module/rig-kill-hook
       - *final-build-size
       - name: Save Cargo build cache
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'

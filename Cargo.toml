@@ -15,7 +15,7 @@ members = [
 edition = "2024"
 license = "MIT"
 publish = false
-rust-version = "1.88"
+rust-version = "1.89"
 
 [workspace.dependencies]
 # Dependencies do not require sibling checkouts.
