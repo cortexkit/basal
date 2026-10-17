@@ -443,9 +443,10 @@ fn an_undecodable_reply_defers_the_run() {
     assert_eq!(health_entry(&f)["state"], "enabled");
 }
 
-/// `flow.install_status` accepts only these `state` values. Active, revoked,
-/// pending, executed, declined and expired states require a valid hash; rejected
-/// may omit the hash, while unknown must have no hash.
+/// `flow.install_status` accepts only these `state` values. Active, pending,
+/// executed, declined and expired states require a valid hash; revoked and
+/// rejected may omit the hash but never carry a malformed one, and unknown must
+/// have no hash.
 #[test]
 fn install_status_replies_decode_strictly() {
     let hash = "0123456789abcdef".repeat(4);
@@ -562,7 +563,6 @@ fn install_status_replies_decode_strictly() {
         json!({"state":"active","code_hash":null}),
         json!({"state":"active","code_hash":hash.to_uppercase()}),
         json!({"state":"active","code_hash":"abc"}),
-        json!({"state":"revoked"}),
         json!({"state":"unknown","code_hash":hash}),
         json!({"state":"superseded","code_hash":hash}),
         json!({"code_hash":hash}),
