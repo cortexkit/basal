@@ -278,6 +278,8 @@ port_listener() {
 
 # For subcommands that would start a daemon: the port must be free.
 guard_port_free() {
+  # Dry runs start no daemon, so host port occupancy is irrelevant to them.
+  [ "$DRY" = 1 ] && return 0
   listener=$(port_listener)
   [ -z "$listener" ] || die "refusing: port $PORT is already taken by pid $listener"
 }
@@ -1036,7 +1038,8 @@ configure_live() {
   fi
   if [ "$DRY" = 1 ]; then
     say "+ read the served catalog: ckdev-models get --subc $CONN --json"
-    say "+ write $ROUTING_CONFIG: model_routing.exclude = [every served provider, -openai/gpt-6-luna]"
+    say "+ write $ROUTING_CONFIG: model_routing.exclude.all = [every served provider, -openai/gpt-6-luna]"
+    say "+ validate with XDG_CONFIG_HOME=$CONFIG_HOME $BIN/ckdev-prefrontal-routing --check-config"
     say "+ fail if openai/gpt-6-luna is absent"
   else
     pin_routing
@@ -1068,15 +1071,20 @@ models = catalog["models"]
 if "openai/gpt-6-luna" not in models:
     sys.exit("flows-rig: served Fusiform catalog lacks openai/gpt-6-luna")
 providers = sorted({key.split("/", 1)[0] for key in models})
-policy = {"model_routing": {"exclude": providers + ["-openai/gpt-6-luna"],
+policy = {"model_routing": {"exclude": {"all": providers + ["-openai/gpt-6-luna"]},
           "models": {"openai/gpt-6-luna": {"elo": 1, "eq": 0, "speed": 0}}}}
 text = json.dumps(policy, indent=2)
 entry = "      \"openai/gpt-6-luna\": {"
 comment = ("      // Rig fixture values, not measured model quality. An empty routing store\n"
            "      // discovers Luna as unscored and never selects it. As the only eligible\n"
-           "      // model, elo=1 clears iq=20; no EQ or speed score is demanded.\n")
+            "      // model, elo=1 clears iq=20; no EQ or speed score is demanded.\n")
 print(text.replace(entry, comment + entry))') || return 1
-  printf '%s\n' "$policy" | write_file "$ROUTING_CONFIG"
+  printf '%s\n' "$policy" | write_file "$ROUTING_CONFIG" || return 1
+  output=$(XDG_CONFIG_HOME="$CONFIG_HOME" "$BIN/ckdev-prefrontal-routing" --check-config 2>&1) || {
+    [ -z "$output" ] || printf '%s\n' "$output" >&2
+    return 1
+  }
+  [ -z "$output" ] || printf '%s\n' "$output"
 }
 
 # ---------------------------------------------------------------- credential
@@ -1248,14 +1256,21 @@ cmd_status() {
     (report_process basal-worker "$BIN/ckdev-basal-worker" "$worker" "$(basal_identifier ck-basal-worker)") || failed=1
   done
   report_credentials
-  [ "$failed" = 0 ] || die "status found a module outside the rig (see above)"
+  [ "$failed" = 0 ] || die "status found a module outside the rig or not running its placed image (see above)"
 }
 
 # One module's row: running, pid, identifier, whether the running image is
 # the placed file, every store the process has open, and any open regular
 # file under the user's real home that is not inside the rig root. Returns
-# non-zero for a store outside the rig's three XDG homes (config/, data/ and
-# runtime/ under the rig root) or for any such file outside the rig root.
+# non-zero when the process is not running its placed image, for a store outside
+# the rig's three XDG homes (config/, data/ and runtime/ under the rig root), or
+# for any other open file under the user's real home that is outside the rig.
+running_image_inode() {
+  lsof -nP -a -p "$1" -d txt -Fin 2>/dev/null | awk '
+    /^i/ { inode = substr($0, 2) }
+    /^n/ { print inode; exit }'
+}
+
 report_process() {
   name=$1
   placed=$2
@@ -1267,17 +1282,28 @@ report_process() {
     return 0
   fi
   placed_inode=$(stat -f %i "$placed")
-  running_inode=$(lsof -nP -a -p "$pid" -d txt -Fin 2>/dev/null | awk -v prog="$placed" '
-    /^i/ { inode = substr($0, 2) }
-    /^n/ { if (substr($0, 2) == prog) { print inode; exit } }')
+  trampoline_inode=$(stat -f %i "$BIN/ckdev-subc")
+  running_inode=$(running_image_inode "$pid")
+  image_waits=0
+  # subc 0.1.6+ may expose its ck-subc trampoline before exec'ing a module.
+  # Give that handoff about five seconds; a process that never reaches its
+  # placed image remains a status failure.
+  while [ "$placed_inode" != "$trampoline_inode" ] \
+      && [ "$running_inode" = "$trampoline_inode" ] \
+      && [ "$image_waits" -lt 50 ]; do
+    sleep 0.1
+    image_waits=$((image_waits + 1))
+    running_inode=$(running_image_inode "$pid")
+  done
+  bad=0
   if [ "$running_inode" = "$placed_inode" ]; then
     image="running image is the placed file (inode $placed_inode)"
   else
     image="running image is NOT the placed file (running inode ${running_inode:-unknown}, placed $placed_inode)"
+    bad=1
   fi
   [ "$identifier" = "$want_identifier" ] || image="$image; identifier should be $want_identifier"
   say "$name: running · pid $pid · identifier $identifier · $image"
-  bad=0
   # Every open file as "<lsof type><tab><path>"; lsof prints a file's type
   # field before its name field.
   opened=$(lsof -nP -a -p "$pid" -Ftn 2>/dev/null | awk '

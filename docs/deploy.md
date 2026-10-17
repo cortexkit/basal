@@ -71,7 +71,7 @@ Fatal exits are reported to the supervisor, which restarts the module:
 | 75 | `EXIT_STORE_FAILURE` | A store failure requires recovery on restart (`EX_TEMPFAIL`). |
 | 76 | `EXIT_PRIVACY_IDENTITY_FAILURE` | `ck-basal` couldn't find its own executable, or the startup probe (the trampoline run once in its check mode) failed. No worker is launched. |
 
-After placement, basal checks that `ck --json provenance basal` names the commit, the parent's and a worker's running images match their placed files by inode, the sandbox verifies at the placed worker path, the store reads the build's new schema version with its tables intact, and `flow.list` answers.
+After placement, basal checks that `ck --json provenance basal` names the commit, the parent's and a worker's running images match their placed files by inode (allow up to five seconds for the ck-subc trampoline to exec, and fail if it never becomes the placed file), the sandbox verifies at the placed worker path, the store reads the build's new schema version with its tables intact, and `flow.list` answers.
 
 ## The rig run before a handover
 

@@ -17,6 +17,23 @@ timeout_s = 120
 build_timeout_s = 1800
 
 [[control]]
+id = "rig-dry-run-port-checks-host"
+guards = "dry runs do not refuse because a host process owns the rig port"
+file = "script/flows-rig.sh"
+old = '[ "$DRY" = 1 ] && return 0'
+new = '[ "$DRY" = 2 ] && return 0 # NON-VACUITY BREAK'
+edits = []
+test_file = "script/tests/flows_rig.py"
+runner = "command"
+platforms = ["linux"]
+command = ["python3", "-m", "unittest", "{test}"]
+test_count_pattern = "Ran {count} test"
+expect_red = ["script.tests.flows_rig.RigChecks.test_dry_run_does_not_check_the_host_rig_port"]
+only = false
+timeout_s = 120
+build_timeout_s = 1800
+
+[[control]]
 id = "rig-routing-pin-accepts-a-catalog-without-luna"
 guards = "the routing pin refuses a served catalog without openai/gpt-6-luna"
 file = "script/flows-rig.sh"
