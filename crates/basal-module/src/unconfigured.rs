@@ -122,12 +122,16 @@ impl Catalog for EmptyCatalog {
         None
     }
 
-    fn agent_known(&self, _agent: &str) -> bool {
-        false
+    fn agent_known(&self, _agent: &str) -> Result<bool, basal_host::transport::WireError> {
+        Err(basal_host::transport::WireError::NeverSent(
+            "agent registry is unconfigured".into(),
+        ))
     }
 
-    fn agent_id(&self, _agent: &str) -> Option<String> {
-        None
+    fn agent_id(&self, _agent: &str) -> Result<Option<String>, basal_host::transport::WireError> {
+        Err(basal_host::transport::WireError::NeverSent(
+            "agent registry is unconfigured".into(),
+        ))
     }
     fn resolve_agents(
         &self,

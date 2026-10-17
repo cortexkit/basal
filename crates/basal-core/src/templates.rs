@@ -582,8 +582,19 @@ impl crate::Runtime {
             return Err(refused("package_not_template", Value::Null));
         }
         let limits = policy(&manifest).map_err(|e| crate::CoreError::Corrupt(e.to_string()))?;
-        if self.catalog().agent_id(agent).as_deref() != Some(agent) {
-            return Err(refused("agent_unknown", Value::Null));
+        // The registry read pages core's agent list over the network, so it
+        // runs here, before the store's write lock is taken below. A failed
+        // read is not evidence that the agent is unknown: it is refused as
+        // retryable, and only an answered read without the agent is final.
+        match self.catalog().agent_id(agent) {
+            Ok(Some(id)) if id == agent => {}
+            Ok(_) => return Err(refused("agent_unknown", Value::Null)),
+            Err(_) => {
+                return Err(refused(
+                    basal_host::catalog::AGENT_REGISTRY_UNAVAILABLE,
+                    json!({"retryable": true}),
+                ));
+            }
         }
         let now = self.config().clock.now_ms();
         let values = validate_values(&manifest, values, now)?;

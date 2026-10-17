@@ -2812,3 +2812,20 @@ expect_red = ["production_sources_never_use_throwaway"]
 only = false
 timeout_s = 600
 build_timeout_s = 3600
+
+[[control]]
+id = "template-dry-run-registry-error-is-not-unknown-agent"
+guards = "A failed agent registry read refuses a template dry run as retryable, never as agent_unknown"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["template_dry_run_refuses_a_failed_agent_registry_read_as_retryable"]
+select = { tests = ["template_dry_run_refuses_a_failed_agent_registry_read_as_retryable", "template_dry_run_refuses_an_agent_absent_from_an_answered_registry_as_unknown"] }
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/ops.rs"
+old = "match self.rt.catalog().agent_id(agent_id) {"
+new = "match self.rt.catalog().agent_id(agent_id).or_else(|_| Ok::<_, basal_host::transport::WireError>(None)) { // NON-VACUITY BREAK"

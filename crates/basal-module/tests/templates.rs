@@ -459,6 +459,104 @@ fn lifetime_limit_refuses_without_creating() {
     assert!(create(&f, OWNER, json!({"note":"a"}), 1, "1d").is_ok());
 }
 
+fn count(f: &Fixture, table: &str) -> i64 {
+    f.module
+        .rt
+        .store()
+        .read(|c| Ok(c.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))?))
+        .unwrap()
+}
+
+fn registry_failures() -> [basal_host::transport::WireError; 3] {
+    use basal_host::transport::WireError;
+    [
+        WireError::NeverSent("core restarting".into()),
+        WireError::TimedOut("agent.list timed out".into()),
+        WireError::Unreadable("agent.list reply undecodable".into()),
+    ]
+}
+
+#[test]
+fn instantiate_refuses_a_failed_agent_registry_read_as_retryable_and_writes_nothing() {
+    for failure in registry_failures() {
+        let f = setup("template-registry-down", false);
+        register(&f, &manifest(), "return 1;");
+        f.catalog.fail_agent_registry(Some(failure.clone()));
+        let as_agent = create(&f, OWNER, json!({"note":"a"}), 1, "1h").unwrap_err();
+        let as_operator = f
+            .module
+            .handle(
+                &Caller::Operator,
+                "flow.instantiate",
+                json!({"template":"watch","version":1,"agent_id":OWNER,"params":{"note":"a"},"expires_in":"1h"}),
+            )
+            .unwrap_err();
+        for error in [as_agent, as_operator] {
+            assert_eq!(error.code, "agent_registry_unavailable", "{failure:?}");
+            assert_eq!(error.detail, Some(json!({"retryable": true})));
+        }
+        assert_eq!(count(&f, "flows"), 0);
+        assert_eq!(count(&f, "template_instances"), 0);
+        assert!(f.module.rt.pending_template_events(32).unwrap().is_empty());
+        // The refusal was not a verdict: the same call succeeds once the
+        // registry answers again.
+        f.catalog.fail_agent_registry(None);
+        let created = create(&f, OWNER, json!({"note":"a"}), 1, "1h").unwrap();
+        assert_eq!(created["new"], true);
+    }
+}
+
+#[test]
+fn instantiate_refuses_an_agent_absent_from_an_answered_registry_as_unknown() {
+    let f = setup("template-registry-absent", false);
+    register(&f, &manifest(), "return 1;");
+    // Neither an unlisted id nor a display name standing in for a stable id
+    // is a known agent.
+    for missing in ["agent_0000000000000000", "Owner"] {
+        let error = create(&f, missing, json!({"note":"a"}), 1, "1h").unwrap_err();
+        assert_eq!(error.code, "agent_unknown", "{missing}");
+        assert_eq!(error.detail, None);
+    }
+    assert_eq!(count(&f, "flows"), 0);
+    assert_eq!(count(&f, "template_instances"), 0);
+}
+
+#[test]
+fn template_dry_run_refuses_a_failed_agent_registry_read_as_retryable() {
+    for failure in registry_failures() {
+        let f = setup("template-dry-registry-down", false);
+        register(&f, &manifest(), "return 1;");
+        f.catalog.fail_agent_registry(Some(failure.clone()));
+        let error = dry(
+            &f,
+            &agent(OWNER),
+            json!({"flow_id":"watch","params":{"note":"a"},"trigger":{}}),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "agent_registry_unavailable", "{failure:?}");
+        assert_eq!(error.detail, Some(json!({"retryable": true})));
+        assert_eq!(count(&f, "flows"), 0);
+        assert_eq!(count(&f, "runs"), 0);
+    }
+}
+
+#[test]
+fn template_dry_run_refuses_an_agent_absent_from_an_answered_registry_as_unknown() {
+    let f = setup("template-dry-registry-absent", false);
+    register(&f, &manifest(), "return 1;");
+    for missing in ["agent_0000000000000000", "Owner"] {
+        let error = dry(
+            &f,
+            &agent(missing),
+            json!({"flow_id":"watch","params":{"note":"a"},"trigger":{}}),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "agent_unknown", "{missing}");
+        assert_eq!(error.detail, None);
+    }
+    assert_eq!(count(&f, "flows"), 0);
+}
+
 #[test]
 fn instance_limits_cover_agent_and_template_and_exclude_ended_expired() {
     let f = setup("template-limits", false);

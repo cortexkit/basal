@@ -178,7 +178,7 @@ fn template(rt: &Runtime) -> String {
     request.manifest = m.to_string();
     rt.register_package(&request.script, &request.manifest)
         .unwrap();
-    rt.catalog().agent_id("BASAL").unwrap()
+    rt.catalog().agent_id("BASAL").unwrap().unwrap()
 }
 
 #[test]

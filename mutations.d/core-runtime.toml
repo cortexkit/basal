@@ -1483,3 +1483,20 @@ select = "expected"
 only = false
 build_timeout_s = 3600
 timeout_s = 600
+
+[[control]]
+id = "target-call-registry-error-defers-instead-of-refusing"
+guards = "A failed agent registry read defers a targeted call unsent instead of finally refusing its target"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test flow_scopes"
+expect_red = ["target_agent_registry_failure_defers_unsent_until_recovery_or_run_deadline"]
+select = { tests = ["target_agent_registry_failure_defers_unsent_until_recovery_or_run_deadline", "target_absent_from_an_answered_agent_registry_is_refused_finally"] }
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "let agent = match self.rt.catalog().agent_id(name) {"
+new = "let agent = match self.rt.catalog().agent_id(name).or_else(|_| Ok::<_, basal_host::transport::WireError>(None)) { // NON-VACUITY BREAK"

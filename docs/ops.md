@@ -26,6 +26,8 @@ Install reads the script and manifest through the AFT file provider's `file.read
 
 If `instantiate.version` is absent, basal asks core's `package.approved_versions` as `reserved:basal`, without borrowing the agent's scope. Core must advertise `package-approved-versions/v1`; otherwise the call returns `version_required` (pass an explicit version). An unknown template or one with no approved versions returns `package_unknown`. Explicit versions go to the operation unchanged; core's run gate still enforces approval and revocation at activation. Registration alone is not approval.
 
+Operations that check an agent against core's `agent.list` registry tell an absent agent apart from a registry that could not be read. When the registry answers without the agent, the operation keeps its final refusal (`agent_unknown`, or for install an `install_refused` naming `UnknownAgent`). When the read fails (core restarting, a timeout, an unreadable or ambiguous reply), `flow.instantiate`, `flow.install`, template `flow.dry_run` and `flow.instance.ensure` refuse with `agent_registry_unavailable` and detail `{"retryable":true}`, write nothing, and can be repeated unchanged. It is never a verdict that the agent does not exist. Basal reads the registry before taking its SQLite write lock.
+
 An opaque top-level `call_key` deduplicates flow calls durably per carrier, bound to the stamped agent. Repeating it returns the recorded success or refusal without re-reading files or repeating effects. A key cannot be reused for another agent. If basal stops after admission but before recording a reply, the key returns `outcome_unknown`: inspect the flow before issuing a new key. A cancelled route does not undo an admitted management operation.
 
 ## flow.instantiate

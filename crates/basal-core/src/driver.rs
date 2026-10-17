@@ -93,12 +93,12 @@ struct Activation<'a> {
 #[derive(Debug, Default)]
 struct Prepared {
     /// Prepared dispatch bytes, rather than the script's arguments. Absent
-    /// while a board target lookup is deferred.
+    /// while a board or targeted call's agent registry read is deferred.
     request: Option<JsonText>,
     /// Tokens to reserve for a model call.
     tokens: Option<u64>,
     args: Option<Value>,
-    /// A failed board target lookup is retried without dispatching the sink.
+    /// A failed agent registry read is retried without dispatching the call.
     deferred: Option<basal_host::flow_refusal::FlowRefusal>,
 }
 
@@ -737,8 +737,13 @@ impl Activation<'_> {
             self.at(Boundary::ResendAuthorized {
                 position: row.position,
             })?;
-            let pending_board =
-                row.kind == CallKind::Primitive(Primitive::SinkBoard) && row.request.is_none();
+            // A board or targeted call deferred on its agent registry read has
+            // no frozen request yet: prepare it again now that its retry is due.
+            let pending_board = row.request.is_none()
+                && matches!(
+                    row.kind,
+                    CallKind::Primitive(Primitive::SinkBoard) | CallKind::OpFor { .. }
+                );
             if pending_board {
                 match self.retry_board_preparation(&mut row, attempt) {
                     Ok(None) => {}
@@ -773,7 +778,7 @@ impl Activation<'_> {
         Ok(Flow::Continue)
     }
 
-    /// A board call with no prepared request has never reached the sink.
+    /// A board or targeted call with no prepared request has never been sent.
     /// Resolve it again when its durable retry is due, then freeze the stable
     /// target id before dispatch so later retries need no registry read.
     fn retry_board_preparation(
@@ -1323,12 +1328,30 @@ impl Activation<'_> {
                     .ok_or_else(|| {
                         Refusal::new(codes::INVALID_ARGUMENTS, "for must name an agent")
                     })?;
-                let agent = self.rt.catalog().agent_id(name).ok_or_else(|| {
-                    Refusal::new(
-                        "sink_audience_unavailable",
-                        "target agent registry unavailable or target unknown",
-                    )
-                })?;
+                let agent = match self.rt.catalog().agent_id(name) {
+                    Ok(Some(agent)) => agent,
+                    Ok(None) => {
+                        return Err(Refusal::new(
+                            "sink_audience_unavailable",
+                            "target agent is not in the agent registry",
+                        ));
+                    }
+                    // A failed registry read is not evidence that the target is
+                    // unknown. Defer the provably unsent call with the same
+                    // durable backoff, bounded by the run deadline, that core's
+                    // own transient audience refusal uses.
+                    Err(_) => {
+                        return Ok(Prepared {
+                            deferred: Some(basal_host::flow_refusal::FlowRefusal::new(
+                                basal_host::flow_refusal::RefusalReason::SinkAudienceUnavailable,
+                                basal_host::subc_catalog::CORE,
+                                "agent.list",
+                            )),
+                            args: Some(args),
+                            ..Prepared::default()
+                        });
+                    }
+                };
                 let targets = self.rt.store().read(|c| {
                     let mut stmt = c.prepare("SELECT DISTINCT json_extract(request,'$.agent') FROM journal WHERE run_id=?1 AND targeted=1 AND request IS NOT NULL")?;
                     Ok(stmt.query_map([&self.run.run_id], |row| row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?)

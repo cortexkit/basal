@@ -798,3 +798,20 @@ timeout_s = 600
 file = "crates/basal-core/src/install.rs"
 old = "if !decl.headers.contains(key) {"
 new = "if false && !decl.headers.contains(key) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "template-instantiate-registry-error-is-not-unknown-agent"
+guards = "A failed agent registry read refuses flow.instantiate as retryable, never as agent_unknown"
+test_file = "crates/basal-module/tests/templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test templates"
+expect_red = ["instantiate_refuses_a_failed_agent_registry_read_as_retryable_and_writes_nothing"]
+select = { tests = ["instantiate_refuses_a_failed_agent_registry_read_as_retryable_and_writes_nothing", "instantiate_refuses_an_agent_absent_from_an_answered_registry_as_unknown"] }
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/templates.rs"
+old = "match self.catalog().agent_id(agent) {"
+new = "match self.catalog().agent_id(agent).or_else(|_| Ok::<_, basal_host::transport::WireError>(None)) { // NON-VACUITY BREAK"

@@ -434,7 +434,7 @@ fn epoch_change_waits_for_old_runs_and_fences_late_writes() {
 #[test]
 fn template_instances_reset_independently_on_first_admission() {
     let f = fixture("instances");
-    let agent = f.rt.catalog().agent_id("SYNAPSE").unwrap();
+    let agent = f.rt.catalog().agent_id("SYNAPSE").unwrap().unwrap();
     let mut m: Value = serde_json::from_str(&manifest(1, None)).unwrap();
     m["id"] = json!("watch");
     m["params"] = json!({"note":{"type":"string","max_bytes":32}});

@@ -96,7 +96,7 @@ fn flow_epoch_list_health_and_dry_run_report_recorded_state() {
         .rt
         .register_package("return 1;", &package.to_string())
         .unwrap();
-    let owner = f.module.rt.catalog().agent_id("SYNAPSE").unwrap();
+    let owner = f.module.rt.catalog().agent_id("SYNAPSE").unwrap().unwrap();
     let instance = f.module.rt.ensure_instance("values", 1, &owner, 1).unwrap();
     f.module
         .rt
