@@ -1566,7 +1566,7 @@ runner = "cargo"
 package = "basal-module"
 platforms = ["linux"]
 target = "--test install_gate"
-select = { tests = ["install_status_replies_decode_strictly"] }
+select = { tests = ["install_status_replies_decode_strictly", "active_with_another_code_hash_is_revoked"] }
 expect_red = ["install_status_replies_decode_strictly"]
 only = true
 build_timeout_s = 3600
