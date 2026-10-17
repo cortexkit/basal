@@ -29,9 +29,9 @@ concurrency:
 env:
   CARGO_TERM_COLOR: never
   PYTHONDONTWRITEBYTECODE: 1
-  # ckdev-mutate 0.12.0. It reads the catalogue from mutations.d/, one file per
+  # ckdev-mutate 0.12.3. It reads the catalogue from mutations.d/, one file per
   # crate or area, and every replay, shard and report covers all of its files.
-  CK_MUTATE_REV: be120e9254c4972191b39b2e6814987918206afc
+  CK_MUTATE_REV: 8200b61fe4250989d315ed8064d16754c5032d10
 
 jobs:
   lint:
@@ -295,7 +295,13 @@ jobs:
         run: |
           mkdir -p target/mutations
           rm -f target/mutations/diff.json
-          env -u BASAL_WORKER_BIN -u BASAL_CUT_EXHAUSTIVE ckdev-mutate run --diff origin/main --report target/mutations/diff.json
+          selected=$(ckdev-mutate run --diff origin/main --list)
+          if [[ -z "$selected" ]]; then
+            printf '[]\n' > target/mutations/diff.json
+            echo "PR diff selects no mutation rows; skipping replay."
+          else
+            env -u BASAL_WORKER_BIN -u BASAL_CUT_EXHAUSTIVE ckdev-mutate run --diff origin/main --report target/mutations/diff.json
+          fi
       - name: Capture exact Windows mutation application and restoration witnesses
         if: matrix.platform == 'windows'
         run: |
@@ -365,7 +371,7 @@ jobs:
       matrix:
         # Scheduled breadth needs shorter shards to stay below the hosted
         # runner's six-hour limit. Push and manual runs use eight Linux shards.
-        # Every host shards the entire sorted catalogue independently;
+        # Every host uses the same pinned timing report to shard the catalogue;
         # rows for other platforms are reported as skips, not built.
         include: ${{ fromJSON(needs.mutation-matrix.outputs.include) }}
     steps:
@@ -410,7 +416,7 @@ jobs:
         run: |
           mkdir -p target/mutations
           rm -f target/mutations/all.json
-          env -u BASAL_WORKER_BIN -u BASAL_CUT_EXHAUSTIVE ckdev-mutate run --all --shard ${{ matrix.shard }}/${{ matrix.shards }} ${BROAD:+--broad} --report target/mutations/all.json
+          env -u BASAL_WORKER_BIN -u BASAL_CUT_EXHAUSTIVE ckdev-mutate run --all --shard ${{ matrix.shard }}/${{ matrix.shards }} --shard-weights evidence/mutation-shard-weights.json ${BROAD:+--broad} --report target/mutations/all.json
         env:
           BROAD: ${{ github.event_name != 'push' && 'true' || '' }}
       - name: Capture exact Windows mutation application and restoration witnesses

@@ -1,0 +1,12 @@
+[
+  {
+    "id": "consent-polls-without-owned-open-cards",
+    "build_ms": 32945,
+    "test_ms": 471
+  },
+  {
+    "id": "admission-does-not-wake-the-idle-engine",
+    "build_ms": 122530,
+    "test_ms": 62609
+  }
+]
