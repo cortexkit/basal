@@ -327,6 +327,124 @@ fn loop_install_rule_needs_the_operator_override() {
     install(&rt, &echoing, false).expect("cause echo satisfies the rule");
 }
 
+/// A version of a flow bound to plexus's events that holds plexus's `react`
+/// tool, a mutation that does not echo causes.
+fn reacting(version: u32) -> Value {
+    let mut m = events_manifest(
+        json!([{"module": "plexus", "name": "pull_request_review", "version": 1}]),
+        json!([{"module": "plexus", "op": "react"}]),
+    );
+    m["version"] = json!(version);
+    m
+}
+
+/// A world whose plexus serves `react` with `emits_events` as `declared`
+/// (`None` leaves the field absent).
+fn react_world(name: &str, declared: Option<bool>) -> World {
+    let world = World::new(name);
+    world.catalog.set_op(
+        "plexus",
+        "react",
+        OpDecl {
+            kind: Some(OpKind::Mutate),
+            cause_echo: false,
+            shell_capable: false,
+        },
+    );
+    world.catalog.set_emits_events("plexus", "react", declared);
+    world
+}
+
+fn react_pair() -> (String, String) {
+    ("plexus".into(), "react".into())
+}
+
+#[test]
+fn loop_install_rule_exempts_a_tool_declaring_it_emits_no_events() {
+    let world = react_world("manifest-loop-no-events", Some(false));
+    let rt = runtime(&world);
+    let exempt = vec![Warning::LoopExemptNoEvents {
+        module: "plexus".into(),
+        op: "react".into(),
+    }];
+    let installed = install(&rt, &reacting(1), false).expect("the declaration satisfies the rule");
+    assert_eq!(installed.warnings, exempt);
+    // With the override as well, the declaration is what admits the op, so
+    // the install does not say loop protection is rate limiting only.
+    let overridden = install(&rt, &reacting(2), true).expect("installs");
+    assert_eq!(overridden.warnings, exempt);
+}
+
+#[test]
+fn loop_install_rule_refuses_a_tool_whose_emits_events_is_absent_or_true() {
+    for (name, declared) in [("absent", None), ("true", Some(true))] {
+        let world = react_world(&format!("manifest-loop-emits-{name}"), declared);
+        let rt = runtime(&world);
+        assert_eq!(
+            install(&rt, &reacting(1), false),
+            Err(InstallError::LoopRule {
+                module: "plexus".into(),
+                op: "react".into()
+            }),
+            "emits_events {name}"
+        );
+        let overridden = install(&rt, &reacting(1), true).expect("the override installs it");
+        assert_eq!(
+            overridden.warnings,
+            vec![Warning::LoopOverride {
+                module: "plexus".into(),
+                op: "react".into()
+            }],
+            "emits_events {name}"
+        );
+    }
+}
+
+#[test]
+fn loop_install_rule_says_when_the_emits_events_declaration_was_unreadable() {
+    let world = react_world("manifest-loop-unreadable", None);
+    world.catalog.fail_emits_events(
+        "plexus",
+        "react",
+        basal_host::transport::WireError::TimedOut("tool.catalog".into()),
+    );
+    let rt = runtime(&world);
+    match install(&rt, &reacting(1), false) {
+        Err(InstallError::LoopRuleDeclarationUnreadable { module, op, reason }) => {
+            assert_eq!((module, op), react_pair());
+            assert!(reason.contains("TimedOut"), "{reason}");
+        }
+        other => panic!("an unreadable declaration must refuse as unreadable: {other:?}"),
+    }
+    // An unreadable declaration is not an exemption: the override still
+    // applies, with its rate-limiting-only warning.
+    let overridden = install(&rt, &reacting(1), true).expect("the override installs it");
+    assert_eq!(
+        overridden.warnings,
+        vec![Warning::LoopOverride {
+            module: "plexus".into(),
+            op: "react".into()
+        }]
+    );
+}
+
+/// The declaration can be a live call to the module, so install reads it
+/// only for a mutation on a triggering module that does not echo causes.
+#[test]
+fn install_reads_emits_events_only_for_ops_the_loop_rule_would_refuse() {
+    let world = react_world("manifest-loop-reads", None);
+    let rt = runtime(&world);
+    let mut m = reacting(1);
+    m["ops"] = json!([
+        {"module": "plexus", "op": "pr.get"},
+        {"module": "plexus", "op": "pr.label"},
+        {"module": "mock", "op": "send"},
+        {"module": "plexus", "op": "react"},
+    ]);
+    install(&rt, &m, true).expect("the override installs it");
+    assert_eq!(world.catalog.emits_events_reads(), vec![react_pair()]);
+}
+
 /// Approval binds to the code hash; a run keeps the version it was
 /// admitted under after another is approved; only the approved version's
 /// exact bytes are admitted.

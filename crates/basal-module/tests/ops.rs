@@ -447,6 +447,58 @@ fn install_refuses_what_an_agent_may_not_do() {
     );
 }
 
+/// When plexus's `emits_events` declaration for a looping tool cannot be
+/// read, install refuses it as the loop rule does, and the refusal's detail
+/// says the declaration was unreadable, not absent, so a retry may help.
+#[test]
+fn install_refusal_says_when_a_tools_emits_events_declaration_was_unreadable() {
+    let f = fixture("ops-loop-unreadable", Options::default());
+    f.catalog.set_op(
+        "plexus",
+        "react",
+        basal_host::OpDecl {
+            kind: Some(basal_host::OpKind::Mutate),
+            cause_echo: false,
+            shell_capable: false,
+        },
+    );
+    let mut manifest = events_manifest("flow-react");
+    manifest["ops"] = json!([{ "module": "plexus", "op": "react" }]);
+    let install = |f: &Fixture| {
+        f.module.handle(
+            &Caller::Operator,
+            "flow.install",
+            json!({ "script": SCRIPT, "manifest": manifest.to_string() }),
+        )
+    };
+    // Absent: the loop-rule refusal as before, with no detail.
+    let absent = install(&f).expect_err("an absent declaration is refused");
+    assert_eq!(absent.code, "install_refused");
+    assert!(
+        absent.message.starts_with("LoopRule {"),
+        "{}",
+        absent.message
+    );
+    assert_eq!(absent.detail, None);
+    f.catalog.fail_emits_events(
+        "plexus",
+        "react",
+        basal_host::transport::WireError::TimedOut("tool.catalog".into()),
+    );
+    let unreadable = install(&f).expect_err("an unreadable declaration is refused");
+    assert_eq!(unreadable.code, "install_refused");
+    assert_eq!(
+        unreadable.detail,
+        Some(json!({
+            "module": "plexus",
+            "op": "react",
+            "emits_events": "unreadable",
+            "retryable": true,
+        }))
+    );
+    assert!(f.module.rt.flow("flow-react").expect("flow").is_none());
+}
+
 #[test]
 fn install_keeps_the_version_when_the_consent_plane_is_down_and_raises_on_retry() {
     let f = fixture("ops-consent-down", Options::with_worker());

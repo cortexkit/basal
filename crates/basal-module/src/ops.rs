@@ -235,6 +235,17 @@ impl Module {
                 format!("header {key} is not declared for event {module}.{name} v{version}"),
             ),
             InstallError::NoSuchFlow(f) => OpError::new("not_found", format!("no flow {f}")),
+            // Refused with the loop rule's `install_refused` code, plus a detail
+            // saying the tool's emits_events declaration was unreadable rather
+            // than absent or true, so the operator knows a retry may succeed.
+            InstallError::LoopRuleDeclarationUnreadable {
+                ref module, ref op, ..
+            } => OpError::new("install_refused", format!("{e:?}")).with_detail(Some(json!({
+                "module": module,
+                "op": op,
+                "emits_events": "unreadable",
+                "retryable": true,
+            }))),
             InstallError::Store(inner) => self.core_error(inner),
             other => OpError::new("install_refused", format!("{other:?}")),
         }

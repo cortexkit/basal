@@ -41,8 +41,9 @@ A refused or failed reaction never blocks or undoes that delivery: its code
 `outcome_unknown`) is recorded in the run result and the run succeeds.
 
 `github_react` is a mutation on the module whose events trigger this flow, so
-install accepts it only if Plexus's catalog declares it `cause_echo`, or the
-operator overrides the loop install rule (`docs/manifest.md`, op reference).
+install accepts it only if Plexus's tool catalog declares `emits_events: false`
+on it (a reaction never makes Plexus emit an event), or the operator overrides
+the loop install rule (`docs/manifest.md`, op reference).
 
 Each run returns `events`, a compact comparison record (`repo`, `kind`,
 `number`, `event_key`, `would_owner`, `would_action`, `suppressed_reason`,

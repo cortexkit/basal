@@ -63,6 +63,21 @@ fn catalog_event_declarations(entry: &Value) -> Option<Vec<EventDeclaration>> {
         .collect()
 }
 
+/// A fresh call key for a read-only role op (`role.describe`,
+/// `tool.catalog`). Such a read changes nothing, so the key only has to be
+/// well formed and not collide with an earlier call.
+fn role_call_key() -> String {
+    use std::sync::atomic::AtomicU64;
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    format!(
+        "basal-catalog-read-{nanos}-{}",
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
 pub const CORE: &str = "prefrontal-core";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Surface {
@@ -186,6 +201,48 @@ impl SubcCatalog {
             .is_some_and(|caps| caps.iter().any(|c| c == "flow-scopes/v1"));
         Ok((found, flow_capable))
     }
+    /// Reads `module`'s own declaration of whether its tool `op` can make it
+    /// emit an event: the typed `emits_events` of the tool's entry in the
+    /// module's `tool.catalog` answer. A management op, or a tool the answer
+    /// does not list, declares nothing (`Ok(None)`). A failed call or an
+    /// answer that does not decode is an error, never a declaration.
+    ///
+    /// Each request is bounded by the transport's call timeout.
+    pub fn tool_emits_events(&self, module: &str, op: &str) -> Result<Option<bool>, WireError> {
+        use cortexkit_role_tool_provider::catalog::{
+            CatalogAnswer, CatalogRequest, params_for_capabilities,
+        };
+        use cortexkit_role_tool_provider::describe::{check_describe, select_tool_capabilities};
+        // Only tools carry the declaration; a management op has none to read.
+        match self.resolve(module, op)? {
+            Some(found) if found.surface == Surface::Tool => {}
+            _ => return Ok(None),
+        }
+        let describe = self
+            .transport
+            .tool(module, "role.describe", json!({}), &role_call_key())?;
+        let describe = check_describe(&describe)
+            .map_err(|problems| WireError::Unreadable(format!("role.describe: {problems:?}")))?;
+        // A provider that filters its catalog by capability tag answers an
+        // empty request with no tools. Ask such a provider for every tag it
+        // serves, so the answer holds every tool that carries any tag.
+        let params = match select_tool_capabilities(&describe, &describe.tool_capabilities) {
+            Some(tags) => params_for_capabilities(tags),
+            None => serde_json::Map::new(),
+        };
+        let request = serde_json::to_value(CatalogRequest::new(params))
+            .map_err(|e| WireError::NeverSent(e.to_string()))?;
+        let answer = self
+            .transport
+            .tool(module, "tool.catalog", request, &role_call_key())?;
+        let answer: CatalogAnswer = serde_json::from_value(answer)
+            .map_err(|e| WireError::Unreadable(format!("tool.catalog answer: {e}")))?;
+        Ok(answer
+            .tools
+            .into_iter()
+            .find(|tool| tool.name == op)
+            .and_then(|tool| tool.emits_events))
+    }
     pub fn known_agent(&self, agent: &str) -> Result<bool, WireError> {
         self.resolve_agent(agent).map(|id| id.is_some())
     }
@@ -300,6 +357,9 @@ impl Catalog for SubcCatalog {
             .flatten()
             .map(|o| o.declaration)
     }
+    fn emits_events(&self, module: &str, op: &str) -> Result<Option<bool>, WireError> {
+        self.tool_emits_events(module, op)
+    }
     fn agent_known(&self, agent: &str) -> Result<bool, WireError> {
         self.known_agent(agent)
     }
@@ -404,5 +464,161 @@ mod event_tests {
         assert!(declared_event(&events, "github_issue_changed", 1).is_none());
         assert!(declared_event(&events, "github_pr_changed", 2).is_none());
         assert!(declared_event(&[], "github_pr_changed", 1).is_none());
+    }
+}
+
+#[cfg(test)]
+mod emits_events_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+    use std::sync::Mutex;
+
+    /// A daemon whose catalog lists plexus with a management mutation
+    /// `label` and a mutating tool `react`, and whose plexus answers each
+    /// role op with what the test set for it.
+    #[derive(Default)]
+    struct Plexus {
+        answers: Mutex<BTreeMap<String, Result<Value, WireError>>>,
+        /// Each role op call: its name, arguments and call key.
+        calls: Mutex<Vec<(String, Value, String)>>,
+    }
+
+    impl Plexus {
+        fn answering(describe: Value, catalog: Result<Value, WireError>) -> Arc<Self> {
+            let plexus = Arc::new(Self::default());
+            let mut answers = plexus.answers.lock().unwrap();
+            answers.insert("role.describe".into(), Ok(describe));
+            answers.insert("tool.catalog".into(), catalog);
+            drop(answers);
+            plexus
+        }
+        fn calls(&self) -> Vec<(String, Value, String)> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl Transport for Plexus {
+        fn catalog(&self) -> Result<Value, WireError> {
+            Ok(
+                json!({"modules":[{"module_id":"plexus","capabilities":{"provides":[]},"roles":[
+                    {"role":"management_surface","operations":[{"name":"label","kind":"mutate"}],
+                     "config_schema":{},"observability":[],"identity_scope":[],"concurrency":"serial"},
+                    {"role":"tool_provider","tools":[{"name":"react","execution_mode":"mutating","schema":{}}],
+                     "identity_scope":[],"concurrency":"serial","emits_push":false,"sub_supervises":false}
+                ]}]}),
+            )
+        }
+        fn management(&self, _: &str, op: &str, _: Value) -> Result<Value, WireError> {
+            panic!("unexpected management op {op}")
+        }
+        fn tool(
+            &self,
+            module: &str,
+            name: &str,
+            arguments: Value,
+            call_key: &str,
+        ) -> Result<Value, WireError> {
+            assert_eq!(module, "plexus");
+            self.calls
+                .lock()
+                .unwrap()
+                .push((name.into(), arguments, call_key.into()));
+            self.answers
+                .lock()
+                .unwrap()
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| panic!("unexpected role op {name}"))
+        }
+    }
+
+    fn describe() -> Value {
+        json!({"majors":[{"version":"tool-provider/v1","ops":["role.describe","tool.catalog"],
+            "stability":"alpha"}],"implementation_version":"1"})
+    }
+
+    /// A `tool.catalog` answer listing `react` with `emits_events` set to
+    /// `declared`, or without the member when `declared` is `None`.
+    fn answer(declared: Option<Value>) -> Value {
+        let mut react = json!({"name":"react","schema_digest":"0".repeat(64),"semantics":1,
+            "capabilities":[],"input_schema":{"type":"object"}});
+        if let Some(declared) = declared {
+            react["emits_events"] = declared;
+        }
+        json!({"generation":"g","catalog_digest":"d","tools":[react]})
+    }
+
+    fn read(plexus: &Arc<Plexus>, op: &str) -> Result<Option<bool>, WireError> {
+        SubcCatalog::new(plexus.clone()).emits_events("plexus", op)
+    }
+
+    #[test]
+    fn reads_the_tools_typed_declaration_from_its_modules_catalog() {
+        for (declared, expected) in [
+            (Some(json!(false)), Some(false)),
+            (Some(json!(true)), Some(true)),
+            (None, None),
+            // An explicit null decodes as absent, as the contract says.
+            (Some(Value::Null), None),
+        ] {
+            let plexus = Plexus::answering(describe(), Ok(answer(declared.clone())));
+            assert_eq!(read(&plexus, "react"), Ok(expected), "{declared:?}");
+            let calls = plexus.calls();
+            let names: Vec<&str> = calls.iter().map(|(name, ..)| name.as_str()).collect();
+            assert_eq!(names, ["role.describe", "tool.catalog"]);
+            // A provider without the capability filter gets no params.
+            assert_eq!(calls[1].1, json!({"params":{}}));
+            assert_ne!(calls[0].2, calls[1].2, "each call has its own key");
+        }
+    }
+
+    #[test]
+    fn a_management_op_or_an_unlisted_tool_declares_nothing() {
+        let plexus = Plexus::answering(describe(), Ok(answer(Some(json!(false)))));
+        assert_eq!(read(&plexus, "label"), Ok(None));
+        assert!(plexus.calls().is_empty(), "management ops are not fetched");
+        let other = Plexus::answering(
+            describe(),
+            Ok(json!({"generation":"g","catalog_digest":"d","tools":[]})),
+        );
+        assert_eq!(read(&other, "react"), Ok(None));
+    }
+
+    #[test]
+    fn a_malformed_or_unreadable_answer_is_an_error_not_a_declaration() {
+        let malformed = Plexus::answering(describe(), Ok(answer(Some(json!("false")))));
+        assert!(
+            matches!(read(&malformed, "react"), Err(WireError::Unreadable(e)) if e.contains("tool.catalog")),
+            "a non-boolean emits_events does not decode"
+        );
+        let timed_out = Plexus::answering(describe(), Err(WireError::TimedOut("no reply".into())));
+        assert_eq!(
+            read(&timed_out, "react"),
+            Err(WireError::TimedOut("no reply".into()))
+        );
+        let bad_describe = Plexus::answering(json!({"majors":[]}), Ok(answer(Some(json!(false)))));
+        assert!(matches!(
+            read(&bad_describe, "react"),
+            Err(WireError::Unreadable(e)) if e.contains("role.describe")
+        ));
+        assert_eq!(
+            bad_describe.calls().len(),
+            1,
+            "no catalog fetch after a bad describe"
+        );
+    }
+
+    #[test]
+    fn a_capability_filtering_provider_is_asked_for_every_tag_it_serves() {
+        let mut filtering = describe();
+        filtering["capabilities"] =
+            json!([cortexkit_role_tool_provider::CATALOG_CAPABILITY_FILTER]);
+        filtering["tool_capabilities"] = json!(["plexus:github.react/v1", "plexus:github.read/v1"]);
+        let plexus = Plexus::answering(filtering, Ok(answer(Some(json!(false)))));
+        assert_eq!(read(&plexus, "react"), Ok(Some(false)));
+        assert_eq!(
+            plexus.calls()[1].1,
+            json!({"params":{"capabilities":["plexus:github.react/v1","plexus:github.read/v1"]}})
+        );
     }
 }

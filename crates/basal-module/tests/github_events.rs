@@ -133,6 +133,8 @@ impl Host for GithubHost {
 struct Test {
     f: Fixture,
     host: Arc<GithubHost>,
+    /// The install card's fields, as raised before the operator approved.
+    card: Value,
 }
 
 impl Test {
@@ -149,16 +151,18 @@ impl Test {
             },
         );
         // A reaction is a mutation on the module whose events trigger this
-        // flow, so install needs it to declare cause_echo.
+        // flow. It does not echo causes; install accepts it because Plexus
+        // declares in its tool catalog that a reaction never emits an event.
         catalog.set_op(
             "plexus",
             "github_react",
             OpDecl {
                 kind: Some(OpKind::Mutate),
-                cause_echo: true,
+                cause_echo: false,
                 shell_capable: false,
             },
         );
+        catalog.set_emits_events("plexus", "github_react", Some(false));
         // Targeted calls resolve the owner through the agent registry.
         for owner in owners(SCRIPT)
             .split('\'')
@@ -200,12 +204,10 @@ impl Test {
             SCRIPT,
             &serde_json::from_str(MANIFEST).unwrap(),
         );
-        assert!(consent.decide(
-            reply["card_id"].as_str().unwrap(),
-            basal_host::CardDecision::Approve,
-            "operator"
-        ));
-        Self { f, host }
+        let card_id = reply["card_id"].as_str().unwrap();
+        let card = consent.card(card_id).unwrap().fields;
+        assert!(consent.decide(card_id, basal_host::CardDecision::Approve, "operator"));
+        Self { f, host, card }
     }
 
     fn event(&self, body: Value) -> Value {
@@ -366,6 +368,37 @@ fn manifest_declares_v2_repo_events_global_sink_and_only_a_delegated_react_grant
             .unwrap()
             .contains("owning agent")
     );
+}
+
+#[test]
+fn install_admits_github_react_by_plexus_declaring_it_emits_no_events() {
+    // `Test::new` installs without the loop override; the card shows which
+    // op passed the loop rule by declaration rather than by cause echo.
+    let test = Test::new();
+    let react = test.card["ops"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|op| op["op"] == "github_react")
+        .unwrap();
+    assert_eq!(react["cause_echo"], false);
+    assert_eq!(react["emits_events"], false);
+    let events_get = test.card["ops"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|op| op["op"] == "events_get")
+        .unwrap();
+    assert_eq!(events_get["emits_events"], Value::Null);
+    let loop_warnings: Vec<&Value> = test.card["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|w| w["kind"].as_str().is_some_and(|k| k.starts_with("loop_")))
+        .collect();
+    assert_eq!(loop_warnings.len(), 1, "{loop_warnings:?}");
+    assert_eq!(loop_warnings[0]["kind"], "loop_exempt_no_events");
+    assert_eq!(loop_warnings[0]["op"], "github_react");
 }
 
 #[test]

@@ -88,6 +88,24 @@ pub trait Catalog: Send + Sync {
     fn event(&self, module: &str, name: &str, version: u32) -> Option<EventDecl>;
     /// The declaration of `module`'s op `op`, if declared.
     fn op(&self, module: &str, op: &str) -> Option<OpDecl>;
+    /// Whether calling `module`'s tool `op` can make `module` emit an event,
+    /// as the module declares it on the tool in its own `tool.catalog`
+    /// answer. `Ok(Some(false))` is the module's promise that no call to the
+    /// tool, with any arguments, makes it emit or relay an event. `Ok(None)`
+    /// means nothing was declared: the field is absent, the tool is not in
+    /// the answer, or the op is not a tool. Callers must treat `None` like
+    /// `Some(true)`. `Err` means the answer could not be read or decoded, so
+    /// nothing is known and a retry may help.
+    ///
+    /// This can be a live call to the module, so it is read only where the
+    /// loop install rule needs it, never on dispatch.
+    fn emits_events(
+        &self,
+        _module: &str,
+        _op: &str,
+    ) -> Result<Option<bool>, crate::transport::WireError> {
+        Ok(None)
+    }
     /// Whether `agent` names a known agent. `Ok(false)` means the registry
     /// answered without it; a failed registry read must remain an error.
     fn agent_known(&self, agent: &str) -> Result<bool, crate::transport::WireError>;
@@ -116,6 +134,12 @@ struct Entries {
     flow_capable: BTreeSet<String>,
     events: BTreeMap<(String, String, u32), EventDecl>,
     ops: BTreeMap<(String, String), OpDecl>,
+    /// What each tool declares for `emits_events`, or the error reading it
+    /// returns. A tool without an entry declares nothing.
+    emits_events: BTreeMap<(String, String), Result<Option<bool>, crate::transport::WireError>>,
+    /// Every `emits_events` read, in order, so a test can see which tools
+    /// install asked about.
+    emits_events_reads: Vec<(String, String)>,
     agents: BTreeMap<String, String>,
     workspaces: BTreeSet<String>,
     /// When set, every agent registry read fails with this error, as when
@@ -235,6 +259,27 @@ impl MockCatalog {
             .insert((module.to_owned(), op.to_owned()), decl);
     }
 
+    /// Sets what `module`'s tool `op` declares for `emits_events`; `None`
+    /// leaves the field absent.
+    pub fn set_emits_events(&self, module: &str, op: &str, emits_events: Option<bool>) {
+        self.write()
+            .emits_events
+            .insert((module.to_owned(), op.to_owned()), Ok(emits_events));
+    }
+
+    /// Makes reading `module`'s tool `op` declaration fail with `failure`,
+    /// as when the module's `tool.catalog` answer cannot be read.
+    pub fn fail_emits_events(&self, module: &str, op: &str, failure: crate::transport::WireError) {
+        self.write()
+            .emits_events
+            .insert((module.to_owned(), op.to_owned()), Err(failure));
+    }
+
+    /// Every `(module, op)` whose `emits_events` was read, in order.
+    pub fn emits_events_reads(&self) -> Vec<(String, String)> {
+        self.read().emits_events_reads.clone()
+    }
+
     pub fn set_event(&self, module: &str, name: &str, version: u32, decl: EventDecl) {
         self.write()
             .events
@@ -284,6 +329,17 @@ impl Catalog for MockCatalog {
             .ops
             .get(&(module.to_owned(), op.to_owned()))
             .cloned()
+    }
+
+    fn emits_events(
+        &self,
+        module: &str,
+        op: &str,
+    ) -> Result<Option<bool>, crate::transport::WireError> {
+        let key = (module.to_owned(), op.to_owned());
+        let mut entries = self.write();
+        entries.emits_events_reads.push(key.clone());
+        entries.emits_events.get(&key).cloned().unwrap_or(Ok(None))
     }
 
     fn agent_known(&self, agent: &str) -> Result<bool, crate::transport::WireError> {
