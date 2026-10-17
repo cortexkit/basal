@@ -1435,13 +1435,13 @@ mod tests {
     #[test]
     fn flow_file_reads_open_aft_on_the_exact_invoking_scope() {
         with_scoped_transport(|transport, opens, calls, _| {
-            let selector = subc_protocol::scope::ScopeSelector {
-                owner: subc_protocol::Principal::Reserved {
+            let selector = subc_protocol::scope::ScopeSelector::new(
+                subc_protocol::Principal::Reserved {
                     module_id: "prefrontal-core".into(),
                 },
-                scope_ref: "flow-read/call".into(),
-                scope_epoch: Some(1),
-            };
+                "flow-read/call",
+                Some(1),
+            );
             let identity = BindIdentity::new("/agent/project", "agent", "session");
             for path in ["flow.js", "flow.json"] {
                 assert_eq!(

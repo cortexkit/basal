@@ -24,7 +24,7 @@ async fn call(route: &Route, arguments: Value) -> Value {
     reply
 }
 
-async fn refusal(route: &Route, arguments: Value) -> subc_protocol_v032::ErrorBody {
+async fn refusal(route: &Route, arguments: Value) -> subc_protocol::ErrorBody {
     let exchange = route
         .request(json!({"name":"flow","arguments":arguments}))
         .await

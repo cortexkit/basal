@@ -14,19 +14,6 @@ use subc_protocol::{ErrorBody, Principal, scope::ScopeStamp};
 
 pub const DESCRIPTION: &str = "Run a short JavaScript program that calls your own tools and returns one result.\n\n- Call a tool with `await tools.<name>(input)`: any of your tools except codemode, with the same input you'd pass to it directly. The tool decides allow, ask and deny exactly as for a direct call, and an ask waits for its answer.\n- `tools.model({prompt, system?, max_output?})` asks a model for one completion, and `tools.classify({text, labels})` picks one label; both count against the run's model budget (20 calls, 200,000 tokens).\n- `console.log(...)` output is captured, up to 64 KiB.\n- The program's last `return value` is the result, as JSON, up to 16 KiB.\n- There is no file, network, shell or other global access except through your tools.\n- Limits: 10 s of JavaScript CPU, 30 min wall time (time spent waiting on a person doesn't count, up to 10 min), 200 tool calls.\n\nThe result lists each call with its outcome. A call whose outcome is unknown was never retried, so check before repeating it.";
 
-pub(crate) fn provider_error(error: subc_protocol_v032::ErrorBody) -> ErrorBody {
-    ErrorBody {
-        code: error.code,
-        message: error.message,
-        detail: error.detail,
-    }
-}
-
-pub(crate) fn provider_call_mode(mode: subc_client_rs::CallMode) -> CallMode {
-    serde_json::from_value(serde_json::to_value(mode).expect("call mode is serializable"))
-        .expect("subc call modes share the same wire vocabulary")
-}
-
 pub fn schema() -> Value {
     json!({"type":"object","properties":{
         "code":{"type":"string","maxLength":1_048_576},
@@ -124,8 +111,7 @@ pub fn catalog(arguments: Value) -> Result<Value, ErrorBody> {
         blake3::hash(&serde_json::to_vec(&full_tools).expect("catalog tools are serializable"))
             .to_hex()
             .to_string();
-    let tools = select_by_capabilities(&request.params, &full_tools)
-        .map_err(provider_error)?
+    let tools = select_by_capabilities(&request.params, &full_tools)?
         .into_iter()
         .cloned()
         .collect();

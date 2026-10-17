@@ -51,7 +51,6 @@ serde_json.workspace = true
 sha2.workspace = true
 subc-client-rs.workspace = true
 subc-protocol.workspace = true
-subc-protocol-v032.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 

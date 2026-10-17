@@ -111,7 +111,7 @@ impl Routes {
             principal: stamp.principal.clone().unwrap_or(Principal::Unverified),
             scope: stamp.scope.clone(),
             bind_identity: stamp.bind_identity.clone(),
-            call_mode: crate::tool::provider_call_mode(stamp.call_mode.clone()),
+            call_mode: stamp.call_mode.clone(),
             consumer_capabilities: stamp.consumer_capabilities.clone(),
         })
     }

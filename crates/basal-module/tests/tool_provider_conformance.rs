@@ -530,8 +530,7 @@ impl Subject {
             role_versions: None,
             admission_facts: None,
             scope,
-            call_mode: mode
-                .map(|mode| serde_json::from_value(serde_json::to_value(mode).unwrap()).unwrap()),
+            call_mode: mode,
         };
         let (corr, mut reply) = handle
             .wire

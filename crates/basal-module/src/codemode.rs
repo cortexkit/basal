@@ -108,7 +108,7 @@ impl Codemode {
         request: &ToolCallRequest,
         cancelled: impl Fn() -> bool,
     ) -> Result<String, ErrorBody> {
-        let pin = call::check_call(request).map_err(crate::tool::provider_error)?;
+        let pin = call::check_call(request)?;
         if let Some(pin) = pin {
             let current = crate::tool::catalog_tool();
             if pin.schema_digest != current.schema_digest {
@@ -241,7 +241,7 @@ impl Codemode {
         request: &ToolCallRequest,
     ) -> Result<Value, ErrorBody> {
         if request.name != "tool.withdraw" {
-            call::check_call(request).map_err(crate::tool::provider_error)?;
+            call::check_call(request)?;
         }
         match request.name.as_str() {
             "role.describe" => Ok(crate::tool::describe()),
@@ -259,12 +259,11 @@ impl Codemode {
         context: &crate::tool::Context,
         request: &ToolCallRequest,
     ) -> Result<Value, ErrorBody> {
-        let arguments =
-            withdraw::parse_withdraw_request(request).map_err(crate::tool::provider_error)?;
+        let arguments = withdraw::parse_withdraw_request(request)?;
         let caller = crate::tool::principal(&context.principal)?;
         let scope = context.identity();
         let resolution = withdraw::resolve_carrier(&caller, scope.as_ref(), &arguments)
-            .map_err(|e| crate::tool::provider_error(e.error()))?;
+            .map_err(|e| e.error())?;
         let carrier = match &resolution {
             withdraw::CarrierResolution::Carrier(carrier)
             | withdraw::CarrierResolution::OwnerAsCarrier(carrier) => carrier,
@@ -276,9 +275,7 @@ impl Codemode {
         ).optional()?)).map_err(storage)?;
         let Some((id, record_scope, answer)) = record else {
             return if matches!(resolution, withdraw::CarrierResolution::OwnerAsCarrier(_)) {
-                Err(crate::tool::provider_error(
-                    withdraw::CallerProblem::CarrierRequired.error(),
-                ))
+                Err(withdraw::CallerProblem::CarrierRequired.error())
             } else {
                 Ok(json!({"answer":"unknown_call"}))
             };
@@ -287,7 +284,7 @@ impl Codemode {
             serde_json::from_str(&record_scope)
                 .map_err(|e| crate::tool::invalid("scope", e.to_string()))?;
         withdraw::check_record_scope(record_scope.as_ref(), scope.as_ref())
-            .map_err(|e| crate::tool::provider_error(e.error()))?;
+            .map_err(|e| e.error())?;
         if let Some(answer) = answer {
             return serde_json::from_str(&answer)
                 .map_err(|e| crate::tool::invalid("record", e.to_string()));
@@ -356,8 +353,7 @@ impl Codemode {
             .map_err(|e| crate::tool::invalid("arguments", e.to_string()))?;
         self.publish()?;
         let head = self.head(&custodian)?;
-        late_results::check_since(&self.incarnation, head, request.since.as_ref())
-            .map_err(crate::tool::provider_error)?;
+        late_results::check_since(&self.incarnation, head, request.since.as_ref())?;
         let limit = request.limit.unwrap_or(100).clamp(1, 1000) as usize;
         let since = request.since.map_or(0, |cursor| cursor.seq);
         let rows = self.store.read(|conn| {
@@ -388,8 +384,7 @@ impl Codemode {
             &self.incarnation,
             self.head(&custodian)?,
             Some(&request.through),
-        )
-        .map_err(crate::tool::provider_error)?;
+        )?;
         self.store.write(|tx| {
             tx.execute("INSERT INTO codemode_late_acks(custodian,through_seq) VALUES (?1,?2) ON CONFLICT(custodian) DO UPDATE SET through_seq=MAX(through_seq,excluded.through_seq)",rusqlite::params![custodian,request.through.seq])?;
             tx.execute("DELETE FROM codemode_late_results WHERE custodian=?1 AND seq<=?2",rusqlite::params![custodian,request.through.seq])?;
