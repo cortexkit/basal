@@ -1,18 +1,56 @@
-# GitHub events: silent comparison shadow
+# GitHub events: live owner delivery
 
-Version 1 resolves Plexus v2 issue, PR and release notices, computes the proposed
-owner delivery, and sends accepted items **only to ALF
-(`agent_fff43bb5f4bea20b`), always with `silent`**. It never reacts to GitHub or
-performs another external write. KV stores local observation history, not vendor
-comment text. This flow does not disable core's existing consumer; install it
-alongside that consumer for comparison, not as a live replacement yet.
+Version 3 replaces prefrontal-core's GitHub wake consumer. It resolves Plexus
+v2 issue, PR and release notices, applies the routing, suppression and own-echo
+rules below (unchanged from the v2 comparison shadow, which matched core for a
+full day with no missed wakes and no owner mismatches), and delivers each
+accepted event to its **real owner** from the `OWNERS` map:
 
-Each run returns `events`, a compact comparison list, plus `delivered` and
-`unmapped` counts. Each comparison has `repo`, `kind`, `number`, `event_key`,
-`would_owner`, `would_action`, `suppressed_reason` and `rule`. Accepted items copy
-these fields to digest `data`, along with state, observation counts/times and
-modeled debounce timestamps. Suppressed events appear in the run result only.
-Malformed/nonmatching transport bodies are ignored before routing.
+- A newly opened issue or PR is sent with `wake`; every other accepted event
+  (comments, edits, closes, reopens, releases, unknown actions) is an update
+  sent with `piggyback`. Core's delivery planner may still downgrade either
+  action under the manifest's `digest_max` and the recipient's wake policy.
+- Every delivery uses `replace_key` `github:<repo>:<kind>:<number>`, so later
+  updates replace the same undelivered item.
+- The body is the same rendering as before: quoted, sanitized title, local
+  observation times and the overflow count. Digest `data` carries the item's
+  identity (`repo`, `kind`, `number`, `event_key`, `state`), its observation
+  counts and times, and the modeled debounce timestamps. It no longer carries
+  the shadow's comparison fields (`would_owner`, `would_action`,
+  `suppressed_reason`, `rule`).
+
+**Seen reaction.** On the first delivery of a newly opened issue or PR, and
+only then, the flow reacts 👀 as the owner through Plexus's narrow
+`github_react` tool:
+`ops.call('plexus', 'github_react', request, {for: owner})`, granted in the
+manifest as `{module: "plexus", op: "github_react", for_target: "delegate"}`
+(the only targeted grant; the body resolver `events_get` reads on the flow's
+own scope). The request is exactly
+`{repository, kind: "issue" | "pr", target: {number}, reaction: "eyes",
+request_nonce: "github-events:<event_key>"}`. Plexus keys the nonce per
+(agent, nonce), so a retried request replays rather than reacting twice.
+Scripts cannot see their run id; admission starts at most one run of this flow
+per event key, so the event key already identifies the run, and the flow-id
+prefix keeps the nonce distinct from other flows' nonces. Updates and releases
+never react, and a second `opened` notice for an item already reacted to does
+not react again.
+
+The digest is delivered and the item's history saved **before** the reaction.
+A refused or failed reaction never blocks or undoes that delivery: its code
+(for example `vendor_rejected`, `agent_grant_absent`, `policy_blocked`,
+`outcome_unknown`) is recorded in the run result and the run succeeds.
+
+`github_react` is a mutation on the module whose events trigger this flow, so
+install accepts it only if Plexus's catalog declares it `cause_echo`, or the
+operator overrides the loop install rule (`docs/manifest.md`, op reference).
+
+Each run returns `events`, a compact comparison record (`repo`, `kind`,
+`number`, `event_key`, `would_owner`, `would_action`, `suppressed_reason`,
+`rule`, plus observation fields when delivered), `delivered` and `unmapped`
+counts, and `reaction`: `null` when no reaction was attempted, otherwise
+`{owner, request_nonce, code}` with `code: null` on success. Suppressed events
+appear in the run result only. Malformed/nonmatching transport bodies are
+ignored before routing.
 
 ## Core rules and source references
 
@@ -57,9 +95,9 @@ The only project-specific row is AFT's `events_suppress_actors:<project_id>`:
 `cortexkit/aft`. No other project rows were reported. These are login identifiers
 only; no private configuration records or real comment text are included.
 
-## Explicit shadow differences and assumptions
+## Explicit differences from core and assumptions
 
-- **Immediate silent writes, modeled timing.** Event-triggered scripts have no
+- **Immediate writes, modeled timing.** Event-triggered scripts have no
   timers/continuations and cannot combine schedule and event triggers
   (`docs/manifest.md:163-180`, `crates/basal-worker/src/prelude.js:219-224,361-371`).
   Every accepted update is therefore sent immediately. KV and digest `data`
@@ -67,12 +105,10 @@ only; no private configuration records or real comment text are included.
   60 min)` for update windows. An opened item has `due_ms = latest_ms`; its
   first update starts an update window. An update arriving after the modeled
   due time starts another window. These timestamps are observations, not
-  vendor `updated_at` values. ALF can compare them to the timestamps when core's
-  delivery planner releases its real deliveries.
-- **Action policy.** The one `WOULD_ACTION` constant is the proposed live mapping.
-  ALF confirmed flow sinks go through core's delivery planner: manifest
-  `digest_max` and the recipient's wake policy may downgrade the live action.
-  No proposed action is executed during the shadow.
+  vendor `updated_at` values.
+- **Action policy.** The one `ACTION` constant maps opened items to `wake` and
+  updates to `piggyback`. Flow sinks go through core's delivery planner:
+  manifest `digest_max` and the recipient's wake policy may downgrade the action.
 - **Rescan age.** Preserve the router's six-hour guard on
   `completed_at ?? updated_at`. Every stale drop is visible with
   `suppressed_reason: "stale"`. Core does not age-drop otherwise deliverable
@@ -92,7 +128,7 @@ only; no private configuration records or real comment text are included.
 - **Bounded history.** `replace_key` is `github:<repo>:<kind>:<number>` and
   replaces an undelivered item within this flow (docs/script.md:145-155).
   The flow cannot observe core delivery acknowledgements, so observation history
-  spans shadow runs rather than resetting upon delivery. It remembers the last
+  spans runs rather than resetting upon delivery. It remembers the last
   64 event keys per item and caps fleet KV at 48,000 serialized bytes, evicting
   oldest histories first. Replays beyond retained history can be observed anew.
   Identities exceeding the sink's 200-byte key limit or containing control

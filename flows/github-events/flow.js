@@ -79,21 +79,20 @@ const SUPPRESS_ACTORS = ['ualtinok', 'alfonso-aft', 'MC-Alfonso'];
 // have no project id.
 const SUPPRESS_ACTORS_BY_REPO = { 'cortexkit/aft': ['cubic-dev-ai', 'greptile-apps'] };
 
-const ALF = 'agent_fff43bb5f4bea20b';
-// Proposed owner actions are comparison data only: this shadow always sends
-// to ALF silently, without waking any agent.
-const WOULD_ACTION = { opened: 'wake', update: 'piggyback' };
+// Owner actions: a newly opened issue or PR wakes its owner; every other
+// accepted event is an update that piggybacks on the owner's next wake.
+const ACTION = { opened: 'wake', update: 'piggyback' };
 const MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const ROLLING_MS = 30 * 60 * 1000;
 const CAP_MS = 60 * 60 * 1000;
 
 // Incremental helper from templates/github-ci-watch, adapted to a flow's body
-// and comparison metadata instead of template params. Never reserialize per character.
-function boundedDigest(title, body, comparison, observed, links = []) {
+// and item metadata instead of template params. Never reserialize per character.
+function boundedDigest(title, body, fields, observed, links = []) {
   const utf8Bytes = text => text.replace(/[\u0080-\u07ff]|[\ud800-\udbff][\udc00-\udfff]|[\u0800-\uffff]/g,
     ch => ch.length === 2 ? 'xxxx' : ch.charCodeAt(0) <= 0x7ff ? 'xx' : 'xxx').length;
   const size = value => utf8Bytes(JSON.stringify(value));
-  const data = { ...comparison, observed: { ...observed } };
+  const data = { ...fields, observed: { ...observed } };
   const item = {
     title: Array.from(title).slice(0, 199).join(''),
     body,
@@ -238,9 +237,11 @@ const owner = OWNERS[repo] ?? null;
 const isNew = (kind === 'issue' || kind === 'pull_request') && body.action === 'opened';
 const comparison = { repo, kind: kind ?? null, number: number ?? null,
   event_key: body.event_key ?? event.event_key, would_owner: owner,
-  would_action: isNew ? WOULD_ACTION.opened : WOULD_ACTION.update,
+  would_action: isNew ? ACTION.opened : ACTION.update,
   suppressed_reason: null, rule: 'deliver' };
-const result = { events: [comparison], delivered: 0, unmapped: 0 };
+// events[] keeps the routing decision for every event, delivered or dropped,
+// so a run result still explains why an event did or did not reach its owner.
+const result = { events: [comparison], delivered: 0, unmapped: 0, reaction: null };
 const drop = reason => {
   comparison.suppressed_reason = reason;
   comparison.rule = reason;
@@ -252,7 +253,7 @@ if (typeof kind !== 'string' || !kind || number == null ||
     (release ? typeof number !== 'string' || !number : !Number.isSafeInteger(number))) return drop('missing_identity');
 const key = `github:${repo}:${kind}:${number}`;
 if (bytes(key) > 200 || /[\u0000-\u001f\u007f]/.test(key)) return drop('invalid_identity');
-// Deliberate shadow difference: drop rescan events older than six hours, as
+// Deliberate difference from core: drop rescan events older than six hours, as
 // the CI router does, and expose each drop in the comparison result. Core has
 // no corresponding deliverable-event cutoff (runtime.rs:904-915).
 const timestamp = Date.parse(body.completed_at ?? body.updated_at);
@@ -321,8 +322,8 @@ const prior = memory.items[key];
 if (prior?.event_keys.includes(comparison.event_key)) return drop('duplicate_event');
 // Opened issues/PRs bypass update debounce. Updates would become due 30 minutes
 // after the latest observation, capped at 60 minutes after the first update.
-// Event-only flows cannot schedule trailing-edge runs: send this silent shadow
-// now, but record the modeled due time (commands.rs:424-491,751-815).
+// Event-only flows cannot schedule trailing-edge runs: deliver now, but record
+// the modeled due time (commands.rs:424-491,751-815).
 const first = !prior || prior.is_new || prior.due_ms <= now || isNew ? now : prior.first_seen_ms;
 const history = prior ?? { count: 0, times: [], event_keys: [] };
 history.count = Math.min(Number.MAX_SAFE_INTEGER, history.count + 1);
@@ -337,10 +338,39 @@ Object.assign(comparison, { state: state ?? null, first_seen_ms: first, latest_m
   due_ms: history.due_ms, observation_count: history.count, observation_times: history.times,
   overflow: Math.max(0, history.count - 6) });
 const summary = String(body.title ?? '');
+// The delivered item carries the item's identity and observation history, not
+// the routing comparison fields (would_*, suppressed_reason, rule), which stay
+// in the run result's events[] only.
+const fields = { repo, kind, number, event_key: comparison.event_key, state: comparison.state,
+  first_seen_ms: first, latest_ms: now, due_ms: history.due_ms, observation_count: history.count,
+  observation_times: history.times, overflow: comparison.overflow };
 const item = boundedDigest(sanitize(`${repo} ${kind} #${number}`), render(repo, kind, number, body.action, history, summary),
-  comparison, { summary }, [{ kind: 'url', url: body.url }]);
-await sink.digest(ALF, item, 'silent', { replace_key: key });
+  fields, { summary }, [{ kind: 'url', url: body.url }]);
+await sink.digest(owner, item, comparison.would_action, { replace_key: key });
+result.delivered = 1;
+// React once, on the first delivery of a newly opened issue or PR. Updates and
+// releases never react. The history records the attempt before the call, so
+// a later event for the same item never reacts again, whatever the outcome.
+const react = isNew && !prior?.reacted;
+if (react) history.reacted = true;
 memory.items[key] = history;
 await save(memory);
-result.delivered = 1;
+if (react) {
+  // Plexus keys the nonce per (agent, nonce) so a retried request replays its
+  // first outcome instead of reacting twice. Admission starts at most one run
+  // of this flow per event_key, so the event_key already identifies the run;
+  // the flow id prefix keeps the nonce distinct from other flows' nonces.
+  const request = { repository: repo, kind: kind === 'pull_request' ? 'pr' : 'issue',
+    target: { number }, reaction: 'eyes', request_nonce: `github-events:${comparison.event_key}` };
+  // The digest is already delivered and the history saved: a refused or
+  // failed reaction is recorded in the run result and never undoes either.
+  let code = null;
+  try {
+    const answer = await ops.call('plexus', 'github_react', request, { for: owner });
+    if (answer?.error) code = String(answer.error.code ?? 'github_react_failed');
+  } catch (error) {
+    code = String(error?.data?.code ?? error?.data?.error?.code ?? 'github_react_failed');
+  }
+  result.reaction = { owner, request_nonce: request.request_nonce, code };
+}
 return result;
