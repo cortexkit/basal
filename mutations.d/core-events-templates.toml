@@ -137,7 +137,15 @@ runner = "cargo"
 package = "basal-core"
 platforms = ["linux"]
 target = "--lib"
-expect_red = ["events::tests::each_events_get_refusal_preserves_its_failure_kind"]
+# The owner-notice tests read the same preserved code: one counts the real
+# refusal code in its notice, the others rely on it to exempt a readiness
+# refusal, so losing the code turns them red too.
+expect_red = [
+    "events::tests::each_events_get_refusal_preserves_its_failure_kind",
+    "events::tests::owner_notices::threshold_counts_real_preamble_failures",
+    "events::tests::owner_notices::interleaved_success_and_exempt_refusals_do_not_alert",
+    "events::tests::owner_notices::typed_rejection_deadline_is_exempt_at_the_real_driver_boundary",
+]
 only = true
 build_timeout_s = 3600
 timeout_s = 600
