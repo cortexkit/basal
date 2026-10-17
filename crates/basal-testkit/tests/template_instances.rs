@@ -150,7 +150,7 @@ fn template_version_revocation_stops_only_that_version_and_keeps_registry() {
         &id,
         1,
         Some(InstallStatus::Revoked {
-            code_hash: original["code_hash"].as_str().unwrap().into(),
+            code_hash: Some(original["code_hash"].as_str().unwrap().into()),
         }),
     );
     assert!(matches!(

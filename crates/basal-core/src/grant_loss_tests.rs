@@ -58,7 +58,7 @@ impl Host for ProbeHost {
     ) -> std::result::Result<basal_host::InstallStatus, TransportError> {
         if self.revoked.load(Ordering::SeqCst) {
             return Ok(basal_host::InstallStatus::Revoked {
-                code_hash: self.hash.clone(),
+                code_hash: Some(self.hash.clone()),
             });
         }
         Ok(basal_host::InstallStatus::Active {

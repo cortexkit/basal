@@ -459,9 +459,25 @@ fn install_status_replies_decode_strictly() {
     assert_eq!(
         decode_install_status(&json!({"state":"revoked","code_hash":hash})),
         Ok(InstallStatus::Revoked {
-            code_hash: hash.clone()
+            code_hash: Some(hash.clone())
         })
     );
+    // Core answers a revoked template instance with no hash. That is still a
+    // revocation, never an unreadable reply the gate would retry forever.
+    assert_eq!(
+        decode_install_status(&json!({"state":"revoked","code_hash":null})),
+        Ok(InstallStatus::Revoked { code_hash: None })
+    );
+    assert_eq!(
+        decode_install_status(&json!({"state":"revoked"})),
+        Ok(InstallStatus::Revoked { code_hash: None })
+    );
+    for bad in [json!("not-a-hash"), json!(7), json!("")] {
+        assert!(
+            decode_install_status(&json!({"state":"revoked","code_hash":bad})).is_err(),
+            "{bad}"
+        );
+    }
     assert_eq!(
         decode_install_status(&json!({"state":"unknown","code_hash":null})),
         Ok(InstallStatus::Unknown)

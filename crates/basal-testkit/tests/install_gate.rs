@@ -159,8 +159,35 @@ fn revoked_cancels_the_run_and_disables_the_flow() {
         &r.flow_id,
         1,
         Some(InstallStatus::Revoked {
-            code_hash: hex(&r.code_hash),
+            code_hash: Some(hex(&r.code_hash)),
         }),
+    );
+    let end = rt.resume(&run_id).expect("activation");
+    assert!(
+        matches!(
+            end,
+            ActivationEnd::Revoked {
+                cause: RevokeCause::Revoked,
+                ..
+            }
+        ),
+        "{end:?}"
+    );
+    assert_refused(&rt, &world, &run_id, &end);
+}
+
+/// Core revokes without naming a hash, as it does for a template instance
+/// whose template version is no longer approved. The run still ends at once.
+#[test]
+fn a_revocation_without_a_hash_cancels_the_run_and_disables_the_flow() {
+    let world = World::new("gate-revoked-no-hash");
+    let rt = gated(&world, &Clock::system());
+    let run_id = admit(&rt, &world, "return 7;");
+    let r = run(&rt, &run_id);
+    world.mock.set_install_status(
+        &r.flow_id,
+        1,
+        Some(InstallStatus::Revoked { code_hash: None }),
     );
     let end = rt.resume(&run_id).expect("activation");
     assert!(
@@ -272,7 +299,7 @@ fn a_resume_after_suspension_is_gated() {
         &r.flow_id,
         1,
         Some(InstallStatus::Revoked {
-            code_hash: hex(&r.code_hash),
+            code_hash: Some(hex(&r.code_hash)),
         }),
     );
     world.mock.complete_all();
@@ -349,7 +376,7 @@ fn approving_a_new_version_lifts_cores_disable() {
         &r.flow_id,
         1,
         Some(InstallStatus::Revoked {
-            code_hash: hex(&r.code_hash),
+            code_hash: Some(hex(&r.code_hash)),
         }),
     );
     let end = rt.resume(&run_id).expect("activation");

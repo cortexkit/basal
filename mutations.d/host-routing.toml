@@ -1557,3 +1557,20 @@ timeout_s = 600
 file = "crates/basal-host/src/routing.rs"
 old = 'is_core_carrier_op(module, op) && matches!(request.kind, CallKind::Op { .. });'
 new = 'is_core_carrier_op(module, op) && op != "work.unsettled" && matches!(request.kind, CallKind::Op { .. }); // NON-VACUITY BREAK'
+
+[[control]]
+id = "hosts-a-revoked-status-without-a-hash-is-unreadable"
+guards = "a revoked install status with no code hash ends the run instead of being retried as unreadable"
+test_file = "crates/basal-module/tests/install_gate.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test install_gate"
+select = { tests = ["install_status_replies_decode_strictly"] }
+expect_red = ["install_status_replies_decode_strictly"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_host.rs"
+old = "                    None | Some(Value::Null) => None,\n                    Some(_) => Some(approved_hash()?),"
+new = "                    None | Some(Value::Null) => Some(approved_hash()?), // NON-VACUITY BREAK\n                    Some(_) => Some(approved_hash()?),"

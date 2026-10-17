@@ -52,7 +52,7 @@ fn core_published_flow_scope_vectors_are_pinned_and_decode_exactly() {
     assert_eq!(
         decode_install_status(&vector("install-status-revoked.json")).unwrap(),
         InstallStatus::Revoked {
-            code_hash: zero.clone()
+            code_hash: Some(zero.clone())
         }
     );
     let InstallStatus::Active {

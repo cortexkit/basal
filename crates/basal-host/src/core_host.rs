@@ -222,9 +222,15 @@ pub fn decode_install_status(value: &Value) -> Result<InstallStatus, String> {
             code_hash: approved_hash()?,
             scope,
         }),
-        Some("revoked") => Ok(InstallStatus::Revoked {
-            code_hash: approved_hash()?,
-        }),
+            // Revoked is terminal with or without a hash: a missing hash must
+            // never read as an unreadable reply, which the gate would retry
+            // forever. A present hash must still be well formed.
+            Some("revoked") => Ok(InstallStatus::Revoked {
+                code_hash: match hash {
+                    None | Some(Value::Null) => None,
+                    Some(_) => Some(approved_hash()?),
+                },
+            }),
         Some("pending") => Ok(InstallStatus::Pending {
             code_hash: approved_hash()?,
         }),

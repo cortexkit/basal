@@ -51,7 +51,7 @@ fn arm(f: &common::Fixture, hook: &RevokeAt, flow: &str, hash: &str) {
             &flow,
             2,
             Some(InstallStatus::Revoked {
-                code_hash: hash.clone(),
+                code_hash: Some(hash.clone()),
             }),
         );
         rt.install_revoked(&flow, 2, &hash).unwrap();

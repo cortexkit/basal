@@ -382,8 +382,10 @@ pub enum InstallStatus {
         scope: Option<flow_scope::RegisteredScope>,
     },
     /// The operator revoked the version in core, which now refuses its sink
-    /// writes.
-    Revoked { code_hash: String },
+    /// writes. Core omits the hash when nothing approved remains to name, such
+    /// as a template instance whose template version is no longer approved;
+    /// the revocation applies to the asked version either way.
+    Revoked { code_hash: Option<String> },
     /// Core has an open install card, not an approval.
     Pending { code_hash: String },
     /// The operator declined the install card.
