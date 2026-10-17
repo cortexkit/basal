@@ -282,13 +282,39 @@ const ownAuthored = bot != null && String(body.author ?? '').toLowerCase() === b
 const humanComment = typeof body.comment_author === 'string' && body.comment_author.length > 0 &&
   !body.comment_author.toLowerCase().endsWith('[bot]');
 if (ownAuthored && !humanComment) return drop('own_bot_automated');
-const suppressed = [...SUPPRESS_ACTORS, ...(SUPPRESS_ACTORS_BY_REPO[repo] ?? []), ...(bot ? [bot] : [])]
-  .map(login => login.toLowerCase());
-// Suppress only when every listed actor is in the suppressed-login set; an
-// empty actor list never matches. A human comment on an own-authored subject
-// bypasses this gate too (consumers.rs:1397-1411,1696-1701).
-if (!(ownAuthored && humanComment) && Array.isArray(actors) && actors.length > 0 &&
-    actors.every(login => suppressed.includes(login.toLowerCase()))) return drop('suppressed_actor_set');
+// Logins compare case-insensitively and without a trailing `[bot]`, so a
+// review bot's account and its App identity are the same actor.
+const login = name => String(name).toLowerCase().replace(/\[bot\]$/, '');
+const suppressed = new Set([...SUPPRESS_ACTORS, ...(SUPPRESS_ACTORS_BY_REPO[repo] ?? []), ...(bot ? [bot] : [])]
+  .map(login));
+const GITHUB_ACTIONS = 'github-actions';
+// An agent's own action, and the automation it sets off, never wakes anyone:
+// github-actions only acts because someone else did (labellers, gates, check
+// reruns). So an event is an own echo when every actor is suppressed, or at
+// least one is and every other is github-actions. github-actions alone, any
+// human, or any unlisted bot still wakes, and a missing actor set still wakes.
+const echoOf = list => Array.isArray(list) && list.length > 0 &&
+  list.some(name => suppressed.has(login(name))) &&
+  // Every actor must be suppressed or github-actions: one suppressed actor
+  // cannot hide a human acting in the same event.
+  list.every(name => suppressed.has(login(name)) || login(name) === GITHUB_ACTIONS);
+// When the event names who started its run, that account decides: a run a
+// suppressed login started, whose actors are all suppressed or github-actions
+// (an empty set counts), is an echo; a run anyone else started wakes even if
+// the agent also acted.
+// Plexus carries a run's starter flat on the body; a nested workflow_run, when
+// present, is the run itself. Each starter is a login or an object with one.
+const subject = body.workflow_run && typeof body.workflow_run === 'object' ? body.workflow_run : body;
+const loginOf = value => typeof value === 'string' ? value :
+  value && typeof value === 'object' && typeof value.login === 'string' ? value.login : '';
+const starter = [subject.triggering_actor, subject.actor].map(loginOf).find(name => name.length > 0) ?? null;
+const echo = starter != null ?
+  suppressed.has(login(starter)) && Array.isArray(actors) &&
+    actors.every(name => suppressed.has(login(name)) || login(name) === GITHUB_ACTIONS) :
+  echoOf(actors);
+// A human comment on an own-authored subject bypasses this gate too
+// (consumers.rs:1397-1411,1696-1701).
+if (!(ownAuthored && humanComment) && echo) return drop('suppressed_actor_set');
 
 const now = Date.now();
 const prior = memory.items[key];

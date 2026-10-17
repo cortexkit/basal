@@ -617,8 +617,8 @@ only = true
 build_timeout_s = 3600
 timeout_s = 600
 file = "flows/github-events/flow.js"
-old = "actors.every(login => suppressed.includes(login.toLowerCase()))"
-new = "actors.some(login => suppressed.includes(login.toLowerCase())) /* NON-VACUITY BREAK */"
+old = "  list.every(name => suppressed.has(login(name)) || login(name) === GITHUB_ACTIONS);"
+new = "  list.some(name => suppressed.has(login(name)) || login(name) === GITHUB_ACTIONS); // NON-VACUITY BREAK"
 
 [[control]]
 id = "github-events-item-dedupe-key"
@@ -636,3 +636,37 @@ timeout_s = 600
 file = "flows/github-events/flow.js"
 old = "const key = `github:${repo}:${kind}:${number}`;"
 new = "const key = `github:${repo}:${kind}:${number}:${body.action}`; // NON-VACUITY BREAK"
+
+[[control]]
+id = "github-events-automation-after-own-action-wakes"
+guards = "github-actions acting alongside a suppressed login is an own echo and never wakes"
+test_file = "crates/basal-module/tests/github_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test github_events"
+select = { tests = ["an_agents_own_action_and_the_automation_it_triggers_never_wake", "operator_plus_another_human_is_delivered"] }
+expect_red = ["an_agents_own_action_and_the_automation_it_triggers_never_wake"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/github-events/flow.js"
+old = "  list.every(name => suppressed.has(login(name)) || login(name) === GITHUB_ACTIONS);"
+new = "  list.every(name => suppressed.has(login(name))); // NON-VACUITY BREAK"
+
+[[control]]
+id = "github-events-workflow-run-starter-ignored"
+guards = "a workflow run is decided by who started it, not by its actor list alone"
+test_file = "crates/basal-module/tests/github_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test github_events"
+select = { tests = ["a_workflow_run_is_decided_by_who_started_it", "operator_plus_another_human_is_delivered"] }
+expect_red = ["a_workflow_run_is_decided_by_who_started_it"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/github-events/flow.js"
+old = "const echo = starter != null ?"
+new = "const echo = false ? // NON-VACUITY BREAK"

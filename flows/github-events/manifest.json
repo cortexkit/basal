@@ -1,7 +1,7 @@
 {
   "format": 1,
   "id": "github-events",
-  "version": 1,
+  "version": 2,
   "purpose": "Shadow GitHub issue, PR and release deliveries, sending everything silently to ALF only for comparison with core; no reactions or other writes.",
   "trigger": {
     "events": [

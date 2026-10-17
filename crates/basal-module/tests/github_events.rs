@@ -267,7 +267,7 @@ fn item(kind: &str, action: &str) -> Value {
 fn manifest_has_only_three_v2_repo_events_global_sink_and_events_get() {
     Manifest::parse(MANIFEST).unwrap();
     let manifest: Value = serde_json::from_str(MANIFEST).unwrap();
-    assert_eq!(manifest["version"], 1);
+    assert_eq!(manifest["version"], 2);
     assert_eq!(manifest["audience"], json!({"kind":"global"}));
     assert_eq!(
         manifest["sinks"],
@@ -408,6 +408,82 @@ fn sole_operator_and_all_suppressed_actors_are_dropped_case_insensitively() {
         );
     }
     assert!(t.writes().is_empty());
+}
+
+#[test]
+fn an_agents_own_action_and_the_automation_it_triggers_never_wake() {
+    // MC commented on its own PR, which set off a label and a design-gate
+    // rerun: github-actions only acted because MC did.
+    let t = Test::new();
+    for (repo, actors) in [
+        (
+            "cortexkit/magic-context",
+            json!(["github-actions[bot]", "magic-alfonso[bot]"]),
+        ),
+        ("cortexkit/basal", json!(["GITHUB-ACTIONS", "ualtinok"])),
+        (
+            "cortexkit/basal",
+            json!(["basal-alfonso", "github-actions[bot]"]),
+        ),
+    ] {
+        let mut body = item("issue", "updated");
+        body["repo"] = json!(repo);
+        body["actor_logins"] = actors.clone();
+        assert_eq!(
+            t.event(body)["events"][0]["suppressed_reason"],
+            "suppressed_actor_set",
+            "{actors}"
+        );
+    }
+    // github-actions alone, a human, or an unlisted review bot still wakes.
+    for actors in [
+        json!(["github-actions[bot]"]),
+        json!(["github-actions[bot]", "ualtinok", "another-human"]),
+        json!(["ualtinok", "coderabbitai[bot]"]),
+    ] {
+        let mut body = item("issue", "updated");
+        body["actor_logins"] = actors.clone();
+        assert_eq!(t.event(body)["delivered"], 1, "{actors}");
+    }
+}
+
+#[test]
+fn a_workflow_run_is_decided_by_who_started_it() {
+    let t = Test::new();
+    // Plexus carries the starter flat, as GitHub's user object.
+    let run = |starter: Value, actors: Value| {
+        let mut body = item("issue", "updated");
+        body["triggering_actor"] = json!({"login": starter});
+        body["actor"] = json!({"login": "someone-else"});
+        body["actor_logins"] = actors;
+        body
+    };
+    // Started by a suppressed login, and only suppressed or github-actions acted
+    // (an empty set counts): an echo.
+    for actors in [
+        json!([]),
+        json!(["github-actions[bot]"]),
+        json!(["ualtinok"]),
+    ] {
+        let result = t.event(run(json!("ualtinok"), actors.clone()));
+        assert_eq!(
+            result["events"][0]["suppressed_reason"], "suppressed_actor_set",
+            "{actors}"
+        );
+    }
+    // Started by anyone else: wakes even when only the agent acted.
+    let result = t.event(run(json!("another-human"), json!(["ualtinok"])));
+    assert_eq!(result["delivered"], 1);
+    // With no triggering_actor, the run's actor decides; a nested workflow_run,
+    // when present, is the run itself.
+    let mut body = item("issue", "updated");
+    body["actor"] = "another-human".into();
+    body["workflow_run"] = json!({"actor": "ualtinok"});
+    body["actor_logins"] = json!(["github-actions[bot]"]);
+    assert_eq!(
+        t.event(body)["events"][0]["suppressed_reason"],
+        "suppressed_actor_set"
+    );
 }
 
 #[test]
