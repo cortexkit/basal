@@ -133,7 +133,7 @@ impl Host for GithubHost {
 struct Test {
     f: Fixture,
     host: Arc<GithubHost>,
-    /// The install card's fields, as raised before the operator approved.
+    /// The install card's fields, read before the operator approved it.
     card: Value,
 }
 

@@ -566,7 +566,9 @@ mod emits_events_tests {
             let calls = plexus.calls();
             let names: Vec<&str> = calls.iter().map(|(name, ..)| name.as_str()).collect();
             assert_eq!(names, ["role.describe", "tool.catalog"]);
-            // A provider without the capability filter gets no params.
+            // This describe does not advertise
+            // tool-catalog-capability-filter/v1, so the request's params
+            // are empty.
             assert_eq!(calls[1].1, json!({"params":{}}));
             assert_ne!(calls[0].2, calls[1].2, "each call has its own key");
         }

@@ -447,9 +447,11 @@ fn install_refuses_what_an_agent_may_not_do() {
     );
 }
 
-/// When plexus's `emits_events` declaration for a looping tool cannot be
-/// read, install refuses it as the loop rule does, and the refusal's detail
-/// says the declaration was unreadable, not absent, so a retry may help.
+/// A mutation on the module whose events trigger the flow is refused by the
+/// loop install rule unless the tool declares `emits_events: false`. When
+/// that declaration cannot be read, install refuses with the same code, and
+/// the refusal's detail says it was unreadable rather than absent, so the
+/// operator knows a retry may succeed.
 #[test]
 fn install_refusal_says_when_a_tools_emits_events_declaration_was_unreadable() {
     let f = fixture("ops-loop-unreadable", Options::default());
@@ -471,7 +473,7 @@ fn install_refusal_says_when_a_tools_emits_events_declaration_was_unreadable() {
             json!({ "script": SCRIPT, "manifest": manifest.to_string() }),
         )
     };
-    // Absent: the loop-rule refusal as before, with no detail.
+    // An absent declaration gets the plain LoopRule refusal, with no detail.
     let absent = install(&f).expect_err("an absent declaration is refused");
     assert_eq!(absent.code, "install_refused");
     assert!(

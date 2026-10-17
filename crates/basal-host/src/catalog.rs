@@ -97,8 +97,11 @@ pub trait Catalog: Send + Sync {
     /// `Some(true)`. `Err` means the answer could not be read or decoded, so
     /// nothing is known and a retry may help.
     ///
-    /// This can be a live call to the module, so it is read only where the
-    /// loop install rule needs it, never on dispatch.
+    /// Install's loop rule refuses a mutation on a module whose events
+    /// trigger the flow, since the call could trigger the flow again; a tool
+    /// declaring `Some(false)` is exempt. This can be a live call to the
+    /// module, so it is read only for an op that rule would otherwise
+    /// refuse, never on dispatch.
     fn emits_events(
         &self,
         _module: &str,

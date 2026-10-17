@@ -113,8 +113,9 @@ pub enum InstallError {
         op: String,
     },
     /// As [`InstallError::LoopRule`], but the module's own declaration of
-    /// whether the tool emits events could not be read, so nothing is known
-    /// about it. A retry may succeed where the read failed.
+    /// whether the tool emits events could not be read or decoded, so the
+    /// op is refused without knowing what the module declares. A retry may
+    /// succeed where the read failed.
     LoopRuleDeclarationUnreadable {
         module: String,
         op: String,

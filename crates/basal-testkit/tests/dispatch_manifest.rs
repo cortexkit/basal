@@ -327,8 +327,9 @@ fn loop_install_rule_needs_the_operator_override() {
     install(&rt, &echoing, false).expect("cause echo satisfies the rule");
 }
 
-/// A version of a flow bound to plexus's events that holds plexus's `react`
-/// tool, a mutation that does not echo causes.
+/// A version of a flow triggered by plexus's `pull_request_review` event
+/// that lists plexus's `react` tool: a mutation without the `cause_echo`
+/// marker, so only its `emits_events` declaration can satisfy the loop rule.
 fn reacting(version: u32) -> Value {
     let mut m = events_manifest(
         json!([{"module": "plexus", "name": "pull_request_review", "version": 1}]),
@@ -369,8 +370,9 @@ fn loop_install_rule_exempts_a_tool_declaring_it_emits_no_events() {
     }];
     let installed = install(&rt, &reacting(1), false).expect("the declaration satisfies the rule");
     assert_eq!(installed.warnings, exempt);
-    // With the override as well, the declaration is what admits the op, so
-    // the install does not say loop protection is rate limiting only.
+    // When the operator also passes the loop override, the `emits_events`
+    // declaration still admits the op, so no LoopOverride warning (which
+    // says loop protection is rate limiting only) is recorded.
     let overridden = install(&rt, &reacting(2), true).expect("installs");
     assert_eq!(overridden.warnings, exempt);
 }
@@ -428,8 +430,10 @@ fn loop_install_rule_says_when_the_emits_events_declaration_was_unreadable() {
     );
 }
 
-/// The declaration can be a live call to the module, so install reads it
-/// only for a mutation on a triggering module that does not echo causes.
+/// Reading `emits_events` can be a live call to the module, so install
+/// reads it only for a mutation, without the `cause_echo` marker, on a
+/// module whose events trigger the flow: queries, ops on other modules and
+/// `cause_echo` ops are not read.
 #[test]
 fn install_reads_emits_events_only_for_ops_the_loop_rule_would_refuse() {
     let world = react_world("manifest-loop-reads", None);
