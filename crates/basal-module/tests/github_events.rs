@@ -338,8 +338,7 @@ fn manifest_declares_v2_repo_events_global_sink_and_only_a_delegated_react_grant
     assert_eq!(
         manifest.as_object().unwrap().keys().collect::<Vec<_>>(),
         [
-            "audience", "deadline", "format", "id", "ops", "purpose", "sinks", "trigger",
-            "version"
+            "audience", "deadline", "format", "id", "ops", "purpose", "sinks", "trigger", "version"
         ]
     );
     assert_eq!(manifest["audience"], json!({"kind":"global"}));
@@ -457,7 +456,11 @@ fn updates_and_releases_never_react() {
     assert_eq!(result["delivered"], 1);
     assert_eq!(result["reaction"], Value::Null);
     assert_eq!(t.writes().len(), 6);
-    assert!(t.writes().iter().all(|write| write["action"] == "piggyback"));
+    assert!(
+        t.writes()
+            .iter()
+            .all(|write| write["action"] == "piggyback")
+    );
     assert!(t.host.reactions.lock().unwrap().is_empty());
 }
 
