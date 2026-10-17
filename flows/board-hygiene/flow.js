@@ -2,6 +2,19 @@ const MINUTE = 60 * 1000;
 const HOUR = 60 * MINUTE;
 const INDEX_SHARDS = 16;
 const INDEX_CAP = 128;
+// A merged delivery nudges its owner once it has been seen merged and
+// unsettled for this long, counted from the first run that saw it merged:
+// core does not report when the merge happened.
+const UNSETTLED_DELAY = 20 * MINUTE;
+// One KV value holds the first-seen time of every merged, owned, unsettled
+// delivery. At most 384 ids of at most 128 bytes, each with a timestamp, keep
+// it below the 64 KiB value limit.
+const UNSETTLED_SEEN_KEY = 'unsettled_seen';
+const UNSETTLED_SEEN_CAP = 384;
+const UNSETTLED_ID_BYTES = 128;
+const UNSETTLED_REF_BYTES = 256;
+// Dependents listed per delivery; the rest are counted.
+const UNSETTLED_BLOCKS_SHOWN = 16;
 let boardOwners = new Set();
 
 function utf8Bytes(value) {
@@ -113,6 +126,36 @@ function age(now, since) {
   return `${span(now, since)} ago`;
 }
 
+// The `blocks` dependents that are well-formed enough to name.
+function workBlocks(work) {
+  return Array.isArray(work.blocks) ? work.blocks.filter(block =>
+    block !== null && typeof block === 'object' && typeof block.item_id === 'string') : [];
+}
+
+// One merged-but-unsettled delivery, for its owner's unsettled_merged list.
+function workEntry(agent, work, since, now) {
+  const blocks = workBlocks(work);
+  const shown = blocks.slice(0, UNSETTLED_BLOCKS_SHOWN).map(block => ({
+    item_id: cut(block.item_id, UNSETTLED_ID_BYTES),
+    title: cut(typeof block.title === 'string' ? block.title : block.item_id, 200),
+  }));
+  const data = {kind: 'board_nudge', rule: 'unsettled_merged', agent_id: agent, item_id: work.item_id,
+    item_title: work.title, merged_ref: work.merged_ref, since_ms: since, blocks: shown};
+  if (blocks.length > shown.length) data.more_blocks = blocks.length - shown.length;
+  if (typeof work.campaign_id === 'string') data.campaign_id = work.campaign_id;
+  if (Number.isFinite(work.delivered_at_ms)) data.delivered_at_ms = work.delivered_at_ms;
+  const text = cut(work.title, 600);
+  // The score is the owner's judgement, so the action leaves it to fill in.
+  const call = `work(action="settle", id=${JSON.stringify(work.item_id)}, score=<0-100>, merged_ref=${JSON.stringify(work.merged_ref)})`;
+  let body = `${JSON.stringify(text)} (${work.item_id}) has been merged into ${work.merged_ref} and left unsettled for at least ${span(now, since)}.`;
+  if (shown.length) {
+    const more = data.more_blocks ? ` and ${data.more_blocks} more` : '';
+    body += ` Waiting on it: ${shown.map(block => `${JSON.stringify(block.title)} (${block.item_id})`).join(', ')}${more}.`;
+  }
+  body += ` Score the delivery and settle it: ${call}.`;
+  return bounded({title: `Merged, not settled: ${text}`, body, data}, 3600, 7000);
+}
+
 function entry(rule, agent, lane, item, since, now) {
   const data = {kind: 'board_nudge', rule, agent_id: agent, lane_id: lane.id,
     lane_title: lane.title, since_ms: since};
@@ -175,7 +218,9 @@ function entry(rule, agent, lane, item, since, now) {
 // What a list shows apart from its ages: an edit to an item's text, lane or
 // start time changes it, while time passing does not. FNV-1a, 32 bits.
 function contentFingerprint(entries) {
-  const parts = entries.map(({member, lane, item, since}) =>
+  const parts = entries.map(({member, lane, item, work, since}) => work ?
+    JSON.stringify([member, work.title, work.merged_ref, work.campaign_id ?? null,
+      workBlocks(work).map(block => [block.item_id, block.title ?? null]), since]) :
     JSON.stringify([member, lane.id, lane.title, item?.text ?? null, item?.state ?? null,
       item?.eta_ms ?? null, item?.wait?.ref ?? null, since]));
   parts.sort();
@@ -200,7 +245,9 @@ function digest(agent, rule, entries, now) {
     rule === 'wait_ended' ? `${count} ${noun} with ended waits.` :
     rule === 'stale_wait' ? `${count} ${noun} waiting with no ETA.` :
     rule === 'stale_pending' ? `${count} planned ${noun} idle with no ETA.` :
-    rule === 'stale_active' ? `${count} stale active ${noun}.` : `${count} completed board ${count === 1 ? 'lane' : 'lanes'}.`;
+    rule === 'stale_active' ? `${count} stale active ${noun}.` :
+    rule === 'unsettled_merged' ? `${count} merged ${count === 1 ? 'delivery is' : 'deliveries are'} waiting to be settled.` :
+    `${count} completed board ${count === 1 ? 'lane' : 'lanes'}.`;
   const result = {title, body: '', data: {kind: 'board_nudge', rule, agent_id: agent,
     entries: [], total_count: count, more_count: count}};
   const lines = [];
@@ -212,7 +259,8 @@ function digest(agent, rule, entries, now) {
   let entryBytes = 0;
   entries.sort((a, b) => a.since - b.since || (a.member < b.member ? -1 : a.member > b.member ? 1 : 0));
   for (const candidate of entries) {
-    const next = entry(rule, candidate.agent, candidate.lane, candidate.item, candidate.since, now);
+    const next = candidate.work ? workEntry(candidate.agent, candidate.work, candidate.since, now) :
+      entry(rule, candidate.agent, candidate.lane, candidate.item, candidate.since, now);
     const remaining = count - lines.length - 1;
     const suffix = remaining ? `\n\nand ${remaining} more` : '';
     const separator = lines.length ? 2 : 0;
@@ -238,6 +286,39 @@ function shardFor(key) {
   let hash = 0;
   for (const char of key) hash = (hash * 31 + char.codePointAt(0)) >>> 0;
   return hash % INDEX_SHARDS;
+}
+
+// Every page of core's list of delivered work that its owner has not settled.
+// A page cut short by core's time budget still carries next_cursor, so follow
+// the cursor rather than counting items. Any failure fails the whole read: a
+// partial list would make missing items look settled.
+async function readUnsettled() {
+  const items = [];
+  const cursors = new Set();
+  let cursor = null;
+  do {
+    const page = await ops.call('prefrontal-core', 'work.unsettled', cursor === null ? {} : {cursor});
+    if (!Array.isArray(page?.items)) throw new Error('work.unsettled reply has no items list');
+    items.push(...page.items);
+    cursor = page.next_cursor ?? null;
+    if (cursor !== null && (typeof cursor !== 'string' || cursors.has(cursor))) {
+      throw new Error('work.unsettled repeated or garbled its cursor');
+    }
+    cursors.add(cursor);
+  } while (cursor !== null);
+  return items;
+}
+
+// Whether a work.unsettled item has the fields this flow relies on. A merged
+// item must name its integration ref, which the settle action needs.
+function unsettledItem(work) {
+  return work !== null && typeof work === 'object' && !Array.isArray(work) &&
+    typeof work.item_id === 'string' && work.item_id !== '' &&
+    utf8Bytes(work.item_id) <= UNSETTLED_ID_BYTES &&
+    typeof work.title === 'string' && typeof work.delivery === 'string' &&
+    (work.agent_id === null || (typeof work.agent_id === 'string' && work.agent_id !== '')) &&
+    (work.delivery !== 'merged' || (typeof work.merged_ref === 'string' && work.merged_ref !== '' &&
+      utf8Bytes(work.merged_ref) <= UNSETTLED_REF_BYTES));
 }
 
 async function run() {
@@ -315,17 +396,17 @@ async function run() {
     }
   }
 
-  function collect(rule, agent, lane, item, since, recipient) {
+  function collect(rule, agent, lane, item, since, recipient, work) {
     const key = memoryKey(recipient, rule);
     if (key === null) {
       log('board hygiene memory key too long', {agent: recipient, rule});
       return;
     }
     if (!groups.has(key)) groups.set(key, {agent: recipient, rule, entries: new Map()});
-    const member = JSON.stringify([agent, item?.id ?? lane.id]);
+    const member = JSON.stringify([agent, work?.item_id ?? item?.id ?? lane.id]);
     // Delay rendering until the group's complete membership fits in KV (64 KiB).
     // digest() renders candidates only until the first one exceeds its size limits.
-    groups.get(key).entries.set(member, {agent, lane, item, since, member});
+    groups.get(key).entries.set(member, {agent, lane, item, work, since, member});
   }
 
   function check(rule, agent, lane, item, condition, since, firstDelay, recipient) {
@@ -398,11 +479,80 @@ async function run() {
         newest, 30 * MINUTE, agent);
     }
   }
+  // Merged deliveries their owner has not settled block the campaign slices
+  // waiting on them. A failed read is logged and leaves this rule's lists and
+  // memory as they were, so the other rules still run and nothing is cleared
+  // on missing data.
+  const unsettled = {scanned: 0, unowned: 0, malformed: 0, error: null};
+  let works = null;
+  try {
+    works = await readUnsettled();
+  } catch (error) {
+    unsettled.error = error.data?.code ?? String(error);
+    log('board hygiene unsettled read failed', {code: unsettled.error});
+  }
+  if (works !== null) {
+    unsettled.scanned = works.length;
+    const stored = await kv.get(UNSETTLED_SEEN_KEY);
+    const before = new Map((Array.isArray(stored) ? stored : []).filter(pair =>
+      Array.isArray(pair) && typeof pair[0] === 'string' && Number.isFinite(pair[1])));
+    const seen = new Map();
+    const fresh = [];
+    const merged = new Map();
+    for (const work of works) {
+      if (!unsettledItem(work)) {
+        unsettled.malformed++;
+        continue;
+      }
+      const kept = before.get(work.item_id);
+      // Only `unmerged` and `none` say the delivery is not merged, so only
+      // they restart its clock. `unknown` and `error` mean core had no Git
+      // facts, and a missing owner says nothing about the merge: both keep
+      // the recorded time without nudging anyone.
+      if (work.delivery === 'unmerged' || work.delivery === 'none') continue;
+      if (work.delivery === 'merged' && work.agent_id === null) unsettled.unowned++;
+      if (work.delivery !== 'merged' || work.agent_id === null) {
+        if (kept !== undefined) seen.set(work.item_id, kept);
+        continue;
+      }
+      if (kept !== undefined) seen.set(work.item_id, kept);
+      else fresh.push(work.item_id);
+      merged.set(work.item_id, work);
+    }
+    // Items already remembered keep their place; new ones fill what is left.
+    let full = false;
+    for (const id of fresh) {
+      if (seen.has(id)) continue;
+      if (seen.size >= UNSETTLED_SEEN_CAP) {
+        full = true;
+        continue;
+      }
+      seen.set(id, now);
+    }
+    if (full) log('board hygiene unsettled memory full', {cap: UNSETTLED_SEEN_CAP});
+    for (const [id, work] of merged) {
+      const since = seen.get(id);
+      if (since === undefined || now < since + UNSETTLED_DELAY) continue;
+      collect('unsettled_merged', work.agent_id, null, null, since, work.agent_id, work);
+    }
+    // Items that left the list are forgotten; write only when memory changed.
+    const next = [...seen].sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+    if (JSON.stringify(next) !== JSON.stringify(stored ?? [])) {
+      try {
+        if (next.length) await kv.set(UNSETTLED_SEEN_KEY, next);
+        else await kv.delete(UNSETTLED_SEEN_KEY);
+      } catch (error) {
+        if (error.data?.code !== 'kv_limit') throw error;
+        log('board hygiene memory refused', {rule: 'unsettled_merged', code: error.data.code});
+      }
+    }
+  }
   // Clear empty lists silently before freeing their membership quota. Unsupported
   // replacement still uses the same silent fallback, so cleanup never wakes an owner.
   for (const index of indexes) {
     for (const key of [...index]) {
       if (groups.has(key)) continue;
+      if (works === null && key.endsWith(':unsettled_merged')) continue;
       const previous = await kv.get(key);
       if (previous?.agent && previous?.rule) await send(previous.agent, digest(previous.agent, previous.rule, []), 'silent');
       await forget(key);
@@ -438,7 +588,9 @@ async function run() {
     }
   }
   return {boards_scanned: boards.length, refusals, skipped_lane_blocks: skipped.lane_blocks,
-    skipped_lane_items: skipped.lane_items};
+    skipped_lane_items: skipped.lane_items, unsettled_scanned: unsettled.scanned,
+    unsettled_read_error: unsettled.error, skipped_unsettled_unowned: unsettled.unowned,
+    skipped_unsettled_items: unsettled.malformed};
 }
 
 return await run();

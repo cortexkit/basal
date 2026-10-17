@@ -1,0 +1,4 @@
+{
+  "code": "work_unsettled_audience_not_global",
+  "message": "work.unsettled lists every head's work and requires a flow whose approved audience is global"
+}

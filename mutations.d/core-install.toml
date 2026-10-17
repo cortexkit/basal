@@ -1546,3 +1546,20 @@ timeout_s = 600
 file = "crates/basal-core/src/install.rs"
 old = "match catalog.agent_known(agent) {"
 new = "match catalog.agent_known(agent).or_else(|_| Ok::<_, basal_host::transport::WireError>(false)) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "core-carrier-work-unsettled-install-demands-flow-scopes"
+guards = "installing a flow that declares work.unsettled does not need core to advertise flow-scopes/v1"
+test_file = "crates/basal-module/tests/flow_scope_capabilities.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test flow_scope_capabilities"
+select = { tests = ["work_unsettled_installs_without_core_flow_scopes", "core_op_install_requires_catalog_capability_for_every_author"] }
+expect_red = ["work_unsettled_installs_without_core_flow_scopes"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/install.rs"
+old = 'if basal_host::core_host::is_core_carrier_op(module, op) {'
+new = 'if basal_host::core_host::is_core_carrier_op(module, op) && op != "work.unsettled" { // NON-VACUITY BREAK'

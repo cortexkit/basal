@@ -32,6 +32,11 @@ struct BoardHost {
     writes: Mutex<Vec<Value>>,
     refuse: AtomicUsize,
     replacement_supported: AtomicBool,
+    /// `work.unsettled` reply pages in order; none means one empty page.
+    unsettled: Mutex<Vec<Value>>,
+    /// Refuse `work.unsettled` reads of this page index and later with this body.
+    unsettled_refusal: Mutex<Option<(usize, Value)>>,
+    unsettled_reads: Mutex<Vec<Value>>,
 }
 
 impl BoardHost {
@@ -51,6 +56,29 @@ impl BoardHost {
                 json!({"boards": &boards[start..end], "next_cursor": if end < boards.len() {
                     boards[end-1]["agent_id"].clone()
                 } else { Value::Null }, "page_cap": 16})
+            }
+            CallKind::Op { module, op }
+                if module == "prefrontal-core" && op == "work.unsettled" =>
+            {
+                // Basal adds the approved stamp; the script sends only a cursor.
+                let object = args.as_object().unwrap();
+                assert!(object["stamp"].is_object());
+                assert!(object.keys().all(|key| key == "stamp" || key == "cursor"));
+                self.unsettled_reads.lock().unwrap().push(args.clone());
+                let pages = self.unsettled.lock().unwrap();
+                let index = args.get("cursor").map_or(0, |cursor| {
+                    pages
+                        .iter()
+                        .position(|page| page["next_cursor"] == *cursor)
+                        .unwrap()
+                        + 1
+                });
+                if let Some((from, refusal)) = self.unsettled_refusal.lock().unwrap().clone()
+                    && index >= from
+                {
+                    return Some(HostOutcome::rejected(text(refusal)));
+                }
+                pages.get(index).cloned().unwrap_or(json!({"items":[]}))
             }
             CallKind::Primitive(Primitive::Facts) => {
                 self.facts_calls.fetch_add(1, Ordering::Relaxed);
@@ -149,15 +177,17 @@ impl Test {
         *host.boards.lock().unwrap() = boards;
         let catalog = MockCatalog::standard();
         catalog.set_flow_capable("prefrontal-core", true);
-        catalog.set_op(
-            "prefrontal-core",
-            "board.read",
-            OpDecl {
-                kind: Some(OpKind::Query),
-                cause_echo: false,
-                shell_capable: false,
-            },
-        );
+        for op in ["board.read", "work.unsettled"] {
+            catalog.set_op(
+                "prefrontal-core",
+                op,
+                OpDecl {
+                    kind: Some(OpKind::Query),
+                    cause_echo: false,
+                    shell_capable: false,
+                },
+            );
+        }
         let consent = MockConsent::new();
         let f = common::fixture(
             "board-hygiene",
@@ -238,7 +268,7 @@ fn published_manifest_has_global_minimal_grants_and_five_minute_schedule() {
     let manifest = Manifest::parse(MANIFEST).unwrap();
     let value = serde_json::to_value(manifest).unwrap();
     assert_eq!(value["id"], "board-hygiene");
-    assert_eq!(value["version"], 11);
+    assert_eq!(value["version"], 12);
     assert_eq!(value["board_read"], json!(["$audience"]));
     assert_eq!(value["audience"], json!({"kind":"global"}));
     assert_eq!(
@@ -247,7 +277,10 @@ fn published_manifest_has_global_minimal_grants_and_five_minute_schedule() {
     );
     assert_eq!(
         value["ops"],
-        json!([{"module":"prefrontal-core","op":"board.read"}])
+        json!([
+            {"module":"prefrontal-core","op":"board.read"},
+            {"module":"prefrontal-core","op":"work.unsettled"}
+        ])
     );
     assert_eq!(value["facts"]["targets"], json!(["$audience"]));
     assert_eq!(
@@ -1217,4 +1250,257 @@ fn local_board_read_pages_complete_without_throwing() {
         println!("owner={owner} rule={rule} digest_items={items} wakes={wakes} members={members}");
         assert_eq!(items, 1);
     }
+}
+
+/// Core's captured `work.unsettled` vectors, copied unchanged from prefrontal.
+const UNSETTLED_VECTORS: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../test-vectors/work-unsettled-v1"
+);
+
+fn vector(name: &str) -> Value {
+    serde_json::from_slice(
+        &std::fs::read(std::path::Path::new(UNSETTLED_VECTORS).join(name)).unwrap(),
+    )
+    .unwrap()
+}
+
+impl Test {
+    fn unsettled(&self, pages: Vec<Value>) {
+        *self.host.unsettled.lock().unwrap() = pages;
+    }
+    fn seen(&self) -> Option<Value> {
+        self.f
+            .module
+            .rt
+            .store()
+            .read(|c| {
+                let mut stmt = c.prepare(
+                    "SELECT value FROM kv WHERE flow_id='board-hygiene' AND key='unsettled_seen'",
+                )?;
+                Ok(stmt
+                    .query_map([], |r| r.get::<_, String>(0))?
+                    .map(|r| serde_json::from_str(&r.unwrap()).unwrap())
+                    .next())
+            })
+            .unwrap()
+    }
+}
+
+#[test]
+fn work_unsettled_vectors_are_pinned() {
+    use sha2::{Digest, Sha256};
+    let dir = std::path::Path::new(UNSETTLED_VECTORS);
+    let sums = std::fs::read(dir.join("SHA256SUMS")).unwrap();
+    assert_eq!(
+        format!("{:x}", Sha256::digest(&sums)),
+        "c198f914f6288cfbf36f11077ee3cd9b3927a8c789c04202b21169e98cc726c2"
+    );
+    let entries: Vec<_> = String::from_utf8(sums)
+        .unwrap()
+        .lines()
+        .map(|line| {
+            let (hash, file) = line.split_once("  ").unwrap();
+            (hash.to_owned(), file.to_owned())
+        })
+        .collect();
+    assert_eq!(entries.len(), 11);
+    // The vectors, SHA256SUMS and core's README, nothing else.
+    assert_eq!(std::fs::read_dir(dir).unwrap().count(), entries.len() + 2);
+    for (hash, file) in entries {
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(std::fs::read(dir.join(&file)).unwrap())
+            ),
+            hash,
+            "{file}"
+        );
+    }
+}
+
+#[test]
+fn a_merged_delivery_nudges_its_owner_twenty_minutes_after_it_is_first_seen() {
+    let mut t = Test::new(Vec::new());
+    t.unsettled(vec![vector("reply-merged-blocked.json")]);
+    // The delivery ended long before BASE; the clock starts when this flow
+    // first sees it merged, because core does not say when it was merged.
+    assert!(t.run(BASE).is_empty());
+    assert_eq!(t.seen(), Some(json!([["wi_merged_slice", BASE]])));
+    assert!(t.run(BASE + 20 * MIN - 1).is_empty());
+    let writes = t.run(BASE + 20 * MIN);
+    assert_eq!(writes.len(), 1);
+    let write = &writes[0];
+    assert_eq!(write["agent"], "ag_owner");
+    assert_eq!(write["action"], "wake");
+    assert_eq!(
+        write["replace_key"],
+        "board_nudge:ag_owner:unsettled_merged"
+    );
+    assert_eq!(
+        write["item"]["title"],
+        "1 merged delivery is waiting to be settled."
+    );
+    assert_eq!(write["item"]["data"]["total_count"], 1);
+    assert_eq!(
+        write["item"]["data"]["entries"][0],
+        json!({"kind":"board_nudge","rule":"unsettled_merged","agent_id":"ag_owner",
+            "item_id":"wi_merged_slice","item_title":"Merged slice","merged_ref":"main",
+            "since_ms":BASE,"blocks":[{"item_id":"wi_blocked_slice","title":"Blocked slice"}],
+            "campaign_id":"ct_hygiene","delivered_at_ms":9_000_000})
+    );
+    assert_eq!(
+        write["item"]["body"],
+        "\"Merged slice\" (wi_merged_slice) has been merged into main and left unsettled for at least 20 min. \
+         Waiting on it: \"Blocked slice\" (wi_blocked_slice). \
+         Score the delivery and settle it: work(action=\"settle\", id=\"wi_merged_slice\", score=<0-100>, merged_ref=\"main\")."
+    );
+    // An unchanged list is never rewritten, however much time passes.
+    assert!(t.run(BASE + 40 * MIN).is_empty());
+    assert!(t.run(BASE + 3 * HOUR).is_empty());
+    // A new dependent changes what the list shows: the owner's digest is
+    // replaced with a silent update, not a wake, because no delivery joined.
+    let mut page = vector("reply-merged-blocked.json");
+    page["items"][0]["blocks"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"item_id":"wi_later_slice","title":"Later slice"}));
+    t.unsettled(vec![page]);
+    let updated = t.run(BASE + 4 * HOUR);
+    assert_eq!(updated.len(), 1);
+    assert_eq!(updated[0]["action"], "silent");
+    let body = updated[0]["item"]["body"].as_str().unwrap();
+    assert!(
+        body.contains(
+            "Waiting on it: \"Blocked slice\" (wi_blocked_slice), \"Later slice\" (wi_later_slice)."
+        ),
+        "{body}"
+    );
+    assert!(t.run(BASE + 5 * HOUR).is_empty());
+    // Settled: the item leaves the list, which clears silently, and its
+    // first-seen time is forgotten.
+    t.unsettled(vec![vector("reply-empty.json")]);
+    let cleared = t.run(BASE + 6 * HOUR);
+    assert_eq!(cleared.len(), 1);
+    assert_eq!(cleared[0]["action"], "silent");
+    assert_eq!(cleared[0]["item"]["data"]["total_count"], 0);
+    assert_eq!(t.seen(), None);
+    assert!(t.keys().iter().all(|key| key.starts_with("index:")));
+}
+
+#[test]
+fn unowned_unmerged_unknown_and_malformed_deliveries_are_not_nudged() {
+    let owned = vector("reply-merged-blocked.json")["items"][0].clone();
+    // No single live head owns this one, so nobody can be nudged about it.
+    let mut unowned = owned.clone();
+    unowned["item_id"] = json!("wi_unowned");
+    unowned["agent_id"] = Value::Null;
+    let unmerged = vector("reply-unmerged.json")["items"][0].clone();
+    let unknown = vector("reply-page-2.json")["items"][0].clone();
+    let mut errored = unknown.clone();
+    errored["item_id"] = json!("wi_errored");
+    errored["delivery"] = json!("error");
+    let mut no_ref = owned.clone();
+    no_ref["item_id"] = json!("wi_no_ref");
+    no_ref.as_object_mut().unwrap().remove("merged_ref");
+    let mut t = Test::new(Vec::new());
+    t.unsettled(vec![
+        json!({"items":[owned, unowned, unmerged, unknown, errored, no_ref]}),
+    ]);
+    assert!(t.run(BASE).is_empty());
+    let writes = t.run(BASE + 20 * MIN);
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0]["agent"], "ag_owner");
+    let entries = writes[0]["item"]["data"]["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["item_id"], "wi_merged_slice");
+    assert_eq!(t.result["unsettled_scanned"], 6);
+    assert_eq!(t.result["skipped_unsettled_unowned"], 1);
+    assert_eq!(t.result["skipped_unsettled_items"], 1);
+    assert_eq!(t.result["unsettled_read_error"], Value::Null);
+    assert_eq!(t.seen(), Some(json!([["wi_merged_slice", BASE]])));
+}
+
+#[test]
+fn every_unsettled_page_is_read_each_run() {
+    let mut last = vector("reply-page-2.json");
+    last["items"][0]["delivery"] = json!("merged");
+    last["items"][0]["merged_ref"] = json!("main");
+    let mut t = Test::new(Vec::new());
+    t.unsettled(vec![vector("reply-page-1.json"), last]);
+    assert!(t.run(BASE).is_empty());
+    {
+        let reads = t.host.unsettled_reads.lock().unwrap();
+        assert_eq!(reads.len(), 2);
+        assert!(reads[0].get("cursor").is_none());
+        assert_eq!(reads[1]["cursor"], "1199:bg_page_199");
+    }
+    assert_eq!(t.result["unsettled_scanned"], 201);
+    let writes = t.run(BASE + 20 * MIN);
+    assert_eq!(writes.len(), 1);
+    assert_eq!(
+        writes[0]["item"]["data"]["entries"][0]["item_id"],
+        "wi_page_200"
+    );
+    assert_eq!(t.host.unsettled_reads.lock().unwrap().len(), 4);
+}
+
+#[test]
+fn a_refused_unsettled_read_is_logged_and_the_board_rules_still_run() {
+    let mut t = Test::new(vec![candidates("eta_passed", 1)]);
+    t.unsettled(vec![vector("reply-merged-blocked.json")]);
+    assert_eq!(rule(&t.run(BASE), "eta_passed").len(), 1);
+    assert_eq!(rule(&t.run(BASE + 20 * MIN), "unsettled_merged").len(), 1);
+    let refusal = vector("refusal-non-global.json");
+    *t.host.unsettled_refusal.lock().unwrap() = Some((0, refusal.clone()));
+    // The board list changes during the refused read and is still updated.
+    t.host.boards.lock().unwrap()[0]["board"]["laneBlocks"][0]["title"] = json!("Edited");
+    let writes = t.run(BASE + 30 * MIN);
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0]["item"]["data"]["rule"], "eta_passed");
+    assert_eq!(writes[0]["action"], "silent");
+    assert_eq!(t.result["unsettled_read_error"], refusal["code"]);
+    assert_eq!(
+        t.result["refusals"],
+        json!([{"message":"board hygiene unsettled read failed","code":refusal["code"]}])
+    );
+    // Missing data clears nothing: the list and its first-seen time remain.
+    assert_eq!(t.seen(), Some(json!([["wi_merged_slice", BASE]])));
+    assert!(t.keys().contains(&"nudge:ag_owner:unsettled_merged".into()));
+    // A refusal on a later page fails the whole read the same way.
+    let mut first = vector("reply-merged-blocked.json");
+    first["next_cursor"] = json!("9000000:bg_merged");
+    t.unsettled(vec![first, vector("reply-empty.json")]);
+    *t.host.unsettled_refusal.lock().unwrap() = Some((1, vector("refusal-unknown-stamp.json")));
+    assert!(t.run(BASE + 40 * MIN).is_empty());
+    assert_eq!(t.result["unsettled_read_error"], "sink_flow_not_installed");
+    assert_eq!(t.seen(), Some(json!([["wi_merged_slice", BASE]])));
+    // Once core answers again the unchanged list is left alone.
+    *t.host.unsettled_refusal.lock().unwrap() = None;
+    t.unsettled(vec![vector("reply-merged-blocked.json")]);
+    assert!(t.run(BASE + 50 * MIN).is_empty());
+    assert_eq!(t.result["unsettled_read_error"], Value::Null);
+}
+
+#[test]
+fn unsettled_memory_is_bounded() {
+    let template = vector("reply-merged-blocked.json")["items"][0].clone();
+    let items: Vec<_> = (0..400)
+        .map(|n| {
+            let mut item = template.clone();
+            item["item_id"] = json!(format!("wi_{n:03}"));
+            item
+        })
+        .collect();
+    let mut t = Test::new(Vec::new());
+    t.unsettled(vec![json!({"items": items})]);
+    t.run(BASE);
+    assert_eq!(t.seen().unwrap().as_array().unwrap().len(), 384);
+    assert_eq!(
+        t.result["refusals"],
+        json!([{"message":"board hygiene unsettled memory full","cap":384}])
+    );
+    let writes = t.run(BASE + 20 * MIN);
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0]["item"]["data"]["total_count"], 384);
 }

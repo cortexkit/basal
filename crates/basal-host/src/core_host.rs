@@ -15,8 +15,10 @@ pub const FLOW_OWNER_NOTICE_V1: &str = "flow-owner-notice/v1";
 /// Manifest-declared ops that core accepts from `reserved:basal`, checking a
 /// `{flow_id, flow_version, code_hash}` stamp against the approved install.
 /// These use basal's own management route, not a provider route bound to the
-/// flow's scope selector.
-pub const CORE_CARRIER_OPS: &[&str] = &["board.read"];
+/// flow's scope selector, so installing them does not need core to advertise
+/// `flow-scopes/v1`. `board.read` pages live boards; `work.unsettled` lists
+/// delivered work items whose owning head has not settled them yet.
+pub const CORE_CARRIER_OPS: &[&str] = &["board.read", "work.unsettled"];
 
 pub fn is_core_carrier_op(module: &str, op: &str) -> bool {
     module == CORE && CORE_CARRIER_OPS.contains(&op)

@@ -437,7 +437,7 @@ fn board_read_install_request_preserves_manifest_bytes_and_hash() {
         .unwrap()
         .push(json!({
             "module_id":"prefrontal-core", "roles":[{"role":"management_surface",
-                "operations":[{"name":"board.read","kind":"query"}],
+                "operations":[{"name":"board.read","kind":"query"},{"name":"work.unsettled","kind":"query"}],
                 "config_schema":{},"observability":[],"identity_scope":[],"concurrency":"serial"}],
             "control_ops":[]
         }));

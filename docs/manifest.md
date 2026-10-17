@@ -152,7 +152,8 @@ flow's own scope has no agent identity, so a write through an agent's bot
 account will be refused. Existing install validation may still refuse an
 unmarked op. An op with `for_target: "delegate"` is exempt because a targeted call using `for:`
 runs on the target agent's delegated scope. Sinks and status writes use their
-own audience grants, and `prefrontal-core.board.read` is routed by basal itself,
+own audience grants, and the core carrier ops `prefrontal-core.board.read` and
+`prefrontal-core.work.unsettled` are routed by basal itself,
 so those routes do not produce this warning.
 
 Audience manifests with a run deadline above 12 hours are refused at install

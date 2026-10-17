@@ -334,9 +334,13 @@ an install ends every target scope for the flow. Provider route opens use these
 selectors exactly as they use the flow's own selector. A scope close during a
 call is a lost reply, never evidence that a mutation was unsent.
 
-## Core carrier operations: `board.read`
+## Core carrier operations: `board.read` and `work.unsettled`
 
-The explicit core carrier-op list contains only `prefrontal-core` / `board.read`.
+The explicit core carrier-op list contains `prefrontal-core` / `board.read` and
+`prefrontal-core` / `work.unsettled`. Both are queries basal sends on its own
+reserved route with the approved install's stamp, as described below for
+`board.read`; `work.unsettled` has its own section after it.
+
 Declare `{"module":"prefrontal-core","op":"board.read"}` in `ops` and a
 nonempty `board_read` string array in the manifest, for example
 `"board_read": ["$audience"]` with `"audience": {"kind":"global"}`. Basal
@@ -414,6 +418,41 @@ validation reason. `sink_target_not_in_audience` names the flow, target and
 audience; `sink_audience_unavailable` may include those names and the lookup
 failure detail. Basal exposes core refusals to the script as ordinary query
 rejections and journals them like other replies.
+
+### `work.unsettled`
+
+`work.unsettled` lists every delivered work item whose owning head has not
+settled it yet. Declare `{"module":"prefrontal-core","op":"work.unsettled"}` in
+`ops`; there is no separate manifest field. Call it with
+`ops.call('prefrontal-core', 'work.unsettled', {})`, or `{cursor}` for a later
+page. Basal routes it exactly like `board.read`: on its own `reserved:basal`
+route, never a flow-scoped one, without requiring `flow-scopes/v1`, with the
+approved stamp added and journaled, refusing script-supplied stamp fields and
+the `for` option. The request on the wire is exactly
+`{"stamp":{"flow_id":…,"flow_version":…,"code_hash":…},"cursor":…}` with
+`cursor` optional; core refuses unknown fields.
+
+Core admits the call only for an active install whose approved audience is
+`{"kind":"global"}` (the reply spans every head's work) and whose approved
+manifest lists the op. The reply is `{"items":[…],"next_cursor":…}` with at
+most 200 items; pass `next_cursor` back as `cursor`. A page cut short by core's
+time budget also carries `next_cursor`, so read until it is absent rather than
+counting items. Each item has `agent_id` (the live head owning the delivering
+session, or `null` when no single live head holds it), `item_id`, `title`,
+`delivery` (`unmerged`, `merged`, `none` or `unknown`; accept `error` too),
+`merged_ref` (only when merged), `delivered_at_ms`, `campaign_id` (campaign
+items only) and `blocks`, the open campaign items that depend on it, as
+`{item_id, title}`. `merged_at_ms` is never sent: core does not record when a
+delivery was first seen merged.
+
+Refusals are `{code, message}`: `sink_principal_refused`, `sink_item_invalid`
+(malformed body, or a cursor `work.unsettled` did not return),
+`sink_flow_not_installed`, `sink_flow_hash_mismatch`,
+`work_unsettled_audience_not_global` and `work_unsettled_not_granted`. Basal
+passes them to the script unchanged as query rejections. Core's captured
+request, reply and refusal vectors, copied from prefrontal revision
+`0c5d9069cfdb5097a765d0f934b6b44c4e7c29f9`, are in
+[`test-vectors/work-unsettled-v1/`](../test-vectors/work-unsettled-v1).
 
 ## Codemode
 

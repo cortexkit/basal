@@ -1,0 +1,19 @@
+{
+  "items": [
+    {
+      "agent_id": "ag_owner",
+      "blocks": [
+        {
+          "item_id": "wi_blocked_slice",
+          "title": "Blocked slice"
+        }
+      ],
+      "campaign_id": "ct_hygiene",
+      "delivered_at_ms": 9000000,
+      "delivery": "merged",
+      "item_id": "wi_merged_slice",
+      "merged_ref": "main",
+      "title": "Merged slice"
+    }
+  ]
+}

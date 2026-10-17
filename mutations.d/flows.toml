@@ -251,6 +251,23 @@ old = "        await sink.digest(agent, item, action);"
 new = "        return false; // NON-VACUITY BREAK: omit the unsent digest retry"
 
 [[control]]
+id = "board-hygiene-unsettled-merged-delay"
+guards = "a merged, unsettled delivery nudges its owner only after twenty minutes past its first-seen time"
+test_file = "crates/basal-module/tests/board_hygiene.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test board_hygiene"
+select = { tests = ["a_merged_delivery_nudges_its_owner_twenty_minutes_after_it_is_first_seen", "install_card_dry_run_text_matches_its_committed_fixture"] }
+expect_red = ["a_merged_delivery_nudges_its_owner_twenty_minutes_after_it_is_first_seen"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/board-hygiene/flow.js"
+old = "const UNSETTLED_DELAY = 20 * MINUTE;"
+new = "const UNSETTLED_DELAY = 19 * MINUTE; // NON-VACUITY BREAK"
+
+[[control]]
 id = "github-ci-watch-job-dedup"
 guards = "a repeated failed job id produces no additional digest write"
 test_file = "crates/basal-module/tests/flow_templates.rs"
