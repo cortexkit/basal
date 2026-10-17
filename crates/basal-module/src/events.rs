@@ -49,6 +49,9 @@ pub struct Health {
     pub first_batch_notices: Option<usize>,
     pub first_batch_elapsed_ms: Option<u64>,
     pub first_batch_oldest_age_ms: Option<i64>,
+    /// The last lifecycle-event publish failure, cleared by the next pass that
+    /// publishes without error. Publishing never stops event delivery.
+    pub outbox_error: Option<String>,
 }
 
 pub struct Reader {
@@ -508,7 +511,23 @@ async fn reader_loop(
             while !stop.load(Ordering::Acquire) {
                 if now_ms() / 1000 >= credential.exp.saturating_sub(60) { break; }
                 if connection.client().connection_state() != async_nats::connection::State::Connected { return Err("event bus disconnected".into()); }
-                publish_outbox(&rt, &connection, &credential.acct).await?;
+                // A failed lifecycle publish (the bus refusing basal's publish
+                // permission, say) must never stop event delivery: the row keeps
+                // its own durable backoff, and this pass still pulls. Ending the
+                // session here once stalled every event-triggered flow.
+                let outbox = publish_outbox(&rt, &connection, &credential.acct).await;
+                {
+                    let mut h = health.lock().unwrap_or_else(|p| p.into_inner());
+                    match outbox {
+                        Ok(_) => h.outbox_error = None,
+                        Err(error) => {
+                            if h.outbox_error.as_deref() != Some(error.as_str()) {
+                                tracing::warn!(target: "events", "lifecycle event publish failed: {error}");
+                            }
+                            h.outbox_error = Some(error);
+                        }
+                    }
+                }
                 let start = Instant::now();
                 let messages = pull(&consumer).await?;
                 refresh_backlog(&health, async {
