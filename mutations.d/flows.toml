@@ -482,7 +482,7 @@ only = true
 build_timeout_s = 3600
 timeout_s = 600
 file = "flows/ci-failure-router/flow.js"
-old = "jobsSinceFirstNotice.length > 0 && !run.completionWoke"
+old = "startedSinceFirstNotice.length > 0 && !run.completionWoke"
 new = "!run.completionWoke // NON-VACUITY BREAK"
 
 [[control]]
@@ -499,8 +499,8 @@ only = true
 build_timeout_s = 3600
 timeout_s = 600
 file = "flows/ci-failure-router/flow.js"
-old = "jobsSinceFirstNotice.length > 0 && !run.completionWoke"
-new = "false && jobsSinceFirstNotice.length > 0 && !run.completionWoke // NON-VACUITY BREAK"
+old = "startedSinceFirstNotice.length > 0 && !run.completionWoke"
+new = "false && startedSinceFirstNotice.length > 0 && !run.completionWoke // NON-VACUITY BREAK"
 
 [[control]]
 id = "ci-failure-router-quiet-repos-stay-silent"
@@ -738,3 +738,37 @@ timeout_s = 600
 file = "flows/github-events/flow.js"
 old = "await sink.digest(owner, item, comparison.would_action, { replace_key: key });"
 new = "await sink.digest('agent_fff43bb5f4bea20b', item, comparison.would_action, { replace_key: key }); // NON-VACUITY BREAK"
+
+[[control]]
+id = "ci-failure-router-never-started-job-wakes"
+guards = "a failed job no runner picked up records silently instead of waking its owner"
+test_file = "crates/basal-module/tests/ci_failure_router.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test ci_failure_router"
+select = { tests = ["jobs_that_never_started_record_silently_and_never_wake_the_run", "first_failed_job_wakes_and_later_jobs_are_silent"] }
+expect_red = ["jobs_that_never_started_record_silently_and_never_wake_the_run"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/ci-failure-router/flow.js"
+old = "const action = quiet || green || mergeQueueRepeat || contributorBranch || notStarted ? 'silent' :"
+new = "const action = quiet || green || mergeQueueRepeat || contributorBranch ? 'silent' : // NON-VACUITY BREAK"
+
+[[control]]
+id = "ci-failure-router-never-started-job-wakes-the-completion"
+guards = "a job that never started doesn't count toward the run completion's second wake"
+test_file = "crates/basal-module/tests/ci_failure_router.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test ci_failure_router"
+select = { tests = ["a_job_that_started_still_wakes_beside_never_started_ones", "run_finished_after_new_jobs_wakes_and_names_only_jobs_since_first_notice"] }
+expect_red = ["a_job_that_started_still_wakes_beside_never_started_ones"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/ci-failure-router/flow.js"
+old = "const startedSinceFirstNotice = jobsSinceFirstNotice.filter(id => !(run.notStarted ?? []).includes(id));"
+new = "const startedSinceFirstNotice = jobsSinceFirstNotice; // NON-VACUITY BREAK"

@@ -298,9 +298,18 @@ const mainFailureKey = JSON.stringify([repo, workflowName, body.name]);
 const mergeQueueRepeat = jobEvent && body.head_branch?.startsWith('gh-readonly-queue/') &&
   knownWorkflow && Object.hasOwn(memory.mainFailures, mainFailureKey);
 const validUrl = url => typeof url === 'string' && bytes(url) <= 1024 && /^https:\/\/[A-Za-z0-9.-]+(?:[/?#]|$)/.test(url);
+// A failed job no runner ever picked up never started: GitHub refused it
+// before it ran, as it does for a private repo whose billing is off. Plexus
+// sends `runner_name: null` for exactly these. Its failure tells the owner
+// nothing new, so it is recorded silently. An older body without the field,
+// or a job that failed during runner setup (a runner, no steps), still wakes.
+const notStarted = jobEvent && body.conclusion === 'failure' &&
+  Object.hasOwn(body, 'runner_name') && body.runner_name === null;
 if (jobEvent) {
   delete run.finished;
-  run.jobs[String(body.id ?? event.event_key)] = short(body.name, 256);
+  const id = String(body.id ?? event.event_key);
+  run.jobs[id] = notStarted ? `${short(body.name, 240)} (not started)` : short(body.name, 256);
+  if (notStarted) run.notStarted = [...(run.notStarted ?? []), id];
   if (validUrl(body.url) && run.links.length < 8 && !run.links.includes(body.url)) run.links.push(body.url);
 } else {
   if (validUrl(body.url)) run.url = body.url;
@@ -340,9 +349,10 @@ while (item.links.length && bytes(JSON.stringify(item)) > 16384) item.links.pop(
 // even though Plexus v2 does not include per-job conclusions in that event.
 const runHasReportedJob = Object.keys(run.jobs).length > 0;
 const needsFirstWake = !hasFirstNotice;
+const startedSinceFirstNotice = jobsSinceFirstNotice.filter(id => !(run.notStarted ?? []).includes(id));
 const runFinishedNeedsWake = !jobEvent && runHasReportedJob &&
   hasFirstNotice &&
-  jobsSinceFirstNotice.length > 0 && !run.completionWoke;
+  startedSinceFirstNotice.length > 0 && !run.completionWoke;
 const quiet = Object.hasOwn(QUIET_REPOS, repo);
 // Off the default, merge-queue and release-train branches, a failure wakes its
 // owner only on a branch a fleet seat started. A contributor's branch (say, a
@@ -356,7 +366,7 @@ const contributorBranch = !protectedBranch && !seatRun;
 // as when GitHub closes runs that waited for a maintainer's approval. Only
 // startup_failure wakes on the run alone, because no job can run there.
 const runAloneWakes = run.conclusion === 'startup_failure';
-const action = quiet || green || mergeQueueRepeat || contributorBranch ? 'silent' :
+const action = quiet || green || mergeQueueRepeat || contributorBranch || notStarted ? 'silent' :
   jobEvent ? (needsFirstWake ? 'wake' : 'silent') :
     runHasReportedJob ? (runFinishedNeedsWake ? 'wake' : 'silent') :
       (needsFirstWake && runAloneWakes ? 'wake' : 'silent');

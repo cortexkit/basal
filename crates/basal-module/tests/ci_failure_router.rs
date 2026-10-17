@@ -333,7 +333,7 @@ fn published_manifest_is_global_with_only_ci_v2_repo_filters_and_minimal_grants(
     Manifest::parse(MANIFEST).unwrap();
     let value: Value = serde_json::from_str(MANIFEST).unwrap();
     assert_eq!(value["audience"], json!({"kind":"global"}));
-    assert_eq!(value["version"], 9);
+    assert_eq!(value["version"], 10);
     assert!(
         value["purpose"]
             .as_str()
@@ -773,6 +773,59 @@ fn failed_jobs_grow_one_silent_item_on_any_branch() {
         );
     }
     assert_eq!(t.memory()["runs"].as_object().unwrap().len(), 1);
+}
+
+/// A failed job no runner picked up never started, as when GitHub refuses a
+/// private repo's jobs for billing. Plexus sends `runner_name: null` for it.
+fn never_started(id: u64) -> Value {
+    let mut body = job("cortexkit/basal", id);
+    body["runner_name"] = Value::Null;
+    body["steps_run"] = json!(0);
+    body
+}
+
+#[test]
+fn jobs_that_never_started_record_silently_and_never_wake_the_run() {
+    let t = Test::new();
+    t.ci(never_started(101));
+    t.ci(never_started(102));
+    t.ci(run("cortexkit/basal", "failure"));
+    let writes = t.writes();
+    assert_eq!(writes.len(), 3);
+    assert!(
+        writes.iter().all(|write| write["action"] == "silent"),
+        "{writes:?}"
+    );
+    let body = writes[2]["item"]["body"].as_str().unwrap();
+    assert!(body.contains("linux shard 101 (not started)"), "{body}");
+}
+
+#[test]
+fn a_job_that_started_still_wakes_beside_never_started_ones() {
+    // A runner but no steps: it failed during runner setup, so it started.
+    let mut setup_failure = job("cortexkit/basal", 103);
+    setup_failure["runner_name"] = json!("GitHub Actions 7");
+    setup_failure["steps_run"] = json!(0);
+    // An older body without the field is not known to be unstarted.
+    let t = Test::new();
+    t.ci(job("cortexkit/basal", 104));
+    assert_eq!(t.writes()[0]["action"], "wake");
+
+    let t = Test::new();
+    t.ci(never_started(101));
+    t.ci(setup_failure);
+    let writes = t.writes();
+    assert_eq!(writes[0]["action"], "silent");
+    assert_eq!(writes[1]["action"], "wake");
+
+    // After a real wake, a later never-started job doesn't wake the
+    // run's completion either.
+    let t = Test::new();
+    t.ci(job("cortexkit/basal", 105));
+    t.ci(never_started(106));
+    t.ci(run("cortexkit/basal", "failure"));
+    let actions: Vec<_> = t.writes().iter().map(|w| w["action"].clone()).collect();
+    assert_eq!(actions, [json!("wake"), json!("silent"), json!("silent")]);
 }
 
 #[test]
