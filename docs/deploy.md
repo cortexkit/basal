@@ -75,10 +75,10 @@ After placement, basal checks that `ck --json provenance basal` names the commit
 
 ## The rig run before a handover
 
-Before staging, run the formatting, both clippy configurations, workspace tests and shell checks listed in [CONTRIBUTING.md](../CONTRIBUTING.md#the-gate), then validate and replay the safety catalogue with the pinned `ckdev-mutate` 0.12.3 runner:
+Before staging, run the formatting, both clippy configurations, workspace tests and shell checks listed in [CONTRIBUTING.md](../CONTRIBUTING.md#the-gate), then validate and replay the safety catalogue with the pinned `ckdev-mutate` 0.12.4 runner:
 
 ```sh
-cargo install --locked --git https://github.com/cortexkit/commons --rev 8200b61fe4250989d315ed8064d16754c5032d10 cortexkit-mutate
+cargo install --locked --git https://github.com/cortexkit/commons --rev 85c8b577795d556fb27e54b548f06ea913d8b337 cortexkit-mutate
 mkdir -p target/mutations
 ckdev-mutate check
 ckdev-mutate run --all --report target/mutations/handover.json

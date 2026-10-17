@@ -55,7 +55,7 @@ python3 .github/workflows/check_mutation_coverage.py
 shellcheck -x script/*.sh
 ```
 
-The mutation proofs use the pinned `ckdev-mutate` 0.12.3 runner; [docs/mutations.md](docs/mutations.md) installs it and describes the catalogue. [CONTRIBUTING.md](CONTRIBUTING.md) lists the full gate, and [docs/testing.md](docs/testing.md) covers test-only features, development executable names and the ckdev-flows rig.
+The mutation proofs use the pinned `ckdev-mutate` 0.12.4 runner; [docs/mutations.md](docs/mutations.md) installs it and describes the catalogue. [CONTRIBUTING.md](CONTRIBUTING.md) lists the full gate, and [docs/testing.md](docs/testing.md) covers test-only features, development executable names and the ckdev-flows rig.
 
 ## Documentation
 
