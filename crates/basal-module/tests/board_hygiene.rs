@@ -238,7 +238,7 @@ fn published_manifest_has_global_minimal_grants_and_five_minute_schedule() {
     let manifest = Manifest::parse(MANIFEST).unwrap();
     let value = serde_json::to_value(manifest).unwrap();
     assert_eq!(value["id"], "board-hygiene");
-    assert_eq!(value["version"], 10);
+    assert_eq!(value["version"], 11);
     assert_eq!(value["board_read"], json!(["$audience"]));
     assert_eq!(value["audience"], json!({"kind":"global"}));
     assert_eq!(
@@ -294,11 +294,12 @@ fn lane_done_first_at_thirty_minutes_with_timestamp_fallback() {
     assert!(t.run(BASE + 3 * HOUR).is_empty());
 }
 
-const RULES: [&str; 5] = [
+const RULES: [&str; 6] = [
     "wait_ended",
     "eta_passed",
     "stale_active",
     "stale_wait",
+    "stale_pending",
     "lane_done",
 ];
 
@@ -364,6 +365,7 @@ fn each_rule_keeps_its_initial_age_threshold() {
         ("wait_ended", 30 * MIN),
         ("eta_passed", 0),
         ("stale_active", 6 * HOUR),
+        ("stale_pending", 6 * HOUR),
     ] {
         let mut t = active_test(vec![candidates(name, 1)]);
         assert!(t.run(BASE + delay - 1).is_empty(), "{name}");
@@ -814,6 +816,28 @@ fn digest_greedily_fills_limits_in_oldest_first_order_with_exact_more_count() {
             || serde_json::to_vec(&next).unwrap().len() > 16384,
         "the first omitted entry must not fit"
     );
+}
+
+#[test]
+fn a_planned_item_idle_six_hours_without_an_eta_nudges_its_owner() {
+    let mut t = Test::new(vec![board("ag_a", vec![item("pending", BASE)])]);
+    assert!(rule(&t.run(BASE + 6 * HOUR - 1), "stale_pending").is_empty());
+    let writes = rule(&t.run(BASE + 6 * HOUR), "stale_pending");
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0]["agent"], "ag_a");
+    assert_eq!(writes[0]["action"], "wake");
+    let body = writes[0]["item"]["body"].as_str().unwrap();
+    assert!(body.contains("has sat 6 h with no ETA"), "{body}");
+    assert!(body.contains("an ask for the user"), "{body}");
+
+    // An ETA hands the item to eta_passed; a change restarts the clock.
+    let mut dated = item("pending", BASE);
+    dated["eta_ms"] = json!(BASE + 48 * HOUR);
+    let mut t = Test::new(vec![board("ag_a", vec![dated])]);
+    assert!(rule(&t.run(BASE + 10 * HOUR), "stale_pending").is_empty());
+    let mut t = Test::new(vec![board("ag_a", vec![item("pending", BASE + 4 * HOUR)])]);
+    assert!(rule(&t.run(BASE + 9 * HOUR), "stale_pending").is_empty());
+    assert_eq!(rule(&t.run(BASE + 10 * HOUR), "stale_pending").len(), 1);
 }
 
 #[test]

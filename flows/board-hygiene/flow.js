@@ -146,6 +146,9 @@ function entry(rule, agent, lane, item, since, now) {
     } else {
       body = `Your ETA passed ${age(now, since)}. Update your item: ${call}; or extend: set a new ETA on your item.`;
     }
+  } else if (rule === 'stale_pending') {
+    title = `Planned item idle: ${text}`;
+    body = `Your planned item has sat ${span(now, since)} with no ETA. Start it; or make it wait on whoever it depends on (a peer, or an ask for the user); or set an ETA; or remove it: ${call}.`;
   } else if (rule === 'stale_wait') {
     title = `Wait unchanged: ${text}`;
     if (item.wait?.on === 'user' && item.wait?.ref == null) {
@@ -196,6 +199,7 @@ function digest(agent, rule, entries, now) {
   const title = rule === 'eta_passed' ? `${count} ${noun} ${count === 1 ? 'is' : 'are'} past ${count === 1 ? 'its' : 'their'} ETA.` :
     rule === 'wait_ended' ? `${count} ${noun} with ended waits.` :
     rule === 'stale_wait' ? `${count} ${noun} waiting with no ETA.` :
+    rule === 'stale_pending' ? `${count} planned ${noun} idle with no ETA.` :
     rule === 'stale_active' ? `${count} stale active ${noun}.` : `${count} completed board ${count === 1 ? 'lane' : 'lanes'}.`;
   const result = {title, body: '', data: {kind: 'board_nudge', rule, agent_id: agent,
     entries: [], total_count: count, more_count: count}};
@@ -377,6 +381,12 @@ async function run() {
             !(typeof item.wait?.ref === 'string' && item.wait.ref.startsWith('ask:')) &&
             Number.isFinite(waitSince),
           waitSince, 24 * HOUR, agent);
+        // A planned item with no ETA that nobody has touched for 6 hours
+        // usually needs a decision now: start it, wait it on its dependency
+        // (a peer, or an ask for the user), date it, or drop it.
+        await check('stale_pending', agent, lane, item,
+          item.state === 'pending' && !Number.isFinite(item.eta_ms) && Number.isFinite(item.changed_at_ms),
+          item.changed_at_ms, 6 * HOUR, agent);
         await check('stale_active', agent, lane, item,
           item.state === 'active' && Number.isFinite(item.changed_at_ms) &&
             activity?.status === 'ok' && Number.isFinite(activity.value) && activity.value > item.changed_at_ms,
