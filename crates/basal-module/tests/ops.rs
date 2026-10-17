@@ -447,6 +447,60 @@ fn install_refuses_what_an_agent_may_not_do() {
     );
 }
 
+/// A mutation on the module whose events trigger the flow is refused by the
+/// loop install rule unless the tool declares `emits_events: false`. When
+/// that declaration cannot be read, install refuses with the same code, and
+/// the refusal's detail says it was unreadable rather than absent, so the
+/// operator knows a retry may succeed.
+#[test]
+fn install_refusal_says_when_a_tools_emits_events_declaration_was_unreadable() {
+    let f = fixture("ops-loop-unreadable", Options::default());
+    f.catalog.set_op(
+        "plexus",
+        "react",
+        basal_host::OpDecl {
+            kind: Some(basal_host::OpKind::Mutate),
+            cause_echo: false,
+            shell_capable: false,
+        },
+    );
+    let mut manifest = events_manifest("flow-react");
+    manifest["ops"] = json!([{ "module": "plexus", "op": "react" }]);
+    let install = |f: &Fixture| {
+        f.module.handle(
+            &Caller::Operator,
+            "flow.install",
+            json!({ "script": SCRIPT, "manifest": manifest.to_string() }),
+        )
+    };
+    // An absent declaration gets the plain LoopRule refusal, with no detail.
+    let absent = install(&f).expect_err("an absent declaration is refused");
+    assert_eq!(absent.code, "install_refused");
+    assert!(
+        absent.message.starts_with("LoopRule {"),
+        "{}",
+        absent.message
+    );
+    assert_eq!(absent.detail, None);
+    f.catalog.fail_emits_events(
+        "plexus",
+        "react",
+        basal_host::transport::WireError::TimedOut("tool.catalog".into()),
+    );
+    let unreadable = install(&f).expect_err("an unreadable declaration is refused");
+    assert_eq!(unreadable.code, "install_refused");
+    assert_eq!(
+        unreadable.detail,
+        Some(json!({
+            "module": "plexus",
+            "op": "react",
+            "emits_events": "unreadable",
+            "retryable": true,
+        }))
+    );
+    assert!(f.module.rt.flow("flow-react").expect("flow").is_none());
+}
+
 #[test]
 fn install_keeps_the_version_when_the_consent_plane_is_down_and_raises_on_retry() {
     let f = fixture("ops-consent-down", Options::with_worker());

@@ -39,6 +39,12 @@ pub(crate) fn warning(w: &Warning) -> Value {
             "op": op,
             "text": "the operator overrode the loop install rule; loop protection for this flow is rate limiting only",
         }),
+        Warning::LoopExemptNoEvents { module, op } => json!({
+            "kind": "loop_exempt_no_events",
+            "module": module,
+            "op": op,
+            "text": "the module declares that no call to this tool makes it emit an event, so the loop install rule does not apply; loop protection for this op rests on that declaration",
+        }),
         Warning::PrivateTextWithNetFetch { host } => json!({
             "kind": "private_text_with_net_fetch",
             "host": host,
@@ -83,11 +89,25 @@ pub fn fields(input: &CardInput<'_>) -> Value {
         .iter()
         .map(|o| {
             let decl = input.catalog.op(&o.module, &o.op);
+            // Install reads a tool's emits_events only for an op the loop
+            // rule would otherwise refuse, and records the result as a
+            // warning. So this is `false` for an op that passed the rule by
+            // that declaration, and null (not read) for every other op.
+            let emits_events = input
+                .installed
+                .warnings
+                .iter()
+                .any(|w| {
+                    matches!(w, Warning::LoopExemptNoEvents { module, op }
+                        if *module == o.module && *op == o.op)
+                })
+                .then_some(false);
             json!({
                 "module": o.module,
                 "op": o.op,
                 "kind": decl.as_ref().and_then(|d| d.kind).map(|k| k.as_str()),
                 "cause_echo": decl.as_ref().map(|d| d.cause_echo),
+                "emits_events": emits_events,
             })
         })
         .collect();

@@ -112,6 +112,15 @@ pub enum InstallError {
         module: String,
         op: String,
     },
+    /// As [`InstallError::LoopRule`], but the module's own declaration of
+    /// whether the tool emits events could not be read or decoded, so the
+    /// op is refused without knowing what the module declares. A retry may
+    /// succeed where the read failed.
+    LoopRuleDeclarationUnreadable {
+        module: String,
+        op: String,
+        reason: String,
+    },
     /// This version exists with different code. Any edit is a new version.
     VersionExists {
         flow_id: String,
@@ -194,6 +203,11 @@ pub enum Warning {
     /// The operator overrode the loop install rule for this op; loop
     /// protection for the flow is rate limiting only.
     LoopOverride { module: String, op: String },
+    /// The loop install rule did not apply to this op: its module declares
+    /// (`emits_events: false` in its tool catalog) that no call to the tool
+    /// makes it emit an event, so calling it cannot trigger the flow again.
+    /// Loop protection for the op rests on that declaration.
+    LoopExemptNoEvents { module: String, op: String },
     /// The flow reads private text and may fetch from this host, which can
     /// carry that text out in a URL, a header or a body.
     PrivateTextWithNetFetch { host: String },
@@ -397,12 +411,29 @@ pub(crate) fn validate_inner(
         };
         if kind == OpKind::Mutate {
             if trigger_modules.contains(&module.as_str()) && !decl.cause_echo {
-                if !loop_override {
+                // Only an explicit `false` exempts: the module's promise that
+                // no call to this tool makes it emit an event, so the call
+                // cannot loop back into a trigger. Absent or `true` may emit.
+                // This is a live read of the module's catalog, made only for
+                // an op this rule would otherwise refuse.
+                let declared = catalog.emits_events(module, op);
+                if declared == Ok(Some(false)) {
                     let (module, op) = pair();
-                    return Err(InstallError::LoopRule { module, op });
+                    warnings.push(Warning::LoopExemptNoEvents { module, op });
+                } else if loop_override {
+                    let (module, op) = pair();
+                    warnings.push(Warning::LoopOverride { module, op });
+                } else {
+                    let (module, op) = pair();
+                    return Err(match declared {
+                        Err(e) => InstallError::LoopRuleDeclarationUnreadable {
+                            module,
+                            op,
+                            reason: format!("{e:?}"),
+                        },
+                        Ok(_) => InstallError::LoopRule { module, op },
+                    });
                 }
-                let (module, op) = pair();
-                warnings.push(Warning::LoopOverride { module, op });
             }
             if reads_text {
                 let (module, op) = pair();

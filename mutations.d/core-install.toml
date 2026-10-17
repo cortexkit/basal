@@ -1563,3 +1563,35 @@ timeout_s = 600
 file = "crates/basal-core/src/install.rs"
 old = 'if basal_host::core_host::is_core_carrier_op(module, op) {'
 new = 'if basal_host::core_host::is_core_carrier_op(module, op) && op != "work.unsettled" { // NON-VACUITY BREAK'
+
+[[control]]
+id = "loop-rule-treats-absent-emits-events-as-exempt"
+guards = "a tool whose emits_events declaration is absent is refused by the loop install rule, not exempted"
+test_file = "crates/basal-testkit/tests/dispatch_manifest.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test dispatch_manifest"
+expect_red = ["loop_install_rule_needs_the_operator_override", "loop_install_rule_refuses_a_tool_whose_emits_events_is_absent_or_true"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/install.rs"
+old = 'if declared == Ok(Some(false)) {'
+new = 'if matches!(declared, Ok(Some(false) | None)) { // NON-VACUITY BREAK'
+
+[[control]]
+id = "loop-rule-ignores-emits-events-exemption"
+guards = "a tool declaring emits_events false installs without the loop override"
+test_file = "crates/basal-testkit/tests/dispatch_manifest.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test dispatch_manifest"
+expect_red = ["loop_install_rule_exempts_a_tool_declaring_it_emits_no_events"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/install.rs"
+old = 'if declared == Ok(Some(false)) {'
+new = 'if false && declared == Ok(Some(false)) { // NON-VACUITY BREAK'
