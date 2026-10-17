@@ -371,7 +371,7 @@ jobs:
       matrix:
         # Scheduled breadth needs shorter shards to stay below the hosted
         # runner's six-hour limit. Push and manual runs use eight Linux shards.
-        # Every host uses the same pinned timing report to shard the catalogue;
+        # Every host shards the entire sorted catalogue independently;
         # rows for other platforms are reported as skips, not built.
         include: ${{ fromJSON(needs.mutation-matrix.outputs.include) }}
     steps:
@@ -416,7 +416,7 @@ jobs:
         run: |
           mkdir -p target/mutations
           rm -f target/mutations/all.json
-          env -u BASAL_WORKER_BIN -u BASAL_CUT_EXHAUSTIVE ckdev-mutate run --all --shard ${{ matrix.shard }}/${{ matrix.shards }} --shard-weights evidence/mutation-shard-weights.json ${BROAD:+--broad} --report target/mutations/all.json
+          env -u BASAL_WORKER_BIN -u BASAL_CUT_EXHAUSTIVE ckdev-mutate run --all --shard ${{ matrix.shard }}/${{ matrix.shards }} ${BROAD:+--broad} --report target/mutations/all.json
         env:
           BROAD: ${{ github.event_name != 'push' && 'true' || '' }}
       - name: Capture exact Windows mutation application and restoration witnesses

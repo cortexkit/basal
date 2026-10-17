@@ -25,7 +25,3 @@ On main, the full catalogue runs as five shards, because GitHub runs at most fiv
 | `throwaway-durability.md` | One before/after Mac unit-suite run, with build and test time separated | `/usr/bin/time -p cargo test -p basal-core --lib` |
 
 Every timing sample is kept. Times are wall-clock and were taken on a shared, heavily loaded Apple M5 Max (18 cores, 128 GiB); `slice-1-measurements.json` records the machine and its load average. Read the tails as a description of that environment, not of capacity.
-
-## Shard timing input
-
-The current CI shard input is [`mutation-shard-weights.json`](mutation-shard-weights.json), built from two checked-in mutation reports. Every platform shard reads the same fixed timings, so all hosts assign rows consistently. This is a sparse calibration, not a full catalogue profile: the runner assigns unmeasured rows the median of the recorded weights. The source reports are [`basal-idle-consent-mutation.json`](basal-idle-consent-mutation.json) and [`basal-idle-admission-mutation.json`](basal-idle-admission-mutation.json); refresh the pinned input from reviewed replay timings when a broader report is available.

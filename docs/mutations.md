@@ -15,7 +15,7 @@ Run from a clean tree with `BASAL_WORKER_BIN` and `BASAL_CUT_EXHAUSTIVE` unset, 
 
 Each proof has one CI host, set by its row's `platforms`. Worker-using packages run on macOS (Seatbelt) or Linux (seccomp and Landlock); rows editing Linux-only confinement code run on Linux, and rows editing Windows-only modules run on Windows. Portable crates and offline command fixtures run only on Linux, so they are not replayed twice. Offline signing and debugger probes replace macOS tools with fixtures rather than invoking codesign or lldb. `python3 .github/workflows/check_mutation_coverage.py` enforces the one-host rule.
 
-Full CI replay shards pass the same pinned [`evidence/mutation-shard-weights.json`](../evidence/mutation-shard-weights.json) report to `--shard-weights`, so each host assigns catalogue rows consistently. The report is a sparse calibration: rows without measured timings use the median of the entries in the report. For PR replay, `ckdev-mutate run --diff origin/main --list` prints the selected IDs without building or running tests. CI skips the replay when that list is empty and writes an empty JSON report for the remaining artifact and witness steps.
+For PR replay, `ckdev-mutate run --diff origin/main --list` prints the selected IDs without building or running tests. CI skips the replay when that list is empty and writes an empty JSON report for the remaining artifact and witness steps.
 
 ## Catalogue files
 
