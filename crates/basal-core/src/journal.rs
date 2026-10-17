@@ -334,6 +334,101 @@ pub fn authorize_resend(tx: &Transaction, lease: &Lease, position: u64) -> Resul
     u32::try_from(attempts).map_err(|_| CoreError::Corrupt(format!("attempts {attempts}")))
 }
 
+/// Freeze a request whose preparation previously waited on a registry read.
+/// Never replace an existing request: a retry must resend its original bytes.
+pub fn freeze_request(
+    tx: &Transaction,
+    lease: &Lease,
+    position: u64,
+    request: &JsonText,
+    max_journal_bytes: u64,
+) -> Result<bool> {
+    if !lease.holds(tx)? {
+        return Err(lease.lost());
+    }
+    ensure_size(tx, &lease.run_id)?;
+    let (_, bytes) = run_size(tx, &lease.run_id)?;
+    if bytes.saturating_add(request.len() as u64) > max_journal_bytes {
+        return Ok(false);
+    }
+    let changed = tx.execute(
+        &format!(
+            "UPDATE journal SET request=?4 WHERE run_id=?1 AND position=?5 \
+            AND request IS NULL AND settlement IS NULL AND {FENCE}"
+        ),
+        params![
+            lease.run_id,
+            lease.owner,
+            lease.generation_i64()?,
+            request.as_str(),
+            pos(position)?
+        ],
+    )?;
+    if changed != 1 {
+        return Err(lease.explain(
+            tx,
+            CoreError::Corrupt("pending request already prepared or settled".into()),
+        ));
+    }
+    bump_size(tx, &lease.run_id, 0, request.len())?;
+    Ok(true)
+}
+
+#[cfg(test)]
+mod request_tests {
+    use super::*;
+
+    #[test]
+    fn pending_request_freezes_once_with_size_accounting_and_ownership() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for migration in crate::schema::MIGRATIONS {
+            conn.execute_batch(migration.statements).unwrap();
+        }
+        conn.execute_batch("INSERT INTO flows(flow_id,created_at) VALUES ('f',1);
+            INSERT INTO runs(run_id,flow_id,trigger_id,attempt,trigger,script,manifest,code_hash,state,owner,generation,admitted_at)
+            VALUES ('r','f','t',1,'{}','return 1','{}',zeroblob(32),'running','owner',1,1)").unwrap();
+        let lease = Lease {
+            run_id: "r".into(),
+            owner: "owner".into(),
+            generation: 1,
+        };
+        let args = JsonText::new("{\"agent\":\"SYNAPSE\"}").unwrap();
+        let request = JsonText::new("{\"agent\":\"agent_owner\"}").unwrap();
+        let tx = conn.transaction().unwrap();
+        insert_call(
+            &tx,
+            &lease,
+            "f",
+            &NewCall {
+                position: 0,
+                kind: &CallKind::Primitive(basal_proto::Primitive::SinkBoard),
+                args: &args,
+                class: StoredClass::KeyedMutation,
+                request: None,
+            },
+        )
+        .unwrap();
+        assert!(!freeze_request(&tx, &lease, 0, &request, 0).unwrap());
+        assert!(row(&tx, "r", 0).unwrap().unwrap().request.is_none());
+        assert_eq!(run_size(&tx, "r").unwrap(), (1, args.len() as u64));
+        let stale = Lease {
+            generation: 2,
+            ..lease.clone()
+        };
+        assert!(freeze_request(&tx, &stale, 0, &request, u64::MAX).is_err());
+        assert!(freeze_request(&tx, &lease, 0, &request, u64::MAX).unwrap());
+        assert!(freeze_request(&tx, &lease, 0, &JsonText::null(), u64::MAX).is_err());
+        assert_eq!(
+            row(&tx, "r", 0).unwrap().unwrap().request,
+            Some(request.clone())
+        );
+        assert_eq!(
+            run_size(&tx, "r").unwrap(),
+            (1, (args.len() + request.len()) as u64)
+        );
+    }
+}
+
 /// The refusal and its retry time commit together; a crashed worker can replay
 /// the unresolved position, but recovery cannot turn it into an early send.
 pub fn defer(

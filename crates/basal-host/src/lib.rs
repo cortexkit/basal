@@ -221,7 +221,9 @@ pub fn op_label(kind: &CallKind) -> String {
     use basal_proto::Primitive;
     match kind {
         CallKind::Op { module, op } | CallKind::OpFor { module, op } => format!("{module}.{op}"),
-        CallKind::Primitive(p @ (Primitive::SinkDigest | Primitive::SinkStatus)) => {
+        CallKind::Primitive(
+            p @ (Primitive::SinkDigest | Primitive::SinkStatus | Primitive::SinkBoard),
+        ) => {
             format!("{}.{}", subc_catalog::CORE, p.name())
         }
         CallKind::Primitive(Primitive::Facts) => format!("{}.agent.facts", subc_catalog::CORE),

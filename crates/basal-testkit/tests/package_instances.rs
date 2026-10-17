@@ -324,6 +324,12 @@ impl basal_host::Catalog for WriterProbeCatalog {
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.catalog.agent_id(agent)
     }
+    fn resolve_agents(
+        &self,
+        agents: &[&str],
+    ) -> Result<Vec<Option<String>>, basal_host::transport::WireError> {
+        self.catalog.resolve_agents(agents)
+    }
 }
 
 #[test]

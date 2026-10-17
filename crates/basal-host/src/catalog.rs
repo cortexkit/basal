@@ -88,6 +88,12 @@ pub trait Catalog: Send + Sync {
     /// Resolves an agent's display name or stable id to its stable id.
     /// Unknown agents and unavailable registries must not resolve.
     fn agent_id(&self, agent: &str) -> Option<String>;
+    /// Resolve related references from one registry read. An answered unknown
+    /// reference is `None`; a failed registry read must remain an error.
+    fn resolve_agents(
+        &self,
+        agents: &[&str],
+    ) -> Result<Vec<Option<String>>, crate::transport::WireError>;
     /// The workspace registry must be readable before a workspace audience is admitted.
     fn workspace_known(&self, _id: &str) -> Result<bool, crate::transport::WireError> {
         Err(crate::transport::WireError::Unreadable(
@@ -269,5 +275,15 @@ impl Catalog for MockCatalog {
 
     fn agent_id(&self, agent: &str) -> Option<String> {
         self.read().agents.get(agent).cloned()
+    }
+    fn resolve_agents(
+        &self,
+        agents: &[&str],
+    ) -> Result<Vec<Option<String>>, crate::transport::WireError> {
+        let entries = self.read();
+        Ok(agents
+            .iter()
+            .map(|agent| entries.agents.get(*agent).cloned())
+            .collect())
     }
 }

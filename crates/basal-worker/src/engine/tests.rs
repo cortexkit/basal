@@ -232,6 +232,9 @@ fn prelude_primitive_calls_match_the_rust_wire_codes() {
         await git.show('r', 'HEAD', 'p'); await git.diff('r', 'a', 'b', {});
         await net.fetch('https://example.com', {});
         await instance.end();
+        await sink.board.append('a', 'work');
+        await sink.board.setState('a', 'i', 'done');
+        await sink.board.retire('a');
         return null;
     "#;
     let result = run_activation(&request(Profile::Flow, script), link.clone());
@@ -261,6 +264,9 @@ fn prelude_primitive_calls_match_the_rust_wire_codes() {
         Primitive::GitDiff,
         Primitive::NetFetch,
         Primitive::InstanceEnd,
+        Primitive::SinkBoard,
+        Primitive::SinkBoard,
+        Primitive::SinkBoard,
     ];
     assert_eq!(
         link.borrow()

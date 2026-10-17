@@ -571,7 +571,10 @@ impl MockHost {
                     honours_idempotency_keys: false,
                 }),
             CallKind::Primitive(p) => match p {
-                Primitive::Llm | Primitive::SinkDigest | Primitive::SinkStatus => keyed,
+                Primitive::Llm
+                | Primitive::SinkDigest
+                | Primitive::SinkStatus
+                | Primitive::SinkBoard => keyed,
                 Primitive::KvSet | Primitive::KvDelete | Primitive::Sh => CallClass::Mutation {
                     honours_idempotency_keys: false,
                 },

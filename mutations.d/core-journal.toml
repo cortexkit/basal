@@ -322,6 +322,7 @@ file = "crates/basal-core/src/schema.rs"
 # Later migrations rebuild the journal table with their own copy of this
 # constraint. Neutralize the newest rebuild's copy: an older copy would be
 # reinstated before the current store's guard can exercise it.
+scope = { after = "const BOARD_DEFERRALS: &str = r#\"", before = "\"#;" }
 old = "    CHECK (unknown_reason IS NOT NULL OR dispatch <> 'unknown'),"
 new = "    , -- NON-VACUITY BREAK"
 
@@ -564,9 +565,9 @@ only = true
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/schema.rs"
-# Migration 23 rebuilds the journal table, so its refusal list determines which codes the current table accepts.
-old = "'module_grant_absent','agent_grant_absent','sink_audience_unavailable')),"
-new = "'module_grant_absent','agent_grant_absent','sink_audience_unavailable','no_flow_scope')), /* NON-VACUITY BREAK */"
+# The latest journal rebuild determines which refusal codes the current table accepts.
+old = "'sink_audience_unavailable','sink_store_failed')),"
+new = "'sink_audience_unavailable','sink_store_failed','no_flow_scope')), /* NON-VACUITY BREAK */"
 
 [[control]]
 id = "journal-refusal-check-accepts-an-unlisted-refusal"
@@ -581,9 +582,9 @@ only = true
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/schema.rs"
-# Widens migration 23's refusal list, the governing journal definition.
-old = "'module_grant_absent','agent_grant_absent','sink_audience_unavailable')),"
-new = "'module_grant_absent','agent_grant_absent','sink_audience_unavailable','new_reason')), /* NON-VACUITY BREAK */"
+# Widen the latest journal rebuild's governing refusal list.
+old = "'sink_audience_unavailable','sink_store_failed')),"
+new = "'sink_audience_unavailable','sink_store_failed','new_reason')), /* NON-VACUITY BREAK */"
 
 [[control]]
 id = "flow-expiry-leaves-unsent-obligations-open"
@@ -713,6 +714,7 @@ edits = [
   { file = "crates/basal-core/src/schema.rs", old = "CREATE INDEX broca_calls_pending ON broca_calls(send_id) WHERE json_extract(snapshot, '$.acknowledged') = 0 AND COALESCE(json_extract(snapshot, '$.deferred'), 0) = 0;", new = "CREATE INDEX broca_calls_pending ON broca_calls(send_id) WHERE json_extract(snapshot, '$.acknowledged') = 0 AND COALESCE(json_extract(snapshot, '$.deferred'), 0) = 1; -- NON-VACUITY BREAK" },
   { file = "crates/basal-core/src/schema.rs", old = "CREATE INDEX broca_calls_pending ON broca_calls (send_id) WHERE json_extract(snapshot, '$.acknowledged') = 0 AND COALESCE(json_extract(snapshot, '$.deferred'), 0) = 0;", new = "CREATE INDEX broca_calls_pending ON broca_calls (send_id) WHERE json_extract(snapshot, '$.acknowledged') = 0 AND COALESCE(json_extract(snapshot, '$.deferred'), 0) = 1; -- NON-VACUITY BREAK" },
   { file = "crates/basal-core/src/schema.rs", old = "CREATE INDEX broca_calls_pending\nON broca_calls(send_id) WHERE json_extract(snapshot, '$.acknowledged') = 0 AND COALESCE(json_extract(snapshot, '$.deferred'), 0) = 0;", new = "CREATE INDEX broca_calls_pending\nON broca_calls(send_id) WHERE json_extract(snapshot, '$.acknowledged') = 0 AND COALESCE(json_extract(snapshot, '$.deferred'), 0) = 1; -- NON-VACUITY BREAK" },
+  { file = "crates/basal-core/src/schema.rs", old = "CREATE INDEX broca_calls_pending\n    ON broca_calls(send_id) WHERE json_extract(snapshot, '$.acknowledged') = 0 AND COALESCE(json_extract(snapshot, '$.deferred'), 0) = 0;", new = "CREATE INDEX broca_calls_pending\n    ON broca_calls(send_id) WHERE json_extract(snapshot, '$.acknowledged') = 0 AND COALESCE(json_extract(snapshot, '$.deferred'), 0) = 1; -- NON-VACUITY BREAK" },
 ]
 test_file = "crates/basal-core/src/schema_health_tests.rs"
 runner = "cargo"
@@ -1120,6 +1122,7 @@ only = true
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/schema.rs"
+scope = { after = "const TARGET_SCOPES: &str = r#\"", before = "\"#;" }
 old = "targeted IN (0,1) AND (targeted=0 OR kind_code=0)"
 new = "targeted IN (0,1) /* NON-VACUITY BREAK */"
 

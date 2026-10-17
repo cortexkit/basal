@@ -350,6 +350,7 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/core_host.rs"
+scope = { after = "pub fn validate_reply(", before = "pub(crate) fn is_code_hash(" }
 old = "if valid {\n        Ok(value)"
 new = "if valid {\n        let mut value = value; if kind == Primitive::Facts { value[\"activity\"][\"state\"][\"value\"] = json!(\"idle\"); value[\"activity\"][\"state\"][\"status\"] = json!(\"ok\"); }\n        Ok(value)"
 
@@ -597,6 +598,7 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/core_host.rs"
+scope = { after = "pub fn validate_reply(", before = "pub(crate) fn is_code_hash(" }
 old = "if valid {"
 new = "if true {"
 
@@ -1506,3 +1508,33 @@ new = '''Some(_) => Ok(InstallStatus::Rejected {
             disposition: None,
         }), // NON-VACUITY BREAK
         _ => Err(format!("unrecognised install status: {value}")),'''
+
+[[control]]
+id = "board-sink-journal-receipt-key"
+guards = "Board receipt keys are the journal call keys, not shared across calls in a run"
+test_file = "crates/basal-module/tests/hosts/board_sink.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test hosts"
+platforms = ["linux"]
+expect_red = ["board_sink::board_operations_pin_stamped_wire_bytes_and_receipts"]
+select = { tests = ["board_sink::board_operations_pin_stamped_wire_bytes_and_receipts", "board_sink::board_replies_reject_malformed_append_and_nonobject_updates"] }
+only = true
+file = "crates/basal-host/src/core_host.rs"
+old = 'v["receipt_key"] = json!(request.idempotency_key);'
+new = 'v["receipt_key"] = json!(request.run_id); // NON-VACUITY BREAK'
+
+[[control]]
+id = "board-sink-store-failure-defers"
+guards = "A retryable board-store refusal is deferred instead of settled finally"
+test_file = "crates/basal-module/tests/hosts/board_sink.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test hosts"
+platforms = ["linux"]
+expect_red = ["board_sink::board_retryable_refusals_defer_with_same_receipt_until_success_or_deadline"]
+select = { tests = ["board_sink::board_retryable_refusals_defer_with_same_receipt_until_success_or_deadline", "board_sink::board_replies_reject_malformed_append_and_nonobject_updates"] }
+only = true
+file = "crates/basal-host/src/core_host.rs"
+old = '"sink_store_failed" => RefusalReason::SinkStoreFailed,'
+new = '"sink_store_failed" => return error, // NON-VACUITY BREAK'

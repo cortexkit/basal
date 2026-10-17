@@ -1484,6 +1484,8 @@ fn map_answer(result: std::result::Result<Value, WireError>) -> Mapped {
                 | SinkTargetNotInAudience
                 | FlowNotApproved
                 | SinkAudienceUnavailable
+                | SinkStoreFailed
+                | SinkBoardTargetUnavailable
                 | FlowHasNoAudience
                 | ScopeExpiryTooFar
                 | FlowTargetScopePrincipalRefused

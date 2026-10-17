@@ -103,6 +103,68 @@ it before the script starts, on the flow scope. A script that explicitly calls
 a granted body resolver such as `events_get` can use the same fourth argument
 as any other module query.
 
+## Board lanes
+
+`sink.board` writes only the flow's own lane on an agent's board:
+
+```js
+const { lane_id, item_id } = await sink.board.append('SYNAPSE', 'Review the build');
+await sink.board.setState('SYNAPSE', item_id, 'active');
+await sink.board.setState('SYNAPSE', item_id, 'done');
+await sink.board.retire('SYNAPSE');
+```
+
+Grant boards in the hashed manifest with
+`"board": [{"agent": "SYNAPSE", "title": "Build work"}]`. Without an audience,
+`agent` is a concrete agent name. Core also accepts `$self`, but basal admits
+it only in templates and packages, as for every sink; it resolves to the
+instance owner's stable id. An ordinary agent-authored flow may name only its
+own agent. With an audience, the grant must use
+`$audience`, and each call supplies a concrete recipient; core checks current
+audience membership. Duplicate agents, missing or blank titles, titles over 56
+characters, and control characters in titles are refused at install and dry run.
+
+There is one lane per flow per agent board, `virtual:flow:<flow_id>`, titled
+from the approved manifest. Scripts cannot choose a lane or edit another flow's
+items. `append` returns `{lane_id, item_id}`. `setState` accepts `pending`,
+`active`, `done`, or `blocked`. Its optional `wait` is allowed only for `blocked`
+and follows the board's wait rules (`{on, ref?}`), enforced by core: `pm:`
+references are refused, and `item:` and `peer:` references must name something
+that exists. Core refuses an invalid wait with `sink_board_wait_invalid`.
+`retire` removes the flow's lane. Update and retire replies pass core's JSON
+object through. Core enforces text, item and lane caps and returns the typed
+refusals below when a cap is reached.
+
+Basal checks the target grant before dispatch; an ungranted target is provably
+unsent and rejected with `sink_board_target_not_granted`. Board writes use the
+stamped receipt-key contract: `{stamp:{flow_id,flow_version,code_hash}, agent,
+receipt_key, operation}`. Basal resolves the recipient and its grant names to
+stable agent ids in one registry traversal, freezes the
+stamp and operation before sending, and uses the journal's `bk1-…` idempotency
+key as `receipt_key` (nonempty, at most 256 bytes, no control characters). Core
+dedupes by sink, flow and receipt key, so a replay returns the original result.
+Digest and status still use their older envelopes, not this board contract.
+Dry runs capture board calls without sending, including in live-read mode.
+
+Final rejections retain their core code: `sink_board_target_not_granted`,
+`sink_board_item_not_owned`, `sink_board_wait_invalid`, `sink_board_text_cap`,
+`sink_board_item_cap`, `sink_board_lane_cap`, `sink_board_lane_missing`,
+`sink_item_invalid`, `sink_input_conflict`, `sink_flow_not_installed`,
+`sink_flow_hash_mismatch`, `sink_principal_refused`, and
+`sink_target_not_in_audience`. Catch them as `error.data.code`, like digest
+refusals. `sink_store_failed` and `sink_audience_unavailable` defer the call
+with bounded backoff and the same receipt key, up to the run deadline; expiry
+records the typed unsent refusal. `sink_audience_check_required` is logged as a
+core wiring error and rejected finally, never retried as a readiness problem.
+
+A failed `agent.list` read is not evidence that the target is ungranted. Basal
+defers that provably unsent call as `sink_board_target_unavailable`, using the
+same durable backoff and run-deadline bound as the retryable core refusals.
+An answered registry read without the target or its grant remains the final
+`sink_board_target_not_granted` refusal. After resolving successfully, basal
+journals the stable target id before sending and does not resolve it again on
+replay.
+
 ## Digest items
 
 Sink signatures are unchanged by an install audience:

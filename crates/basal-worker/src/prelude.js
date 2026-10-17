@@ -25,7 +25,8 @@
   const NOW = 1, RANDOM = 2, FACTS = 3, CLASSIFY = 4, LLM = 5, SINK_DIGEST = 6,
     SINK_STATUS = 7, KV_GET = 8, KV_SET = 9, KV_DELETE = 10, SH = 11, FS_READ = 12,
     FS_LIST = 13, FS_STAT = 14, FS_WRITE = 15, GIT_LOG = 16, GIT_REV_PARSE = 17,
-    GIT_DESCRIBE_TAGS = 18, GIT_SHOW = 19, GIT_DIFF = 20, NET_FETCH = 21, INSTANCE_END = 24;
+    GIT_DESCRIBE_TAGS = 18, GIT_SHOW = 19, GIT_DIFF = 20, NET_FETCH = 21, INSTANCE_END = 24,
+    SINK_BOARD = 25;
 
   const G = globalThis;
   const ObjectDefineProperty = Object.defineProperty;
@@ -306,6 +307,17 @@
       },
       status(agent, value) {
         return callPrimitive(SINK_STATUS, { agent, value });
+      },
+      board: {
+        append(agent, text) {
+          return callPrimitive(SINK_BOARD, { agent, operation: { op: 'append', text } });
+        },
+        setState(agent, item_id, state, wait) {
+          return callPrimitive(SINK_BOARD, { agent, operation: { op: 'set_state', item_id, state, wait } });
+        },
+        retire(agent) {
+          return callPrimitive(SINK_BOARD, { agent, operation: { op: 'retire' } });
+        },
       },
     },
     kv: {

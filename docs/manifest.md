@@ -24,6 +24,7 @@ A flow is a script plus a manifest. The manifest says everything the flow may do
 | `sinks` | list of sink grants | no | `[]` | Agents whose digest the flow may write. |
 | `status` | list of agent names | no | `[]` | Agents whose status line the flow may set. |
 | `board_read` | list of agent references (strings) | no | `[]` | Agents whose boards the flow may read. Requires `prefrontal-core` / `board.read` in `ops`, and that op requires a nonempty `board_read`. |
+| `board` | list of board lane grants | no | `[]` | Agents whose boards the flow may write, each with an approved lane title. Independent of `board_read`. |
 | `claims` | list of claims | no | `[]` | Source kinds the flow takes over from core for an agent. |
 | `ops` | list of op references | no | `[]` | Every module op the flow may call. Anything else is refused at run time. |
 | `facts` | facts grant | no | none | Whose facts the flow may read. Without it, `facts()` is refused. |
@@ -72,7 +73,7 @@ reports boolean `state_reset` without changing stored values.
 
 Agent fields also accept the literal `$self` in [package manifests](packages.md). Registration permits only `$self`; activation resolves it to the instance's stable owner id. Ordinary `flow.install` refuses `$self` with `self_requires_package`.
 
-Every agent named by `sinks[].agent`, `status[]`, `board_read[]`, `claims[].agent` and `facts.targets[]` must be known to the catalog. Fields may use a display name or a stable `agent_id`; the catalog resolves both to that id. For an agent-owned flow, every resolved id must equal its author's stable id: the flow acts only for its owner. Install and dry run refuse a foreign target with `foreign_agent_target`, naming the field and agent, before recording an install or raising a consent card. The author's id comes from the daemon-stamped caller scope for an agent install, not the manifest. An operator installing in an agent's name uses that agent's stable id as the author and follows the same rule. Global flows authored as `operator` and local-caller installs authored as `local:unverified` may still name any known agent.
+Every agent named by `sinks[].agent`, `status[]`, `board_read[]`, `board[].agent`, `claims[].agent` and `facts.targets[]` must be known to the catalog. Fields may use a display name or a stable `agent_id`; the catalog resolves both to that id. For an agent-owned flow, every resolved id must equal its author's stable id: the flow acts only for its owner. Install and dry run refuse a foreign target with `foreign_agent_target`, naming the field and agent, before recording an install or raising a consent card. The author's id comes from the daemon-stamped caller scope for an agent install, not the manifest. An operator installing in an agent's name uses that agent's stable id as the author and follows the same rule. Global flows authored as `operator` and local-caller installs authored as `local:unverified` may still name any known agent.
 
 ### `audience`
 
@@ -100,8 +101,9 @@ during startup recovery. Installing in an agent's name still applies that agent'
 static target authorship rules. An agent-authored flow may claim sources or read named facts
 targets only for its own stable agent id; operator-authored flows may name other agents.
 
-With an audience, every digest sink must declare `agent: "$audience"` and every
-status or `board_read` entry must be `"$audience"`. A named sink, status or board-read target returns
+With an audience, every digest sink and board lane grant must declare
+`agent: "$audience"`, and every status or `board_read` entry must be
+`"$audience"`. A named sink, status, board lane or board-read target returns
 `audience_sink_named`; static and audience targets cannot mix. Without an
 audience, `$audience` is refused with `audience_placeholder_without_audience`.
 It is not valid in claims or an agent audience id. Facts may use it only with a
@@ -275,6 +277,21 @@ wire field is inferred.
 | `digest_max` | `"silent"`, `"piggyback"` or `"wake"` | yes | | The most intrusive action approved for the sink. An omitted action uses this cap, in both live dispatch and dry runs. Basal refuses static writes above the cap; audience writes go to core for delivery admission. |
 | `status_group` | string matching `[A-Z]{1,4}` | no | absent | Groups undelivered tagged digest items in the agent's status segment, for example `GH NI3 NRPR13`. Part of the hashed manifest shown on the approval card; checked at install and dry run. Only this grant permits per-write `status_tag`. |
 | `break_through` | boolean | no | `false` | Shown on the card as requested. Only the operator grants it, through policy. |
+
+### Board lane grant
+
+`"board": [{"agent": "SYNAPSE", "title": "Build work"}]` authorizes the flow to
+maintain its own lane on each named board through `sink.board`; it does not
+grant `board.read`. `agent` is a concrete name (or `$self` in packages and
+templates only, as for digest sinks) without an audience,
+and must be exactly `$audience` with an audience. `$audience` without an
+audience is invalid. Agent-authored flows are self-only, as for digest sinks;
+templates and packages may use `$self`. Duplicate agents are refused. Every
+entry needs a nonblank title of at most 56 characters, with no control
+characters; a missing or blank title is `missing board lane title`. The title
+is part of the hashed, approved manifest. Core creates one lane per flow per
+agent board (`virtual:flow:<flow_id>`); scripts cannot pick a lane. See
+[Board lanes](script.md#board-lanes) for operations, limits and refusals.
 
 ### Claim
 

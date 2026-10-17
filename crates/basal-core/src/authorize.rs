@@ -144,6 +144,9 @@ pub fn resolve_self(manifest: &mut Manifest, agent_id: &str) {
     for sink in &mut manifest.sinks {
         resolve(&mut sink.agent);
     }
+    for grant in &mut manifest.board {
+        resolve(&mut grant.agent);
+    }
     if let Some(crate::manifest::Audience::Agent { id }) = &mut manifest.audience {
         resolve(id);
     }
@@ -354,6 +357,22 @@ pub fn check(
                         codes::INVALID_ARGUMENTS,
                         "a digest action is a string",
                     )),
+                }
+            }
+            Primitive::SinkBoard => {
+                let agent = agent_arg(args, *p)?;
+                let target = if manifest.audience.is_some() {
+                    crate::manifest::AUDIENCE_TARGET
+                } else {
+                    agent
+                };
+                if manifest.board.iter().any(|g| g.agent == target) {
+                    Ok(())
+                } else {
+                    Err(Refusal::new(
+                        "sink_board_target_not_granted",
+                        format!("{agent} is not among the manifest's board targets"),
+                    ))
                 }
             }
             Primitive::SinkStatus => {

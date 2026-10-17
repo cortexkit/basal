@@ -1,0 +1,75 @@
+[[control]]
+id = "board-sink-target-grant-before-dispatch"
+guards = "Board writes without an approved target grant are provably unsent"
+test_file = "crates/basal-module/tests/hosts/board_sink.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test hosts"
+platforms = ["linux"]
+expect_red = ["board_sink::board_target_refusal_is_unsent_and_final_refusals_reach_script"]
+select = { tests = ["board_sink::board_target_refusal_is_unsent_and_final_refusals_reach_script", "board_sink::board_operations_pin_stamped_wire_bytes_and_receipts"] }
+only = true
+file = "crates/basal-core/src/authorize.rs"
+scope = { after = "Primitive::SinkBoard => {", before = "Primitive::SinkStatus => {" }
+old = "if manifest.board.iter().any(|g| g.agent == target) {"
+new = "if true || manifest.board.iter().any(|g| g.agent == target) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "board-sink-title-character-cap"
+guards = "Board lane titles over 56 characters are refused before install"
+test_file = "crates/basal-core/src/board_sink_tests.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+platforms = ["linux"]
+expect_red = ["manifest::board_sink_tests::board_manifest_validates_titles_and_targets"]
+select = { tests = ["manifest::board_sink_tests::board_manifest_validates_titles_and_targets", "manifest::board_sink_tests::board_grants_resolve_self_and_enforce_author_ownership"] }
+only = true
+file = "crates/basal-core/src/manifest.rs"
+old = "if grant.title.chars().count() > 56 {"
+new = "if grant.title.chars().count() > 57 { // NON-VACUITY BREAK"
+
+[[control]]
+id = "board-sink-registry-errors-are-not-unknown-targets"
+guards = "An unavailable agent registry defers an unsent board call instead of finally refusing its target"
+test_file = "crates/basal-module/tests/hosts/board_sink.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test hosts"
+platforms = ["linux"]
+expect_red = ["board_sink::board_registry_failure_defers_before_send_and_resolves_once_on_retry"]
+select = { tests = ["board_sink::board_registry_failure_defers_before_send_and_resolves_once_on_retry", "board_sink::board_registry_answer_without_target_or_grant_is_final"] }
+only = true
+file = "crates/basal-core/src/driver.rs"
+old = "match self.rt.catalog().resolve_agents(&refs) {"
+new = "match self.rt.catalog().resolve_agents(&refs).or_else(|_| Ok::<_, basal_host::transport::WireError>(vec![None; refs.len()])) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "board-sink-pending-request-respects-journal-cap"
+guards = "Preparing a previously deferred board request still respects the journal byte limit"
+test_file = "crates/basal-core/src/journal.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+platforms = ["linux"]
+expect_red = ["journal::request_tests::pending_request_freezes_once_with_size_accounting_and_ownership"]
+select = { tests = ["journal::request_tests::pending_request_freezes_once_with_size_accounting_and_ownership", "manifest::board_sink_tests::board_manifest_validates_titles_and_targets"] }
+only = true
+file = "crates/basal-core/src/journal.rs"
+old = "if bytes.saturating_add(request.len() as u64) > max_journal_bytes {"
+new = "if false && bytes.saturating_add(request.len() as u64) > max_journal_bytes { // NON-VACUITY BREAK"
+
+[[control]]
+id = "board-sink-unprepared-call-is-provably-unsent"
+guards = "A cut before board target preparation cannot make an unsent call's outcome unknown"
+test_file = "crates/basal-module/tests/hosts.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test hosts"
+platforms = ["linux"]
+expect_red = ["journaled_sink_intent_is_byte_identical_after_a_cut"]
+select = { tests = ["journaled_sink_intent_is_byte_identical_after_a_cut", "board_sink::board_registry_failure_defers_before_send_and_resolves_once_on_retry"] }
+only = true
+file = "crates/basal-core/src/driver.rs"
+old = "pending_board\n                    || matches!("
+new = "false\n                    || matches!( // NON-VACUITY BREAK"

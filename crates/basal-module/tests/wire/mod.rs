@@ -162,6 +162,10 @@ impl Fake {
                 Ok(json!({"ok":true}))
             }
             "sink.digest" => Ok(json!({"disposition":"stored","fire_id":"wf_1","replayed":false})),
+            "sink.board" => Ok(match params["operation"]["op"].as_str() {
+                Some("append") => json!({"lane_id":"virtual:flow:host-flow","item_id":"item_1"}),
+                _ => json!({"ok":true}),
+            }),
             "sink.status" => Ok(
                 json!({"disposition":"published","accepted_revision":params["revision"],"segment":"flow:host-flow","scope":"session:ses-author","replayed":false}),
             ),

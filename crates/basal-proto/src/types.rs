@@ -145,6 +145,7 @@ pub enum Primitive {
     Llm,
     SinkDigest,
     SinkStatus,
+    SinkBoard,
     KvGet,
     KvSet,
     KvDelete,
@@ -167,7 +168,7 @@ pub enum Primitive {
 }
 
 impl Primitive {
-    pub const ALL: [Primitive; 22] = [
+    pub const ALL: [Primitive; 23] = [
         Self::Now,
         Self::Random,
         Self::Facts,
@@ -175,6 +176,7 @@ impl Primitive {
         Self::Llm,
         Self::SinkDigest,
         Self::SinkStatus,
+        Self::SinkBoard,
         Self::KvGet,
         Self::KvSet,
         Self::KvDelete,
@@ -217,6 +219,7 @@ impl Primitive {
             Self::GitDiff => 20,
             Self::NetFetch => 21,
             Self::InstanceEnd => 24,
+            Self::SinkBoard => 25,
         }
     }
 
@@ -233,6 +236,7 @@ impl Primitive {
             Self::Llm => "llm",
             Self::SinkDigest => "sink.digest",
             Self::SinkStatus => "sink.status",
+            Self::SinkBoard => "sink.board",
             Self::KvGet => "kv.get",
             Self::KvSet => "kv.set",
             Self::KvDelete => "kv.delete",
