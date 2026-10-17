@@ -70,11 +70,11 @@ const PROTECTED_BRANCHES = ['gh-readonly-queue/*', 'train/*', 'release/*'];
 // the operator as actor; a seat's GitHub App pushes as `<seat>-alfonso[bot]`.
 // `actor` is who pushed, not who re-ran: a re-run of a contributor's run by the
 // operator keeps the contributor as actor.
-const SEAT_LOGINS = ['ualtinok', 'alfonso-aft', 'mc-alfonso'];
+const OPERATOR_LOGIN = 'ualtinok';
 function seatActor(login) {
   if (typeof login !== 'string' || login.length === 0) return false;
   const lower = login.toLowerCase();
-  return SEAT_LOGINS.includes(lower) || /^[a-z0-9-]+-alfonso\[bot\]$/.test(lower);
+  return lower === OPERATOR_LOGIN || /^[a-z0-9-]+-alfonso\[bot\]$/.test(lower);
 }
 
 const QUIET_REPOS = {
