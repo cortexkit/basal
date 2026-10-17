@@ -73,6 +73,11 @@ pub struct EventDecl {
     pub headers: Vec<String>,
 }
 
+/// The refusal code for an op that needed core's agent registry while it
+/// could not be read (core restarting, a timeout, an undecodable reply). It
+/// is never a verdict about the agent: the caller should try again.
+pub const AGENT_REGISTRY_UNAVAILABLE: &str = "agent_registry_unavailable";
+
 /// The declarations basal validates manifests against. Implementations
 /// must be safe to call from several threads.
 pub trait Catalog: Send + Sync {
@@ -83,11 +88,14 @@ pub trait Catalog: Send + Sync {
     fn event(&self, module: &str, name: &str, version: u32) -> Option<EventDecl>;
     /// The declaration of `module`'s op `op`, if declared.
     fn op(&self, module: &str, op: &str) -> Option<OpDecl>;
-    /// Whether `agent` names a known agent.
-    fn agent_known(&self, agent: &str) -> bool;
+    /// Whether `agent` names a known agent. `Ok(false)` means the registry
+    /// answered without it; a failed registry read must remain an error.
+    fn agent_known(&self, agent: &str) -> Result<bool, crate::transport::WireError>;
     /// Resolves an agent's display name or stable id to its stable id.
-    /// Unknown agents and unavailable registries must not resolve.
-    fn agent_id(&self, agent: &str) -> Option<String>;
+    /// `Ok(None)` means the registry answered and no agent has that name or
+    /// id. A failed registry read must remain an error: it says nothing about
+    /// whether the agent exists, so callers must not treat it as unknown.
+    fn agent_id(&self, agent: &str) -> Result<Option<String>, crate::transport::WireError>;
     /// Resolve related references from one registry read. An answered unknown
     /// reference is `None`; a failed registry read must remain an error.
     fn resolve_agents(
@@ -110,6 +118,9 @@ struct Entries {
     ops: BTreeMap<(String, String), OpDecl>,
     agents: BTreeMap<String, String>,
     workspaces: BTreeSet<String>,
+    /// When set, every agent registry read fails with this error, as when
+    /// core's `agent.list` cannot be read.
+    agent_registry_failure: Option<crate::transport::WireError>,
 }
 
 /// An in-memory catalog. Cloning shares the same entries, so a test can
@@ -234,6 +245,12 @@ impl MockCatalog {
         self.add_named_agent(agent, agent);
     }
 
+    /// Makes every later agent registry read fail with `failure`, or answer
+    /// again when `None`.
+    pub fn fail_agent_registry(&self, failure: Option<crate::transport::WireError>) {
+        self.write().agent_registry_failure = failure;
+    }
+
     pub fn add_workspace(&self, id: &str) {
         self.write().workspaces.insert(id.to_owned());
     }
@@ -269,18 +286,25 @@ impl Catalog for MockCatalog {
             .cloned()
     }
 
-    fn agent_known(&self, agent: &str) -> bool {
-        self.read().agents.contains_key(agent)
+    fn agent_known(&self, agent: &str) -> Result<bool, crate::transport::WireError> {
+        Ok(self.agent_id(agent)?.is_some())
     }
 
-    fn agent_id(&self, agent: &str) -> Option<String> {
-        self.read().agents.get(agent).cloned()
+    fn agent_id(&self, agent: &str) -> Result<Option<String>, crate::transport::WireError> {
+        let entries = self.read();
+        if let Some(failure) = &entries.agent_registry_failure {
+            return Err(failure.clone());
+        }
+        Ok(entries.agents.get(agent).cloned())
     }
     fn resolve_agents(
         &self,
         agents: &[&str],
     ) -> Result<Vec<Option<String>>, crate::transport::WireError> {
         let entries = self.read();
+        if let Some(failure) = &entries.agent_registry_failure {
+            return Err(failure.clone());
+        }
         Ok(agents
             .iter()
             .map(|agent| entries.agents.get(*agent).cloned())

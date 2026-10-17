@@ -147,7 +147,8 @@ Approval isn't checked here. As for every flow, each activation and resume asks 
 Refusals:
 - `generation_stale` and `generation_conflict`: see above.
 - `package_unknown`: that version isn't registered.
-- `agent_unknown`: core's agent list has no agent with that `agent_id`.
+- `agent_unknown`: core's agent list answered and has no agent with that `agent_id`.
+- `agent_registry_unavailable`, with detail `{"retryable":true}`: core's agent list could not be read (core restarting, a timeout, an unreadable reply). It says nothing about the agent; resend the same generation.
 
 A refused call records no generation.
 

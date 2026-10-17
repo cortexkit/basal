@@ -300,11 +300,11 @@ impl Catalog for SubcCatalog {
             .flatten()
             .map(|o| o.declaration)
     }
-    fn agent_known(&self, agent: &str) -> bool {
-        self.known_agent(agent).unwrap_or(false)
+    fn agent_known(&self, agent: &str) -> Result<bool, WireError> {
+        self.known_agent(agent)
     }
-    fn agent_id(&self, agent: &str) -> Option<String> {
-        self.resolve_agent(agent).ok().flatten()
+    fn agent_id(&self, agent: &str) -> Result<Option<String>, WireError> {
+        self.resolve_agent(agent)
     }
     fn resolve_agents(&self, agents: &[&str]) -> Result<Vec<Option<String>>, WireError> {
         let mut cursor: Option<String> = None;

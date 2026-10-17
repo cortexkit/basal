@@ -484,3 +484,61 @@ fn package_length_and_unknown_agent_refusals_do_not_write() {
         "package_unknown"
     );
 }
+
+fn count(f: &Fixture, table: &str) -> i64 {
+    f.module
+        .rt
+        .store()
+        .read(|c| Ok(c.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))?))
+        .unwrap()
+}
+
+#[test]
+fn ensure_refuses_a_failed_agent_registry_read_as_retryable_and_records_nothing() {
+    use basal_host::transport::WireError;
+    for failure in [
+        WireError::NeverSent("core restarting".into()),
+        WireError::TimedOut("agent.list timed out".into()),
+        WireError::Unreadable("agent.list reply undecodable".into()),
+    ] {
+        let f = setup("pkg-registry-down");
+        register(&f, 1);
+        f.catalog.fail_agent_registry(Some(failure.clone()));
+        let error = f
+            .module
+            .handle(
+                &Caller::Core,
+                "flow.instance.ensure",
+                json!({"package":"dark-wake","version":1,"agent_id":OWNER,"generation":1}),
+            )
+            .unwrap_err();
+        assert_eq!(error.code, "agent_registry_unavailable", "{failure:?}");
+        assert_eq!(error.detail, Some(json!({"retryable": true})));
+        assert_eq!(count(&f, "flows"), 0);
+        assert_eq!(count(&f, "instance_generations"), 0);
+        // No generation was recorded, so core's resend of the same
+        // generation succeeds once the registry answers again.
+        f.catalog.fail_agent_registry(None);
+        assert_eq!(ensure(&f, 1, 1)["new"], true);
+    }
+}
+
+#[test]
+fn ensure_refuses_an_agent_absent_from_an_answered_registry_as_unknown() {
+    let f = setup("pkg-registry-absent");
+    register(&f, 1);
+    for agent in ["agent_0000000000000000", "Renamable"] {
+        let error = f
+            .module
+            .handle(
+                &Caller::Core,
+                "flow.instance.ensure",
+                json!({"package":"dark-wake","version":1,"agent_id":agent,"generation":1}),
+            )
+            .unwrap_err();
+        assert_eq!(error.code, "agent_unknown", "{agent}");
+        assert_eq!(error.detail, None);
+    }
+    assert_eq!(count(&f, "flows"), 0);
+    assert_eq!(count(&f, "instance_generations"), 0);
+}

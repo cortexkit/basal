@@ -102,19 +102,32 @@ fn audience_agent_registry_resolves_names_and_ids_and_fails_closed() {
             json!({"agents":[{"agent_id":"agent_owner","name":"SYNAPSE"}]}),
         ));
         let catalog = SubcCatalog::new(wire.clone());
-        assert_eq!(catalog.agent_id(reference).as_deref(), Some("agent_owner"));
+        assert_eq!(
+            catalog.agent_id(reference).unwrap().as_deref(),
+            Some("agent_owner")
+        );
         assert_eq!(
             *wire.calls.lock().unwrap(),
             vec![(CORE.into(), "agent.list".into(), json!({}))]
         );
     }
+    // Failed or unreadable registry reads stay errors, so no caller can
+    // mistake them for an answer that the agent does not exist.
     for reply in [
         Err(WireError::NeverSent("offline".into())),
         Ok(json!({})),
         Ok(json!({"agents":[{"name":"SYNAPSE"}]})),
     ] {
-        assert_eq!(SubcCatalog::new(Wire::new(reply)).agent_id("SYNAPSE"), None);
+        assert!(
+            SubcCatalog::new(Wire::new(reply))
+                .agent_id("SYNAPSE")
+                .is_err()
+        );
     }
+    let answered = Wire::new(Ok(
+        json!({"agents":[{"agent_id":"agent_other","name":"ALF"}]}),
+    ));
+    assert_eq!(SubcCatalog::new(answered).agent_id("SYNAPSE"), Ok(None));
 }
 
 #[test]

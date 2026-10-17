@@ -40,11 +40,14 @@ pub(crate) fn record_retirement(
     let target = args["agent"].as_str().map(str::to_owned);
     // An agent_retired refusal need not name the retired agent. Agent-owned
     // flows can target only their author; global sink/facts intents carry
-    // their recipient in the agent argument.
+    // their recipient in the agent argument. The stable id is a best-effort
+    // label here: when the registry cannot be read or does not know the
+    // reference, the reference itself is recorded instead.
     let agent_id = owner.or_else(|| {
-        target
-            .as_deref()
-            .map(|t| catalog.agent_id(t).unwrap_or_else(|| t.to_owned()))
+        target.as_deref().map(|t| match catalog.agent_id(t) {
+            Ok(Some(id)) => id,
+            Ok(None) | Err(_) => t.to_owned(),
+        })
     });
     let retirement = Retirement {
         agent_id,
@@ -94,11 +97,12 @@ pub(crate) fn retirement_cleared_by(
         if target == "$self" {
             return agent_owned && author != retired;
         }
-        // A target alias missing from the catalog cannot prove that the new
-        // manifest no longer involves the retired recipient.
+        // A target alias missing from the catalog, or a registry that cannot
+        // be read, cannot prove that the new manifest no longer involves the
+        // retired recipient.
         catalog
-            .and_then(|c| c.agent_id(target))
-            .is_some_and(|id| id != retired)
+            .map(|c| c.agent_id(target))
+            .is_some_and(|id| matches!(id, Ok(Some(id)) if id != retired))
     });
     Ok(different_owner && no_target)
 }

@@ -546,6 +546,7 @@ impl DryRunner {
             | basal_core::InstallError::UnknownEventHeader { .. }
             | basal_core::InstallError::UnknownWorkspace(_)
             | basal_core::InstallError::WorkspaceRegistryUnavailable(_)
+            | basal_core::InstallError::AgentRegistryUnavailable(_)
             | basal_core::InstallError::UnknownAgent {
                 field: "audience.id",
                 ..

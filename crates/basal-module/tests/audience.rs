@@ -389,7 +389,7 @@ fn unreadable_registries_refuse_install_and_dry_run() {
             0,
             json!({"kind":"agent","id":"SYNAPSE"}),
             "agent.list",
-            "install_refused",
+            "agent_registry_unavailable",
         ),
         (
             1,

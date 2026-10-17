@@ -310,10 +310,10 @@ impl basal_host::Catalog for WriterProbeCatalog {
     fn op(&self, module: &str, op: &str) -> Option<basal_host::OpDecl> {
         self.catalog.op(module, op)
     }
-    fn agent_known(&self, agent: &str) -> bool {
+    fn agent_known(&self, agent: &str) -> Result<bool, basal_host::transport::WireError> {
         self.catalog.agent_known(agent)
     }
-    fn agent_id(&self, agent: &str) -> Option<String> {
+    fn agent_id(&self, agent: &str) -> Result<Option<String>, basal_host::transport::WireError> {
         let conn = rusqlite::Connection::open(&self.store_path).unwrap();
         conn.busy_timeout(std::time::Duration::ZERO).unwrap();
         assert!(

@@ -484,8 +484,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/subc_catalog.rs"
-old = "self.known_agent(agent).unwrap_or(false)"
-new = "true"
+old = "self.known_agent(agent)"
+new = "Ok(true)"
 
 [[control]]
 id = "hosts-shell-denylist-disabled"

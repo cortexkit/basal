@@ -342,9 +342,9 @@ fn catalog_install_refuses_missing_ops_and_events_and_marks_mutations() {
     assert_eq!(cat.op("mock", "post").unwrap().kind, Some(OpKind::Mutate));
     assert_eq!(cat.op("mock", "read").unwrap().kind, Some(OpKind::Query));
     assert!(!cat.op("mock", "shell").unwrap().shell_capable);
-    assert!(cat.agent_known("ag_synapse"));
-    assert!(cat.agent_known("SYNAPSE"));
-    assert!(!cat.agent_known("unknown"));
+    assert!(cat.agent_known("ag_synapse").unwrap());
+    assert!(cat.agent_known("SYNAPSE").unwrap());
+    assert!(!cat.agent_known("unknown").unwrap());
     common::install(
         &f,
         &agent_on_scope("ag_synapse", "scope-live"),
@@ -1271,7 +1271,7 @@ fn denylist_and_paged_agent_registry_fail_closed() {
             Ok(json!({"agents":[{"agent_id":"ag_2","name":"ALF"}]})),
         ],
     );
-    assert!(cat.agent_known("ALF"));
+    assert!(cat.agent_known("ALF").unwrap());
     assert_eq!(
         fake.calls("agent.list")[1]["params"],
         json!({"cursor":"page2"})
@@ -1283,25 +1283,26 @@ fn denylist_and_paged_agent_registry_fail_closed() {
             Ok(json!({"agents":[{"agent_id":"ag_2","name":"ALF"}]})),
         ],
     );
-    assert_eq!(cat.agent_id("ALF").as_deref(), Some("ag_2"));
+    assert_eq!(cat.agent_id("ALF").unwrap().as_deref(), Some("ag_2"));
     fake.enqueue(
         "agent.list",
         vec![Ok(json!({
             "agents":[{"agent_id":"ag_2","name":"ALF"}]
         }))],
     );
-    assert_eq!(cat.agent_id("ag_2").as_deref(), Some("ag_2"));
+    assert_eq!(cat.agent_id("ag_2").unwrap().as_deref(), Some("ag_2"));
     fake.enqueue("agent.list", vec![Ok(json!({"agents":[]}))]);
-    assert_eq!(cat.agent_id("missing"), None);
+    assert_eq!(cat.agent_id("missing"), Ok(None));
+    // A failed read must stay an error, never an answer that the agent is
+    // absent: callers refuse it as retryable rather than unknown.
     fake.enqueue(
         "agent.list",
         vec![Err(WireError::Unknown("registry unavailable".into()))],
     );
-    assert_eq!(cat.agent_id("ALF"), None);
+    assert!(cat.agent_id("ALF").is_err());
     fake.enqueue("agent.list", vec![Ok(json!({"agents":[{"name":"ALF"}]}))]);
-    assert_eq!(
-        cat.agent_id("ALF"),
-        None,
+    assert!(
+        cat.agent_id("ALF").is_err(),
         "a name without a stable id cannot confer ownership"
     );
     fake.enqueue(
@@ -1316,7 +1317,7 @@ fn denylist_and_paged_agent_registry_fail_closed() {
         "agent.list",
         vec![Err(WireError::Unknown("registry unavailable".into()))],
     );
-    assert!(!cat.agent_known("ALF"));
+    assert!(cat.agent_known("ALF").is_err());
 }
 #[test]
 fn install_answers_are_ignored_in_the_decision_feed() {

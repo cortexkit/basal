@@ -108,6 +108,16 @@ fn invalid_params(e: impl std::fmt::Display) -> OpError {
     OpError::new("invalid_params", e.to_string())
 }
 
+/// A failed read of core's agent registry: retryable, never a verdict that
+/// the agent is unknown.
+fn agent_registry_unavailable(error: &basal_host::transport::WireError) -> OpError {
+    OpError::new(
+        basal_host::catalog::AGENT_REGISTRY_UNAVAILABLE,
+        format!("core's agent registry could not be read: {error:?}"),
+    )
+    .with_detail(Some(json!({"retryable": true})))
+}
+
 impl Module {
     /// A core error as an op error. A storage failure also raises the fatal
     /// latch, which ends the process.
@@ -175,6 +185,11 @@ impl Module {
             InstallError::WorkspaceRegistryUnavailable(reason) => {
                 OpError::new("workspace_registry_unavailable", reason)
             }
+            InstallError::AgentRegistryUnavailable(reason) => OpError::new(
+                basal_host::catalog::AGENT_REGISTRY_UNAVAILABLE,
+                format!("core's agent registry could not be read: {reason}"),
+            )
+            .with_detail(Some(json!({"retryable": true}))),
             InstallError::AgentRetired {
                 flow_id,
                 retirement,
@@ -471,7 +486,14 @@ impl Module {
                     |current| format!("the call is stale; the current generation is {current}"),
                 ),
             )
-            .with_detail(current.map(|current| json!({"current":current}))),
+            .with_detail(
+                current
+                    .map(|current| json!({"current":current}))
+                    .or_else(|| {
+                        (code == basal_host::catalog::AGENT_REGISTRY_UNAVAILABLE)
+                            .then(|| json!({"retryable": true}))
+                    }),
+            ),
         })
     }
 
@@ -958,8 +980,15 @@ impl Module {
                     let Caller::Agent { agent_id, .. } = caller else {
                         return Err(OpError::not_permitted("template flow.dry_run", caller));
                     };
-                    if self.rt.catalog().agent_id(agent_id).as_deref() != Some(agent_id) {
-                        return Err(OpError::new("agent_unknown", "caller is not a known agent"));
+                    match self.rt.catalog().agent_id(agent_id) {
+                        Ok(Some(id)) if id == *agent_id => {}
+                        Ok(_) => {
+                            return Err(OpError::new(
+                                "agent_unknown",
+                                "caller is not a known agent",
+                            ));
+                        }
+                        Err(e) => return Err(agent_registry_unavailable(&e)),
                     }
                     let values = basal_core::templates::validate_values(
                         &manifest,

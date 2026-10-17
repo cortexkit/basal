@@ -185,6 +185,8 @@ no instances. This is a preview only and never resets real state.
 |---|---|---|
 | `package_unknown` | that template version isn't registered | |
 | `package_not_template` | the package has no `params` | |
+| `agent_unknown` | core's agent registry answered, and no agent has the creating agent's stable id | |
+| `agent_registry_unavailable` | core's agent registry could not be read (core restarting, a timeout, an unreadable reply); nothing is created, and the same call can be repeated | `{"retryable": true}` |
 | `param_missing`, `param_unknown`, `param_out_of_bounds` | one parameter is missing, undeclared, or outside its bounds | `{"param": name, "bound": ...}`; parameters are checked in name order and the first failure is reported |
 | `lifetime_too_long` | `expires_in` exceeds `max_lifetime` | |
 | `instance_limit_reached` | the agent already has `max_per_agent` live instances of this template, or the template has `max_live` across all agents | `{"limit": n, "scope": "agent" \| "template"}`; expired and ended instances don't count |

@@ -1768,6 +1768,101 @@ fn transient_target_audience_unavailability_defers_until_recovery_or_run_deadlin
 }
 
 #[test]
+fn target_agent_registry_failure_defers_unsent_until_recovery_or_run_deadline() {
+    for failure in [
+        WireError::NeverSent("core restarting".into()),
+        WireError::TimedOut("agent.list timed out".into()),
+        WireError::Unreadable("agent.list reply undecodable".into()),
+    ] {
+        let f = target_fixture(
+            "target-registry-down",
+            "return await ops.call('mock','echo',{n:7},{for:'Alice'});",
+        );
+        f.world.catalog.fail_agent_registry(Some(failure.clone()));
+        let run = f.admit("one");
+        f.activate(&run);
+        assert_eq!(
+            f.rt.run(&run).unwrap().state,
+            RunState::Suspended,
+            "{failure:?}"
+        );
+        let row = &f.rt.calls(&run).unwrap()[0];
+        assert_eq!(row.dispatch, basal_core::DispatchState::Deferred);
+        assert!(row.request.is_none(), "nothing is frozen before resolution");
+        assert!(row.outcome.is_none());
+        let reason: String =
+            f.rt.store()
+                .read(|c| {
+                    Ok(c.query_row(
+                        "SELECT refusal FROM journal WHERE run_id=?1 AND position=0",
+                        [&run],
+                        |r| r.get(0),
+                    )?)
+                })
+                .unwrap();
+        assert_eq!(reason, "sink_audience_unavailable");
+        assert!(f.wire.target_asks.lock().unwrap().is_empty());
+        assert!(f.wire.opens.lock().unwrap().is_empty());
+        // The registry answers again: the due retry resolves the target,
+        // freezes its stable id and sends the call.
+        f.world.catalog.fail_agent_registry(None);
+        f.clock.set(f.retry_at(&run));
+        f.activate(&run);
+        assert_eq!(run_result(&f, &run), json!({"n":7}));
+        let asks = f.wire.target_asks.lock().unwrap();
+        assert_eq!(asks.len(), 1);
+        assert_eq!(asks[0]["agent"], "agent_alice");
+        let row = &f.rt.calls(&run).unwrap()[0];
+        let request: Value = serde_json::from_str(row.request.as_ref().unwrap().as_str()).unwrap();
+        assert_eq!(request["agent"], "agent_alice");
+        assert_eq!(request["args"], json!({"n":7}));
+    }
+
+    let f = target_fixture(
+        "target-registry-deadline",
+        "return await ops.call('mock','echo',{}, {for:'Alice'});",
+    );
+    f.world
+        .catalog
+        .fail_agent_registry(Some(WireError::NeverSent("core restarting".into())));
+    let run = f.admit("one");
+    f.activate(&run);
+    f.clock.set(f.rt.run(&run).unwrap().deadline_at.unwrap());
+    f.rt.enforce_deadlines().unwrap();
+    assert_eq!(f.rt.run(&run).unwrap().state, RunState::Failed);
+    let refused: String =
+        f.rt.store()
+            .read(|c| {
+                Ok(c.query_row(
+                    "SELECT value FROM mailbox WHERE run_id=?1 AND position=0",
+                    [&run],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+    let value: Value = serde_json::from_str(&refused).unwrap();
+    assert_eq!(value["code"], "sink_audience_unavailable");
+    assert_eq!(f.rt.flow_health().unwrap()[0].consecutive_failures, 0);
+    assert!(f.wire.target_asks.lock().unwrap().is_empty());
+    assert_eq!(f.sends(), 0);
+}
+
+#[test]
+fn target_absent_from_an_answered_agent_registry_is_refused_finally() {
+    let f = target_fixture(
+        "target-registry-absent",
+        "try { await ops.call('mock','echo',{}, {for:'Nobody'}); } catch(e) { return e.data.code; }",
+    );
+    let run = f.admit("one");
+    f.activate(&run);
+    assert_eq!(run_result(&f, &run), json!("sink_audience_unavailable"));
+    let row = &f.rt.calls(&run).unwrap()[0];
+    assert_ne!(row.dispatch, basal_core::DispatchState::Deferred);
+    assert_eq!(row.attempts, 0);
+    assert!(f.wire.target_asks.lock().unwrap().is_empty());
+    assert!(f.wire.opens.lock().unwrap().is_empty());
+}
+#[test]
 fn target_scope_principal_refusal_is_a_terminal_carrier_bug() {
     let f = target_fixture(
         "target-carrier-bug",

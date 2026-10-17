@@ -275,3 +275,63 @@ fn plain_install_cannot_occupy_package_instance_ids() {
         assert_eq!(reply["state"], "pending", "{id}");
     }
 }
+
+fn install_attempt(
+    f: &Fixture,
+    caller: &Caller,
+    id: &str,
+    target: &str,
+) -> Result<Value, basal_module::ops::OpError> {
+    let mut m = events_manifest(id);
+    m["sinks"][0]["agent"] = json!(target);
+    f.module.handle(
+        caller,
+        "flow.install",
+        json!({ "script": SCRIPT, "manifest": m.to_string() }),
+    )
+}
+
+#[test]
+fn install_refuses_a_failed_agent_registry_read_as_retryable_and_records_nothing() {
+    use basal_host::transport::WireError;
+    for failure in [
+        WireError::NeverSent("core restarting".into()),
+        WireError::TimedOut("agent.list timed out".into()),
+        WireError::Unreadable("agent.list reply undecodable".into()),
+    ] {
+        let f = fixture("agent-target-registry-down", Options::default());
+        f.catalog.add_named_agent(OWNER, OWNER_NAME);
+        f.catalog.fail_agent_registry(Some(failure.clone()));
+        // An agent-owned install resolves its targets to compare them with the
+        // author; a global install only checks that they exist.
+        for (caller, id) in [
+            (agent(OWNER), "registry-down-agent"),
+            (Caller::Operator, "registry-down-operator"),
+        ] {
+            let error = install_attempt(&f, &caller, id, OWNER_NAME).unwrap_err();
+            assert_eq!(error.code, "agent_registry_unavailable", "{failure:?}");
+            assert_eq!(error.detail, Some(json!({ "retryable": true })));
+            assert_no_install(&f, id);
+        }
+        f.catalog.fail_agent_registry(None);
+        let reply = install_attempt(&f, &agent(OWNER), "registry-down-agent", OWNER_NAME)
+            .expect("the same install succeeds once the registry answers");
+        assert_eq!(reply["state"], "pending");
+    }
+}
+
+#[test]
+fn install_refuses_an_agent_absent_from_an_answered_registry_as_unknown() {
+    let f = fixture("agent-target-registry-absent", Options::default());
+    f.catalog.add_named_agent(OWNER, OWNER_NAME);
+    for (caller, id) in [
+        (agent(OWNER), "registry-absent-agent"),
+        (Caller::Operator, "registry-absent-operator"),
+    ] {
+        let error = install_attempt(&f, &caller, id, "MISSING").unwrap_err();
+        assert_eq!(error.code, "install_refused", "{error}");
+        assert!(error.message.contains("UnknownAgent"), "{error}");
+        assert_eq!(error.detail, None);
+        assert_no_install(&f, id);
+    }
+}

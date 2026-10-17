@@ -243,8 +243,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/install.rs"
-old = "if !catalog.agent_known(agent) {"
-new = "if false && !catalog.agent_known(agent) {"
+old = "match catalog.agent_known(agent) {"
+new = "match catalog.agent_known(agent).map(|_| true) {"
 
 [[control]]
 id = "loop-install-rule-not-applied"
@@ -807,11 +807,14 @@ id = "instance-agent-lookup-outside-writer"
 guards = "core agent lookup must happen before the SQLite writer is held"
 file = "crates/basal-core/src/packages.rs"
 old = """
-let known_agent = self.catalog().agent_id(agent).as_deref() == Some(agent);
+let known_agent = self
+            .catalog()
+            .agent_id(agent)
+            .map(|id| id.as_deref() == Some(agent));
         decide(self, |tx| {"""
 new = """
 decide(self, |tx| {
-            let known_agent = self.catalog().agent_id(agent).as_deref() == Some(agent); // NON-VACUITY BREAK"""
+            let known_agent = self.catalog().agent_id(agent).map(|id| id.as_deref() == Some(agent)); // NON-VACUITY BREAK"""
 edits = []
 test_file = "crates/basal-testkit/tests/package_instances.rs"
 runner = "cargo"
@@ -1214,8 +1217,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/install.rs"
-old = '} else if !catalog.agent_known(agent) {'
-new = '} else if !catalog.agent_known(agent) && field != "audience.id" { // NON-VACUITY BREAK'
+old = 'match catalog.agent_known(agent) {'
+new = 'match catalog.agent_known(agent).or_else(|e| if field == "audience.id" { Ok(true) } else { Err(e) }) { // NON-VACUITY BREAK'
 
 [[control]]
 id = "target-grant-requires-audience-at-install"
@@ -1492,3 +1495,54 @@ expect_red = [
 only = true
 build_timeout_s = 3600
 timeout_s = 600
+
+[[control]]
+id = "package-ensure-registry-error-is-not-unknown-agent"
+guards = "A failed agent registry read refuses flow.instance.ensure as retryable and records no generation"
+test_file = "crates/basal-module/tests/packages.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test packages"
+expect_red = ["ensure_refuses_a_failed_agent_registry_read_as_retryable_and_records_nothing"]
+select = { tests = ["ensure_refuses_a_failed_agent_registry_read_as_retryable_and_records_nothing", "ensure_refuses_an_agent_absent_from_an_answered_registry_as_unknown"] }
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/packages.rs"
+old = ".agent_id(agent)"
+new = ".agent_id(agent).or_else(|_| Ok::<_, basal_host::transport::WireError>(None)) // NON-VACUITY BREAK"
+
+[[control]]
+id = "install-agent-owned-registry-error-is-not-unknown-agent"
+guards = "A failed agent registry read refuses an agent-owned install as retryable, never as UnknownAgent"
+test_file = "crates/basal-module/tests/agent_targets.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test agent_targets"
+expect_red = ["install_refuses_a_failed_agent_registry_read_as_retryable_and_records_nothing"]
+select = { tests = ["install_refuses_a_failed_agent_registry_read_as_retryable_and_records_nothing", "install_refuses_an_agent_absent_from_an_answered_registry_as_unknown"] }
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/install.rs"
+old = "let target_id = match catalog.agent_id(agent) {"
+new = "let target_id = match catalog.agent_id(agent).or_else(|_| Ok::<_, basal_host::transport::WireError>(None)) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "install-global-registry-error-is-not-unknown-agent"
+guards = "A failed agent registry read refuses a global install as retryable, never as UnknownAgent"
+test_file = "crates/basal-module/tests/agent_targets.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test agent_targets"
+expect_red = ["install_refuses_a_failed_agent_registry_read_as_retryable_and_records_nothing"]
+select = { tests = ["install_refuses_a_failed_agent_registry_read_as_retryable_and_records_nothing", "install_refuses_an_agent_absent_from_an_answered_registry_as_unknown"] }
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/install.rs"
+old = "match catalog.agent_known(agent) {"
+new = "match catalog.agent_known(agent).or_else(|_| Ok::<_, basal_host::transport::WireError>(false)) { // NON-VACUITY BREAK"

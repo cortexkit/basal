@@ -221,7 +221,11 @@ impl Runtime {
     ) -> Result<Value, PackageError> {
         // The catalog may page core's agent list over the network. Resolve it
         // before holding the store's writer, so journal commits do not wait on core.
-        let known_agent = self.catalog().agent_id(agent).as_deref() == Some(agent);
+        // A failed read stays distinct from an answered read without the agent.
+        let known_agent = self
+            .catalog()
+            .agent_id(agent)
+            .map(|id| id.as_deref() == Some(agent));
         decide(self, |tx| {
             let id = instance_id(package, agent);
             let identity: Option<(Option<String>, Option<String>)> = tx
@@ -246,8 +250,12 @@ impl Runtime {
             if manifest.params.is_some() {
                 return Err(refused("package_has_params"));
             }
-            if !known_agent {
-                return Err(refused("agent_unknown"));
+            match known_agent {
+                Ok(true) => {}
+                Ok(false) => return Err(refused("agent_unknown")),
+                // Refused before any write, so no generation is recorded and
+                // core can resend the same generation once the registry answers.
+                Err(_) => return Err(refused(basal_host::catalog::AGENT_REGISTRY_UNAVAILABLE)),
             }
             // The pointer remains even when approval is revoked, so removal
             // and re-ensure can report the selected version without losing state.

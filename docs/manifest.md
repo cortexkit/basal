@@ -86,7 +86,8 @@ the others require it. Unknown fields are refused. Workspace ids are nonblank
 strings of at most 512 bytes; agent ids follow the agent-name rules above.
 
 At install and dry run, agent ids resolve through core's `agent.list` registry
-to a stable id. An unreadable registry fails closed. Workspace ids must exactly
+to a stable id. An unreadable registry fails closed with the retryable
+`agent_registry_unavailable`, never `UnknownAgent`. Workspace ids must exactly
 match a workspace returned by Entorhinal's management query `enumerate` with
 `{ "workspaceId": "workspace-id" }`; a missing workspace returns
 `unknown_workspace`, and an unavailable or unreadable registry returns
@@ -125,8 +126,11 @@ unchanged. An omitted audience keeps all existing static-target behavior.
 
 An audience also permits `ops.call(module, op, args, {for: "agent"})` to use
 that target agent's core-owned daemon scope. Names resolve to stable ids before
-the request is journaled. Without an audience, the option returns
-`for_requires_audience`; without `for`, the call keeps using the flow's own
+the request is journaled. If core's `agent.list` cannot be read while resolving
+the name, basal defers the provably unsent call as `sink_audience_unavailable`,
+with the same backoff and run-deadline bound as core's transient refusal below;
+a registry that answers without the target refuses the call finally with that
+code. Without an audience, the option returns `for_requires_audience`; without `for`, the call keeps using the flow's own
 scope. A targeted query reads as the agent. A targeted mutation requires that
 op's own `for_target: "delegate"` grant, or returns
 `for_target_requires_delegate` before dispatch, even if another op delegates.

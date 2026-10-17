@@ -44,6 +44,9 @@ pub enum InstallError {
     SelfRequiresPackage,
     UnknownWorkspace(String),
     WorkspaceRegistryUnavailable(String),
+    /// Core's agent registry could not be read, so no agent field could be
+    /// checked. Retryable: it says nothing about whether the agent exists.
+    AgentRegistryUnavailable(String),
     FlowScopeUnsupported {
         module: String,
         op: String,
@@ -421,11 +424,15 @@ pub(crate) fn validate_inner(
             // unverified local caller is global and belongs to no agent; it
             // may name any agent the catalog knows.
             if author != crate::decisions::OPERATOR_ACTOR && author != "local:unverified" {
-                let Some(target_id) = catalog.agent_id(agent) else {
-                    return Err(InstallError::UnknownAgent {
-                        field,
-                        agent: agent.to_owned(),
-                    });
+                let target_id = match catalog.agent_id(agent) {
+                    Ok(Some(id)) => id,
+                    Ok(None) => {
+                        return Err(InstallError::UnknownAgent {
+                            field,
+                            agent: agent.to_owned(),
+                        });
+                    }
+                    Err(e) => return Err(InstallError::AgentRegistryUnavailable(format!("{e:?}"))),
                 };
                 // Manifests may use a display name, while the scope-stamped author
                 // is a stable id. Compare resolved identities, not their spelling.
@@ -436,11 +443,19 @@ pub(crate) fn validate_inner(
                         author: author.to_owned(),
                     });
                 }
-            } else if !catalog.agent_known(agent) {
-                return Err(InstallError::UnknownAgent {
-                    field,
-                    agent: agent.to_owned(),
-                });
+            } else {
+                match catalog.agent_known(agent) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        return Err(InstallError::UnknownAgent {
+                            field,
+                            agent: agent.to_owned(),
+                        });
+                    }
+                    Err(e) => {
+                        return Err(InstallError::AgentRegistryUnavailable(format!("{e:?}")));
+                    }
+                }
             }
         }
     }
