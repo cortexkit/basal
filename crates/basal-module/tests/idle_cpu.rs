@@ -42,8 +42,31 @@ async fn sample(source: &Path, label: &str) -> Value {
     );
     std::fs::create_dir_all(&dir.0).unwrap();
     let worker = basal_testkit::channel::worker_binary();
-    let placed = basal_testkit::DevBinaries::new(&[source, &worker]).unwrap();
-    let binary = placed.path(source).unwrap();
+    let binary = cortexkit_test_support::ckdev_binary(source);
+    // The production module derives its worker path from its own filename.
+    // Link the shared worker copy beside the module so this test exercises
+    // that lookup without making another executable copy.
+    let sibling_worker =
+        binary.with_file_name(cortexkit_test_support::ckdev_file_name("ck-basal-worker"));
+    let worker_bytes = std::fs::read(&worker).expect("staged worker");
+    let sibling_matches =
+        std::fs::read(&sibling_worker).is_ok_and(|sibling_bytes| sibling_bytes == worker_bytes);
+    if !sibling_matches {
+        if sibling_worker.exists() {
+            std::fs::remove_file(&sibling_worker).expect("remove stale worker sibling");
+        }
+        match std::fs::hard_link(&worker, &sibling_worker) {
+            Ok(()) => {}
+            Err(error)
+                if error.kind() == std::io::ErrorKind::AlreadyExists
+                    && std::fs::read(&sibling_worker)
+                        .is_ok_and(|sibling_bytes| sibling_bytes == worker_bytes) =>
+            {
+                // Another test process published the same shared worker.
+            }
+            Err(error) => panic!("link staged worker beside module: {error}"),
+        }
+    }
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
         .unwrap();

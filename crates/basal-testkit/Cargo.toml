@@ -11,6 +11,7 @@ rust-version.workspace = true
 test-support = ["basal-core/test-support", "basal-host/test-support"]
 
 [dependencies]
+cortexkit-test-support.workspace = true
 basal-core.workspace = true
 basal-host.workspace = true
 basal-proto.workspace = true

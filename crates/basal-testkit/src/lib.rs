@@ -22,7 +22,7 @@ pub mod parent;
 pub mod process;
 pub mod run_scopes;
 
-pub use binaries::{DevBinaries, dev_binary};
+pub use binaries::dev_binary;
 pub use channel::{FrameCounts, ProcessChannel, ProcessSource, worker_binary};
 pub use mock::{Answer, ScriptHost};
 pub use parent::{Ending, Journal, JournalEntry, Report, TestParent};

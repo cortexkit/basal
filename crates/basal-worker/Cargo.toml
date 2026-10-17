@@ -51,6 +51,7 @@ default = []
 deviations = []
 
 [dev-dependencies]
+cortexkit-test-support.workspace = true
 serde_json.workspace = true
 basal-testkit = { workspace = true, features = ["test-support"] }
 

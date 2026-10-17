@@ -10,13 +10,11 @@ use basal_module::process::{SpawnError, WorkerLaunch, WorkerProcess};
 fn real_trampoline_confirms_and_worker_completes_seatbelt_handshake() {
     let module = basal_testkit::dev_binary(env!("CARGO_BIN_EXE_ck-basal"));
     let worker = basal_testkit::worker_binary();
-    let binaries = basal_testkit::DevBinaries::new(&[&module, &worker]).expect("development pair");
-    let trampoline = binaries.path(&module).expect("development trampoline");
-    subc_os::privacy_identity::probe(&trampoline, Instant::now() + Duration::from_secs(180))
+    subc_os::privacy_identity::probe(&module, Instant::now() + Duration::from_secs(180))
         .expect("production trampoline probe before runtime startup");
     let worker = WorkerProcess::start(
-        &binaries.path(&worker).expect("development worker"),
-        &WorkerLaunch::Disclaimed { trampoline },
+        &worker,
+        &WorkerLaunch::Disclaimed { trampoline: module },
         Duration::from_secs(180),
     )
     .unwrap_or_else(|error| panic!("disclaimed handshake: {error}"));
@@ -41,11 +39,7 @@ fn disclaimed_worker_closes_extra_inherited_descriptors_at_startup() {
     let write_fd = write.as_raw_fd();
     let module = basal_testkit::dev_binary(env!("CARGO_BIN_EXE_ck-basal"));
     let worker = basal_testkit::worker_binary();
-    let binaries = basal_testkit::DevBinaries::new(&[&module, &worker]).expect("development pair");
-    let mut builder = DisclaimedCommand::new(
-        binaries.path(&module).expect("development trampoline"),
-        binaries.path(&worker).expect("development worker"),
-    );
+    let mut builder = DisclaimedCommand::new(&module, &worker);
     builder
         .args(["--confinement-probe", "--no-sandbox"])
         .env_clear()
