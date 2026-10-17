@@ -94,6 +94,14 @@ fn absence(grant: Value) -> FlowRefusal {
 }
 impl Fixture {
     fn new(owner: &str) -> Self {
+        Self::with_catalog(owner, |catalog, _| catalog as Arc<dyn basal_host::Catalog>)
+    }
+    /// A fixture whose runtime reads agents through the catalog `wrap`
+    /// builds from the standard one and the store's path.
+    fn with_catalog(
+        owner: &str,
+        wrap: impl FnOnce(Arc<MockCatalog>, std::path::PathBuf) -> Arc<dyn basal_host::Catalog>,
+    ) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!(
             "basal-grant-loss-{}-{}",
@@ -124,6 +132,7 @@ impl Fixture {
         catalog.add_agent("old-agent");
         catalog.add_agent("new-agent");
         catalog.add_named_agent("old-agent", "OLD");
+        let catalog = wrap(catalog, dir.join("store.sqlite"));
         let rt = Runtime::new(
             store,
             host.clone(),
@@ -673,4 +682,115 @@ fn grant_loss_after_unknown_disables_without_relabelling_the_earlier_call() {
         Some("grant_lost")
     );
     assert_eq!(f.rt.grant_losses().unwrap().len(), 1);
+}
+
+/// Fails the test when an agent registry read happens while the store's
+/// writer is held. A second SQLite connection observes the real write lock,
+/// rather than a flag pretending the catalog was called outside a
+/// transaction.
+struct WriterProbeCatalog {
+    catalog: Arc<MockCatalog>,
+    store_path: std::path::PathBuf,
+    lookups: AtomicU64,
+}
+
+impl basal_host::Catalog for WriterProbeCatalog {
+    fn supports_flow_scopes(&self, module: &str) -> bool {
+        self.catalog.supports_flow_scopes(module)
+    }
+    fn event(&self, module: &str, name: &str, version: u32) -> Option<basal_host::EventDecl> {
+        self.catalog.event(module, name, version)
+    }
+    fn op(&self, module: &str, op: &str) -> Option<basal_host::OpDecl> {
+        self.catalog.op(module, op)
+    }
+    fn agent_known(
+        &self,
+        agent: &str,
+    ) -> std::result::Result<bool, basal_host::transport::WireError> {
+        self.catalog.agent_known(agent)
+    }
+    fn agent_id(
+        &self,
+        agent: &str,
+    ) -> std::result::Result<Option<String>, basal_host::transport::WireError> {
+        let conn = rusqlite::Connection::open(&self.store_path).unwrap();
+        conn.busy_timeout(std::time::Duration::ZERO).unwrap();
+        assert!(
+            conn.execute_batch("BEGIN IMMEDIATE; ROLLBACK;").is_ok(),
+            "agent lookup for {agent} must not hold the SQLite writer"
+        );
+        self.lookups.fetch_add(1, Ordering::SeqCst);
+        self.catalog.agent_id(agent)
+    }
+    fn resolve_agents(
+        &self,
+        agents: &[&str],
+    ) -> std::result::Result<Vec<Option<String>>, basal_host::transport::WireError> {
+        self.catalog.resolve_agents(agents)
+    }
+}
+
+fn probing_fixture(owner: &str) -> (Fixture, Arc<WriterProbeCatalog>) {
+    let mut probe = None;
+    let f = Fixture::with_catalog(owner, |catalog, store_path| {
+        let p = Arc::new(WriterProbeCatalog {
+            catalog,
+            store_path,
+            lookups: AtomicU64::new(0),
+        });
+        probe = Some(p.clone());
+        p as Arc<dyn basal_host::Catalog>
+    });
+    (f, probe.unwrap())
+}
+
+#[test]
+fn retirement_label_lookup_leaves_the_sqlite_writer_available() {
+    // Both refusal paths record a retirement: the one after an earlier send
+    // whose outcome is unknown, and the one that fails the run directly.
+    for prior_unsent in [true, false] {
+        let (f, probe) = probing_fixture("operator");
+        f.lose_after(
+            "run",
+            FlowRefusal::new(
+                RefusalReason::AgentRetired,
+                "prefrontal-core",
+                "sink.status",
+            ),
+            json!({"agent":"OLD"}),
+            prior_unsent,
+        );
+        assert_eq!(probe.lookups.load(Ordering::SeqCst), 1, "{prior_unsent}");
+        // The display name was resolved to the stable id, so the lookup's
+        // answer reached the recorded label.
+        assert_eq!(
+            f.rt.flow_health().unwrap()[0]
+                .agent_retirement
+                .as_ref()
+                .unwrap()["agent_id"],
+            "old-agent",
+            "{prior_unsent}"
+        );
+    }
+}
+
+#[test]
+fn retirement_clear_lookup_leaves_the_sqlite_writer_available() {
+    let (f, probe) = probing_fixture("operator");
+    f.lose(
+        "run",
+        FlowRefusal::new(
+            RefusalReason::AgentRetired,
+            "prefrontal-core",
+            "sink.status",
+        ),
+        json!({"agent":"old-agent"}),
+    );
+    let labelled = probe.lookups.load(Ordering::SeqCst);
+    f.approve("operator", json!(["new-agent"]));
+    assert_eq!(probe.lookups.load(Ordering::SeqCst), labelled + 1);
+    // Clearing needed the lookup's answer: an unresolved target keeps the
+    // retirement and the flow stays disabled.
+    assert!(f.rt.flow("flow").unwrap().unwrap().enabled);
 }

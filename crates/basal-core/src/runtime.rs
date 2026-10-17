@@ -865,6 +865,12 @@ impl Runtime {
                         tracing::error!(flow_id=%request.flow_id,code="flow_target_scope_principal_refused","basal called core flow.target_scope on the wrong carrier route");
                     }
                     if let Some(reason) = maybe_sent {
+                        // The retirement label's registry read happens here,
+                        // before the store's writer is held.
+                        let target_id = (!refusal.grant_absent()
+                            && refusal.reason == RefusalReason::AgentRetired)
+                            .then(|| self.retirement_target_id(&request))
+                            .flatten();
                         self.shared.store.write(|tx| {
                             journal::record_unknown(tx, &run_id, position, reason)?;
                             // Refusing a resend proves nothing about the earlier
@@ -884,7 +890,7 @@ impl Runtime {
                                     &request,
                                     &refusal,
                                     self.config.clock.now_ms(),
-                                    self.shared.catalog.as_ref(),
+                                    target_id.as_deref(),
                                 )?;
                                 crate::install::disable(
                                     tx,
@@ -936,6 +942,9 @@ impl Runtime {
                     } else if refusal.reason == RefusalReason::AgentRetired {
                         // A retired agent cannot authorize more calls. Fail the run
                         // and disable its flow together so recovery cannot retry it.
+                        // The retirement label's registry read happens first,
+                        // before the store's writer is held.
+                        let target_id = self.retirement_target_id(&request);
                         self.shared.store.write(|tx| {
                             let flow_id = &request.flow_id;
                             crate::grant_loss::record_retirement(
@@ -943,7 +952,7 @@ impl Runtime {
                                 &request,
                                 &refusal,
                                 self.config.clock.now_ms(),
-                                self.shared.catalog.as_ref(),
+                                target_id.as_deref(),
                             )?;
                             crate::install::disable(
                                 tx,

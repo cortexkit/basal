@@ -631,6 +631,78 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 
+# The agent registry is read over the network, so retirement handling resolves
+# agents before the store's writer is held. Each row moves one lookup back
+# inside the write transaction.
+[[control]]
+id = "grant-loss-retirement-label-lookup-outside-writer"
+guards = "labelling an agent_retired refusal reads the agent registry before the SQLite writer is held"
+file = "crates/basal-core/src/runtime.rs"
+old = """
+let target_id = self.retirement_target_id(&request);
+                        self.shared.store.write(|tx| {
+                            let flow_id = &request.flow_id;"""
+new = """
+self.shared.store.write(|tx| {
+                            let flow_id = &request.flow_id;
+                            let target_id = crate::grant_loss::retirement_label(self.shared.catalog.as_ref(), crate::grant_loss::retirement_lookup(tx, &request)?.as_deref()); // NON-VACUITY BREAK"""
+test_file = "crates/basal-core/src/grant_loss_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+select = { filter = "runtime::grant_loss_tests::" }
+expect_red = ["runtime::grant_loss_tests::retirement_label_lookup_leaves_the_sqlite_writer_available"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "grant-loss-unknown-retirement-label-lookup-outside-writer"
+guards = "labelling an agent_retired refusal of a resend reads the agent registry before the SQLite writer is held"
+file = "crates/basal-core/src/runtime.rs"
+old = """
+.then(|| self.retirement_target_id(&request))
+                            .flatten();
+                        self.shared.store.write(|tx| {
+                            journal::record_unknown(tx, &run_id, position, reason)?;"""
+new = """
+;
+                        self.shared.store.write(|tx| {
+                            journal::record_unknown(tx, &run_id, position, reason)?;
+                            let target_id = target_id.then(|| crate::grant_loss::retirement_label(self.shared.catalog.as_ref(), crate::grant_loss::retirement_lookup(tx, &request).ok().flatten().as_deref())).flatten(); // NON-VACUITY BREAK"""
+test_file = "crates/basal-core/src/grant_loss_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+select = { filter = "runtime::grant_loss_tests::" }
+expect_red = ["runtime::grant_loss_tests::retirement_label_lookup_leaves_the_sqlite_writer_available"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "grant-loss-retirement-clear-lookup-outside-writer"
+guards = "approval reads the agent registry for a retirement clear check before the SQLite writer is held"
+file = "crates/basal-core/src/install.rs"
+old = """
+let resolved = crate::grant_loss::resolve_agents(self.catalog(), &targets);
+        decide(self, |tx| {"""
+new = """
+decide(self, |tx| {
+            let resolved = crate::grant_loss::resolve_agents(self.catalog(), &targets); // NON-VACUITY BREAK"""
+test_file = "crates/basal-core/src/grant_loss_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+select = { filter = "runtime::grant_loss_tests::" }
+expect_red = ["runtime::grant_loss_tests::retirement_clear_lookup_leaves_the_sqlite_writer_available"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
 [[control]]
 id = "grant-card-agent-loss-writes-intent"
 guards = "an agent grant refusal writes its decision intent in the disabling commit"
