@@ -20,34 +20,80 @@ pub struct Retirement {
     pub at_ms: i64,
 }
 
+/// The agent that owns the refused call's flow, if an agent does: the run's
+/// install author, else the flow's owner. The operator and unverified local
+/// authors are not agents.
+fn retirement_owner(
+    conn: &Connection,
+    request: &basal_host::CallRequest,
+) -> Result<Option<String>> {
+    let run_author: Option<String> = conn.query_row(
+        "SELECT i.author FROM installs i JOIN runs r ON r.flow_id=i.flow_id AND r.flow_version=i.version WHERE r.run_id=?1",
+        [&request.run_id], |r| r.get(0),
+    ).optional()?;
+    let flow = install::flow(conn, &request.flow_id)?;
+    Ok(run_author
+        .or_else(|| flow.and_then(|f| f.owner))
+        .filter(|o| o != crate::decisions::OPERATOR_ACTOR && o != "local:unverified"))
+}
+
+/// The agent reference that labelling an agent_retired refusal would look up
+/// in the registry: the call's `agent` argument, needed only when the flow
+/// has no agent owner. Read-only, so it runs before the write transaction
+/// that records the retirement.
+pub(crate) fn retirement_lookup(
+    conn: &Connection,
+    request: &basal_host::CallRequest,
+) -> Result<Option<String>> {
+    if retirement_owner(conn, request)?.is_some() {
+        return Ok(None);
+    }
+    // Unparseable arguments are reported by `record_retirement` itself.
+    let args: Option<Value> = serde_json::from_str(request.args.as_str()).ok();
+    Ok(args.and_then(|a| a["agent"].as_str().map(str::to_owned)))
+}
+
+/// The stable id of `target`, as a best-effort retirement label. `None` when
+/// there is no target, when the registry answered without it, or when the
+/// registry could not be read. The registry is read over the network, so
+/// callers must not hold the store's write transaction while calling this.
+pub(crate) fn retirement_label(
+    catalog: &dyn basal_host::Catalog,
+    target: Option<&str>,
+) -> Option<String> {
+    match catalog.agent_id(target?) {
+        Ok(Some(id)) => Some(id),
+        Ok(None) | Err(_) => None,
+    }
+}
+
+/// Records an agent_retired refusal. `target_id` is the stable id resolved
+/// for the call's `agent` argument before this transaction began (see
+/// [`retirement_lookup`] and [`retirement_label`]), or `None` when it was not
+/// resolved.
 pub(crate) fn record_retirement(
     tx: &Transaction,
     request: &basal_host::CallRequest,
     refusal: &FlowRefusal,
     now: i64,
-    catalog: &dyn basal_host::Catalog,
+    target_id: Option<&str>,
 ) -> Result<()> {
-    let run_author: Option<String> = tx.query_row(
-        "SELECT i.author FROM installs i JOIN runs r ON r.flow_id=i.flow_id AND r.flow_version=i.version WHERE r.run_id=?1",
-        [&request.run_id], |r| r.get(0),
-    ).optional()?;
-    let flow = install::flow(tx, &request.flow_id)?;
-    let owner = run_author
-        .or_else(|| flow.and_then(|f| f.owner))
-        .filter(|o| o != crate::decisions::OPERATOR_ACTOR && o != "local:unverified");
+    let owner = retirement_owner(tx, request)?;
     let args: Value = serde_json::from_str(request.args.as_str())
         .map_err(|e| CoreError::Corrupt(e.to_string()))?;
     let target = args["agent"].as_str().map(str::to_owned);
     // An agent_retired refusal need not name the retired agent. Agent-owned
     // flows can target only their author; global sink/facts intents carry
     // their recipient in the agent argument. The stable id is a best-effort
-    // label here: when the registry cannot be read or does not know the
-    // reference, the reference itself is recorded instead.
+    // label here: when the registry could not be read, did not know the
+    // reference, or was not consulted because the flow had an agent owner
+    // when it was read before this transaction, the reference itself is
+    // recorded instead. The owner is read again here, so an owner present
+    // now always labels the retirement.
     let agent_id = owner.or_else(|| {
-        target.as_deref().map(|t| match catalog.agent_id(t) {
-            Ok(Some(id)) => id,
-            Ok(None) | Err(_) => t.to_owned(),
-        })
+        target
+            .as_deref()
+            .map(|t| target_id.map_or_else(|| t.to_owned(), str::to_owned))
     });
     let retirement = Retirement {
         agent_id,
@@ -68,12 +114,91 @@ pub(crate) fn record_retirement(
     Ok(())
 }
 
+/// Stable ids of manifest agent targets, keyed by the reference the manifest
+/// names. Only references the registry answered with an id are present.
+pub(crate) type ResolvedAgents = std::collections::BTreeMap<String, String>;
+
+/// The manifest targets of `flow_id` at `version` whose registry ids
+/// [`retirement_cleared_by`] may need: none unless the flow records a
+/// retirement of a known agent, and never `$self` or a reference already
+/// equal to the retired agent. Read-only, so approval can resolve them
+/// before its write transaction.
+pub(crate) fn retirement_lookups(
+    conn: &Connection,
+    flow_id: &str,
+    version: u32,
+) -> Result<Vec<String>> {
+    let body: Option<String> = conn
+        .query_row(
+            "SELECT agent_retirement FROM flows WHERE flow_id=?1",
+            [flow_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten();
+    // A retirement that cannot be decoded, or a manifest that is missing or
+    // cannot be parsed, needs no lookups: the approval's own transaction
+    // reports those errors.
+    let Some(retirement) = body.and_then(|b| serde_json::from_str::<Retirement>(&b).ok()) else {
+        return Ok(Vec::new());
+    };
+    let Some(retired) = retirement.agent_id.as_deref() else {
+        return Ok(Vec::new());
+    };
+    let manifest: Option<String> = conn
+        .query_row(
+            "SELECT manifest FROM installs WHERE flow_id=?1 AND version=?2",
+            params![flow_id, version],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(manifest) = manifest.and_then(|m| crate::Manifest::parse_stored(&m).ok()) else {
+        return Ok(Vec::new());
+    };
+    let mut targets: Vec<String> = manifest
+        .agents()
+        .into_iter()
+        .map(|(_, target)| target)
+        .filter(|t| {
+            *t != "$self" && *t != retired && retirement.agent_reference.as_deref() != Some(*t)
+        })
+        .map(str::to_owned)
+        .collect();
+    targets.sort();
+    targets.dedup();
+    Ok(targets)
+}
+
+/// Resolves `targets` in the agent registry, keeping only references it
+/// answered with an id. A failed registry read leaves its reference out, so
+/// [`retirement_cleared_by`] cannot use it to clear a retirement. The
+/// registry is read over the network, so callers must not hold the store's
+/// write transaction while calling this.
+pub(crate) fn resolve_agents(
+    catalog: &dyn basal_host::Catalog,
+    targets: &[String],
+) -> ResolvedAgents {
+    targets
+        .iter()
+        .filter_map(|target| match catalog.agent_id(target) {
+            Ok(Some(id)) => Some((target.clone(), id)),
+            Ok(None) | Err(_) => None,
+        })
+        .collect()
+}
+
+/// Whether approving `manifest` by `author` clears the flow's recorded
+/// retirement. `resolved` holds registry ids read before this transaction
+/// (see [`retirement_lookups`] and [`resolve_agents`]). Every check uses
+/// the retirement as stored now, so a retirement recorded or changed after
+/// those reads can only find a reference missing from `resolved`, and a
+/// missing reference never clears anything.
 pub(crate) fn retirement_cleared_by(
     tx: &Transaction,
     flow_id: &str,
     author: &str,
     manifest: &str,
-    catalog: Option<&dyn basal_host::Catalog>,
+    resolved: &ResolvedAgents,
 ) -> Result<bool> {
     let body: Option<String> = tx.query_row(
         "SELECT agent_retirement FROM flows WHERE flow_id=?1",
@@ -97,12 +222,11 @@ pub(crate) fn retirement_cleared_by(
         if target == "$self" {
             return agent_owned && author != retired;
         }
-        // A target alias missing from the catalog, or a registry that cannot
-        // be read, cannot prove that the new manifest no longer involves the
-        // retired recipient.
-        catalog
-            .map(|c| c.agent_id(target))
-            .is_some_and(|id| matches!(id, Ok(Some(id)) if id != retired))
+        // A target alias missing from the catalog, a registry that could not
+        // be read, or a reference not resolved before this transaction
+        // cannot prove that the new manifest no longer involves the retired
+        // recipient.
+        resolved.get(target).is_some_and(|id| id != retired)
     });
     Ok(different_owner && no_target)
 }
@@ -261,6 +385,20 @@ pub(crate) fn eligible(conn: &Connection, loss: &GrantLoss) -> Result<bool> {
 }
 
 impl Runtime {
+    /// The best-effort stable id labelling an agent_retired refusal of
+    /// `request`, resolved before the write transaction that records it so
+    /// the registry's network read never holds the store's writer. A failed
+    /// store read only costs the label its resolution, as a failed registry
+    /// read does; the recording transaction reports store failures itself.
+    pub(crate) fn retirement_target_id(&self, request: &basal_host::CallRequest) -> Option<String> {
+        let target = self
+            .store()
+            .read(|c| retirement_lookup(c, request))
+            .ok()
+            .flatten();
+        retirement_label(self.shared.catalog.as_ref(), target.as_deref())
+    }
+
     /// Read all stored grant losses, including their latest identity, revision
     /// and restoration state, without performing a permission check.
     pub fn grant_losses(&self) -> Result<Vec<GrantLoss>> {

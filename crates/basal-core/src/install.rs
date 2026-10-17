@@ -620,7 +620,7 @@ pub fn approve(
     now_ms: i64,
     schedule: &SchedulerConfig,
 ) -> std::result::Result<Option<Approval>, InstallError> {
-    approve_using_catalog(
+    approve_with_resolved_agents(
         tx,
         flow_id,
         version,
@@ -628,12 +628,12 @@ pub fn approve(
         approval_ref,
         now_ms,
         schedule,
-        None,
+        &crate::grant_loss::ResolvedAgents::new(),
     )
 }
 
 #[allow(clippy::too_many_arguments)]
-fn approve_using_catalog(
+fn approve_with_resolved_agents(
     tx: &Transaction,
     flow_id: &str,
     version: u32,
@@ -641,7 +641,7 @@ fn approve_using_catalog(
     approval_ref: &str,
     now_ms: i64,
     schedule: &SchedulerConfig,
-    catalog: Option<&dyn Catalog>,
+    resolved_agents: &crate::grant_loss::ResolvedAgents,
 ) -> std::result::Result<Option<Approval>, InstallError> {
     let row: Option<(Vec<u8>, String, String, Option<i64>)> = tx
         .query_row(
@@ -702,7 +702,7 @@ fn approve_using_catalog(
         params![flow_id, version],
         |r| r.get(0),
     )?;
-    if crate::grant_loss::retirement_cleared_by(tx, flow_id, &author, &manifest, catalog)? {
+    if crate::grant_loss::retirement_cleared_by(tx, flow_id, &author, &manifest, resolved_agents)? {
         tx.execute("UPDATE flows SET agent_retirement=NULL, disabled_reason=CASE WHEN disabled_by='core' AND disabled_reason='agent_retired' THEN 'retirement_cleared' ELSE disabled_reason END WHERE flow_id=?1", [flow_id])?;
     }
     crate::grant_loss::clear(tx, flow_id, now_ms)?;
@@ -1127,8 +1127,17 @@ impl Runtime {
     ) -> std::result::Result<Option<Approval>, InstallError> {
         let now = self.config().clock.now_ms();
         let schedule = self.config().schedule.clone();
+        // Whether a recorded agent retirement clears depends on registry
+        // reads over the network. Resolve them before the store's writer is
+        // held; the approval transaction re-checks everything against the
+        // rows as they are then (see `grant_loss::retirement_cleared_by`).
+        let targets = self
+            .store()
+            .read(|c| crate::grant_loss::retirement_lookups(c, flow_id, version))
+            .map_err(InstallError::Store)?;
+        let resolved = crate::grant_loss::resolve_agents(self.catalog(), &targets);
         decide(self, |tx| {
-            approve_using_catalog(
+            approve_with_resolved_agents(
                 tx,
                 flow_id,
                 version,
@@ -1136,7 +1145,7 @@ impl Runtime {
                 approval_ref,
                 now,
                 &schedule,
-                Some(self.shared.catalog.as_ref()),
+                &resolved,
             )
         })
     }
