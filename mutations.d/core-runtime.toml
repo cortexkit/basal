@@ -1500,3 +1500,19 @@ timeout_s = 600
 file = "crates/basal-core/src/driver.rs"
 old = "let agent = match self.rt.catalog().agent_id(name) {"
 new = "let agent = match self.rt.catalog().agent_id(name).or_else(|_| Ok::<_, basal_host::transport::WireError>(None)) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "runs-startable-compares-every-pending-run-with-its-history"
+guards = "picking startable runs reads slot holders from runs_slot_holders, never every earlier run's row"
+test_file = "crates/basal-core/src/runs.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["runs::plan_tests::slot_queries_read_slot_holders_from_their_index"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/schema.rs"
+old = "statements: \"CREATE INDEX runs_slot_holders ON runs(flow_id, admit_seq, state, run_id) WHERE state IN ('pending', 'running', 'suspended', 'needs_reconcile');\","
+new = "statements: \"CREATE INDEX runs_slot_holders ON runs(flow_id, admit_seq, run_id) WHERE state IN ('pending', 'running', 'suspended', 'needs_reconcile');\", // NON-VACUITY BREAK"

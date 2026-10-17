@@ -99,31 +99,87 @@ pub const HOLDS_SLOT: &str = "('pending', 'running', 'suspended', 'needs_reconci
 /// run one at a time in trigger order, so such a run holds the slot.
 fn slot_holder(conn: &Connection, run_id: &str) -> Result<Option<String>> {
     Ok(conn
-        .query_row(
-            &format!(
-                "SELECT o.run_id FROM runs r JOIN runs o ON o.flow_id = r.flow_id \
-                 WHERE r.run_id = ?1 AND o.admit_seq < r.admit_seq AND o.state IN {HOLDS_SLOT} \
-                 ORDER BY o.admit_seq LIMIT 1"
-            ),
-            [run_id],
-            |r| r.get(0),
-        )
+        .query_row(&slot_holder_sql(), [run_id], |r| r.get(0))
         .optional()?)
+}
+
+/// The earlier slot-holding runs are found on `runs_slot_holders` alone; a
+/// run row is read only for `run_id` itself.
+fn slot_holder_sql() -> String {
+    format!(
+        "SELECT o.run_id FROM runs r JOIN runs o INDEXED BY runs_slot_holders ON o.flow_id = r.flow_id \
+         WHERE r.run_id = ?1 AND o.admit_seq < r.admit_seq AND o.state IN {HOLDS_SLOT} \
+         ORDER BY o.admit_seq LIMIT 1"
+    )
 }
 
 /// Pending runs that no earlier run of their flow holds back, in admission
 /// order, as (run, flow). Runs of one flow run one at a time, so this is at
 /// most one run per flow: the runs a scheduler of activations may start now.
 pub(crate) fn startable(conn: &Connection) -> Result<Vec<(String, String)>> {
-    let mut stmt = conn.prepare(&format!(
-        "SELECT r.run_id, r.flow_id FROM runs r WHERE r.state = 'pending' AND NOT EXISTS \
-         (SELECT 1 FROM runs o WHERE o.flow_id = r.flow_id AND o.admit_seq < r.admit_seq \
-          AND o.state IN {HOLDS_SLOT}) ORDER BY r.admit_seq, r.run_id"
-    ))?;
+    let mut stmt = conn.prepare(&startable_sql())?;
     let rows = stmt
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
+}
+
+/// Both the pending runs and the earlier slot holders are read from the
+/// `runs_slot_holders` index alone. Through the table, checking `state` read
+/// each run's row past its script and manifest, once per pending run and
+/// earlier run of its flow: with a few hundred runs pending, one pass took
+/// about 20 s while holding the store. `INDEXED BY` makes a plan that can't
+/// use the index fail to prepare instead of silently scanning the table; the
+/// redundant `IN` lets the outer scan use the partial index.
+fn startable_sql() -> String {
+    format!(
+        "SELECT r.run_id, r.flow_id FROM runs r INDEXED BY runs_slot_holders \
+         WHERE r.state = 'pending' AND r.state IN {HOLDS_SLOT} AND NOT EXISTS \
+         (SELECT 1 FROM runs o INDEXED BY runs_slot_holders WHERE o.flow_id = r.flow_id \
+          AND o.admit_seq < r.admit_seq AND o.state IN {HOLDS_SLOT}) \
+         ORDER BY r.admit_seq, r.run_id"
+    )
+}
+
+#[cfg(test)]
+mod plan_tests {
+    use super::*;
+
+    fn plan(conn: &Connection, sql: &str, params: &[&dyn rusqlite::ToSql]) -> Vec<String> {
+        conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+            .unwrap()
+            .query_map(params, |r| r.get(3))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn slot_queries_read_slot_holders_from_their_index() {
+        // The full migrated schema. Neither query may read the earlier runs'
+        // rows: those carry the script and manifest before `state`.
+        let conn = crate::runtime_authorization_regressions::connection();
+        let startable = plan(&conn, &startable_sql(), &[]);
+        assert!(
+            startable
+                .iter()
+                .any(|l| l.contains("SCAN r USING COVERING INDEX runs_slot_holders")),
+            "{startable:?}"
+        );
+        assert!(
+            startable
+                .iter()
+                .any(|l| l.contains("SEARCH o USING COVERING INDEX runs_slot_holders")),
+            "{startable:?}"
+        );
+        let holder = plan(&conn, &slot_holder_sql(), &[&"run"]);
+        assert!(
+            holder
+                .iter()
+                .any(|l| l.contains("SEARCH o USING COVERING INDEX runs_slot_holders")),
+            "{holder:?}"
+        );
+    }
 }
 
 /// Takes a pending run for a new activation: compare-and-set from

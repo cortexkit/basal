@@ -388,6 +388,16 @@ CREATE INDEX owner_notice_pending ON outbox(retry_at) WHERE delivered_at IS NULL
         version: 33,
         statements: BOARD_DEFERRALS,
     },
+    // Runs that hold their flow's one slot, keyed by flow and admission
+    // order, so finding the slot holder never reads a run's row. A run row
+    // keeps its script and manifest before `state`, and checking `state`
+    // through the table read overflow pages for every earlier run of the
+    // flow: with a few hundred runs pending, one scheduler pass took about
+    // 20 s and held the store the whole time.
+    Migration {
+        version: 34,
+        statements: "CREATE INDEX runs_slot_holders ON runs(flow_id, admit_seq, state, run_id) WHERE state IN ('pending', 'running', 'suspended', 'needs_reconcile');",
+    },
 ];
 
 // Allow journal rows to defer board storage and registry-read failures.
