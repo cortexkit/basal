@@ -45,6 +45,97 @@ class RigChecks(unittest.TestCase):
                     self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                     self.assertIn("refusing: the rig root", result.stderr)
 
+    def test_dry_run_does_not_check_the_host_rig_port(self):
+        with tempfile.TemporaryDirectory() as home:
+            result = self.run_shell('''
+DRY=1
+port_listener() { printf '25910\\n'; }
+guard_port_free
+''', home)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_real_start_refuses_a_taken_rig_port(self):
+        with tempfile.TemporaryDirectory() as home:
+            result = self.run_shell('''
+port_listener() { printf '25910\\n'; }
+cmd_start
+''', home)
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("refusing: port 8791 is already taken by pid 25910", result.stderr)
+
+    def test_status_retries_until_module_exits_the_subc_trampoline(self):
+        with tempfile.TemporaryDirectory() as home:
+            result = self.run_shell('''
+mkdir -p "$BIN"
+: > "$BIN/ckdev-subc"
+: > "$BIN/module"
+stat() {
+  case "$3" in
+    "$BIN/ckdev-subc") printf '100\\n' ;;
+    "$BIN/module") printf '200\\n' ;;
+    *) return 1 ;;
+  esac
+}
+identifier_of() { printf 'fixture-id\\n'; }
+image_reads=0
+printf '0\\n' > "$HOME/image-reads"
+lsof() {
+  case "$*" in
+    *"-d txt -Fin"*)
+      image_reads=$(cat "$HOME/image-reads")
+      image_reads=$((image_reads + 1))
+      printf '%s\\n' "$image_reads" > "$HOME/image-reads"
+      if [ "$image_reads" -eq 1 ]; then
+        printf 'i100\\nn%s\\n' "$BIN/ckdev-subc"
+      else
+        printf 'i200\\nn%s\\n' "$BIN/module"
+      fi ;;
+    *"-Ftn"*) : ;;
+  esac
+}
+sleep() { :; }
+report_process fixture "$BIN/module" 123 fixture-id
+printf 'image-reads=%s\\n' "$(cat "$HOME/image-reads")"
+''', home)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("running image is the placed file (inode 200)", result.stdout)
+            self.assertIn("image-reads=2", result.stdout)
+
+    def test_status_fails_if_module_never_exits_the_subc_trampoline(self):
+        with tempfile.TemporaryDirectory() as home:
+            result = self.run_shell('''
+mkdir -p "$BIN"
+: > "$BIN/ckdev-subc"
+: > "$BIN/module"
+stat() {
+  case "$3" in
+    "$BIN/ckdev-subc") printf '100\\n' ;;
+    "$BIN/module") printf '200\\n' ;;
+    *) return 1 ;;
+  esac
+}
+identifier_of() { printf 'fixture-id\\n'; }
+image_reads=0
+printf '0\\n' > "$HOME/image-reads"
+lsof() {
+  case "$*" in
+    *"-d txt -Fin"*)
+      image_reads=$(cat "$HOME/image-reads")
+      image_reads=$((image_reads + 1))
+      printf '%s\\n' "$image_reads" > "$HOME/image-reads"
+      printf 'i100\\nn%s\\n' "$BIN/ckdev-subc" ;;
+    *"-Ftn"*) : ;;
+  esac
+}
+sleep() { :; }
+status=0
+report_process fixture "$BIN/module" 123 fixture-id || status=$?
+printf 'report-status=%s image-reads=%s\\n' "$status" "$(cat "$HOME/image-reads")"
+''', home)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("running image is NOT the placed file (running inode 100, placed 200)", result.stdout)
+            self.assertIn("report-status=1 image-reads=51", result.stdout)
+
     def test_report_rejects_zero_checks_unless_explicitly_not_run(self):
         with tempfile.TemporaryDirectory() as home:
             report_path = Path(home) / "contract.json"
@@ -249,16 +340,24 @@ basal_identifier ck-basal-worker
                 "new-provider/some-model": {}, "openai/gpt-6-luna": {},
                 "openai/other": {}, "another/model/with/slashes": {},
             }}))
+            routing = Path(home) / "Work/Projects/CortexKit-scratch/ckdev-flows/bin/ckdev-prefrontal-routing"
+            routing.parent.mkdir(parents=True)
+            routing.write_text('#!/bin/sh\nprintf \'%s\\n\' "$XDG_CONFIG_HOME" "$@" > "$HOME/check-call"\n')
+            routing.chmod(0o755)
             code = 'guard_all_paths; rig_env() { /bin/cat "$HOME/catalog.json"; }; pin_routing'
             result = self.run_shell(code, home)
             self.assertEqual(result.returncode, 0, result.stderr)
             policy = Path(home) / "Work/Projects/CortexKit-scratch/ckdev-flows/config/cortexkit/alfonso-routing.jsonc"
+            self.assertEqual((Path(home) / "check-call").read_text().splitlines(), [
+                str(Path(home) / "Work/Projects/CortexKit-scratch/ckdev-flows/config"),
+                "--check-config",
+            ])
             policy_text = policy.read_text()
             self.assertIn("// Rig fixture values, not measured model quality.", policy_text)
             value = json.loads("\n".join(line for line in policy_text.splitlines()
                                          if not line.lstrip().startswith("//")))
             self.assertEqual(value, {"model_routing": {
-                "exclude": ["another", "new-provider", "openai", "-openai/gpt-6-luna"],
+                "exclude": {"all": ["another", "new-provider", "openai", "-openai/gpt-6-luna"]},
                 "models": {"openai/gpt-6-luna": {"elo": 1, "eq": 0, "speed": 0}},
             }})
             policy.unlink()
@@ -267,6 +366,20 @@ basal_identifier ck-basal-worker
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("lacks openai/gpt-6-luna", result.stderr)
             self.assertFalse(policy.exists())
+
+    def test_pin_fails_with_routing_config_validation_output(self):
+        with tempfile.TemporaryDirectory() as home:
+            catalog = Path(home) / "catalog.json"
+            catalog.write_text(json.dumps({"models": {"openai/gpt-6-luna": {}}}))
+            routing = Path(home) / "Work/Projects/CortexKit-scratch/ckdev-flows/bin/ckdev-prefrontal-routing"
+            routing.parent.mkdir(parents=True)
+            routing.write_text('#!/bin/sh\nprintf \'unsupported routing configuration\\n\' >&2\nexit 2\n')
+            routing.chmod(0o755)
+            result = self.run_shell(
+                'guard_all_paths; rig_env() { /bin/cat "$HOME/catalog.json"; }; pin_routing', home
+            )
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("unsupported routing configuration", result.stderr)
 
     def test_credential_inventory_requires_one_active_openai_binding(self):
         with tempfile.TemporaryDirectory() as home:
@@ -357,6 +470,8 @@ cmd_config
         with tempfile.TemporaryDirectory() as home:
             result = self.run_shell('guard_all_paths; DRY=1; cmd_config; cmd_test --models', home)
             self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("model_routing.exclude.all = [every served provider, -openai/gpt-6-luna]", result.stdout)
+            self.assertIn("ckdev-prefrontal-routing --check-config", result.stdout)
             path = f"{home}/Work/Projects/CortexKit-scratch/ckdev-flows/runtime/basal-unscoped-send"
             self.assertIn(f'"BASAL_RIG_UNSCOPED_FILE": "{path}"', result.stdout)
             self.assertIn(f"--unscoped-file {path}", result.stdout)

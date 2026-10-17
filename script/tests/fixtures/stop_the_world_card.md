@@ -39,8 +39,8 @@
 - The place-module.sh commands are read-only gate runs; the SUBC operator adds `--place` to both for actual placement. Never start between placements. If either fails, leave basal stopped and recover the binary pair and matching store backup before starting.
 
 **Post-placement checks**
-- `ck --json provenance basal`: build_git_sha @SHA@, and the observed pid's running image is the placed ck-basal (same inode).
-- a worker's running image is the placed ck-basal-worker (same inode) once a flow runs.
+- `ck --json provenance basal`: build_git_sha @SHA@, and after allowing up to five seconds for the ck-subc trampoline to exec, the observed pid's running image is the placed ck-basal (same inode); fail if it never becomes that file.
+- a worker's running image is the placed ck-basal-worker (same inode) once a flow runs; if it briefly reports the ck-subc trampoline, retry for up to five seconds and fail if it never becomes the placed file.
 - BASAL_WORKER_IDENTIFIER=ck-basal-worker sh script/sign-worker.sh verify ~/.local/share/cortexkit/bin/ck-basal-worker passes at the placed path.
 - the store reads schema version 7 with its tables intact.
 - basal's flow.list answers.

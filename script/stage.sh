@@ -580,8 +580,8 @@ cat > "$CARD" <<EOF
 - the daemon has no basal module yet: its subc.jsonc entry is the operator's approval step and comes after both files are in place. The entry: no environment (basal finds its store from its home), \`reserved: true\` (core accepts basal's install and decision cards only from reserved:basal), and exclusive overlap (the journal is a single-writer database).
 
 **Post-placement check** (mine)
-- \`ck --json provenance basal\`: build_git_sha $SHA, and the observed pid's running image is the placed ck-basal (same inode).
-- a worker's running image is the placed ck-basal-worker (same inode) once a flow runs.
+- \`ck --json provenance basal\`: build_git_sha $SHA, and after allowing up to five seconds for the ck-subc trampoline to exec, the observed pid's running image is the placed ck-basal (same inode); fail if it never becomes that file.
+- a worker's running image is the placed ck-basal-worker (same inode) once a flow runs; if it briefly reports the ck-subc trampoline, retry for up to five seconds and fail if it never becomes the placed file.
 - BASAL_WORKER_IDENTIFIER=ck-basal-worker sh script/sign-worker.sh verify ~/.local/share/cortexkit/bin/ck-basal-worker passes at the placed path.
 - basal's flow.list answers (no flows yet).
 EOF
@@ -666,8 +666,8 @@ else
   say '**Post-placement check** (mine)' >> "$CARD"
 fi
 cat >> "$CARD" <<EOF
-- \`ck --json provenance basal\`: build_git_sha $SHA, and the observed pid's running image is the placed ck-basal (same inode).
-- a worker's running image is the placed ck-basal-worker (same inode) once a flow runs.
+- \`ck --json provenance basal\`: build_git_sha $SHA, and after allowing up to five seconds for the ck-subc trampoline to exec, the observed pid's running image is the placed ck-basal (same inode); fail if it never becomes that file.
+- a worker's running image is the placed ck-basal-worker (same inode) once a flow runs; if it briefly reports the ck-subc trampoline, retry for up to five seconds and fail if it never becomes the placed file.
 - BASAL_WORKER_IDENTIFIER=ck-basal-worker sh script/sign-worker.sh verify ~/.local/share/cortexkit/bin/ck-basal-worker passes at the placed path.
 - the store reads schema version $BUILD_SCHEMA with its tables intact.
 - basal's flow.list answers.
