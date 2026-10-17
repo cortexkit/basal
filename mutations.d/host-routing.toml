@@ -1538,3 +1538,20 @@ only = true
 file = "crates/basal-host/src/core_host.rs"
 old = '"sink_store_failed" => RefusalReason::SinkStoreFailed,'
 new = '"sink_store_failed" => return error, // NON-VACUITY BREAK'
+
+[[control]]
+id = "core-carrier-work-unsettled-takes-a-flow-scoped-route"
+guards = "work.unsettled goes on basal's own reserved:basal route, never a flow-scoped provider route"
+test_file = "crates/basal-testkit/tests/flow_scopes.rs"
+runner = "cargo"
+package = "basal-testkit"
+platforms = ["linux"]
+target = "--test flow_scopes"
+select = { tests = ["work_unsettled_never_uses_a_flow_scoped_route", "board_read_uses_basal_route_with_journaled_approved_stamp"] }
+expect_red = ["work_unsettled_never_uses_a_flow_scoped_route"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/routing.rs"
+old = 'is_core_carrier_op(module, op) && matches!(request.kind, CallKind::Op { .. });'
+new = 'is_core_carrier_op(module, op) && op != "work.unsettled" && matches!(request.kind, CallKind::Op { .. }); // NON-VACUITY BREAK'
