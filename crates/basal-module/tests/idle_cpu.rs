@@ -13,6 +13,9 @@ use subc_protocol::{Flags, Frame, FrameType, PROTOCOL_VERSION, Priority};
 use subc_transport::connection_file::{ConnectionInfo, Endpoint, SCHEMA_VERSION, write_atomic};
 use subc_transport::{authenticate_server, read_frame, write_frame};
 
+#[path = "common/binary_staging.rs"]
+mod binary_staging;
+
 struct ChildGuard(Child);
 impl Drop for ChildGuard {
     fn drop(&mut self) {
@@ -41,32 +44,13 @@ async fn sample(source: &Path, label: &str) -> Value {
         std::env::temp_dir().join(format!("basal-idle-cpu-{}-{label}", std::process::id())),
     );
     std::fs::create_dir_all(&dir.0).unwrap();
-    let worker = basal_testkit::channel::worker_binary();
-    let binary = cortexkit_test_support::ckdev_binary(source);
-    // The production module derives its worker path from its own filename.
-    // Link the shared worker copy beside the module so this test exercises
-    // that lookup without making another executable copy.
-    let sibling_worker =
-        binary.with_file_name(cortexkit_test_support::ckdev_file_name("ck-basal-worker"));
-    let worker_bytes = std::fs::read(&worker).expect("staged worker");
-    let sibling_matches =
-        std::fs::read(&sibling_worker).is_ok_and(|sibling_bytes| sibling_bytes == worker_bytes);
-    if !sibling_matches {
-        if sibling_worker.exists() {
-            std::fs::remove_file(&sibling_worker).expect("remove stale worker sibling");
-        }
-        match std::fs::hard_link(&worker, &sibling_worker) {
-            Ok(()) => {}
-            Err(error)
-                if error.kind() == std::io::ErrorKind::AlreadyExists
-                    && std::fs::read(&sibling_worker)
-                        .is_ok_and(|sibling_bytes| sibling_bytes == worker_bytes) =>
-            {
-                // Another test process published the same shared worker.
-            }
-            Err(error) => panic!("link staged worker beside module: {error}"),
-        }
-    }
+    let worker_source = basal_testkit::channel::worker_binary();
+    let (binary, worker) = binary_staging::stage_module_worker(source, &worker_source);
+    assert_eq!(
+        binary.parent(),
+        worker.parent(),
+        "the production module locates its worker beside its own executable"
+    );
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
         .unwrap();

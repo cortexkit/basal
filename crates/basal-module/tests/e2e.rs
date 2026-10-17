@@ -31,6 +31,10 @@ const T0: i64 = 1_777_593_600_000;
 const HOUR: i64 = 3_600_000;
 
 #[cfg(unix)]
+#[path = "common/binary_staging.rs"]
+mod binary_staging;
+
+#[cfg(unix)]
 const PROBE_MODULE: &str = "BASAL_E2E_PRIVACY_MODULE_BINARY";
 #[cfg(unix)]
 const PROBE_WORKER: &str = "BASAL_E2E_PRIVACY_WORKER_BINARY";
@@ -39,6 +43,7 @@ const PROBE_WORKER: &str = "BASAL_E2E_PRIVACY_WORKER_BINARY";
 fn placed_probe_binaries() -> (PathBuf, PathBuf, PathBuf) {
     let module = basal_testkit::dev_binary(env!("CARGO_BIN_EXE_ck-basal"));
     let worker = worker_binary();
+    let (module, worker) = binary_staging::stage_module_worker(&module, &worker);
     let executable = std::env::current_exe().expect("test executable");
     // The probe is also an executable, so stage it before giving it its own
     // macOS privacy identity. Its build output may live on a removable volume.
@@ -640,6 +645,11 @@ fn copied_test_executable_entrypoint() {
     let expected = std::env::var_os("BASAL_E2E_EXPECTED_PROBE").expect("expected copy path");
     assert_eq!(executable, PathBuf::from(expected));
     let (module, worker) = probe_fixture_binaries();
+    assert_eq!(
+        module.parent(),
+        worker.parent(),
+        "the production module locates its worker beside its own executable"
+    );
     for binary in [module, worker] {
         let binary = binary.canonicalize().expect("placed fixture binary");
         assert_ne!(binary, executable);
