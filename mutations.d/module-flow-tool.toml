@@ -54,3 +54,19 @@ new = '''let caller = Caller::Agent { // NON-VACUITY BREAK
     agent_id: request.arguments["agent_id"].as_str().unwrap_or("argument-agent").to_owned(),
     scope_ref: context.scope.as_ref().map(|s| s.scope_ref.clone()).unwrap_or_default(),
 };'''
+
+[[control]]
+id = "flow-file-read-uses-aft-management-surface"
+guards = "flow file reads open AFT's tool-provider route, which AFT admits under a flow-read scope; its management surface is refused there"
+test_file = "crates/basal-host/src/transport.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["transport::tests::flow_file_reads_open_aft_on_the_exact_invoking_scope"]
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/transport.rs"
+old = "                .open_route_scoped(\n                    RouteTarget::ToolProvider {\n                        module_id: \"aft\".into(),"
+new = "                .open_route_scoped(\n                    RouteTarget::ManagementSurface { // NON-VACUITY BREAK\n                        module_id: \"aft\".into(),"

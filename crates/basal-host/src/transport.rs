@@ -731,8 +731,11 @@ impl Transport for SubcTransport {
         self.handle.block_on(async {
             let handle = self
                 .consumer
+                // AFT serves file.read_exact on its tool-provider route and
+                // refuses its management surface under a flow-read scope, so
+                // the child scope can never reach AFT's management operations.
                 .open_route_scoped(
-                    RouteTarget::ManagementSurface {
+                    RouteTarget::ToolProvider {
                         module_id: "aft".into(),
                     },
                     identity.clone(),
@@ -755,7 +758,10 @@ impl Transport for SubcTransport {
                 .consumer
                 .request(
                     &handle,
-                    serde_json::to_vec(&management_body("file.read_exact", json!({"path":path})))
+                    // A flat request AFT intercepts before tool-call parsing.
+                    // Success is the bare {bytes_base64, size, sha256}; every
+                    // refusal is a protocol Error frame with AFT's code.
+                    serde_json::to_vec(&json!({"op":"file.read_exact","path":path}))
                         .expect("file read request"),
                     CallOptions {
                         timeout: self.timeout,
@@ -764,7 +770,7 @@ impl Transport for SubcTransport {
                 )
                 .await
                 .map_err(map_error)
-                .and_then(|bytes| decode_response(&bytes, true));
+                .and_then(|bytes| decode_response(&bytes, false));
             let _ = self
                 .consumer
                 .close_handle(&handle, Default::default())
@@ -1382,6 +1388,9 @@ mod tests {
                     json!({"result":{"state":"completed"}})
                 } else if body["method"]=="route.set_decision_outcome" {
                     json!({"result":{"ok":true}})
+                } else if body["op"] == "file.read_exact" {
+                    // AFT answers the flat read with a bare object, unwrapped.
+                    json!({"path":body["path"]})
                 } else if body["name"] == "echo" || body["name"] == "slow_echo" {
                     if body["name"] == "slow_echo" { tokio::time::sleep(Duration::from_secs(11)).await; }
                     body["arguments"].clone()
@@ -1456,7 +1465,7 @@ mod tests {
             for open in opens.iter() {
                 assert_eq!(
                     open["target"],
-                    json!({"kind":"management_surface","module_id":"aft"})
+                    json!({"kind":"tool_provider","module_id":"aft"})
                 );
                 assert_eq!(open["scope"], serde_json::to_value(&selector).unwrap());
                 assert_eq!(open["identity"], serde_json::to_value(&identity).unwrap());
@@ -1464,7 +1473,7 @@ mod tests {
             let calls = calls.lock().unwrap();
             let reads: Vec<_> = calls
                 .iter()
-                .filter(|(_, body)| body["method"] == "file.read_exact")
+                .filter(|(_, body)| body["op"] == "file.read_exact")
                 .collect();
             assert_eq!(reads.len(), 2);
             assert_eq!(reads[0].0, 11);
