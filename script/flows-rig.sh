@@ -1077,7 +1077,7 @@ text = json.dumps(policy, indent=2)
 entry = "      \"openai/gpt-6-luna\": {"
 comment = ("      // Rig fixture values, not measured model quality. An empty routing store\n"
            "      // discovers Luna as unscored and never selects it. As the only eligible\n"
-            "      // model, elo=1 clears iq=20; no EQ or speed score is demanded.\n")
+           "      // model, elo=1 clears iq=20; no EQ or speed score is demanded.\n")
 print(text.replace(entry, comment + entry))') || return 1
   printf '%s\n' "$policy" | write_file "$ROUTING_CONFIG" || return 1
   output=$(XDG_CONFIG_HOME="$CONFIG_HOME" "$BIN/ckdev-prefrontal-routing" --check-config 2>&1) || {
