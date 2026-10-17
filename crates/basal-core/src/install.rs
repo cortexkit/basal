@@ -210,9 +210,10 @@ fn agentless_audience_op_warning(
     kind: Option<OpKind>,
 ) -> Option<Warning> {
     // Sink and status delivery permissions come from the manifest's `sinks` and
-    // `status` fields, not from `ops`. `prefrontal-core.board.read` is the only
-    // op sent through basal's management route instead of an agent's provider
-    // route, so exclude it from this provider-write warning.
+    // `status` fields, not from `ops`. The core carrier ops
+    // (`prefrontal-core.board.read` and `prefrontal-core.work.unsettled`) are
+    // sent through basal's management route instead of an agent's provider
+    // route, so exclude them from this provider-write warning.
     if let Some(audience) = audience
         && op_ref.for_target != Some(TargetAuthority::Delegate)
         && !basal_host::core_host::is_core_carrier_op(&op_ref.module, &op_ref.op)

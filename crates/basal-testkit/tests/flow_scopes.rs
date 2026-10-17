@@ -112,7 +112,7 @@ impl Transport for Wire {
                 json!([{"name":"echo","kind":"query"},{"name":"post","kind":"mutate"}]);
             modules[0]["roles"].as_array_mut().unwrap().push(json!({"role":"tool_provider","tools":[{"name":"send","execution_mode":"mutating","schema":{}}],"identity_scope":[],"config_schema":{},"observability":[],"concurrency":"serial","emits_push":false,"sub_supervises":false}));
         }
-        modules.push(json!({"module_id":"prefrontal-core", "capabilities":{"provides":if *self.core_capable.lock().unwrap() {vec!["flow-scopes/v1"]} else {vec![]}}, "roles":[{"role":"management_surface","operations":[{"name":"board.read","kind":"query"},{"name":"board.write","kind":"mutate"}],"config_schema":{},"observability":[],"identity_scope":[],"concurrency":"serial"}]}));
+        modules.push(json!({"module_id":"prefrontal-core", "capabilities":{"provides":if *self.core_capable.lock().unwrap() {vec!["flow-scopes/v1"]} else {vec![]}}, "roles":[{"role":"management_surface","operations":[{"name":"board.read","kind":"query"},{"name":"work.unsettled","kind":"query"},{"name":"board.write","kind":"mutate"}],"config_schema":{},"observability":[],"identity_scope":[],"concurrency":"serial"}]}));
         Ok(json!({"generation":1,"modules":modules,"subc_ops":[]}))
     }
     fn management(&self, module: &str, op: &str, params: Value) -> Result<Value, WireError> {
@@ -1139,6 +1139,189 @@ fn board_read_requires_object_arguments_and_own_audience_selector() {
         );
         assert!(f.wire.target_asks.lock().unwrap().is_empty());
     }
+}
+
+fn work_unsettled_fixture(tag: &str, script: &str) -> Fixture {
+    let f = Fixture::new(tag, script, false, false);
+    // Core does not advertise flow-scopes/v1: a carrier op must still install
+    // and run, because it never uses a flow-scoped route.
+    f.world.catalog.set_flow_capable("prefrontal-core", false);
+    f.world.catalog.set_op(
+        "prefrontal-core",
+        "work.unsettled",
+        basal_host::OpDecl {
+            kind: Some(basal_host::OpKind::Query),
+            cause_echo: false,
+            shell_capable: false,
+        },
+    );
+    install_target_manifest(&f, |manifest| {
+        manifest["ops"] = json!([{"module":"prefrontal-core","op":"work.unsettled"}]);
+    });
+    f
+}
+
+/// Core's captured `work.unsettled` vectors, copied unchanged from prefrontal
+/// and pinned by hash in basal-module's `board_hygiene` tests.
+fn work_unsettled_vector(name: &str) -> Vec<u8> {
+    std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../test-vectors/work-unsettled-v1")
+            .join(name),
+    )
+    .unwrap()
+}
+
+/// The bytes core's vectors would hold for `params`. The vectors were captured
+/// for a placeholder install (`flow-hygiene` version 1, an all-zero hash), so
+/// after checking that basal stamped this fixture's approved install, swap in
+/// that placeholder stamp. Everything else is compared byte for byte.
+fn as_vector_bytes(f: &Fixture, mut params: Value) -> Vec<u8> {
+    assert_eq!(
+        params["stamp"],
+        json!({"flow_id":"flow-test","flow_version":2,"code_hash":*f.wire.hash.lock().unwrap()})
+    );
+    params["stamp"] = json!({"flow_id":"flow-hygiene","flow_version":1,"code_hash":"0".repeat(64)});
+    (serde_json::to_string_pretty(&params).unwrap() + "\n").into_bytes()
+}
+
+#[test]
+fn work_unsettled_requests_match_core_vectors_on_basal_route() {
+    let f = work_unsettled_fixture(
+        "work-unsettled-carrier",
+        "const first = await ops.call('prefrontal-core', 'work.unsettled', {});
+         const next = await ops.call('prefrontal-core', 'work.unsettled', {cursor: '1199:bg_page_199'});
+         return [first, next];",
+    );
+    let run = f.admit("work-unsettled-carrier");
+    f.activate(&run);
+    // The wire echoes each request's params, so the result is what was sent.
+    let result = run_result(&f, &run);
+    let calls = f.wire.calls.lock().unwrap();
+    let sent: Vec<_> = calls
+        .iter()
+        .filter(|(_, _, body)| body["method"] == "work.unsettled")
+        .collect();
+    assert_eq!(sent.len(), 2);
+    for (index, vector) in ["request-global.json", "request-page-2.json"]
+        .into_iter()
+        .enumerate()
+    {
+        let (route, module, body) = sent[index];
+        assert_eq!(*route, None, "{vector}: sent on a flow-scoped route");
+        assert_eq!(module, "prefrontal-core");
+        assert_eq!(
+            body,
+            &management_body("work.unsettled", result[index].clone())
+        );
+        assert_eq!(
+            as_vector_bytes(&f, body["params"].clone()),
+            work_unsettled_vector(vector),
+            "{vector}"
+        );
+    }
+    assert!(f.wire.opens.lock().unwrap().is_empty());
+    assert!(f.wire.target_asks.lock().unwrap().is_empty());
+    let classes: Vec<String> =
+        f.rt.store()
+            .read(|c| {
+                let mut stmt =
+                    c.prepare("SELECT class FROM journal WHERE run_id=?1 ORDER BY position")?;
+                Ok(stmt
+                    .query_map([&run], |row| row.get(0))?
+                    .collect::<Result<_, _>>()?)
+            })
+            .unwrap();
+    assert_eq!(classes, ["query", "query"]);
+}
+
+#[test]
+fn work_unsettled_refusals_reach_the_script_typed() {
+    let mut refusals: Vec<Value> = ["refusal-non-global.json", "refusal-unknown-stamp.json"]
+        .into_iter()
+        .map(|name| serde_json::from_slice(&work_unsettled_vector(name)).unwrap())
+        .collect();
+    // Core's other documented refusals have no captured vector; they use the
+    // same `{code, message}` body.
+    for code in [
+        "sink_principal_refused",
+        "sink_item_invalid",
+        "sink_flow_hash_mismatch",
+        "work_unsettled_not_granted",
+    ] {
+        refusals.push(json!({"code":code,"message":code}));
+    }
+    for refusal in refusals {
+        let f = work_unsettled_fixture(
+            "work-unsettled-refused",
+            "try { await ops.call('prefrontal-core', 'work.unsettled', {}); return 'sent'; } catch (e) { return e.data; }",
+        );
+        f.wire
+            .refusals
+            .lock()
+            .unwrap()
+            .push_back(WireError::Refused {
+                code: refusal["code"].as_str().unwrap().into(),
+                message: refusal["message"].as_str().unwrap().into(),
+            });
+        let run = f.admit("work-unsettled-refused");
+        f.activate(&run);
+        assert_eq!(run_result(&f, &run), refusal);
+        let calls = f.wire.calls.lock().unwrap();
+        let sent: Vec<_> = calls
+            .iter()
+            .filter(|(_, _, body)| body["method"] == "work.unsettled")
+            .collect();
+        assert_eq!(sent.len(), 1, "{refusal}");
+        assert_eq!(sent[0].0, None, "{refusal}");
+    }
+}
+
+#[test]
+fn work_unsettled_never_uses_a_flow_scoped_route() {
+    let wire = Arc::new(Wire::default());
+    let host = ModuleOpsHost::new(wire.clone(), Arc::new(SubcCatalog::new(wire.clone())));
+    let request = |op: &str| CallRequest {
+        flow_id: "flow-a".into(),
+        run_id: "run-a".into(),
+        position: 0,
+        kind: CallKind::Op {
+            module: "prefrontal-core".into(),
+            op: op.into(),
+        },
+        args: JsonText::new(
+            json!({"stamp":{"flow_id":"flow-a","flow_version":1,"code_hash":"0".repeat(64)}})
+                .to_string(),
+        )
+        .unwrap(),
+        idempotency_key: "key-a".into(),
+        attempt: 1,
+    };
+    // Without flow-scopes/v1 or any scope, it is still sent on basal's route.
+    host.dispatch(&request("work.unsettled")).unwrap();
+    // With a core scope a flow-scoped route exists, and an ordinary core op
+    // takes it; work.unsettled still does not.
+    *wire.core_capable.lock().unwrap() = true;
+    let mut core_scope = scope(1);
+    core_scope.targets.insert("prefrontal-core".into());
+    host.configure_flow("flow-a", Some(core_scope));
+    host.dispatch(&request("work.unsettled")).unwrap();
+    host.dispatch(&request("board.write")).unwrap();
+    let routes: Vec<_> = wire
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(route, _, body)| (*route, body["method"].as_str().unwrap().to_owned()))
+        .collect();
+    assert_eq!(
+        routes,
+        [
+            (None, "work.unsettled".to_owned()),
+            (None, "work.unsettled".to_owned()),
+            (Some(1), "board.write".to_owned()),
+        ]
+    );
 }
 
 fn install_target_manifest(f: &Fixture, modify: impl FnOnce(&mut Value)) {

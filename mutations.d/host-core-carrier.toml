@@ -12,5 +12,5 @@ only = true
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/core_host.rs"
-old = 'pub const CORE_CARRIER_OPS: &[&str] = &["board.read"];'
+old = 'pub const CORE_CARRIER_OPS: &[&str] = &["board.read", "work.unsettled"];'
 new = 'pub const CORE_CARRIER_OPS: &[&str] = &[]; // NON-VACUITY BREAK'

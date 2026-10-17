@@ -1,0 +1,12 @@
+{
+  "items": [
+    {
+      "agent_id": "ag_owner",
+      "blocks": [],
+      "delivered_at_ms": 9200000,
+      "delivery": "unmerged",
+      "item_id": "wi_open_follow_up",
+      "title": "Open follow-up"
+    }
+  ]
+}

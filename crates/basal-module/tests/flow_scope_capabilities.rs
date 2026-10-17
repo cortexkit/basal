@@ -81,15 +81,17 @@ fn dry_run_rechecks_core_op_catalog_capability() {
 fn board_hygiene_manifest_installs_without_core_flow_scopes() {
     let f = fixture("board-carrier-cap", Options::default());
     f.catalog.set_flow_capable("prefrontal-core", false);
-    f.catalog.set_op(
-        "prefrontal-core",
-        "board.read",
-        OpDecl {
-            kind: Some(OpKind::Query),
-            cause_echo: false,
-            shell_capable: false,
-        },
-    );
+    for op in ["board.read", "work.unsettled"] {
+        f.catalog.set_op(
+            "prefrontal-core",
+            op,
+            OpDecl {
+                kind: Some(OpKind::Query),
+                cause_echo: false,
+                shell_capable: false,
+            },
+        );
+    }
     f.module
         .handle(
             &Caller::Operator,
@@ -105,6 +107,43 @@ fn board_hygiene_manifest_installs_without_core_flow_scopes() {
             &Caller::Operator,
             "flow.dry_run",
             json!({"flow_id":"board-hygiene","trigger":{}}),
+        )
+        .unwrap();
+}
+
+#[test]
+fn work_unsettled_installs_without_core_flow_scopes() {
+    // work.unsettled is a core carrier op: basal sends it on its own route, so
+    // neither install nor a dry run asks core for flow-scopes/v1. An ordinary
+    // core op in the same manifest would be refused (see the test above).
+    let f = fixture("work-unsettled-cap", Options::default());
+    f.catalog.set_flow_capable("prefrontal-core", false);
+    f.catalog.set_op(
+        "prefrontal-core",
+        "work.unsettled",
+        OpDecl {
+            kind: Some(OpKind::Query),
+            cause_echo: false,
+            shell_capable: false,
+        },
+    );
+    let mut manifest: serde_json::Value =
+        serde_json::from_str(include_str!("../../../flows/board-hygiene/manifest.json")).unwrap();
+    manifest["id"] = json!("work-unsettled-only");
+    manifest["ops"] = json!([{"module":"prefrontal-core","op":"work.unsettled"}]);
+    manifest.as_object_mut().unwrap().remove("board_read");
+    f.module
+        .handle(
+            &Caller::Operator,
+            "flow.install",
+            json!({"script":"return 7;","manifest":manifest.to_string()}),
+        )
+        .unwrap();
+    f.module
+        .handle(
+            &Caller::Operator,
+            "flow.dry_run",
+            json!({"flow_id":"work-unsettled-only","trigger":{}}),
         )
         .unwrap();
 }
