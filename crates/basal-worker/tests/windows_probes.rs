@@ -249,7 +249,8 @@ fn native_winsock_tcp_udp_and_loopback_are_denied_and_parent_observes_controls()
         let confined = Probe::start(Deviation::Full, probe, "", port as usize).end();
         assert!(
             confined.denial(probe, &[10107, 10093], None),
-            "{probe}: {} {}",
+            "{probe}: exit code {:#x}; stderr {:?}; stdout {:?}",
+            confined.code,
             confined.stderr,
             confined.stdout
         );
