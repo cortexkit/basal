@@ -401,6 +401,40 @@ old = "entry.name === name && !entry.unless_branch.some(pattern => matches(patte
 new = "entry.name === name); // NON-VACUITY BREAK"
 
 [[control]]
+id = "ci-failure-router-contributor-branch-wakes"
+guards = "a failure on a contributor's branch records silently; only seat-started runs wake off protected branches"
+test_file = "crates/basal-module/tests/ci_failure_router.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test ci_failure_router"
+select = { tests = ["contributor_branch_failures_record_silently_and_seat_branches_wake", "protected_branches_wake_whoever_started_the_run"] }
+expect_red = ["contributor_branch_failures_record_silently_and_seat_branches_wake"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/ci-failure-router/flow.js"
+old = "const contributorBranch = !protectedBranch && !seatRun;"
+new = "const contributorBranch = false; // NON-VACUITY BREAK"
+
+[[control]]
+id = "ci-failure-router-seat-actor-uses-re-runner"
+guards = "the seat check reads who pushed (actor), not who re-ran the run (triggering_actor)"
+test_file = "crates/basal-module/tests/ci_failure_router.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test ci_failure_router"
+select = { tests = ["contributor_branch_failures_record_silently_and_seat_branches_wake", "protected_branches_wake_whoever_started_the_run"] }
+expect_red = ["contributor_branch_failures_record_silently_and_seat_branches_wake"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/ci-failure-router/flow.js"
+old = "seatActor(body.actor);"
+new = "seatActor(body.triggering_actor); // NON-VACUITY BREAK"
+
+[[control]]
 id = "ci-failure-router-jobless-red-run-wakes"
 guards = "a red run with no failed job wakes only for startup_failure; fork runs closed unapproved stay silent"
 test_file = "crates/basal-module/tests/ci_failure_router.rs"

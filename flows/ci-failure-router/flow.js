@@ -63,6 +63,20 @@ function ignoredName(entries, name, branch) {
     entry.name === name && !entry.unless_branch.some(pattern => matches(pattern, branch)));
 }
 
+// Branches whose failures always wake the owner, besides the default branch.
+const PROTECTED_BRANCHES = ['gh-readonly-queue/*', 'train/*', 'release/*'];
+
+// Seats push with the operator's git credential, so a seat's own branch shows
+// the operator as actor; a seat's GitHub App pushes as `<seat>-alfonso[bot]`.
+// `actor` is who pushed, not who re-ran: a re-run of a contributor's run by the
+// operator keeps the contributor as actor.
+const SEAT_LOGINS = ['ualtinok', 'alfonso-aft', 'mc-alfonso'];
+function seatActor(login) {
+  if (typeof login !== 'string' || login.length === 0) return false;
+  const lower = login.toLowerCase();
+  return SEAT_LOGINS.includes(lower) || /^[a-z0-9-]+-alfonso\[bot\]$/.test(lower);
+}
+
 const QUIET_REPOS = {
   'cortexkit/cerebellum': 'CI is off by owner decision: GitHub billing refuses its jobs',
 };
@@ -330,12 +344,19 @@ const runFinishedNeedsWake = !jobEvent && runHasReportedJob &&
   hasFirstNotice &&
   jobsSinceFirstNotice.length > 0 && !run.completionWoke;
 const quiet = Object.hasOwn(QUIET_REPOS, repo);
+// Off the default, merge-queue and release-train branches, a failure wakes its
+// owner only on a branch a fleet seat started. A contributor's branch (say, a
+// draft held by a design gate) is the contributor's to fix, so it records a
+// silent entry. Unknown fork or actor counts as not a seat's run.
+const protectedBranch = mainBranch || PROTECTED_BRANCHES.some(pattern => matches(pattern, body.head_branch));
+const seatRun = body.head_repo_is_fork === false && seatActor(body.actor);
+const contributorBranch = !protectedBranch && !seatRun;
 // A red run with no failed job in hand records its item silently: either its
 // job events are still arriving (the first one wakes), or no job ever ran,
 // as when GitHub closes runs that waited for a maintainer's approval. Only
 // startup_failure wakes on the run alone, because no job can run there.
 const runAloneWakes = run.conclusion === 'startup_failure';
-const action = quiet || green || mergeQueueRepeat ? 'silent' :
+const action = quiet || green || mergeQueueRepeat || contributorBranch ? 'silent' :
   jobEvent ? (needsFirstWake ? 'wake' : 'silent') :
     runHasReportedJob ? (runFinishedNeedsWake ? 'wake' : 'silent') :
       (needsFirstWake && runAloneWakes ? 'wake' : 'silent');

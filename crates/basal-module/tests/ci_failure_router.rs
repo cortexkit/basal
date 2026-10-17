@@ -333,7 +333,7 @@ fn published_manifest_is_global_with_only_ci_v2_repo_filters_and_minimal_grants(
     Manifest::parse(MANIFEST).unwrap();
     let value: Value = serde_json::from_str(MANIFEST).unwrap();
     assert_eq!(value["audience"], json!({"kind":"global"}));
-    assert_eq!(value["version"], 8);
+    assert_eq!(value["version"], 9);
     assert!(
         value["purpose"]
             .as_str()
@@ -653,6 +653,88 @@ fn tests_failures_on_land_branches_in_aft_still_wake() {
     assert_eq!(writes[0]["agent"], "agent_ab64ea0873bbee0c");
     assert_eq!(writes[1]["action"], "wake");
     assert_eq!(writes[1]["agent"], "agent_ab64ea0873bbee0c");
+}
+
+#[test]
+fn contributor_branch_failures_record_silently_and_seat_branches_wake() {
+    // A contributor's branch, such as a draft held by a design gate, is the
+    // contributor's to fix: its failure is recorded without waking the owner.
+    let contributor = |id: u64, tweak: &dyn Fn(&mut Value)| {
+        let mut body = job("cortexkit/claustrum", id);
+        body["run_id"] = json!(id);
+        body["head_branch"] = json!("feat/opencode-v2-plugin");
+        tweak(&mut body);
+        body
+    };
+    type Case<'a> = (&'a str, &'a dyn Fn(&mut Value), &'a str);
+    let cases: [Case; 9] = [
+        (
+            "contributor push",
+            &|b| b["actor"] = json!("some-contributor"),
+            "silent",
+        ),
+        (
+            "operator re-ran a contributor's run",
+            &|b| {
+                b["actor"] = json!("some-contributor");
+                b["triggering_actor"] = json!("ualtinok");
+            },
+            "silent",
+        ),
+        (
+            "fork pushed under an operator-like login",
+            &|b| b["head_repo_is_fork"] = json!(true),
+            "silent",
+        ),
+        (
+            "unknown fork",
+            &|b| b["head_repo_is_fork"] = Value::Null,
+            "silent",
+        ),
+        ("unknown actor", &|b| b["actor"] = Value::Null, "silent"),
+        ("operator push", &|_| {}, "wake"),
+        (
+            "operator push, other case",
+            &|b| b["actor"] = json!("UAltinok"),
+            "wake",
+        ),
+        (
+            "seat bot push",
+            &|b| b["actor"] = json!("ckcred-alfonso[bot]"),
+            "wake",
+        ),
+        (
+            "third-party bot",
+            &|b| b["actor"] = json!("dependabot[bot]"),
+            "silent",
+        ),
+    ];
+    for (id, (name, tweak, action)) in (201..).zip(cases) {
+        let t = Test::new();
+        t.ci(contributor(id, tweak));
+        let writes = t.writes();
+        assert_eq!(writes.len(), 1, "{name}");
+        assert_eq!(writes[0]["action"], action, "{name}");
+    }
+}
+
+#[test]
+fn protected_branches_wake_whoever_started_the_run() {
+    for (id, branch) in (301..).zip([
+        "main",
+        "gh-readonly-queue/main/pr-9-1",
+        "train/2026-10",
+        "release/0.4",
+    ]) {
+        let t = Test::new();
+        let mut body = job("cortexkit/claustrum", id);
+        body["run_id"] = json!(id);
+        body["head_branch"] = json!(branch);
+        body["actor"] = json!("some-contributor");
+        body["head_repo_is_fork"] = json!(true);
+        t.ci(body);
+        assert_eq!(t.writes()[0]["action"], "wake", "{branch}");
+    }
 }
 
 #[test]
