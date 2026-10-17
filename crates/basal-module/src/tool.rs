@@ -1,10 +1,13 @@
 //! Basal's provider surface. Only the principal and scope stamped by the daemon
 //! on the inbound route supply caller authority; model arguments never do.
 
-use cortexkit_role_tool_provider::CallMode;
-use cortexkit_role_tool_provider::catalog::{
-    CatalogAnswer, CatalogRequest, CatalogTool, check_modes, composition_digest, schema_digest,
-    serves_call_mode,
+use cortexkit_role_tool_provider::{
+    CATALOG_CAPABILITY_FILTER, CallMode,
+    catalog::{
+        CatalogAnswer, CatalogRequest, CatalogTool, check_modes, composition_digest, schema_digest,
+        select_by_capabilities, serves_call_mode,
+    },
+    describe::{Major, RoleDescribe},
 };
 use serde_json::{Value, json};
 use subc_protocol::{ErrorBody, Principal, scope::ScopeStamp};
@@ -58,7 +61,40 @@ pub fn check_call_mode(name: &str, mode: &CallMode) -> Result<(), ErrorBody> {
 }
 
 pub fn describe() -> Value {
-    json!({"majors":[{"version":"tool-provider/v1","ops":["role.describe","tool.catalog","tool.withdraw","late_results","late_results.ack"],"stability":"alpha"}],"implementation_version":env!("CARGO_PKG_VERSION")})
+    let tools = catalog_tools();
+    let describe = RoleDescribe::new(
+        vec![Major {
+            version: "tool-provider/v1".into(),
+            ops: vec![
+                "role.describe".into(),
+                "tool.catalog".into(),
+                "tool.withdraw".into(),
+                "late_results".into(),
+                "late_results.ack".into(),
+            ],
+            stability: "alpha".into(),
+        }],
+        env!("CARGO_PKG_VERSION"),
+    )
+    .with_capabilities(vec![CATALOG_CAPABILITY_FILTER.into()])
+    .with_tool_capabilities(
+        tools
+            .iter()
+            .flat_map(|tool| tool.capabilities.iter().cloned()),
+    );
+    serde_json::to_value(describe).expect("role description is serializable")
+}
+
+fn catalog_tools() -> Vec<CatalogTool> {
+    vec![catalog_tool(), crate::flow_tool::catalog_tool()]
+}
+
+fn catalog_content_digest(answer: &CatalogAnswer) -> String {
+    let mut content = answer.clone();
+    content.catalog_digest.clear();
+    blake3::hash(&serde_json::to_vec(&content).expect("catalog answer is serializable"))
+        .to_hex()
+        .to_string()
 }
 
 pub fn catalog(arguments: Value) -> Result<Value, ErrorBody> {
@@ -70,22 +106,17 @@ pub fn catalog(arguments: Value) -> Result<Value, ErrorBody> {
     if request.system_text.is_some() {
         return Err(invalid("system_text", "basal supplies no system text"));
     }
-    let mut tools = vec![catalog_tool(), crate::flow_tool::catalog_tool()];
-    for (key, value) in &request.params {
-        if key != "exclude" {
-            return Err(invalid(&format!("params.{key}"), "unknown catalog axis"));
-        }
-        let names = value
-            .as_array()
-            .ok_or_else(|| invalid("params.exclude", "expected tool names"))?;
-        for name in names {
-            let name = name
-                .as_str()
-                .ok_or_else(|| invalid("params.exclude", "expected tool names"))?;
-            tools.retain(|tool| tool.name != name);
-        }
-    }
-    let mut answer = CatalogAnswer::new("", "").with_tools(tools);
+    let full_tools = catalog_tools();
+    let generation =
+        blake3::hash(&serde_json::to_vec(&full_tools).expect("catalog tools are serializable"))
+            .to_hex()
+            .to_string();
+    let tools = select_by_capabilities(&request.params, &full_tools)?
+        .into_iter()
+        .cloned()
+        .collect();
+    let mut answer = CatalogAnswer::new(generation, "").with_tools(tools);
+
     answer
         .capabilities
         .insert("late_results".into(), true.into());
@@ -95,10 +126,8 @@ pub fn catalog(arguments: Value) -> Result<Value, ErrorBody> {
                 .map_err(|e| invalid("composition", e.to_string()))?,
         );
     }
-    answer.catalog_digest = blake3::hash(serde_json::to_string(&answer).unwrap().as_bytes())
-        .to_hex()
-        .to_string();
-    answer.generation = answer.catalog_digest.clone();
+    answer.catalog_digest = catalog_content_digest(&answer);
+
     if request.digest_only == Some(true) {
         return Ok(json!({"generation":answer.generation,"catalog_digest":answer.catalog_digest}));
     }
@@ -126,6 +155,7 @@ pub struct Context {
     pub scope: Option<ScopeStamp>,
     pub bind_identity: subc_protocol::BindIdentity,
     pub call_mode: CallMode,
+    pub consumer_capabilities: Option<Vec<String>>,
 }
 
 impl Context {

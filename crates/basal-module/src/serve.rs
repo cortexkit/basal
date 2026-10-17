@@ -54,6 +54,7 @@ struct RouteStamp {
     tool_surface: bool,
     bind_identity: subc_protocol::BindIdentity,
     call_mode: subc_client_rs::CallMode,
+    consumer_capabilities: Option<Vec<String>>,
 }
 
 /// The stamp of every bound route, and the caller each one names.
@@ -77,6 +78,7 @@ impl Routes {
                 scope: request.scope.clone(),
                 bind_identity: request.identity.clone(),
                 call_mode: request.call_mode.clone(),
+                consumer_capabilities: request.consumer_capabilities.clone(),
                 tool_surface: matches!(
                     request.target,
                     subc_protocol::RouteTarget::ToolProvider { .. }
@@ -110,6 +112,7 @@ impl Routes {
             scope: stamp.scope.clone(),
             bind_identity: stamp.bind_identity.clone(),
             call_mode: stamp.call_mode.clone(),
+            consumer_capabilities: stamp.consumer_capabilities.clone(),
         })
     }
 }
@@ -212,6 +215,9 @@ impl BasalHandler {
         if let Err(error) = crate::tool::check_call_mode(&request.name, &context.call_mode) {
             return tool_error(error);
         }
+        let accepts_content_v1 = cortexkit_role_tool_provider::consumer_reads_content_v1(
+            context.consumer_capabilities.as_deref(),
+        );
         let module = match &*lock(&self.phase) {
             Phase::Ready(module) => module.clone(),
             _ => {
@@ -222,8 +228,9 @@ impl BasalHandler {
             }
         };
         if request.name == "flow" {
-            return tool_outcome(
+            return tool_result_outcome(
                 tokio::task::spawn_blocking(move || module.flow_tool(&context, &request)).await,
+                accepts_content_v1,
             );
         }
         if request.name != "codemode" {
@@ -255,8 +262,8 @@ impl BasalHandler {
         let waiting = tokio::task::spawn_blocking(move || codemode.wait(&waiting_id, timeout));
         tokio::select! {
             outcome = waiting => match outcome {
-                Ok(Ok(Some(result))) => tool_response(result),
-                Ok(Ok(None)) if keyed => tool_response(crate::codemode::running(&id)),
+                Ok(Ok(Some(result))) => tool_result_response(result, accepts_content_v1),
+                Ok(Ok(None)) if keyed => tool_result_response(crate::codemode::running(&id), accepts_content_v1),
                 Ok(Ok(None)) => tool_error(subc_protocol::ErrorBody::new("outcome_unknown","keyless codemode reply was lost")),
                 Ok(Err(error)) => tool_error(error),
                 Err(error) => tool_error(subc_protocol::ErrorBody::new("internal",error.to_string())),
@@ -268,7 +275,7 @@ impl BasalHandler {
                     codemode.wait(&id, Duration::ZERO)
                 }).await;
                 match outcome {
-                    Ok(Ok(Some(result))) => tool_response(result),
+                    Ok(Ok(Some(result))) => tool_result_response(result, accepts_content_v1),
                     Ok(Ok(None)) => tool_error(subc_protocol::ErrorBody::new("cancelled","codemode cancelled")),
                     Ok(Err(error)) => tool_error(error),
                     Err(error) => tool_error(subc_protocol::ErrorBody::new("internal",error.to_string())),
@@ -560,6 +567,44 @@ fn tool_response(value: Value) -> HandlerOutcome {
             "encode_failed",
             error.to_string(),
         )),
+    }
+}
+
+fn tool_result_response(value: Value, accepts_content_v1: bool) -> HandlerOutcome {
+    if accepts_content_v1 {
+        tool_response(value)
+    } else {
+        tool_response(legacy_tool_result(value))
+    }
+}
+
+fn legacy_tool_result(value: Value) -> Value {
+    let Some(text) = value
+        .get("content")
+        .and_then(Value::as_array)
+        .and_then(|content| content.first())
+        .and_then(|part| part.get("text"))
+        .and_then(Value::as_str)
+    else {
+        return value;
+    };
+    let Some(fields) = value.get("structuredContent").and_then(Value::as_object) else {
+        return value;
+    };
+    // Legacy callers receive the same text and machine fields in one JSON object.
+    let mut legacy = fields.clone();
+    legacy.insert("text".into(), Value::String(text.to_owned()));
+    Value::Object(legacy)
+}
+
+fn tool_result_outcome(
+    outcome: Result<Result<Value, subc_protocol::ErrorBody>, tokio::task::JoinError>,
+    accepts_content_v1: bool,
+) -> HandlerOutcome {
+    match outcome {
+        Ok(Ok(value)) => tool_result_response(value, accepts_content_v1),
+        Ok(Err(error)) => tool_error(error),
+        Err(error) => tool_error(subc_protocol::ErrorBody::new("internal", error.to_string())),
     }
 }
 

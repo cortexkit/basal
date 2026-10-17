@@ -339,11 +339,7 @@ impl<H: Copy + Eq> ScopedRoutes<H> {
 
 impl FlowScope {
     pub fn selector(&self) -> ScopeSelector {
-        ScopeSelector {
-            owner: self.owner.clone(),
-            scope_ref: self.scope_ref.clone(),
-            scope_epoch: Some(self.epoch),
-        }
+        ScopeSelector::new(self.owner.clone(), self.scope_ref.clone(), Some(self.epoch))
     }
 }
 

@@ -75,11 +75,11 @@ fn read_scope(context: &Context) -> Result<ScopeSelector, ErrorBody> {
             && scope.scope_ref.len() > "flow-read/".len()
             && scope.kind == ScopeKind::Ephemeral
     }).ok_or_else(|| ErrorBody::new("flow_read_scope_missing", "install needs core's ephemeral flow-read scope"))?;
-    Ok(ScopeSelector {
-        owner: scope.owner.clone(),
-        scope_ref: scope.scope_ref.clone(),
-        scope_epoch: Some(scope.scope_epoch),
-    })
+    Ok(ScopeSelector::new(
+        scope.owner.clone(),
+        scope.scope_ref.clone(),
+        Some(scope.scope_epoch),
+    ))
 }
 
 impl Module {

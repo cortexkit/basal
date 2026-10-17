@@ -41,8 +41,8 @@ cortexkit-test-support = "=0.1.8"
 # busy timeout, and versioned migrations. Pinned exactly, as astrocyte does.
 cortexkit-store = { version = "=0.2.4", features = ["sqlite"] }
 cortexkit-store-types = "0.2.2"
-cortexkit-role-tool-provider = "=0.7.2"
-cortexkit-role-tool-provider-conformance = "=0.7.1"
+cortexkit-role-tool-provider = "=0.9.0"
+cortexkit-role-tool-provider-conformance = "=0.9.0"
 # The provider-owned resource-busy refusal is shared across the fleet.
 cortexkit-resource-busy = { git = "https://github.com/cortexkit/commons", rev = "c46f324133c5df6411703714e4c147f7cc8554a0" }
 # The driver cortexkit-store is built on. basal-core writes its own queries
@@ -64,10 +64,10 @@ sha2 = "0.10"
 # The module shell. subc-client-rs owns HELLO, route binding, health and the
 # frame lifecycle; subc-protocol is the manifest and route vocabulary it
 # speaks. Keep the scope-stamp reader current with the protocol.
-subc-client-rs = "0.28.0"
-subc-os = "0.1.15"
-subc-protocol = "0.31.0"
-subc-transport = "0.12.0"
+subc-client-rs = "0.29.3"
+subc-os = "0.1.17"
+subc-protocol = "0.32.4"
+subc-transport = "0.13.0"
 async-trait = "0.1"
 async-nats = { version = "0.50", default-features = false, features = ["jetstream", "kv", "nkeys", "nuid", "ring", "server_2_10"] }
 cortexkit-bus-naming = "=0.2.0"
