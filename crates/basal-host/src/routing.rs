@@ -235,7 +235,10 @@ impl RoutingHost {
         match kind {
             CallKind::Op { .. } | CallKind::OpFor { .. } => self.ops.as_ref(),
             CallKind::Primitive(
-                Primitive::SinkDigest | Primitive::SinkStatus | Primitive::Facts,
+                Primitive::SinkDigest
+                | Primitive::SinkStatus
+                | Primitive::SinkBoard
+                | Primitive::Facts,
             ) => self.core.as_ref(),
             CallKind::Primitive(p) if p.is_builtin() => self.builtins.as_ref(),
             _ => self.model.as_ref(),
@@ -278,6 +281,7 @@ impl Host for RoutingHost {
                     | Primitive::Classify
                     | Primitive::SinkDigest
                     | Primitive::SinkStatus
+                    | Primitive::SinkBoard
                     | Primitive::Facts
             )
         {

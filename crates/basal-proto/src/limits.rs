@@ -2,7 +2,7 @@
 //! side will read before it allocates, independent of any activation budget.
 
 /// The current protocol version, exchanged in the handshake.
-pub const PROTOCOL_VERSION: u32 = 9;
+pub const PROTOCOL_VERSION: u32 = 10;
 
 /// Linux codemode process ceiling, including the 64 MiB JS heap, native
 /// stacks, executable mappings and allocator overhead.

@@ -161,7 +161,7 @@ impl ScriptHost {
                             .unwrap_or(&Value::Null),
                     ),
                 ),
-                Primitive::SinkDigest | Primitive::SinkStatus => {
+                Primitive::SinkDigest | Primitive::SinkStatus | Primitive::SinkBoard => {
                     ready(Settlement::Fulfilled, text(&json!({"accepted": true})))
                 }
                 Primitive::KvGet => ready(Settlement::Fulfilled, JsonText::null()),

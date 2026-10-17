@@ -282,11 +282,11 @@ impl Host for CoreHost {
     fn classify(&self, kind: &CallKind) -> CallClass {
         match kind {
             CallKind::Primitive(Primitive::Facts) => CallClass::Query,
-            CallKind::Primitive(Primitive::SinkDigest | Primitive::SinkStatus) => {
-                CallClass::Mutation {
-                    honours_idempotency_keys: true,
-                }
-            }
+            CallKind::Primitive(
+                Primitive::SinkDigest | Primitive::SinkStatus | Primitive::SinkBoard,
+            ) => CallClass::Mutation {
+                honours_idempotency_keys: true,
+            },
             _ => CallClass::Mutation {
                 honours_idempotency_keys: false,
             },
@@ -296,20 +296,35 @@ impl Host for CoreHost {
         let (p, op) = match request.kind {
             CallKind::Primitive(Primitive::SinkDigest) => (Primitive::SinkDigest, "sink.digest"),
             CallKind::Primitive(Primitive::SinkStatus) => (Primitive::SinkStatus, "sink.status"),
+            CallKind::Primitive(Primitive::SinkBoard) => (Primitive::SinkBoard, "sink.board"),
             CallKind::Primitive(Primitive::Facts) => (Primitive::Facts, "agent.facts"),
             _ => return outcome(Err(WireError::NeverSent("not a core call".into()))),
         };
         let params = serde_json::from_str(request.args.as_str())
             .map_err(|e| WireError::NeverSent(e.to_string()));
-        outcome(
-            params
-                .and_then(|v| {
-                    self.transport
-                        .management(CORE, op, v)
-                        .map_err(|e| crate::transport::contextual(e, CORE, op))
+        outcome(params.and_then(|mut v: Value| {
+            if p == Primitive::SinkBoard {
+                v["receipt_key"] = json!(request.idempotency_key);
+            }
+            let operation = v["operation"]["op"].as_str().map(str::to_owned);
+            self.transport
+                .management(CORE, op, v)
+                .map_err(|e| crate::transport::contextual(e, CORE, op))
+                .map_err(|e| {
+                    if p == Primitive::SinkBoard {
+                        board_refusal(e)
+                    } else {
+                        e
+                    }
                 })
-                .and_then(|v| validate_reply(p, v)),
-        )
+                .and_then(|v| {
+                    if p == Primitive::SinkBoard {
+                        validate_board_reply(operation.as_deref(), v)
+                    } else {
+                        validate_reply(p, v)
+                    }
+                })
+        }))
     }
     crate::live_host_services!();
     fn install_status(&self, flow_id: &str, version: u32) -> Result<InstallStatus, TransportError> {
@@ -357,6 +372,47 @@ impl Host for CoreHost {
         decode()
             .map_err(|detail| TransportError::maybe_sent(UnknownReason::ReplyUnreadable, detail))
     }
+}
+
+fn validate_board_reply(operation: Option<&str>, value: Value) -> Result<Value, WireError> {
+    let valid = value.is_object()
+        && match operation {
+            Some("append") => {
+                value.as_object().is_some_and(|o| o.len() == 2)
+                    && value["lane_id"].as_str().is_some_and(|s| !s.is_empty())
+                    && value["item_id"].as_str().is_some_and(|s| !s.is_empty())
+            }
+            Some("set_state" | "retire") => true,
+            _ => false,
+        };
+    if valid {
+        Ok(value)
+    } else {
+        Err(WireError::Unreadable(
+            "unrecognised sink.board reply".into(),
+        ))
+    }
+}
+
+fn board_refusal(error: WireError) -> WireError {
+    use crate::flow_refusal::{FlowRefusal, RefusalReason};
+    let code = match &error {
+        WireError::Refused { code, .. } | WireError::RefusedDetails { code, .. } => code.as_str(),
+        _ => return error,
+    };
+    let reason = match code {
+        "sink_store_failed" => RefusalReason::SinkStoreFailed,
+        "sink_audience_unavailable" => RefusalReason::SinkAudienceUnavailable,
+        "sink_audience_check_required" => {
+            tracing::error!(
+                code,
+                "core could not check the audience on basal's sink.board carrier route"
+            );
+            return error;
+        }
+        _ => return error,
+    };
+    WireError::Typed(FlowRefusal::new(reason, CORE, "sink.board"))
 }
 pub(crate) fn system_now() -> f64 {
     basal_proto::util::unix_millis() as f64

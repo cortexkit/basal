@@ -91,6 +91,10 @@ pub struct Manifest {
     /// Agents whose boards the flow may read with prefrontal-core's `board.read`.
     #[serde(default)]
     pub board_read: Vec<String>,
+    /// Boards where the flow may add and update its own items. Each grant also
+    /// names the approved title for the lane grouping that flow's items.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub board: Vec<BoardGrant>,
     #[serde(default)]
     pub claims: Vec<Claim>,
     #[serde(default)]
@@ -189,6 +193,14 @@ pub struct SinkGrant {
     /// policy.
     #[serde(default)]
     pub break_through: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BoardGrant {
+    pub agent: String,
+    #[serde(default)]
+    pub title: String,
 }
 
 /// Core checks membership in this reach when it delivers a sink write.
@@ -778,6 +790,19 @@ impl Manifest {
             check_sink("board_read", agent)?;
         }
         check_list("board_read", self.board_read.iter().cloned())?;
+        for grant in &self.board {
+            check_sink("board.agent", &grant.agent)?;
+            if grant.title.trim().is_empty() {
+                return Err(invalid("board.title", "missing board lane title"));
+            }
+            if grant.title.chars().count() > 56 {
+                return Err(invalid("board.title", "longer than 56 characters"));
+            }
+            if grant.title.chars().any(char::is_control) {
+                return Err(invalid("board.title", "contains a control character"));
+            }
+        }
+        check_list("board", self.board.iter().map(|g| g.agent.clone()))?;
         for c in &self.claims {
             check_agent("claims.agent", &c.agent)?;
             check_name(
@@ -1060,6 +1085,12 @@ impl Manifest {
         );
         out.extend(self.claims.iter().map(|c| ("claims", c.agent.as_str())));
         out.extend(
+            self.board
+                .iter()
+                .filter(|g| g.agent != AUDIENCE_TARGET)
+                .map(|g| ("board", g.agent.as_str())),
+        );
+        out.extend(
             self.board_read
                 .iter()
                 .filter(|a| a.as_str() != AUDIENCE_TARGET)
@@ -1080,6 +1111,10 @@ impl Manifest {
 #[cfg(test)]
 #[path = "board_read_tests.rs"]
 mod board_read_tests;
+
+#[cfg(test)]
+#[path = "board_sink_tests.rs"]
+mod board_sink_tests;
 
 #[cfg(test)]
 mod tests {

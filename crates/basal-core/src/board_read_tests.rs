@@ -49,12 +49,12 @@ fn board_read_requires_nonempty_string_references_and_rejects_duplicates() {
     let mut value = manifest();
     value["board_read"] = json!(["SYNAPSE", "ALF"]);
     assert!(Manifest::parse(&value.to_string()).is_ok());
-    value["board"] = json!([]);
+    value["board_write"] = json!([]);
     assert!(matches!(
         Manifest::parse(&value.to_string()),
         Err(ManifestError::Decode(_))
     ));
-    value.as_object_mut().unwrap().remove("board");
+    value.as_object_mut().unwrap().remove("board_write");
     value["board_read"] = json!(["SYNAPSE", "SYNAPSE"]);
     assert!(
         matches!(Manifest::parse(&value.to_string()), Err(ManifestError::Duplicate { field, .. }) if field == "board_read")

@@ -1,0 +1,30 @@
+[[control]]
+id = "board-sink-target-grant-before-dispatch"
+guards = "Board writes without an approved target grant are provably unsent"
+test_file = "crates/basal-module/tests/hosts/board_sink.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test hosts"
+platforms = ["linux"]
+expect_red = ["board_sink::board_target_refusal_is_unsent_and_final_refusals_reach_script"]
+select = { tests = ["board_sink::board_target_refusal_is_unsent_and_final_refusals_reach_script", "board_sink::board_operations_pin_stamped_wire_bytes_and_receipts"] }
+only = true
+file = "crates/basal-core/src/authorize.rs"
+scope = { after = "Primitive::SinkBoard => {", before = "Primitive::SinkStatus => {" }
+old = "if manifest.board.iter().any(|g| {"
+new = "if true || manifest.board.iter().any(|g| { // NON-VACUITY BREAK"
+
+[[control]]
+id = "board-sink-title-character-cap"
+guards = "Board lane titles over 56 characters are refused before install"
+test_file = "crates/basal-core/src/board_sink_tests.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+platforms = ["linux"]
+expect_red = ["manifest::board_sink_tests::board_manifest_validates_titles_and_targets"]
+select = { tests = ["manifest::board_sink_tests::board_manifest_validates_titles_and_targets", "manifest::board_sink_tests::board_grants_resolve_self_and_enforce_author_ownership"] }
+only = true
+file = "crates/basal-core/src/manifest.rs"
+old = "if grant.title.chars().count() > 56 {"
+new = "if grant.title.chars().count() > 57 { // NON-VACUITY BREAK"

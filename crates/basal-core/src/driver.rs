@@ -1076,11 +1076,28 @@ impl Activation<'_> {
         };
         if matches!(
             call.kind,
-            CallKind::Primitive(Primitive::SinkDigest | Primitive::SinkStatus | Primitive::Facts)
+            CallKind::Primitive(
+                Primitive::SinkDigest
+                    | Primitive::SinkStatus
+                    | Primitive::SinkBoard
+                    | Primitive::Facts
+            )
         ) && args["agent"] == "$self"
             && let Some(agent) = self.input["agent_id"].as_str()
         {
             args["agent"] = Value::String(agent.to_owned());
+        }
+        if matches!(call.kind, CallKind::Primitive(Primitive::SinkBoard)) {
+            let agent = args["agent"]
+                .as_str()
+                .and_then(|a| self.rt.catalog().agent_id(a))
+                .ok_or_else(|| {
+                    Refusal::new(
+                        "sink_board_target_not_granted",
+                        "board target could not be resolved",
+                    )
+                })?;
+            args["agent"] = Value::String(agent);
         }
         if matches!(call.kind, CallKind::Primitive(Primitive::SinkDigest))
             && args.get("action").is_none_or(Value::is_null)
@@ -1264,6 +1281,28 @@ impl Activation<'_> {
                     request: Some(request),
                     tokens: Some(clamped.reserve),
                     args: None,
+                })
+            }
+            CallKind::Primitive(Primitive::SinkBoard) => {
+                let version = self
+                    .run
+                    .flow_version
+                    .ok_or_else(|| Refusal::denied("core calls require an installed version"))?;
+                // Record the flow version, code hash and board operation before
+                // sending, so recovery cannot switch to a newer install. The
+                // host adds receipt_key from this call's journal idempotency key
+                // so core can return the original result after a lost reply.
+                let value = serde_json::json!({
+                    "stamp": {"flow_id":self.run.flow_id, "flow_version":version,
+                        "code_hash":crate::ids::hex(&self.run.code_hash)},
+                    "agent":args["agent"], "operation":args["operation"],
+                });
+                Ok(Prepared {
+                    request: Some(
+                        JsonText::new(value.to_string())
+                            .map_err(|e| Refusal::new(codes::TOO_LARGE, e.to_string()))?,
+                    ),
+                    ..Prepared::default()
                 })
             }
             CallKind::Primitive(

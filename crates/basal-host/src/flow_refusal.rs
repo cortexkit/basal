@@ -26,6 +26,7 @@ pub enum RefusalReason {
     SinkTargetNotInAudience,
     FlowNotApproved,
     SinkAudienceUnavailable,
+    SinkStoreFailed,
     FlowHasNoAudience,
     ScopeExpiryTooFar,
     FlowTargetScopePrincipalRefused,
@@ -53,6 +54,7 @@ impl RefusalReason {
             Self::SinkTargetNotInAudience => "sink_target_not_in_audience",
             Self::FlowNotApproved => "flow_not_approved",
             Self::SinkAudienceUnavailable => "sink_audience_unavailable",
+            Self::SinkStoreFailed => "sink_store_failed",
             Self::FlowHasNoAudience => "flow_has_no_audience",
             Self::ScopeExpiryTooFar => "scope_expiry_too_far",
             Self::FlowTargetScopePrincipalRefused => "flow_target_scope_principal_refused",
@@ -130,6 +132,7 @@ impl FlowRefusal {
             RefusalReason::SinkAudienceUnavailable => {
                 "core cannot currently read the install audience"
             }
+            RefusalReason::SinkStoreFailed => "core could not store the board write",
             RefusalReason::FlowHasNoAudience => "the approved flow has no audience",
             RefusalReason::ScopeExpiryTooFar => {
                 "the requested scope lifetime exceeds the approved run bound"

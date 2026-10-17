@@ -66,11 +66,12 @@ fn instance_ids_match_all_shared_vectors() {
 #[test]
 fn packages_require_self_in_every_agent_field() {
     let f = setup("pkg-self-only");
-    for field in ["sinks", "status", "claims", "facts", "board_read"] {
+    for field in ["sinks", "status", "claims", "facts", "board_read", "board"] {
         let mut m = manifest(1);
         match field {
             "sinks" => m["sinks"][0]["agent"] = json!("SYNAPSE"),
             "status" => m["status"] = json!(["SYNAPSE"]),
+            "board" => m["board"] = json!([{"agent":"SYNAPSE","title":"Work"}]),
             "claims" => m["claims"][0]["agent"] = json!("SYNAPSE"),
             "board_read" => {
                 m["board_read"] = json!(["SYNAPSE"]);
@@ -94,11 +95,12 @@ fn packages_require_self_in_every_agent_field() {
 #[test]
 fn ordinary_installs_refuse_self_in_every_agent_field() {
     let f = setup("pkg-install-self");
-    for field in ["sinks", "status", "claims", "facts", "board_read"] {
+    for field in ["sinks", "status", "claims", "facts", "board_read", "board"] {
         let mut m = events_manifest("ordinary");
         match field {
             "sinks" => m["sinks"][0]["agent"] = json!("$self"),
             "status" => m["status"] = json!(["$self"]),
+            "board" => m["board"] = json!([{"agent":"$self","title":"Work"}]),
             "claims" => m["claims"] = json!([{"agent":"$self","source_kind":"idleness"}]),
             "board_read" => {
                 m["board_read"] = json!(["$self"]);

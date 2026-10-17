@@ -1,4 +1,6 @@
 //! Wire fixtures verify request and reply formats without connecting to a daemon.
+#[path = "hosts/board_sink.rs"]
+mod board_sink;
 mod common;
 mod wire;
 use std::sync::{Arc, Mutex};
@@ -1036,6 +1038,10 @@ fn journaled_sink_intent_is_byte_identical_after_a_cut() {
             "await sink.status('SYNAPSE','ready'); return 1;",
         ),
         ("agent.facts", "await facts('SYNAPSE'); return 1;"),
+        (
+            "sink.board",
+            "await sink.board.append('SYNAPSE','work'); return 1;",
+        ),
     ] {
         let dir = common::scratch("core-cut");
         let clock = Clock::manual(common::T0);
@@ -1073,6 +1079,7 @@ fn journaled_sink_intent_is_byte_identical_after_a_cut() {
         .unwrap();
         let mut tagged_manifest = manifest();
         tagged_manifest["sinks"][0]["status_group"] = json!("GH");
+        tagged_manifest["board"] = json!([{"agent":"SYNAPSE","title":"Work"}]);
         module
             .handle(
                 &Caller::Operator,
@@ -1127,7 +1134,15 @@ fn journaled_sink_intent_is_byte_identical_after_a_cut() {
         if op == "sink.status" {
             assert_eq!(sent[1]["params"]["revision"], common::T0);
         }
-        assert_eq!(sent[1]["params"]["flow_version"], 1);
+        if op == "sink.board" {
+            assert_eq!(sent[1]["params"]["stamp"]["flow_version"], 1);
+            assert_eq!(
+                sent[1]["params"]["receipt_key"],
+                module.rt.calls(&run).unwrap()[0].idempotency_key
+            );
+        } else {
+            assert_eq!(sent[1]["params"]["flow_version"], 1);
+        }
         module.pool.stop();
         consent.attach(Arc::new(Decisions::default()));
         drop(module);

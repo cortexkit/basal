@@ -158,7 +158,7 @@ fn grant_decision_migration_preserves_existing_cards_and_named_indexes() {
 }
 
 /// A store opened the normal way, through every migration, carries the
-/// journal table migration 16 last rebuilt. Its refusal list, not the list an
+/// journal table the latest migration rebuilt. Its refusal list, not the list an
 /// earlier migration created, decides which refusals a deferred call may hold.
 #[test]
 fn current_store_refuses_a_deferred_call_with_a_refusal_outside_the_closed_set() {
@@ -267,4 +267,41 @@ fn target_scope_migration_preserves_existing_calls_and_children() {
             .unwrap()
             .is_none()
     );
+}
+
+#[test]
+fn board_deferral_migration_preserves_calls_children_and_indexes() {
+    let conn = old_store();
+    for migration in MIGRATIONS.iter().filter(|m| (9..33).contains(&m.version)) {
+        conn.execute_batch(migration.statements).unwrap();
+    }
+    let count = conn
+        .prepare("SELECT * FROM journal")
+        .unwrap()
+        .column_count();
+    let before = rows(&conn, "journal", count);
+    let mailbox = rows(&conn, "mailbox", 9);
+    let broca = rows(&conn, "broca_calls", 4);
+    let indexes = || {
+        conn.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name IN ('journal','mailbox','broca_calls') ORDER BY name").unwrap()
+        .query_map([], |r| r.get::<_, String>(0)).unwrap().collect::<Result<Vec<_>,_>>().unwrap()
+    };
+    let before_indexes = indexes();
+    conn.execute_batch(BOARD_DEFERRALS).unwrap();
+    assert_eq!(rows(&conn, "journal", count), before);
+    assert_eq!(rows(&conn, "mailbox", 9), mailbox);
+    assert_eq!(rows(&conn, "broca_calls", 4), broca);
+    assert_eq!(indexes(), before_indexes);
+    assert!(
+        conn.prepare("PRAGMA foreign_key_check")
+            .unwrap()
+            .query([])
+            .unwrap()
+            .next()
+            .unwrap()
+            .is_none()
+    );
+    for code in ["sink_store_failed", "sink_audience_unavailable"] {
+        conn.execute("UPDATE journal SET dispatch='deferred',refusal=?1,retry_not_before=100,refusal_detail=json_object('reason',?1,'provider','prefrontal-core','action','sink.board') WHERE position=0", [code]).unwrap();
+    }
 }
