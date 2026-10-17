@@ -1358,7 +1358,8 @@ fn a_merged_delivery_nudges_its_owner_twenty_minutes_after_it_is_first_seen() {
     // An unchanged list is never rewritten, however much time passes.
     assert!(t.run(BASE + 40 * MIN).is_empty());
     assert!(t.run(BASE + 3 * HOUR).is_empty());
-    // A new dependent changes what the list shows: it updates without waking.
+    // A new dependent changes what the list shows: the owner's digest is
+    // replaced with a silent update, not a wake, because no delivery joined.
     let mut page = vector("reply-merged-blocked.json");
     page["items"][0]["blocks"]
         .as_array_mut()
