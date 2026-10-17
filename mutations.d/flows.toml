@@ -670,3 +670,54 @@ timeout_s = 600
 file = "flows/github-events/flow.js"
 old = "const echo = starter != null ?"
 new = "const echo = false ? // NON-VACUITY BREAK"
+
+[[control]]
+id = "github-events-reaction-only-on-opened"
+guards = "only a newly opened issue or PR reacts; updates and releases never react"
+test_file = "crates/basal-module/tests/github_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test github_events"
+select = { tests = ["updates_and_releases_never_react", "opened_issue_wakes_its_owner_and_reacts_once_with_the_pinned_request"] }
+expect_red = ["updates_and_releases_never_react"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/github-events/flow.js"
+old = "const react = isNew && !prior?.reacted;"
+new = "const react = !prior?.reacted; // NON-VACUITY BREAK"
+
+[[control]]
+id = "github-events-delivery-survives-reaction-failure"
+guards = "a refused reaction leaves the digest delivered and records its code instead of failing the run"
+test_file = "crates/basal-module/tests/github_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test github_events"
+select = { tests = ["a_reaction_refusal_still_delivers_the_digest_and_records_its_code", "opened_issue_wakes_its_owner_and_reacts_once_with_the_pinned_request"] }
+expect_red = ["a_reaction_refusal_still_delivers_the_digest_and_records_its_code"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/github-events/flow.js"
+old = "    code = String(error?.data?.code ?? error?.data?.error?.code ?? 'github_react_failed');"
+new = "    throw error; // NON-VACUITY BREAK"
+
+[[control]]
+id = "github-events-owner-is-sink-target"
+guards = "each accepted event is delivered to its repository's owner, not a fixed agent"
+test_file = "crates/basal-module/tests/github_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test github_events"
+select = { tests = ["opened_issue_wakes_its_owner_and_reacts_once_with_the_pinned_request", "operator_plus_another_human_is_delivered"] }
+expect_red = ["opened_issue_wakes_its_owner_and_reacts_once_with_the_pinned_request"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/github-events/flow.js"
+old = "await sink.digest(owner, item, comparison.would_action, { replace_key: key });"
+new = "await sink.digest('agent_fff43bb5f4bea20b', item, comparison.would_action, { replace_key: key }); // NON-VACUITY BREAK"

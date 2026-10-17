@@ -1,5 +1,6 @@
-//! Execute the shipped GitHub shadow with synthetic issue/PR event bodies.
-//! The worker resolves each notice and verifies its body digest before routing.
+//! Execute the shipped GitHub events flow with synthetic issue/PR event bodies.
+//! The worker resolves each notice and verifies its body digest before routing,
+//! then delivers to the repository's owner and reacts on newly opened items.
 mod common;
 
 use std::collections::BTreeMap;
@@ -19,8 +20,8 @@ use sha2::{Digest, Sha256};
 
 const MANIFEST: &str = include_str!("../../../flows/github-events/manifest.json");
 const SCRIPT: &str = include_str!("../../../flows/github-events/flow.js");
-const ALF: &str = "agent_fff43bb5f4bea20b";
 const BASAL: &str = "agent_12eb4c0c42cecdb5";
+const PLEX: &str = "agent_309edd5e94fbb2fe";
 const EVENTS: [&str; 3] = [
     "github_issue_changed",
     "github_pr_changed",
@@ -33,6 +34,10 @@ struct GithubHost {
     bodies: Mutex<BTreeMap<String, Value>>,
     writes: Mutex<Vec<Value>>,
     items: Mutex<BTreeMap<String, Value>>,
+    /// Raw journaled envelopes of every targeted `github_react` call.
+    reactions: Mutex<Vec<String>>,
+    /// What `github_react` answers; a fulfilled `{ok:true}` when unset.
+    react_outcome: Mutex<Option<HostOutcome>>,
 }
 
 fn text(value: Value) -> JsonText {
@@ -44,8 +49,6 @@ impl GithubHost {
         let args: Value = serde_json::from_str(request.args.as_str()).unwrap();
         match &request.kind {
             CallKind::Primitive(Primitive::SinkDigest) => {
-                assert_eq!(args["agent"], ALF, "shadow must never target an owner");
-                assert_eq!(args["action"], "silent", "shadow must never wake");
                 let item = &args["item"];
                 assert!(item["title"].as_str().unwrap().chars().count() <= 200);
                 assert!(item["body"].as_str().unwrap().len() <= 4096);
@@ -66,7 +69,22 @@ impl GithubHost {
                     "event_key":args["event_key"], "event_name":args["event_name"]
                 }))))
             }
-            CallKind::Op { .. } => panic!("shadow made a non-events_get op: {request:?}"),
+            CallKind::OpFor { module, op } if module == "plexus" && op == "github_react" => {
+                self.reactions
+                    .lock()
+                    .unwrap()
+                    .push(request.args.as_str().to_owned());
+                Some(
+                    self.react_outcome
+                        .lock()
+                        .unwrap()
+                        .clone()
+                        .unwrap_or_else(|| HostOutcome::fulfilled(text(json!({"ok":true})))),
+                )
+            }
+            CallKind::Op { .. } | CallKind::OpFor { .. } => {
+                panic!("flow made an unexpected op: {request:?}")
+            }
             _ => None,
         }
     }
@@ -130,6 +148,24 @@ impl Test {
                 shell_capable: false,
             },
         );
+        // A reaction is a mutation on the module whose events trigger this
+        // flow, so install needs it to declare cause_echo.
+        catalog.set_op(
+            "plexus",
+            "github_react",
+            OpDecl {
+                kind: Some(OpKind::Mutate),
+                cause_echo: true,
+                shell_capable: false,
+            },
+        );
+        // Targeted calls resolve the owner through the agent registry.
+        for owner in owners(SCRIPT)
+            .split('\'')
+            .filter(|part| part.starts_with("agent_"))
+        {
+            catalog.add_agent(owner);
+        }
         for name in EVENTS {
             catalog.set_event(
                 "plexus",
@@ -224,6 +260,16 @@ impl Test {
         self.host.writes.lock().unwrap().clone()
     }
 
+    fn reactions(&self) -> Vec<Value> {
+        self.host
+            .reactions
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|raw| serde_json::from_str(raw).unwrap())
+            .collect()
+    }
+
     fn memory(&self) -> Value {
         let stored: String = self
             .f
@@ -263,19 +309,52 @@ fn item(kind: &str, action: &str) -> Value {
     body
 }
 
+fn owners(script: &str) -> String {
+    script
+        .split_once("const OWNERS = {")
+        .unwrap()
+        .1
+        .split_once("\n};")
+        .unwrap()
+        .0
+        .to_owned()
+}
+
+/// The exact `github_react` arguments, as basal journals them inside the
+/// targeted-call envelope, for an opened item numbered 42 in cortexkit/basal.
+fn pinned_reaction(kind: &str, event: usize) -> String {
+    format!(
+        r#""args":{{"kind":"{kind}","reaction":"eyes","repository":"cortexkit/basal","request_nonce":"github-events:{event:064x}","target":{{"number":42}}}}"#
+    )
+}
+
 #[test]
-fn manifest_has_only_three_v2_repo_events_global_sink_and_events_get() {
+fn manifest_declares_v2_repo_events_global_sink_and_only_a_delegated_react_grant() {
     Manifest::parse(MANIFEST).unwrap();
     let manifest: Value = serde_json::from_str(MANIFEST).unwrap();
-    assert_eq!(manifest["version"], 2);
+    assert_eq!(manifest["version"], 3);
+    // Nothing beyond the trigger, the audience sink and the two ops: no
+    // facts, board, status, claims or model grant.
+    assert_eq!(
+        manifest.as_object().unwrap().keys().collect::<Vec<_>>(),
+        [
+            "audience", "deadline", "format", "id", "ops", "purpose", "sinks", "trigger",
+            "version"
+        ]
+    );
     assert_eq!(manifest["audience"], json!({"kind":"global"}));
     assert_eq!(
         manifest["sinks"],
         json!([{"agent":"$audience", "digest_max":"wake"}])
     );
+    // Only github_react may act as the target agent; the body resolver reads
+    // on the flow's own scope.
     assert_eq!(
         manifest["ops"],
-        json!([{"module":"plexus", "op":"events_get"}])
+        json!([
+            {"module":"plexus", "op":"events_get"},
+            {"module":"plexus", "op":"github_react", "for_target":"delegate"}
+        ])
     );
     assert_eq!(
         manifest["trigger"]["events"],
@@ -286,22 +365,12 @@ fn manifest_has_only_three_v2_repo_events_global_sink_and_events_get() {
         manifest["purpose"]
             .as_str()
             .unwrap()
-            .contains("silently to ALF only")
+            .contains("owning agent")
     );
 }
 
 #[test]
 fn owner_map_matches_router_and_bot_bindings_are_populated() {
-    let owners = |script: &str| {
-        script
-            .split_once("const OWNERS = {")
-            .unwrap()
-            .1
-            .split_once("\n};")
-            .unwrap()
-            .0
-            .to_owned()
-    };
     assert_eq!(
         owners(SCRIPT),
         owners(include_str!("../../../flows/ci-failure-router/flow.js"))
@@ -320,18 +389,26 @@ fn owner_map_matches_router_and_bot_bindings_are_populated() {
 }
 
 #[test]
-fn opened_issue_would_wake_owner_but_sends_only_silently_to_alf() {
+fn opened_issue_wakes_its_owner_and_reacts_once_with_the_pinned_request() {
     let t = Test::new();
     let result = t.event(item("issue", "opened"));
     let writes = t.writes();
     assert_eq!(writes.len(), 1);
-    assert_eq!(writes[0]["item"]["data"]["would_owner"], BASAL);
-    assert_eq!(writes[0]["item"]["data"]["would_action"], "wake");
-    assert_eq!(writes[0]["item"]["data"]["suppressed_reason"], Value::Null);
+    assert_eq!(writes[0]["agent"], BASAL);
+    assert_eq!(writes[0]["action"], "wake");
+    assert_eq!(writes[0]["replace_key"], "github:cortexkit/basal:issue:42");
+    // Routing comparison fields stay in the run result, not the delivered item.
+    let data = writes[0]["item"]["data"].as_object().unwrap();
+    for field in ["would_owner", "would_action", "suppressed_reason", "rule"] {
+        assert!(!data.contains_key(field), "{field}");
+    }
+    assert_eq!(data["repo"], "cortexkit/basal");
+    assert_eq!(data["number"], 42);
     assert_eq!(result["events"][0]["event_key"], format!("{:064x}", 1));
     assert_eq!(result["events"][0]["would_owner"], BASAL);
+    assert_eq!(result["events"][0]["would_action"], "wake");
+    assert_eq!(result["events"][0]["rule"], "deliver");
     assert_eq!(result["delivered"], 1);
-    assert_eq!(writes[0]["replace_key"], "github:cortexkit/basal:issue:42");
     assert!(
         writes[0]["item"]["body"]
             .as_str()
@@ -339,6 +416,85 @@ fn opened_issue_would_wake_owner_but_sends_only_silently_to_alf() {
             .contains("cortexkit/basal Issue #42 opened observed at")
     );
     assert_eq!(t.memory()["items"].as_object().unwrap().len(), 1);
+    // One reaction, as the owner, with byte-stable arguments and nonce.
+    let raw = t.host.reactions.lock().unwrap().clone();
+    assert_eq!(raw.len(), 1);
+    assert!(raw[0].contains(&pinned_reaction("issue", 1)), "{}", raw[0]);
+    let reaction = &t.reactions()[0];
+    assert_eq!(reaction["agent"], BASAL);
+    assert_eq!(
+        reaction["args"],
+        json!({"repository":"cortexkit/basal", "kind":"issue", "target":{"number":42},
+            "reaction":"eyes", "request_nonce":format!("github-events:{:064x}", 1)})
+    );
+    assert_eq!(
+        result["reaction"],
+        json!({"owner":BASAL, "request_nonce":format!("github-events:{:064x}", 1), "code":null})
+    );
+    // A second opened notice for the same item (a new event key) is still
+    // delivered but never reacts again.
+    let again = t.event(item("issue", "opened"));
+    assert_eq!(again["delivered"], 1);
+    assert_eq!(again["reaction"], Value::Null);
+    assert_eq!(t.host.reactions.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn updates_and_releases_never_react() {
+    let t = Test::new();
+    for action in ["updated", "created", "closed", "reopened"] {
+        let result = t.event(item("issue", action));
+        assert_eq!(result["delivered"], 1, "{action}");
+        assert_eq!(result["reaction"], Value::Null, "{action}");
+    }
+    let result = t.event(item("pull_request", "synchronize"));
+    assert_eq!(result["delivered"], 1);
+    let release = json!({"repo":"cortexkit/basal", "kind":"release", "action":"published",
+        "tag_name":"v1", "title":"Synthetic release",
+        "url":"https://github.com/cortexkit/basal/releases/tag/v1", "updated_at":null,
+        "author":"someone", "actor_logins":["someone"], "actor_unknown":null});
+    let result = t.event(release);
+    assert_eq!(result["delivered"], 1);
+    assert_eq!(result["reaction"], Value::Null);
+    assert_eq!(t.writes().len(), 6);
+    assert!(t.writes().iter().all(|write| write["action"] == "piggyback"));
+    assert!(t.host.reactions.lock().unwrap().is_empty());
+}
+
+#[test]
+fn a_reaction_refusal_still_delivers_the_digest_and_records_its_code() {
+    for (code, outcome) in [
+        (
+            "vendor_rejected",
+            HostOutcome::rejected(text(
+                json!({"code":"vendor_rejected", "message":"rate limited"}),
+            )),
+        ),
+        (
+            "agent_grant_absent",
+            HostOutcome::rejected(text(
+                json!({"code":"agent_grant_absent", "message":"no grant"}),
+            )),
+        ),
+        // A refusal Plexus reports inside a fulfilled tool result.
+        (
+            "policy_blocked",
+            HostOutcome::fulfilled(text(json!({"error":{"code":"policy_blocked"}}))),
+        ),
+    ] {
+        let t = Test::new();
+        *t.host.react_outcome.lock().unwrap() = Some(outcome);
+        let result = t.event(item("pull_request", "opened"));
+        assert_eq!(result["delivered"], 1, "{code}");
+        assert_eq!(result["reaction"]["code"], code);
+        assert_eq!(result["reaction"]["owner"], BASAL);
+        let writes = t.writes();
+        assert_eq!(writes.len(), 1, "{code}");
+        assert_eq!(writes[0]["agent"], BASAL);
+        assert_eq!(writes[0]["action"], "wake");
+        assert_eq!(t.reactions()[0]["args"]["kind"], "pr");
+        assert_eq!(t.memory()["items"].as_object().unwrap().len(), 1);
+    }
 }
 
 #[test]
@@ -359,11 +515,15 @@ fn updates_replace_one_item_and_accumulate_times_with_newest_summary() {
     assert_eq!(t.host.items.lock().unwrap().len(), 1);
     let writes = t.writes();
     assert_eq!(writes[0]["replace_key"], writes[1]["replace_key"]);
+    assert_eq!(writes[1]["agent"], BASAL);
+    assert_eq!(writes[1]["action"], "piggyback");
     assert_eq!(writes[1]["item"]["data"]["observation_count"], 2);
     assert_eq!(
         writes[1]["item"]["body"],
         "- cortexkit/basal Issue #42 updated at 12:00 and 12:01: \"Newest synthetic title\""
     );
+    // Only the opened notice reacted.
+    assert_eq!(t.host.reactions.lock().unwrap().len(), 1);
 }
 
 #[test]
@@ -389,7 +549,7 @@ fn own_bot_subject_with_human_comment_is_delivered() {
     body["comment_author"] = json!("ualtinok");
     body["comment_url"] = json!("https://github.com/cortexkit/basal/pull/42#issuecomment-1");
     assert_eq!(t.event(body)["delivered"], 1);
-    assert_eq!(t.writes()[0]["item"]["data"]["would_action"], "piggyback");
+    assert_eq!(t.writes()[0]["action"], "piggyback");
 }
 
 #[test]
@@ -714,6 +874,9 @@ fn opened_pr_bypasses_debounce_and_first_update_starts_its_own_window() {
     let update = t.event(item("pull_request", "updated"));
     assert_eq!(update["events"][0]["first_seen_ms"], first + 5 * 60_000);
     assert_eq!(update["events"][0]["due_ms"], first + 35 * 60_000);
+    let raw = t.host.reactions.lock().unwrap().clone();
+    assert_eq!(raw.len(), 1);
+    assert!(raw[0].contains(&pinned_reaction("pr", 1)), "{}", raw[0]);
 }
 
 #[test]
@@ -781,6 +944,9 @@ fn distinct_repo_kind_and_number_each_get_a_distinct_replacement_key() {
     t.event(body);
     assert_eq!(t.host.items.lock().unwrap().len(), 4);
     assert_eq!(t.memory()["items"].as_object().unwrap().len(), 4);
+    // Each repository's item goes to that repository's owner.
+    let agents: Vec<_> = t.writes().iter().map(|w| w["agent"].clone()).collect();
+    assert_eq!(agents, [BASAL, BASAL, BASAL, PLEX]);
 }
 
 #[test]
@@ -797,7 +963,7 @@ fn identity_is_required_but_kind_and_action_have_no_whitelist() {
     let mut body = item("discussion", "unknown-action");
     body["number"] = json!(0);
     assert_eq!(t.event(body)["delivered"], 1);
-    assert_eq!(t.writes()[0]["item"]["data"]["would_action"], "piggyback");
+    assert_eq!(t.writes()[0]["action"], "piggyback");
     let mut body = item("issue", "suppressed_own_echo");
     assert_eq!(
         t.event(body.clone())["events"][0]["suppressed_reason"],
