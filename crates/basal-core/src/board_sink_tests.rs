@@ -96,8 +96,10 @@ fn board_authorization_checks_grants_before_dispatch() {
     let mut value = manifest();
     let parsed = Manifest::parse(&value.to_string()).unwrap();
     for agent in ["SYNAPSE", "agent_owner"] {
+        let mut resolved = parsed.clone();
+        resolved.board[0].agent = agent.into();
         authorize::check(
-            &parsed,
+            &resolved,
             &ShellDenylist::default(),
             &catalog,
             &kind,

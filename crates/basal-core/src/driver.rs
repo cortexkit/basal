@@ -89,15 +89,17 @@ struct Activation<'a> {
     manifest: Option<Manifest>,
 }
 
-/// A call that passed the manifest check, ready to journal.
+/// A call ready to journal, including a board call waiting for its registry read.
 #[derive(Debug, Default)]
 struct Prepared {
-    /// The exact bytes to send when they are not the script's arguments: a
-    /// model call's clamped request.
+    /// Prepared dispatch bytes, rather than the script's arguments. Absent
+    /// while a board target lookup is deferred.
     request: Option<JsonText>,
     /// Tokens to reserve for a model call.
     tokens: Option<u64>,
     args: Option<Value>,
+    /// A failed board target lookup is retried without dispatching the sink.
+    deferred: Option<basal_host::flow_refusal::FlowRefusal>,
 }
 
 impl Runtime {
@@ -719,7 +721,7 @@ impl Activation<'_> {
                 true,
             ));
         }
-        for row in resend {
+        for mut row in resend {
             self.rt.register(&run_id, row.position);
             let attempt = match self
                 .rt
@@ -735,6 +737,21 @@ impl Activation<'_> {
             self.at(Boundary::ResendAuthorized {
                 position: row.position,
             })?;
+            let pending_board =
+                row.kind == CallKind::Primitive(Primitive::SinkBoard) && row.request.is_none();
+            if pending_board {
+                match self.retry_board_preparation(&mut row, attempt) {
+                    Ok(None) => {}
+                    result => {
+                        self.rt.unregister(&run_id, row.position);
+                        match result? {
+                            Some(Flow::Continue) => continue,
+                            Some(done) => return Ok(done),
+                            None => unreachable!(),
+                        }
+                    }
+                }
+            }
             let mut request = Runtime::request(&self.run, &row, attempt);
             if matches!(request.kind, CallKind::OpFor { .. }) {
                 let mut envelope: Value = serde_json::from_str(request.args.as_str())
@@ -746,13 +763,73 @@ impl Activation<'_> {
             self.rt.spawn_dispatch(
                 request,
                 row.class,
-                matches!(
-                    row.dispatch,
-                    DispatchState::Deferred | DispatchState::NotApplied
-                ),
+                pending_board
+                    || matches!(
+                        row.dispatch,
+                        DispatchState::Deferred | DispatchState::NotApplied
+                    ),
             );
         }
         Ok(Flow::Continue)
+    }
+
+    /// A board call with no prepared request has never reached the sink.
+    /// Resolve it again when its durable retry is due, then freeze the stable
+    /// target id before dispatch so later retries need no registry read.
+    fn retry_board_preparation(
+        &self,
+        row: &mut crate::model::CallRow,
+        attempt: u32,
+    ) -> Result<Option<Flow>> {
+        let call = HostCall {
+            position: row.position,
+            kind: row.kind.clone(),
+            args: row.args.clone(),
+        };
+        let prepared = match self.prepare(&call) {
+            Ok(prepared) => prepared,
+            Err(refusal) => {
+                self.rt.accept(
+                    &self.lease.run_id,
+                    row.position,
+                    None,
+                    &refusal.outcome(),
+                    Source::Local,
+                )?;
+                return Ok(Some(Flow::Continue));
+            }
+        };
+        if let Some(refusal) = prepared.deferred {
+            self.rt
+                .defer_dispatch_refusal(&Runtime::request(&self.run, row, attempt), &refusal)?;
+            return Ok(Some(Flow::Continue));
+        }
+        let request = prepared
+            .request
+            .ok_or_else(|| CoreError::Corrupt("board preparation produced no request".into()))?;
+        let fits = self.rt.store().write(|tx| {
+            journal::freeze_request(
+                tx,
+                &self.lease,
+                row.position,
+                &request,
+                self.rt.config.limits.max_journal_bytes,
+            )
+        })?;
+        if !fits {
+            return self
+                .fail(
+                    "limit",
+                    format!(
+                        "the run's journal would pass its limit of {} bytes",
+                        self.rt.config.limits.max_journal_bytes
+                    ),
+                    false,
+                )
+                .map(Some);
+        }
+        row.request = Some(request);
+        Ok(None)
     }
 
     /// The value of a clock read (kept monotonic within the run) or a random
@@ -917,19 +994,22 @@ impl Activation<'_> {
                 self.at(Boundary::CallCommitted {
                     position: call.position,
                 })?;
-                self.rt.spawn_dispatch(
-                    basal_host::CallRequest {
-                        flow_id,
-                        run_id,
-                        position: call.position,
-                        kind: call.kind,
-                        args: prepared.request.unwrap_or(call.args),
-                        idempotency_key: key,
-                        attempt: 1,
-                    },
-                    class,
-                    true,
-                );
+                let request = basal_host::CallRequest {
+                    flow_id,
+                    run_id,
+                    position: call.position,
+                    kind: call.kind,
+                    args: prepared.request.unwrap_or(call.args),
+                    idempotency_key: key,
+                    attempt: 1,
+                };
+                if let Some(refusal) = prepared.deferred {
+                    let result = self.rt.defer_dispatch_refusal(&request, &refusal);
+                    self.rt.unregister(&request.run_id, request.position);
+                    result?;
+                } else {
+                    self.rt.spawn_dispatch(request, class, true);
+                }
                 Ok(Flow::Continue)
             }
         }
@@ -1087,18 +1167,62 @@ impl Activation<'_> {
         {
             args["agent"] = Value::String(agent.to_owned());
         }
-        if matches!(call.kind, CallKind::Primitive(Primitive::SinkBoard)) {
-            let agent = args["agent"]
-                .as_str()
-                .and_then(|a| self.rt.catalog().agent_id(a))
-                .ok_or_else(|| {
-                    Refusal::new(
-                        "sink_board_target_not_granted",
-                        "board target could not be resolved",
-                    )
-                })?;
-            args["agent"] = Value::String(agent);
-        }
+        let resolved_manifest = if matches!(call.kind, CallKind::Primitive(Primitive::SinkBoard))
+            && !manifest.board.is_empty()
+        {
+            let target = args["agent"].as_str().ok_or_else(|| {
+                Refusal::new(
+                    codes::INVALID_ARGUMENTS,
+                    "sink.board needs an agent reference",
+                )
+            })?;
+            let mut refs = vec![target];
+            if manifest.audience.is_none() {
+                refs.extend(manifest.board.iter().map(|grant| grant.agent.as_str()));
+            }
+            // Resolve the target and every grant from the same registry read,
+            // so aliases are compared as stable ids without a second lookup.
+            let resolved = match self.rt.catalog().resolve_agents(&refs) {
+                Ok(ids) if ids.len() == refs.len() => ids,
+                _ => {
+                    return Ok(Prepared {
+                        deferred: Some(basal_host::flow_refusal::FlowRefusal::new(
+                            basal_host::flow_refusal::RefusalReason::SinkBoardTargetUnavailable,
+                            basal_host::subc_catalog::CORE,
+                            "agent.list",
+                        )),
+                        args: Some(args),
+                        ..Prepared::default()
+                    });
+                }
+            };
+            let agent = resolved[0].as_ref().ok_or_else(|| {
+                Refusal::new(
+                    "sink_board_target_not_granted",
+                    "board target is not in the agent registry",
+                )
+            })?;
+            args["agent"] = Value::String(agent.clone());
+            let mut resolved_manifest = manifest.clone();
+            if manifest.audience.is_none() {
+                resolved_manifest.board = manifest
+                    .board
+                    .iter()
+                    .zip(&resolved[1..])
+                    .filter_map(|(grant, id)| {
+                        id.as_ref().map(|id| {
+                            let mut grant = grant.clone();
+                            grant.agent = id.clone();
+                            grant
+                        })
+                    })
+                    .collect();
+            }
+            Some(resolved_manifest)
+        } else {
+            None
+        };
+        let manifest = resolved_manifest.as_ref().unwrap_or(manifest);
         if matches!(call.kind, CallKind::Primitive(Primitive::SinkDigest))
             && args.get("action").is_none_or(Value::is_null)
             && let Some(cap) = args
@@ -1281,6 +1405,7 @@ impl Activation<'_> {
                     request: Some(request),
                     tokens: Some(clamped.reserve),
                     args: None,
+                    ..Prepared::default()
                 })
             }
             CallKind::Primitive(Primitive::SinkBoard) => {
@@ -1341,6 +1466,7 @@ impl Activation<'_> {
                     request: Some(request),
                     tokens: None,
                     args: None,
+                    ..Prepared::default()
                 })
             }
             CallKind::Primitive(p) if p.is_builtin() => {
@@ -1355,6 +1481,7 @@ impl Activation<'_> {
                     request: Some(request),
                     tokens: None,
                     args: None,
+                    ..Prepared::default()
                 })
             }
             _ => Ok(Prepared::default()),

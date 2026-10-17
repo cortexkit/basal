@@ -138,7 +138,8 @@ refusals below when a cap is reached.
 Basal checks the target grant before dispatch; an ungranted target is provably
 unsent and rejected with `sink_board_target_not_granted`. Board writes use the
 stamped receipt-key contract: `{stamp:{flow_id,flow_version,code_hash}, agent,
-receipt_key, operation}`. Basal resolves names to stable agent ids, freezes the
+receipt_key, operation}`. Basal resolves the recipient and its grant names to
+stable agent ids in one registry traversal, freezes the
 stamp and operation before sending, and uses the journal's `bk1-…` idempotency
 key as `receipt_key` (nonempty, at most 256 bytes, no control characters). Core
 dedupes by sink, flow and receipt key, so a replay returns the original result.
@@ -155,6 +156,14 @@ refusals. `sink_store_failed` and `sink_audience_unavailable` defer the call
 with bounded backoff and the same receipt key, up to the run deadline; expiry
 records the typed unsent refusal. `sink_audience_check_required` is logged as a
 core wiring error and rejected finally, never retried as a readiness problem.
+
+A failed `agent.list` read is not evidence that the target is ungranted. Basal
+defers that provably unsent call as `sink_board_target_unavailable`, using the
+same durable backoff and run-deadline bound as the retryable core refusals.
+An answered registry read without the target or its grant remains the final
+`sink_board_target_not_granted` refusal. After resolving successfully, basal
+journals the stable target id before sending and does not resolve it again on
+replay.
 
 ## Digest items
 

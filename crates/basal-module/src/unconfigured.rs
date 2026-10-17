@@ -129,6 +129,14 @@ impl Catalog for EmptyCatalog {
     fn agent_id(&self, _agent: &str) -> Option<String> {
         None
     }
+    fn resolve_agents(
+        &self,
+        _agents: &[&str],
+    ) -> Result<Vec<Option<String>>, basal_host::transport::WireError> {
+        Err(basal_host::transport::WireError::NeverSent(
+            "agent registry is unconfigured".into(),
+        ))
+    }
 }
 
 /// A consent plane that cannot be reached.

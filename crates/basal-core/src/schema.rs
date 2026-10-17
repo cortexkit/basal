@@ -390,7 +390,7 @@ CREATE INDEX owner_notice_pending ON outbox(retry_at) WHERE delivered_at IS NULL
     },
 ];
 
-// Allow journal rows to defer sink_store_failed replies for a later retry.
+// Allow journal rows to defer board storage and registry-read failures.
 // SQLite requires rebuilding the CHECK constraint; copy the related mailbox
 // and broca_calls rows too, so rebuilding journal loses no pending answers.
 const BOARD_DEFERRALS: &str = r#"
@@ -409,7 +409,7 @@ CREATE TABLE journal_new (
     delivery_order INTEGER CHECK (delivery_order>=0), clock_ms REAL, issued_generation INTEGER NOT NULL, request TEXT,
     unknown_reason TEXT CHECK (unknown_reason IN ('basal_restarted','connection_lost','reply_timeout','reply_unreadable','retries_exhausted','provider_lost_run'))
     CHECK (unknown_reason IS NOT NULL OR dispatch <> 'unknown'),
-    refusal TEXT CHECK (refusal IN ('scope_not_carrier','scope_ended','scope_not_live','scope_epoch_required','scope_not_synced','scope_changed','scope_unsupported','resource_busy','consent_unavailable','module_grant_absent','agent_grant_absent','sink_audience_unavailable','sink_store_failed')),
+    refusal TEXT CHECK (refusal IN ('scope_not_carrier','scope_ended','scope_not_live','scope_epoch_required','scope_not_synced','scope_changed','scope_unsupported','resource_busy','consent_unavailable','module_grant_absent','agent_grant_absent','sink_board_target_unavailable','sink_audience_unavailable','sink_store_failed')),
     retry_not_before INTEGER, refusal_detail TEXT,
     targeted INTEGER NOT NULL DEFAULT 0 CHECK (targeted IN (0,1) AND (targeted=0 OR kind_code=0)),
     scope_cut INTEGER NOT NULL DEFAULT 0 CHECK (scope_cut IN (0,1)),

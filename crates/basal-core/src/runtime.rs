@@ -769,6 +769,47 @@ impl Runtime {
         });
     }
 
+    /// Persist a provably unsent refusal with the same bounded retry policy,
+    /// whether the failure happened during preparation or at the provider.
+    pub(crate) fn defer_dispatch_refusal(
+        &self,
+        request: &CallRequest,
+        refusal: &basal_host::flow_refusal::FlowRefusal,
+    ) -> Result<()> {
+        use basal_host::flow_refusal::RefusalReason;
+        let now = self.config.clock.now_ms();
+        let backoff = self
+            .config
+            .deferral_retry
+            .saturating_mul(1u32 << (request.attempt.saturating_sub(1)).min(16))
+            .min(self.config.deferral_retry_max);
+        let delay = refusal
+            .retry_after_ms
+            .unwrap_or_else(|| u64::try_from(backoff.as_millis()).unwrap_or(u64::MAX));
+        // Missing consent must be restored by an explicit grant.
+        // i64::MAX prevents automatic retries before that grant.
+        let retry = if refusal.reason == RefusalReason::ConsentUnavailable {
+            i64::MAX
+        } else {
+            now.saturating_add(i64::try_from(delay).unwrap_or(i64::MAX))
+        };
+        self.shared.store.write(|tx| {
+            let deadline: Option<i64> = tx.query_row(
+                "SELECT deadline_at FROM runs WHERE run_id = ?1",
+                [&request.run_id],
+                |r| r.get(0),
+            )?;
+            let retry = if refusal.reason != RefusalReason::ConsentUnavailable {
+                deadline.map_or(retry, |d| retry.min(d))
+            } else {
+                retry
+            };
+            journal::defer(tx, &request.run_id, request.position, refusal, retry)
+        })?;
+        self.shared.signal.bump();
+        Ok(())
+    }
+
     fn dispatch(
         &self,
         mut request: CallRequest,
@@ -935,35 +976,7 @@ impl Runtime {
                         self.shared.host.refusal_committed(&request, &refusal);
                         self.wake_flow(&request.flow_id);
                     } else {
-                        let now = self.config.clock.now_ms();
-                        let backoff = self
-                            .config
-                            .deferral_retry
-                            .saturating_mul(1u32 << (request.attempt.saturating_sub(1)).min(16))
-                            .min(self.config.deferral_retry_max);
-                        let delay = refusal.retry_after_ms.unwrap_or_else(|| {
-                            u64::try_from(backoff.as_millis()).unwrap_or(u64::MAX)
-                        });
-                        // Missing consent must be restored by an explicit grant.
-                        // i64::MAX prevents automatic retries before that grant.
-                        let retry = if refusal.reason == RefusalReason::ConsentUnavailable {
-                            i64::MAX
-                        } else {
-                            now.saturating_add(i64::try_from(delay).unwrap_or(i64::MAX))
-                        };
-                        self.shared.store.write(|tx| {
-                            let deadline: Option<i64> = tx.query_row(
-                                "SELECT deadline_at FROM runs WHERE run_id = ?1",
-                                [&run_id],
-                                |r| r.get(0),
-                            )?;
-                            let retry = if refusal.reason != RefusalReason::ConsentUnavailable {
-                                deadline.map_or(retry, |d| retry.min(d))
-                            } else {
-                                retry
-                            };
-                            journal::defer(tx, &run_id, position, &refusal, retry)
-                        })?;
+                        self.defer_dispatch_refusal(&request, &refusal)?;
                     }
                     self.shared.signal.bump();
                     return Ok(());

@@ -1028,19 +1028,27 @@ fn journaled_sink_intent_is_byte_identical_after_a_cut() {
         pool::{PoolConfig, ProcessSpawner},
     };
     use basal_testkit::harness::{Point, Probe};
-    for (op, script) in [
+    for (op, script, pending_registry) in [
         (
             "sink.digest",
             "await sink.digest('SYNAPSE',{title:'x',body:'y'},'piggyback',{status_tag:'NI',replace_key:'article:42'}); return 1;",
+            false,
         ),
         (
             "sink.status",
             "await sink.status('SYNAPSE','ready'); return 1;",
+            false,
         ),
-        ("agent.facts", "await facts('SYNAPSE'); return 1;"),
+        ("agent.facts", "await facts('SYNAPSE'); return 1;", false),
         (
             "sink.board",
             "await sink.board.append('SYNAPSE','work'); return 1;",
+            false,
+        ),
+        (
+            "sink.board",
+            "await sink.board.append('SYNAPSE','work'); return 1;",
+            true,
         ),
     ] {
         let dir = common::scratch("core-cut");
@@ -1067,7 +1075,12 @@ fn journaled_sink_intent_is_byte_identical_after_a_cut() {
         }
         let consent = Arc::new(CoreConsent::new(fake.clone()));
         let probe = Arc::new(Probe::crash_at(
-            Point::parse("HostAnswered { position: 0 }#1").unwrap(),
+            Point::parse(if pending_registry {
+                "CallCommitted { position: 0 }#1"
+            } else {
+                "HostAnswered { position: 0 }#1"
+            })
+            .unwrap(),
         ));
         let mut dependencies = hosts(fake.clone(), consent.clone());
         dependencies.hooks = probe.clone();
@@ -1100,10 +1113,26 @@ fn journaled_sink_intent_is_byte_identical_after_a_cut() {
             .run_id()
             .unwrap()
             .to_owned();
+        if pending_registry {
+            fake.enqueue(
+                "agent.list",
+                vec![Err(WireError::NeverSent("offline".into()))],
+            );
+        }
         assert!(module.engine.run_until_idle(50).is_err());
         module.rt.quiesce();
         module.pool.stop();
         assert!(probe.fired());
+        if pending_registry {
+            assert!(fake.calls("sink.board").is_empty());
+            fake.enqueue(
+                "sink.board",
+                vec![Err(WireError::Refused {
+                    code: "sink_store_failed".into(),
+                    message: "temporary".into(),
+                })],
+            );
+        }
         consent.attach(Arc::new(Decisions::default()));
         drop(module);
         clock.set(common::T0 + 10000);
@@ -1113,7 +1142,31 @@ fn journaled_sink_intent_is_byte_identical_after_a_cut() {
             Arc::new(ProcessSpawner::new(&pool)),
         )
         .unwrap();
+        if pending_registry {
+            assert!(module.rt.calls(&run).unwrap()[0].request.is_none());
+        }
         module.engine.run_until_idle(50).unwrap();
+        if pending_registry {
+            assert_eq!(
+                module.rt.calls(&run).unwrap()[0].dispatch,
+                basal_core::DispatchState::Deferred
+            );
+            let reads = fake.calls("agent.list").len();
+            let retry: i64 = module
+                .rt
+                .store()
+                .read(|c| {
+                    Ok(c.query_row(
+                        "SELECT retry_not_before FROM journal WHERE run_id=?1",
+                        [&run],
+                        |r| r.get(0),
+                    )?)
+                })
+                .unwrap();
+            clock.set(retry);
+            module.engine.run_until_idle(50).unwrap();
+            assert_eq!(fake.calls("agent.list").len(), reads);
+        }
         assert_eq!(module.rt.run(&run).unwrap().state, RunState::Succeeded);
         let sent = fake.calls(op);
         assert_eq!(sent.len(), 2);

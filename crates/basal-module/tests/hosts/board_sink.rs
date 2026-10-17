@@ -191,6 +191,196 @@ fn board_retryable_refusals_defer_with_same_receipt_until_success_or_deadline() 
 }
 
 #[test]
+fn board_registry_failure_defers_before_send_and_resolves_once_on_retry() {
+    for failure in [
+        WireError::NeverSent("core unreachable".into()),
+        WireError::TimedOut("registry timed out".into()),
+        WireError::Unreadable("invalid registry reply".into()),
+    ] {
+        let fake = Fake::new();
+        let consent = Arc::new(CoreConsent::new(fake.clone()));
+        let f = worker_fixture(fake.clone(), consent, "board-registry-retry");
+        common::install(
+            &f,
+            &Caller::Operator,
+            "return await sink.board.append('ag_synapse','work');",
+            &board_manifest(),
+        );
+        approve(&fake, &f.module);
+        let run = common::admit(&f, "host-flow", "board-registry-retry");
+        let reads = fake.calls("agent.list").len();
+        fake.enqueue("agent.list", vec![Err(failure)]);
+        f.module.engine.run_until_idle(50).unwrap();
+        let row = f.module.rt.calls(&run).unwrap().remove(0);
+        assert_eq!(row.dispatch, basal_core::DispatchState::Deferred);
+        assert!(row.request.is_none());
+        assert!(fake.calls("sink.board").is_empty());
+        assert_eq!(fake.calls("agent.list").len(), reads + 1);
+        let (reason, retry): (String, i64) = f
+            .module
+            .rt
+            .store()
+            .read(|c| {
+                Ok(c.query_row(
+                    "SELECT refusal,retry_not_before FROM journal WHERE run_id=?1",
+                    [&run],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(reason, "sink_board_target_unavailable");
+        assert!(retry > common::T0 && retry <= common::T0 + 30_000);
+        f.clock.set(retry);
+        f.module.engine.run_until_idle(50).unwrap();
+        assert_eq!(f.module.rt.run(&run).unwrap().state, RunState::Succeeded);
+        assert_eq!(fake.calls("agent.list").len(), reads + 2);
+        let sent = fake.calls("sink.board");
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0]["params"]["agent"], "ag_synapse");
+        assert_eq!(sent[0]["params"]["receipt_key"], row.idempotency_key);
+        let completed = f.module.rt.calls(&run).unwrap().remove(0);
+        assert_eq!(completed.attempts, 2);
+        let frozen: Value =
+            serde_json::from_str(completed.request.as_ref().unwrap().as_str()).unwrap();
+        assert_eq!(frozen["agent"], "ag_synapse");
+        assert_eq!(frozen["stamp"], sent[0]["params"]["stamp"]);
+        let bytes = completed.args.len()
+            + completed.request.as_ref().unwrap().len()
+            + completed.outcome.as_ref().unwrap().value.len();
+        assert_eq!(
+            f.module
+                .rt
+                .store()
+                .read(|c| basal_core::journal::run_size(c, &run))
+                .unwrap(),
+            (1, bytes as u64)
+        );
+    }
+}
+
+#[test]
+fn board_registry_answer_without_target_or_grant_is_final() {
+    for target in ["MISSING", "ag_synapse"] {
+        let fake = Fake::new();
+        let consent = Arc::new(CoreConsent::new(fake.clone()));
+        let f = worker_fixture(fake.clone(), consent, "board-registry-absent");
+        common::install(
+            &f,
+            &Caller::Operator,
+            &format!("return await sink.board.append('{target}','work').catch(e => e.data.code);"),
+            &board_manifest(),
+        );
+        approve(&fake, &f.module);
+        let run = common::admit(&f, "host-flow", "board-registry-absent");
+        let reads = fake.calls("agent.list").len();
+        if target == "ag_synapse" {
+            fake.enqueue(
+                "agent.list",
+                vec![Ok(
+                    json!({"agents":[{"agent_id":"ag_synapse","name":"RENAMED"}]}),
+                )],
+            );
+        }
+        f.module.engine.run_until_idle(50).unwrap();
+        let done = f.module.rt.run(&run).unwrap();
+        assert_eq!(done.state, RunState::Succeeded);
+        assert_eq!(
+            done.result.as_deref(),
+            Some("\"sink_board_target_not_granted\"")
+        );
+        let row = f.module.rt.calls(&run).unwrap().remove(0);
+        assert_eq!(row.dispatch, basal_core::DispatchState::None);
+        assert_eq!(row.attempts, 0);
+        assert_eq!(fake.calls("agent.list").len(), reads + 1);
+        assert!(fake.calls("sink.board").is_empty());
+    }
+}
+
+#[test]
+fn board_registry_outage_backoff_stops_at_the_run_deadline() {
+    let fake = Fake::new();
+    let consent = Arc::new(CoreConsent::new(fake.clone()));
+    let f = worker_fixture(fake.clone(), consent, "board-registry-deadline");
+    let mut manifest = board_manifest();
+    manifest["deadline"] = json!("1m");
+    common::install(
+        &f,
+        &Caller::Operator,
+        "return await sink.board.append('SYNAPSE','work');",
+        &manifest,
+    );
+    approve(&fake, &f.module);
+    let run = common::admit(&f, "host-flow", "board-registry-deadline");
+    fake.enqueue(
+        "agent.list",
+        vec![
+            Err(WireError::NeverSent("offline".into())),
+            Err(WireError::NeverSent("offline".into())),
+        ],
+    );
+    f.module.engine.run_until_idle(50).unwrap();
+    let retry = || {
+        f.module
+            .rt
+            .store()
+            .read(|c| {
+                Ok(c.query_row(
+                    "SELECT retry_not_before FROM journal WHERE run_id=?1",
+                    [&run],
+                    |r| r.get::<_, i64>(0),
+                )?)
+            })
+            .unwrap()
+    };
+    let first = retry();
+    assert!(first > common::T0);
+    f.clock.set(first);
+    f.module.engine.run_until_idle(50).unwrap();
+    let second = retry();
+    assert_eq!(second - first, (first - common::T0) * 2);
+    assert!(second <= common::T0 + 60_000);
+    f.clock.set(common::T0 + 60_000);
+    f.module.engine.run_until_idle(50).unwrap();
+    assert_eq!(f.module.rt.run(&run).unwrap().state, RunState::Failed);
+    assert!(fake.calls("sink.board").is_empty());
+    let value: String = f
+        .module
+        .rt
+        .store()
+        .read(|c| {
+            Ok(c.query_row(
+                "SELECT value FROM mailbox WHERE run_id=?1 AND position=0",
+                [&run],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&value).unwrap()["code"],
+        "sink_board_target_unavailable"
+    );
+}
+
+#[test]
+fn board_registry_batch_resolves_paged_names_and_exact_ids_together() {
+    let fake = Fake::new();
+    let catalog = SubcCatalog::new(fake.clone());
+    fake.enqueue("agent.list", vec![
+        Ok(json!({"agents":[{"agent_id":"agent_other","name":"agent_owner"}],"next_cursor":"next"})),
+        Ok(json!({"agents":[{"agent_id":"agent_owner","name":"SYNAPSE"}]})),
+    ]);
+    assert_eq!(
+        basal_host::Catalog::resolve_agents(&catalog, &["agent_owner", "SYNAPSE", "MISSING"])
+            .unwrap(),
+        [Some("agent_owner".into()), Some("agent_owner".into()), None]
+    );
+    let calls = fake.calls("agent.list");
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0]["params"], json!({}));
+    assert_eq!(calls[1]["params"], json!({"cursor":"next"}));
+}
+
+#[test]
 fn board_replies_reject_malformed_append_and_nonobject_updates() {
     let fake = Fake::new();
     let host = CoreHost::new(fake.clone());

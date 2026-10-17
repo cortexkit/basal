@@ -306,6 +306,57 @@ impl Catalog for SubcCatalog {
     fn agent_id(&self, agent: &str) -> Option<String> {
         self.resolve_agent(agent).ok().flatten()
     }
+    fn resolve_agents(&self, agents: &[&str]) -> Result<Vec<Option<String>>, WireError> {
+        let mut cursor: Option<String> = None;
+        let mut seen = std::collections::BTreeSet::new();
+        let mut entries = Vec::new();
+        loop {
+            let mut params = json!({});
+            if let Some(cursor) = &cursor {
+                params["cursor"] = json!(cursor);
+            }
+            let reply = self.transport.management(CORE, "agent.list", params)?;
+            for entry in reply["agents"]
+                .as_array()
+                .ok_or_else(|| WireError::Unreadable("agent.list agents missing".into()))?
+            {
+                let id = entry["agent_id"]
+                    .as_str()
+                    .filter(|id| !id.is_empty())
+                    .ok_or_else(|| WireError::Unreadable("agent.list agent_id missing".into()))?;
+                entries.push((id.to_owned(), entry["name"].as_str().map(str::to_owned)));
+            }
+            match reply.get("next_cursor") {
+                None | Some(Value::Null) => break,
+                Some(Value::String(next)) if seen.insert(next.clone()) => {
+                    cursor = Some(next.clone())
+                }
+                _ => {
+                    return Err(WireError::Unreadable(
+                        "invalid or repeated agent cursor".into(),
+                    ));
+                }
+            }
+        }
+        agents
+            .iter()
+            .map(|agent| {
+                if let Some((id, _)) = entries.iter().find(|(id, _)| id == agent) {
+                    return Ok(Some(id.clone()));
+                }
+                let named: std::collections::BTreeSet<_> = entries
+                    .iter()
+                    .filter(|(_, name)| name.as_deref() == Some(*agent))
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                match named.len() {
+                    0 => Ok(None),
+                    1 => Ok(named.into_iter().next()),
+                    _ => Err(WireError::Unreadable("ambiguous agent display name".into())),
+                }
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]

@@ -366,11 +366,7 @@ pub fn check(
                 } else {
                     agent
                 };
-                if manifest.board.iter().any(|g| {
-                    g.agent == target
-                        || (manifest.audience.is_none()
-                            && catalog.agent_id(&g.agent).as_deref() == Some(agent))
-                }) {
+                if manifest.board.iter().any(|g| g.agent == target) {
                     Ok(())
                 } else {
                     Err(Refusal::new(
