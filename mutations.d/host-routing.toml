@@ -307,6 +307,8 @@ new = "\"decisionID\":\"wrong\",\"outcome\":outcome"
 
 [[control]]
 id = "hosts-facts-request-groups-discarded"
+hub = "A facts request carries the flow's requested field groups to core unchanged; the host request vectors and the published board-hygiene flow, which asks only for activity, both assert that exact field list"
+hub_targets = ["board_hygiene"]
 guards = "hosts: facts request groups discarded"
 test_file = "crates/basal-module/tests/hosts.rs"
 runner = "cargo"

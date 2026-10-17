@@ -549,8 +549,8 @@ platforms = ["linux"]
 target = "--test templates"
 expect_red = ["lifecycle_sequence_changes_only_for_committed_changes_across_kinds"]
 only = false
-hub = "Each committed lifecycle transition allocates a strictly increasing per-instance sequence, giving repeated outbox rows distinct flow_id/seq keys; create, extend, expire, end and epoch-preview witnesses require those transitions to commit without duplicate keys"
-hub_targets = ["basal_module", "flow_templates", "module_events", "state_epoch"]
+hub = "Each committed lifecycle transition allocates a strictly increasing per-instance sequence, giving repeated outbox rows distinct flow_id/seq keys; create, extend, expire, end and epoch-preview witnesses, the published state-epoch vectors and the flow tool's instantiate and end actions require those transitions to commit without duplicate keys"
+hub_targets = ["basal_module", "flow_templates", "module_events", "state_epoch", "state_epoch_vectors", "tool_provider_conformance"]
 file = "crates/basal-core/src/template_events.rs"
 old = "UPDATE template_instances SET seq=seq+1 WHERE flow_id=?1"
 new = "UPDATE template_instances SET seq=1 WHERE flow_id=?1 /* NON-VACUITY BREAK */"

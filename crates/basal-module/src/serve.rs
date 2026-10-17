@@ -35,6 +35,9 @@ pub type MakeHosts = Box<dyn Fn() -> Hosts + Send + Sync>;
 pub type InitializeHosts = Box<dyn Fn(Arc<basal_core::Store>) -> Result<(), String> + Send + Sync>;
 /// Starts adapter polling only after module preparation has succeeded.
 pub type ReadyHosts = Box<dyn Fn() + Send + Sync>;
+/// What the serving process does with the first store failure the module
+/// latches. Production exits so supervision restarts it and recovery runs.
+pub type OnStoreFailure = Box<dyn Fn(String) + Send + Sync>;
 
 enum Phase {
     Starting,
@@ -129,6 +132,7 @@ pub struct BasalHandler {
     initialized: Arc<std::sync::atomic::AtomicBool>,
     daemon_capabilities: Arc<basal_host::subc_catalog::DaemonCapabilities>,
     tool_foreground: Duration,
+    on_store_failure: Arc<OnStoreFailure>,
 }
 
 use basal_proto::util::lock;
@@ -146,6 +150,7 @@ impl BasalHandler {
             initialized: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             daemon_capabilities: Arc::new(basal_host::subc_catalog::DaemonCapabilities::default()),
             tool_foreground: Duration::from_secs(25),
+            on_store_failure: Arc::new(Box::new(crate::fatal::exit_after_store_failure)),
         }
     }
     pub fn with_daemon_capabilities(
@@ -161,6 +166,15 @@ impl BasalHandler {
     }
     pub fn with_ready_hosts(mut self, ready: ReadyHosts) -> Self {
         self.ready = Arc::new(ready);
+        self
+    }
+
+    /// Replace exiting the process on a latched store failure. Only an
+    /// in-process test harness should use this: exiting there would end the
+    /// whole test binary before it reports which test hit the failure. The
+    /// module still latches the failure and its health reports `Failing`.
+    pub fn with_store_failure_action(mut self, action: OnStoreFailure) -> Self {
+        self.on_store_failure = Arc::new(action);
         self
     }
 
@@ -333,15 +347,17 @@ const OPEN_RETRY: Duration = Duration::from_secs(10);
 
 /// Opens the store and starts the module on its own thread: opening can wait
 /// for an exiting predecessor's lease, and HELLO_ACK must not wait with it.
-fn start(
-    path: PathBuf,
-    configure: Arc<Configure>,
-    hosts: Arc<MakeHosts>,
-    initialize: Arc<InitializeHosts>,
-    ready: Arc<ReadyHosts>,
-    phase: Arc<Mutex<Phase>>,
-    event_transport: Arc<Option<Arc<dyn basal_host::transport::Transport>>>,
-) {
+fn start(path: PathBuf, handler: &BasalHandler) {
+    let BasalHandler {
+        configure,
+        hosts,
+        initialize,
+        ready,
+        phase,
+        event_transport,
+        on_store_failure,
+        ..
+    } = handler.clone();
     std::thread::spawn(move || {
         let deadline = std::time::Instant::now() + OPEN_RETRY;
         let started = loop {
@@ -371,7 +387,7 @@ fn start(
                     ));
                 }
                 let module = Arc::new(module);
-                module.fatal.exit_when_raised();
+                module.fatal.when_raised(move |why| on_store_failure(why));
                 module.engine.spawn_loop();
                 tracing::info!(target: "engine", "basal is serving");
                 *lock(&phase) = Phase::Ready(module);
@@ -480,15 +496,7 @@ impl ModuleHandler for BasalHandler {
             return;
         }
         match store_path(ack) {
-            Ok(path) => start(
-                path,
-                self.configure.clone(),
-                self.hosts.clone(),
-                self.initialize.clone(),
-                self.ready.clone(),
-                self.phase.clone(),
-                self.event_transport.clone(),
-            ),
+            Ok(path) => start(path, self),
             Err(e) => {
                 tracing::error!(target: "store", "{e}");
                 *lock(&self.phase) = Phase::Failed(e);

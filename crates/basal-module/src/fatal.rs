@@ -93,11 +93,21 @@ impl Fatal {
     /// Starts a thread that ends the process with [`EXIT_STORE_FAILURE`] as
     /// soon as a fatal error is raised.
     pub fn exit_when_raised(&self) {
-        let fatal = self.clone();
-        std::thread::spawn(move || {
-            let why = fatal.wait();
-            eprintln!("ck-basal: exiting after a store failure: {why}");
-            std::process::exit(EXIT_STORE_FAILURE);
-        });
+        self.when_raised(exit_after_store_failure);
     }
+
+    /// Starts a thread that hands the first fatal error to `action` as soon as
+    /// it is raised.
+    pub fn when_raised(&self, action: impl FnOnce(String) + Send + 'static) {
+        let fatal = self.clone();
+        std::thread::spawn(move || action(fatal.wait()));
+    }
+}
+
+/// The serving process's answer to a store failure: log it and exit with
+/// [`EXIT_STORE_FAILURE`] so supervision restarts the process and recovery
+/// runs before anything else.
+pub fn exit_after_store_failure(why: String) {
+    eprintln!("ck-basal: exiting after a store failure: {why}");
+    std::process::exit(EXIT_STORE_FAILURE);
 }
