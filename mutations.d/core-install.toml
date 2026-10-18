@@ -46,7 +46,7 @@ build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/install_policy.rs"
 old = 'Ok((InstallStatus::Active { code_hash, .. }, approval)) if code_hash == expected => {'
-new = 'Ok((InstallStatus::Active { code_hash, .. } | InstallStatus::Revoked { code_hash }, approval)) if code_hash == expected => { // NON-VACUITY BREAK'
+new = 'Ok((InstallStatus::Active { code_hash, .. } | InstallStatus::Revoked { code_hash: Some(code_hash) }, approval)) if code_hash == expected => { // NON-VACUITY BREAK'
 
 [[control]]
 id = "policy-status-hash-not-bound"
@@ -1327,7 +1327,7 @@ guards = "a decided hint cannot approve a non-active status even with the local 
 file = "crates/basal-core/src/install_policy.rs"
 old = '''Ok((InstallStatus::Active { code_hash, .. }, approval))
                 if code_hash == crate::ids::hex(&card.code_hash) =>'''
-new = '''Ok((InstallStatus::Active { code_hash, .. } | InstallStatus::Revoked { code_hash }, approval))
+new = '''Ok((InstallStatus::Active { code_hash, .. } | InstallStatus::Revoked { code_hash: Some(code_hash) }, approval))
                 if code_hash == crate::ids::hex(&card.code_hash) => // NON-VACUITY BREAK'''
 test_file = "crates/basal-module/tests/install_policy.rs"
 runner = "cargo"

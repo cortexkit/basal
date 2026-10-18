@@ -36,7 +36,7 @@ old = '''let status = self
             .map_err(|e| {
                 CoreError::Unavailable(format!("no install status for {flow} v{version}: {e}"))
             })?;'''
-new = '''let status = InstallStatus::Revoked { code_hash: hash.clone() }; // NON-VACUITY BREAK'''
+new = '''let status = InstallStatus::Revoked { code_hash: Some(hash.clone()) }; // NON-VACUITY BREAK'''
 
 [[control]]
 id = "revoked-run-counts-as-a-health-failure"
