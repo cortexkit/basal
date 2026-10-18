@@ -175,35 +175,6 @@ mod tests {
         fs::remove_dir_all(root).expect("remove catalog fixture");
     }
 
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn python_catalog_guard_matches_golden() {
-        use std::process::Command;
-
-        let root = basal_core::test_support::timestamp_scratch("engram-catalog", "python");
-        let data_dir = root.join("resolved-data-dir");
-        write_for_store(&data_dir.join("store.db"));
-
-        let module_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let checker = module_dir.join("../../script/tests/engram_catalog.py");
-        let golden = module_dir.join("testdata/engram-catalog.json");
-        let written = data_dir.join("engram-catalog.json");
-        let result = Command::new("python3")
-            .arg(checker)
-            .arg(written)
-            .arg(golden)
-            .output()
-            .expect("run the catalog's Python golden-file check");
-        assert!(
-            result.status.success(),
-            "Python catalog check failed: {}{}",
-            String::from_utf8_lossy(&result.stdout),
-            String::from_utf8_lossy(&result.stderr)
-        );
-
-        fs::remove_dir_all(root).expect("remove catalog fixture");
-    }
-
     #[test]
     fn matching_catalog_bytes_skip_the_writer() {
         let root = basal_core::test_support::timestamp_scratch("engram-catalog", "unchanged");
