@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "module_id": "basal",
+  "entries": [
+    {
+      "entry_id": "basal-store",
+      "class": "portable",
+      "reason": "Restoring this database onto another Mac while this basal instance still runs would run its flows twice. Restore only onto a machine where this basal instance no longer runs.",
+      "mechanism": "whole-db",
+      "path": "store.db"
+    },
+    {
+      "entry_id": "basal-writer-lease",
+      "class": "portable",
+      "reason": "Restore this writer lease only with the matching database and only onto a machine where this basal instance no longer runs; leaving basal running on both Macs would run its flows twice.",
+      "mechanism": "filetree",
+      "path": "a820ffc03d506451.lease"
+    },
+    {
+      "entry_id": "basal-logs",
+      "class": "excluded",
+      "reason": "Operational logs are not durable module state and may contain sensitive operational details.",
+      "path": "logs"
+    },
+    {
+      "entry_id": "basal-dry-run",
+      "class": "excluded",
+      "reason": "Dry-run output is temporary scratch that can be regenerated and must not be restored.",
+      "path": "dry-run"
+    }
+  ]
+}

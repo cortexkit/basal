@@ -2827,3 +2827,23 @@ timeout_s = 600
 file = "crates/basal-module/src/ops.rs"
 old = "match self.rt.catalog().agent_id(agent_id) {"
 new = "match self.rt.catalog().agent_id(agent_id).or_else(|_| Ok::<_, basal_host::transport::WireError>(None)) { // NON-VACUITY BREAK"
+
+
+# The production catalog's bytes must match the reviewed shape exactly.
+[[control]]
+id = "engram-catalog-bytes-match-golden"
+guards = "ck-basal writes the byte-stable checked-in catalog beside the resolved store path"
+file = "crates/basal-module/src/engram_catalog.rs"
+scope = { after = "fn catalog_bytes() -> &'static [u8] {", before = "\n}" }
+old = "CATALOG_JSON.as_bytes()"
+new = "b\"\" // NON-VACUITY BREAK"
+test_file = "script/tests/engram_catalog.py"
+package = "basal-module"
+runner = "cargo"
+target = "--bin ck-basal"
+platforms = ["linux"]
+expect_red = ["engram_catalog::tests::python_catalog_guard_matches_golden"]
+select = { tests = ["engram_catalog::tests::python_catalog_guard_matches_golden", "engram_catalog::tests::catalog_write_failure_is_nonfatal"] }
+only = true
+timeout_s = 600
+build_timeout_s = 3600
