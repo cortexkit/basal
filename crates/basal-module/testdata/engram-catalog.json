@@ -6,8 +6,9 @@
       "entry_id": "basal-store",
       "class": "portable",
       "reason": "Restoring this database onto another Mac while this basal instance still runs would run its flows twice. Restore only onto a machine where this basal instance no longer runs.",
-      "mechanism": "whole-db",
-      "path": "store.db"
+      "mechanism": "page-db",
+      "path": "store.db",
+      "writer_interaction": "read-transaction-live"
     },
     {
       "entry_id": "basal-writer-lease",
