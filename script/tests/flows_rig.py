@@ -347,7 +347,7 @@ basal_identifier ck-basal-worker
             code = 'guard_all_paths; rig_env() { /bin/cat "$HOME/catalog.json"; }; pin_routing'
             result = self.run_shell(code, home)
             self.assertEqual(result.returncode, 0, result.stderr)
-            policy = Path(home) / "Work/Projects/CortexKit-scratch/ckdev-flows/config/cortexkit/alfonso-routing.jsonc"
+            policy = Path(home) / "Work/Projects/CortexKit-scratch/ckdev-flows/config/cortexkit/prefrontal-routing.jsonc"
             self.assertEqual((Path(home) / "check-call").read_text().splitlines(), [
                 str(Path(home) / "Work/Projects/CortexKit-scratch/ckdev-flows/config"),
                 "--check-config",

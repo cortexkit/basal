@@ -47,7 +47,7 @@
 #   config    write subc.jsonc, bootstrap the key-file vault and grant only
 #             Broca's read of apikey:openai and routing's llm-provider list.
 #             Temporarily start the rig to read its served Fusiform catalog,
-#             then pin alfonso-routing.jsonc to openai/gpt-6-luna. Refuse a
+#             then pin prefrontal-routing.jsonc to openai/gpt-6-luna. Refuse a
 #             catalog without that model. No production config is copied.
 #             Luna's only score is a labeled rig fixture (elo 1, eq/speed 0),
 #             not measured quality; the stack manifest records that fact.
@@ -188,7 +188,9 @@ RIG_HOME="$RIG/home"
 CONN="$RUNTIME_DIR/subc-connection.json"
 PIDFILE="$RUNTIME_DIR/ckdev-subc.pid"
 SUBC_CONFIG="$CONFIG_HOME/cortexkit/subc.jsonc"
-ROUTING_CONFIG="$CONFIG_HOME/cortexkit/alfonso-routing.jsonc"
+# prefrontal-routing reads only prefrontal-routing.jsonc, and refuses to start
+# (config_renamed) while an old alfonso-routing.jsonc sits beside it.
+ROUTING_CONFIG="$CONFIG_HOME/cortexkit/prefrontal-routing.jsonc"
 BROCA_INDEX="$DATA_HOME/cortexkit/broca/run-index.db"
 # The vault's data directory is where the daemon's storage convention puts
 # module `claustrum`. Its master key must live outside that directory (the
@@ -1080,6 +1082,9 @@ comment = ("      // Rig fixture values, not measured model quality. An empty ro
            "      // model, elo=1 clears iq=20; no EQ or speed score is demanded.\n")
 print(text.replace(entry, comment + entry))') || return 1
   printf '%s\n' "$policy" | write_file "$ROUTING_CONFIG" || return 1
+  # A rig built before the rename may still hold the old file name, which makes
+  # routing refuse to start.
+  rm -f "$CONFIG_HOME/cortexkit/alfonso-routing.jsonc"
   output=$(XDG_CONFIG_HOME="$CONFIG_HOME" "$BIN/ckdev-prefrontal-routing" --check-config 2>&1) || {
     [ -z "$output" ] || printf '%s\n' "$output" >&2
     return 1
