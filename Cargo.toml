@@ -36,7 +36,7 @@ croner = { version = "4.0", default-features = false, features = ["jiff"] }
 # machine and in every test.
 jiff = { version = "0.2.37", default-features = false, features = ["std", "tzdb-bundle-always"] }
 # Shared test-binary staging keeps test executables off removable build volumes.
-cortexkit-test-support = "=0.1.8"
+cortexkit-test-support = "=0.1.10"
 # The fleet's storage mechanics: open with the single-writer lease, WAL and a
 # busy timeout, and versioned migrations. Pinned exactly, as astrocyte does.
 cortexkit-store = { version = "=0.2.4", features = ["sqlite"] }

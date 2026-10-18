@@ -520,9 +520,9 @@ dependencies = [
 
 [[package]]
 name = "cortexkit-test-support"
-version = "0.1.8"
+version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7471b48bd5625003399de9af514d278f9a238b65fc866bdf7aee2d6786fe4d3"
+checksum = "efb28b25772aa8ebe64dc31a3a69a2f930327801c0f22d4478aab8fb41e93fd5"
 dependencies = [
  "file-id",
  "rustix",
@@ -806,7 +806,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1868,7 +1868,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
