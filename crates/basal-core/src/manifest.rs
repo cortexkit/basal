@@ -534,7 +534,7 @@ fn id_byte(b: u8) -> bool {
     b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_'
 }
 
-/// Event names and source kinds are one NATS subject token each.
+/// One NATS subject token: an event-name component or a source kind.
 fn token_byte(b: u8) -> bool {
     b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'
 }
@@ -704,7 +704,24 @@ impl Manifest {
                 }
                 for e in events {
                     check_name("trigger.events.module", &e.module, MAX_NAME_BYTES, id_byte)?;
-                    check_name("trigger.events.name", &e.name, MAX_NAME_BYTES, token_byte)?;
+                    check_name("trigger.events.name", &e.name, MAX_NAME_BYTES, |b| {
+                        token_byte(b) || b == b'.'
+                    })?;
+                    if e.name.split('.').count() > 4 || e.name.split('.').any(str::is_empty) {
+                        return Err(invalid(
+                            "trigger.events.name",
+                            "must have 1 to 4 nonempty dot-separated tokens",
+                        ));
+                    }
+                    if e.name.split('.').any(|p| {
+                        p.strip_prefix('v')
+                            .is_some_and(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
+                    }) {
+                        return Err(invalid(
+                            "trigger.events.name",
+                            "tokens must not be v followed only by digits",
+                        ));
+                    }
                     if e.version == 0 {
                         return Err(invalid("trigger.events.version", "must be at least 1"));
                     }
@@ -1119,6 +1136,86 @@ mod board_sink_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn event_names_accept_one_to_four_tokens_within_total_byte_limit() {
+        let mut value = serde_json::json!({
+            "id":"names", "version":1, "purpose":"Receive hierarchical events",
+            "trigger":{"events":[{"module":"broca","name":"run.started","version":1}]}
+        });
+        for name in [
+            "run",
+            "run.started",
+            "run.task.started",
+            "run.task.step.started",
+        ] {
+            value["trigger"]["events"][0]["name"] = serde_json::json!(name);
+            assert!(Manifest::parse(&value.to_string()).is_ok(), "{name}");
+        }
+        value["trigger"]["events"][0]["name"] = serde_json::json!(format!("a.{}", "b".repeat(126)));
+        assert!(Manifest::parse(&value.to_string()).is_ok());
+        for name in [
+            "".to_string(),
+            ".run".into(),
+            "run.".into(),
+            "run..started".into(),
+            "run.*".into(),
+            "run.>".into(),
+            "run.Started".into(),
+            "run.task-started".into(),
+            "run.é".into(),
+            format!("a.{}", "b".repeat(127)),
+        ] {
+            value["trigger"]["events"][0]["name"] = serde_json::json!(name);
+            assert!(
+                matches!(
+                    Manifest::parse(&value.to_string()),
+                    Err(ManifestError::Invalid { ref field, .. }) if field == "trigger.events.name"
+                ),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn event_names_refuse_five_tokens() {
+        let value = serde_json::json!({
+            "id":"names", "version":1, "purpose":"Bound hierarchical event names",
+            "trigger":{"events":[{"module":"broca","name":"run.task.step.work.started","version":1}]}
+        });
+        assert!(matches!(
+            Manifest::parse(&value.to_string()),
+            Err(ManifestError::Invalid { ref field, .. }) if field == "trigger.events.name"
+        ));
+    }
+
+    #[test]
+    fn event_names_refuse_version_shaped_tokens() {
+        let mut value = serde_json::json!({
+            "id":"names", "version":1, "purpose":"Unambiguous event names",
+            "trigger":{"events":[{"module":"broca","name":"run.started","version":1}]}
+        });
+        for name in [
+            "v2",
+            "v2.started",
+            "run.v0",
+            "run.v01.started",
+            "run.v999999999999999999999",
+        ] {
+            value["trigger"]["events"][0]["name"] = serde_json::json!(name);
+            assert!(
+                matches!(
+                    Manifest::parse(&value.to_string()),
+                    Err(ManifestError::Invalid { ref field, .. }) if field == "trigger.events.name"
+                ),
+                "{name}"
+            );
+        }
+        for name in ["v", "v.started", "run.v2_started", "run.v2a"] {
+            value["trigger"]["events"][0]["name"] = serde_json::json!(name);
+            assert!(Manifest::parse(&value.to_string()).is_ok(), "{name}");
+        }
+    }
 
     #[test]
     fn windows_roots_are_the_fs_built_ins_drive_paths_or_under_the_profile() {

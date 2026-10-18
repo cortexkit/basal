@@ -204,6 +204,71 @@ fn reply() -> serde_json::Value {
 }
 
 #[test]
+fn hierarchical_subject_identity_borrows_complete_name_and_last_version() {
+    for (subject, name, version) in [
+        ("ck.account.event.broca.run.started.v1", "run.started", 1),
+        (
+            "ck.account.event.broca.run.task.step.started.v23",
+            "run.task.step.started",
+            23,
+        ),
+    ] {
+        let mut notice = notice(0);
+        notice.subject = subject.into();
+        let identity = notice.subject_identity().unwrap();
+        assert_eq!(identity, ("broca", name, version));
+        let start = "ck.account.event.broca.".len();
+        assert_eq!(identity.1.as_ptr(), notice.subject[start..].as_ptr());
+        assert_eq!(notice.identity().unwrap(), identity);
+        assert_eq!(notice.target_flow().unwrap(), None);
+    }
+}
+
+#[test]
+fn subject_identity_refuses_five_name_tokens() {
+    let mut notice = notice(0);
+    notice.subject = "ck.account.event.broca.run.task.step.work.started.v1".into();
+    assert!(notice.subject_identity().is_err());
+}
+
+#[test]
+fn subject_identity_refuses_version_shaped_name_tokens() {
+    let mut notice = notice(0);
+    for name in [
+        "v2",
+        "v2.started",
+        "run.v0",
+        "run.v01.started",
+        "run.v999999999999999999999",
+    ] {
+        notice.subject = format!("ck.account.event.broca.{name}.v1");
+        assert!(notice.subject_identity().is_err(), "{name}");
+    }
+    for name in ["v", "v.started", "run.v2_started", "run.v2a"] {
+        notice.subject = format!("ck.account.event.broca.{name}.v1");
+        assert_eq!(notice.subject_identity().unwrap(), ("broca", name, 1));
+    }
+}
+
+#[test]
+fn hierarchical_subject_identity_refuses_empty_wildcard_and_bad_version_tokens() {
+    let mut notice = notice(0);
+    for subject in [
+        "ck.account.event.broca.run..started.v1",
+        "ck.account.event.broca.run.*.v1",
+        "ck.account.event.broca.run.>.v1",
+        "ck.account.event.broca.run.started.v0",
+        "ck.account.event.broca.run.started.v01",
+        "ck.account.event.broca.run.started.v+1",
+        "ck.account.event.broca.run.started.v4294967296",
+        "ck.account.event.broca.run.started.1",
+    ] {
+        notice.subject = subject.into();
+        assert!(notice.subject_identity().is_err(), "{subject}");
+    }
+}
+
+#[test]
 fn header_patterns_match_only_present_nonempty_values() {
     for (key, pattern, value, expected) in [
         ("repo", "cortexkit/*", "CortexKit/basal", true),

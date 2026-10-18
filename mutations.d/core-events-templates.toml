@@ -725,9 +725,9 @@ only = true
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/events.rs"
-old = "if parts.len() != 6"
+old = "if !(6..=9).contains(&parts.len())"
 new = """if parts.len() == 5 { return Ok((parts[3], parts[4], 1)); } // NON-VACUITY BREAK
-        if parts.len() != 6"""
+        if !(6..=9).contains(&parts.len())"""
 
 # Nonmatching notice headers prevent creation of a receipt, backlog entry or run.
 [[control]]
@@ -815,3 +815,105 @@ timeout_s = 600
 file = "crates/basal-core/src/templates.rs"
 old = "match self.catalog().agent_id(agent) {"
 new = "match self.catalog().agent_id(agent).or_else(|_| Ok::<_, basal_host::transport::WireError>(None)) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "event-subject-version-uses-last-token"
+guards = "hierarchical event names retain every name token and decode the final version token"
+file = "crates/basal-core/src/events.rs"
+old = "let version_token = parts[parts.len() - 1];"
+new = "let version_token = parts[5]; // NON-VACUITY BREAK"
+test_file = "crates/basal-core/src/events_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["events::tests::hierarchical_subject_identity_borrows_complete_name_and_last_version"]
+select = { tests = ["events::tests::hierarchical_subject_identity_borrows_complete_name_and_last_version", "events::tests::subject_identity_refuses_five_name_tokens"] }
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "event-subject-name-token-cap"
+guards = "event subjects refuse more than four name tokens"
+file = "crates/basal-core/src/events.rs"
+old = "!(6..=9).contains(&parts.len())"
+new = "!(6..=10).contains(&parts.len()) /* NON-VACUITY BREAK */"
+test_file = "crates/basal-core/src/events_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["events::tests::subject_identity_refuses_five_name_tokens"]
+select = { tests = ["events::tests::subject_identity_refuses_five_name_tokens", "events::tests::hierarchical_subject_identity_borrows_complete_name_and_last_version"] }
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "manifest-event-name-allows-dots"
+guards = "manifest event names accept dotted tokens within the existing total byte limit"
+file = "crates/basal-core/src/manifest.rs"
+old = "token_byte(b) || b == b'.'"
+new = "token_byte(b) /* NON-VACUITY BREAK */"
+test_file = "crates/basal-core/src/manifest.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["manifest::tests::event_names_accept_one_to_four_tokens_within_total_byte_limit"]
+select = { tests = ["manifest::tests::event_names_accept_one_to_four_tokens_within_total_byte_limit", "manifest::tests::event_names_refuse_five_tokens"] }
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "manifest-event-name-token-cap"
+guards = "manifest event names refuse more than four name tokens"
+file = "crates/basal-core/src/manifest.rs"
+old = "e.name.split('.').count() > 4"
+new = "e.name.split('.').count() > 5 /* NON-VACUITY BREAK */"
+test_file = "crates/basal-core/src/manifest.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["manifest::tests::event_names_refuse_five_tokens"]
+select = { tests = ["manifest::tests::event_names_refuse_five_tokens", "manifest::tests::event_names_accept_one_to_four_tokens_within_total_byte_limit"] }
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "event-subject-name-refuses-version-tokens"
+guards = "event name tokens cannot be v followed only by digits"
+file = "crates/basal-core/src/events.rs"
+old = "!v.is_empty() && v.bytes().all(|b| b.is_ascii_digit())"
+new = "false && !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()) /* NON-VACUITY BREAK */"
+test_file = "crates/basal-core/src/events_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["events::tests::subject_identity_refuses_version_shaped_name_tokens"]
+select = { tests = ["events::tests::subject_identity_refuses_version_shaped_name_tokens", "events::tests::hierarchical_subject_identity_borrows_complete_name_and_last_version"] }
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+
+[[control]]
+id = "manifest-event-name-refuses-version-tokens"
+guards = "manifest event name tokens cannot be v followed only by digits"
+file = "crates/basal-core/src/manifest.rs"
+old = "!v.is_empty() && v.bytes().all(|b| b.is_ascii_digit())"
+new = "false && !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()) /* NON-VACUITY BREAK */"
+test_file = "crates/basal-core/src/manifest.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["manifest::tests::event_names_refuse_version_shaped_tokens"]
+select = { tests = ["manifest::tests::event_names_refuse_version_shaped_tokens", "manifest::tests::event_names_accept_one_to_four_tokens_within_total_byte_limit"] }
+only = true
+build_timeout_s = 3600
+timeout_s = 600

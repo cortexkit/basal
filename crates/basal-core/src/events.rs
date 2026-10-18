@@ -54,19 +54,27 @@ impl Notice {
     /// Key validation belongs to `identity`, after the key has been selected.
     pub fn subject_identity(&self) -> Result<(&str, &str, u32)> {
         let parts: Vec<_> = self.subject.split('.').collect();
-        if parts.len() != 6
+        if !(6..=9).contains(&parts.len())
             || parts[0] != "ck"
             || parts[2] != "event"
             || parts.iter().any(|p| p.is_empty() || p.contains(['*', '>']))
+            || parts[4..parts.len() - 1].iter().any(|p| {
+                p.strip_prefix('v')
+                    .is_some_and(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
+            })
         {
             return Err(CoreError::Invalid("invalid event subject".into()));
         }
-        let version = parts[5]
+        let version_token = parts[parts.len() - 1];
+        let version = version_token
             .strip_prefix('v')
             .and_then(|v| v.parse::<u32>().ok())
-            .filter(|v| *v > 0 && parts[5] == format!("v{v}"))
+            .filter(|v| *v > 0 && version_token == format!("v{v}"))
             .ok_or_else(|| CoreError::Invalid("invalid event version".into()))?;
-        Ok((parts[3], parts[4], version))
+        // Borrow the complete dotted name, excluding the prefix and version separator.
+        let name_start: usize = parts[..4].iter().map(|p| p.len() + 1).sum();
+        let name_end = self.subject.len() - version_token.len() - 1;
+        Ok((parts[3], &self.subject[name_start..name_end], version))
     }
 
     pub fn identity(&self) -> Result<(&str, &str, u32)> {

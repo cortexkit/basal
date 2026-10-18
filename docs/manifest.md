@@ -38,7 +38,7 @@ A flow is a script plus a manifest. The manifest says everything the flow may do
 | `concurrency` | integer | no | `1` | Only `1`: runs of a flow run one at a time, in trigger order. |
 | `deadline` | duration | no | the runtime's default (10 minutes) | The per-run wall-clock deadline, from `"1s"` to `"24h"`; an audience limits it to `"12h"`. |
 
-Names: module ids use `a-z`, `0-9`, `-`, `_`; op names add `A-Z` and `.` (`browser.read_page`; the pair, never the dots, identifies the op); event names and source kinds are one NATS subject token, `a-z`, `0-9`, `_`; agent names use letters, digits, `-` and `_`. Every name is 1 to 128 bytes.
+Names: module ids use `a-z`, `0-9`, `-`, `_`; op names add `A-Z` and `.` (`browser.read_page`; the module id and complete op name identify the op, without splitting the op name at dots); event names are 1–4 nonempty dot-separated NATS subject tokens (for example, `run.started`), each using `a-z`, `0-9`, `_`, with no token consisting of `v` followed only by digits (`v2`); source kinds are one token using `a-z`, `0-9`, `_`; agent names use letters, digits, `-` and `_`. Every name is 1 to 128 bytes, including the dots in an event name.
 
 A duration is a positive whole number followed by one unit: `s`, `m`, `h` or `d` (`"90s"`, `"10m"`, `"6h"`, `"1d"`).
 

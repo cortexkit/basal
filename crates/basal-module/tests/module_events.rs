@@ -14,6 +14,8 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 mod common;
+#[path = "module_events/hierarchical.rs"]
+mod hierarchical;
 #[path = "module_events/lifecycle.rs"]
 mod lifecycle;
 #[path = "module_events/reader.rs"]
