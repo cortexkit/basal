@@ -9,6 +9,8 @@
 //! Anything else is refused with status 64, so a mistyped command never
 //! falls through to serving.
 
+mod engram_catalog;
+
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 
@@ -120,9 +122,10 @@ fn serve() -> ExitCode {
     let initialized_models = models.clone();
     let ready_models = models;
     let event_transport = transport.clone();
-    // Only the rig's kill switch reads this: the store path, once known.
+    // Startup hooks and the backup catalog need the resolved store path.
     let store_path_cell = Arc::new(std::sync::OnceLock::<std::path::PathBuf>::new());
     let configured_store = store_path_cell.clone();
+    let initialized_store_path = store_path_cell.clone();
     tracing::info!("basal module starting");
     let daemon_capabilities = Arc::new(basal_host::subc_catalog::DaemonCapabilities::default());
     let catalog_capabilities = daemon_capabilities.clone();
@@ -197,6 +200,16 @@ fn serve() -> ExitCode {
     )
     .with_daemon_capabilities(daemon_capabilities)
     .with_store_initializer(Box::new(move |shared| {
+        // Store::open has created the private data directory by this point. Write the
+        // catalog before the handler becomes ready.
+        if let Some(store_path) = initialized_store_path.get() {
+            engram_catalog::write_for_store(store_path);
+        } else {
+            tracing::warn!(
+                target: "engram",
+                "cannot write basal engram catalog before the daemon resolves the store path"
+            );
+        }
         if let Some(models) = initialized_models
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -293,5 +306,99 @@ mod tests {
         assert!(pragmas.journal_mode_wal);
         drop(store);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod store_restore_tests {
+    use basal_core::{Durability, Store};
+    use std::path::{Path, PathBuf};
+
+    fn copy_sqlite_store(source: &Path, destination: &Path) {
+        std::fs::create_dir_all(destination).expect("create fresh restore directory");
+        let source_db = source.join("store.db");
+        let destination_db = destination.join("store.db");
+        std::fs::copy(&source_db, &destination_db).expect("copy store database");
+        for suffix in ["-wal", "-shm"] {
+            let from = PathBuf::from(format!("{}{suffix}", source_db.display()));
+            if from.exists() {
+                let to = PathBuf::from(format!("{}{suffix}", destination_db.display()));
+                std::fs::copy(from, to).expect("copy SQLite sidecar");
+            }
+        }
+    }
+
+    #[test]
+    fn restoring_store_requires_its_persisted_lease_epoch() {
+        let root = basal_core::test_support::timestamp_scratch("store-restore", "lease");
+        let source = root.join("source");
+        std::fs::create_dir_all(&source).expect("create source data directory");
+        let source_db = source.join("store.db");
+
+        // The first open persists epoch 1 in both the database fence and its lease file.
+        drop(Store::open(&source_db, Durability::throwaway()).expect("open source store"));
+
+        let lease = std::fs::read_dir(&source)
+            .expect("list source data directory")
+            .map(|entry| entry.expect("read source entry").path())
+            .find(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "lease")
+            })
+            .expect("store creates one persistent lease file");
+        assert_eq!(
+            lease.file_name().and_then(|name| name.to_str()),
+            Some("a820ffc03d506451.lease"),
+            "the catalog must use the deterministic lease key for basal's core SQLite store"
+        );
+
+        let old_lease_capture = root.join("lease-captured-before-restart");
+        std::fs::create_dir_all(&old_lease_capture).expect("create old lease capture");
+        std::fs::copy(
+            &lease,
+            old_lease_capture.join(lease.file_name().expect("lease filename")),
+        )
+        .expect("capture epoch-1 lease");
+
+        // Restart advances the lease and the next fenced database write to epoch 2.
+        drop(Store::open(&source_db, Durability::throwaway()).expect("restart source store"));
+
+        let without_lease = root.join("restored-without-lease");
+        copy_sqlite_store(&source, &without_lease);
+        let error = Store::open(without_lease.join("store.db"), Durability::throwaway())
+            .err()
+            .expect("a database copy without its epoch lease must refuse startup");
+        assert_eq!(
+            error.to_string(),
+            "store: fenced write rejected: this writer holds epoch 1 but the database was claimed by a newer writer at epoch 2"
+        );
+
+        let with_lease = root.join("restored-with-lease");
+        copy_sqlite_store(&source, &with_lease);
+        std::fs::copy(
+            &lease,
+            with_lease.join(lease.file_name().expect("lease filename")),
+        )
+        .expect("copy matching persistent lease");
+        drop(
+            Store::open(with_lease.join("store.db"), Durability::throwaway())
+                .expect("database and matching lease restore together"),
+        );
+
+        // A one-restart capture gap leaves the copied lease at epoch 1 and the
+        // database at epoch 2. The next writer advances the restored lease to 2.
+        let out_of_order = root.join("restored-from-out-of-order-capture");
+        copy_sqlite_store(&source, &out_of_order);
+        std::fs::copy(
+            old_lease_capture.join(lease.file_name().expect("lease filename")),
+            out_of_order.join(lease.file_name().expect("lease filename")),
+        )
+        .expect("restore lease captured before the database epoch advanced");
+        drop(
+            Store::open(out_of_order.join("store.db"), Durability::throwaway())
+                .expect("one epoch of capture-order skew catches up on open"),
+        );
+
+        std::fs::remove_dir_all(root).expect("remove restore fixture");
     }
 }
