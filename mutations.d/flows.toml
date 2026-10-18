@@ -431,8 +431,8 @@ only = true
 build_timeout_s = 3600
 timeout_s = 600
 file = "flows/ci-failure-router/flow.js"
-old = "const contributorBranch = !protectedBranch && !seatRun;"
-new = "const contributorBranch = false; // NON-VACUITY BREAK"
+old = "  !protectedBranch && !seatRun;"
+new = "  false; // NON-VACUITY BREAK"
 
 [[control]]
 id = "ci-failure-router-seat-actor-uses-re-runner"
@@ -772,3 +772,37 @@ timeout_s = 600
 file = "flows/ci-failure-router/flow.js"
 old = "const startedSinceFirstNotice = jobsSinceFirstNotice.filter(id => !(run.notStarted ?? []).includes(id));"
 new = "const startedSinceFirstNotice = jobsSinceFirstNotice; // NON-VACUITY BREAK"
+
+[[control]]
+id = "github-events-paused-repo-delivers"
+guards = "a repository its owner paused gets no digest and no reaction"
+test_file = "crates/basal-module/tests/github_events.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test github_events"
+select = { tests = ["a_paused_repository_delivers_nothing_and_other_repositories_still_do", "operator_plus_another_human_is_delivered"] }
+expect_red = ["a_paused_repository_delivers_nothing_and_other_repositories_still_do"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/github-events/flow.js"
+old = "if (Object.hasOwn(PAUSED_REPOS, repo)) return drop('paused_repo');"
+new = "// NON-VACUITY BREAK"
+
+[[control]]
+id = "ci-failure-router-wake-branches-ignored"
+guards = "a repository with its own wake branches wakes only on those branches"
+test_file = "crates/basal-module/tests/ci_failure_router.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test ci_failure_router"
+select = { tests = ["a_repository_with_wake_branches_wakes_only_on_those_branches", "protected_branches_wake_whoever_started_the_run"] }
+expect_red = ["a_repository_with_wake_branches_wakes_only_on_those_branches"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/ci-failure-router/flow.js"
+old = "const wakeBranches = WAKE_BRANCHES_BY_REPO[repo];"
+new = "const wakeBranches = undefined; // NON-VACUITY BREAK"

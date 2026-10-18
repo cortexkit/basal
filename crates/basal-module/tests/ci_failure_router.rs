@@ -333,7 +333,7 @@ fn published_manifest_is_global_with_only_ci_v2_repo_filters_and_minimal_grants(
     Manifest::parse(MANIFEST).unwrap();
     let value: Value = serde_json::from_str(MANIFEST).unwrap();
     assert_eq!(value["audience"], json!({"kind":"global"}));
-    assert_eq!(value["version"], 10);
+    assert_eq!(value["version"], 11);
     assert!(
         value["purpose"]
             .as_str()
@@ -438,15 +438,17 @@ fn magic_context_design_gate_is_ignored_off_master_and_train_branches() {
 fn magic_context_design_gate_job_in_another_workflow_is_ignored_off_master() {
     // The reusable gate also reports as a job inside other workflows.
     let t = Test::new();
+    // bench/* is a magic-context wake branch where the design gate is still
+    // ignored, so the other job on it wakes while the gate job sends nothing.
     let mut failed = job("cortexkit/magic-context", 101);
     failed["workflow_name"] = json!("CI");
     failed["name"] = json!("design-gate");
-    failed["head_branch"] = json!("contributor/fix");
+    failed["head_branch"] = json!("bench/fix");
     t.ci(failed);
     assert!(t.writes().is_empty());
     let mut other = job("cortexkit/magic-context", 102);
     other["workflow_name"] = json!("CI");
-    other["head_branch"] = json!("contributor/fix");
+    other["head_branch"] = json!("bench/fix");
     t.ci(other);
     assert_eq!(t.writes()[0]["action"], "wake");
 }
@@ -719,6 +721,39 @@ fn contributor_branch_failures_record_silently_and_seat_branches_wake() {
 }
 
 #[test]
+fn a_repository_with_wake_branches_wakes_only_on_those_branches() {
+    // magic-context wakes only on master, train/* and bench/*, even for a branch
+    // the operator pushed; other repositories keep the general rule.
+    for (id, repo, branch, action) in [
+        (401, "cortexkit/magic-context", "master", "wake"),
+        (402, "cortexkit/magic-context", "train/2026-10", "wake"),
+        (403, "cortexkit/magic-context", "bench/levels", "wake"),
+        (
+            404,
+            "cortexkit/magic-context",
+            "feat/operator-branch",
+            "silent",
+        ),
+        (
+            405,
+            "cortexkit/magic-context",
+            "gh-readonly-queue/master/pr-1",
+            "silent",
+        ),
+        (406, "cortexkit/aft", "feat/operator-branch", "wake"),
+    ] {
+        let t = Test::new();
+        let mut body = job(repo, id);
+        body["run_id"] = json!(id);
+        body["head_branch"] = json!(branch);
+        body["actor"] = json!("ualtinok");
+        body["head_repo_is_fork"] = json!(false);
+        t.ci(body);
+        assert_eq!(t.writes()[0]["action"], action, "{repo} {branch}");
+    }
+}
+
+#[test]
 fn protected_branches_wake_whoever_started_the_run() {
     for (id, branch) in (301..).zip([
         "main",
@@ -905,17 +940,24 @@ fn rerun_attempt_gets_a_new_item_with_the_same_job_id() {
 
 #[test]
 fn superseded_attempt_and_later_events_send_nothing() {
+    // On master, so magic-context's wake-branch list lets the first job wake and
+    // the supersession read happen.
+    let on_master = |repo: &str, id: u64| {
+        let mut body = job(repo, id);
+        body["head_branch"] = json!("master");
+        body
+    };
     for repo in ["cortexkit/aft", "cortexkit/magic-context"] {
         let t = Test::new();
         t.supersession(supersession_reply(repo, 42, true));
-        t.ci(job(repo, 101));
+        t.ci(on_master(repo, 101));
         assert!(t.writes().is_empty());
         assert_eq!(
             t.memory()["runs"][format!("ci:{repo}:42:1")]["superseded"],
             true
         );
         t.supersession(supersession_reply(repo, 42, false));
-        t.ci(job(repo, 102));
+        t.ci(on_master(repo, 102));
         t.ci(run(repo, "failure"));
         t.ci(run(repo, "success"));
         assert!(t.writes().is_empty());

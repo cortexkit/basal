@@ -77,6 +77,13 @@ function seatActor(login) {
   return lower === OPERATOR_LOGIN || /^[a-z0-9-]+-alfonso\[bot\]$/.test(lower);
 }
 
+// Repositories whose owner wakes only for these branches; a failure on any other
+// branch, whoever pushed it, records a silent entry. This replaces the general
+// protected-branch and seat-push rule for that repository.
+const WAKE_BRANCHES_BY_REPO = {
+  'cortexkit/magic-context': ['master', 'train/*', 'bench/*'],
+};
+
 const QUIET_REPOS = {
   'cortexkit/cerebellum': 'CI is off by owner decision: GitHub billing refuses its jobs',
 };
@@ -360,7 +367,10 @@ const quiet = Object.hasOwn(QUIET_REPOS, repo);
 // silent entry. Unknown fork or actor counts as not a seat's run.
 const protectedBranch = mainBranch || PROTECTED_BRANCHES.some(pattern => matches(pattern, body.head_branch));
 const seatRun = body.head_repo_is_fork === false && seatActor(body.actor);
-const contributorBranch = !protectedBranch && !seatRun;
+const wakeBranches = WAKE_BRANCHES_BY_REPO[repo];
+const contributorBranch = wakeBranches ?
+  !wakeBranches.some(pattern => matches(pattern, body.head_branch)) :
+  !protectedBranch && !seatRun;
 // A red run with no failed job in hand records its item silently: either its
 // job events are still arriving (the first one wakes), or no job ever ran,
 // as when GitHub closes runs that waited for a maintainer's approval. Only
