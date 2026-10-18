@@ -1385,6 +1385,23 @@ timeout_s = 600
 build_timeout_s = 3600
 
 [[control]]
+id = "worker-startup-rejects-first-spawn-failure"
+guards = "the production-worker readiness probe stops at the first failed spawn instead of waiting for an image that cannot appear"
+file = "crates/basal-module/tests/common/worker_startup.rs"
+old = 'return Err(format!("worker startup failed: {detail:?}; {metrics}"));'
+new = 'return Ok(()); // NON-VACUITY BREAK'
+test_file = "crates/basal-module/tests/common/worker_startup.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test e2e"
+select = { filter = "worker_startup::tests::" }
+expect_red = ["worker_startup::tests::rejects_the_first_spawn_failure_even_with_a_greeted_worker"]
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
 id = "module-worker-frames-unbounded"
 guards = "worker frames back-pressure their stdout reader instead of growing parent memory"
 file = "crates/basal-module/src/process.rs"

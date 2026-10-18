@@ -34,6 +34,9 @@ const HOUR: i64 = 3_600_000;
 #[path = "common/binary_staging.rs"]
 mod binary_staging;
 
+#[path = "common/worker_startup.rs"]
+mod worker_startup;
+
 #[cfg(unix)]
 const PROBE_MODULE: &str = "BASAL_E2E_PRIVACY_MODULE_BINARY";
 #[cfg(unix)]
@@ -438,13 +441,11 @@ mod privacy {
             )
             .expect("ack");
             write_frame(&mut stream, &ack).await.expect("write ack");
-            let pids = loop {
-                let pids = worker_pids(module.0.id(), &worker);
-                if !pids.is_empty() {
-                    break pids;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            };
+            worker_startup::wait_for_worker_startup(&mut stream, Duration::from_secs(180))
+                .await
+                .expect("production worker greeted without a spawn failure");
+            let pids = worker_pids(module.0.id(), &worker);
+            assert!(!pids.is_empty(), "greeted worker must run the staged image");
             for pid in pids {
                 let responsible = responsible_pid(pid);
                 assert_eq!(

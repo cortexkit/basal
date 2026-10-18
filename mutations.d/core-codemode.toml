@@ -247,19 +247,17 @@ new = 'c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04X}", c as u32)),'
 
 [[control]]
 id = "codemode-canonical-parses-nearest-double"
-hub = "JSON text rounds to the nearest binary64 value before RFC 8785 canonicalization; the canonicalizer and independent RFC-example oracle require the same correctly rounded number parsing"
-hub_targets = ["codemode_digest_vectors"]
-guards = "JSON numbers parse to the nearest double before canonicalization"
-test_file = "crates/basal-core/src/codemode/canonical.rs"
-runner = "cargo"
-package = "basal-core"
+guards = "basal-core itself requests correctly rounded JSON parsing, independently of Cargo feature unification by other dependencies"
+test_file = "script/tests/codemode_manifest.py"
+runner = "command"
 platforms = ["linux"]
-target = "--lib"
-expect_red = ["codemode::canonical::tests::json_text_parses_to_the_nearest_double", "codemode::canonical::tests::the_rfc_8785_example_canonicalizes_exactly"]
+command = ["python3", "-m", "unittest", "-v", "{test}"]
+test_count_pattern = "Ran {count} test"
+expect_red = ["script.tests.codemode_manifest.CanonicalJsonFeatures.test_core_requests_correctly_rounded_json_parsing"]
 only = false
 file = "crates/basal-core/Cargo.toml"
 old = 'serde_json = { workspace = true, features = ["float_roundtrip"] }'
-new = 'serde_json = { workspace = true }'
+new = 'serde_json = { workspace = true } # NON-VACUITY BREAK'
 
 [[control]]
 id = "codemode-schema-same-document-refs-only"
