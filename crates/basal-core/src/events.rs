@@ -565,13 +565,7 @@ impl Runtime {
         if let Err(TransportError::Refused(refusal)) = &dispatched
             && refusal.reason == basal_host::flow_refusal::RefusalReason::NoFlowScope
         {
-            let should_warn = self.store().write(|tx| {
-                let changed = tx.execute(
-                    "UPDATE event_body_journal SET scope_wait_warned=1 WHERE run_id=?1 AND scope_wait_warned=0",
-                    [&run.run_id],
-                )?;
-                Ok(changed == 1)
-            })?;
+            let should_warn = self.mark_event_scope_warning(&run.run_id);
             if should_warn {
                 tracing::warn!(
                     flow_id = %run.flow_id,

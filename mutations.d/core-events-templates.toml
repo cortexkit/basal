@@ -262,9 +262,9 @@ expect_red = ["events::tests::no_flow_scope_warning_is_logged_once_across_retrie
 only = true
 build_timeout_s = 3600
 timeout_s = 600
-file = "crates/basal-core/src/events.rs"
-old = "if should_warn {"
-new = "if true { // NON-VACUITY BREAK"
+file = "crates/basal-core/src/runtime.rs"
+old = "if !self.run_ids.insert(run_id.to_owned()) {\n            return false;\n        }"
+new = "let _ = self.run_ids.insert(run_id.to_owned()); // NON-VACUITY BREAK"
 
 # Each template control selects its expected failing test by exact name.
 # Workspace test suites exercise the implementation on both macOS and Linux.

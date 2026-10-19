@@ -195,6 +195,9 @@ impl Runtime {
         let state = self
             .store()
             .write(|tx| resolve(tx, run_id, position, &resolution, actor, None))?;
+        if state.is_terminal() {
+            self.clear_event_scope_warning(run_id);
+        }
         self.flush_refusals()?;
         self.shared.signal.bump();
         if state == RunState::Pending {

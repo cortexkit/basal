@@ -843,6 +843,18 @@ fn no_flow_scope_warning_is_logged_once_across_retries() {
 }
 
 #[test]
+fn no_flow_scope_warning_marker_is_cleared_when_run_is_cancelled() {
+    let f = Fixture::new(60);
+    let run = f.run();
+    assert!(f.rt.mark_event_scope_warning(&run.run_id));
+    assert!(!f.rt.mark_event_scope_warning(&run.run_id));
+
+    f.rt.cancel(&run.run_id, "test").unwrap();
+
+    assert!(f.rt.mark_event_scope_warning(&run.run_id));
+}
+
+#[test]
 fn synthetic_event_dry_run_never_resolves_live() {
     let f = Fixture::new(60);
     let mut run = f.run();

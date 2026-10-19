@@ -398,10 +398,6 @@ CREATE INDEX owner_notice_pending ON outbox(retry_at) WHERE delivered_at IS NULL
         version: 34,
         statements: "CREATE INDEX runs_slot_holders ON runs(flow_id, admit_seq, state, run_id) WHERE state IN ('pending', 'running', 'suspended', 'needs_reconcile');",
     },
-    Migration {
-        version: 35,
-        statements: "ALTER TABLE event_body_journal ADD COLUMN scope_wait_warned INTEGER NOT NULL DEFAULT 0 CHECK (scope_wait_warned IN (0,1));",
-    },
 ];
 
 // Allow journal rows to defer board storage and registry-read failures.
