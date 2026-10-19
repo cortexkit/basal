@@ -179,11 +179,30 @@ impl DigestAction {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub enum SinkGrant {
     Digest(DigestGrant),
     Wait(WaitGrant),
+}
+
+// Choose the variant by the presence of `kind` rather than trying each in
+// turn: an untagged attempt would replace a precise "unknown field" error in a
+// digest grant with serde's generic "did not match any variant".
+impl<'de> Deserialize<'de> for SinkGrant {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        let value = serde_json::Value::deserialize(deserializer)?;
+        if value.get("kind").is_some() {
+            WaitGrant::deserialize(value)
+                .map(Self::Wait)
+                .map_err(D::Error::custom)
+        } else {
+            DigestGrant::deserialize(value)
+                .map(Self::Digest)
+                .map_err(D::Error::custom)
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
