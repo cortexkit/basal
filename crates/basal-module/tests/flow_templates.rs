@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use basal_core::{Admission, NoHooks, RunState};
 use basal_host::mock::MockHost;
@@ -79,6 +80,8 @@ struct TemplateHost {
     bodies: Mutex<BTreeMap<String, Value>>,
     resolved: AtomicUsize,
     replacement_unsupported: AtomicBool,
+    wait_resolve_unsupported: AtomicBool,
+    wait_resolve_delay_ms: AtomicU64,
 }
 
 impl TemplateHost {
@@ -102,12 +105,23 @@ impl TemplateHost {
                 let args: Value = serde_json::from_str(request.args.as_str()).unwrap();
                 limits(&args["item"]);
             }
+            if p == Primitive::SinkWaitResolve {
+                let delay = self.wait_resolve_delay_ms.load(Ordering::Relaxed);
+                if delay > 0 {
+                    std::thread::sleep(Duration::from_millis(delay));
+                }
+            }
             let mut overrides = self.overrides.lock().unwrap();
             if overrides
                 .front()
                 .is_some_and(|(expected, _)| *expected == p)
             {
                 return overrides.pop_front().map(|(_, outcome)| outcome);
+            }
+            if p == Primitive::SinkWaitResolve {
+                return Some(HostOutcome::fulfilled(text(json!({
+                    "resolved":0,"replayed":false
+                }))));
             }
         }
         if request.kind
@@ -130,8 +144,10 @@ impl TemplateHost {
 
 impl Host for TemplateHost {
     fn supports_core_capability(&self, capability: &str) -> bool {
-        capability == basal_host::core_host::FLOW_DIGEST_REPLACE_KEY_V1
-            && !self.replacement_unsupported.load(Ordering::Relaxed)
+        (capability == basal_host::core_host::FLOW_DIGEST_REPLACE_KEY_V1
+            && !self.replacement_unsupported.load(Ordering::Relaxed))
+            || (capability == basal_host::core_host::FLOW_WAIT_RESOLVE_V1
+                && !self.wait_resolve_unsupported.load(Ordering::Relaxed))
     }
 
     fn classify(&self, kind: &CallKind) -> CallClass {
@@ -284,13 +300,19 @@ impl Test {
     }
 
     fn create(&self, template: &str, params: Value) -> Value {
+        let version = match template {
+            "watch-github" => 4,
+            "remind-at" | "watch-file" | "watch-git" => 3,
+            "github-ci-watch" => 2,
+            _ => 2,
+        };
         self.f
             .module
             .handle(
                 &agent(OWNER),
                 "flow.instantiate",
                 json!({
-                    "template":template,"version":if template == "watch-github" { 3 } else { 2 },"params":params,"expires_in":"365d",
+                    "template":template,"version":version,"params":params,"expires_in":"365d",
                 }),
             )
             .unwrap()
@@ -457,13 +479,52 @@ impl Test {
         assert!(item["data"]["params"].get("note").is_none());
         self.live(instance, false);
         let calls = self.f.module.rt.calls(run).unwrap();
+        let wait_resolutions: Vec<_> = calls
+            .iter()
+            .enumerate()
+            .filter(|(_, call)| call.kind == CallKind::Primitive(Primitive::SinkWaitResolve))
+            .collect();
+        assert_eq!(wait_resolutions.len(), 1, "{calls:#?}");
+        let (wait, wait_call) = wait_resolutions[0];
+        let expected_outcome = if title.contains("stopped:") {
+            "failed"
+        } else {
+            "met"
+        };
+        let args: Value = serde_json::from_str(wait_call.args.as_str()).unwrap();
+        assert_eq!(args["outcome"], expected_outcome);
+        let note = args["note"].as_str().unwrap();
+        assert!(note.len() <= 500);
+        assert!(!note.chars().any(char::is_control));
+        let wait_outcome = wait_call
+            .outcome
+            .as_ref()
+            .expect("wait resolution settles before the digest is issued");
+        assert_eq!(wait_outcome.settlement, basal_proto::Settlement::Fulfilled);
+        let reply: Value = serde_json::from_str(wait_outcome.value.as_str()).unwrap();
+        assert_eq!(
+            reply["resolved"], 0,
+            "a flow without waiting items is a no-op success"
+        );
         let sink = calls
             .iter()
             .position(|call| call.kind == CallKind::Primitive(Primitive::SinkDigest))
             .unwrap();
+        let digest_outcome = calls[sink]
+            .outcome
+            .as_ref()
+            .expect("the digest call has settled");
+        assert!(
+            wait_outcome.delivery_order < digest_outcome.delivery_order,
+            "wait resolution must settle before the digest"
+        );
         assert_eq!(
             calls[sink + 1].kind,
             CallKind::Primitive(Primitive::InstanceEnd)
+        );
+        assert!(
+            wait < sink,
+            "wait resolution must be issued before the digest"
         );
         assert_eq!(
             calls
@@ -509,6 +570,31 @@ impl Test {
         assert_eq!(self.host.resolved.load(Ordering::Relaxed), resolved);
         reply
     }
+}
+
+fn assert_captured_wait_resolution(reply: &Value, outcome: &str) {
+    let calls = reply["summary"]["runs"][0]["calls"].as_array().unwrap();
+    let resolutions: Vec<_> = calls
+        .iter()
+        .filter(|call| call["kind"] == "sink.wait.resolve")
+        .collect();
+    assert_eq!(resolutions.len(), 1, "{calls:#?}");
+    assert_eq!(resolutions[0]["args"]["outcome"], outcome);
+    assert_eq!(resolutions[0]["action"], "captured");
+    let wait_position = resolutions[0]["position"].as_u64().unwrap();
+    let digest_position = calls
+        .iter()
+        .find(|call| call["kind"] == "sink.digest")
+        .unwrap()["position"]
+        .as_u64()
+        .unwrap();
+    let end_position = calls
+        .iter()
+        .find(|call| call["kind"] == "instance.end")
+        .unwrap()["position"]
+        .as_u64()
+        .unwrap();
+    assert!(wait_position < digest_position && digest_position < end_position);
 }
 
 fn file_params(path: &Path, condition: &str, text: &str) -> Value {
@@ -587,7 +673,12 @@ fn published_templates_declare_exact_bounds_and_self_only_grants() {
     for (name, manifest, _) in TEMPLATES {
         let m: Value = serde_json::from_str(manifest).unwrap();
         assert_eq!(m["id"], name);
-        assert_eq!(m["version"], if name == "watch-github" { 3 } else { 2 });
+        let expected_version = match name {
+            "watch-github" => 4,
+            "github-ci-watch" => 2,
+            _ => 3,
+        };
+        assert_eq!(m["version"], expected_version);
         if name == "watch-github" {
             for event in m["trigger"]["events"].as_array().unwrap() {
                 assert_eq!(event["match"], json!({"repo":"$params.repo"}));
@@ -624,7 +715,15 @@ fn published_templates_declare_exact_bounds_and_self_only_grants() {
             m["template"],
             json!({"max_per_agent":100,"max_lifetime":"365d"})
         );
-        assert_eq!(m["sinks"], json!([{"agent":"$self","digest_max":"wake"}]));
+        let expected_sinks = if matches!(
+            name,
+            "remind-at" | "watch-file" | "watch-git" | "watch-github"
+        ) {
+            json!([{"agent":"$self","digest_max":"wake"},{"kind":"wait"}])
+        } else {
+            json!([{"agent":"$self","digest_max":"wake"}])
+        };
+        assert_eq!(m["sinks"], expected_sinks);
         assert!(m.get("audience").is_none());
         assert!(m.get("llm").is_none());
         assert!(m.get("net").is_none());
@@ -1058,6 +1157,7 @@ fn reminder_waits_until_due_then_catches_up_once_and_ends() {
     let tick = t.f.module.rt.scheduler().unwrap().tick().unwrap();
     assert_eq!(tick.new_runs().len(), 1);
     let run = tick.new_runs()[0].to_owned();
+    t.host.wait_resolve_delay_ms.store(25, Ordering::Relaxed);
     t.finish(&run);
     let item = t.notified(&instance, &run, "Reminder time reached");
     assert_eq!(item["data"]["observed"]["due"], at);
@@ -1074,6 +1174,79 @@ fn reminder_waits_until_due_then_catches_up_once_and_ends() {
 }
 
 #[test]
+fn wait_resolution_refusal_does_not_block_digest_or_end() {
+    for unsupported in [false, true] {
+        let t = Test::new();
+        let path = t.work.0.join("ready");
+        std::fs::write(&path, "ready").unwrap();
+        let instance = t.create("watch-file", file_params(&path, "exists", ""));
+        if unsupported {
+            t.host
+                .wait_resolve_unsupported
+                .store(true, Ordering::Relaxed);
+        } else {
+            t.host
+                .reject(Primitive::SinkWaitResolve, "sink_store_failed");
+        }
+        let run = t.run(
+            &instance,
+            if unsupported {
+                "unsupported"
+            } else {
+                "refused"
+            },
+        );
+        let items = t.items();
+        assert_eq!(items.len(), 1, "{items:#?}");
+        assert_eq!(items[0]["item"]["body"], instance["params"]["note"]);
+        assert!(
+            items[0]["item"]["title"]
+                .as_str()
+                .unwrap()
+                .contains("File appeared")
+        );
+        t.live(&instance, false);
+        let calls = t.f.module.rt.calls(&run).unwrap();
+        let digest = calls
+            .iter()
+            .position(|call| call.kind == CallKind::Primitive(Primitive::SinkDigest))
+            .unwrap();
+        let end = calls
+            .iter()
+            .position(|call| call.kind == CallKind::Primitive(Primitive::InstanceEnd))
+            .unwrap();
+        assert!(digest < end);
+        let waits: Vec<_> = calls
+            .iter()
+            .enumerate()
+            .filter(|(_, call)| call.kind == CallKind::Primitive(Primitive::SinkWaitResolve))
+            .collect();
+        assert!(waits.len() <= 1);
+        if !unsupported {
+            assert_eq!(waits.len(), 1);
+        }
+        if let Some((position, wait)) = waits.first() {
+            assert!(*position < digest);
+            let outcome = wait.outcome.as_ref().unwrap();
+            assert_eq!(outcome.settlement, basal_proto::Settlement::Rejected);
+            assert!(
+                outcome.delivery_order < calls[digest].outcome.as_ref().unwrap().delivery_order,
+                "a refused resolution must settle before the digest proceeds"
+            );
+            let error: Value = serde_json::from_str(outcome.value.as_str()).unwrap();
+            assert_eq!(
+                error["code"],
+                if unsupported {
+                    "wait_resolve_unsupported"
+                } else {
+                    "sink_store_failed"
+                }
+            );
+        }
+    }
+}
+
+#[test]
 fn reminder_past_invalid_or_over_ceiling_timestamp_is_refused_at_creation() {
     let t = Test::new();
     for at in [
@@ -1086,7 +1259,7 @@ fn reminder_past_invalid_or_over_ceiling_timestamp_is_refused_at_creation() {
             .to_string(),
     ] {
         let error = t.f.module.handle(&agent(OWNER), "flow.instantiate", json!({
-            "template":"remind-at","version":2,"params":{"at":at,"note":"Never delivered"},"expires_in":"365d",
+            "template":"remind-at","version":3,"params":{"at":at,"note":"Never delivered"},"expires_in":"365d",
         })).unwrap_err();
         assert_eq!(error.code, "param_out_of_bounds");
         assert_eq!(error.detail.unwrap()["param"], "at");
@@ -1112,7 +1285,7 @@ fn all_five_templates_dry_run_successfully_in_capture_mode() {
         git_params(&repo, "commit_matching", "", "Release"),
         json!({}),
     );
-    t.dry(
+    let github_dry = t.dry(
         "watch-github",
         github_params("pr", "merged"),
         json!({"event":{
@@ -1123,11 +1296,13 @@ fn all_five_templates_dry_run_successfully_in_capture_mode() {
     let at = jiff::Timestamp::from_millisecond(t.f.clock.now_ms() + 60_000)
         .unwrap()
         .to_string();
-    t.dry(
+    let reminder_dry = t.dry(
         "remind-at",
         json!({"at":at,"note":"Preview reminder"}),
         json!({}),
     );
+    assert_captured_wait_resolution(&github_dry, "met");
+    assert_captured_wait_resolution(&reminder_dry, "met");
     let dry = t.dry(
         "github-ci-watch",
         ci_params(),
@@ -1191,7 +1366,7 @@ fn exact_file_and_git_template_roots_refuse_values_outside_work() {
                     &agent(OWNER),
                     "flow.instantiate",
                     json!({
-                        "template":template,"version":if template == "watch-github" { 3 } else { 2 },"params":values,"expires_in":"1d",
+                        "template":template,"version":3,"params":values,"expires_in":"1d",
                     }),
                 )
                 .unwrap_err();
@@ -1264,7 +1439,29 @@ fn digest_helper_bounds_escaped_note_long_metadata_and_links_on_every_platform()
         .unwrap();
     let instance = t.create("digest-helper", json!({"note":note}));
     let run = t.run(&instance, "bounded-metadata");
-    let item = t.notified(&instance, &run, "File appeared");
+    let items = t.items();
+    assert_eq!(items.len(), 1, "{items:#?}");
+    assert_eq!(items[0]["agent"], OWNER);
+    assert_eq!(items[0]["action"], "wake");
+    let item = items[0]["item"].clone();
+    limits(&item);
+    assert_eq!(item["body"], instance["params"]["note"]);
+    assert!(item["title"].as_str().unwrap().contains("File appeared"));
+    t.live(&instance, false);
+    let calls = t.f.module.rt.calls(&run).unwrap();
+    let digest = calls
+        .iter()
+        .position(|call| call.kind == CallKind::Primitive(Primitive::SinkDigest))
+        .unwrap();
+    assert_eq!(
+        calls[digest + 1].kind,
+        CallKind::Primitive(Primitive::InstanceEnd)
+    );
+    assert!(
+        !calls
+            .iter()
+            .any(|call| call.kind == CallKind::Primitive(Primitive::SinkWaitResolve))
+    );
     assert_eq!(item["body"], note);
     assert_eq!(
         item["data"]["truncated"]["params.path"]["original_bytes"],

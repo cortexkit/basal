@@ -80,8 +80,16 @@ async function finishWatch(title, observed, links = []) {
 }
 // END boundedDigest
 
+async function finishResolvedWatch(title, observed, links = [], outcome = 'met', note = title) {
+  // A refused wait resolution must not suppress the digest or end.
+  try {
+    await sink.wait.resolve(outcome, note);
+  } catch {}
+  return finishWatch(title, observed, links);
+}
+
 if (params.condition !== 'exists' && params.text === '') {
-  await finishWatch('File watch stopped: misconfigured empty text', { reason: 'empty_text' });
+  await finishResolvedWatch('File watch stopped: misconfigured empty text', { reason: 'empty_text' }, [], 'failed', 'Empty text makes this file condition impossible.');
   return;
 }
 
@@ -92,7 +100,7 @@ try {
   if (!stat.exists) return;
   if (params.condition !== 'exists') {
     if (stat.kind !== 'file') {
-      await finishWatch('File watch stopped: target is not a text file', { reason: 'not_a_file', kind: stat.kind });
+      await finishResolvedWatch('File watch stopped: target is not a text file', { reason: 'not_a_file', kind: stat.kind }, [], 'failed', 'This file condition requires a text file.');
       return;
     }
     read = await fs.read(params.path);
@@ -100,7 +108,7 @@ try {
 } catch (error) {
   const code = error.data?.code;
   if (code === 'denied' || code === 'invalid_arguments') {
-    await finishWatch(`File watch stopped: ${code}`, { reason: code });
+    await finishResolvedWatch(`File watch stopped: ${code}`, { reason: code }, [], 'failed', 'The file watch can no longer access its approved path.');
   }
   // Contents can become readable later. Absence between stat and read,
   // oversized or non-text contents, I/O failures and captured reads all retry.
@@ -110,7 +118,7 @@ try {
 const contains = read ? read.text.includes(params.text) : false;
 if (params.condition === 'contains' && !contains) return;
 if (params.condition === 'lacks' && contains) return;
-await finishWatch(`File ${params.condition === 'exists' ? 'appeared' : params.condition === 'contains' ? 'contains the watched text' : 'lacks the watched text'}`, {
+await finishResolvedWatch(`File ${params.condition === 'exists' ? 'appeared' : params.condition === 'contains' ? 'contains the watched text' : 'lacks the watched text'}`, {
   exists: true,
   kind: stat.kind,
   size: stat.size,

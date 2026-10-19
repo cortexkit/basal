@@ -1,7 +1,7 @@
 {
   "format": 1,
   "id": "watch-github",
-  "version": 3,
+  "version": 4,
   "purpose": "Wake the creating agent once for a matching GitHub PR, issue, or published release event.",
   "trigger": {
     "events": [
@@ -10,7 +10,7 @@
       { "module": "plexus", "name": "github_release_published", "version": 1, "match": { "repo": "$params.repo" } }
     ]
   },
-  "sinks": [{ "agent": "$self", "digest_max": "wake" }],
+  "sinks": [{ "agent": "$self", "digest_max": "wake" }, { "kind": "wait" }],
   "ops": [{ "module": "plexus", "op": "events_get" }],
   "params": {
     "note": { "type": "string", "max_bytes": 4096 },
