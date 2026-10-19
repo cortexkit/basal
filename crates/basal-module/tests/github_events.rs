@@ -334,7 +334,7 @@ fn pinned_reaction(kind: &str, event: usize) -> String {
 fn manifest_declares_v2_repo_events_global_sink_and_only_a_delegated_react_grant() {
     Manifest::parse(MANIFEST).unwrap();
     let manifest: Value = serde_json::from_str(MANIFEST).unwrap();
-    assert_eq!(manifest["version"], 4);
+    assert_eq!(manifest["version"], 5);
     // Nothing beyond the trigger, the audience sink and the two ops: no
     // facts, board, status, claims or model grant.
     assert_eq!(
@@ -683,21 +683,11 @@ fn a_workflow_run_is_decided_by_who_started_it() {
 }
 
 #[test]
-fn a_paused_repository_delivers_nothing_and_other_repositories_still_do() {
+fn magic_context_issues_are_delivered_again_after_its_lockdown() {
     let t = Test::new();
-    let mut paused = item("issue", "opened");
-    paused["repo"] = json!("cortexkit/magic-context");
-    let result = t.event(paused);
-    assert_eq!(result["delivered"], 0);
-    assert_eq!(result["events"][0]["suppressed_reason"], "paused_repo");
-    assert!(
-        result["reaction"].is_null(),
-        "no reaction for a paused repository"
-    );
-
-    let mut other = item("issue", "opened");
-    other["repo"] = json!("cortexkit/aft");
-    assert_eq!(t.event(other)["delivered"], 1);
+    let mut opened = item("issue", "opened");
+    opened["repo"] = json!("cortexkit/magic-context");
+    assert_eq!(t.event(opened)["delivered"], 1);
 }
 
 #[test]

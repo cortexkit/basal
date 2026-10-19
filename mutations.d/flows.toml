@@ -797,23 +797,6 @@ old = "const startedSinceFirstNotice = jobsSinceFirstNotice.filter(id => !(run.n
 new = "const startedSinceFirstNotice = jobsSinceFirstNotice; // NON-VACUITY BREAK"
 
 [[control]]
-id = "github-events-paused-repo-delivers"
-guards = "a repository its owner paused gets no digest and no reaction"
-test_file = "crates/basal-module/tests/github_events.rs"
-runner = "cargo"
-package = "basal-module"
-platforms = ["linux"]
-target = "--test github_events"
-select = { tests = ["a_paused_repository_delivers_nothing_and_other_repositories_still_do", "operator_plus_another_human_is_delivered"] }
-expect_red = ["a_paused_repository_delivers_nothing_and_other_repositories_still_do"]
-only = true
-build_timeout_s = 3600
-timeout_s = 600
-file = "flows/github-events/flow.js"
-old = "if (Object.hasOwn(PAUSED_REPOS, repo)) return drop('paused_repo');"
-new = "// NON-VACUITY BREAK"
-
-[[control]]
 id = "ci-failure-router-wake-branches-ignored"
 guards = "a repository with its own wake branches wakes only on those branches"
 test_file = "crates/basal-module/tests/ci_failure_router.rs"

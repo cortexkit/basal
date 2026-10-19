@@ -1,7 +1,7 @@
 {
   "format": 1,
   "id": "github-events",
-  "version": 4,
+  "version": 5,
   "purpose": "Deliver GitHub issue, PR and release events to each repository's owning agent, waking it for newly opened issues and PRs, and add an eyes reaction as that owner on each newly opened one; no other GitHub writes.",
   "trigger": {
     "events": [

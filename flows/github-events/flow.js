@@ -79,13 +79,6 @@ const SUPPRESS_ACTORS = ['ualtinok', 'alfonso-aft', 'MC-Alfonso'];
 // have no project id.
 const SUPPRESS_ACTORS_BY_REPO = { 'cortexkit/aft': ['cubic-dev-ai', 'greptile-apps'] };
 
-// Repositories whose owner asked for no GitHub notifications for now. Their
-// events are dropped before anything is stored or delivered, and no reaction
-// is made. Remove an entry (and publish a new version) to turn them back on.
-const PAUSED_REPOS = {
-  'cortexkit/magic-context': 'owner lockdown until Magic Context mode 3 is done',
-};
-
 // Owner actions: a newly opened issue or PR wakes its owner; every other
 // accepted event is an update that piggybacks on the owner's next wake.
 const ACTION = { opened: 'wake', update: 'piggyback' };
@@ -258,7 +251,6 @@ const drop = reason => {
 // kind/action whitelist (commands.rs:866-891).
 if (typeof kind !== 'string' || !kind || number == null ||
     (release ? typeof number !== 'string' || !number : !Number.isSafeInteger(number))) return drop('missing_identity');
-if (Object.hasOwn(PAUSED_REPOS, repo)) return drop('paused_repo');
 const key = `github:${repo}:${kind}:${number}`;
 if (bytes(key) > 200 || /[\u0000-\u001f\u007f]/.test(key)) return drop('invalid_identity');
 // Deliberate difference from core: drop rescan events older than six hours, as
