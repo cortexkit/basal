@@ -1,7 +1,7 @@
 //! A codemode catalog's digest and its tool input schemas.
 //!
 //! The catalog is the list of tools a codemode program may call, each entry
-//! `{name, input_schema, module, op}`. Its digest identifies the catalog a
+//! `{name, input_schema, module, op, result_format?}`. Its digest identifies the catalog a
 //! run was admitted with, independently of how the sender ordered entries,
 //! keys or spelled numbers. Each entry's `input_schema` is compiled once at
 //! admission and checks every input the program sends to that tool.

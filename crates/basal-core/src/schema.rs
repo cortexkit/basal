@@ -398,6 +398,10 @@ CREATE INDEX owner_notice_pending ON outbox(retry_at) WHERE delivered_at IS NULL
         version: 34,
         statements: "CREATE INDEX runs_slot_holders ON runs(flow_id, admit_seq, state, run_id) WHERE state IN ('pending', 'running', 'suspended', 'needs_reconcile');",
     },
+    Migration {
+        version: 35,
+        statements: CODEMODE_WITHDRAWN,
+    },
 ];
 
 // Allow journal rows to defer board storage and registry-read failures.
@@ -1497,5 +1501,54 @@ CREATE TABLE codemode_late_acks (custodian TEXT PRIMARY KEY, through_seq INTEGER
     codemode_call_triggers!(),
     codemode_run_final_trigger!(),
     codemode_run_id_triggers!(),
+    codemode_end_trigger!()
+);
+
+// A provider can prove a sent, held action never ran without erasing its
+// dispatch timestamps. Keep that fact distinct from cancellation before send.
+// Copy the model children before rebuilding their foreign-key parent.
+const CODEMODE_WITHDRAWN: &str = concat!(
+    r#"
+CREATE TABLE migration_35_models AS SELECT * FROM codemode_models;
+CREATE TABLE migration_35_broca AS SELECT * FROM codemode_broca_calls;
+DROP TABLE codemode_models;
+DROP TABLE codemode_broca_calls;
+DROP TRIGGER codemode_calls_outcome_is_final;
+DROP TRIGGER codemode_calls_only_while_running;
+DROP TRIGGER codemode_runs_end_with_no_pending_call;
+CREATE TABLE codemode_calls_new (
+    run_id TEXT NOT NULL REFERENCES codemode_runs(run_id), position INTEGER NOT NULL CHECK (position >= 0),
+    tool TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, input_bytes INTEGER NOT NULL CHECK (input_bytes >= 0),
+    intent_at INTEGER, outcome TEXT NOT NULL CHECK (outcome IN ('pending','ok','error','refused','denied',
+        'consent_unavailable','tool_unavailable','outcome_unknown','cancelled','withdrawn')),
+    code TEXT, duration_ms INTEGER CHECK (duration_ms IS NULL OR duration_ms >= 0),
+    entered_at INTEGER CHECK (entered_at IS NULL OR intent_at IS NOT NULL),
+    waited_on_person INTEGER NOT NULL DEFAULT 0 CHECK (waited_on_person IN (0,1)),
+    PRIMARY KEY (run_id,position),
+    CHECK ((code IS NULL) = (outcome IN ('pending','ok','cancelled'))),
+    CHECK (outcome NOT IN ('ok','error','consent_unavailable','outcome_unknown') OR intent_at IS NOT NULL),
+    CHECK (outcome <> 'cancelled' OR intent_at IS NULL),
+    CHECK (outcome <> 'withdrawn' OR (intent_at IS NOT NULL AND entered_at IS NOT NULL AND waited_on_person=1)),
+"#,
+    codemode_entered_duration!(),
+    r#");
+INSERT INTO codemode_calls_new SELECT * FROM codemode_calls;
+DROP TABLE codemode_calls;
+ALTER TABLE codemode_calls_new RENAME TO codemode_calls;
+CREATE TABLE codemode_models (
+    run_id TEXT NOT NULL, position INTEGER NOT NULL, reserved INTEGER NOT NULL, charged INTEGER, envelope TEXT,
+    PRIMARY KEY (run_id,position),
+    FOREIGN KEY (run_id,position) REFERENCES codemode_calls(run_id,position) ON DELETE CASCADE
+);
+CREATE TABLE codemode_broca_calls (
+    send_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, position INTEGER NOT NULL, snapshot TEXT NOT NULL,
+    FOREIGN KEY (run_id,position) REFERENCES codemode_calls(run_id,position) ON DELETE CASCADE
+);
+INSERT INTO codemode_models SELECT * FROM migration_35_models;
+INSERT INTO codemode_broca_calls SELECT * FROM migration_35_broca;
+DROP TABLE migration_35_models;
+DROP TABLE migration_35_broca;
+"#,
+    codemode_call_triggers!(),
     codemode_end_trigger!()
 );

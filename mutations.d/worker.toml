@@ -1600,3 +1600,18 @@ timeout_s = 600
 file = "crates/basal-worker/tests/data/windows-imports.txt"
 old = "kernel32.dll\n"
 new = "# NON-VACUITY BREAK\n"
+
+[[control]]
+id = "codemode-consent-rejection-exposes-detail"
+guards = "a program can inspect provider consent detail before choosing a fresh action"
+test_file = "crates/basal-module/tests/codemode.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test codemode"
+select = { tests = ["consent_approval_rejects_not_started_and_the_program_chooses_a_new_call", "held_provider_late_content_resumes_the_program_with_its_structured_value"] }
+expect_red = ["consent_approval_rejects_not_started_and_the_program_chooses_a_new_call"]
+only = true
+file = "crates/basal-worker/src/codemode_prelude.js"
+old = "for (const key of ['code', 'outcome', 'detail']) {"
+new = "for (const key of ['code', 'outcome']) { // NON-VACUITY BREAK"

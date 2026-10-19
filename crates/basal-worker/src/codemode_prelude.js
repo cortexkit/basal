@@ -59,7 +59,7 @@
       ? data.message : 'tool call rejected');
     define(error, 'name', { value: 'HostError', writable: true, configurable: true });
     define(error, 'data', { value: data, writable: true, enumerable: true, configurable: true });
-    for (const key of ['code', 'outcome']) {
+    for (const key of ['code', 'outcome', 'detail']) {
       define(error, key, { value: data !== null && typeof data === 'object' ? data[key] : undefined,
         writable: true, enumerable: true, configurable: true });
     }

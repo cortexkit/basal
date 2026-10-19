@@ -98,3 +98,57 @@ retries.
 
 See [operations](ops.md#results-and-long-calls) for late-result custody,
 retention, withdrawal and scope closure.
+
+## Call outcomes
+
+Per-call outcomes include `ok`, `denied`, `consent_unavailable`, `tool_unavailable`,
+`error`, `refused`, `outcome_unknown`, `cancelled` and `withdrawn`. `cancelled` means the
+call was never sent. `withdrawn` means it was sent and held, but the provider proved
+its action never started (by `tool.withdraw` or a late `not_started` entry). Dispatch
+and entry timestamps remain recorded. A started action or an uncertain withdrawal
+stays `outcome_unknown`; basal never resends it. Held replies are interim, not values:
+the program resumes only on a final late result. Onward content results return
+`structuredContent` when present, otherwise their joined text parts; `isError: true`
+rejects the promise.
+
+## Consent, then a fresh call
+
+Basal decodes held replies with tool-provider 0.9.3 only when that specific tool
+opts into `result_format: "content/v1"`. A route capability is not a format guess:
+legacy tools retain their original JSON bodies. If any provider catalog is unreadable,
+admission refuses before the program starts with a retry-may-succeed message; there
+is no guessed raw fallback. `consent`, `login_handoff`,
+`login_capture` and unknown well-formed held reasons all keep the await pending.
+Transient transport failures retry custody reads, not tool actions; a reconnect
+reopens only the same run-scoped custody route. Definitive scope end still ends
+the unanswered call as unknown.
+
+Cerebellum does not execute an approval-gated action after the person wait: the
+page, coordinates or other state may have changed. Approval instead arrives as
+`not_started` with provider detail such as `{outcome: "approved"}`. Basal records
+`withdrawn` and rejects the promise with `error.code === "not_started"` and that
+object in `error.detail`. The grant is now active, so the program can choose a new
+call without a second approval card. Denial is a terminal refusal; do not treat it
+as approval. Login handoff and capture settle with their actual result.
+
+For example, if `browser_use` is in the admitted catalog, take a fresh snapshot
+rather than replaying old coordinates:
+
+```js
+let view;
+try {
+  view = await tools.browser_use({action: "snapshot"});
+} catch (error) {
+  if (error.code !== "not_started" || error.detail?.outcome !== "approved") {
+    throw error;
+  }
+  // This new call observes the current page under the newly approved grant.
+  view = await tools.browser_use({action: "snapshot"});
+}
+return view;
+```
+
+Every explicit call has a new journal position and call key. Basal never retries
+the original action automatically. One provider intake worker serves every run
+holding calls there; final results and their acknowledgements are coordinated
+across runs, so one run ending cannot interrupt another.

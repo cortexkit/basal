@@ -98,6 +98,7 @@ dependencies = [
  "basal-host",
  "basal-proto",
  "blake3",
+ "cortexkit-role-tool-provider",
  "cortexkit-store",
  "cortexkit-store-types",
  "croner",
@@ -473,9 +474,9 @@ dependencies = [
 
 [[package]]
 name = "cortexkit-role-tool-provider"
-version = "0.9.1"
+version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c5771c0930ccd302c49d5a72cebf2ad72b8452c3cff7a307e4cc0807da55cec1"
+checksum = "16a116728fe806a4032006c4a4fe24fbd768173b991f3118421a882c4cc8a152"
 dependencies = [
  "serde",
  "serde_jcs",
@@ -486,9 +487,9 @@ dependencies = [
 
 [[package]]
 name = "cortexkit-role-tool-provider-conformance"
-version = "0.9.1"
+version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "baaf00f62917a972fcfd6075317a1b47e625995d67b246c9eaec25e859944b7c"
+checksum = "9bbabb5d38e391ff35ef8fa766a25dfd0a6e1a7ae3c42c4a923bb4b139d54604"
 dependencies = [
  "async-trait",
  "cortexkit-role-harness",

@@ -102,6 +102,7 @@ pub enum Outcome {
     ConsentUnavailable,
     ToolUnavailable,
     OutcomeUnknown,
+    Withdrawn,
     Cancelled,
 }
 
@@ -116,6 +117,7 @@ impl Outcome {
             Self::ConsentUnavailable => "consent_unavailable",
             Self::ToolUnavailable => "tool_unavailable",
             Self::OutcomeUnknown => "outcome_unknown",
+            Self::Withdrawn => "withdrawn",
             Self::Cancelled => "cancelled",
         }
     }
@@ -130,6 +132,7 @@ impl Outcome {
             "consent_unavailable" => Self::ConsentUnavailable,
             "tool_unavailable" => Self::ToolUnavailable,
             "outcome_unknown" => Self::OutcomeUnknown,
+            "withdrawn" => Self::Withdrawn,
             "cancelled" => Self::Cancelled,
             _ => return None,
         })

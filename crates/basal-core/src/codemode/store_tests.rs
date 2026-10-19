@@ -487,3 +487,101 @@ fn the_schema_bounds_the_description() {
         );
     }
 }
+
+#[test]
+fn withdrawn_requires_a_sent_entered_person_held_call() {
+    let t = temp_store();
+    admit(&t.store, &new_run("withdrawal"));
+    for (position, intent, entered, held) in [
+        (0, None, None, 1),
+        (1, Some(100), None, 1),
+        (2, Some(100), Some(100), 0),
+        (3, Some(100), Some(100), 1),
+    ] {
+        t.store.write(|tx| {
+            tx.execute("INSERT INTO codemode_calls(run_id,position,tool,idempotency_key,input_bytes,intent_at,entered_at,waited_on_person,outcome) VALUES('withdrawal',?1,'browser_use',?2,0,?3,?4,?5,'pending')", params![position, format!("withdraw-{position}"),intent,entered,held])?;
+            let update = record_outcome(tx,"withdrawal",position,Outcome::Withdrawn,Some("withdrawn"),200);
+            if position == 3 { assert!(update?); } else { assert!(update.is_err(), "withdrawn requires dispatch and a person hold at position {position}"); }
+            Ok(())
+        }).unwrap();
+    }
+    let withdrawn = call(&t.store, "withdrawal", 3);
+    assert_eq!(withdrawn.outcome, Outcome::Withdrawn);
+    assert_eq!(withdrawn.intent_at, Some(100));
+    assert_eq!(withdrawn.entered_at, Some(100));
+    assert_eq!(withdrawn.duration_ms, Some(100));
+    assert_eq!(Outcome::parse("withdrawn"), Some(Outcome::Withdrawn));
+    t.store.write(|tx| {
+        assert!(tx.execute("UPDATE codemode_calls SET outcome='cancelled',code=NULL,duration_ms=100 WHERE run_id='withdrawal' AND position=2",[]).is_err(), "cancelled still means never sent");
+        assert!(tx.execute("UPDATE codemode_calls SET outcome='outcome_unknown',code='changed' WHERE run_id='withdrawal' AND position=3",[]).is_err(), "withdrawal is final");
+        Ok(())
+    }).unwrap();
+}
+
+#[test]
+fn withdrawn_migration_preserves_calls_model_children_and_finality() {
+    let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+    for migration in crate::schema::MIGRATIONS.iter().filter(|m| m.version < 35) {
+        conn.execute_batch(migration.statements).unwrap();
+    }
+    let tx = conn.transaction().unwrap();
+    insert_run(&tx, &new_run("old"), None).unwrap();
+    insert_call(&tx, "old", 0, "model", 0, CallStart::Intent { at: 100 }).unwrap();
+    record_outcome(&tx, "old", 0, Outcome::Ok, None, 110).unwrap();
+    tx.execute(
+        "INSERT INTO codemode_models VALUES('old',0,17,11,'{\"model\":true}')",
+        [],
+    )
+    .unwrap();
+    tx.execute(
+        "INSERT INTO codemode_broca_calls VALUES('send-1','old',0,'{\"pending\":true}')",
+        [],
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    conn.execute_batch(
+        crate::schema::MIGRATIONS
+            .iter()
+            .find(|m| m.version == 35)
+            .unwrap()
+            .statements,
+    )
+    .unwrap();
+    let call = calls(&conn, "old").unwrap().remove(0);
+    assert_eq!(call.outcome, Outcome::Ok);
+    assert_eq!(call.intent_at, Some(100));
+    assert_eq!(call.entered_at, Some(100));
+    assert_eq!(call.duration_ms, Some(10));
+    assert_eq!(
+        conn.query_row(
+            "SELECT reserved,charged,envelope FROM codemode_models",
+            [],
+            |r| Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?
+            ))
+        )
+        .unwrap(),
+        (17, 11, "{\"model\":true}".into())
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT snapshot FROM codemode_broca_calls WHERE send_id='send-1'",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "{\"pending\":true}"
+    );
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+    assert!(conn.execute("UPDATE codemode_calls SET outcome='error',code='changed' WHERE run_id='old' AND position=0",[]).is_err());
+}

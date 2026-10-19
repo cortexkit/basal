@@ -7,14 +7,18 @@
 //!
 //! Each run's driver sleeps on one event channel until something happens:
 //! a worker frame (forwarded by the run's reader thread), a provider answer,
-//! a cancel, or a move of a manual clock. Its only timeout is the run's wall
-//! deadline, so a run waiting on a slow tool costs no CPU.
+//! a cancel, or a move of a manual clock. Without held replies its only timeout
+//! is the run's wall deadline, so an ordinary slow RPC costs no polling CPU.
+//! Held replies additionally schedule bounded late-result reads.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+#[path = "held.rs"]
+mod held;
 
 use basal_host::Catalog;
 use basal_host::flow_refusal::RefusalReason;
@@ -48,6 +52,12 @@ enum Event {
     ReaderPanicked,
     /// A provider answer from a dispatch thread.
     Answer(Answer),
+    LateAnswer {
+        call: HostCall,
+        entry: cortexkit_role_tool_provider::late_results::LateEntry,
+        ack: mpsc::SyncSender<()>,
+    },
+    CustodyChanged,
     ModelAnswer {
         position: u64,
         result: std::result::Result<basal_host::HostOutcome, WireError>,
@@ -118,6 +128,7 @@ struct Shared {
     active: Mutex<BTreeMap<String, mpsc::Sender<Event>>>,
     drivers: Mutex<Drivers>,
     dispatch_starts: Arc<DispatchStarts>,
+    custody: Arc<held::Custody>,
     terminal_changed: (Mutex<u64>, Condvar),
     terminal_hook: Mutex<Option<Arc<TerminalHook>>>,
     #[cfg(test)]
@@ -203,6 +214,7 @@ impl Supervisor {
             active: Mutex::new(BTreeMap::new()),
             drivers: Mutex::new(Drivers::default()),
             dispatch_starts: Arc::new(DispatchStarts::default()),
+            custody: Arc::new(held::Custody::default()),
             terminal_changed: (Mutex::new(0), Condvar::new()),
             terminal_hook: Mutex::new(None),
             #[cfg(test)]
@@ -289,8 +301,14 @@ impl Supervisor {
     /// store references before returning. Provider calls already in flight may
     /// finish later, but they retain no store and their answer receiver is gone.
     pub fn shutdown(&self) -> Result<()> {
-        let mut drivers = self.0.drivers.lock().unwrap();
-        drivers.stopped = true;
+        let mut drivers = {
+            let mut registered = self.0.drivers.lock().unwrap();
+            registered.stopped = true;
+            Drivers {
+                stopped: true,
+                threads: std::mem::take(&mut registered.threads),
+            }
+        };
         let ids = self
             .0
             .active
@@ -300,8 +318,17 @@ impl Supervisor {
             .cloned()
             .collect::<Vec<_>>();
         let mut error = None;
+        let mut cancellations = Vec::new();
         for id in ids {
-            if let Err(failure) = self.cancel(&id) {
+            if let Some(sender) = self.0.active.lock().unwrap().get(&id).cloned() {
+                let (ack, done) = mpsc::sync_channel(1);
+                if sender.send(Event::Cancel(ack)).is_ok() {
+                    cancellations.push(done);
+                }
+            }
+        }
+        for done in cancellations {
+            if let Ok(Err(failure)) = done.recv() {
                 error.get_or_insert(failure);
             }
         }
@@ -310,6 +337,7 @@ impl Supervisor {
                 error.get_or_insert_with(|| CoreError::Invalid("codemode driver panicked".into()));
             }
         }
+        self.0.custody.shutdown();
         // A dispatch scheduled just before cancellation may still be recording
         // its intent. Wait for that store reference, never for the provider.
         let starts = &self.0.dispatch_starts;
@@ -518,6 +546,7 @@ struct Driver {
     in_flight: usize,
     flight_positions: BTreeSet<u64>,
     held_positions: BTreeSet<u64>,
+    tool_calls: BTreeMap<u64, (String, HostCall)>,
     blocked: bool,
     person_wait_ms: i64,
     last_tick_ms: i64,
@@ -528,6 +557,7 @@ struct Driver {
     parent_owned_kill: bool,
     output_truncated: bool,
     identity: Option<subc_protocol::BindIdentity>,
+    scope_lost: bool,
 }
 
 impl Driver {
@@ -555,6 +585,7 @@ impl Driver {
             in_flight: 0,
             flight_positions: BTreeSet::new(),
             held_positions: BTreeSet::new(),
+            tool_calls: BTreeMap::new(),
             blocked: false,
             person_wait_ms: 0,
             last_tick_ms,
@@ -565,6 +596,7 @@ impl Driver {
             parent_owned_kill: false,
             output_truncated: false,
             identity: None,
+            scope_lost: false,
         }
     }
 
@@ -650,6 +682,7 @@ impl Driver {
             }
             if self.in_flight == 0
                 && self.queue.is_empty()
+                && self.shared.custody.is_idle(&self.run.run_id)
                 && let Some(terminal) = self.completion.take()
             {
                 self.end(terminal)?;
@@ -661,10 +694,28 @@ impl Driver {
                 Some(Event::ClockMoved) => self.clock_moved.store(false, Ordering::SeqCst),
                 Some(Event::Cancel(ack)) => self.cancel(ack)?,
                 Some(Event::Answer(answer)) => self.answer(answer)?,
+                Some(Event::LateAnswer { call, entry, ack }) => {
+                    self.mark_held(call.position, true)?;
+                    self.mark_held(call.position, false)?;
+                    let format = self.result_format(&call);
+                    let mapped = held::map_entry(entry, format.as_ref());
+                    self.settle_answer(
+                        Answer {
+                            call,
+                            result: Ok(Value::Null),
+                            usage: None,
+                            no_effect: mapped.outcome == Outcome::Withdrawn,
+                        },
+                        Some(mapped),
+                    )?;
+                    let _ = ack.send(());
+                }
+                Some(Event::CustodyChanged) => {}
                 Some(Event::ModelAnswer { position, result }) => {
                     self.model_answer(position, result)?
                 }
                 Some(Event::ScopeEnded(code)) => {
+                    self.scope_lost = true;
                     if !self.wall()? {
                         self.end(interrupted(&code, "the daemon ended the run scope"))?;
                     }
@@ -678,19 +729,9 @@ impl Driver {
                         let _ = ack.send(());
                         break;
                     }
-                    let entered = self.shared.store.read(|conn| Ok(conn.query_row(
-                        "SELECT EXISTS (SELECT 1 FROM codemode_calls WHERE run_id=?1 AND position=?2 AND entered_at IS NOT NULL AND outcome='pending')",
-                        rusqlite::params![self.run.run_id,position],|row| row.get::<_,bool>(0))?))?;
-                    if self.flight_positions.contains(&position) && entered {
-                        if held {
-                            self.held_positions.insert(position);
-                            self.shared.store.write(|tx| {
-                                tx.execute("UPDATE codemode_calls SET waited_on_person=1 WHERE run_id=?1 AND position=?2 AND outcome='pending'", rusqlite::params![self.run.run_id, position])?;
-                                Ok(())
-                            })?;
-                        } else {
-                            self.held_positions.remove(&position);
-                        }
+                    self.mark_held(position, held)?;
+                    if held {
+                        self.start_intake(position)?;
                     }
                     let _ = ack.send(());
                 }
@@ -716,8 +757,8 @@ impl Driver {
         Ok(())
     }
 
-    /// Sleeps until an event arrives or the wall deadline, measured on the
-    /// injected clock, comes due. `None` means the deadline came due.
+    /// Sleeps until an event or the injected wall deadline. Provider intake
+    /// workers own their polling timers; the driver wakes on their deliveries.
     fn next_event(&mut self) -> Option<Event> {
         let remaining = if self.person_only() {
             basal_host::run_scope::PERSON_WAIT_MS.saturating_sub(self.person_wait_ms)
@@ -789,21 +830,181 @@ impl Driver {
         }
     }
 
-    fn answer(&mut self, answer: Answer) -> Result<()> {
+    fn start_intake(&self, position: u64) -> Result<()> {
+        if let Some((module, _)) = self.tool_calls.get(&position) {
+            self.shared
+                .custody
+                .ensure_worker(module, self.shared.transport.clone())?;
+        }
+        Ok(())
+    }
+
+    fn mark_held(&mut self, position: u64, held: bool) -> Result<()> {
+        self.account_time();
+        let entered = self.shared.store.read(|conn| Ok(conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM codemode_calls WHERE run_id=?1 AND position=?2 AND entered_at IS NOT NULL AND outcome='pending')",
+            rusqlite::params![self.run.run_id,position],|row| row.get::<_,bool>(0))?))?;
+        if self.flight_positions.contains(&position) && entered {
+            if let Some((module, _)) = self.tool_calls.get(&position) {
+                self.shared
+                    .custody
+                    .mark_held(module, &self.run.run_id, position, held);
+            }
+            if held {
+                self.held_positions.insert(position);
+                self.shared.store.write(|tx| {
+                    tx.execute("UPDATE codemode_calls SET waited_on_person=1 WHERE run_id=?1 AND position=?2 AND outcome='pending'", rusqlite::params![self.run.run_id, position])?;
+                    Ok(())
+                })?;
+            } else {
+                self.held_positions.remove(&position);
+            }
+        }
+        Ok(())
+    }
+
+    fn custody_scope(&self) -> cortexkit_role_tool_provider::scope::ScopeIdentity {
+        let scope = &self.start.scope.selector;
+        let owner = match &scope.owner {
+            subc_protocol::Principal::Reserved { module_id } => format!("reserved:{module_id}"),
+            subc_protocol::Principal::Direct => "direct".into(),
+            subc_protocol::Principal::Unverified => "unverified".into(),
+        };
+        cortexkit_role_tool_provider::scope::ScopeIdentity {
+            owner,
+            scope_ref: scope.scope_ref.clone(),
+            scope_epoch: scope.epoch,
+        }
+    }
+
+    fn custody_options(&self) -> basal_host::transport::RunToolOptions {
+        basal_host::transport::RunToolOptions {
+            identity: self.identity.clone().unwrap_or_else(|| {
+                subc_protocol::BindIdentity::new("/", "basal", format!("basal:flow:{}", self.key()))
+            }),
+            reply_timeout: Duration::from_secs(2),
+        }
+    }
+
+    fn withdraw_held(&mut self) -> Result<()> {
+        if self.scope_lost {
+            return Ok(());
+        }
+        let mut calls = Vec::new();
+        for position in &self.held_positions {
+            let Some((module, call)) = self.tool_calls.get(position) else {
+                continue;
+            };
+            calls.push((*position, module.clone(), self.result_format(call)));
+        }
+        let results = thread::scope(|threads| {
+            let mut pending = Vec::new();
+            for (position, module, format) in calls {
+                let transport = self.shared.transport.clone();
+                let custody_route = self.key();
+                let options = self.custody_options();
+                let request = cortexkit_role_tool_provider::withdraw::WithdrawArguments::new(
+                    store::call_key(&self.run.run_id, position),
+                )
+                .with_scope(self.custody_scope());
+                pending.push((
+                    position,
+                    threads.spawn(move || {
+                        held::withdraw(
+                            transport.as_ref(),
+                            &custody_route,
+                            &module,
+                            request,
+                            options,
+                            format.as_ref(),
+                        )
+                    }),
+                ));
+            }
+            pending
+                .into_iter()
+                .map(|(position, reply)| {
+                    (
+                        position,
+                        reply.join().unwrap_or_else(|_| {
+                            Mapped::rejected(
+                                Outcome::OutcomeUnknown,
+                                "no_outcome",
+                                "withdrawal worker failed",
+                            )
+                        }),
+                    )
+                })
+                .collect::<Vec<_>>()
+        });
+        for (position, mapped) in results {
+            self.shared.store.write(|tx| {
+                store::record_outcome(
+                    tx,
+                    &self.run.run_id,
+                    position,
+                    mapped.outcome,
+                    mapped.code.as_deref(),
+                    self.shared.clock.now_ms(),
+                )
+            })?;
+        }
+        Ok(())
+    }
+
+    fn result_format(
+        &self,
+        call: &HostCall,
+    ) -> Option<cortexkit_role_tool_provider::result::ResultFormat> {
+        let CallKind::Tool { name } = &call.kind else {
+            return None;
+        };
+        self.start
+            .tools
+            .get(name)
+            .and_then(|tool| tool.result_format.clone())
+    }
+
+    fn answer(&mut self, mut answer: Answer) -> Result<()> {
+        if !self.flight_positions.contains(&answer.call.position) {
+            return Ok(());
+        }
+        if let Ok(value) = answer.result {
+            let format = self.result_format(&answer.call);
+            match held::classify(value, format.as_ref()) {
+                held::Reply::Held { detail } => {
+                    let _ = detail;
+                    if self.wall()? {
+                        return Ok(());
+                    }
+                    self.mark_held(answer.call.position, true)?;
+                    self.start_intake(answer.call.position)?;
+                    return Ok(());
+                }
+                held::Reply::Final(result) => answer.result = result,
+            }
+        }
+        self.settle_answer(answer, None)
+    }
+
+    fn settle_answer(&mut self, answer: Answer, mapped: Option<Mapped>) -> Result<()> {
         #[cfg(test)]
         if let Some(hook) = self.shared.before_record.lock().unwrap().as_ref() {
             hook();
         }
-        if self.wall()? {
-            return Ok(());
-        }
+        self.account_time();
         if !self.flight_positions.contains(&answer.call.position) {
             return Ok(());
         }
         self.in_flight -= 1;
         self.flight_positions.remove(&answer.call.position);
         self.held_positions.remove(&answer.call.position);
-        let mapped = map_answer(answer.result);
+        if let Some((module, _)) = self.tool_calls.remove(&answer.call.position) {
+            self.shared
+                .custody
+                .remove(&module, &self.run.run_id, answer.call.position);
+        }
+        let mapped = mapped.unwrap_or_else(|| map_answer(answer.result));
         if self.shared.store.write(|tx| {
             super::models::settle(
                 tx,
@@ -822,6 +1023,7 @@ impl Driver {
             )
         })? {
             if mapped.scope_loss {
+                self.scope_lost = true;
                 return self.end(interrupted(
                     mapped.code.as_deref().unwrap(),
                     &mapped.message,
@@ -1149,6 +1351,20 @@ impl Driver {
         let before_entry = self.shared.before_entry.lock().unwrap().clone();
         self.in_flight += 1;
         self.flight_positions.insert(call.position);
+        self.shared.custody.register(
+            &module,
+            held::Target {
+                run: id.clone(),
+                scope: self.custody_scope(),
+                call: call.clone(),
+                events: events.clone(),
+                options: options.clone(),
+                held: false,
+            },
+        );
+        self.tool_calls
+            .insert(call.position, (module.clone(), call.clone()));
+
         if let Err(error) = thread::Builder::new()
             .name(format!("{route}:tool"))
             .spawn(move || {
@@ -1311,6 +1527,9 @@ impl Driver {
             if let Some(reason) = mapped.reason {
                 rejection["reason"] = json!(reason);
             }
+            if let Some(detail) = mapped.detail {
+                rejection["detail"] = detail;
+            }
             let rejection = rejection.to_string();
             let value =
                 JsonText::new(rejection).map_err(|error| CoreError::Invalid(error.to_string()))?;
@@ -1334,6 +1553,7 @@ impl Driver {
     }
 
     fn end(&mut self, mut terminal: Terminal) -> Result<()> {
+        self.shared.custody.end(&self.run.run_id);
         self.account_time();
         self.stopping = true;
         self.parent_owned_kill = true;
@@ -1346,6 +1566,7 @@ impl Driver {
             )?;
             Ok(())
         });
+        self.withdraw_held()?;
         let ended = terminate(
             &self.shared,
             &self.run.run_id,
@@ -1432,6 +1653,7 @@ struct Mapped {
     value: Option<JsonText>,
     scope_loss: bool,
     reason: Option<String>,
+    detail: Option<Value>,
 }
 
 impl Mapped {
@@ -1443,6 +1665,7 @@ impl Mapped {
             value: None,
             scope_loss: false,
             reason: None,
+            detail: None,
         }
     }
 }
@@ -1457,6 +1680,7 @@ fn map_answer(result: std::result::Result<Value, WireError>) -> Mapped {
                 value: Some(value),
                 scope_loss: false,
                 reason: None,
+                detail: None,
             },
             Err(_) => Mapped::rejected(
                 Outcome::Error,

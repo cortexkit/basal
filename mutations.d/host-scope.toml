@@ -558,22 +558,37 @@ only = true
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/run_scope.rs"
-old = "if !serves_call_mode(tool, &CallMode::Codemode) {"
-new = "if false && !serves_call_mode(tool, &CallMode::Codemode) { // NON-VACUITY BREAK"
+old = "if !legacy && !serves_call_mode(tool, &CallMode::Codemode) {"
+new = "if false && !legacy && !serves_call_mode(tool, &CallMode::Codemode) { // NON-VACUITY BREAK"
 
 [[control]]
 id = "run-scope-legacy-capability-skipped"
-guards = "a provider declaring agent-run-scopes/v1 is admitted without a catalog read"
+guards = "a readable legacy provider catalog admits tools without per-tool mode opt-in"
 test_file = "crates/basal-host/src/run_scope.rs"
 runner = "cargo"
 package = "basal-host"
 platforms = ["linux"]
 target = "--lib"
-select = { filter = "run_scope::" }
-expect_red = ["run_scope::call_mode_tests::a_legacy_run_scopes_provider_is_admitted_without_reading_its_catalog"]
+select = { tests = ["run_scope::call_mode_tests::a_readable_legacy_catalog_does_not_require_per_tool_mode_opt_in", "run_scope::call_mode_tests::a_call_modes_provider_whose_tool_lists_codemode_is_admitted"] }
+expect_red = ["run_scope::call_mode_tests::a_readable_legacy_catalog_does_not_require_per_tool_mode_opt_in"]
 only = true
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/run_scope.rs"
-old = "if provides(LEGACY_RUN_SCOPES_CAPABILITY) {"
-new = "if false && provides(LEGACY_RUN_SCOPES_CAPABILITY) { // NON-VACUITY BREAK"
+old = "let legacy = provides(LEGACY_RUN_SCOPES_CAPABILITY);"
+new = "let legacy = false; // NON-VACUITY BREAK"
+
+[[control]]
+id = "run-scope-unreadable-legacy-format-refused"
+guards = "legacy scope capability cannot bypass the catalog needed to decode content and held replies without guessing"
+test_file = "crates/basal-host/src/run_scope.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["run_scope::call_mode_tests::an_unreadable_legacy_catalog_refuses_admission_without_guessing_format", "run_scope::call_mode_tests::a_call_modes_provider_whose_tool_lists_codemode_is_admitted"] }
+expect_red = ["run_scope::call_mode_tests::an_unreadable_legacy_catalog_refuses_admission_without_guessing_format"]
+only = true
+file = "crates/basal-host/src/run_scope.rs"
+old = "let legacy = provides(LEGACY_RUN_SCOPES_CAPABILITY);"
+new = "let legacy = provides(LEGACY_RUN_SCOPES_CAPABILITY); if legacy { return Ok(None); } // NON-VACUITY BREAK"
