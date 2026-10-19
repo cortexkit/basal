@@ -16,6 +16,17 @@ pub fn code_hash_hex(hash: &[u8; 32]) -> String {
 
 pub(crate) fn warning(w: &Warning) -> Value {
     match w {
+        Warning::MacosProtectedRoot {
+            field,
+            path,
+            protected_folder,
+        } => json!({
+            "kind": "macos_protected_root",
+            "field": field,
+            "path": path,
+            "protected_folder": protected_folder,
+            "text": "On macOS this path is in a folder the system protects; the first access will ask the operator for permission.",
+        }),
         Warning::AgentlessAudienceOp {
             module,
             op,
@@ -50,6 +61,29 @@ pub(crate) fn warning(w: &Warning) -> Value {
             "host": host,
             "text": "the flow reads private text and can fetch from this host, which can carry that text out",
         }),
+    }
+}
+
+#[cfg(test)]
+mod warning_tests {
+    use super::*;
+
+    #[test]
+    fn macos_protected_root_warning_keeps_its_manifest_source() {
+        assert_eq!(
+            warning(&Warning::MacosProtectedRoot {
+                field: "fs.read".into(),
+                path: "~/Desktop/project".into(),
+                protected_folder: "~/Desktop".into(),
+            }),
+            json!({
+                "kind": "macos_protected_root",
+                "field": "fs.read",
+                "path": "~/Desktop/project",
+                "protected_folder": "~/Desktop",
+                "text": "On macOS this path is in a folder the system protects; the first access will ask the operator for permission.",
+            }),
+        );
     }
 }
 

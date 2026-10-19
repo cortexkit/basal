@@ -191,6 +191,13 @@ impl From<rusqlite::Error> for InstallError {
 /// Something the card must show, which does not refuse the install.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Warning {
+    /// A manifest root falls within a location macOS protects with a privacy
+    /// prompt on first access.
+    MacosProtectedRoot {
+        field: String,
+        path: String,
+        protected_folder: String,
+    },
     /// The flow's audience-wide scope has no agent identity for an op that is
     /// not a query; writes through an agent's bot account will be refused.
     AgentlessAudienceOp {
@@ -261,6 +268,98 @@ pub fn agentless_audience_warnings(manifest: &Manifest, catalog: &dyn Catalog) -
         .collect()
 }
 
+/// Warns about manifest roots under macOS privacy-protected folders without
+/// resolving symlinks or checking whether the paths exist.
+pub fn protected_root_warnings(manifest: &Manifest) -> Vec<Warning> {
+    let mut warnings = manifest
+        .roots()
+        .into_iter()
+        .filter_map(|(field, path)| protected_root_warning(field, path))
+        .collect::<Vec<_>>();
+
+    if manifest.params.is_some()
+        && let Ok(parameters) = crate::templates::declarations(manifest)
+    {
+        for (name, parameter) in parameters {
+            if let crate::templates::Parameter::Path { under }
+            | crate::templates::Parameter::Repo { under } = parameter
+            {
+                let field = format!("params.{name}.under");
+                warnings.extend(
+                    under
+                        .into_iter()
+                        .filter_map(|path| protected_root_warning(&field, &path)),
+                );
+            }
+        }
+    }
+
+    warnings
+}
+
+fn protected_root_warning(field: &str, path: &str) -> Option<Warning> {
+    protected_folder(path).map(|protected_folder| Warning::MacosProtectedRoot {
+        field: field.to_owned(),
+        path: path.to_owned(),
+        protected_folder: protected_folder.to_owned(),
+    })
+}
+
+fn protected_folder(path: &str) -> Option<&'static str> {
+    let path = normalize_path(std::path::Path::new(path));
+    let volumes = std::path::Path::new("/Volumes");
+    if path.starts_with(volumes) {
+        return Some("/Volumes/");
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(path_text) = path.to_str()
+            && let Some(expanded) = basal_host::builtins::expand_home(path_text)
+            && let Some(home) = basal_host::builtins::expand_home("~")
+        {
+            let expanded = normalize_path(&expanded);
+            let home = normalize_path(&home);
+            for (folder, protected_folder) in [
+                ("Desktop", "~/Desktop"),
+                ("Documents", "~/Documents"),
+                ("Downloads", "~/Downloads"),
+            ] {
+                if expanded.starts_with(home.join(folder)) {
+                    return Some(protected_folder);
+                }
+            }
+        }
+    }
+
+    for (folder, protected_folder) in [
+        ("Desktop", "~/Desktop"),
+        ("Documents", "~/Documents"),
+        ("Downloads", "~/Downloads"),
+    ] {
+        if path.starts_with(std::path::Path::new("~").join(folder)) {
+            return Some(protected_folder);
+        }
+    }
+    None
+}
+
+fn normalize_path(path: &std::path::Path) -> std::path::PathBuf {
+    use std::path::Component;
+
+    let mut normalized = std::path::PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
+}
+
 #[cfg(test)]
 mod agentless_audience_warning_tests {
     use super::*;
@@ -306,6 +405,132 @@ mod agentless_audience_warning_tests {
                 Some(OpKind::Mutate),
             ),
             None,
+        );
+    }
+}
+
+#[cfg(test)]
+mod protected_root_warning_tests {
+    use super::*;
+    use serde_json::{Value, json};
+
+    fn manifest(
+        fs_read: &[&str],
+        fs_write: &[&str],
+        git_read: &[&str],
+        params: Option<Value>,
+    ) -> Manifest {
+        let mut value = json!({
+            "id": "protected-root-test",
+            "version": 1,
+            "purpose": "Check protected-root warnings",
+            "trigger": {"events": []},
+            "fs": {"read": fs_read, "write": fs_write},
+            "git": {"read": git_read},
+        });
+        if let Some(params) = params {
+            value["params"] = params;
+        }
+        serde_json::from_value(value).expect("manifest decodes")
+    }
+
+    #[test]
+    fn each_macos_protected_prefix_warns_with_its_manifest_field() {
+        let manifest = manifest(
+            &["~/Desktop/project", "~/Downloads/archive"],
+            &["/Volumes/backup/repo"],
+            &["~/Documents/notes"],
+            None,
+        );
+
+        let actual = protected_root_warnings(&manifest)
+            .into_iter()
+            .map(|warning| match warning {
+                Warning::MacosProtectedRoot {
+                    field,
+                    path,
+                    protected_folder,
+                } => (field, path, protected_folder),
+                other => panic!("unexpected warning: {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            actual,
+            vec![
+                (
+                    "fs.read".into(),
+                    "~/Desktop/project".into(),
+                    "~/Desktop".into()
+                ),
+                (
+                    "fs.read".into(),
+                    "~/Downloads/archive".into(),
+                    "~/Downloads".into()
+                ),
+                (
+                    "fs.write".into(),
+                    "/Volumes/backup/repo".into(),
+                    "/Volumes/".into()
+                ),
+                (
+                    "git.read".into(),
+                    "~/Documents/notes".into(),
+                    "~/Documents".into()
+                ),
+            ],
+        );
+    }
+
+    #[test]
+    fn work_temp_and_desktop_sibling_roots_do_not_warn() {
+        let manifest = manifest(
+            &["~/Work/project", "/tmp/work", "~/DesktopX/project"],
+            &[],
+            &[],
+            None,
+        );
+
+        assert!(protected_root_warnings(&manifest).is_empty());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn absolute_home_paths_match_without_checking_for_existence() {
+        let home = basal_host::builtins::expand_home("~").expect("home is available");
+        let path = home
+            .join("Downloads/not-created-yet")
+            .to_string_lossy()
+            .into_owned();
+        let manifest = manifest(&[&path], &[], &[], None);
+
+        assert_eq!(
+            protected_root_warnings(&manifest),
+            vec![Warning::MacosProtectedRoot {
+                field: "fs.read".into(),
+                path,
+                protected_folder: "~/Downloads".into(),
+            }],
+        );
+    }
+
+    #[test]
+    fn template_under_roots_warn_with_their_parameter_field() {
+        let manifest = manifest(
+            &[],
+            &[],
+            &[],
+            Some(json!({
+                "repository": {"type": "repo", "under": ["~/Desktop/template-repo"]}
+            })),
+        );
+
+        assert_eq!(
+            protected_root_warnings(&manifest),
+            vec![Warning::MacosProtectedRoot {
+                field: "params.repository.under".into(),
+                path: "~/Desktop/template-repo".into(),
+                protected_folder: "~/Desktop".into(),
+            }],
         );
     }
 }
@@ -448,6 +673,7 @@ pub(crate) fn validate_inner(
             });
         }
     }
+    warnings.extend(protected_root_warnings(manifest));
     if !package {
         for (field, agent) in manifest.agents() {
             // A flow installed by an agent is agent-owned: every agent field

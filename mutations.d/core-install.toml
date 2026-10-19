@@ -1595,3 +1595,28 @@ timeout_s = 600
 file = "crates/basal-core/src/install.rs"
 old = 'if declared == Ok(Some(false)) {'
 new = 'if false && declared == Ok(Some(false)) { // NON-VACUITY BREAK'
+
+[[control]]
+id = "install-protected-root-warning-disabled"
+guards = "macOS protected roots warn on install and dry run without filesystem resolution"
+test_file = "crates/basal-core/src/install.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["install::protected_root_warning_tests::each_macos_protected_prefix_warns_with_its_manifest_field"]
+only = true
+select = { tests = ["install::protected_root_warning_tests::each_macos_protected_prefix_warns_with_its_manifest_field", "install::protected_root_warning_tests::work_temp_and_desktop_sibling_roots_do_not_warn"] }
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/install.rs"
+old = '''fn protected_root_warning(field: &str, path: &str) -> Option<Warning> {
+    protected_folder(path).map(|protected_folder| Warning::MacosProtectedRoot {
+        field: field.to_owned(),
+        path: path.to_owned(),
+        protected_folder: protected_folder.to_owned(),
+    })
+}'''
+new = '''fn protected_root_warning(_field: &str, _path: &str) -> Option<Warning> {
+    None // NON-VACUITY BREAK
+}'''
