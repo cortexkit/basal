@@ -113,7 +113,7 @@ rejects the promise.
 
 ## Consent, then a fresh call
 
-Basal decodes held replies with tool-provider 0.9.2 only when that specific tool
+Basal decodes held replies with tool-provider 0.9.3 only when that specific tool
 opts into `result_format: "content/v1"`. A route capability is not a format guess:
 legacy tools retain their original JSON bodies. If any provider catalog is unreadable,
 admission refuses before the program starts with a retry-may-succeed message; there

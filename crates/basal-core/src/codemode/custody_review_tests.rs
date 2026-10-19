@@ -462,3 +462,42 @@ fn incarnation_change_during_ack_rereads_even_after_the_last_call_settled() {
     assert_eq!(f.terminal()["status"], "completed");
     assert_eq!(f.calls()[0].outcome, Outcome::Ok);
 }
+
+#[test]
+fn published_093_held_reply_vectors_are_consumed_without_local_wire_rules() {
+    let vectors: Value = serde_json::from_str(
+        cortexkit_role_tool_provider::vectors::file("held-reply-v1.json")
+            .expect("published held-reply vectors"),
+    )
+    .unwrap();
+    let valid = vectors["valid"].as_array().unwrap();
+    let invalid = vectors["invalid"].as_array().unwrap();
+    let decode_invalid = vectors["decode_invalid"].as_array().unwrap();
+    assert_eq!(
+        (valid.len(), invalid.len(), decode_invalid.len()),
+        (4, 5, 3)
+    );
+    for case in valid {
+        match held::classify(case["body"].clone(), Some(&ResultFormat::ContentV1)) {
+            held::Reply::Held { detail } => assert_eq!(
+                detail,
+                case["body"]["held"].get("detail").cloned(),
+                "{}",
+                case["name"]
+            ),
+            held::Reply::Final(_) => {
+                panic!("published held reply settled as final: {}", case["name"])
+            }
+        }
+    }
+    for case in invalid.iter().chain(decode_invalid) {
+        assert!(
+            matches!(
+                held::classify(case["body"].clone(), Some(&ResultFormat::ContentV1)),
+                held::Reply::Final(Err(_))
+            ),
+            "published malformed body was accepted: {}",
+            case["name"]
+        );
+    }
+}
