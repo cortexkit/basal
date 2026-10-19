@@ -11,7 +11,7 @@
 //! an async runtime: SQLite and the worker pipes are blocking, and a module
 //! that embeds this next to an async client calls it from blocking threads.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -251,6 +251,7 @@ pub(crate) struct Shared {
     /// Runs whose install gate got no answer from core, with when they may
     /// be checked again. In memory: a restart checks every run at once.
     pub(crate) gate_backoff: Mutex<HashMap<String, crate::gate::Backoff>>,
+    event_scope_warnings: Mutex<EventScopeWarnings>,
     pub(crate) signal: Signal,
     threads: Mutex<Vec<JoinHandle<()>>>,
     pub(crate) retention_next: Mutex<Option<i64>>,
@@ -258,6 +259,37 @@ pub(crate) struct Shared {
     pub(crate) owner_notice_drain: Mutex<()>,
     /// The `fs.write` temporary files this process is writing now.
     pub(crate) fs_temps: crate::retention::FsTemps,
+}
+
+const EVENT_SCOPE_WARNING_HISTORY: usize = 4096;
+
+/// Warning state is process-local, so one repeat after restart is expected.
+/// Ended runs are removed and FIFO eviction bounds the remaining live IDs.
+#[derive(Default)]
+struct EventScopeWarnings {
+    run_ids: HashSet<String>,
+    order: VecDeque<String>,
+}
+
+impl EventScopeWarnings {
+    fn insert_once(&mut self, run_id: &str) -> bool {
+        if !self.run_ids.insert(run_id.to_owned()) {
+            return false;
+        }
+        self.order.push_back(run_id.to_owned());
+        while self.order.len() > EVENT_SCOPE_WARNING_HISTORY {
+            if let Some(expired) = self.order.pop_front() {
+                self.run_ids.remove(&expired);
+            }
+        }
+        true
+    }
+
+    fn remove(&mut self, run_id: &str) {
+        if self.run_ids.remove(run_id) {
+            self.order.retain(|id| id != run_id);
+        }
+    }
 }
 
 /// A handle on the runtime. Cheap to clone.
@@ -341,6 +373,7 @@ impl Runtime {
             source,
             inflight: Mutex::new(HashSet::new()),
             gate_backoff: Mutex::new(HashMap::new()),
+            event_scope_warnings: Mutex::new(EventScopeWarnings::default()),
             signal: Signal {
                 epoch: Mutex::new(0),
                 cond: Condvar::new(),
@@ -525,6 +558,7 @@ impl Runtime {
             runs::cancel(tx, run_id, &format!("cancelled by {actor}"))?;
             crate::reconcile::audit(tx, actor, "cancel", Some(run_id), None, "")
         })?;
+        self.clear_event_scope_warning(run_id);
         self.flush_refusals()?;
         self.shared.signal.bump();
         if let Ok(run) = self.run(run_id) {
@@ -744,6 +778,14 @@ impl Runtime {
 
     pub(crate) fn unregister(&self, run_id: &str, position: u64) {
         lock(&self.shared.inflight).remove(&(run_id.to_owned(), position));
+    }
+
+    pub(crate) fn mark_event_scope_warning(&self, run_id: &str) -> bool {
+        lock(&self.shared.event_scope_warnings).insert_once(run_id)
+    }
+
+    pub(crate) fn clear_event_scope_warning(&self, run_id: &str) {
+        lock(&self.shared.event_scope_warnings).remove(run_id);
     }
 
     pub(crate) fn is_inflight(&self, run_id: &str, position: u64) -> bool {
@@ -981,6 +1023,7 @@ impl Runtime {
                             )?;
                             Ok(())
                         })?;
+                        self.clear_event_scope_warning(&run_id);
                         self.flush_refusals()?;
                         self.shared.host.refusal_committed(&request, &refusal);
                         self.wake_flow(&request.flow_id);
@@ -1179,6 +1222,9 @@ impl Runtime {
     pub fn enforce_deadlines(&self) -> Result<Vec<String>> {
         let now = self.config.clock.now_ms();
         let expired = self.shared.store.write(|tx| runs::expire(tx, now, None))?;
+        for (run_id, _) in &expired {
+            self.clear_event_scope_warning(run_id);
+        }
         self.flush_refusals()?;
         self.retention_due(now)?;
         self.reap_threads();

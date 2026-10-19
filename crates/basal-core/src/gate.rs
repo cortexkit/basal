@@ -183,6 +183,7 @@ impl Runtime {
                 .write(|tx| cancel_removed(tx, lease, &run.flow_id, &detail))?;
             if cancelled {
                 self.clear_backoff(&lease.run_id);
+                self.clear_event_scope_warning(&lease.run_id);
                 self.shared.signal.bump();
                 return Ok(Gate::Closed(ActivationEnd::Revoked {
                     version: run.flow_version.unwrap_or(0),
@@ -325,6 +326,7 @@ impl Runtime {
             )
         })?;
         self.clear_backoff(&lease.run_id);
+        self.clear_event_scope_warning(&lease.run_id);
         self.shared.signal.bump();
         Ok(Gate::Closed(ActivationEnd::Revoked {
             version,

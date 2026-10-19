@@ -170,6 +170,9 @@ impl Runtime {
                 if let ActivationEnd::NotRunnable { .. } = end
                     && let Ok(run) = self.run(run_id)
                 {
+                    if run.state.is_terminal() {
+                        self.clear_event_scope_warning(run_id);
+                    }
                     // It expired just now: the slot it held is free.
                     self.shared.signal.bump();
                     self.wake_flow(&run.flow_id);
@@ -274,15 +277,18 @@ impl Runtime {
             }
             Ok(end) => {
                 // A run that reached a terminal state frees its flow's slot.
-                if matches!(
+                let terminal = matches!(
                     end,
                     ActivationEnd::Succeeded { .. }
                         | ActivationEnd::Failed { .. }
                         | ActivationEnd::EngineMismatch { .. }
                         | ActivationEnd::Revoked { .. }
-                ) && let Ok(run) = self.run(&run_id)
-                {
-                    self.wake_flow(&run.flow_id);
+                );
+                if terminal {
+                    self.clear_event_scope_warning(&run_id);
+                    if let Ok(run) = self.run(&run_id) {
+                        self.wake_flow(&run.flow_id);
+                    }
                 }
                 end
             }

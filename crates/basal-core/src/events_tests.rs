@@ -14,10 +14,44 @@ use std::sync::{
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 const BODY: &str = "{\"changed\": true}";
 
+#[derive(Clone, Default)]
+struct CapturedLogs(Arc<Mutex<Vec<(tracing::Level, String)>>>);
+
+impl tracing::Subscriber for CapturedLogs {
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        struct Fields(String);
+        impl tracing::field::Visit for Fields {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                self.0.push_str(&format!("{}={value:?};", field.name()));
+            }
+            fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                self.0.push_str(&format!("{}={value:?};", field.name()));
+            }
+        }
+        let mut fields = Fields(String::new());
+        event.record(&mut fields);
+        self.0
+            .lock()
+            .unwrap()
+            .push((*event.metadata().level(), fields.0));
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
 struct Source {
     replies: Mutex<Vec<std::result::Result<Dispatched, TransportError>>>,
     calls: Mutex<Vec<CallRequest>>,
     on_call: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    readiness_refusal: Mutex<Option<basal_host::flow_refusal::FlowRefusal>>,
     notice_capability: std::sync::atomic::AtomicBool,
     notices: Mutex<Vec<serde_json::Value>>,
     on_notice: Mutex<Option<Box<dyn FnOnce() + Send>>>,
@@ -54,6 +88,16 @@ impl Host for Source {
         }
         self.replies.lock().unwrap().remove(0)
     }
+    fn provider_ready(
+        &self,
+        _: &str,
+        _: &CallKind,
+    ) -> std::result::Result<(), basal_host::flow_refusal::FlowRefusal> {
+        match self.readiness_refusal.lock().unwrap().clone() {
+            Some(refusal) => Err(refusal),
+            None => Ok(()),
+        }
+    }
     fn now_ms(&self) -> f64 {
         0.0
     }
@@ -80,6 +124,7 @@ impl Fixture {
             replies: Mutex::new(Vec::new()),
             calls: Mutex::new(Vec::new()),
             on_call: Mutex::new(None),
+            readiness_refusal: Mutex::new(None),
             notice_capability: std::sync::atomic::AtomicBool::new(true),
             notices: Mutex::new(Vec::new()),
             on_notice: Mutex::new(None),
@@ -747,6 +792,66 @@ fn unavailable_body_is_deferred_with_backoff_until_deadline() {
         matches!(f.rt.event_preamble(&run,&manifest).unwrap(), Preamble::Failed {kind,..} if kind == "deadline")
     );
     assert_eq!(f.source.calls.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn no_flow_scope_warning_is_logged_once_across_retries() {
+    let f = Fixture::new(60);
+    let mut run = f.run();
+    run.deadline_at = Some(10_000);
+    *f.source.readiness_refusal.lock().unwrap() = Some(basal_host::flow_refusal::FlowRefusal {
+        reason: basal_host::flow_refusal::RefusalReason::NoFlowScope,
+        provider: "plexus".into(),
+        action: basal_host::catalog::EVENT_BODY_OP.into(),
+        retry_after_ms: None,
+        detail: None,
+    });
+    let manifest = Manifest::parse(&run.manifest).unwrap();
+    let logs = CapturedLogs::default();
+    {
+        let _subscriber = tracing::subscriber::set_default(logs.clone());
+        for _ in 0..3 {
+            assert!(matches!(
+                f.rt.event_preamble(&run, &manifest).unwrap(),
+                Preamble::Retry
+            ));
+            let retry_at: i64 = f
+                .rt
+                .store()
+                .read(|c| {
+                    Ok(c.query_row("SELECT retry_at FROM event_body_journal", [], |r| r.get(0))?)
+                })
+                .unwrap();
+            f.rt.config.clock.set(retry_at);
+        }
+    }
+    let events = logs.0.lock().unwrap();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].0, tracing::Level::WARN);
+    for field in [
+        "flow_id=flow",
+        "provider=plexus",
+        "reason=\"no_flow_scope\"",
+    ] {
+        assert!(
+            events[0].1.contains(field),
+            "missing {field}: {:?}",
+            events[0]
+        );
+    }
+    assert!(events[0].1.contains(&format!("run_id={}", run.run_id)));
+}
+
+#[test]
+fn no_flow_scope_warning_marker_is_cleared_when_run_is_cancelled() {
+    let f = Fixture::new(60);
+    let run = f.run();
+    assert!(f.rt.mark_event_scope_warning(&run.run_id));
+    assert!(!f.rt.mark_event_scope_warning(&run.run_id));
+
+    f.rt.cancel(&run.run_id, "test").unwrap();
+
+    assert!(f.rt.mark_event_scope_warning(&run.run_id));
 }
 
 #[test]

@@ -12,7 +12,7 @@ use std::sync::{atomic::AtomicBool, mpsc};
 use std::time::{Duration, Instant};
 
 use basal_core::{Boundary, Hooks, RunState, Step};
-use basal_module::pool::{Binding, Pool, PoolConfig, ProcessSpawner, Source, Spawn};
+use basal_module::pool::{Binding, EndReason, Pool, PoolConfig, ProcessSpawner, Source, Spawn};
 use basal_module::process::{SpawnError, WorkerProcess};
 use basal_testkit::harness::wait_until;
 use common::{
@@ -165,8 +165,10 @@ fn budget_retirement(tag: &str, script: &str, budgets: Budgets, kind: &str) {
     let pids = pids_of(&f.module.pool, &flow);
     assert_eq!(pids.len(), 2);
     assert_ne!(
-        pids[0], pids[1],
-        "a reported budget exhaustion must replace the worker"
+        pids[0],
+        pids[1],
+        "a reported budget exhaustion must replace the worker: {:?}",
+        f.module.pool.handouts()
     );
     assert_eq!(killed_after_first, 1);
     assert!(
@@ -405,6 +407,14 @@ fn a_killed_worker_is_replaced_and_the_run_continues() {
     let used = workers_of(&f.module.pool, &flow);
     assert_eq!(used.len(), 2, "{:?}", f.module.pool.handouts());
     assert_ne!(used[0], used[1], "the run continued on another worker");
+    let handouts = f.module.pool.handouts();
+    assert!(
+        matches!(
+            handouts[0].end_reason,
+            Some(EndReason::Killed | EndReason::LostChannel)
+        ),
+        "the first worker's end reason is recorded: {handouts:?}"
+    );
     let metrics = &f.module.metrics;
     assert_eq!(metrics.workers_killed.load(Ordering::Relaxed), 1);
     wait_for_spares(&f);
@@ -476,6 +486,12 @@ fn a_bound_worker_is_retired_after_its_activation_count_and_its_idle_period() {
     let used = workers_of(&f.module.pool, &flow);
     assert_eq!(used[0], used[1]);
     assert_ne!(used[1], used[2], "retired after two activations");
+    let handouts = f.module.pool.handouts();
+    assert_eq!(
+        handouts[1].end_reason,
+        Some(EndReason::ReplacedAfterBudget),
+        "the activation-count budget ends the second handout: {handouts:?}"
+    );
     assert_eq!(f.module.pool.stats().bound, vec![(flow.clone(), 1)]);
 
     // Idle past the period on the runtime's clock: the next pass retires it.
