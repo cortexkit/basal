@@ -177,8 +177,9 @@ pub trait Transport: Send + Sync {
             "run-scoped tool dispatch unavailable".into(),
         ))
     }
-    /// Custody operations use the already-open run tool route, without reopening
-    /// or falling back to a management route. They carry no top-level call key.
+    /// Custody operations may reopen the run's tool route after reconnect, but
+    /// never resend the tool call or fall back to an unscoped management route.
+    /// They carry no top-level call key.
     fn role_for_run(
         &self,
         run: &str,
@@ -204,6 +205,7 @@ pub trait Transport: Send + Sync {
 pub type RunScopeEnded = dyn Fn(&str) + Send + Sync;
 
 /// Configuration copied from the invoking bind; it doesn't establish who the caller is.
+#[derive(Clone)]
 pub struct RunToolOptions {
     pub identity: BindIdentity,
     pub reply_timeout: Duration,
@@ -375,64 +377,88 @@ impl SubcTransport {
         identity: Option<&BindIdentity>,
         bind: BindIdentity,
     ) -> Result<subc_client_rs::RouteHandle, WireError> {
+        self.open_scoped_handle_with_budget(flow, target, identity, bind, None)
+    }
+
+    /// Custody bounds the entire open attempt, including a wait behind another
+    /// opener. Ordinary tool and model opens keep their existing timeout policy.
+    fn open_scoped_handle_with_budget(
+        &self,
+        flow: &str,
+        target: &RouteTarget,
+        identity: Option<&BindIdentity>,
+        bind: BindIdentity,
+        budget: Option<Duration>,
+    ) -> Result<subc_client_rs::RouteHandle, WireError> {
         self.handle.block_on(async {
-            let key = {
-                let routes = self.routes.lock().unwrap_or_else(|p| p.into_inner());
-                let plan = routes.prepare(flow, target, identity)?;
+            let opening = async {
+                let key = {
+                    let routes = self.routes.lock().unwrap_or_else(|p| p.into_inner());
+                    let plan = routes.prepare(flow, target, identity)?;
+                    if let Some(handle) = plan.handle {
+                        return Ok(handle);
+                    }
+                    plan.key
+                };
+                let gate = {
+                    let mut gates = self.open_gates.lock().unwrap_or_else(|p| p.into_inner());
+                    gates.retain(|_, gate| gate.strong_count() > 0);
+                    let gate = gates
+                        .get(&key)
+                        .and_then(std::sync::Weak::upgrade)
+                        .unwrap_or_else(|| Arc::new(tokio::sync::Mutex::new(())));
+                    gates.insert(key, Arc::downgrade(&gate));
+                    gate
+                };
+                // Only opens for this route identity wait for one another. Control
+                // pushes and other providers never wait on a network round trip.
+                let _opening = gate.lock().await;
+                let plan = self
+                    .routes
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .prepare(flow, target, identity)?;
                 if let Some(handle) = plan.handle {
                     return Ok(handle);
                 }
-                plan.key
-            };
-            let gate = {
-                let mut gates = self.open_gates.lock().unwrap_or_else(|p| p.into_inner());
-                gates.retain(|_, gate| gate.strong_count() > 0);
-                let gate = gates
-                    .get(&key)
-                    .and_then(std::sync::Weak::upgrade)
-                    .unwrap_or_else(|| Arc::new(tokio::sync::Mutex::new(())));
-                gates.insert(key, Arc::downgrade(&gate));
-                gate
-            };
-            // Only opens for this route identity wait for one another. Control
-            // pushes and other providers never wait on a network round trip.
-            let _opening = gate.lock().await;
-            let plan = self
-                .routes
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .prepare(flow, target, identity)?;
-            if let Some(handle) = plan.handle {
-                return Ok(handle);
-            }
-            let mut options = CallOptions {
-                timeout: self.timeout,
-                ..Default::default()
-            };
-            if flow.starts_with("codemode:") && matches!(target, RouteTarget::ToolProvider { .. }) {
-                options = options
-                    .with_consumer_capability("content/v1")
-                    .expect("static capability")
-                    .with_consumer_capability("held-reply/v1")
-                    .expect("static capability");
-            }
-            let handle = self
-                .consumer
-                .open_route_scoped(target.clone(), bind, plan.scope.selector(), options)
-                .await
-                .map_err(map_error)?;
-            let result = self
-                .routes
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .install(flow, plan, handle);
-            if !result.as_ref().is_ok_and(|installed| *installed == handle) {
-                let _ = self
+                let mut options = CallOptions {
+                    timeout: budget.unwrap_or(self.timeout),
+                    ..Default::default()
+                };
+                if flow.starts_with("codemode:")
+                    && matches!(target, RouteTarget::ToolProvider { .. })
+                {
+                    options = options
+                        .with_consumer_capability("content/v1")
+                        .expect("static capability")
+                        .with_consumer_capability("held-reply/v1")
+                        .expect("static capability");
+                }
+                let handle = self
                     .consumer
-                    .close_handle(&handle, Default::default())
-                    .await;
+                    .open_route_scoped(target.clone(), bind, plan.scope.selector(), options)
+                    .await
+                    .map_err(map_error)?;
+                let result = self
+                    .routes
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .install(flow, plan, handle);
+                if !result.as_ref().is_ok_and(|installed| *installed == handle) {
+                    let _ = self
+                        .consumer
+                        .close_handle(&handle, Default::default())
+                        .await;
+                }
+                result
+            };
+            if let Some(budget) = budget {
+                tokio::time::timeout(budget, opening)
+                    .await
+                    .map_err(|_| WireError::TimedOut("custody route open timed out".into()))?
+            } else {
+                opening.await
             }
-            result
         })
     }
 
@@ -989,28 +1015,40 @@ impl Transport for SubcTransport {
         let target = RouteTarget::ToolProvider {
             module_id: module.into(),
         };
-        let handle = self
-            .routes
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .prepare(run, &target, Some(&options.identity))?
-            .handle
-            .ok_or_else(|| WireError::ScopeCut("run tool route drained".into()))?;
+        let custody_deadline =
+            std::time::Instant::now() + options.reply_timeout.min(Duration::from_secs(2));
+        let handle = self.open_scoped_handle_with_budget(
+            run,
+            &target,
+            Some(&options.identity),
+            options.identity.clone(),
+            Some(custody_deadline.saturating_duration_since(std::time::Instant::now())),
+        )?;
         let body = serde_json::to_vec(&subc_protocol::tool_call::ToolCallRequest::new(
             name, arguments,
         ))
         .map_err(|e| WireError::NeverSent(e.to_string()))?;
-        let bytes = self
-            .handle
-            .block_on(self.consumer.request(
-                &handle,
-                body,
-                CallOptions {
-                    timeout: options.reply_timeout.min(Duration::from_secs(2)),
-                    ..Default::default()
-                },
-            ))
-            .map_err(map_error)?;
+        let remaining = custody_deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(WireError::TimedOut(
+                "custody request deadline passed".into(),
+            ));
+        }
+        let reply = self.handle.block_on(self.consumer.request(
+            &handle,
+            body,
+            CallOptions {
+                timeout: remaining,
+                ..Default::default()
+            },
+        ));
+        if matches!(&reply, Err(CallError::StaleRouteHandle(_))) {
+            self.routes
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .closed(handle, false);
+        }
+        let bytes = reply.map_err(map_error)?;
         decode_response(&bytes, false)
     }
     fn catalog(&self) -> Result<Value, WireError> {
@@ -1728,7 +1766,7 @@ mod tests {
     }
 
     #[test]
-    fn run_custody_uses_the_declared_tool_route_without_reopening_or_call_keys() {
+    fn run_custody_reuses_the_declared_route_and_never_resends_the_tool() {
         with_scoped_transport(|transport, opens, calls, _| {
             let options = run_scope(&transport);
             transport
@@ -1789,6 +1827,88 @@ mod tests {
                 1,
                 "custody never opens a replacement route"
             );
+        });
+    }
+
+    #[test]
+    fn custody_reconnect_reopens_the_same_scope_for_metadata_without_resending_the_tool() {
+        with_scoped_transport(|transport, opens, calls, _| {
+            let options = run_scope(&transport);
+            transport
+                .tool_for_run("codemode:run", "mock", "echo", json!(7), "once", &options)
+                .unwrap();
+            let handle = cached_run_route(&transport, &options);
+            transport
+                .handle
+                .block_on(transport.consumer.close_handle(&handle, Default::default()))
+                .unwrap();
+            transport.routes.lock().unwrap().connection_restored();
+            for name in ["late_results", "late_results.ack", "tool.withdraw"] {
+                transport
+                    .role_for_run("codemode:run", "mock", name, json!({}), &options)
+                    .unwrap();
+            }
+            let opened = opens.lock().unwrap();
+            assert_eq!(opened.len(), 2);
+            assert_eq!(
+                opened[0]["scope"], opened[1]["scope"],
+                "reconnect keeps the same scope epoch"
+            );
+            assert_eq!(opened[0]["identity"], opened[1]["identity"]);
+            assert_eq!(
+                requests_named(&calls, "echo"),
+                1,
+                "the tool action is never resent"
+            );
+            drop(opened);
+            transport.configure_flow("codemode:run", None);
+        });
+    }
+
+    #[test]
+    fn custody_deadline_includes_waiting_for_a_shared_route_open() {
+        let (entered, received) = std::sync::mpsc::sync_channel(1);
+        let (release, paused) = tokio::sync::oneshot::channel();
+        with_paused_open(Some((entered, paused)), |transport, _, calls, _| {
+            let options = run_scope(&transport);
+            let action_transport = transport.clone();
+            let action_options = options.clone();
+            let action = std::thread::spawn(move || {
+                action_transport.tool_for_run(
+                    "codemode:run",
+                    "mock",
+                    "echo",
+                    json!(7),
+                    "once",
+                    &action_options,
+                )
+            });
+            received.recv_timeout(Duration::from_secs(10)).unwrap();
+            let custody_transport = transport.clone();
+            let mut custody_options = options;
+            custody_options.reply_timeout = Duration::from_millis(50);
+            let (finished, done) = std::sync::mpsc::sync_channel(1);
+            let custody = std::thread::spawn(move || {
+                let reply = custody_transport.role_for_run(
+                    "codemode:run",
+                    "mock",
+                    "late_results",
+                    json!({"since":null}),
+                    &custody_options,
+                );
+                finished.send(reply).unwrap();
+            });
+            let reply = done.recv_timeout(Duration::from_millis(500));
+            release.send(()).unwrap();
+            action.join().unwrap().unwrap();
+            custody.join().unwrap();
+            assert!(
+                matches!(reply, Ok(Err(WireError::TimedOut(_)))),
+                "custody must time out while the unrelated route opener is still waiting"
+            );
+            assert_eq!(requests_named(&calls, "echo"), 1);
+            assert_eq!(requests_named(&calls, "late_results"), 0);
+            transport.configure_flow("codemode:run", None);
         });
     }
 

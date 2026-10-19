@@ -27,6 +27,9 @@ struct Core {
     identities: Mutex<Vec<subc_protocol::BindIdentity>>,
     store: Mutex<Option<Arc<basal_core::Store>>>,
     held_provider: AtomicBool,
+    format_unreadable: AtomicBool,
+    consent_provider: AtomicBool,
+    onward_keys: Mutex<Vec<String>>,
     onward: Mutex<Option<(String, String, Value)>>,
     late_reads: AtomicUsize,
     late_acks: AtomicUsize,
@@ -73,11 +76,20 @@ impl Transport for Core {
         assert!(options.reply_timeout > Duration::from_secs(30));
         if self.held_provider.load(Ordering::SeqCst) {
             assert_eq!((module, name), ("mock", "echo"));
+            self.onward_keys.lock().unwrap().push(key.into());
+            let mut state = self.state.lock().unwrap();
+            state.0 += 1;
+            let retry = self.consent_provider.load(Ordering::SeqCst) && state.0 > 1;
+            drop(state);
+            if retry {
+                return Ok(
+                    json!({"content":[{"type":"text","text":"Grant already active"}],"structuredContent":input}),
+                );
+            }
             *self.onward.lock().unwrap() = Some((run.into(), key.into(), input));
-            self.state.lock().unwrap().0 += 1;
             self.changed.notify_all();
             return Ok(
-                json!({"content":[{"type":"text","text":"Waiting for login"}],"held":{"reason":"login_pending"}}),
+                json!({"content":[{"type":"text","text":"Waiting for a person"}],"held":{"reason":if self.consent_provider.load(Ordering::SeqCst) {"consent"} else {"login_handoff"}}}),
             );
         }
         self.tool_for_flow(run, module, name, input, key)
@@ -101,7 +113,11 @@ impl Transport for Core {
                 self.changed.notify_all();
                 let ready = state.1;
                 let scope = self.opens.lock().unwrap()[0]["run_id"].clone();
-                let entries = if ready {
+                let entries = if ready && self.consent_provider.load(Ordering::SeqCst) {
+                    vec![
+                        json!({"kind":"not_started","owner":"reserved:prefrontal-core","ref":scope,"scope_epoch":19,"custodian":"reserved:basal","call_key":key,"event_id":"consent-result","settled_at":100,"reason":"consent","detail":{"outcome":"approved"}}),
+                    ]
+                } else if ready {
                     vec![
                         json!({"kind":"result","owner":"reserved:prefrontal-core","ref":scope,"scope_epoch":19,
                     "custodian":"reserved:basal","call_key":key,"event_id":"login-result","settled_at":100,
@@ -182,8 +198,26 @@ impl Transport for Core {
             _ => panic!("unexpected management op {op}"),
         }
     }
-    fn tool(&self, _: &str, _: &str, _: Value, _: &str) -> Result<Value, WireError> {
-        panic!("unscoped send")
+    fn tool(&self, module: &str, name: &str, _: Value, _: &str) -> Result<Value, WireError> {
+        assert_eq!(module, "mock");
+        if self.format_unreadable.load(Ordering::SeqCst)
+            && matches!(name, "role.describe" | "tool.catalog")
+        {
+            return Err(WireError::TimedOut("provider catalog unavailable".into()));
+        }
+        match name {
+            "role.describe" => Ok(
+                json!({"majors":[{"version":"tool-provider/v1","ops":["role.describe","tool.catalog"],"stability":"alpha"}],"implementation_version":"test"}),
+            ),
+            "tool.catalog" => {
+                let mut tool = json!({"name":"echo","schema_digest":"0".repeat(64),"semantics":1,"capabilities":[],"input_schema":{}});
+                if self.held_provider.load(Ordering::SeqCst) {
+                    tool["result_format"] = json!("content/v1");
+                }
+                Ok(json!({"generation":"test","catalog_digest":"test","tools":[tool]}))
+            }
+            _ => panic!("unscoped action send"),
+        }
     }
     fn tool_for_flow(
         &self,
@@ -840,4 +874,65 @@ fn held_provider_late_content_resumes_the_program_with_its_structured_value() {
         "held calls are never resent"
     );
     assert!(rig.core.late_acks.load(Ordering::SeqCst) > 0);
+}
+
+#[test]
+fn consent_approval_rejects_not_started_and_the_program_chooses_a_new_call() {
+    let rig = rig("consent-program-retry", false);
+    rig.core.held_provider.store(true, Ordering::SeqCst);
+    rig.core.consent_provider.store(true, Ordering::SeqCst);
+    let program = r#"
+        let answer;
+        try { answer = await tools.echo({n:20}); }
+        catch (error) {
+            if (error.code !== 'not_started' || error.detail.outcome !== 'approved') throw error;
+            answer = await tools.echo({n:22});
+        }
+        return answer.n + 20;
+    "#;
+    assert_eq!(
+        call(&rig, "consent-key", program, Duration::from_millis(20))["structuredContent"]["status"],
+        "running"
+    );
+    rig.core.wait_sent(1);
+    rig.core.release();
+    let result = call(&rig, "consent-key", program, Duration::from_secs(180));
+    assert_eq!(
+        result["structuredContent"]["status"], "completed",
+        "{result}"
+    );
+    assert_eq!(result["structuredContent"]["value"], 42);
+    assert_eq!(
+        result["structuredContent"]["calls"][0]["outcome"],
+        "withdrawn"
+    );
+    assert_eq!(result["structuredContent"]["calls"][1]["outcome"], "ok");
+    let keys = rig.core.onward_keys.lock().unwrap();
+    assert_eq!(keys.len(), 2);
+    assert_ne!(keys[0], keys[1], "only a fresh program call gets a new key");
+}
+
+#[test]
+fn unreadable_legacy_result_catalog_refuses_before_start_with_a_retry_message() {
+    let rig = rig("legacy-format-unreadable", true);
+    rig.core.format_unreadable.store(true, Ordering::SeqCst);
+    let result = call(
+        &rig,
+        "unreadable-format",
+        "return 1;",
+        Duration::from_secs(10),
+    );
+    assert!(rig.fixture.module.codemode_pool.handouts().is_empty());
+    assert_eq!(result["structuredContent"]["status"], "failed");
+    assert_eq!(
+        result["structuredContent"]["error"]["code"],
+        basal_host::run_scope::RefusalReason::CatalogUnreadable.code()
+    );
+    assert!(
+        result["structuredContent"]["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("retrying the run may succeed")
+    );
+    assert_eq!(rig.core.state.lock().unwrap().0, 0);
 }

@@ -114,8 +114,17 @@ impl Transport for MockCore {
             _ => panic!("unexpected core op {op}"),
         }
     }
-    fn tool(&self, _: &str, _: &str, _: Value, _: &str) -> Result<Value, WireError> {
-        panic!("unscoped tool")
+    fn tool(&self, module: &str, name: &str, _: Value, _: &str) -> Result<Value, WireError> {
+        assert_eq!(module, "mock");
+        match name {
+            "role.describe" => Ok(
+                json!({"majors":[{"version":"tool-provider/v1","ops":["role.describe","tool.catalog"],"stability":"alpha"}],"implementation_version":"fixture"}),
+            ),
+            "tool.catalog" => Ok(
+                json!({"generation":"fixture","catalog_digest":"fixture","tools":[{"name":"write_marker","schema_digest":"0".repeat(64),"semantics":1,"capabilities":[],"input_schema":{}}]}),
+            ),
+            _ => panic!("unscoped action"),
+        }
     }
     fn tool_for_run(
         &self,
@@ -702,7 +711,10 @@ async fn basal_tool_provider_conforms_for_declared_capabilities() {
             "late_results_cursor_round_trip",
             "late_results_ack",
             "crash_after_prepared_not_started",
-            "crash_after_authorized_not_started"
+            "crash_after_authorized_not_started",
+            // Basal consumes held replies but does not advertise provider-side
+            // approval execution or the held-reply capability on its own tool.
+            "tool_result_held_reply_route_gating"
         ]
         .into_iter()
         .collect()

@@ -2398,8 +2398,10 @@ expect_red = ["codemode::supervisor::tests::provider_held_reply_stays_pending_un
 only = true
 file = "crates/basal-core/src/codemode/supervisor.rs"
 old = '''self.mark_held(answer.call.position, true)?;
+                    self.start_intake(answer.call.position)?;
                     return Ok(());'''
 new = '''self.mark_held(answer.call.position, true)?;
+                    self.start_intake(answer.call.position)?;
                     answer.result = Ok(Value::Null); // NON-VACUITY BREAK
                     return self.settle_answer(answer, None);'''
 
@@ -2421,17 +2423,18 @@ new = 'for position in &BTreeSet::<u64>::new() { // NON-VACUITY BREAK'
 [[control]]
 id = "codemode-late-polls-only-held"
 guards = "a provider route and an in-flight call without a held reply cause zero late-results traffic"
-test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+test_file = "crates/basal-core/src/codemode/custody_intake_tests.rs"
 runner = "cargo"
 package = "basal-core"
 platforms = ["linux"]
 target = "--lib"
-select = { tests = ["codemode::supervisor::tests::no_late_results_traffic_without_a_provider_held_reply", "codemode::supervisor::tests::shutdown_refuses_to_start_a_new_driver"] }
-expect_red = ["codemode::supervisor::tests::no_late_results_traffic_without_a_provider_held_reply"]
+select = { tests = ["codemode::supervisor::held::intake_tests::an_awake_provider_worker_with_no_held_targets_makes_zero_requests", "codemode::supervisor::held::intake_tests::malformed_entry_does_not_poison_the_following_valid_entry"] }
+expect_red = ["codemode::supervisor::held::intake_tests::an_awake_provider_worker_with_no_held_targets_makes_zero_requests"]
 only = true
-file = "crates/basal-core/src/codemode/held.rs"
-old = '&& target.held'
-new = '&& true /* NON-VACUITY BREAK */'
+file = "crates/basal-core/src/codemode/custody.rs"
+scope = { after = "fn is_held(&self) -> bool {", before = "\n    fn " }
+old = 'self.held'
+new = 'true /* NON-VACUITY BREAK */'
 
 [[control]]
 id = "codemode-withdrawn-requires-dispatch"
@@ -2447,3 +2450,112 @@ only = true
 file = "crates/basal-core/src/schema.rs"
 old = "CHECK (outcome <> 'withdrawn' OR (intent_at IS NOT NULL AND entered_at IS NOT NULL AND waited_on_person=1)),"
 new = "CHECK (outcome <> 'withdrawn' OR waited_on_person=1), -- NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-early-not-started-records-hold"
+guards = "a late not_started that beats its held reply records the person hold before withdrawn settlement"
+test_file = "crates/basal-core/src/codemode/custody_review_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["codemode::supervisor::tests::custody_review::not_started_before_the_held_reply_records_the_person_hold", "codemode::supervisor::tests::custody_review::legacy_content_members_remain_opaque_in_direct_and_late_results"] }
+expect_red = ["codemode::supervisor::tests::custody_review::not_started_before_the_held_reply_records_the_person_hold"]
+only = true
+file = "crates/basal-core/src/codemode/supervisor.rs"
+scope = { after = "Some(Event::LateAnswer { call, entry, ack }) => {", before = "Some(Event::CustodyChanged)" }
+old = "self.mark_held(call.position, true)?;"
+new = "let _ = call.position; // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-late-scope-entry-isolation"
+guards = "an entry from another scope is skipped and acknowledged without being delivered to a live run"
+test_file = "crates/basal-core/src/codemode/custody_intake_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["codemode::supervisor::held::intake_tests::foreign_scope_entry_is_skipped_and_the_page_is_acked", "codemode::supervisor::held::intake_tests::foreign_custodian_entry_is_skipped_and_the_page_is_acked"] }
+expect_red = ["codemode::supervisor::held::intake_tests::foreign_scope_entry_is_skipped_and_the_page_is_acked"]
+only = true
+file = "crates/basal-core/src/codemode/custody.rs"
+old = '''if entry.owner != target.scope.owner
+                    || entry.scope_ref != target.scope.scope_ref
+                    || entry.scope_epoch != target.scope.scope_epoch'''
+new = "if false /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "codemode-late-custodian-entry-isolation"
+guards = "an entry for another custodian is skipped and acknowledged without being delivered"
+test_file = "crates/basal-core/src/codemode/custody_intake_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["codemode::supervisor::held::intake_tests::foreign_custodian_entry_is_skipped_and_the_page_is_acked", "codemode::supervisor::held::intake_tests::foreign_scope_entry_is_skipped_and_the_page_is_acked"] }
+expect_red = ["codemode::supervisor::held::intake_tests::foreign_custodian_entry_is_skipped_and_the_page_is_acked"]
+only = true
+file = "crates/basal-core/src/codemode/custody.rs"
+old = 'if entry.custodian != "reserved:basal" {'
+new = 'if false && entry.custodian != "reserved:basal" { // NON-VACUITY BREAK'
+
+[[control]]
+id = "codemode-completion-waits-for-custody-ack"
+guards = "program completion keeps its route alive until the final late page is successfully acknowledged"
+test_file = "crates/basal-core/src/codemode/custody_review_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["codemode::supervisor::tests::custody_review::final_run_completion_waits_for_a_successful_late_ack", "codemode::supervisor::tests::custody_review::legacy_content_members_remain_opaque_in_direct_and_late_results"] }
+expect_red = ["codemode::supervisor::tests::custody_review::final_run_completion_waits_for_a_successful_late_ack"]
+only = true
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "&& self.shared.custody.is_idle(&self.run.run_id)"
+new = "&& true /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "codemode-shared-held-detail-validation"
+guards = "content/v1 held detail must pass the shared tool-provider object validation"
+test_file = "crates/basal-core/src/codemode/custody_review_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["codemode::supervisor::tests::custody_review::malformed_held_detail_is_rejected_by_the_shared_decoder", "codemode::supervisor::tests::custody_review::legacy_content_members_remain_opaque_in_direct_and_late_results"] }
+expect_red = ["codemode::supervisor::tests::custody_review::malformed_held_detail_is_rejected_by_the_shared_decoder"]
+only = true
+file = "crates/basal-core/src/codemode/held.rs"
+old = "if let Err(error) = cortexkit_role_tool_provider::result::validate(&decoded) {"
+new = "if let Err(error) = Ok::<(), String>(()) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-person-time-before-hold-transition"
+guards = "changing held state accounts the interval under the previous state rather than charging or losing it afterward"
+test_file = "crates/basal-core/src/codemode/custody_review_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["codemode::supervisor::tests::custody_review::mark_held_accounts_the_previous_person_interval_before_changing_state", "codemode::supervisor::tests::custody_review::legacy_content_members_remain_opaque_in_direct_and_late_results"] }
+expect_red = ["codemode::supervisor::tests::custody_review::mark_held_accounts_the_previous_person_interval_before_changing_state"]
+only = true
+file = "crates/basal-core/src/codemode/supervisor.rs"
+scope = { after = "fn mark_held(&mut self, position: u64, held: bool) -> Result<()> {", before = "\n    fn " }
+old = "self.account_time();"
+new = "// NON-VACUITY BREAK: skip the previous interval"
+
+[[control]]
+id = "codemode-ack-incarnation-rereads"
+guards = "a provider restart during ack rereads its new incarnation even after the last held call settled"
+test_file = "crates/basal-core/src/codemode/custody_review_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["codemode::supervisor::tests::custody_review::incarnation_change_during_ack_rereads_even_after_the_last_call_settled", "codemode::supervisor::tests::custody_review::legacy_content_members_remain_opaque_in_direct_and_late_results"] }
+expect_red = ["codemode::supervisor::tests::custody_review::incarnation_change_during_ack_rereads_even_after_the_last_call_settled"]
+only = true
+file = "crates/basal-core/src/codemode/custody.rs"
+old = "position.pending.as_mut().unwrap().reread = true;"
+new = "position.pending.as_mut().unwrap().reread = false; // NON-VACUITY BREAK"

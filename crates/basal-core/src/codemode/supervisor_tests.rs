@@ -76,6 +76,7 @@ struct FakeTransport {
     custody_controlled: AtomicBool,
     custody_attempts: mpsc::Sender<CustodyAttempt>,
     custody_count: AtomicUsize,
+    content_results: AtomicBool,
 }
 
 impl Transport for FakeTransport {
@@ -414,6 +415,7 @@ impl Fixture {
             custody_controlled: AtomicBool::new(false),
             custody_attempts: custody_tx,
             custody_count: AtomicUsize::new(0),
+            content_results: AtomicBool::new(false),
         });
         let catalog = Arc::new(MockCatalog::new());
         catalog.set_op(
@@ -478,6 +480,9 @@ impl Fixture {
                         module: module.to_string(),
                         op: op.to_string(),
                         input_schema: compile_input_schema(schema).unwrap(),
+                        result_format: self.host.content_results.load(Ordering::SeqCst).then_some(
+                            cortexkit_role_tool_provider::result::ResultFormat::ContentV1,
+                        ),
                     },
                 )
             })
@@ -2038,7 +2043,7 @@ fn raw_scope_expired_refusal_and_provider_denial_have_distinct_outcomes() {
 }
 
 fn held_reply() -> Value {
-    json!({"content":[{"type":"text","text":"Waiting for approval"}],"held":{"reason":"approval_pending","detail":{"site":"example.test"}}})
+    json!({"content":[{"type":"text","text":"Waiting for approval"}],"held":{"reason":"consent","detail":{"site":"example.test"}}})
 }
 
 fn late_entry(key: &str, event: &str, result: Value) -> Value {
@@ -2056,6 +2061,7 @@ impl Fixture {
         attempt
     }
     fn provider_held(&self) -> (Attempt, CustodyAttempt) {
+        self.host.content_results.store(true, Ordering::SeqCst);
         self.host.custody_controlled.store(true, Ordering::SeqCst);
         let call = self.held_far_from_its_deadline();
         self.worker
@@ -2174,13 +2180,17 @@ fn provider_incarnation_rereads_from_null_without_double_settlement() {
     f.issue(1, "read", json!({}));
     let second = f.attempt();
     second.reply.send(Ok(held_reply())).unwrap();
-    let e1 = late_entry(&first.key, "e1", json!(11));
+    let e1 = late_entry(
+        &first.key,
+        "e1",
+        json!({"content":[{"type":"text","text":"first"}],"structuredContent":{"n":11}}),
+    );
     pull.reply
         .send(Ok(late_page("i1", 1, vec![e1.clone()])))
         .unwrap();
     let delivery = f.delivery();
     assert_eq!(delivery.settlement, Settlement::Fulfilled);
-    assert_eq!(delivery.value.as_str(), "11");
+    assert_eq!(delivery.value.as_str(), r#"{"n":11}"#);
     f.custody_attempt("late_results.ack")
         .reply
         .send(Ok(json!({})))
@@ -2204,13 +2214,13 @@ fn provider_incarnation_rereads_from_null_without_double_settlement() {
         .send(Ok(late_page(
             "i2",
             2,
-            vec![e1, late_entry(&second.key, "e2", json!(22))],
+            vec![e1, late_entry(&second.key, "e2", json!({"content":[{"type":"text","text":"second"}],"structuredContent":{"n":22}}))],
         )))
         .unwrap();
     let delivery = f.delivery();
     assert_eq!(delivery.position, 1);
     assert_eq!(delivery.settlement, Settlement::Fulfilled);
-    assert_eq!(delivery.value.as_str(), "22");
+    assert_eq!(delivery.value.as_str(), r#"{"n":22}"#);
     f.custody_attempt("late_results.ack")
         .reply
         .send(Ok(json!({})))
@@ -2268,7 +2278,7 @@ fn onward_content_results_map_structured_text_and_errors_and_reject_malformed_he
             Err("permission_denied"),
         ),
         (
-            json!({"content":[{"type":"text","text":"bad"}],"isError":true,"errorCode":"bad_held","held":{"reason":"approval_pending"}}),
+            json!({"content":[{"type":"text","text":"bad"}],"isError":true,"errorCode":"bad_held","held":{"reason":"consent"}}),
             Err("reply_unreadable"),
         ),
         (
@@ -2277,6 +2287,7 @@ fn onward_content_results_map_structured_text_and_errors_and_reject_malformed_he
         ),
     ] {
         let f = Fixture::new();
+        f.host.content_results.store(true, Ordering::SeqCst);
         f.standard();
         f.issue(0, "read", json!({}));
         f.attempt().reply.send(Ok(body)).unwrap();
@@ -2362,6 +2373,7 @@ fn route_draining_while_held_is_unknown_without_reopening() {
 fn wall_deadline_with_a_held_call_withdraws_even_when_worker_is_not_blocked() {
     let f = Fixture::new();
     f.host.custody_controlled.store(true, Ordering::SeqCst);
+    f.host.content_results.store(true, Ordering::SeqCst);
     f.standard();
     f.issue(0, "read", json!({}));
     f.attempt().reply.send(Ok(held_reply())).unwrap();
@@ -2378,3 +2390,6 @@ fn wall_deadline_with_a_held_call_withdraws_even_when_worker_is_not_blocked() {
     assert_eq!(f.calls()[0].outcome, Outcome::OutcomeUnknown);
     drop(pull);
 }
+
+#[path = "custody_review_tests.rs"]
+mod custody_review;

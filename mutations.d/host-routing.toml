@@ -822,10 +822,10 @@ timeout_s = 600
 file = "crates/basal-host/src/transport.rs"
 old = """
 let handle = self
-                .consumer
-                .open_route_scoped(target.clone(), bind, plan.scope.selector(), options)
-                .await
-                .map_err(map_error)?;"""
+                    .consumer
+                    .open_route_scoped(target.clone(), bind, plan.scope.selector(), options)
+                    .await
+                    .map_err(map_error)?;"""
 new = """
 let handle = if identity.is_none() { // NON-VACUITY BREAK
                 self.consumer.open_route(target.clone(), bind, options).await
@@ -1236,6 +1236,7 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/transport.rs"
+scope = { after = "let deadline = std::time::Instant::now() + options.reply_timeout;", before = "\n    fn role_for_run(" }
 old = "options.identity.clone(),"
 new = 'BindIdentity::new("/","basal","wrong-session"), /* NON-VACUITY BREAK */'
 
@@ -1599,3 +1600,19 @@ timeout_s = 600
 file = "crates/basal-host/src/transport.rs"
 old = "                if reopened {\n                    return Err(map_error(error));\n                }"
 new = "                if true || reopened { // NON-VACUITY BREAK\n                    return Err(map_error(error));\n                }"
+
+[[control]]
+id = "codemode-custody-budget-includes-route-open"
+guards = "metadata cleanup deadlines bound waiting for another request's route-open gate as well as the provider reply"
+test_file = "crates/basal-host/src/transport.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["transport::tests::custody_deadline_includes_waiting_for_a_shared_route_open", "transport::tests::custody_reconnect_reopens_the_same_scope_for_metadata_without_resending_the_tool"] }
+expect_red = ["transport::tests::custody_deadline_includes_waiting_for_a_shared_route_open"]
+only = true
+file = "crates/basal-host/src/transport.rs"
+scope = { after = "fn open_scoped_handle_with_budget(", before = "\n    fn call_for_flow(" }
+old = "if let Some(budget) = budget {"
+new = "if let Some(budget) = None::<Duration> { // NON-VACUITY BREAK"

@@ -70,6 +70,7 @@ pub struct Tool {
     pub module: String,
     pub op: String,
     pub input_schema: Validator,
+    pub result_format: Option<cortexkit_role_tool_provider::result::ResultFormat>,
 }
 
 /// Permission to register `codemode:<run_id>` and start its fresh worker.
@@ -415,13 +416,13 @@ fn catalog(value: &Value) -> Checked<BTreeMap<String, Tool>> {
         let fields = entry
             .as_object()
             .ok_or_else(|| invalid("must be an object"))?;
-        if fields.len() != 4
+        if fields.len() != 4 + usize::from(fields.contains_key("result_format"))
             || !["name", "input_schema", "module", "op"]
                 .iter()
                 .all(|k| fields.contains_key(*k))
         {
             return Err(invalid(
-                "expected exactly name, input_schema, module and op",
+                "expected name, input_schema, module, op and optional result_format",
             ));
         }
         let name = name.ok_or_else(|| invalid("name must be a string"))?;
@@ -447,12 +448,24 @@ fn catalog(value: &Value) -> Checked<BTreeMap<String, Tool>> {
             .ok_or_else(|| invalid("invalid op"))?;
         let input_schema =
             compile_input_schema(&fields["input_schema"]).map_err(|e| invalid(&e.to_string()))?;
+        let result_format = fields
+            .get("result_format")
+            .map(|format| {
+                format
+                    .as_str()
+                    .map(|format| {
+                        cortexkit_role_tool_provider::result::ResultFormat::from(format.to_owned())
+                    })
+                    .ok_or_else(|| invalid("result_format must be a string"))
+            })
+            .transpose()?;
         tools.insert(
             name.to_owned(),
             Tool {
                 module: module.to_owned(),
                 op: op.to_owned(),
                 input_schema,
+                result_format,
             },
         );
     }

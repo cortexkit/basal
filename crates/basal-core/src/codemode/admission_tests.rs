@@ -892,3 +892,27 @@ fn invalid_catalog_precedes_busy() {
     req["catalog"] = json!([entry("console")]);
     refused(&t.store, &h, &req, "invalid_catalog");
 }
+
+#[test]
+fn per_tool_result_format_is_optional_typed_and_preserved() {
+    let legacy = entry("read");
+    let mut content = entry("read_content");
+    content["result_format"] = json!("content/v1");
+    let mut future = entry("read_future");
+    future["result_format"] = json!("future/v2");
+    let tools = catalog(&json!([legacy, content, future])).unwrap();
+    assert!(tools["read"].result_format.is_none());
+    assert_eq!(
+        tools["read_content"].result_format,
+        Some(cortexkit_role_tool_provider::result::ResultFormat::ContentV1)
+    );
+    assert_eq!(
+        tools["read_future"].result_format,
+        Some(cortexkit_role_tool_provider::result::ResultFormat::Unknown(
+            "future/v2".into()
+        ))
+    );
+    let mut invalid = entry("invalid");
+    invalid["result_format"] = json!(true);
+    assert!(catalog(&json!([invalid])).is_err());
+}

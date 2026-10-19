@@ -158,7 +158,7 @@ fn codemode_served(
     module: &Value,
     entry: &CatalogEntry,
     answers: &mut BTreeMap<String, Result<CatalogAnswer, WireError>>,
-) -> Result<(), ToolRefusal> {
+) -> Result<Option<cortexkit_role_tool_provider::result::ResultFormat>, ToolRefusal> {
     let refuse = |reason, problem: String| ToolRefusal {
         reason,
         module: entry.module.clone(),
@@ -171,10 +171,8 @@ fn codemode_served(
             .as_array()
             .is_some_and(|caps| caps.iter().any(|cap| cap == token))
     };
-    if provides(LEGACY_RUN_SCOPES_CAPABILITY) {
-        return Ok(());
-    }
-    if !provides(CALL_MODES_CAPABILITY) {
+    let legacy = provides(LEGACY_RUN_SCOPES_CAPABILITY);
+    if !legacy && !provides(CALL_MODES_CAPABILITY) {
         return Err(refuse(
             RefusalReason::NotOptedIn,
             format!(
@@ -189,7 +187,7 @@ fn codemode_served(
     let answer = answer.as_ref().map_err(|error| {
         refuse(
             RefusalReason::CatalogUnreadable,
-            format!("its tool.catalog could not be read: {error:?}"),
+            format!("its tool.catalog could not be read: {error:?}; retrying the run may succeed"),
         )
     })?;
     // An invalid modes list on any tool makes the whole answer invalid, not
@@ -215,23 +213,24 @@ fn codemode_served(
             "its tool.catalog lists the tool more than once".into(),
         ));
     }
-    if !serves_call_mode(tool, &CallMode::Codemode) {
+    if !legacy && !serves_call_mode(tool, &CallMode::Codemode) {
         return Err(refuse(
             RefusalReason::ModeNotServed,
             "the tool's modes do not include codemode".into(),
         ));
     }
-    Ok(())
+    Ok(tool.result_format.clone())
 }
 
 /// Resolve only tools declared by the daemon, not schemas carried by core or
 /// script input. Basal inserts its own model tools separately.
 ///
 /// Every entry must be served in codemode by its provider (see
-/// `codemode_served`); one entry that is not refuses the whole catalog. A
-/// provider declaring `call-modes/v1` is asked for its own `tool.catalog`,
-/// two calls each bounded by the transport's call timeout, so callers must
-/// not hold a store lock across this function.
+/// `codemode_served`); one entry that is not refuses the whole catalog.
+/// Every provider catalog is read to freeze result formats, including legacy
+/// providers whose capability admits codemode without per-tool mode opt-in.
+/// Each module is read once, with requests bounded by the transport timeout;
+/// callers must not hold a store lock across this function.
 pub fn catalog(
     transport: &dyn Transport,
     daemon: &Value,
@@ -250,7 +249,8 @@ pub fn catalog(
             .iter()
             .find(|module| module["module_id"] == entry.module)
             .ok_or_else(|| WireError::NeverSent(format!("provider {} is absent", entry.module)))?;
-        codemode_served(transport, module, entry, &mut answers).map_err(CatalogError::Tool)?;
+        let result_format =
+            codemode_served(transport, module, entry, &mut answers).map_err(CatalogError::Tool)?;
         let roles: Vec<subc_protocol::manifest::ProviderRole> =
             serde_json::from_value(module["roles"].clone())
                 .map_err(|e| WireError::Unreadable(e.to_string()))?;
@@ -269,7 +269,11 @@ pub fn catalog(
         if schemas.next().is_some() {
             return Err(WireError::Unreadable("ambiguous tool declaration".into()).into());
         }
-        resolved.push(serde_json::json!({"name":entry.tool,"module":entry.module,"op":entry.op,"input_schema":schema}));
+        let mut resolved_tool = serde_json::json!({"name":entry.tool,"module":entry.module,"op":entry.op,"input_schema":schema});
+        if let Some(format) = result_format {
+            resolved_tool["result_format"] = serde_json::to_value(format).unwrap();
+        }
+        resolved.push(resolved_tool);
     }
     Ok(Value::Array(resolved))
 }
@@ -470,16 +474,59 @@ mod call_mode_tests {
     }
 
     #[test]
-    fn a_legacy_run_scopes_provider_is_admitted_without_reading_its_catalog() {
-        let provider = Provider::answering(Err(WireError::TimedOut("never asked".into())));
+    fn result_format_is_frozen_from_each_provider_tool_catalog() {
+        for capability in [CALL_MODES_CAPABILITY, LEGACY_RUN_SCOPES_CAPABILITY] {
+            let mut read = tool("read", Some(json!(["codemode"])));
+            read["result_format"] = json!("content/v1");
+            let provider = Provider::answering(Ok(answer(vec![
+                read,
+                tool("write", Some(json!(["codemode"]))),
+            ])));
+            let resolved = catalog(
+                &provider,
+                &daemon(&[capability]),
+                &[entry("read"), entry("write")],
+            )
+            .unwrap();
+            assert_eq!(resolved[0]["result_format"], "content/v1");
+            assert!(resolved[1].get("result_format").is_none());
+            assert_eq!(provider.calls(), ["role.describe", "tool.catalog"]);
+        }
+    }
+
+    #[test]
+    fn an_unreadable_legacy_catalog_refuses_admission_without_guessing_format() {
+        // Run routes advertise content/v1 and held-reply/v1, so even legacy
+        // providers must disclose each result_format before the run starts.
+        let provider = Provider::answering(Err(WireError::TimedOut("offline".into())));
+        let refused = refusal(catalog(
+            &provider,
+            &daemon(&[LEGACY_RUN_SCOPES_CAPABILITY]),
+            &[entry("read"), entry("write")],
+        ));
+        assert_eq!(refused.reason, RefusalReason::CatalogUnreadable);
+        assert!(refused.message().contains("retrying the run may succeed"));
+        assert_eq!(provider.calls(), ["role.describe", "tool.catalog"]);
+    }
+
+    #[test]
+    fn a_readable_legacy_catalog_does_not_require_per_tool_mode_opt_in() {
+        let provider =
+            Provider::answering(Ok(answer(vec![tool("read", None), tool("write", None)])));
         let resolved = catalog(
             &provider,
             &daemon(&[LEGACY_RUN_SCOPES_CAPABILITY]),
             &[entry("read"), entry("write")],
         )
-        .expect("the legacy capability admits every tool");
+        .unwrap();
         assert_eq!(resolved.as_array().unwrap().len(), 2);
-        assert!(provider.calls().is_empty(), "no catalog read");
+        assert!(
+            resolved
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|tool| tool.get("result_format").is_none())
+        );
     }
 
     #[test]
