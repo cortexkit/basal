@@ -846,3 +846,20 @@ timeout_s = 600
 file = "flows/ci-failure-router/flow.js"
 old = "item.body = bodyLines.join('\\n');"
 new = "item.body = item.title + '\\n' + bodyLines.join('\\n'); // NON-VACUITY BREAK"
+
+[[control]]
+id = "remind-at-resolves-wait-before-ending"
+guards = "one-shot reminders resolve their board waits before digesting and ending"
+test_file = "crates/basal-module/tests/flow_templates.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test flow_templates"
+select = { tests = ["reminder_waits_until_due_then_catches_up_once_and_ends", "reminder_past_invalid_or_over_ceiling_timestamp_is_refused_at_creation"] }
+expect_red = ["reminder_waits_until_due_then_catches_up_once_and_ends"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "templates/remind-at/flow.js"
+old = "Promise.resolve(sink.wait.resolve(outcome, note)).catch(() => {});"
+new = "// NON-VACUITY BREAK"

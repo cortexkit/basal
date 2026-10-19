@@ -80,12 +80,20 @@ async function finishWatch(title, observed, links = []) {
 }
 // END boundedDigest
 
+function finishResolvedWatch(title, observed, links = [], outcome = 'met', note = title) {
+  // A slow or refused wait resolution must not delay the digest or end.
+  try {
+    Promise.resolve(sink.wait.resolve(outcome, note)).catch(() => {});
+  } catch {}
+  return finishWatch(title, observed, links);
+}
+
 if (params.kind === 'issue' && params.state === 'merged') {
-  await finishWatch('GitHub watch stopped: issues cannot merge', { reason: 'issue_cannot_merge' });
+  await finishResolvedWatch('GitHub watch stopped: issues cannot merge', { reason: 'issue_cannot_merge' }, [], 'failed', 'An issue cannot satisfy a merged-state watch.');
   return;
 }
 if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(params.repo)) {
-  await finishWatch('GitHub watch stopped: misconfigured repository name', { reason: 'invalid_repo' });
+  await finishResolvedWatch('GitHub watch stopped: misconfigured repository name', { reason: 'invalid_repo' }, [], 'failed', 'The repository name cannot match a GitHub event.');
   return;
 }
 
@@ -114,5 +122,5 @@ if (params.kind === 'pr') observed.merged = merged;
 const happened = params.kind === 'release' ? 'release published' :
   params.state === 'any_change' ? `${params.kind === 'pr' ? 'PR' : 'issue'} changed` :
   `${params.kind === 'pr' ? 'PR' : 'issue'} ${params.state}`;
-await finishWatch(`GitHub ${happened}`, observed,
+await finishResolvedWatch(`GitHub ${happened}`, observed,
   typeof body.html_url === 'string' ? [{ kind: 'url', url: body.html_url }] : []);

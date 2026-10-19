@@ -80,5 +80,13 @@ async function finishWatch(title, observed, links = []) {
 }
 // END boundedDigest
 
+function finishResolvedWatch(title, observed, links = [], outcome = 'met', note = title) {
+  // A slow or refused wait resolution must not delay the digest or end.
+  try {
+    Promise.resolve(sink.wait.resolve(outcome, note)).catch(() => {});
+  } catch {}
+  return finishWatch(title, observed, links);
+}
+
 // The one-shot scheduler, not the script's wall clock, decides when to run.
-await finishWatch('Reminder time reached', { due: trigger?.due ?? params.at });
+await finishResolvedWatch('Reminder time reached', { due: trigger?.due ?? params.at });

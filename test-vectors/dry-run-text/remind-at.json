@@ -1,6 +1,7 @@
 {
   "summary": "Runs once, at 2026-05-01 01:00 UTC; the dry run ran it ahead of time.",
   "would": [
+    "Resolve its board waits as 'met'",
     "Wake 'agent_47120287c700722b': 'Reminder time reached'",
     "End this flow instance, so it doesn't run again"
   ],

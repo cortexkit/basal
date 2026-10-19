@@ -80,6 +80,14 @@ async function finishWatch(title, observed, links = []) {
 }
 // END boundedDigest
 
+function finishResolvedWatch(title, observed, links = [], outcome = 'met', note = title) {
+  // A slow or refused wait resolution must not delay the digest or end.
+  try {
+    Promise.resolve(sink.wait.resolve(outcome, note)).catch(() => {});
+  } catch {}
+  return finishWatch(title, observed, links);
+}
+
 const ref = params.ref || 'HEAD';
 let head;
 try {
@@ -87,13 +95,13 @@ try {
 } catch (error) {
   const code = error.data?.code;
   if (code === 'denied' || code === 'invalid_arguments') {
-    await finishWatch(`Git watch stopped: ${code}`, { reason: code });
+    await finishResolvedWatch(`Git watch stopped: ${code}`, { reason: code }, [], 'failed', 'The watched Git ref cannot be read.');
   }
   // A ref may appear later; unavailable Git and captured reads retry too.
   return;
 }
 if (params.condition === 'ref_exists') {
-  await finishWatch('Git ref exists', { ref, sha: head });
+  await finishResolvedWatch('Git ref exists', { ref, sha: head });
   return;
 }
 
@@ -110,22 +118,22 @@ try {
   await git.revParse(params.repo, baseline);
   const lost = await git.log(params.repo, { ref: `${head}..${baseline}`, maxCount: 1 });
   if (lost.length) {
-    await finishWatch('Git watch stopped: watched history was rewritten', { reason: 'history_rewritten', baseline, head });
+    await finishResolvedWatch('Git watch stopped: watched history was rewritten', { reason: 'history_rewritten', baseline, head }, [], 'failed', 'Rewritten Git history prevents a complete watch.');
     return;
   }
   commits = await git.log(params.repo, { ref: `${baseline}..${head}`, maxCount: 500 });
 } catch (error) {
   const code = error.data?.code;
   if (code === 'denied' || code === 'invalid_arguments' || code === 'not_found') {
-    await finishWatch(`Git watch stopped: ${code}`, { reason: code, baseline, head });
+    await finishResolvedWatch(`Git watch stopped: ${code}`, { reason: code, baseline, head }, [], 'failed', 'The watched Git history can no longer be read.');
   }
   return;
 }
 const match = commits.find(commit => commit.subject.includes(params.pattern));
 if (match) {
-  await finishWatch('Matching Git commit landed', { sha: match.sha, subject: match.subject, author_ms: match.author_ms, baseline, head });
+  await finishResolvedWatch('Matching Git commit landed', { sha: match.sha, subject: match.subject, author_ms: match.author_ms, baseline, head });
 } else if (commits.length === 500) {
-  await finishWatch('Git watch stopped: more than 500 new commits between checks', { reason: 'history_limit', baseline, head, scan_limit: 500 });
+  await finishResolvedWatch('Git watch stopped: more than 500 new commits between checks', { reason: 'history_limit', baseline, head, scan_limit: 500 }, [], 'failed', 'The new Git history exceeds the complete scan limit.');
 } else {
   // Advancing only after a complete scan keeps each subsequent range small.
   await kv.set('baseline', head);

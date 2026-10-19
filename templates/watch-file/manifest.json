@@ -1,10 +1,10 @@
 {
   "format": 1,
   "id": "watch-file",
-  "version": 2,
+  "version": 3,
   "purpose": "Wake the creating agent once when a file exists, contains text, or lacks text.",
   "trigger": { "schedule": { "interval": "$params.every" } },
-  "sinks": [{ "agent": "$self", "digest_max": "wake" }],
+  "sinks": [{ "agent": "$self", "digest_max": "wake" }, { "kind": "wait" }],
   "fs": { "read": ["$params.path"] },
   "params": {
     "note": { "type": "string", "max_bytes": 4096 },
