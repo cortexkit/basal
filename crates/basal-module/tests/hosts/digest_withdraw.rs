@@ -72,20 +72,36 @@ fn withdrawal_vectors_are_pinned_and_match_sink_digest_wire_bytes() {
 }
 
 #[test]
-fn withdrawal_replies_accept_every_disposition_and_reject_malformed_results() {
+fn digest_replies_accept_only_the_dispositions_for_the_request_kind() {
     for disposition in ["withdrawn", "already_delivered", "not_found"] {
         let reply = json!({"disposition":disposition,"fire_id":null,"replayed":false});
         assert_eq!(
-            validate_reply(Primitive::SinkDigest, reply.clone()).unwrap(),
+            validate_reply(Primitive::SinkDigest, reply.clone(), true).unwrap(),
             reply
         );
+        assert!(validate_reply(Primitive::SinkDigest, reply, false).is_err());
     }
+
+    for (disposition, fire_id) in [
+        ("stored", json!("wf_1")),
+        ("claim_in_fallback", Value::Null),
+        ("episode_ended", Value::Null),
+    ] {
+        let reply = json!({"disposition":disposition,"fire_id":fire_id,"replayed":false});
+        assert_eq!(
+            validate_reply(Primitive::SinkDigest, reply.clone(), false).unwrap(),
+            reply
+        );
+        assert!(validate_reply(Primitive::SinkDigest, reply, true).is_err());
+    }
+
     for reply in [
         json!({"disposition":"withdrawn","fire_id":"wf_1","replayed":false}),
         json!({"disposition":"not_found","fire_id":null,"replayed":"no"}),
         json!({"disposition":"unknown","fire_id":null,"replayed":false}),
     ] {
-        assert!(validate_reply(Primitive::SinkDigest, reply).is_err());
+        assert!(validate_reply(Primitive::SinkDigest, reply.clone(), true).is_err());
+        assert!(validate_reply(Primitive::SinkDigest, reply, false).is_err());
     }
 }
 

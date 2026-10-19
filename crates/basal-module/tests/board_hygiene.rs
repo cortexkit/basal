@@ -33,6 +33,7 @@ struct BoardHost {
     refuse: AtomicUsize,
     replacement_supported: AtomicBool,
     withdrawal_supported: AtomicBool,
+    withdrawal_refusals: Mutex<Vec<Value>>,
     /// `work.unsettled` reply pages in order; none means one empty page.
     unsettled: Mutex<Vec<Value>>,
     /// Refuse `work.unsettled` reads of this page index and later with this body.
@@ -66,6 +67,7 @@ impl BoardHost {
     }
     fn answer(&self, request: &CallRequest) -> Option<HostOutcome> {
         let args: Value = serde_json::from_str(request.args.as_str()).unwrap();
+        let mut withdrawal_refusal = None;
         let value = match &request.kind {
             CallKind::Op { module, op } if module == "prefrontal-core" && op == "board.read" => {
                 assert!(args.get("for").is_none());
@@ -120,6 +122,7 @@ impl BoardHost {
                     assert!(args.get("item").is_none());
                     assert!(args.get("action").is_none());
                     assert!((1..=200).contains(&args["replace_key"].as_str().unwrap().len()));
+                    withdrawal_refusal = self.withdrawal_refusals.lock().unwrap().pop();
                     json!({"disposition":"not_found","fire_id":null,"replayed":false})
                 } else {
                     let item = &args["item"];
@@ -142,6 +145,9 @@ impl BoardHost {
         };
         if matches!(&request.kind, CallKind::Primitive(Primitive::SinkDigest)) {
             self.writes.lock().unwrap().push(args);
+            if let Some(refusal) = withdrawal_refusal {
+                return Some(HostOutcome::rejected(text(refusal)));
+            }
             if self.refuse.swap(0, Ordering::Relaxed) > 0 {
                 return Some(HostOutcome::rejected(text(
                     json!({"code":"sink_target_not_in_audience","message":"moved"}),
@@ -553,6 +559,52 @@ fn empty_lists_fall_back_to_silent_empty_replace_when_withdraw_is_unsupported() 
     assert_eq!(fallback[0]["item"]["body"], "Nothing is outstanding.");
     assert_eq!(fallback[0]["item"]["data"]["entries"], json!([]));
     assert_eq!(fallback[0]["replace_key"], "board_nudge:ag_a:eta_passed");
+}
+
+#[test]
+fn empty_lists_fall_back_after_other_withdraw_refusals_and_log_each_code_once() {
+    let mut t = active_test(vec![
+        candidates("eta_passed", 2),
+        board("ag_b", vec![candidate("eta_passed", "item-b", BASE)]),
+        board("ag_c", vec![candidate("eta_passed", "item-c", BASE)]),
+    ]);
+    assert_eq!(t.run(BASE + 8 * HOUR).len(), 3);
+    *t.host.boards.lock().unwrap() = vec![];
+    *t.host.withdrawal_refusals.lock().unwrap() = vec![
+        json!({"code":"sink_store_failed","message":"temporarily unavailable"}),
+        json!({"code":"sink_store_failed","message":"temporarily unavailable"}),
+        json!({"code":"sink_target_not_in_audience","message":"recipient moved"}),
+    ];
+
+    let writes = t.run(BASE + 9 * HOUR);
+    assert_eq!(
+        writes
+            .iter()
+            .filter(|write| write["withdraw"] == true)
+            .count(),
+        3
+    );
+    let fallback: Vec<_> = writes
+        .iter()
+        .filter(|write| write["withdraw"] != true)
+        .collect();
+    assert_eq!(fallback.len(), 3);
+    assert!(fallback.iter().all(|write| {
+        write["action"] == "silent" && write["item"]["body"] == "Nothing is outstanding."
+    }));
+
+    let refusals = t.result["refusals"].as_array().unwrap();
+    let logged: Vec<_> = refusals
+        .iter()
+        .filter(|refusal| refusal["message"] == "board hygiene digest withdrawal refused")
+        .collect();
+    assert_eq!(logged.len(), 2);
+    let mut codes: Vec<_> = logged
+        .iter()
+        .map(|refusal| refusal["code"].as_str().unwrap())
+        .collect();
+    codes.sort();
+    assert_eq!(codes, ["sink_store_failed", "sink_target_not_in_audience"]);
 }
 
 #[test]

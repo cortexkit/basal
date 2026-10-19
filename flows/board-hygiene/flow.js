@@ -434,6 +434,7 @@ async function run() {
   }
 
   let withdrawalUnsupportedLogged = false;
+  const withdrawalRefusalsLogged = new Set();
   async function clearList(agent, item) {
     const key = replacementKey(item.data);
     if (key === null) return send(agent, item, 'silent');
@@ -441,13 +442,15 @@ async function run() {
       await sink.digest.withdraw(agent, {replace_key: key});
       return true;
     } catch (error) {
-      if (error.data?.code !== 'digest_withdraw_unsupported') {
-        log('board hygiene digest withdrawal refused', {agent, code: error.data?.code ?? String(error)});
-        return false;
-      }
-      if (!withdrawalUnsupportedLogged) {
-        log('board hygiene digest withdrawal unsupported', {code: error.data.code});
-        withdrawalUnsupportedLogged = true;
+      const code = error?.data?.code ?? String(error);
+      if (code === 'digest_withdraw_unsupported') {
+        if (!withdrawalUnsupportedLogged) {
+          log('board hygiene digest withdrawal unsupported', {code});
+          withdrawalUnsupportedLogged = true;
+        }
+      } else if (!withdrawalRefusalsLogged.has(code)) {
+        log('board hygiene digest withdrawal refused', {agent, code});
+        withdrawalRefusalsLogged.add(code);
       }
       return send(agent, item, 'silent');
     }

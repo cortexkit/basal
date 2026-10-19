@@ -142,21 +142,30 @@ pub fn core_provides(transport: &dyn Transport, capability: &str) -> bool {
         .unwrap_or(false)
 }
 
-pub fn validate_reply(kind: Primitive, value: Value) -> Result<Value, WireError> {
+/// Validates a core reply against the primitive and the digest request kind.
+/// Withdrawal replies and write replies have disjoint dispositions.
+pub fn validate_reply(kind: Primitive, value: Value, withdraw: bool) -> Result<Value, WireError> {
     let valid = match kind {
         Primitive::SinkDigest => {
             value["replayed"].is_boolean()
-                && match value["disposition"].as_str() {
-                    Some("stored") => value["fire_id"].is_string(),
-                    Some(
-                        "claim_in_fallback" | "episode_ended" | "withdrawn" | "already_delivered"
-                        | "not_found",
-                    ) => value.get("fire_id").is_some_and(Value::is_null),
-                    _ => false,
+                && if withdraw {
+                    matches!(
+                        value["disposition"].as_str(),
+                        Some("withdrawn" | "already_delivered" | "not_found")
+                    ) && value.get("fire_id").is_some_and(Value::is_null)
+                } else {
+                    match value["disposition"].as_str() {
+                        Some("stored") => value["fire_id"].is_string(),
+                        Some("claim_in_fallback" | "episode_ended") => {
+                            value.get("fire_id").is_some_and(Value::is_null)
+                        }
+                        _ => false,
+                    }
                 }
         }
         Primitive::SinkStatus => {
-            value["replayed"].is_boolean()
+            !withdraw
+                && value["replayed"].is_boolean()
                 && match value["disposition"].as_str() {
                     Some("published") => {
                         value["accepted_revision"].as_i64().is_some()
@@ -175,7 +184,8 @@ pub fn validate_reply(kind: Primitive, value: Value) -> Result<Value, WireError>
         // data, not false or idle. Preserve unrecognised fact groups so an
         // older consumer still returns fields added by a newer core.
         Primitive::Facts => {
-            value["agent_id"].is_string()
+            !withdraw
+                && value["agent_id"].is_string()
                 && value["as_of"].as_i64().is_some()
                 && value["home"].is_string()
                 && value["core_boot_at"].as_i64().is_some()
@@ -345,6 +355,7 @@ impl Host for CoreHost {
             if matches!(p, Primitive::SinkBoard | Primitive::SinkWaitResolve) {
                 v["receipt_key"] = json!(request.idempotency_key);
             }
+            let withdrawal = p == Primitive::SinkDigest && v["withdraw"] == true;
             let operation = v["operation"]["op"].as_str().map(str::to_owned);
             self.transport
                 .management(CORE, op, v)
@@ -364,7 +375,7 @@ impl Host for CoreHost {
                     } else if p == Primitive::SinkWaitResolve {
                         validate_wait_reply(v)
                     } else {
-                        validate_reply(p, v)
+                        validate_reply(p, v, withdrawal)
                     }
                 })
         }))
