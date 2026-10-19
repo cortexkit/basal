@@ -29,9 +29,9 @@ concurrency:
 env:
   CARGO_TERM_COLOR: never
   PYTHONDONTWRITEBYTECODE: 1
-  # ckdev-mutate 0.12.4. It reads the catalogue from mutations.d/, one file per
+  # ckdev-mutate 0.12.6. It reads the catalogue from mutations.d/, one file per
   # crate or area, and every replay, shard and report covers all of its files.
-  CK_MUTATE_REV: 85c8b577795d556fb27e54b548f06ea913d8b337
+  CK_MUTATE_REV: 0b3bc096880e22ab43bec18eb6719a50fc59c270
 
 jobs:
   lint:
