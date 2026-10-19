@@ -26,7 +26,7 @@
 - Rollback is the old binary AND the store backup together, with both binaries restored as a pair. A binary-only rollback refuses to open the newer store: basal_core::Store::open returns "the store's schema is at version N but this build knows only up to M". Stop basal before restoring the store backup; do not let it reopen the store until both old binaries and the backup are restored.
 
 **Order and restart** (stop-the-world)
-- Measured worker protocol: staged 7 / live 1. Different versions cannot share a running parent: stop basal before either placement, and keep it stopped until both files are replaced.
+- Measured worker protocol: staged 11 / live 10. Different versions cannot share a running parent: stop basal before either placement, and keep it stopped until both files are replaced.
 1. Back up the store read-only before stopping (retain the directory and sidecar for rollback):
    `BACKUP=$(mktemp -d ~/.local/share/cortexkit/staging/basal-store.XXXXXX) && sqlite3 "file:$HOME/.local/share/cortexkit/basal/store.db?mode=ro" ".backup '$BACKUP/store.db'" && (cd "$BACKUP" && shasum -a 256 store.db > store.db.sha256 && shasum -c store.db.sha256)`
 2. Stop and disable the module (persists until start); confirm no basal parent or worker remains before placing:
