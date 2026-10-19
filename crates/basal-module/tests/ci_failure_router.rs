@@ -1328,11 +1328,13 @@ fn unknown_conclusion_and_branch_are_never_green() {
     assert_eq!(writes.len(), 2);
     for (index, write) in writes.into_iter().enumerate() {
         assert_eq!(write["action"], if index == 0 { "wake" } else { "silent" });
+        let title = write["item"]["title"].as_str().unwrap();
+        assert!(!title.contains("green"), "{title}");
         assert!(
-            !write["item"]["title"]
+            !write["item"]["body"]
                 .as_str()
                 .unwrap()
-                .contains("now green")
+                .contains("green")
         );
         assert_eq!(write["item"]["data"]["observed"]["conclusion"], "unknown");
         assert_eq!(write["item"]["data"]["observed"]["branch"], "unknown");
