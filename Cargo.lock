@@ -98,6 +98,7 @@ dependencies = [
  "basal-host",
  "basal-proto",
  "blake3",
+ "cortexkit-role-tool-provider",
  "cortexkit-store",
  "cortexkit-store-types",
  "croner",

@@ -177,6 +177,19 @@ pub trait Transport: Send + Sync {
             "run-scoped tool dispatch unavailable".into(),
         ))
     }
+    /// Custody operations use the already-open run tool route, without reopening
+    /// or falling back to a management route. They carry no top-level call key.
+    fn role_for_run(
+        &self,
+        run: &str,
+        module: &str,
+        name: &str,
+        arguments: Value,
+        options: &RunToolOptions,
+    ) -> Result<Value, WireError> {
+        let _ = (run, module, name, arguments, options);
+        Err(WireError::ScopeCut("run custody route unavailable".into()))
+    }
     fn catalog(&self) -> Result<Value, WireError>;
     fn management(&self, module: &str, op: &str, params: Value) -> Result<Value, WireError>;
     fn tool(
@@ -392,17 +405,20 @@ impl SubcTransport {
             if let Some(handle) = plan.handle {
                 return Ok(handle);
             }
+            let mut options = CallOptions {
+                timeout: self.timeout,
+                ..Default::default()
+            };
+            if flow.starts_with("codemode:") && matches!(target, RouteTarget::ToolProvider { .. }) {
+                options = options
+                    .with_consumer_capability("content/v1")
+                    .expect("static capability")
+                    .with_consumer_capability("held-reply/v1")
+                    .expect("static capability");
+            }
             let handle = self
                 .consumer
-                .open_route_scoped(
-                    target.clone(),
-                    bind,
-                    plan.scope.selector(),
-                    CallOptions {
-                        timeout: self.timeout,
-                        ..Default::default()
-                    },
-                )
+                .open_route_scoped(target.clone(), bind, plan.scope.selector(), options)
                 .await
                 .map_err(map_error)?;
             let result = self
@@ -961,6 +977,41 @@ impl Transport for SubcTransport {
             },
         )
         .and_then(|bytes| decode_response(&bytes, false))
+    }
+    fn role_for_run(
+        &self,
+        run: &str,
+        module: &str,
+        name: &str,
+        arguments: Value,
+        options: &RunToolOptions,
+    ) -> Result<Value, WireError> {
+        let target = RouteTarget::ToolProvider {
+            module_id: module.into(),
+        };
+        let handle = self
+            .routes
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .prepare(run, &target, Some(&options.identity))?
+            .handle
+            .ok_or_else(|| WireError::ScopeCut("run tool route drained".into()))?;
+        let body = serde_json::to_vec(&subc_protocol::tool_call::ToolCallRequest::new(
+            name, arguments,
+        ))
+        .map_err(|e| WireError::NeverSent(e.to_string()))?;
+        let bytes = self
+            .handle
+            .block_on(self.consumer.request(
+                &handle,
+                body,
+                CallOptions {
+                    timeout: options.reply_timeout.min(Duration::from_secs(2)),
+                    ..Default::default()
+                },
+            ))
+            .map_err(map_error)?;
+        decode_response(&bytes, false)
     }
     fn catalog(&self) -> Result<Value, WireError> {
         let catalog = self
@@ -1673,6 +1724,71 @@ mod tests {
                 1
             );
             transport.configure_flow("codemode:run", None);
+        });
+    }
+
+    #[test]
+    fn run_custody_uses_the_declared_tool_route_without_reopening_or_call_keys() {
+        with_scoped_transport(|transport, opens, calls, _| {
+            let options = run_scope(&transport);
+            transport
+                .tool_for_run(
+                    "codemode:run",
+                    "mock",
+                    "echo",
+                    json!(7),
+                    "stable-key",
+                    &options,
+                )
+                .unwrap();
+            assert_eq!(
+                opens.lock().unwrap()[0]["consumer_capabilities"],
+                json!(["content/v1", "held-reply/v1"])
+            );
+            for name in ["late_results", "late_results.ack", "tool.withdraw"] {
+                transport
+                    .role_for_run(
+                        "codemode:run",
+                        "mock",
+                        name,
+                        json!({"call_key":"stable-key"}),
+                        &options,
+                    )
+                    .unwrap();
+            }
+            let recorded = calls.lock().unwrap();
+            let tool = recorded
+                .iter()
+                .find(|(_, body)| body["name"] == "echo")
+                .unwrap();
+            for name in ["late_results", "late_results.ack", "tool.withdraw"] {
+                let call = recorded
+                    .iter()
+                    .find(|(_, body)| body["name"] == name)
+                    .unwrap();
+                assert_eq!(call.0, tool.0);
+                assert!(call.1.get("call_key").is_none());
+                assert!(call.1.get("method").is_none());
+            }
+            drop(recorded);
+            assert_eq!(opens.lock().unwrap().len(), 1);
+            transport.configure_flow("codemode:run", None);
+            assert!(
+                transport
+                    .role_for_run(
+                        "codemode:run",
+                        "mock",
+                        "late_results",
+                        json!({"since":null}),
+                        &options
+                    )
+                    .is_err()
+            );
+            assert_eq!(
+                opens.lock().unwrap().len(),
+                1,
+                "custody never opens a replacement route"
+            );
         });
     }
 

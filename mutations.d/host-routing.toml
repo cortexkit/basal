@@ -823,20 +823,11 @@ file = "crates/basal-host/src/transport.rs"
 old = """
 let handle = self
                 .consumer
-                .open_route_scoped(
-                    target.clone(),
-                    bind,
-                    plan.scope.selector(),
-                    CallOptions {
-                        timeout: self.timeout,
-                        ..Default::default()
-                    },
-                )
+                .open_route_scoped(target.clone(), bind, plan.scope.selector(), options)
                 .await
                 .map_err(map_error)?;"""
 new = """
-let options = CallOptions { timeout:self.timeout, ..Default::default() };
-            let handle = if identity.is_none() { // NON-VACUITY BREAK
+let handle = if identity.is_none() { // NON-VACUITY BREAK
                 self.consumer.open_route(target.clone(), bind, options).await
             } else {
                 self.consumer.open_route_scoped(target.clone(), bind, plan.scope.selector(), options).await

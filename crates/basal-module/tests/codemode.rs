@@ -1,5 +1,6 @@
 mod common;
 
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -25,6 +26,10 @@ struct Core {
     mismatch: Mutex<bool>,
     identities: Mutex<Vec<subc_protocol::BindIdentity>>,
     store: Mutex<Option<Arc<basal_core::Store>>>,
+    held_provider: AtomicBool,
+    onward: Mutex<Option<(String, String, Value)>>,
+    late_reads: AtomicUsize,
+    late_acks: AtomicUsize,
 }
 
 impl Core {
@@ -66,7 +71,55 @@ impl Transport for Core {
             .unwrap()
             .push(options.identity.clone());
         assert!(options.reply_timeout > Duration::from_secs(30));
+        if self.held_provider.load(Ordering::SeqCst) {
+            assert_eq!((module, name), ("mock", "echo"));
+            *self.onward.lock().unwrap() = Some((run.into(), key.into(), input));
+            self.state.lock().unwrap().0 += 1;
+            self.changed.notify_all();
+            return Ok(
+                json!({"content":[{"type":"text","text":"Waiting for login"}],"held":{"reason":"login_pending"}}),
+            );
+        }
         self.tool_for_flow(run, module, name, input, key)
+    }
+    fn role_for_run(
+        &self,
+        run: &str,
+        module: &str,
+        name: &str,
+        _: Value,
+        _: &basal_host::transport::RunToolOptions,
+    ) -> Result<Value, WireError> {
+        assert!(self.held_provider.load(Ordering::SeqCst));
+        assert_eq!(module, "mock");
+        let (route, key, input) = self.onward.lock().unwrap().clone().unwrap();
+        assert_eq!(run, route);
+        match name {
+            "late_results" => {
+                let state = self.state.lock().unwrap();
+                self.late_reads.fetch_add(1, Ordering::SeqCst);
+                self.changed.notify_all();
+                let ready = state.1;
+                let scope = self.opens.lock().unwrap()[0]["run_id"].clone();
+                let entries = if ready {
+                    vec![
+                        json!({"kind":"result","owner":"reserved:prefrontal-core","ref":scope,"scope_epoch":19,
+                    "custodian":"reserved:basal","call_key":key,"event_id":"login-result","settled_at":100,
+                    "result":{"content":[{"type":"text","text":"Ready"}],"structuredContent":input}}),
+                    ]
+                } else {
+                    vec![]
+                };
+                Ok(
+                    json!({"entries":entries,"cursor":{"provider_incarnation":"fake","seq":if ready {1} else {0}},"more":false}),
+                )
+            }
+            "late_results.ack" => {
+                self.late_acks.fetch_add(1, Ordering::SeqCst);
+                Ok(json!({}))
+            }
+            _ => panic!("unexpected custody operation {name}"),
+        }
     }
     fn catalog(&self) -> Result<Value, WireError> {
         Ok(
@@ -747,4 +800,44 @@ fn forwarded_bind_identity_is_configuration_not_agent_authority() {
         "scope_mismatch"
     );
     assert_eq!(rig.core.identities.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn held_provider_late_content_resumes_the_program_with_its_structured_value() {
+    let rig = rig("held-late-value", false);
+    rig.core.held_provider.store(true, Ordering::SeqCst);
+    let program = "const answer = await tools.echo({n:20}); return answer.n + 22;";
+    let first = call(&rig, "held-key", program, Duration::from_millis(20));
+    assert_eq!(first["structuredContent"]["status"], "running");
+    rig.core.wait_sent(1);
+    let state = rig.core.state.lock().unwrap();
+    let (state, timeout) = rig
+        .core
+        .changed
+        .wait_timeout_while(state, Duration::from_secs(180), |_| {
+            rig.core.late_reads.load(Ordering::SeqCst) == 0
+        })
+        .unwrap();
+    assert!(
+        !timeout.timed_out(),
+        "held call never started the late-result reader"
+    );
+    drop(state);
+    rig.core.release();
+    let result = call(&rig, "held-key", program, Duration::from_secs(180));
+    assert_eq!(
+        result["structuredContent"]["status"], "completed",
+        "{result}"
+    );
+    assert_eq!(result["structuredContent"]["value"], 42);
+    assert_eq!(
+        result["structuredContent"]["calls"][0]["waited_on_person"],
+        true
+    );
+    assert_eq!(
+        rig.core.state.lock().unwrap().0,
+        1,
+        "held calls are never resent"
+    );
+    assert!(rig.core.late_acks.load(Ordering::SeqCst) > 0);
 }

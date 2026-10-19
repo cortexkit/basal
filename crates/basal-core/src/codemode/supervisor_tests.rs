@@ -56,6 +56,12 @@ struct Attempt {
 
 type Provider = dyn Fn(&str, Value, &str) -> std::result::Result<Value, WireError> + Send + Sync;
 
+struct CustodyAttempt {
+    name: String,
+    input: Value,
+    reply: mpsc::SyncSender<std::result::Result<Value, WireError>>,
+}
+
 struct FakeTransport {
     attempts: mpsc::Sender<Attempt>,
     events: Arc<Mutex<Vec<String>>>,
@@ -67,9 +73,45 @@ struct FakeTransport {
     store: Arc<Store>,
     provider: Mutex<Option<Arc<Provider>>>,
     scope_end: Mutex<Option<Arc<basal_host::transport::RunScopeEnded>>>,
+    custody_controlled: AtomicBool,
+    custody_attempts: mpsc::Sender<CustodyAttempt>,
+    custody_count: AtomicUsize,
 }
 
 impl Transport for FakeTransport {
+    fn role_for_run(
+        &self,
+        run: &str,
+        module: &str,
+        name: &str,
+        input: Value,
+        _: &basal_host::transport::RunToolOptions,
+    ) -> std::result::Result<Value, WireError> {
+        assert_eq!(run, "codemode:r");
+        assert_eq!(module, "notes");
+        self.custody_count.fetch_add(1, Ordering::SeqCst);
+        if self.custody_controlled.load(Ordering::SeqCst) {
+            let (reply, done) = mpsc::sync_channel(1);
+            self.custody_attempts
+                .send(CustodyAttempt {
+                    name: name.into(),
+                    input,
+                    reply,
+                })
+                .unwrap();
+            return done
+                .recv_timeout(TIMEOUT)
+                .unwrap_or_else(|_| Err(WireError::Unknown("fake route drained".into())));
+        }
+        Ok(match name {
+            "late_results" => {
+                json!({"entries":[],"cursor":{"provider_incarnation":"fake","seq":0},"more":false})
+            }
+            "late_results.ack" => json!({}),
+            "tool.withdraw" => json!({"answer":"unknown_call"}),
+            _ => panic!("unexpected custody operation {name}"),
+        })
+    }
     fn tool_for_run(
         &self,
         run: &str,
@@ -311,6 +353,7 @@ struct Fixture {
     worker: Frames,
     parent: mpsc::Receiver<ParentMessage>,
     attempts: mpsc::Receiver<Attempt>,
+    custody_attempts: mpsc::Receiver<CustodyAttempt>,
     host: Arc<FakeTransport>,
     catalog: Arc<MockCatalog>,
     source: Arc<FakeSource>,
@@ -335,6 +378,7 @@ impl Fixture {
         let (worker, messages) = mpsc::channel();
         let (parent_tx, parent) = mpsc::channel();
         let (attempt_tx, attempts) = mpsc::channel();
+        let (custody_tx, custody_attempts) = mpsc::channel();
         let hash = PreludeHash::of("parent's codemode prelude");
         let worker_panic = Flag::new(&worker);
         let worker_exit = Flag::new(&worker);
@@ -367,6 +411,9 @@ impl Fixture {
             store: store.clone(),
             provider: Mutex::new(provider),
             scope_end: Mutex::new(None),
+            custody_controlled: AtomicBool::new(false),
+            custody_attempts: custody_tx,
+            custody_count: AtomicUsize::new(0),
         });
         let catalog = Arc::new(MockCatalog::new());
         catalog.set_op(
@@ -396,6 +443,7 @@ impl Fixture {
             worker: Frames(worker),
             parent,
             attempts,
+            custody_attempts,
             host,
             catalog,
             source,
@@ -1987,4 +2035,346 @@ fn raw_scope_expired_refusal_and_provider_denial_have_distinct_outcomes() {
     assert_eq!(result["status"], "interrupted");
     assert_eq!(result["error"]["code"], "scope_expired");
     assert_eq!(result["calls"][0]["outcome"], "denied");
+}
+
+fn held_reply() -> Value {
+    json!({"content":[{"type":"text","text":"Waiting for approval"}],"held":{"reason":"approval_pending","detail":{"site":"example.test"}}})
+}
+
+fn late_entry(key: &str, event: &str, result: Value) -> Value {
+    json!({"kind":"result","owner":"reserved:core","ref":"scope-r","scope_epoch":7,"custodian":"reserved:basal","call_key":key,"event_id":event,"settled_at":100,"result":result})
+}
+
+fn late_page(incarnation: &str, seq: u64, entries: Vec<Value>) -> Value {
+    json!({"entries":entries,"cursor":{"provider_incarnation":incarnation,"seq":seq},"more":false})
+}
+
+impl Fixture {
+    fn custody_attempt(&self, name: &str) -> CustodyAttempt {
+        let attempt = self.custody_attempts.recv_timeout(TIMEOUT).unwrap();
+        assert_eq!(attempt.name, name);
+        attempt
+    }
+    fn provider_held(&self) -> (Attempt, CustodyAttempt) {
+        self.host.custody_controlled.store(true, Ordering::SeqCst);
+        let call = self.held_far_from_its_deadline();
+        self.worker
+            .send(WorkerMessage::Blocked { awaiting: vec![0] })
+            .unwrap();
+        call.reply.send(Ok(held_reply())).unwrap();
+        assert!(
+            self.parent.recv_timeout(Duration::from_millis(75)).is_err(),
+            "a held reply must not settle the program's await"
+        );
+        let pull = self.custody_attempt("late_results");
+        assert_eq!(pull.input["since"], Value::Null);
+        (call, pull)
+    }
+}
+
+#[test]
+fn provider_held_reply_stays_pending_until_late_value_and_counts_person_wait() {
+    let f = Fixture::new();
+    let (call, pull) = f.provider_held();
+    assert!(f.parent.try_recv().is_err(), "held is not the final answer");
+    assert_eq!(f.calls()[0].outcome, Outcome::Pending);
+    assert_eq!(
+        f.supervisor.result("r").unwrap().unwrap()["calls"][0]["waited_on_person"],
+        true
+    );
+    f.clock.set(1_100);
+    pull.reply.send(Ok(late_page("i1", 1, vec![late_entry(&call.key, "e1", json!({"content":[{"type":"text","text":"approved"}],"structuredContent":{"answer":42}}))]))).unwrap();
+    let delivery = f.delivery();
+    assert_eq!(delivery.settlement, Settlement::Fulfilled);
+    assert_eq!(delivery.value, JsonText::new(r#"{"answer":42}"#).unwrap());
+    let ack = f.custody_attempt("late_results.ack");
+    assert_eq!(
+        ack.input,
+        json!({"through":{"provider_incarnation":"i1","seq":1}})
+    );
+    assert_eq!(f.calls()[0].outcome, Outcome::Ok, "settlement precedes ack");
+    ack.reply.send(Ok(json!({}))).unwrap();
+    f.finish("42");
+    let result = f.terminal();
+    assert_eq!(result["person_wait_ms"], 1_000);
+    assert!(
+        f.custody_attempts
+            .recv_timeout(Duration::from_millis(75))
+            .is_err()
+    );
+}
+
+#[test]
+fn cancel_while_provider_held_withdraws_before_closing_scope() {
+    let f = Fixture::new();
+    let (call, pull) = f.provider_held();
+    let supervisor = f.supervisor.clone();
+    let cancelled = thread::spawn(move || supervisor.cancel("r").unwrap().unwrap());
+    let withdraw = f.custody_attempt("tool.withdraw");
+    assert_eq!(
+        withdraw.input,
+        json!({"call_key":call.key,"scope":{"owner":"reserved:core","ref":"scope-r","scope_epoch":7}})
+    );
+    assert!(
+        !f.host
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|e| e == "core_close")
+    );
+    withdraw
+        .reply
+        .send(Ok(json!({"answer":"withdrawn"})))
+        .unwrap();
+    assert_eq!(cancelled.join().unwrap()["status"], "cancelled");
+    assert_eq!(f.calls()[0].outcome, Outcome::Withdrawn);
+    drop(pull);
+    assert!(
+        f.attempts.try_recv().is_err(),
+        "the held tool is never resent"
+    );
+}
+
+#[test]
+fn provider_held_person_budget_withdraws_and_keeps_started_outcome_unknown() {
+    let f = Fixture::new();
+    let (_, pull) = f.provider_held();
+    f.clock.set(600_100);
+    let withdraw = f.custody_attempt("tool.withdraw");
+    withdraw
+        .reply
+        .send(Ok(json!({"answer":"already_started","outcome":"unknown"})))
+        .unwrap();
+    let result = f.terminal();
+    assert_eq!(result["status"], "budget_exhausted:person_wait");
+    assert_eq!(result["person_wait_ms"], 600_000);
+    assert_eq!(f.calls()[0].outcome, Outcome::OutcomeUnknown);
+    drop(pull);
+}
+
+#[test]
+fn scope_end_while_provider_held_is_unknown_and_never_resent() {
+    let f = Fixture::new();
+    let (_, pull) = f.provider_held();
+    f.host.scope_end.lock().unwrap().as_ref().unwrap()("scope_parent_ended");
+    let result = f.terminal();
+    assert_eq!(result["status"], "interrupted");
+    assert_eq!(result["error"]["code"], "scope_parent_ended");
+    assert_eq!(f.calls()[0].outcome, Outcome::OutcomeUnknown);
+    assert!(f.custody_attempts.try_recv().is_err());
+    assert!(f.attempts.try_recv().is_err());
+    drop(pull);
+}
+
+#[test]
+fn provider_incarnation_rereads_from_null_without_double_settlement() {
+    let f = Fixture::new();
+    let (first, pull) = f.provider_held();
+    f.issue(1, "read", json!({}));
+    let second = f.attempt();
+    second.reply.send(Ok(held_reply())).unwrap();
+    let e1 = late_entry(&first.key, "e1", json!(11));
+    pull.reply
+        .send(Ok(late_page("i1", 1, vec![e1.clone()])))
+        .unwrap();
+    let delivery = f.delivery();
+    assert_eq!(delivery.settlement, Settlement::Fulfilled);
+    assert_eq!(delivery.value.as_str(), "11");
+    f.custody_attempt("late_results.ack")
+        .reply
+        .send(Ok(json!({})))
+        .unwrap();
+    let stale = f.custody_attempt("late_results");
+    assert_eq!(
+        stale.input["since"],
+        json!({"provider_incarnation":"i1","seq":1})
+    );
+    stale
+        .reply
+        .send(Err(WireError::Refused {
+            code: "cursor_incarnation_changed".into(),
+            message: "restarted".into(),
+        }))
+        .unwrap();
+    let fresh = f.custody_attempt("late_results");
+    assert_eq!(fresh.input["since"], Value::Null);
+    fresh
+        .reply
+        .send(Ok(late_page(
+            "i2",
+            2,
+            vec![e1, late_entry(&second.key, "e2", json!(22))],
+        )))
+        .unwrap();
+    let delivery = f.delivery();
+    assert_eq!(delivery.position, 1);
+    assert_eq!(delivery.settlement, Settlement::Fulfilled);
+    assert_eq!(delivery.value.as_str(), "22");
+    f.custody_attempt("late_results.ack")
+        .reply
+        .send(Ok(json!({})))
+        .unwrap();
+    f.finish("33");
+    assert_eq!(f.terminal()["status"], "completed");
+    assert!(
+        f.parent.try_recv().is_err(),
+        "duplicate entry must not settle twice"
+    );
+    assert_eq!(
+        f.calls()
+            .iter()
+            .filter(|c| c.outcome == Outcome::Ok)
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn no_late_results_traffic_without_a_provider_held_reply() {
+    let f = Fixture::new();
+    f.standard();
+    f.issue(0, "read", json!({}));
+    let call = f.attempt();
+    // A dispatch slot and a provider route alone must not start the poller.
+    f.worker
+        .send(WorkerMessage::Blocked { awaiting: vec![0] })
+        .unwrap();
+    assert!(
+        f.custody_attempts
+            .recv_timeout(Duration::from_millis(75))
+            .is_err()
+    );
+    call.reply.send(Ok(json!(123))).unwrap();
+    f.delivery();
+    f.finish("123");
+    assert_eq!(f.terminal()["status"], "completed");
+    assert_eq!(f.host.custody_count.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn onward_content_results_map_structured_text_and_errors_and_reject_malformed_held() {
+    for (body, expected) in [
+        (
+            json!({"content":[{"type":"text","text":"one"},{"type":"text","text":"two"}]}),
+            Ok(json!("one\ntwo")),
+        ),
+        (
+            json!({"content":[{"type":"text","text":"display"}],"structuredContent":{"machine":7}}),
+            Ok(json!({"machine":7})),
+        ),
+        (
+            json!({"content":[{"type":"text","text":"denied"}],"isError":true,"errorCode":"permission_denied"}),
+            Err("permission_denied"),
+        ),
+        (
+            json!({"content":[{"type":"text","text":"bad"}],"isError":true,"errorCode":"bad_held","held":{"reason":"approval_pending"}}),
+            Err("reply_unreadable"),
+        ),
+        (
+            json!({"content":[{"type":"text","text":"bad"}],"held":{"reason":"Not Snake Case"}}),
+            Err("reply_unreadable"),
+        ),
+    ] {
+        let f = Fixture::new();
+        f.standard();
+        f.issue(0, "read", json!({}));
+        f.attempt().reply.send(Ok(body)).unwrap();
+        let delivery = f.delivery();
+        match expected {
+            Ok(value) => {
+                assert_eq!(delivery.settlement, Settlement::Fulfilled);
+                assert_eq!(delivery.value, JsonText::new(value.to_string()).unwrap());
+            }
+            Err(code) => {
+                assert_eq!(delivery.settlement, Settlement::Rejected);
+                let error: Value = serde_json::from_str(delivery.value.as_str()).unwrap();
+                assert_eq!(error["code"], code);
+            }
+        }
+        assert_eq!(f.host.custody_count.load(Ordering::SeqCst), 0);
+        f.finish("null");
+        assert_eq!(f.terminal()["status"], "completed");
+    }
+}
+
+#[test]
+fn late_not_started_expired_unknown_and_error_results_are_terminal_without_retry() {
+    for (kind, result, outcome, code) in [
+        ("not_started", None, Outcome::Withdrawn, "not_started"),
+        ("expired", None, Outcome::OutcomeUnknown, "result_expired"),
+        (
+            "future_kind",
+            None,
+            Outcome::OutcomeUnknown,
+            "late_result_unknown",
+        ),
+        (
+            "result",
+            Some(
+                json!({"content":[{"type":"text","text":"No approval"}],"isError":true,"errorCode":"permission_denied"}),
+            ),
+            Outcome::Error,
+            "permission_denied",
+        ),
+    ] {
+        let f = Fixture::new();
+        let (call, pull) = f.provider_held();
+        let mut entry = late_entry(&call.key, "event", Value::Null);
+        entry["kind"] = json!(kind);
+        entry["reason"] = json!("restart_before_dispatch");
+        entry.as_object_mut().unwrap().remove("result");
+        if let Some(value) = result {
+            entry["result"] = value;
+        }
+        pull.reply
+            .send(Ok(late_page("i1", 1, vec![entry])))
+            .unwrap();
+        let delivery = f.delivery();
+        assert_eq!(delivery.settlement, Settlement::Rejected);
+        let rejection: Value = serde_json::from_str(delivery.value.as_str()).unwrap();
+        assert_eq!(rejection["code"], code);
+        assert_eq!(f.calls()[0].outcome, outcome);
+        f.custody_attempt("late_results.ack")
+            .reply
+            .send(Ok(json!({})))
+            .unwrap();
+        f.finish("null");
+        assert_eq!(f.terminal()["status"], "completed");
+        assert!(f.attempts.try_recv().is_err());
+    }
+}
+
+#[test]
+fn route_draining_while_held_is_unknown_without_reopening() {
+    let f = Fixture::new();
+    let (_, pull) = f.provider_held();
+    pull.reply
+        .send(Err(WireError::ScopeCut("route drained".into())))
+        .unwrap();
+    assert_eq!(f.terminal()["status"], "interrupted");
+    assert_eq!(f.calls()[0].outcome, Outcome::OutcomeUnknown);
+    assert!(f.attempts.try_recv().is_err());
+    assert!(f.custody_attempts.try_recv().is_err());
+}
+
+#[test]
+fn wall_deadline_with_a_held_call_withdraws_even_when_worker_is_not_blocked() {
+    let f = Fixture::new();
+    f.host.custody_controlled.store(true, Ordering::SeqCst);
+    f.standard();
+    f.issue(0, "read", json!({}));
+    f.attempt().reply.send(Ok(held_reply())).unwrap();
+    let pull = f.custody_attempt("late_results");
+    f.clock.set(10_000);
+    let withdraw = f.custody_attempt("tool.withdraw");
+    withdraw
+        .reply
+        .send(Err(WireError::ScopeCut(
+            "deadline drained the route".into(),
+        )))
+        .unwrap();
+    assert_eq!(f.terminal()["status"], "budget_exhausted:wall");
+    assert_eq!(f.calls()[0].outcome, Outcome::OutcomeUnknown);
+    drop(pull);
 }

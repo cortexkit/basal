@@ -287,3 +287,32 @@ fn structured_omission_keeps_large_but_deliverable_model_text() {
     );
     assert!(serialized_size(&result) < MAX_RESULT_BYTES);
 }
+
+#[test]
+fn withdrawn_call_is_distinct_from_unsent_cancellation_in_text_and_structure() {
+    let mut run = successful_run();
+    run["status"] = json!("cancelled");
+    run.as_object_mut().unwrap().remove("value");
+    run["calls"] = json!([
+        {"tool":"browser_use","outcome":"withdrawn","code":"withdrawn","waited_on_person":true,"duration_ms":120},
+        {"tool":"queued","outcome":"cancelled","waited_on_person":false}
+    ]);
+    run["call_count"] = json!(2);
+    let result = render("codemode:withdrawal", run);
+    let decoded: ToolResult = serde_json::from_value(result.clone()).unwrap();
+    validate(&decoded).unwrap();
+    let text = result["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("browser_use | withdrawn | true | 120"),
+        "{text}"
+    );
+    assert!(text.contains("queued | cancelled | false"), "{text}");
+    assert_eq!(
+        result["structuredContent"]["calls"][0]["outcome"],
+        "withdrawn"
+    );
+    assert_eq!(
+        result["structuredContent"]["calls"][1]["outcome"],
+        "cancelled"
+    );
+}

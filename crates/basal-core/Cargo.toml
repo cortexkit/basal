@@ -17,6 +17,7 @@ test-support = ["basal-host/test-support"]
 basal-host.workspace = true
 basal-proto.workspace = true
 blake3.workspace = true
+cortexkit-role-tool-provider.workspace = true
 cortexkit-store.workspace = true
 cortexkit-store-types.workspace = true
 croner.workspace = true

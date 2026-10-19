@@ -98,3 +98,15 @@ retries.
 
 See [operations](ops.md#results-and-long-calls) for late-result custody,
 retention, withdrawal and scope closure.
+
+## Call outcomes
+
+Per-call outcomes include `ok`, `denied`, `consent_unavailable`, `tool_unavailable`,
+`error`, `refused`, `outcome_unknown`, `cancelled` and `withdrawn`. `cancelled` means the
+call was never sent. `withdrawn` means it was sent and held, but the provider proved
+its action never started (by `tool.withdraw` or a late `not_started` entry). Dispatch
+and entry timestamps remain recorded. A started action or an uncertain withdrawal
+stays `outcome_unknown`; basal never resends it. Held replies are interim, not values:
+the program resumes only on a final late result. Onward content results return
+`structuredContent` when present, otherwise their joined text parts; `isError: true`
+rejects the promise.

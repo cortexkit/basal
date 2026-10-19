@@ -2384,3 +2384,66 @@ expect_red = ["codemode::admission::deadline_tests::tool_scope_open_checks_the_a
 only = false
 build_timeout_s = 3600
 timeout_s = 600
+
+[[control]]
+id = "codemode-held-reply-is-not-final"
+guards = "an interim held reply never settles the program promise before its late result"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["codemode::supervisor::tests::provider_held_reply_stays_pending_until_late_value_and_counts_person_wait", "codemode::supervisor::tests::no_late_results_traffic_without_a_provider_held_reply"] }
+expect_red = ["codemode::supervisor::tests::provider_held_reply_stays_pending_until_late_value_and_counts_person_wait"]
+only = true
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = '''self.mark_held(answer.call.position, true)?;
+                    return Ok(());'''
+new = '''self.mark_held(answer.call.position, true)?;
+                    answer.result = Ok(Value::Null); // NON-VACUITY BREAK
+                    return self.settle_answer(answer, None);'''
+
+[[control]]
+id = "codemode-held-cancel-withdraws"
+guards = "cancellation withdraws every held onward call before ending its scope"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["codemode::supervisor::tests::cancel_while_provider_held_withdraws_before_closing_scope", "codemode::supervisor::tests::no_late_results_traffic_without_a_provider_held_reply"] }
+expect_red = ["codemode::supervisor::tests::cancel_while_provider_held_withdraws_before_closing_scope"]
+only = true
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = 'for position in &self.held_positions {'
+new = 'for position in &BTreeSet::<u64>::new() { // NON-VACUITY BREAK'
+
+[[control]]
+id = "codemode-late-polls-only-held"
+guards = "a provider route and an in-flight call without a held reply cause zero late-results traffic"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["codemode::supervisor::tests::no_late_results_traffic_without_a_provider_held_reply", "codemode::supervisor::tests::shutdown_refuses_to_start_a_new_driver"] }
+expect_red = ["codemode::supervisor::tests::no_late_results_traffic_without_a_provider_held_reply"]
+only = true
+file = "crates/basal-core/src/codemode/held.rs"
+old = '&& target.held'
+new = '&& true /* NON-VACUITY BREAK */'
+
+[[control]]
+id = "codemode-withdrawn-requires-dispatch"
+guards = "withdrawn cannot describe an unsent call even when its person-wait flag is set"
+test_file = "crates/basal-core/src/codemode/store_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["codemode::store::tests::withdrawn_requires_a_sent_entered_person_held_call", "codemode::store::tests::a_recorded_outcome_never_changes"] }
+expect_red = ["codemode::store::tests::withdrawn_requires_a_sent_entered_person_held_call"]
+only = true
+file = "crates/basal-core/src/schema.rs"
+old = "CHECK (outcome <> 'withdrawn' OR (intent_at IS NOT NULL AND entered_at IS NOT NULL AND waited_on_person=1)),"
+new = "CHECK (outcome <> 'withdrawn' OR waited_on_person=1), -- NON-VACUITY BREAK"
