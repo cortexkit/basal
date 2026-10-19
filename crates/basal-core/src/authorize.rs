@@ -65,6 +65,8 @@ pub mod codes {
     /// The refusal code when prefrontal-core's current catalog does not declare
     /// support for keyed digest writes.
     pub const DIGEST_REPLACE_KEY_UNSUPPORTED: &str = "digest_replace_key_unsupported";
+    /// The refusal code when prefrontal-core cannot withdraw a pending digest item.
+    pub const DIGEST_WITHDRAW_UNSUPPORTED: &str = "digest_withdraw_unsupported";
 }
 
 /// The module ops a flow may never call, even when its manifest lists
@@ -293,9 +295,40 @@ pub fn check(
             }
             Primitive::SinkDigest => {
                 let agent = agent_arg(args, *p)?;
-                if let Some(replace_key) = args
-                    .get("options")
-                    .and_then(|options| options.get("replace_key"))
+                let withdrawing = match args.get("withdraw") {
+                    None => false,
+                    Some(Value::Bool(true)) => true,
+                    Some(_) => {
+                        return Err(Refusal::new(
+                            codes::INVALID_ARGUMENTS,
+                            "withdraw must be true when supplied",
+                        ));
+                    }
+                };
+                let options = args.get("options");
+                if withdrawing {
+                    if args.get("item").is_some()
+                        || args.get("action").is_some()
+                        || options
+                            .and_then(|options| options.get("status_tag"))
+                            .is_some()
+                    {
+                        return Err(Refusal::new(
+                            codes::INVALID_ARGUMENTS,
+                            "a digest withdrawal must not include an item, action, or status_tag",
+                        ));
+                    }
+                    if options
+                        .and_then(|options| options.get("replace_key"))
+                        .is_none()
+                    {
+                        return Err(Refusal::new(
+                            codes::INVALID_ARGUMENTS,
+                            "a digest withdrawal needs options.replace_key",
+                        ));
+                    }
+                }
+                if let Some(replace_key) = options.and_then(|options| options.get("replace_key"))
                     && !replace_key.as_str().is_some_and(|key| {
                         !key.is_empty() && key.len() <= 200 && !key.chars().any(char::is_control)
                     })

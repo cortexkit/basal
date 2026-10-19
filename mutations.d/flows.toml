@@ -167,8 +167,8 @@ runner = "cargo"
 package = "basal-module"
 platforms = ["linux"]
 target = "--test board_hygiene"
-select = { tests = ["leaving_members_and_empty_lists_update_silently", "install_card_dry_run_text_matches_its_committed_fixture"] }
-expect_red = ["leaving_members_and_empty_lists_update_silently"]
+select = { tests = ["leaving_members_and_empty_lists_withdraw_their_digest_items", "install_card_dry_run_text_matches_its_committed_fixture"] }
+expect_red = ["leaving_members_and_empty_lists_withdraw_their_digest_items"]
 only = true
 build_timeout_s = 3600
 timeout_s = 600
@@ -863,3 +863,20 @@ timeout_s = 600
 file = "templates/remind-at/flow.js"
 old = "await sink.wait.resolve(outcome, note);"
 new = "// NON-VACUITY BREAK"
+
+[[control]]
+id = "board-hygiene-withdraws-empty-list-digest"
+guards = "an empty per-owner rule list withdraws its pending digest item instead of writing a silent placeholder"
+test_file = "crates/basal-module/tests/board_hygiene.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test board_hygiene"
+select = { tests = ["leaving_members_and_empty_lists_withdraw_their_digest_items", "empty_lists_fall_back_to_silent_empty_replace_when_withdraw_is_unsupported"] }
+expect_red = ["leaving_members_and_empty_lists_withdraw_their_digest_items"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/board-hygiene/flow.js"
+old = "await clearList(previous.agent, digest(previous.agent, previous.rule, []));"
+new = "await send(previous.agent, digest(previous.agent, previous.rule, []), 'silent'); // NON-VACUITY BREAK"

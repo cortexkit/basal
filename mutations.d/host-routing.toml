@@ -336,8 +336,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/core_host.rs"
-old = "Primitive::Facts => {\n            value[\"agent_id\"].is_string()"
-new = "Primitive::Facts => {\n            true || value[\"agent_id\"].is_string()"
+old = "Primitive::Facts => {\n            !withdraw\n                && value[\"agent_id\"].is_string()"
+new = "Primitive::Facts => {\n            !withdraw\n                && true || value[\"agent_id\"].is_string() // NON-VACUITY BREAK"
 
 [[control]]
 id = "hosts-facts-unknown-activity-normalised-to-idle"
@@ -433,8 +433,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/core_host.rs"
-old = "Primitive::SinkStatus => {\n            value[\"replayed\"].is_boolean()"
-new = "Primitive::SinkStatus => {\n            true"
+old = "Primitive::SinkStatus => {\n            !withdraw\n                && value[\"replayed\"].is_boolean()"
+new = "Primitive::SinkStatus => {\n            true // NON-VACUITY BREAK"
 
 [[control]]
 id = "hosts-missing-management-op-accepted"

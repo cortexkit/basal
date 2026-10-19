@@ -2,6 +2,8 @@
 #[path = "hosts/board_sink.rs"]
 mod board_sink;
 mod common;
+#[path = "hosts/digest_withdraw.rs"]
+mod digest_withdraw;
 #[path = "hosts/wait_resolve.rs"]
 mod wait_resolve;
 mod wire;
@@ -128,25 +130,32 @@ fn core_requests_match_c3_c4_field_for_field() {
 fn closed_sink_dispositions_and_unknown_facts_survive() {
     for d in ["stored", "claim_in_fallback", "episode_ended"] {
         let v = json!({"disposition":d,"fire_id":if d=="stored" {json!("wf_1")} else {Value::Null},"replayed":true,"future":42});
-        assert_eq!(validate_reply(Primitive::SinkDigest, v.clone()).unwrap(), v);
+        assert_eq!(
+            validate_reply(Primitive::SinkDigest, v.clone(), false).unwrap(),
+            v
+        );
     }
     for v in [
         json!({"disposition":"published","accepted_revision":1,"segment":"flow:f","scope":"session:s","replayed":false}),
         json!({"disposition":"no_live_session","accepted_revision":null,"segment":null,"scope":null,"replayed":true}),
     ] {
-        assert_eq!(validate_reply(Primitive::SinkStatus, v.clone()).unwrap(), v);
+        assert_eq!(
+            validate_reply(Primitive::SinkStatus, v.clone(), false).unwrap(),
+            v
+        );
     }
     for p in [Primitive::SinkDigest, Primitive::SinkStatus] {
         assert!(matches!(
             validate_reply(
                 p,
-                json!({"disposition":"new_value","fire_id":"wf_1","replayed":false,"accepted_revision":1,"segment":"flow:f","scope":"session:s"})
+                json!({"disposition":"new_value","fire_id":"wf_1","replayed":false,"accepted_revision":1,"segment":"flow:f","scope":"session:s"}),
+                false,
             ),
             Err(WireError::Unreadable(_))
         ));
-        assert!(validate_reply(p, json!({})).is_err());
+        assert!(validate_reply(p, json!({}), false).is_err());
     }
-    assert!(validate_reply(Primitive::SinkStatus,json!({"disposition":"published","accepted_revision":null,"segment":"flow:f","scope":null})).is_err());
+    assert!(validate_reply(Primitive::SinkStatus,json!({"disposition":"published","accepted_revision":null,"segment":"flow:f","scope":null}), false).is_err());
     let f = Fake::new();
     let host = CoreHost::new(f);
     let Dispatched::Completed(outcome) = host.dispatch(&call(Primitive::Facts, json!({}))).unwrap()
@@ -1373,18 +1382,24 @@ fn sink_reply_missing_fields_and_wrong_types_are_unknown_outcomes() {
     ] {
         let mut extra = v.clone();
         extra["future"] = json!({"ignored":true});
-        assert_eq!(validate_reply(p, extra.clone()).unwrap(), extra);
+        assert_eq!(validate_reply(p, extra.clone(), false).unwrap(), extra);
         for key in v.as_object().unwrap().keys() {
             let mut missing = v.clone();
             missing.as_object_mut().unwrap().remove(key);
             assert!(
-                matches!(validate_reply(p, missing), Err(WireError::Unreadable(_))),
+                matches!(
+                    validate_reply(p, missing, false),
+                    Err(WireError::Unreadable(_))
+                ),
                 "missing {key}: {v}"
             );
             let mut wrong = v.clone();
             wrong[key] = json!({});
             assert!(
-                matches!(validate_reply(p, wrong), Err(WireError::Unreadable(_))),
+                matches!(
+                    validate_reply(p, wrong, false),
+                    Err(WireError::Unreadable(_))
+                ),
                 "wrong {key}: {v}"
             );
         }
@@ -1393,7 +1408,7 @@ fn sink_reply_missing_fields_and_wrong_types_are_unknown_outcomes() {
         json!({"disposition":"stored","fire_id":null,"replayed":false}),
         json!({"disposition":"episode_ended","fire_id":"wf_1","replayed":false}),
     ] {
-        assert!(validate_reply(Primitive::SinkDigest, v).is_err());
+        assert!(validate_reply(Primitive::SinkDigest, v, false).is_err());
     }
 }
 
@@ -1597,13 +1612,13 @@ fn fact_identity_and_clock_fields_are_required_without_normalising_leaves() {
         let mut missing = reply.clone();
         missing.as_object_mut().unwrap().remove(key);
         assert!(matches!(
-            validate_reply(Primitive::Facts, missing),
+            validate_reply(Primitive::Facts, missing, false),
             Err(WireError::Unreadable(_))
         ));
         let mut wrong = reply.clone();
         wrong[key] = json!({});
         assert!(matches!(
-            validate_reply(Primitive::Facts, wrong),
+            validate_reply(Primitive::Facts, wrong, false),
             Err(WireError::Unreadable(_))
         ));
     }

@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 pub const FLOW_DIGEST_REPLACE_KEY_V1: &str = "flow-digest-replace-key/v1";
+pub const FLOW_DIGEST_WITHDRAW_V1: &str = "flow-digest-withdraw/v1";
 pub const FLOW_OWNER_NOTICE_V1: &str = "flow-owner-notice/v1";
 pub const FLOW_WAIT_RESOLVE_V1: &str = "flow-wait-resolve/v1";
 
@@ -48,6 +49,11 @@ pub fn intent(kind: Primitive, args: &Value, ctx: IntentContext<'_>) -> Value {
     } = ctx;
     match kind {
         Primitive::SinkDigest => {
+            if args["withdraw"] == true {
+                return json!({"flow_id":flow_id,"flow_version":version,"run_id":run_id,
+                    "call_position":position,"agent":args["agent"],
+                    "replace_key":args["options"]["replace_key"],"withdraw":true});
+            }
             let mut request = json!({"flow_id":flow_id,"flow_version":version,"run_id":run_id,"call_position":position,
             "agent":args["agent"],"action":args["action"],
             "due_at":due_at,"created_at":created_at,"item":args["item"],"claim":null});
@@ -109,8 +115,8 @@ impl CoreHost {
         Self { transport }
     }
 
-    /// Read the current catalog for each gated write; a stale catalog cannot
-    /// authorize a field that an older core may refuse.
+    /// Read the current catalog for each gated call; a stale catalog cannot
+    /// authorize fields that an older core may refuse.
     pub fn supports_capability(&self, capability: &str) -> bool {
         core_provides(self.transport.as_ref(), capability)
     }
@@ -136,20 +142,30 @@ pub fn core_provides(transport: &dyn Transport, capability: &str) -> bool {
         .unwrap_or(false)
 }
 
-pub fn validate_reply(kind: Primitive, value: Value) -> Result<Value, WireError> {
+/// Validates a core reply against the primitive and the digest request kind.
+/// Withdrawal replies and write replies have disjoint dispositions.
+pub fn validate_reply(kind: Primitive, value: Value, withdraw: bool) -> Result<Value, WireError> {
     let valid = match kind {
         Primitive::SinkDigest => {
             value["replayed"].is_boolean()
-                && match value["disposition"].as_str() {
-                    Some("stored") => value["fire_id"].is_string(),
-                    Some("claim_in_fallback" | "episode_ended") => {
-                        value.get("fire_id").is_some_and(Value::is_null)
+                && if withdraw {
+                    matches!(
+                        value["disposition"].as_str(),
+                        Some("withdrawn" | "already_delivered" | "not_found")
+                    ) && value.get("fire_id").is_some_and(Value::is_null)
+                } else {
+                    match value["disposition"].as_str() {
+                        Some("stored") => value["fire_id"].is_string(),
+                        Some("claim_in_fallback" | "episode_ended") => {
+                            value.get("fire_id").is_some_and(Value::is_null)
+                        }
+                        _ => false,
                     }
-                    _ => false,
                 }
         }
         Primitive::SinkStatus => {
-            value["replayed"].is_boolean()
+            !withdraw
+                && value["replayed"].is_boolean()
                 && match value["disposition"].as_str() {
                     Some("published") => {
                         value["accepted_revision"].as_i64().is_some()
@@ -168,7 +184,8 @@ pub fn validate_reply(kind: Primitive, value: Value) -> Result<Value, WireError>
         // data, not false or idle. Preserve unrecognised fact groups so an
         // older consumer still returns fields added by a newer core.
         Primitive::Facts => {
-            value["agent_id"].is_string()
+            !withdraw
+                && value["agent_id"].is_string()
                 && value["as_of"].as_i64().is_some()
                 && value["home"].is_string()
                 && value["core_boot_at"].as_i64().is_some()
@@ -326,9 +343,19 @@ impl Host for CoreHost {
         let params = serde_json::from_str(request.args.as_str())
             .map_err(|e| WireError::NeverSent(e.to_string()));
         outcome(params.and_then(|mut v: Value| {
+            if p == Primitive::SinkDigest
+                && v["withdraw"] == true
+                && !self.supports_capability(FLOW_DIGEST_WITHDRAW_V1)
+            {
+                return Err(WireError::Refused {
+                    code: "digest_withdraw_unsupported".into(),
+                    message: "core does not advertise flow-digest-withdraw/v1".into(),
+                });
+            }
             if matches!(p, Primitive::SinkBoard | Primitive::SinkWaitResolve) {
                 v["receipt_key"] = json!(request.idempotency_key);
             }
+            let withdrawal = p == Primitive::SinkDigest && v["withdraw"] == true;
             let operation = v["operation"]["op"].as_str().map(str::to_owned);
             self.transport
                 .management(CORE, op, v)
@@ -348,7 +375,7 @@ impl Host for CoreHost {
                     } else if p == Primitive::SinkWaitResolve {
                         validate_wait_reply(v)
                     } else {
-                        validate_reply(p, v)
+                        validate_reply(p, v, withdrawal)
                     }
                 })
         }))

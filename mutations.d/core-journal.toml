@@ -1189,3 +1189,21 @@ hub_targets = ["templates"]
 file = "crates/basal-core/src/maintenance.rs"
 old = "Ok([schedule, deadline, retry, codemode, grant, expiry]"
 new = "let _ = expiry; Ok([schedule, deadline, retry, codemode, grant] /* NON-VACUITY BREAK */"
+
+[[control]]
+id = "digest-withdraw-intent-journaled-before-send"
+guards = "a withdrawal's exact core request is stored before send and is reused after a cut"
+test_file = "crates/basal-module/tests/hosts.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test hosts"
+select = { tests = ["digest_withdraw::withdrawal_journals_before_send_and_replays_identical_intent_after_cut", "digest_withdraw::withdrawal_vectors_are_pinned_and_match_sink_digest_wire_bytes"] }
+expect_red = ["digest_withdraw::withdrawal_journals_before_send_and_replays_identical_intent_after_cut"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+scope = { after = "fn commit_host_call(", before = "fn commit_local_call(" }
+old = "request: prepared.request.as_ref(),"
+new = "request: if matches!(call.kind, CallKind::Primitive(Primitive::SinkDigest)) { None } else { prepared.request.as_ref() }, // NON-VACUITY BREAK"

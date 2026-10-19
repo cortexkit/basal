@@ -238,6 +238,7 @@ fn capture_mode_executes_no_host_call_and_replays_the_schedule_window() {
     let script = "const r = await ops.call('mock', 'echo', { due: trigger.due }).catch((e) => e.data.code);\n\
                   await sink.digest('SYNAPSE', { title: 'fire' }).catch(() => null);\n\
                   await sink.digest('SYNAPSE', { title: 'loud' }, 'wake').catch(() => null);\n\
+                  await sink.digest.withdraw('SYNAPSE', { replace_key: 'daily-report' }).catch(() => null);\n\
                   return r;";
     // Hourly, so a 24-hour window holds 24 due times; ten are replayed.
     let reply = install(
@@ -274,6 +275,10 @@ fn capture_mode_executes_no_host_call_and_replays_the_schedule_window() {
         // Asking for more than the cap is refused before anything else.
         assert_eq!(c[2]["action"], "refused");
         assert_eq!(c[2]["outcome"]["rejected"], "denied");
+        assert_eq!(c[3]["kind"], "sink.digest");
+        assert_eq!(c[3]["action"], "captured");
+        assert_eq!(c[3]["args"]["withdraw"], true);
+        assert!(c[3]["args"].get("item").is_none());
     }
     assert_eq!(runs[0]["trigger"]["due"], "2026-04-30T15:00:00Z");
     assert_eq!(f.mock.total_sends(), 0, "nothing reached a host");

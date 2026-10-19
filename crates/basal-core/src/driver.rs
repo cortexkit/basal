@@ -1235,6 +1235,7 @@ impl Activation<'_> {
         };
         let manifest = resolved_manifest.as_ref().unwrap_or(manifest);
         if matches!(call.kind, CallKind::Primitive(Primitive::SinkDigest))
+            && args.get("withdraw").and_then(Value::as_bool) != Some(true)
             && args.get("action").is_none_or(Value::is_null)
             && let Some(cap) = args
                 .get("agent")
@@ -1264,6 +1265,7 @@ impl Activation<'_> {
             ));
         }
         if matches!(call.kind, CallKind::Primitive(Primitive::SinkDigest))
+            && args.get("withdraw").and_then(Value::as_bool) != Some(true)
             && args
                 .get("options")
                 .and_then(|options| options.get("replace_key"))
@@ -1277,6 +1279,19 @@ impl Activation<'_> {
             return Err(Refusal::new(
                 codes::DIGEST_REPLACE_KEY_UNSUPPORTED,
                 "prefrontal-core does not currently advertise flow-digest-replace-key/v1",
+            ));
+        }
+        if matches!(call.kind, CallKind::Primitive(Primitive::SinkDigest))
+            && args.get("withdraw").and_then(Value::as_bool) == Some(true)
+            && !self
+                .rt
+                .shared
+                .host
+                .supports_core_capability(basal_host::core_host::FLOW_DIGEST_WITHDRAW_V1)
+        {
+            return Err(Refusal::new(
+                codes::DIGEST_WITHDRAW_UNSUPPORTED,
+                "prefrontal-core does not currently advertise flow-digest-withdraw/v1",
             ));
         }
         if !matches!(call.kind, CallKind::OpFor { .. }) {
