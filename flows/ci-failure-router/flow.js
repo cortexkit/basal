@@ -347,9 +347,13 @@ const item = boundedDigest(title, {
 // data.observed.failed_jobs retains the job list beyond the short body summary;
 // boundedDigest records any metadata truncation in data.truncated.
 const bodyJobs = !jobEvent && newNames.length ? newNames : names;
-const failedJobsLine = bodyJobs.length ?
-  `${!jobEvent && newNames.length ? 'Failed since first notice: ' : 'Failed jobs: '}${bodyJobs.join(', ')}` :
-  'Failed jobs not reported yet';
+// A green run's jobs are the ones that were failing before; call them that,
+// so the body never reads as a fresh failure.
+const failedJobsLine = green ?
+  (names.length ? `Previously failed: ${names.join(', ')}` : 'No failed jobs') :
+  bodyJobs.length ?
+    `${!jobEvent && newNames.length ? 'Failed since first notice: ' : 'Failed jobs: '}${bodyJobs.join(', ')}` :
+    'Failed jobs not reported yet';
 const bodyStatus = run.finished ?
   (run.finished === 'now green' ? 'finished green (success)' : run.finished.replace(/^run /, '')) :
   'jobs arriving';

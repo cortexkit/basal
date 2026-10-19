@@ -630,7 +630,7 @@ fn digest_body_never_repeats_title_or_reports_unavailable_test_names() {
     );
     assert_eq!(
         green_item["body"],
-        "Failed jobs: linux shard 101\nRun 42, attempt 1, finished green (success)\nCommit 0123456789ab"
+        "Previously failed: linux shard 101\nRun 42, attempt 1, finished green (success)\nCommit 0123456789ab"
     );
     assert_eq!(
         red_item["title"],
