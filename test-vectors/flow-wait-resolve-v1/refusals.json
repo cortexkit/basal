@@ -1,0 +1,15 @@
+[
+  {"case":"not_basal","principal":"direct","code":"sink_principal_refused"},
+  {"case":"unapproved_version","params_patch":{"stamp":{"flow_id":"wait-flow","flow_version":2,"code_hash":"0000000000000000000000000000000000000000000000000000000000000000"}},"code":"sink_flow_not_installed"},
+  {"case":"wrong_hash","params_patch":{"stamp":{"flow_id":"wait-flow","flow_version":1,"code_hash":"1111111111111111111111111111111111111111111111111111111111111111"}},"code":"sink_flow_hash_mismatch"},
+  {"case":"no_wait_grant","manifest":{"sinks":[]},"code":"sink_wait_not_granted"},
+  {"case":"note_control","params_patch":{"note":"line\nbreak"},"code":"sink_item_invalid"},
+  {"case":"note_over_cap","note_generator":{"repeat":"é","count":251},"code":"sink_item_invalid"},
+  {"case":"invalid_outcome","params_patch":{"outcome":"done"},"code":"sink_item_invalid"},
+  {"case":"params_identity","params_patch":{"flow_id":"wait-flow"},"code":"sink_item_invalid"},
+  {"case":"receipt_conflict","precondition":"request-met accepted with receipt_key one","params_patch":{"outcome":"failed"},"code":"sink_input_conflict"},
+  {"case":"expired","precondition":"template instance at expires_at on core clock","code":"sink_instance_expired"},
+  {"case":"wait_missing_flow","wait_ref":"flow:missing","code":"board_wait_flow_not_owned"},
+  {"case":"wait_other_owner","wait_ref":"flow:wait-flow","board_owner":"ag_other","code":"board_wait_flow_not_owned"},
+  {"case":"grant_has_target","manifest":{"sinks":[{"kind":"wait","targets":[]}]},"code":"elicitation_invalid_request"}
+]

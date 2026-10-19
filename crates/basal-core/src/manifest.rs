@@ -179,11 +179,24 @@ impl DigestAction {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SinkGrant {
+    Digest(DigestGrant),
+    Wait(WaitGrant),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum WaitGrant {
+    Wait {},
+}
+
 /// An agent whose digest the flow may write, and the most intrusive action
 /// it may ask for there.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SinkGrant {
+pub struct DigestGrant {
     pub agent: String,
     pub digest_max: DigestAction,
     /// Groups undelivered tagged items in the agent's status segment.
@@ -790,7 +803,7 @@ impl Manifest {
                 check_agent(field, agent)
             }
         };
-        for s in &self.sinks {
+        for s in self.digest_sinks() {
             check_sink("sinks.agent", &s.agent)?;
             if let Some(group) = &s.status_group
                 && !valid_status_label(group)
@@ -798,7 +811,19 @@ impl Manifest {
                 return Err(invalid("sinks.status_group", "must match [A-Z]{1,4}"));
             }
         }
-        check_list("sinks", self.sinks.iter().map(|s| s.agent.clone()))?;
+        check_list("sinks", self.digest_sinks().map(|s| s.agent.clone()))?;
+        if self
+            .sinks
+            .iter()
+            .filter(|s| matches!(s, SinkGrant::Wait(_)))
+            .count()
+            > 1
+        {
+            return Err(invalid("sinks", "duplicate wait grant"));
+        }
+        if self.lists_op(basal_host::subc_catalog::CORE, "sink.wait_resolve") && !self.wait_sink() {
+            return Err(invalid("sinks", "sink.wait_resolve requires a wait grant"));
+        }
         for a in &self.status {
             check_sink("status", a)?;
         }
@@ -1005,10 +1030,22 @@ impl Manifest {
 
     /// The most intrusive digest action allowed for `agent`, if any.
     pub fn digest_cap(&self, agent: &str) -> Option<DigestAction> {
-        self.sinks
-            .iter()
+        self.digest_sinks()
             .find(|s| s.agent == agent || (self.audience.is_some() && s.agent == AUDIENCE_TARGET))
             .map(|s| s.digest_max)
+    }
+
+    pub fn digest_sinks(&self) -> impl Iterator<Item = &DigestGrant> {
+        self.sinks.iter().filter_map(|sink| match sink {
+            SinkGrant::Digest(grant) => Some(grant),
+            SinkGrant::Wait(_) => None,
+        })
+    }
+
+    pub fn wait_sink(&self) -> bool {
+        self.sinks
+            .iter()
+            .any(|sink| matches!(sink, SinkGrant::Wait(_)))
     }
 
     /// The scope the manifest grants a built-in call, or `None` when the
@@ -1089,8 +1126,7 @@ impl Manifest {
             out.push(("audience.id", id));
         }
         out.extend(
-            self.sinks
-                .iter()
+            self.digest_sinks()
                 .filter(|s| s.agent != AUDIENCE_TARGET)
                 .map(|s| ("sinks", s.agent.as_str())),
         );
@@ -1349,7 +1385,15 @@ mod tests {
         for group in ["A", "GH", "ABCD"] {
             value["sinks"][0]["status_group"] = group.into();
             let manifest = Manifest::parse(&value.to_string()).unwrap();
-            assert_eq!(manifest.sinks[0].status_group.as_deref(), Some(group));
+            assert_eq!(
+                manifest
+                    .digest_sinks()
+                    .next()
+                    .unwrap()
+                    .status_group
+                    .as_deref(),
+                Some(group)
+            );
             assert_eq!(
                 serde_json::to_value(manifest).unwrap()["sinks"][0]["status_group"],
                 group

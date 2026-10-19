@@ -142,7 +142,9 @@ pub fn resolve_self(manifest: &mut Manifest, agent_id: &str) {
         }
     };
     for sink in &mut manifest.sinks {
-        resolve(&mut sink.agent);
+        if let crate::manifest::SinkGrant::Digest(sink) = sink {
+            resolve(&mut sink.agent);
+        }
     }
     for grant in &mut manifest.board {
         resolve(&mut grant.agent);
@@ -319,8 +321,7 @@ pub fn check(
                         agent
                     };
                     if !manifest
-                        .sinks
-                        .iter()
+                        .digest_sinks()
                         .any(|s| s.agent == target && s.status_group.is_some())
                     {
                         return Err(Refusal::new(
@@ -330,7 +331,7 @@ pub fn check(
                     }
                 }
                 if manifest.audience.is_some() {
-                    return if manifest.sinks.is_empty() {
+                    return if manifest.digest_sinks().next().is_none() {
                         Err(Refusal::denied("the manifest grants no digest sink"))
                     } else {
                         Ok(())
@@ -357,6 +358,32 @@ pub fn check(
                         codes::INVALID_ARGUMENTS,
                         "a digest action is a string",
                     )),
+                }
+            }
+            Primitive::SinkWaitResolve => {
+                if !manifest.wait_sink() {
+                    return Err(Refusal::new(
+                        "sink_wait_not_granted",
+                        "the manifest grants no wait sink",
+                    ));
+                }
+                let valid = args.as_object().is_some_and(|object| {
+                    object
+                        .keys()
+                        .all(|key| matches!(key.as_str(), "outcome" | "note"))
+                }) && matches!(args["outcome"].as_str(), Some("met" | "failed"))
+                    && args.get("note").is_none_or(|note| {
+                        note.as_str().is_some_and(|text| {
+                            text.len() <= 500 && !text.chars().any(char::is_control)
+                        })
+                    });
+                if valid {
+                    Ok(())
+                } else {
+                    Err(Refusal::new(
+                        "sink_item_invalid",
+                        "wait resolution needs met or failed and an optional note of at most 500 UTF-8 bytes without control characters",
+                    ))
                 }
             }
             Primitive::SinkBoard => {

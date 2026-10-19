@@ -129,11 +129,13 @@ pub fn fields(input: &CardInput<'_>) -> Value {
         "purpose": m.purpose,
         "author": input.author,
         "trigger": trigger,
-        "sinks": m.sinks.iter().map(|s| json!({
+        "sinks": m.sinks.iter().map(|s| match s {
+            basal_core::manifest::SinkGrant::Wait(_) => json!({"kind":"wait"}),
+            basal_core::manifest::SinkGrant::Digest(s) => json!({
             "agent": s.agent,
             "digest_max": s.digest_max,
             "break_through_requested": s.break_through,
-        })).collect::<Vec<_>>(),
+        })}).collect::<Vec<_>>(),
         "status_targets": m.status,
         "claims": m.claims.iter().map(|c| json!({ "agent": c.agent, "source_kind": c.source_kind })).collect::<Vec<_>>(),
         "ops": ops,

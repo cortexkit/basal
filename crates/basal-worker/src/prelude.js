@@ -26,7 +26,8 @@
     SINK_STATUS = 7, KV_GET = 8, KV_SET = 9, KV_DELETE = 10, SH = 11, FS_READ = 12,
     FS_LIST = 13, FS_STAT = 14, FS_WRITE = 15, GIT_LOG = 16, GIT_REV_PARSE = 17,
     GIT_DESCRIBE_TAGS = 18, GIT_SHOW = 19, GIT_DIFF = 20, NET_FETCH = 21, INSTANCE_END = 24,
-    SINK_BOARD = 25;
+    SINK_BOARD = 25,
+    SINK_WAIT_RESOLVE = 26;
 
   const G = globalThis;
   const ObjectDefineProperty = Object.defineProperty;
@@ -317,6 +318,11 @@
         },
         retire(agent) {
           return callPrimitive(SINK_BOARD, { agent, operation: { op: 'retire' } });
+        },
+      },
+      wait: {
+        resolve(outcome, note) {
+          return callPrimitive(SINK_WAIT_RESOLVE, { outcome, note });
         },
       },
     },

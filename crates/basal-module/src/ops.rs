@@ -604,7 +604,7 @@ impl Module {
                 }
                 // Core needs a declared digest sink to route a local install's
                 // approval card, whether the target is static or audience-wide.
-                if manifest.sinks.is_empty() {
+                if manifest.digest_sinks().next().is_none() {
                     return Err(OpError::new(
                         "local_install_needs_digest_sink",
                         "a local caller's flow must declare at least one digest sink: core routes its install card through the first sink's agent",

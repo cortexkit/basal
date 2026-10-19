@@ -283,6 +283,16 @@ wire field is inferred.
 | `status_group` | string matching `[A-Z]{1,4}` | no | absent | Groups undelivered tagged digest items in the agent's status segment, for example `GH NI3 NRPR13`. Part of the hashed manifest shown on the approval card; checked at install and dry run. Only this grant permits per-write `status_tag`. |
 | `break_through` | boolean | no | `false` | Shown on the card as requested. Only the operator grants it, through policy. |
 
+The same `sinks` array may contain a targetless wait grant:
+`{"kind":"wait"}`. This exact shape authorizes
+[`sink.wait.resolve`](script.md#resolving-board-waits) to mark the install owner's board waits on
+this flow as met or failed. No other fields are allowed, including `targets`,
+even an empty array. Duplicate wait grants are refused. The grant is independent
+of digest sinks, board lanes and audience targets; it grants none of those
+permissions. A manifest listing `prefrontal-core/sink.wait_resolve` in `ops`
+without the wait grant is invalid. JavaScript is not statically inspected;
+calling the sink without the grant is refused unsent at runtime.
+
 ### Board lane grant
 
 `"board": [{"agent": "SYNAPSE", "title": "Build work"}]` authorizes the flow to

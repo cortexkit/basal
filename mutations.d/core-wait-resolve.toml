@@ -1,0 +1,15 @@
+[[control]]
+id = "wait-resolve-intent-durable-before-send"
+guards = "Wait resolution identity and outcome are journaled before transport sends, so crash recovery cannot reconstruct a different request"
+test_file = "crates/basal-module/tests/hosts/wait_resolve.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test hosts"
+platforms = ["linux"]
+expect_red = ["wait_resolve::wait_journals_before_send_and_replays_identical_intent_after_cut"]
+select = { tests = ["wait_resolve::wait_journals_before_send_and_replays_identical_intent_after_cut", "wait_resolve::wait_wire_matches_met_failed_and_all_reply_vectors"] }
+only = true
+file = "crates/basal-core/src/driver.rs"
+scope = { after = "fn commit_host_call(", before = "fn commit_local_call(" }
+old = "request: prepared.request.as_ref(),"
+new = "request: if matches!(call.kind, CallKind::Primitive(Primitive::SinkWaitResolve)) { None } else { prepared.request.as_ref() }, // NON-VACUITY BREAK"

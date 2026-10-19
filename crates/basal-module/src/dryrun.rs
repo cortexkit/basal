@@ -914,6 +914,12 @@ fn captured(detail: &str) -> HostOutcome {
 }
 
 impl Host for CaptureHost {
+    fn supports_core_capability(&self, capability: &str) -> bool {
+        // Wait resolutions are captured even in live mode. Previewing them
+        // therefore needs no deployed core capability and makes no core call.
+        capability == basal_host::core_host::FLOW_WAIT_RESOLVE_V1
+    }
+
     fn classify(&self, kind: &CallKind) -> CallClass {
         // A built-in is classed by the runtime from its arguments and never
         // asks this; a module op's class is the catalog's.

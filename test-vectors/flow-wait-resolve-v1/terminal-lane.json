@@ -1,0 +1,1 @@
+{"id":"ln_release","title":"Release","status":"Waiting","updated_at_ms":100,"items":[{"id":"ship","text":"Ship it","state":"blocked","wait":{"on":"CI outcome","ref":"flow:wait-flow","since_ms":10,"ref_state":"terminal","ref_terminal_at_ms":100,"resolution":"met","resolution_note":"CI is green"}}]}
