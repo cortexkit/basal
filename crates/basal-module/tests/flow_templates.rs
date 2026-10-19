@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use basal_core::{Admission, NoHooks, RunState};
 use basal_host::mock::MockHost;
@@ -80,6 +81,7 @@ struct TemplateHost {
     resolved: AtomicUsize,
     replacement_unsupported: AtomicBool,
     wait_resolve_unsupported: AtomicBool,
+    wait_resolve_delay_ms: AtomicU64,
 }
 
 impl TemplateHost {
@@ -102,6 +104,12 @@ impl TemplateHost {
             if p == Primitive::SinkDigest {
                 let args: Value = serde_json::from_str(request.args.as_str()).unwrap();
                 limits(&args["item"]);
+            }
+            if p == Primitive::SinkWaitResolve {
+                let delay = self.wait_resolve_delay_ms.load(Ordering::Relaxed);
+                if delay > 0 {
+                    std::thread::sleep(Duration::from_millis(delay));
+                }
             }
             let mut overrides = self.overrides.lock().unwrap();
             if overrides
@@ -488,19 +496,28 @@ impl Test {
         let note = args["note"].as_str().unwrap();
         assert!(note.len() <= 500);
         assert!(!note.chars().any(char::is_control));
-        if let Some(outcome) = &wait_call.outcome
-            && outcome.settlement == basal_proto::Settlement::Fulfilled
-        {
-            let reply: Value = serde_json::from_str(outcome.value.as_str()).unwrap();
-            assert_eq!(
-                reply["resolved"], 0,
-                "a flow without waiting items is a no-op success"
-            );
-        }
+        let wait_outcome = wait_call
+            .outcome
+            .as_ref()
+            .expect("wait resolution settles before the digest is issued");
+        assert_eq!(wait_outcome.settlement, basal_proto::Settlement::Fulfilled);
+        let reply: Value = serde_json::from_str(wait_outcome.value.as_str()).unwrap();
+        assert_eq!(
+            reply["resolved"], 0,
+            "a flow without waiting items is a no-op success"
+        );
         let sink = calls
             .iter()
             .position(|call| call.kind == CallKind::Primitive(Primitive::SinkDigest))
             .unwrap();
+        let digest_outcome = calls[sink]
+            .outcome
+            .as_ref()
+            .expect("the digest call has settled");
+        assert!(
+            wait_outcome.delivery_order < digest_outcome.delivery_order,
+            "wait resolution must settle before the digest"
+        );
         assert_eq!(
             calls[sink + 1].kind,
             CallKind::Primitive(Primitive::InstanceEnd)
@@ -1140,6 +1157,7 @@ fn reminder_waits_until_due_then_catches_up_once_and_ends() {
     let tick = t.f.module.rt.scheduler().unwrap().tick().unwrap();
     assert_eq!(tick.new_runs().len(), 1);
     let run = tick.new_runs()[0].to_owned();
+    t.host.wait_resolve_delay_ms.store(25, Ordering::Relaxed);
     t.finish(&run);
     let item = t.notified(&instance, &run, "Reminder time reached");
     assert_eq!(item["data"]["observed"]["due"], at);
@@ -1211,6 +1229,10 @@ fn wait_resolution_refusal_does_not_block_digest_or_end() {
             assert!(*position < digest);
             let outcome = wait.outcome.as_ref().unwrap();
             assert_eq!(outcome.settlement, basal_proto::Settlement::Rejected);
+            assert!(
+                outcome.delivery_order < calls[digest].outcome.as_ref().unwrap().delivery_order,
+                "a refused resolution must settle before the digest proceeds"
+            );
             let error: Value = serde_json::from_str(outcome.value.as_str()).unwrap();
             assert_eq!(
                 error["code"],

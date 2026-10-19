@@ -861,5 +861,5 @@ only = true
 build_timeout_s = 3600
 timeout_s = 600
 file = "templates/remind-at/flow.js"
-old = "Promise.resolve(sink.wait.resolve(outcome, note)).catch(() => {});"
+old = "await sink.wait.resolve(outcome, note);"
 new = "// NON-VACUITY BREAK"
