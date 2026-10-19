@@ -70,3 +70,20 @@ timeout_s = 600
 file = "crates/basal-host/src/transport.rs"
 old = "                .open_route_scoped(\n                    RouteTarget::ToolProvider {\n                        module_id: \"aft\".into(),"
 new = "                .open_route_scoped(\n                    RouteTarget::ManagementSurface { // NON-VACUITY BREAK\n                        module_id: \"aft\".into(),"
+
+[[control]]
+id = "flow-file-read-malformed-reply-excerpt-is-bounded"
+guards = "malformed AFT file replies expose no more than 200 bytes in their escaped excerpt"
+test_file = "crates/basal-module/tests/tool_provider_conformance/flow.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test tool_provider_conformance"
+select = { tests = ["flow::install_malformed_reply_includes_a_bounded_excerpt", "flow::install_digest_guard_rechecks_returned_bytes"] }
+expect_red = ["flow::install_malformed_reply_includes_a_bounded_excerpt"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-module/src/flow_tool.rs"
+old = "const FILE_READ_EXCERPT_BYTES: usize = 200;"
+new = "const FILE_READ_EXCERPT_BYTES: usize = 201; // NON-VACUITY BREAK"

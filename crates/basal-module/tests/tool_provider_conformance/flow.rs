@@ -202,6 +202,41 @@ async fn install_digest_guard_rechecks_returned_bytes() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn install_malformed_reply_includes_a_bounded_excerpt() {
+    let root = common::scratch("flow-malformed-read");
+    let subject = Subject::default();
+    let live = subject.spawn(&root).await.unwrap();
+    live.core
+        .files
+        .lock()
+        .unwrap()
+        .insert("head.js".into(), Ok(json!({"unexpected":true})));
+    let route = content_route(&subject, &live, &stamp()).await;
+    let malformed = refusal(&route, install()).await;
+    assert_eq!(malformed.code, "flow_read_bad_response");
+    assert_eq!(
+        malformed.message,
+        r#"invalid file.read_exact response: {\"unexpected\":true}"#
+    );
+
+    live.core
+        .files
+        .lock()
+        .unwrap()
+        .insert("head.js".into(), Ok(json!({"x":"a".repeat(300)})));
+    let oversized = refusal(&route, install()).await;
+    assert_eq!(oversized.code, "flow_read_bad_response");
+    let expected_excerpt = format!(r#"{{\"x\":\"{}…"#, "a".repeat(188));
+    assert_eq!(
+        oversized.message,
+        format!("invalid file.read_exact response: {expected_excerpt}")
+    );
+    drop(live);
+    subject.join_stopped().await;
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn install_passes_all_aft_refusals_through_unchanged() {
     let root = common::scratch("flow-aft-errors");
     let subject = Subject::default();

@@ -302,6 +302,31 @@ pub enum Source {
     Spawned,
 }
 
+/// How the worker from a handout was eventually removed from the pool.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EndReason {
+    Exited {
+        code: Option<i32>,
+        signal: Option<i32>,
+    },
+    Killed,
+    ReplacedAfterBudget,
+    LostChannel,
+    Retired,
+}
+
+fn exit_signal(status: &ExitStatus) -> Option<i32> {
+    #[cfg(unix)]
+    {
+        status.signal()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = status;
+        None
+    }
+}
+
 /// One worker handed out, for tests and measurements.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Handout {
@@ -309,6 +334,7 @@ pub struct Handout {
     pub pid: u32,
     pub binding: Binding,
     pub source: Source,
+    pub end_reason: Option<EndReason>,
 }
 
 #[derive(Debug)]
@@ -407,6 +433,12 @@ impl State {
             self.handouts.pop_front();
         }
     }
+
+    fn record_end(&mut self, worker: u64, reason: EndReason) {
+        if let Some(handout) = self.handouts.iter_mut().rev().find(|h| h.worker == worker) {
+            handout.end_reason = Some(reason);
+        }
+    }
 }
 
 impl Pool {
@@ -477,6 +509,13 @@ impl Pool {
                         let status = idle.process.exit_status().unwrap_or_else(|| {
                             Err(std::io::Error::other("worker exit status unavailable"))
                         });
+                        state.record_end(
+                            idle.id,
+                            EndReason::Exited {
+                                code: status.as_ref().ok().and_then(ExitStatus::code),
+                                signal: status.as_ref().ok().and_then(exit_signal),
+                            },
+                        );
                         self.shared.crashed(&mut state, status);
                         drop(idle);
                         continue;
@@ -548,6 +587,7 @@ impl Pool {
                 pid: process.pid(),
                 binding: binding.clone(),
                 source,
+                end_reason: None,
             });
         }
         // A spare was used: start its replacement now.
@@ -559,6 +599,8 @@ impl Pool {
             binding,
             activations,
             killed: false,
+            channel_lost: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            channel_failure_caused_kill: false,
         })
     }
 
@@ -592,14 +634,23 @@ impl Pool {
         {
             let mut state = self.lock();
             let mut crashes = Vec::new();
+            let mut ends = Vec::new();
             let mut retired = 0;
             for workers in state.bound.values_mut() {
                 let mut keep = Vec::with_capacity(workers.len());
                 for mut idle in workers.drain(..) {
                     if let Some(status) = idle.process.exit_status() {
+                        ends.push((
+                            idle.id,
+                            EndReason::Exited {
+                                code: status.as_ref().ok().and_then(ExitStatus::code),
+                                signal: status.as_ref().ok().and_then(exit_signal),
+                            },
+                        ));
                         crashes.push(status);
                         doomed.push(idle.process);
                     } else if now.saturating_sub(idle.idle_since_ms) >= idle_ms {
+                        ends.push((idle.id, EndReason::Retired));
                         retired += 1;
                         doomed.push(idle.process);
                     } else {
@@ -609,6 +660,9 @@ impl Pool {
                 *workers = keep;
             }
             state.bound.retain(|_, w| !w.is_empty());
+            for (worker, reason) in ends {
+                state.record_end(worker, reason);
+            }
             let mut spares = VecDeque::new();
             while let Some((id, mut process)) = state.spares.pop_front() {
                 if let Some(status) = process.exit_status() {
@@ -731,8 +785,15 @@ impl Pool {
             let mut state = self.lock();
             state.stopped = true;
             let mut doomed: Vec<WorkerProcess> = state.spares.drain(..).map(|(_, p)| p).collect();
+            let mut retired = Vec::new();
             for (_, workers) in state.bound.drain() {
-                doomed.extend(workers.into_iter().map(|i| i.process));
+                for idle in workers {
+                    retired.push(idle.id);
+                    doomed.push(idle.process);
+                }
+            }
+            for worker in retired {
+                state.record_end(worker, EndReason::Retired);
             }
             state.live = state.live.saturating_sub(doomed.len());
             doomed
@@ -773,6 +834,23 @@ impl Pool {
                 });
             }
             None => {
+                let reason = if let Some(status) = crash_status.as_ref() {
+                    EndReason::Exited {
+                        code: status.as_ref().ok().and_then(ExitStatus::code),
+                        signal: status.as_ref().ok().and_then(exit_signal),
+                    }
+                } else if lease.killed && lease.channel_failure_caused_kill {
+                    EndReason::LostChannel
+                } else if lease.killed {
+                    EndReason::Killed
+                } else if activations >= self.shared.config.max_activations
+                    || !matches!(&lease.binding, Binding::Flow(_))
+                {
+                    EndReason::ReplacedAfterBudget
+                } else {
+                    EndReason::Retired
+                };
+                state.record_end(lease.id, reason);
                 if let Some(status) = crash_status {
                     self.shared.crashed(&mut state, status);
                 } else if lease.killed {
@@ -860,6 +938,7 @@ impl Shared {
         if workers.is_empty() {
             state.bound.remove(&flow);
         }
+        state.record_end(idle.id, EndReason::Retired);
         state.live = state.live.saturating_sub(1);
         Metrics::bump(&self.metrics.workers_retired);
         Some(idle)
@@ -959,6 +1038,26 @@ pub struct Lease {
     binding: Binding,
     activations: u32,
     killed: bool,
+    channel_lost: Arc<std::sync::atomic::AtomicBool>,
+    channel_failure_caused_kill: bool,
+}
+
+struct TrackedReceiver {
+    inner: Box<dyn WorkerReceiver>,
+    channel_lost: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl WorkerReceiver for TrackedReceiver {
+    fn recv(&mut self) -> Result<WorkerMessage, ChannelError> {
+        let result = self.inner.recv();
+        if result
+            .as_ref()
+            .is_err_and(|error| !matches!(error, ChannelError::Timeout))
+        {
+            self.channel_lost.store(true, Ordering::Relaxed);
+        }
+        result
+    }
 }
 
 impl Lease {
@@ -980,27 +1079,43 @@ impl WorkerChannel for Lease {
     }
 
     fn send(&mut self, message: &ParentMessage) -> Result<(), ChannelError> {
-        match self.process.as_mut() {
+        let result = match self.process.as_mut() {
             Some(p) => p.send(message),
             None => Err(ChannelError::Closed),
+        };
+        if result.is_err() {
+            self.channel_lost.store(true, Ordering::Relaxed);
         }
+        result
     }
 
     fn recv(&mut self, timeout: Duration) -> Result<WorkerMessage, ChannelError> {
-        match self.process.as_mut() {
+        let result = match self.process.as_mut() {
             Some(p) => p.recv(timeout),
             None => Err(ChannelError::Closed),
+        };
+        if result
+            .as_ref()
+            .is_err_and(|error| !matches!(error, ChannelError::Timeout))
+        {
+            self.channel_lost.store(true, Ordering::Relaxed);
         }
+        result
     }
 
     fn receiver(&mut self) -> Box<dyn WorkerReceiver> {
-        match self.process.as_ref() {
+        let inner: Box<dyn WorkerReceiver> = match self.process.as_ref() {
             Some(p) => p.receiver(),
             None => Box::new(crate::process::Ended),
-        }
+        };
+        Box::new(TrackedReceiver {
+            inner,
+            channel_lost: self.channel_lost.clone(),
+        })
     }
 
     fn kill(&mut self) {
+        self.channel_failure_caused_kill |= self.channel_lost.load(Ordering::Relaxed);
         self.killed = true;
         if let Some(p) = self.process.as_mut() {
             p.kill();

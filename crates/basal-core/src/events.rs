@@ -562,6 +562,26 @@ impl Runtime {
                 detail: "event body query returned after the run deadline".into(),
             });
         }
+        if let Err(TransportError::Refused(refusal)) = &dispatched
+            && refusal.reason == basal_host::flow_refusal::RefusalReason::NoFlowScope
+        {
+            let should_warn = self.store().write(|tx| {
+                let changed = tx.execute(
+                    "UPDATE event_body_journal SET scope_wait_warned=1 WHERE run_id=?1 AND scope_wait_warned=0",
+                    [&run.run_id],
+                )?;
+                Ok(changed == 1)
+            })?;
+            if should_warn {
+                tracing::warn!(
+                    flow_id = %run.flow_id,
+                    run_id = %run.run_id,
+                    provider = %refusal.provider,
+                    reason = refusal.reason.as_str(),
+                    "event body fetch is waiting for the flow scope"
+                );
+            }
+        }
         match dispatched {
             Ok(Dispatched::Completed(outcome)) => {
                 let reply: serde_json::Value = match serde_json::from_str(outcome.value.as_str()) {

@@ -19,6 +19,38 @@ use crate::{caller::Caller, module::Module, tool::Context};
 
 pub const DESCRIPTION: &str = "Manage your own flows; installs need operator approval before running.\ninstall: read script_path and manifest_path from your files and submit the exact bytes for approval, with a capture dry run.\ndry_run: preview flow_id with optional version and window (for example 6h) or a sample trigger; no live effects.\ndisable: stop flow_id, with an optional reason.\nenable: resume flow_id if you disabled it yourself.\nlist: show your flows, optionally filtered by flow_ids.\ninstantiate: create or extend a bounded template with params and expires_in; version is optional and defaults to the newest approved.\nend: end your template instance by flow_id.";
 
+const FILE_READ_EXCERPT_BYTES: usize = 200;
+
+fn escaped_excerpt(bytes: &[u8]) -> String {
+    const TRUNCATION: &str = "…";
+    let excerpt_limit = FILE_READ_EXCERPT_BYTES - TRUNCATION.len();
+    let mut excerpt = String::new();
+    let mut truncated = false;
+    for byte in bytes {
+        let escaped: String = std::ascii::escape_default(*byte).map(char::from).collect();
+        if excerpt.len() + escaped.len() > excerpt_limit {
+            truncated = true;
+            break;
+        }
+        excerpt.push_str(&escaped);
+    }
+    if truncated {
+        excerpt.push_str(TRUNCATION);
+    }
+    excerpt
+}
+
+fn malformed_file_read_reply(reply: &Value) -> ErrorBody {
+    let encoded = serde_json::to_vec(reply).expect("JSON values always serialize");
+    ErrorBody::new(
+        "flow_read_bad_response",
+        format!(
+            "invalid file.read_exact response: {}",
+            escaped_excerpt(&encoded)
+        ),
+    )
+}
+
 pub fn schema() -> Value {
     json!({"type":"object","properties":{
         "action":{"type":"string","enum":["install","dry_run","disable","enable","list","instantiate","end"]},
@@ -189,8 +221,7 @@ impl Module {
             .flow_transport
             .flow_read_exact(&scope, &context.bind_identity, path)
             .map_err(wire)?;
-        let malformed =
-            || ErrorBody::new("flow_read_bad_response", "invalid file.read_exact response");
+        let malformed = || malformed_file_read_reply(&reply);
         let size = reply["size"].as_u64().ok_or_else(malformed)?;
         if size > max as u64 {
             return Err(ErrorBody::new(
@@ -297,6 +328,16 @@ impl Module {
                     .expect("flow op returns an object"),
             );
         serde_json::to_value(reply).map_err(storage)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::escaped_excerpt;
+
+    #[test]
+    fn file_read_excerpt_escapes_binary_bytes() {
+        assert_eq!(escaped_excerpt(b"reply:\0\xff\n"), r"reply:\x00\xff\n");
     }
 }
 

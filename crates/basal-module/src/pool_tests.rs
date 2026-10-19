@@ -23,6 +23,7 @@ fn handout_history_keeps_a_bounded_recent_tail() {
             pid: 1,
             binding: Binding::Flow("f".into()),
             source: Source::Bound,
+            end_reason: None,
         });
     }
     let history = pool.handouts();
