@@ -113,6 +113,38 @@ it before the script starts, on the flow scope. A script that explicitly calls
 a granted body resolver such as `events_get` can use the same fourth argument
 as any other module query.
 
+## Resolving board waits
+
+`sink.wait.resolve(outcome, note?)` resolves open waits on the install owner's
+board whose `wait.ref` names this flow (`flow:<flow_id>`). It requires the exact
+targetless manifest grant `"sinks": [{"kind":"wait"}]`; it grants no digest or
+board-lane writes. `outcome` is `"met"` or `"failed"`. The optional note is at most
+500 UTF-8 bytes with no control characters. Scripts cannot supply an agent,
+flow identity, version, code hash, or receipt key.
+
+```js
+return await sink.wait.resolve('met', 'CI is green');
+// => { resolved: 2, replayed: false }
+```
+
+Basal journals the approved install stamp and outcome before sending
+`sink.wait_resolve` through its daemon-attested core carrier. A retry reuses the
+receipt key and frozen request; core returns the original count with
+`replayed: true`. Resolving no open waits succeeds with `resolved: 0`. Core must
+advertise `flow-wait-resolve/v1`; otherwise the call is refused unsent with
+`wait_resolve_unsupported`. No `flow-scopes/v1` capability is needed. Missing
+grants are refused unsent with `sink_wait_not_granted` at runtime; manifest ops
+listing `prefrontal-core/sink.wait_resolve` without the grant fail install.
+
+Core's `sink_store_failed` refusal is retryable with the same receipt until the
+run deadline. Invalid input, receipt conflicts, principal/installation/hash or
+grant refusals, and expired instances are terminal rejections visible to the
+script. Capture and live dry runs only record that the flow would resolve its
+waits; neither sends a resolution. Resolving a wait does not unblock the board
+item: its owner must update the item. Core owns the consent card's `Waits` fact
+(“Can mark your board waits on this flow as met or failed”) and the terminal wait
+markers, including `ended_without_resolving` when a flow ends without resolving.
+
 ## Board lanes
 
 `sink.board` writes only the flow's own lane on an agent's board:

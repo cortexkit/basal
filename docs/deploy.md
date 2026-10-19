@@ -61,6 +61,19 @@ Warm workers are spawned by ck-basal. Restarting ck-basal last ensures every wor
 
 For different measured worker protocols, follow the stop-the-world card instead. Its SQLite `.backup` opens the live store with `mode=ro`, and records a checksum beside the backup. `ck module stop basal` disables the module until `ck module start basal`; confirm the parent and workers have exited before either placement. Both gate commands use `--no-restart`, including ck-basal's `--migrates` snapshot when the schema rises. Never start basal between placements or after a failed placement. Rollback still requires both old binaries and a matching store snapshot together.
 
+These parent-worker protocol bumps require replacing both binaries together:
+
+| Version | Change |
+|---|---|
+| 10 | Adds board writes through `sink.board` (primitive code 25). |
+| 11 | Adds wait resolution through `sink.wait.resolve` (primitive code 26). |
+
+Every new primitive requires a protocol-version bump, even when existing wire
+codes are unchanged: an older peer cannot decode the new code. The stage card
+measures the worker versions rather than assuming compatibility. Staged protocol
+11 with live protocol 10 therefore selects the stop-the-world update, never a
+mixed parent-worker pair.
+
 On macOS, privacy (TCC) grants such as Files & Folders belong to a "responsible process", which a child normally shares with its parent. So `ck-basal` launches each worker *disclaimed*, making it its own responsible process, so flow code can never use a grant `ck-basal` holds. It does this with `subc-os`'s trampoline: `ck-basal` re-executes itself in a hidden single-threaded mode that sets the disclaim attribute and then becomes the worker. The environment stays empty, and the worker still closes inherited descriptors and applies its own Seatbelt profile. After its first Subconscious connection and before starting any warm spares, `ck-basal` runs the trampoline once in its check mode (the startup probe), which confirms it can launch disclaimed. If that fails, `ck-basal` exits rather than ever launching a worker plainly.
 
 Fatal exits are reported to the supervisor, which restarts the module:

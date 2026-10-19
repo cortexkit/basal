@@ -227,6 +227,9 @@ pub fn op_label(kind: &CallKind) -> String {
             format!("{}.{}", subc_catalog::CORE, p.name())
         }
         CallKind::Primitive(Primitive::Facts) => format!("{}.agent.facts", subc_catalog::CORE),
+        CallKind::Primitive(Primitive::SinkWaitResolve) => {
+            format!("{}.sink.wait_resolve", subc_catalog::CORE)
+        }
         CallKind::Primitive(Primitive::Llm | Primitive::Classify) => "broca.session.send".into(),
         // Local primitives and the built-ins, which basal carries out itself.
         CallKind::Primitive(p) => p.name().into(),

@@ -1027,8 +1027,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/manifest.rs"
-old = '#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]'
-new = '#[serde(tag = "kind", rename_all = "snake_case")] // NON-VACUITY BREAK'
+old = "#[serde(tag = \"kind\", rename_all = \"snake_case\", deny_unknown_fields)]\npub enum Audience"
+new = "#[serde(tag = \"kind\", rename_all = \"snake_case\")] // NON-VACUITY BREAK\npub enum Audience"
 
 [[control]]
 id = "audience-sinks-allow-named-targets"

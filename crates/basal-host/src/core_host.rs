@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 pub const FLOW_DIGEST_REPLACE_KEY_V1: &str = "flow-digest-replace-key/v1";
 pub const FLOW_OWNER_NOTICE_V1: &str = "flow-owner-notice/v1";
+pub const FLOW_WAIT_RESOLVE_V1: &str = "flow-wait-resolve/v1";
 
 /// Manifest-declared ops that core accepts from `reserved:basal`, checking a
 /// `{flow_id, flow_version, code_hash}` stamp against the approved install.
@@ -291,7 +292,10 @@ impl Host for CoreHost {
         match kind {
             CallKind::Primitive(Primitive::Facts) => CallClass::Query,
             CallKind::Primitive(
-                Primitive::SinkDigest | Primitive::SinkStatus | Primitive::SinkBoard,
+                Primitive::SinkDigest
+                | Primitive::SinkStatus
+                | Primitive::SinkBoard
+                | Primitive::SinkWaitResolve,
             ) => CallClass::Mutation {
                 honours_idempotency_keys: true,
             },
@@ -305,13 +309,24 @@ impl Host for CoreHost {
             CallKind::Primitive(Primitive::SinkDigest) => (Primitive::SinkDigest, "sink.digest"),
             CallKind::Primitive(Primitive::SinkStatus) => (Primitive::SinkStatus, "sink.status"),
             CallKind::Primitive(Primitive::SinkBoard) => (Primitive::SinkBoard, "sink.board"),
+            CallKind::Primitive(Primitive::SinkWaitResolve) => {
+                (Primitive::SinkWaitResolve, "sink.wait_resolve")
+            }
             CallKind::Primitive(Primitive::Facts) => (Primitive::Facts, "agent.facts"),
             _ => return outcome(Err(WireError::NeverSent("not a core call".into()))),
         };
+        // Recheck at dispatch as well as preparation: a frozen call can be
+        // retried after core's catalog has changed.
+        if p == Primitive::SinkWaitResolve && !self.supports_capability(FLOW_WAIT_RESOLVE_V1) {
+            return outcome(Err(WireError::Refused {
+                code: "wait_resolve_unsupported".into(),
+                message: "core does not advertise flow-wait-resolve/v1".into(),
+            }));
+        }
         let params = serde_json::from_str(request.args.as_str())
             .map_err(|e| WireError::NeverSent(e.to_string()));
         outcome(params.and_then(|mut v: Value| {
-            if p == Primitive::SinkBoard {
+            if matches!(p, Primitive::SinkBoard | Primitive::SinkWaitResolve) {
                 v["receipt_key"] = json!(request.idempotency_key);
             }
             let operation = v["operation"]["op"].as_str().map(str::to_owned);
@@ -321,6 +336,8 @@ impl Host for CoreHost {
                 .map_err(|e| {
                     if p == Primitive::SinkBoard {
                         board_refusal(e)
+                    } else if p == Primitive::SinkWaitResolve {
+                        wait_refusal(e)
                     } else {
                         e
                     }
@@ -328,6 +345,8 @@ impl Host for CoreHost {
                 .and_then(|v| {
                     if p == Primitive::SinkBoard {
                         validate_board_reply(operation.as_deref(), v)
+                    } else if p == Primitive::SinkWaitResolve {
+                        validate_wait_reply(v)
                     } else {
                         validate_reply(p, v)
                     }
@@ -379,6 +398,34 @@ impl Host for CoreHost {
         };
         decode()
             .map_err(|detail| TransportError::maybe_sent(UnknownReason::ReplyUnreadable, detail))
+    }
+}
+
+fn validate_wait_reply(value: Value) -> Result<Value, WireError> {
+    if value.as_object().is_some_and(|o| o.len() == 2)
+        && value["resolved"].as_u64().is_some()
+        && value["replayed"].is_boolean()
+    {
+        Ok(value)
+    } else {
+        Err(WireError::Unreadable(
+            "unrecognised sink.wait_resolve reply".into(),
+        ))
+    }
+}
+
+fn wait_refusal(error: WireError) -> WireError {
+    match &error {
+        WireError::Refused { code, .. } | WireError::RefusedDetails { code, .. }
+            if code == "sink_store_failed" =>
+        {
+            WireError::Typed(crate::flow_refusal::FlowRefusal::new(
+                crate::flow_refusal::RefusalReason::SinkStoreFailed,
+                CORE,
+                "sink.wait_resolve",
+            ))
+        }
+        _ => error,
     }
 }
 

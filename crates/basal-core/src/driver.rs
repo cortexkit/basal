@@ -1251,6 +1251,18 @@ impl Activation<'_> {
             &call.kind,
             &args,
         )?;
+        if matches!(call.kind, CallKind::Primitive(Primitive::SinkWaitResolve))
+            && !self
+                .rt
+                .shared
+                .host
+                .supports_core_capability(basal_host::core_host::FLOW_WAIT_RESOLVE_V1)
+        {
+            return Err(Refusal::new(
+                "wait_resolve_unsupported",
+                "prefrontal-core does not currently advertise flow-wait-resolve/v1",
+            ));
+        }
         if matches!(call.kind, CallKind::Primitive(Primitive::SinkDigest))
             && args
                 .get("options")
@@ -1434,6 +1446,29 @@ impl Activation<'_> {
                     request: Some(request),
                     tokens: Some(clamped.reserve),
                     args: None,
+                    ..Prepared::default()
+                })
+            }
+            CallKind::Primitive(Primitive::SinkWaitResolve) => {
+                let version = self
+                    .run
+                    .flow_version
+                    .ok_or_else(|| Refusal::denied("core calls require an installed version"))?;
+                // Freeze the approved identity and outcome before sending. A
+                // lost reply must reuse the same payload and receipt on retry.
+                let mut value = serde_json::json!({
+                    "stamp": {"flow_id":self.run.flow_id, "flow_version":version,
+                        "code_hash":crate::ids::hex(&self.run.code_hash)},
+                    "outcome":args["outcome"],
+                });
+                if let Some(note) = args.get("note") {
+                    value["note"] = note.clone();
+                }
+                Ok(Prepared {
+                    request: Some(
+                        JsonText::new(value.to_string())
+                            .map_err(|e| Refusal::new(codes::TOO_LARGE, e.to_string()))?,
+                    ),
                     ..Prepared::default()
                 })
             }

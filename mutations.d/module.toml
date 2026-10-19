@@ -445,7 +445,7 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-module/src/ops.rs"
-old = "if manifest.sinks.is_empty() {"
+old = "if manifest.digest_sinks().next().is_none() {"
 new = "if false {"
 
 [[control]]

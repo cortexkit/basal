@@ -2,6 +2,8 @@
 #[path = "hosts/board_sink.rs"]
 mod board_sink;
 mod common;
+#[path = "hosts/wait_resolve.rs"]
+mod wait_resolve;
 mod wire;
 use std::sync::{Arc, Mutex};
 
