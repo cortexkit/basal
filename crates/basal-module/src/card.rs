@@ -64,29 +64,6 @@ pub(crate) fn warning(w: &Warning) -> Value {
     }
 }
 
-#[cfg(test)]
-mod warning_tests {
-    use super::*;
-
-    #[test]
-    fn macos_protected_root_warning_keeps_its_manifest_source() {
-        assert_eq!(
-            warning(&Warning::MacosProtectedRoot {
-                field: "fs.read".into(),
-                path: "~/Desktop/project".into(),
-                protected_folder: "~/Desktop".into(),
-            }),
-            json!({
-                "kind": "macos_protected_root",
-                "field": "fs.read",
-                "path": "~/Desktop/project",
-                "protected_folder": "~/Desktop",
-                "text": "On macOS this path is in a folder the system protects; the first access will ask the operator for permission.",
-            }),
-        );
-    }
-}
-
 /// Everything the card shows.
 pub struct CardInput<'a> {
     pub manifest: &'a Manifest,
@@ -188,4 +165,27 @@ pub fn fields(input: &CardInput<'_>) -> Value {
             .unwrap_or(Value::Null),
         "dry_run_summary": input.dry_run,
     })
+}
+
+#[cfg(test)]
+mod warning_tests {
+    use super::*;
+
+    #[test]
+    fn macos_protected_root_warning_keeps_its_manifest_source() {
+        assert_eq!(
+            warning(&Warning::MacosProtectedRoot {
+                field: "fs.read".into(),
+                path: "~/Desktop/project".into(),
+                protected_folder: "~/Desktop".into(),
+            }),
+            json!({
+                "kind": "macos_protected_root",
+                "field": "fs.read",
+                "path": "~/Desktop/project",
+                "protected_folder": "~/Desktop",
+                "text": "On macOS this path is in a folder the system protects; the first access will ask the operator for permission.",
+            }),
+        );
+    }
 }
