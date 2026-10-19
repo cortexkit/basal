@@ -554,7 +554,10 @@ impl DryRunner {
             other => DryRunError::Invalid(format!("install into the scratch store: {other}")),
         })?;
         let warnings = if request.template.is_some() {
-            basal_core::install::agentless_audience_warnings(manifest, self.catalog.as_ref())
+            let mut warnings =
+                basal_core::install::agentless_audience_warnings(manifest, self.catalog.as_ref());
+            warnings.extend(basal_core::install::protected_root_warnings(manifest));
+            warnings
         } else {
             installed.warnings.clone()
         };

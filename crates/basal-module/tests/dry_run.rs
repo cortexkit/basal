@@ -127,6 +127,72 @@ fn agentless_audience_non_query_ops_warn_in_install_and_dry_run() {
     );
 }
 
+#[cfg(target_os = "linux")]
+struct ProtectedRootDirectory {
+    root: std::path::PathBuf,
+    desktop: std::path::PathBuf,
+    remove_desktop: bool,
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for ProtectedRootDirectory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+        if self.remove_desktop {
+            let _ = std::fs::remove_dir(&self.desktop);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn protected_root_warning_is_returned_for_install_and_dry_run() {
+    let name = format!(
+        "basal-warning-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock is after Unix epoch")
+            .as_nanos()
+    );
+    let manifest_root = format!("~/Desktop/{name}");
+    let root = basal_host::builtins::expand_home(&manifest_root).expect("home root expands");
+    let desktop = root.parent().expect("Desktop parent").to_path_buf();
+    let remove_desktop = !desktop.exists();
+    std::fs::create_dir_all(&desktop).expect("create temporary Desktop parent");
+    std::fs::create_dir(&root).expect("create unique protected root");
+    let _root_cleanup = ProtectedRootDirectory {
+        root,
+        desktop,
+        remove_desktop,
+    };
+
+    let f = fixture("protected-root-warning", Options::default());
+    let mut manifest = events_manifest("flow-protected-root-warning");
+    manifest["fs"] = json!({"read": [manifest_root]});
+    let installed = install(&f, &Caller::Operator, "return 1;", &manifest);
+    assert_eq!(
+        installed["state"], "pending",
+        "the warning is not a refusal"
+    );
+    assert_eq!(installed["warnings"].as_array().unwrap().len(), 1);
+    assert_eq!(installed["warnings"][0]["kind"], "macos_protected_root");
+    assert_eq!(installed["warnings"][0]["field"], "fs.read");
+    assert_eq!(installed["warnings"][0]["path"], manifest_root);
+    assert_eq!(installed["warnings"][0]["protected_folder"], "~/Desktop");
+
+    let dry_run = f
+        .module
+        .handle(
+            &Caller::Operator,
+            "flow.dry_run",
+            json!({"flow_id": installed["flow_id"]}),
+        )
+        .expect("dry run succeeds");
+    assert_eq!(dry_run["warnings"], installed["warnings"]);
+    assert_eq!(dry_run["summary"]["warnings"], installed["warnings"]);
+}
+
 fn calls(run: &Value) -> Vec<Value> {
     run["calls"].as_array().cloned().unwrap_or_default()
 }

@@ -4,10 +4,20 @@ A flow script runs in `ck-basal-worker`, a separate process that confines
 itself before it reads anything from basal. The script reaches the world only
 through host calls: `sink.*`, `facts`, `ops.call`, `llm`, `classify`, `kv` and
 the built-ins. basal checks each one against the approved manifest, in the
-parent process, and journals it there. This page documents module-event
-triggers, module calls for a target agent and the digest item shape, then two
-behaviours of the script runtime that are deliberate limits, not guarantees,
-and public facts across a global audience.
+parent process, and journals it there. This page documents install and dry-run
+warnings, module-event triggers, module calls for a target agent and the digest
+item shape, then two deliberate limits of the script runtime and public facts
+across a global audience.
+
+## Install and dry-run warnings
+
+Flow installs and dry runs report `macos_protected_root` when an `fs.read`,
+`fs.write`, `git.read` or template parameter `under` root is under
+`~/Desktop`, `~/Documents`, `~/Downloads` or `/Volumes/`. The warning includes
+the manifest `field`, original `path` and `protected_folder`; it does not refuse
+the flow. These locations are listed on every platform so manifests intended
+for macOS can be reviewed before their first access. On macOS, the first access
+to the protected root named by `path` will ask the operator for permission.
 
 ## Revocation during a run
 
