@@ -907,9 +907,11 @@ fn digest_keeps_twenty_long_entries_without_follow_up_text() {
                 "The detailed item {n:02} continues beyond eighty characters: {}",
                 "item context ".repeat(4)
             ));
+            // Short, so twenty entries' data stays under core's 8 KiB data
+            // cap; a long follow_up kept out of the body is checked in
+            // digest_data_is_exact_and_escaped_large_text_stays_within_core_limits.
             item["follow_up"] = json!(format!(
-                "FOLLOW_UP_PRIVATE_{n:02}: {}",
-                "review the linked context; ".repeat(1)
+                "FOLLOW_UP_PRIVATE_{n:02}: review the linked context; "
             ));
             item
         })
@@ -939,10 +941,7 @@ fn digest_keeps_twenty_long_entries_without_follow_up_text() {
             "The detailed item {n:02} continues beyond eighty characters: {}",
             "item context ".repeat(4)
         );
-        let follow_up = format!(
-            "FOLLOW_UP_PRIVATE_{n:02}: {}",
-            "review the linked context; ".repeat(1)
-        );
+        let follow_up = format!("FOLLOW_UP_PRIVATE_{n:02}: review the linked context; ");
         assert_eq!(entry["item_text"], item_text);
         assert_eq!(entry["follow_up"], follow_up);
         let short: String = item_text.chars().take(79).collect();
