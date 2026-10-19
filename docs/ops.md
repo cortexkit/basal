@@ -463,7 +463,9 @@ The named tool request uses the daemon wire protocol's [`ToolCallRequest`](https
 {"name":"codemode","arguments":{"code":"string","description?":"string","limits?":{"wall_ms?":"integer","tool_calls?":"integer","output_bytes?":"integer"}},"call_key?":"string","schema_pin?":"string"}
 ```
 
-The JavaScript function body sees only `tools.<name>(input)`, `console.log(...)`, and frozen intrinsics. Each tool has the same input and provider permission rules as the agent's direct calls, including writes and shell. Only codemode itself is excluded. Model tools are not implemented yet.
+The JavaScript function body sees only `tools.<name>(input)`, `console.log(...)`, and frozen intrinsics. Each tool has the same input and provider permission rules as the agent's direct calls, including writes and shell. Only codemode itself is excluded. A provider's tools are usable only if it declares `agent-run-scopes/v1`; otherwise the run is refused before it starts. Basal adds its own `model` and `classify` tools, which call Broca on the run's scope.
+
+Core offers `codemode` to a head only when its allowlist names the tool's capability tag, `basal:codemode/v1`.
 
 - A keyed run's ID is domain-separated BLAKE3 over length-framed `(agent_id, call_key)`. A repeated key attaches to its running run or returns its finished result, never starting another worker or dispatching another call.
 - Without a key, a fresh OS-random run ID executes once, with no deduplication, withdrawal or late result. Its result warns that a lost reply cannot be recovered.

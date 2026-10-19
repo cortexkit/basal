@@ -37,7 +37,11 @@ pub fn catalog_tool() -> CatalogTool {
     tool.result_format = Some(cortexkit_role_tool_provider::result::ResultFormat::ContentV1);
     tool.reply =
         Some(serde_json::from_value(json!({"max_ms":2_520_000})).expect("static reply deadline"));
-    let tool = tool.with_modes(vec![CallMode::Classic]);
+    // Core offers a head only the tools whose tags its allowlist names, so this
+    // tag is the switch that grants codemode. It exposes nothing on its own.
+    let tool = tool
+        .with_capabilities(vec!["basal:codemode/v1".into()])
+        .with_modes(vec![CallMode::Classic]);
     check_modes(&tool).expect("static codemode call modes");
     tool
 }

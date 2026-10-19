@@ -1013,7 +1013,7 @@ fn role_describe_advertises_catalog_capability_filter() {
         .any(|capability| capability == cortexkit_role_tool_provider::CATALOG_CAPABILITY_FILTER));
     assert_eq!(
         describe["tool_capabilities"],
-        json!(["basal:flow.manage/v1"])
+        json!(["basal:codemode/v1", "basal:flow.manage/v1"])
     );
 }
 
@@ -1021,7 +1021,7 @@ fn role_describe_advertises_catalog_capability_filter() {
 fn role_describe_tool_capabilities_match_catalog_tool_union() {
     let describe = basal_module::tool::describe();
     let catalog = basal_module::tool::catalog(json!({
-        "params":{"capabilities":["basal:flow.manage/v1"]}
+        "params":{"capabilities":["basal:codemode/v1", "basal:flow.manage/v1"]}
     }))
     .unwrap();
     let union: BTreeSet<String> = catalog["tools"]
@@ -1042,7 +1042,7 @@ fn role_describe_tool_capabilities_match_catalog_tool_union() {
     );
     assert_eq!(
         union,
-        ["basal:flow.manage/v1"]
+        ["basal:codemode/v1", "basal:flow.manage/v1"]
             .into_iter()
             .map(str::to_owned)
             .collect()
@@ -1065,6 +1065,20 @@ fn catalog_capability_filter_selects_flow_and_refuses_invalid_requests() {
             .map(|tool| tool["name"].as_str().unwrap())
             .collect::<Vec<_>>(),
         ["flow"]
+    );
+    // Each tag selects only its own tool, so granting one never exposes the other.
+    let codemode = basal_module::tool::catalog(json!({
+        "params":{"capabilities":["basal:codemode/v1"]}
+    }))
+    .unwrap();
+    assert_eq!(
+        codemode["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["codemode"]
     );
 
     for request in [json!({"params":{}}), json!({"params":{"capabilities":[]}})] {

@@ -2570,8 +2570,8 @@ timeout_s = 600
 id = "call-modes-codemode-catalog-serves-flow"
 guards = "the public catalog declares only classic for codemode"
 file = "crates/basal-module/src/tool.rs"
-old = 'let tool = tool.with_modes(vec![CallMode::Classic]);'
-new = 'let tool = tool.with_modes(vec![CallMode::Classic, CallMode::Flow]); // NON-VACUITY BREAK'
+old = '.with_modes(vec![CallMode::Classic]);'
+new = '.with_modes(vec![CallMode::Classic, CallMode::Flow]); // NON-VACUITY BREAK'
 test_file = "crates/basal-module/tests/tool_provider_conformance.rs"
 runner = "cargo"
 package = "basal-module"
@@ -2878,6 +2878,23 @@ platforms = ["linux"]
 target = "--bin ck-basal"
 expect_red = ["engram_catalog::tests::catalog_is_owner_only_when_written_and_when_already_current"]
 select = { tests = ["engram_catalog::tests::catalog_is_owner_only_when_written_and_when_already_current", "engram_catalog::tests::matching_catalog_bytes_skip_the_writer"] }
+only = true
+timeout_s = 600
+build_timeout_s = 3600
+
+[[control]]
+id = "codemode-tool-carries-no-capability-tag"
+guards = "codemode carries basal:codemode/v1, the tag core's head allowlist uses to offer it"
+file = "crates/basal-module/src/tool.rs"
+old = '.with_capabilities(vec!["basal:codemode/v1".into()])'
+new = '.with_capabilities(Vec::new()) // NON-VACUITY BREAK'
+test_file = "crates/basal-module/tests/tool_provider_conformance.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test tool_provider_conformance"
+select = { tests = ["catalog_capability_filter_selects_flow_and_refuses_invalid_requests", "role_describe_advertises_catalog_capability_filter", "every_public_tool_declares_its_served_modes"] }
+expect_red = ["catalog_capability_filter_selects_flow_and_refuses_invalid_requests", "role_describe_advertises_catalog_capability_filter"]
 only = true
 timeout_s = 600
 build_timeout_s = 3600
