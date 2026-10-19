@@ -1261,8 +1261,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/transport.rs"
-old = "timeout: options.reply_timeout,"
-new = "timeout: self.timeout, /* NON-VACUITY BREAK */"
+old = "let deadline = std::time::Instant::now() + options.reply_timeout;"
+new = "let deadline = std::time::Instant::now() + self.timeout; /* NON-VACUITY BREAK */"
 
 [[control]]
 id = "codemode-model-routing-task"
