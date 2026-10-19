@@ -84,7 +84,7 @@ impl CiHost {
         }
         if request.kind == CallKind::Primitive(Primitive::SinkDigest) {
             let item = &args["item"];
-            assert!(item["title"].as_str().unwrap().chars().count() < 200);
+            assert!(item["title"].as_str().unwrap().chars().count() <= 80);
             assert!(item["body"].as_str().unwrap().len() <= 4096);
             assert!(serde_json::to_vec(&item["data"]).unwrap().len() <= 8192);
             assert!(serde_json::to_vec(item).unwrap().len() <= 16384);
@@ -333,7 +333,7 @@ fn published_manifest_is_global_with_only_ci_v2_repo_filters_and_minimal_grants(
     Manifest::parse(MANIFEST).unwrap();
     let value: Value = serde_json::from_str(MANIFEST).unwrap();
     assert_eq!(value["audience"], json!({"kind":"global"}));
-    assert_eq!(value["version"], 11);
+    assert_eq!(value["version"], 12);
     assert!(
         value["purpose"]
             .as_str()
@@ -484,10 +484,10 @@ fn quiet_repo_updates_silently_while_other_repos_still_wake() {
     assert_eq!(writes[0]["agent"], "agent_b1a9c546c33b84c9");
     assert_eq!(writes[0]["replace_key"], "ci:cortexkit/cerebellum:42:1");
     assert!(
-        writes[0]["item"]["title"]
+        writes[0]["item"]["body"]
             .as_str()
             .unwrap()
-            .contains("linux shard 101")
+            .contains("Failed jobs: linux shard 101")
     );
     assert_eq!(
         t.memory()["runs"]["ci:cortexkit/cerebellum:42:1"]["jobs"]
@@ -597,6 +597,75 @@ fn first_failed_job_wakes_and_later_jobs_are_silent() {
 }
 
 #[test]
+fn digest_body_never_repeats_title_or_reports_unavailable_test_names() {
+    let failed = Test::new();
+    failed.ci(job("cortexkit/basal", 101));
+    let failed_item = failed.writes()[0]["item"].clone();
+
+    let green = Test::new();
+    green.ci(job("cortexkit/basal", 101));
+    green.ci(run("cortexkit/basal", "success"));
+    let green_writes = green.writes();
+    let green_item = green_writes.last().unwrap()["item"].clone();
+
+    let red_without_jobs = Test::new();
+    red_without_jobs.ci(run("cortexkit/basal", "failure"));
+    let red_item = red_without_jobs.writes()[0]["item"].clone();
+
+    for item in [&failed_item, &green_item, &red_item] {
+        let title = item["title"].as_str().unwrap();
+        let body = item["body"].as_str().unwrap();
+        assert!(!body.contains(title), "{body}");
+        assert!(!body.contains("test names unavailable"), "{body}");
+    }
+
+    assert_eq!(failed_item["title"], "cortexkit/basal: CI failed on main");
+    assert_eq!(
+        failed_item["body"],
+        "Failed jobs: linux shard 101\nRun 42, attempt 1, jobs arriving\nCommit 0123456789ab"
+    );
+    assert_eq!(
+        green_item["title"],
+        "cortexkit/basal: CI green again on main"
+    );
+    assert_eq!(
+        green_item["body"],
+        "Failed jobs: linux shard 101\nRun 42, attempt 1, finished green (success)\nCommit 0123456789ab"
+    );
+    assert_eq!(
+        red_item["title"],
+        "cortexkit/basal: CI run on main ended failure"
+    );
+    assert_eq!(
+        red_item["body"],
+        "Failed jobs not reported yet\nRun 42, attempt 1, finished red (failure)\nCommit 0123456789ab"
+    );
+}
+
+#[test]
+fn digest_links_put_the_run_first_and_keep_at_most_three_failed_jobs() {
+    let t = Test::new();
+    for id in 101..=108 {
+        t.ci(job("cortexkit/basal", id));
+    }
+    t.ci(run("cortexkit/basal", "failure"));
+
+    let writes = t.writes();
+    let links = writes.last().unwrap()["item"]["links"].as_array().unwrap();
+    assert_eq!(links.len(), 4);
+    assert_eq!(
+        links[0]["url"],
+        "https://github.com/cortexkit/basal/actions/runs/42"
+    );
+    for (link, id) in links[1..].iter().zip(101..=103) {
+        assert_eq!(
+            link["url"],
+            format!("https://github.com/cortexkit/basal/actions/runs/42/job/{id}")
+        );
+    }
+}
+
+#[test]
 fn oversized_failed_job_digest_stays_within_core_item_limits() {
     let t = Test::new();
     let mut event = job("cortexkit/basal", 108);
@@ -612,7 +681,8 @@ fn oversized_failed_job_digest_stays_within_core_item_limits() {
     t.ci(event);
 
     let item = &t.writes()[0]["item"];
-    assert!(item["title"].as_str().unwrap().chars().count() <= 200);
+    assert!(item["title"].as_str().unwrap().chars().count() <= 80);
+    assert!(item["title"].as_str().unwrap().ends_with('…'));
     assert!(item["body"].as_str().unwrap().len() <= 4096);
     assert!(serde_json::to_vec(&item["data"]).unwrap().len() <= 8192);
     assert!(serde_json::to_vec(item).unwrap().len() <= 16 * 1024);
@@ -794,13 +864,13 @@ fn failed_jobs_grow_one_silent_item_on_any_branch() {
             .join(", ");
         assert_eq!(
             last["item"]["title"],
-            format!("cortexkit/basal run 42 (attempt 1) on feature/ci: failed jobs {names}")
+            "cortexkit/basal: CI failed on feature/ci"
         );
         assert!(
             last["item"]["body"]
                 .as_str()
                 .unwrap()
-                .contains("test names unavailable")
+                .contains(&format!("Failed jobs: {names}"))
         );
         assert_eq!(
             last["item"]["links"].as_array().unwrap().len(),
@@ -879,11 +949,9 @@ fn run_finished_after_new_jobs_wakes_and_names_only_jobs_since_first_notice() {
     let finished = &writes[7];
     assert_eq!(finished["action"], "wake");
     assert_eq!(finished["replace_key"], "ci:cortexkit/basal:42:1");
-    assert!(
-        finished["item"]["title"]
-            .as_str()
-            .unwrap()
-            .contains("failed jobs since first notice:")
+    assert_eq!(
+        finished["item"]["title"],
+        "cortexkit/basal: CI failed on main"
     );
     assert!(
         !finished["item"]["body"]
@@ -892,7 +960,7 @@ fn run_finished_after_new_jobs_wakes_and_names_only_jobs_since_first_notice() {
             .contains("linux shard 101")
     );
     assert!(finished["item"]["body"].as_str().unwrap().contains(
-        "failed jobs since first notice: linux shard 102, linux shard 103, linux shard 104, linux shard 105, linux shard 106, linux shard 107"
+        "Failed since first notice: linux shard 102, linux shard 103, linux shard 104, linux shard 105, linux shard 106, linux shard 107"
     ));
     assert_eq!(
         finished["item"]["data"]["observed"]["failed_jobs_since_first_notice"],
@@ -1190,19 +1258,15 @@ fn red_run_without_jobs_creates_one_item_and_only_startup_failure_wakes() {
         assert_eq!(writes[0]["agent"], BASAL);
         assert_eq!(writes[0]["action"], action, "{conclusion}");
         assert_eq!(writes[0]["replace_key"], "ci:cortexkit/basal:42:1");
-        assert!(
-            writes[0]["item"]["title"]
-                .as_str()
-                .unwrap()
-                .contains(&format!(
-                    "run failed ({conclusion}); failed jobs not yet reported"
-                ))
+        assert_eq!(
+            writes[0]["item"]["title"],
+            format!("cortexkit/basal: CI run on main ended {conclusion}")
         );
-        assert!(
-            writes[0]["item"]["body"]
-                .as_str()
-                .unwrap()
-                .contains("test names unavailable")
+        assert_eq!(
+            writes[0]["item"]["body"],
+            format!(
+                "Failed jobs not reported yet\nRun 42, attempt 1, finished red ({conclusion})\nCommit 0123456789ab"
+            )
         );
     }
 }
@@ -1230,19 +1294,14 @@ fn completed_red_updates_the_existing_item_then_green_updates_silently() {
             .iter()
             .all(|w| w["replace_key"] == "ci:cortexkit/basal:42:1")
     );
-    assert_eq!(writes[1]["action"], "silent");
-    assert!(
-        writes[1]["item"]["title"]
-            .as_str()
-            .unwrap()
-            .contains("run finished red (failure)")
+    assert_eq!(
+        writes[1]["item"]["title"],
+        "cortexkit/basal: CI failed on main"
     );
     assert_eq!(writes[2]["action"], "silent");
-    assert!(
-        writes[2]["item"]["title"]
-            .as_str()
-            .unwrap()
-            .ends_with("now green")
+    assert_eq!(
+        writes[2]["item"]["title"],
+        "cortexkit/basal: CI green again on main"
     );
 }
 

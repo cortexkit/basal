@@ -829,3 +829,20 @@ timeout_s = 600
 file = "flows/ci-failure-router/flow.js"
 old = "const wakeBranches = WAKE_BRANCHES_BY_REPO[repo];"
 new = "const wakeBranches = undefined; // NON-VACUITY BREAK"
+
+[[control]]
+id = "ci-failure-router-digest-body-does-not-repeat-title"
+guards = "digest body never repeats its title or reports unavailable test names"
+test_file = "crates/basal-module/tests/ci_failure_router.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test ci_failure_router"
+select = { tests = ["digest_body_never_repeats_title_or_reports_unavailable_test_names", "first_failed_job_wakes_and_later_jobs_are_silent"] }
+expect_red = ["digest_body_never_repeats_title_or_reports_unavailable_test_names"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/ci-failure-router/flow.js"
+old = "item.body = bodyLines.join('\\n');"
+new = "item.body = item.title + '\\n' + bodyLines.join('\\n'); // NON-VACUITY BREAK"

@@ -329,20 +329,16 @@ const firstWakeJobIds = new Set(hasFirstNotice ? run.firstWakeJobIds : []);
 const jobsSinceFirstNotice = hasFirstNotice ?
   Object.keys(run.jobs).filter(id => !firstWakeJobIds.has(id)) : [];
 const newNames = jobsSinceFirstNotice.map(id => run.jobs[id]);
-const result = green ? 'now green' : !jobEvent && newNames.length ?
-  `failed jobs since first notice: ${newNames.join(', ')}` : names.length ? `failed jobs ${names.join(', ')}` :
-  // Plexus's run event carries no job list, so a red run with no job in hand
-  // only means its job events haven't arrived; they update this item later.
-  run.conclusion === 'unknown' ? 'run conclusion unknown; failed jobs not yet reported' :
-    `run failed (${run.conclusion}); failed jobs not yet reported`;
-const summary = `${repo} run ${runId ?? 'unknown'} (attempt ${attempt ?? 'unknown'}) on ${run.branch}: ${result}`;
-const status = run.finished && !green ? `; ${run.finished}` : '';
-const links = [...run.links];
-if (run.url && !links.includes(run.url)) {
-  if (links.length === 8) links.pop();
-  links.push(run.url);
-}
-const item = boundedDigest(summary + status, {
+const titlePrefix = green ? `${repo}: CI green again on ` : names.length ? `${repo}: CI failed on ` :
+  `${repo}: CI run on `;
+const titleSuffix = green || names.length ? '' : ` ended ${run.conclusion}`;
+const branchLimit = Math.max(1, 80 - Array.from(titlePrefix).length - Array.from(titleSuffix).length);
+const branch = Array.from(run.branch ?? 'unknown');
+const titleBranch = branch.length > branchLimit ?
+  `${branch.slice(0, Math.max(0, branchLimit - 1)).join('')}…` : branch.join('');
+const title = `${titlePrefix}${titleBranch}${titleSuffix}`;
+const links = run.url ? [run.url, ...run.links.filter(url => url !== run.url).slice(0, 3)] : run.links.slice(0, 3);
+const item = boundedDigest(title, {
   repo, run_id: runId, run_attempt: attempt, branch: run.branch, head_sha: body.head_sha,
   conclusion: run.conclusion, failed_jobs: names.join(', '),
   failed_jobs_since_first_notice: !jobEvent && hasFirstNotice ? newNames.join(', ') : '',
@@ -350,7 +346,19 @@ const item = boundedDigest(summary + status, {
 }, links.map(url => ({ kind: 'url', url })));
 // data.observed.failed_jobs retains the job list beyond the short body summary;
 // boundedDigest records any metadata truncation in data.truncated.
-item.body = `${short(summary + status, 1400)}\nHead sha: ${run.sha}\nConclusion: ${run.conclusion}\ntest names unavailable`;
+const bodyJobs = !jobEvent && newNames.length ? newNames : names;
+const failedJobsLine = bodyJobs.length ?
+  `${!jobEvent && newNames.length ? 'Failed since first notice: ' : 'Failed jobs: '}${bodyJobs.join(', ')}` :
+  'Failed jobs not reported yet';
+const bodyStatus = run.finished ?
+  (run.finished === 'now green' ? 'finished green (success)' : run.finished.replace(/^run /, '')) :
+  'jobs arriving';
+const bodyLines = [
+  short(failedJobsLine, 1400),
+  short(`Run ${runId ?? 'unknown'}, attempt ${attempt ?? 'unknown'}, ${bodyStatus}`, 240),
+  `Commit ${run.sha}`,
+];
+item.body = bodyLines.join('\n');
 while (item.links.length && bytes(JSON.stringify(item)) > 16384) item.links.pop();
 // A run completion can compare its accumulated job IDs with the first notice,
 // even though Plexus v2 does not include per-job conclusions in that event.
