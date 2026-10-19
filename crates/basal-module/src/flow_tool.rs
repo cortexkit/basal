@@ -331,16 +331,6 @@ impl Module {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::escaped_excerpt;
-
-    #[test]
-    fn file_read_excerpt_escapes_binary_bytes() {
-        assert_eq!(escaped_excerpt(b"reply:\0\xff\n"), r"reply:\x00\xff\n");
-    }
-}
-
 fn summary(action: &str, result: &Value) -> String {
     match action {
         "install" => format!(
@@ -373,5 +363,15 @@ fn summary(action: &str, result: &Value) -> String {
             }
         }
         _ => format!("{action}: {result}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::escaped_excerpt;
+
+    #[test]
+    fn file_read_excerpt_escapes_binary_bytes() {
+        assert_eq!(escaped_excerpt(b"reply:\0\xff\n"), r"reply:\x00\xff\n");
     }
 }
