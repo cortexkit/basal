@@ -78,6 +78,39 @@ fn role_call_key() -> String {
     )
 }
 
+/// Reads `module`'s own `tool.catalog` answer: `role.describe` first, then
+/// `tool.catalog` asking for every capability tag the provider serves. The
+/// answer carries per-tool declarations the daemon catalog does not, such as
+/// `emits_events` and `modes`. A failed call, a describe that fails the
+/// role's checks, or an answer that does not decode is an error.
+///
+/// Each of the two requests is bounded by the transport's call timeout.
+pub fn read_tool_catalog(
+    transport: &dyn Transport,
+    module: &str,
+) -> Result<cortexkit_role_tool_provider::catalog::CatalogAnswer, WireError> {
+    use cortexkit_role_tool_provider::catalog::{
+        CatalogAnswer, CatalogRequest, params_for_capabilities,
+    };
+    use cortexkit_role_tool_provider::describe::{check_describe, select_tool_capabilities};
+    let describe = transport.tool(module, "role.describe", json!({}), &role_call_key())?;
+    let describe = check_describe(&describe)
+        .map_err(|problems| WireError::Unreadable(format!("role.describe: {problems:?}")))?;
+    // A provider that filters its catalog by capability tag answers an
+    // empty request with no tools. Ask such a provider for every tag it
+    // serves, so the answer holds every tool that carries any tag.
+    let params = match select_tool_capabilities(&describe, &describe.tool_capabilities) {
+        Some(tags) => params_for_capabilities(tags),
+        None => serde_json::Map::new(),
+    };
+    let request = serde_json::to_value(CatalogRequest::new(params))
+        .map_err(|e| WireError::NeverSent(e.to_string()))?;
+    let answer = transport.tool(module, "tool.catalog", request, &role_call_key())?;
+    let answer: CatalogAnswer = serde_json::from_value(answer)
+        .map_err(|e| WireError::Unreadable(format!("tool.catalog answer: {e}")))?;
+    Ok(answer)
+}
+
 pub const CORE: &str = "prefrontal-core";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Surface {
@@ -209,34 +242,12 @@ impl SubcCatalog {
     ///
     /// Each request is bounded by the transport's call timeout.
     pub fn tool_emits_events(&self, module: &str, op: &str) -> Result<Option<bool>, WireError> {
-        use cortexkit_role_tool_provider::catalog::{
-            CatalogAnswer, CatalogRequest, params_for_capabilities,
-        };
-        use cortexkit_role_tool_provider::describe::{check_describe, select_tool_capabilities};
         // Only tools carry the declaration; a management op has none to read.
         match self.resolve(module, op)? {
             Some(found) if found.surface == Surface::Tool => {}
             _ => return Ok(None),
         }
-        let describe = self
-            .transport
-            .tool(module, "role.describe", json!({}), &role_call_key())?;
-        let describe = check_describe(&describe)
-            .map_err(|problems| WireError::Unreadable(format!("role.describe: {problems:?}")))?;
-        // A provider that filters its catalog by capability tag answers an
-        // empty request with no tools. Ask such a provider for every tag it
-        // serves, so the answer holds every tool that carries any tag.
-        let params = match select_tool_capabilities(&describe, &describe.tool_capabilities) {
-            Some(tags) => params_for_capabilities(tags),
-            None => serde_json::Map::new(),
-        };
-        let request = serde_json::to_value(CatalogRequest::new(params))
-            .map_err(|e| WireError::NeverSent(e.to_string()))?;
-        let answer = self
-            .transport
-            .tool(module, "tool.catalog", request, &role_call_key())?;
-        let answer: CatalogAnswer = serde_json::from_value(answer)
-            .map_err(|e| WireError::Unreadable(format!("tool.catalog answer: {e}")))?;
+        let answer = read_tool_catalog(self.transport.as_ref(), module)?;
         Ok(answer
             .tools
             .into_iter()

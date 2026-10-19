@@ -543,3 +543,37 @@ timeout_s = 600
 file = "crates/basal-host/src/target_scope.rs"
 old = "self.refresh_required.insert(cache_key.clone());"
 new = "let _ = &cache_key; // NON-VACUITY BREAK"
+
+[[control]]
+id = "run-scope-classic-only-tool-admitted"
+guards = "a call-modes provider's tool whose modes leave out codemode is refused by name"
+test_file = "crates/basal-host/src/run_scope.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+select = { filter = "run_scope::" }
+expect_red = ["run_scope::call_mode_tests::a_call_modes_tool_that_does_not_list_codemode_is_refused_by_name"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/run_scope.rs"
+old = "if !serves_call_mode(tool, &CallMode::Codemode) {"
+new = "if false && !serves_call_mode(tool, &CallMode::Codemode) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "run-scope-legacy-capability-skipped"
+guards = "a provider declaring agent-run-scopes/v1 is admitted without a catalog read"
+test_file = "crates/basal-host/src/run_scope.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+select = { filter = "run_scope::" }
+expect_red = ["run_scope::call_mode_tests::a_legacy_run_scopes_provider_is_admitted_without_reading_its_catalog"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/run_scope.rs"
+old = "if provides(LEGACY_RUN_SCOPES_CAPABILITY) {"
+new = "if false && provides(LEGACY_RUN_SCOPES_CAPABILITY) { // NON-VACUITY BREAK"

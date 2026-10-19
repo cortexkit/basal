@@ -615,8 +615,16 @@ pub fn admit_tool(
         )
         .map_err(|e| json!({"code":e.code,"message":e.message}))?;
         let daemon = transport.catalog().map_err(super::scope::error_value)?;
-        let resolved =
-            run_scope::catalog(&daemon, &opened.catalog).map_err(super::scope::error_value)?;
+        // Reading each opted-in provider's own tool catalog makes live calls,
+        // so it runs here, outside every store write.
+        let resolved = run_scope::catalog(transport, &daemon, &opened.catalog).map_err(
+            |error| match error {
+                run_scope::CatalogError::Wire(error) => super::scope::error_value(error),
+                run_scope::CatalogError::Tool(refusal) => {
+                    json!({"code":refusal.reason.code(),"message":refusal.message()})
+                }
+            },
+        )?;
         let resolved = super::models::add_catalog(&resolved)
             .map_err(|e| json!({"code":"invalid_catalog","message":e}))?;
         let tools = catalog(&resolved).map_err(|e| json!({"code":e.code,"message":e.message}))?;

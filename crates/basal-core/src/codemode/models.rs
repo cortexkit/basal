@@ -56,6 +56,10 @@ pub fn add_catalog(catalog: &Value) -> Result<Value, &'static str> {
 
 pub fn provider_ready(transport: &dyn Transport) -> Result<(), WireError> {
     let catalog = transport.catalog()?;
+    // Broca is gated on the legacy run-scope capability, not on per-tool
+    // call modes: a codemode run reaches Broca to open model routes, not to
+    // call one of Broca's tools, so there is no tool whose `modes` could say
+    // codemode. Broca declares this capability for that purpose.
     let opted_in = catalog["modules"].as_array().is_some_and(|modules| {
         modules.iter().any(|m| {
             m["module_id"] == "broca"

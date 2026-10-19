@@ -1467,9 +1467,14 @@ fn map_answer(result: std::result::Result<Value, WireError>) -> Mapped {
         Err(WireError::Typed(refusal)) => {
             use RefusalReason::*;
             let (outcome, code, scope_loss) = match refusal.reason {
-                ScopeEnded | ScopeNotLive | ScopeNotSynced | ScopeChanged => {
+                ScopeEnded | ScopeNotLive | ScopeNotSynced => {
                     (Outcome::Refused, refusal.reason.as_str(), true)
                 }
+                // The run scope is still live: its record changed while a bind
+                // was in flight. The transport has already re-opened such a
+                // bind once, and never resends a request the provider may have
+                // received, so this refusal ends only this call.
+                ScopeChanged => (Outcome::Refused, refusal.reason.as_str(), false),
                 ConsentUnavailable => (Outcome::Refused, "consent_unavailable", false),
                 ScopeNotCarrier
                 | ScopeEpochRequired
