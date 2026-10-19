@@ -294,7 +294,7 @@ fn published_manifest_has_global_minimal_grants_and_five_minute_schedule() {
     let manifest = Manifest::parse(MANIFEST).unwrap();
     let value = serde_json::to_value(manifest).unwrap();
     assert_eq!(value["id"], "board-hygiene");
-    assert_eq!(value["version"], 12);
+    assert_eq!(value["version"], 13);
     assert_eq!(value["board_read"], json!(["$audience"]));
     assert_eq!(value["audience"], json!({"kind":"global"}));
     assert_eq!(
@@ -453,12 +453,13 @@ fn several_members_aggregate_by_owner_and_rule() {
                 write["item"]["data"]["entries"].as_array().unwrap().len(),
                 count
             );
-            assert!(write["item"]["body"].as_str().unwrap().contains("Release"));
+            let body = write["item"]["body"].as_str().unwrap();
+            assert!(body.contains("\"Release\""), "{body}");
             assert!(
-                write["item"]["body"]
-                    .as_str()
-                    .unwrap()
-                    .contains("board update:")
+                body.lines()
+                    .nth(1)
+                    .is_some_and(|line| line.starts_with("- ")),
+                "{body}"
             );
         }
     }
@@ -607,7 +608,7 @@ fn plain_peer_wait_nudges_the_peer_and_nonpeer_wait_nudges_owner() {
                 writes[0]["item"]["body"]
                     .as_str()
                     .unwrap()
-                    .contains("own board, or decline")
+                    .contains("commit with an item on your own board with an ETA, or decline")
             );
         }
     }
@@ -815,33 +816,164 @@ fn digest_data_is_exact_and_escaped_large_text_stays_within_core_limits() {
         first[0]["item"]["body"]
             .as_str()
             .unwrap()
-            .contains("board update: item \"Ship\" → done")
+            .contains("- \"Release\": \"Ship\" (item1): wait on item:ag_b/item2 ended 30 min ago")
     );
     i["text"] = json!("🧭".repeat(300));
     i["follow_up"] = json!("\"".repeat(4096));
     t.item(i);
     let repeated = t.run(BASE + HOUR);
     assert_eq!(repeated.len(), 1);
+    let body = repeated[0]["item"]["body"].as_str().unwrap();
     assert!(
-        repeated[0]["item"]["body"]
-            .as_str()
-            .unwrap()
-            .contains("Follow-up:")
+        !body.contains("Follow-up:") && !body.contains(&"\"".repeat(20)),
+        "{body}"
+    );
+    assert!(body.contains("…"), "{body}");
+}
+
+#[test]
+fn each_rule_digest_has_one_remedy_and_compact_entry_lines() {
+    let expected = [
+        (
+            "wait_ended",
+            "Update each item to done.\n- \"Release\": \"Ship\" (item0): wait on work ended 8 h ago",
+        ),
+        (
+            "eta_passed",
+            "Mark each done, or set a new ETA.\n- \"Release\": \"Ship\" (item0): ETA passed 08:00Z",
+        ),
+        (
+            "stale_active",
+            "Update each item, or set a new ETA.\n- \"Release\": \"Ship\" (item0): active, unchanged 8 h",
+        ),
+        (
+            "stale_wait",
+            "Check each wait and update its item, or set a new ETA.\n- \"Release\": \"Ship\" (item0): waiting 32 h on work:wi_silent, no ETA",
+        ),
+        (
+            "stale_pending",
+            "Start each, make it wait on whoever it depends on (a peer, or an ask for the user), set an ETA, or remove it.\n- \"Release\": \"Ship\" (item0): planned, idle 8 h, no ETA",
+        ),
+        (
+            "lane_done",
+            "Retire each completed lane.\n- \"Release\": all items done 8 h ago",
+        ),
+    ];
+    for (name, body) in expected {
+        let mut t = active_test(vec![candidates(name, 1)]);
+        let digest = rule(&t.run(BASE + 8 * HOUR), name).remove(0);
+        assert_eq!(digest["item"]["body"], body, "{name}");
+    }
+}
+
+#[test]
+fn eta_passed_digest_shows_other_utc_dates() {
+    let mut item = candidate("eta_passed", "item1", BASE);
+    item["eta_ms"] = json!(BASE - 24 * HOUR);
+    let mut t = Test::new(vec![board("ag_a", vec![item])]);
+    let digest = rule(&t.run(BASE), "eta_passed").remove(0);
+    assert_eq!(
+        digest["item"]["body"],
+        "Mark each done, or set a new ETA.\n- \"Release\": \"Ship\" (item1): ETA passed 01-14 08:00Z"
     );
 }
 
 #[test]
+fn digest_trims_long_lane_titles_and_item_texts() {
+    let lane_title = format!("Release lane: {}", "long horizon ".repeat(7));
+    let item_text = format!("Detailed deliverable: {}", "specific context ".repeat(7));
+    let mut item = candidate("eta_passed", "item1", BASE);
+    item["text"] = json!(item_text);
+    let mut b = board("ag_a", vec![item]);
+    b["board"]["laneBlocks"][0]["title"] = json!(lane_title);
+    let mut t = Test::new(vec![b]);
+    let digest = rule(&t.run(BASE), "eta_passed").remove(0);
+    let lane_short: String = lane_title.chars().take(79).collect();
+    let item_short: String = item_text.chars().take(79).collect();
+    let lane = serde_json::to_string(&format!("{lane_short}…")).unwrap();
+    let text = serde_json::to_string(&format!("{item_short}…")).unwrap();
+    assert_eq!(
+        digest["item"]["body"],
+        format!("Mark each done, or set a new ETA.\n- {lane}: {text} (item1): ETA passed 08:00Z")
+    );
+}
+
+#[test]
+fn digest_keeps_twenty_long_entries_without_follow_up_text() {
+    let items = (0..20)
+        .map(|n| {
+            let mut item = candidate("eta_passed", &format!("long_item_{n:02}"), BASE);
+            item["text"] = json!(format!(
+                "The detailed item {n:02} continues beyond eighty characters: {}",
+                "item context ".repeat(4)
+            ));
+            item["follow_up"] = json!(format!(
+                "FOLLOW_UP_PRIVATE_{n:02}: {}",
+                "review the linked context; ".repeat(1)
+            ));
+            item
+        })
+        .collect();
+    let mut t = Test::new(vec![board("ag_a", items)]);
+    let writes = t.run(BASE);
+    assert_eq!(writes.len(), 1);
+    let digest = &writes[0]["item"];
+    let body = digest["body"].as_str().unwrap();
+    let entries = digest["data"]["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 20);
+    assert_eq!(digest["data"]["total_count"], 20);
+    assert_eq!(digest["data"]["more_count"], 0);
+    assert!(body.len() <= 4096, "{} bytes", body.len());
+    assert_eq!(body.lines().count(), 21, "{body}");
+    assert_eq!(
+        body.lines().next(),
+        Some("Mark each done, or set a new ETA.")
+    );
+    assert!(
+        !body.contains("FOLLOW_UP_PRIVATE") && !body.contains("review the linked context"),
+        "{body}"
+    );
+    assert!(body.contains("…"), "{body}");
+    for (n, entry) in entries.iter().enumerate() {
+        let item_text = format!(
+            "The detailed item {n:02} continues beyond eighty characters: {}",
+            "item context ".repeat(4)
+        );
+        let follow_up = format!(
+            "FOLLOW_UP_PRIVATE_{n:02}: {}",
+            "review the linked context; ".repeat(1)
+        );
+        assert_eq!(entry["item_text"], item_text);
+        assert_eq!(entry["follow_up"], follow_up);
+        let short: String = item_text.chars().take(79).collect();
+        assert_eq!(
+            body.lines().nth(n + 1),
+            Some(
+                format!("- \"Release\": \"{short}…\" (long_item_{n:02}): ETA passed 08:00Z")
+                    .as_str()
+            )
+        );
+    }
+}
+
+#[test]
 fn digest_greedily_fills_limits_in_oldest_first_order_with_exact_more_count() {
+    let long_text = "Quote \" and é🦀\n".repeat(6);
     let mut items: Vec<_> = (0..80)
         .map(|n| {
             let mut i = candidate("eta_passed", &format!("item{n:03}"), BASE);
-            i["text"] = json!("Quote \" and é🦀\n".repeat(6));
+            i["text"] = json!(long_text.clone());
             i
         })
         .collect();
     let mut single = Test::new(vec![board("ag_a", vec![items[0].clone()])]);
     let example = single.run(BASE).remove(0);
-    let line = example["item"]["body"].as_str().unwrap();
+    let first_line = example["item"]["body"]
+        .as_str()
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap();
     // Digests order equally old entries by member ID, regardless of traversal order.
     items.reverse();
     let mut t = Test::new(vec![board("ag_a", items)]);
@@ -855,18 +987,28 @@ fn digest_greedily_fills_limits_in_oldest_first_order_with_exact_more_count() {
     for (n, entry) in entries.iter().enumerate() {
         assert_eq!(entry["item_id"], format!("item{n:03}"));
     }
-    let mut lines = vec![line; included];
-    let expected = format!("{}\n\nand {} more", lines.join("\n\n"), 80 - included);
+    let short_text: String = long_text.chars().take(79).collect();
+    let quoted_text = serde_json::to_string(&format!("{short_text}…")).unwrap();
+    let lines = (0..included)
+        .map(|n| format!("- \"Release\": {quoted_text} (item{n:03}): ETA passed 08:00Z"))
+        .collect::<Vec<_>>();
+    let expected = format!(
+        "{first_line}\n{}\nand {} more",
+        lines.join("\n"),
+        80 - included
+    );
     assert_eq!(digest["body"], expected);
     let mut next = digest.clone();
     let mut entry = example["item"]["data"]["entries"][0].clone();
     entry["item_id"] = json!(format!("item{included:03}"));
     next["data"]["entries"].as_array_mut().unwrap().push(entry);
     next["data"]["more_count"] = json!(79 - included);
-    lines.push(line);
+    let next_line = format!("- \"Release\": {quoted_text} (item{included:03}): ETA passed 08:00Z");
+    let mut lines = lines;
+    lines.push(next_line);
     next["body"] = json!(format!(
-        "{}\n\nand {} more",
-        lines.join("\n\n"),
+        "{first_line}\n{}\nand {} more",
+        lines.join("\n"),
         79 - included
     ));
     assert!(
@@ -886,7 +1028,7 @@ fn a_planned_item_idle_six_hours_without_an_eta_nudges_its_owner() {
     assert_eq!(writes[0]["agent"], "ag_a");
     assert_eq!(writes[0]["action"], "wake");
     let body = writes[0]["item"]["body"].as_str().unwrap();
-    assert!(body.contains("has sat 6 h with no ETA"), "{body}");
+    assert!(body.contains("planned, idle 6 h, no ETA"), "{body}");
     assert!(body.contains("an ask for the user"), "{body}");
 
     // An ETA hands the item to eta_passed; a change restarts the clock.
@@ -915,14 +1057,20 @@ fn a_wait_unchanged_for_a_day_without_an_eta_nudges_the_owner() {
     assert_eq!(writes[0]["agent"], "ag_a");
     assert_eq!(writes[0]["action"], "wake");
     let body = writes[0]["item"]["body"].as_str().unwrap();
-    assert!(body.contains("has waited 24 h on work:wi_silent"), "{body}");
+    assert!(
+        body.contains("waiting 24 h on work:wi_silent, no ETA"),
+        "{body}"
+    );
     assert!(!body.contains("ago"), "{body}");
 
     // Long waits read in days.
     let mut t = Test::new(vec![board("ag_a", vec![blocked()])]);
     let writes = rule(&t.run(BASE + 106 * HOUR), "stale_wait");
     let body = writes[0]["item"]["body"].as_str().unwrap();
-    assert!(body.contains("has waited 4 days on"), "{body}");
+    assert!(
+        body.contains("waiting 4 days on work:wi_silent, no ETA"),
+        "{body}"
+    );
 
     // An older wait on the user with no ask asks the owner to file one.
     let mut legacy = blocked();
@@ -931,7 +1079,7 @@ fn a_wait_unchanged_for_a_day_without_an_eta_nudges_the_owner() {
     let writes = rule(&t.run(BASE + 30 * HOUR), "stale_wait");
     let body = writes[0]["item"]["body"].as_str().unwrap();
     assert!(body.contains("on the user with no ask"), "{body}");
-    assert!(body.contains("File an ask"), "{body}");
+    assert!(body.contains("file an ask"), "{body}");
 
     // An ETA, an ended wait or a declined wait each take the item off this rule.
     let mut with_eta = blocked();
@@ -1015,8 +1163,8 @@ fn peer_waits_fold_into_peers_eta_list_without_waiting_owner_copies() {
         assert_eq!(entries[1]["item_wait"]["on"], "ag_b");
         assert!(entries[1].get("own_item_id").is_none());
         let body = first[0]["item"]["body"].as_str().unwrap();
-        assert!(body.contains("ag_a is waiting on you"));
-        assert!(body.contains("own board, or decline"));
+        assert!(body.contains("ag_a waits on you"));
+        assert!(body.contains("commit with an item on your own board with an ETA, or decline"));
         assert!(rule(&t.run(BASE + 3 * HOUR), "eta_passed").is_empty());
         t.host.boards.lock().unwrap()[0]["board"]["laneBlocks"][0]["items"][0]["state"] =
             json!("done");
@@ -1377,9 +1525,7 @@ fn a_merged_delivery_nudges_its_owner_twenty_minutes_after_it_is_first_seen() {
     );
     assert_eq!(
         write["item"]["body"],
-        "\"Merged slice\" (wi_merged_slice) has been merged into main and left unsettled for at least 20 min. \
-         Waiting on it: \"Blocked slice\" (wi_blocked_slice). \
-         Score the delivery and settle it: work(action=\"settle\", id=\"wi_merged_slice\", score=<0-100>, merged_ref=\"main\")."
+        "Score and settle each delivery.\n- \"Merged slice\" (wi_merged_slice): merged into main, unsettled 20 min; blocks 1 slice"
     );
     // An unchanged list is never rewritten, however much time passes.
     assert!(t.run(BASE + 40 * MIN).is_empty());
@@ -1397,9 +1543,7 @@ fn a_merged_delivery_nudges_its_owner_twenty_minutes_after_it_is_first_seen() {
     assert_eq!(updated[0]["action"], "silent");
     let body = updated[0]["item"]["body"].as_str().unwrap();
     assert!(
-        body.contains(
-            "Waiting on it: \"Blocked slice\" (wi_blocked_slice), \"Later slice\" (wi_later_slice)."
-        ),
+        body.contains("merged into main, unsettled 4 h; blocks 2 slices"),
         "{body}"
     );
     assert!(t.run(BASE + 5 * HOUR).is_empty());

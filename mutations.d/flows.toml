@@ -18,6 +18,29 @@ old = "activity = [group?.primary_turn_end_at, group?.last_activity_at]"
 new = "activity = [group?.last_activity_at] // NON-VACUITY BREAK"
 
 [[control]]
+id = "board-hygiene-digest-omits-follow-up-text"
+guards = "compact digest entries keep long follow-up notes out of the body"
+test_file = "crates/basal-module/tests/board_hygiene.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test board_hygiene"
+select = { tests = ["digest_keeps_twenty_long_entries_without_follow_up_text", "a_planned_item_idle_six_hours_without_an_eta_nudges_its_owner"] }
+expect_red = ["digest_keeps_twenty_long_entries_without_follow_up_text"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "flows/board-hygiene/flow.js"
+scope = { after = "function entry(", before = "function contentFingerprint(" }
+old = '''const body = rule === 'lane_done' ?
+    `- ${JSON.stringify(laneTitle)}: ${condition}` :
+    `- ${JSON.stringify(laneTitle)}: ${JSON.stringify(shortText(item?.text ?? lane.title ?? lane.id))} (${item.id}): ${condition}`;'''
+new = '''let body = rule === 'lane_done' ?
+    `- ${JSON.stringify(laneTitle)}: ${condition}` :
+    `- ${JSON.stringify(laneTitle)}: ${JSON.stringify(shortText(item?.text ?? lane.title ?? lane.id))} (${item.id}): ${condition}`;
+  if (item?.follow_up) body += ` FOLLOW_UP:${item.follow_up}`; // NON-VACUITY BREAK'''
+
+[[control]]
 id = "board-hygiene-stale-pending-ignores-an-eta"
 guards = "an idle planned item nudges only when it has no ETA to bound it"
 test_file = "crates/basal-module/tests/board_hygiene.rs"

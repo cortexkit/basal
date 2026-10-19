@@ -126,6 +126,62 @@ function age(now, since) {
   return `${span(now, since)} ago`;
 }
 
+function shortText(value, max = 80) {
+  const text = String(value ?? '');
+  const chars = Array.from(text);
+  return chars.length > max ? `${chars.slice(0, max - 1).join('')}…` : text;
+}
+
+function etaTime(now, eta) {
+  const date = new Date(eta);
+  const current = new Date(now);
+  if (!Number.isFinite(date.getTime())) return 'unknown time';
+  const time = `${String(date.getUTCHours()).padStart(2, '0')}:${String(date.getUTCMinutes()).padStart(2, '0')}Z`;
+  if (date.getUTCFullYear() === current.getUTCFullYear() &&
+      date.getUTCMonth() === current.getUTCMonth() && date.getUTCDate() === current.getUTCDate()) return time;
+  return `${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')} ${time}`;
+}
+
+function itemCondition(rule, agent, item, since, now) {
+  if (rule === 'wait_ended') {
+    return `wait on ${shortText(item.wait?.ref ?? item.wait?.on ?? 'its wait')} ended ${age(now, since)}`;
+  }
+  if (rule === 'eta_passed') {
+    return peerWait(item.wait) ?
+      `${shortText(agent)} waits on you, ETA passed ${etaTime(now, since)}` :
+      `ETA passed ${etaTime(now, since)}`;
+  }
+  if (rule === 'stale_pending') return `planned, idle ${span(now, since)}, no ETA`;
+  if (rule === 'stale_wait') {
+    if (item.wait?.on === 'user' && item.wait?.ref == null) {
+      return `waiting ${span(now, since)} on the user with no ask`;
+    }
+    return `waiting ${span(now, since)} on ${shortText(item.wait?.ref ?? item.wait?.on ?? 'its wait')}, no ETA`;
+  }
+  if (rule === 'stale_active') return `active, unchanged ${span(now, since)}`;
+  return `all items done ${age(now, since)}`;
+}
+
+function digestInstruction(rule, entries) {
+  if (rule === 'wait_ended') return 'Update each item to done.';
+  if (rule === 'eta_passed') {
+    return entries.some(({item}) => peerWait(item?.wait)) ?
+      'For your items, mark each done or set a new ETA; for peer waits, commit with an item on your own board with an ETA, or decline to the waiting owner.' :
+      'Mark each done, or set a new ETA.';
+  }
+  if (rule === 'stale_pending') {
+    return 'Start each, make it wait on whoever it depends on (a peer, or an ask for the user), set an ETA, or remove it.';
+  }
+  if (rule === 'stale_wait') {
+    return entries.some(({item}) => item?.wait?.on === 'user' && item.wait?.ref == null) ?
+      'Check each wait and update its item or set a new ETA; for a user wait with no ask, file an ask so the user receives the question.' :
+      'Check each wait and update its item, or set a new ETA.';
+  }
+  if (rule === 'stale_active') return 'Update each item, or set a new ETA.';
+  if (rule === 'unsettled_merged') return 'Score and settle each delivery.';
+  return 'Retire each completed lane.';
+}
+
 // The `blocks` dependents that are well-formed enough to name.
 function workBlocks(work) {
   return Array.isArray(work.blocks) ? work.blocks.filter(block =>
@@ -145,14 +201,10 @@ function workEntry(agent, work, since, now) {
   if (typeof work.campaign_id === 'string') data.campaign_id = work.campaign_id;
   if (Number.isFinite(work.delivered_at_ms)) data.delivered_at_ms = work.delivered_at_ms;
   const text = cut(work.title, 600);
-  // The score is the owner's judgement, so the action leaves it to fill in.
-  const call = `work(action="settle", id=${JSON.stringify(work.item_id)}, score=<0-100>, merged_ref=${JSON.stringify(work.merged_ref)})`;
-  let body = `${JSON.stringify(text)} (${work.item_id}) has been merged into ${work.merged_ref} and left unsettled for at least ${span(now, since)}.`;
-  if (shown.length) {
-    const more = data.more_blocks ? ` and ${data.more_blocks} more` : '';
-    body += ` Waiting on it: ${shown.map(block => `${JSON.stringify(block.title)} (${block.item_id})`).join(', ')}${more}.`;
-  }
-  body += ` Score the delivery and settle it: ${call}.`;
+  const condition = `merged into ${shortText(work.merged_ref)}, unsettled ${span(now, since)}` +
+    (typeof work.campaign_id === 'string' && blocks.length ?
+      `; blocks ${blocks.length} ${blocks.length === 1 ? 'slice' : 'slices'}` : '');
+  const body = `- ${JSON.stringify(shortText(work.title ?? work.item_id))} (${work.item_id}): ${condition}`;
   return bounded({title: `Merged, not settled: ${text}`, body, data}, 3600, 7000);
 }
 
@@ -176,42 +228,25 @@ function entry(rule, agent, lane, item, since, now) {
     if (item.wait?.ref_terminal_at_ms !== undefined) data.ref_terminal_at_ms = item.wait.ref_terminal_at_ms;
   }
   const text = cut(item?.text ?? lane.title, 600);
-  const call = `board update: item ${JSON.stringify(text)} → done`;
   let title;
-  let body;
   if (rule === 'wait_ended') {
     title = `Wait ended: ${text}`;
-    body = `Your wait ended ${age(now, since)}. Update your item: ${call}.`;
   } else if (rule === 'eta_passed') {
     title = `ETA passed: ${text}`;
-    if (peerWait(item.wait)) {
-      body = `${agent} is waiting on you; the ETA passed ${age(now, since)}. Commit with an item on your own board, or decline: board update: add item ${JSON.stringify(text)} with an ETA; or tell ${agent} you decline.`;
-    } else {
-      body = `Your ETA passed ${age(now, since)}. Update your item: ${call}; or extend: set a new ETA on your item.`;
-    }
   } else if (rule === 'stale_pending') {
     title = `Planned item idle: ${text}`;
-    body = `Your planned item has sat ${span(now, since)} with no ETA. Start it; or make it wait on whoever it depends on (a peer, or an ask for the user); or set an ETA; or remove it: ${call}.`;
   } else if (rule === 'stale_wait') {
     title = `Wait unchanged: ${text}`;
-    if (item.wait?.on === 'user' && item.wait?.ref == null) {
-      // An older wait on the user from before the board required an ask: the
-      // user never received a question, so the owner should file one.
-      body = `Your item has waited ${span(now, since)} on the user with no ask and no ETA. File an ask so the question reaches the user, or update your item: ${call}; or extend: set an ETA on your item.`;
-    } else {
-      const target = cut(item.wait?.ref ?? item.wait?.on ?? 'its wait', 200);
-      body = `Your item has waited ${span(now, since)} on ${target} with no ETA. Check the wait and update your item: ${call}; or extend: set an ETA on your item.`;
-    }
   } else if (rule === 'stale_active') {
     title = `Active item unchanged: ${text}`;
-    body = `Your active item last changed ${age(now, since)}, although you have been active since. Update your item: ${call}; or extend: set a new ETA on your item.`;
   } else {
     title = `Lane complete: ${text}`;
-    body = `Every item in this lane has been done since ${age(now, since)}. Retire the lane: board update: lane ${JSON.stringify(text)} → retired.`;
   }
-  if (item?.follow_up) body += ` Follow-up: ${cut(item.follow_up, 2400)}`;
-  body = `${JSON.stringify(cut(lane.title ?? lane.id, 200))}: ${JSON.stringify(text)}. ${body}`;
-  // Leave room for the digest envelope and its omitted-entry count.
+  const laneTitle = shortText(lane.title ?? lane.id);
+  const condition = item ? itemCondition(rule, agent, item, since, now) : `all items done ${age(now, since)}`;
+  const body = rule === 'lane_done' ?
+    `- ${JSON.stringify(laneTitle)}: ${condition}` :
+    `- ${JSON.stringify(laneTitle)}: ${JSON.stringify(shortText(item?.text ?? lane.title ?? lane.id))} (${item.id}): ${condition}`;
   return bounded({title, body, data}, 3600, 7000);
 }
 
@@ -250,20 +285,21 @@ function digest(agent, rule, entries, now) {
     `${count} completed board ${count === 1 ? 'lane' : 'lanes'}.`;
   const result = {title, body: '', data: {kind: 'board_nudge', rule, agent_id: agent,
     entries: [], total_count: count, more_count: count}};
+  const instruction = digestInstruction(rule, entries);
   const lines = [];
   const size = value => utf8Bytes(JSON.stringify(value));
   const emptyDataBytes = size(result.data);
   const envelopeBytes = size(result) - emptyDataBytes - size('');
-  let bodyBytes = 0;
-  let bodyJsonBytes = 0;
+  let bodyBytes = utf8Bytes(instruction);
+  let bodyJsonBytes = size(instruction) - 2;
   let entryBytes = 0;
   entries.sort((a, b) => a.since - b.since || (a.member < b.member ? -1 : a.member > b.member ? 1 : 0));
   for (const candidate of entries) {
     const next = candidate.work ? workEntry(candidate.agent, candidate.work, candidate.since, now) :
       entry(rule, candidate.agent, candidate.lane, candidate.item, candidate.since, now);
     const remaining = count - lines.length - 1;
-    const suffix = remaining ? `\n\nand ${remaining} more` : '';
-    const separator = lines.length ? 2 : 0;
+    const suffix = remaining ? `\nand ${remaining} more` : '';
+    const separator = 1;
     const nextBodyBytes = bodyBytes + separator + utf8Bytes(next.body);
     const nextBodyJsonBytes = bodyJsonBytes + 2 * separator + size(next.body) - 2;
     const nextEntryBytes = entryBytes + (lines.length ? 1 : 0) + size(next.data);
@@ -277,8 +313,9 @@ function digest(agent, rule, entries, now) {
     bodyJsonBytes = nextBodyJsonBytes;
     entryBytes = nextEntryBytes;
   }
-  result.body = lines.length ? [...lines, ...(result.data.more_count ? [`and ${result.data.more_count} more`] : [])].join('\n\n') :
-    count ? `and ${count} more` : 'Nothing is outstanding.';
+  result.body = count ?
+    [instruction, ...lines, ...(result.data.more_count ? [`and ${result.data.more_count} more`] : [])].join('\n') :
+    'Nothing is outstanding.';
   return result;
 }
 
