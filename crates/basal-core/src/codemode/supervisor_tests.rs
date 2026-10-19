@@ -44,6 +44,40 @@ fn teardown(action: impl FnOnce() + Send + 'static) {
     }
 }
 
+/// A helper thread whose join the test bounds. `shutdown` and `cancel` wait
+/// for a run's driver to exit, so a driver that never exits would block a bare
+/// join forever and hang the whole test binary instead of failing the test.
+struct BoundedThread<T> {
+    finished: mpsc::Receiver<std::thread::Result<T>>,
+    thread: thread::JoinHandle<()>,
+}
+
+fn spawn_bounded<T: Send + 'static>(
+    action: impl FnOnce() -> T + Send + 'static,
+) -> BoundedThread<T> {
+    let (done, finished) = mpsc::channel();
+    let thread = thread::spawn(move || {
+        let _ = done.send(std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+            action,
+        )));
+    });
+    BoundedThread { finished, thread }
+}
+
+impl<T> BoundedThread<T> {
+    /// Returns the thread's value, re-raises its panic, or fails the test
+    /// naming `what` when the thread has not finished within `TIMEOUT`.
+    fn join(self, what: &str) -> T {
+        match self.finished.recv_timeout(TIMEOUT) {
+            Ok(result) => {
+                self.thread.join().unwrap();
+                result.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+            }
+            Err(error) => panic!("{what} did not return within {TIMEOUT:?}: {error}"),
+        }
+    }
+}
+
 struct Attempt {
     flow: String,
     module: String,

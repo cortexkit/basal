@@ -714,7 +714,7 @@ target = "--lib"
 expect_red = ["codemode::admission::tests::catalog_array_and_exact_entry_keys_are_required"]
 only = false
 file = "crates/basal-core/src/codemode/admission.rs"
-old = "fields.len() != 4"
+old = 'fields.len() != 4 + usize::from(fields.contains_key("result_format"))'
 new = "false /* NON-VACUITY BREAK */"
 
 [[control]]

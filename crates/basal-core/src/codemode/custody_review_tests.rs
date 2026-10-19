@@ -304,7 +304,7 @@ fn cancellation_withdraws_held_calls_in_parallel_and_shutdown_releases_drivers_l
     f.attempt().reply.send(Ok(held_reply())).unwrap();
     f.supervisor.held("r", 1, true).unwrap();
     let supervisor = f.supervisor.clone();
-    let shutdown = thread::spawn(move || supervisor.shutdown().unwrap());
+    let shutdown = spawn_bounded(move || supervisor.shutdown().unwrap());
     let first = f.custody_attempt("tool.withdraw");
     assert!(
         f.supervisor.0.drivers.try_lock().is_ok(),
@@ -317,7 +317,7 @@ fn cancellation_withdraws_held_calls_in_parallel_and_shutdown_releases_drivers_l
         .send(Ok(json!({"answer":"withdrawn"})))
         .unwrap();
     drop(pull);
-    shutdown.join().unwrap();
+    shutdown.join("shutdown after both held calls were withdrawn");
     assert!(
         f.calls()
             .iter()
