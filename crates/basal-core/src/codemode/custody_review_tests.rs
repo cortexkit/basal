@@ -88,7 +88,7 @@ fn transient_pull_failure_keeps_the_run_live_and_withdrawable() {
         "running"
     );
     let supervisor = f.supervisor.clone();
-    let cancel = thread::spawn(move || supervisor.cancel("r").unwrap());
+    let cancel = spawn_bounded(move || supervisor.cancel("r").unwrap());
     let withdraw = f.custody_attempt("tool.withdraw");
     assert!(
         !f.supervisor.0.custody.has_held("codemode:r", "notes"),
@@ -98,7 +98,7 @@ fn transient_pull_failure_keeps_the_run_live_and_withdrawable() {
         .reply
         .send(Ok(json!({"answer":"withdrawn"})))
         .unwrap();
-    cancel.join().unwrap();
+    cancel.join("cancel of the run holding a call");
     assert_eq!(f.calls()[0].outcome, Outcome::Withdrawn);
     drop(retry);
 }
@@ -330,7 +330,7 @@ fn withdrawal_retries_transient_refusals_and_records_a_retained_completed_result
     let f = Fixture::new();
     let (_, pull) = f.provider_held();
     let supervisor = f.supervisor.clone();
-    let cancel = thread::spawn(move || supervisor.cancel("r").unwrap());
+    let cancel = spawn_bounded(move || supervisor.cancel("r").unwrap());
     f.custody_attempt("tool.withdraw")
         .reply
         .send(Err(WireError::Refused {
@@ -339,7 +339,7 @@ fn withdrawal_retries_transient_refusals_and_records_a_retained_completed_result
         }))
         .unwrap();
     f.custody_attempt("tool.withdraw").reply.send(Ok(json!({"answer":"completed","result_retained":true,"result":{"content":[{"type":"text","text":"completed"}],"structuredContent":{"n":42}}}))).unwrap();
-    cancel.join().unwrap();
+    cancel.join("cancel of the run holding a call");
     assert_eq!(f.calls()[0].outcome, Outcome::Ok);
     drop(pull);
 }
