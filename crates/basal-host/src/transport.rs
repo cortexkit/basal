@@ -925,33 +925,42 @@ impl Transport for SubcTransport {
         let target = RouteTarget::ToolProvider {
             module_id: module.into(),
         };
-        let handle = self
-            .open_scoped_handle(
-                run,
-                &target,
-                Some(&options.identity),
-                options.identity.clone(),
-            )
-            .map_err(|error| contextual(error, module, name))?;
         let body = serde_json::to_vec(&tool_body(name, arguments, call_key)?)
             .map_err(|e| WireError::NeverSent(e.to_string()))?;
-        let result = self.handle.block_on(self.consumer.request(
-            &handle,
-            body,
-            CallOptions {
-                timeout: options.reply_timeout,
-                ..Default::default()
+        // A re-opened attempt gets only what is left of the call's reply time.
+        let deadline = std::time::Instant::now() + options.reply_timeout;
+        send_with_one_reopen(
+            || {
+                self.open_scoped_handle(
+                    run,
+                    &target,
+                    Some(&options.identity),
+                    options.identity.clone(),
+                )
+                .map_err(|error| contextual(error, module, name))
             },
-        ));
-        if let Err(CallError::StaleRouteHandle(_)) = &result {
-            self.routes
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .closed(handle, false);
-        }
-        result
-            .map_err(map_error)
-            .and_then(|bytes| decode_response(&bytes, false))
+            |handle| {
+                self.handle.block_on(
+                    self.consumer.request(
+                        &handle,
+                        body.clone(),
+                        CallOptions {
+                            timeout: deadline
+                                .saturating_duration_since(std::time::Instant::now())
+                                .max(Duration::from_millis(1)),
+                            ..Default::default()
+                        },
+                    ),
+                )
+            },
+            |handle| {
+                self.routes
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .closed(handle, false);
+            },
+        )
+        .and_then(|bytes| decode_response(&bytes, false))
     }
     fn catalog(&self) -> Result<Value, WireError> {
         let catalog = self
@@ -994,6 +1003,58 @@ impl Transport for SubcTransport {
             body,
             false,
         )
+    }
+}
+
+/// Sends one codemode tool request, opening (or reusing) its route with `open`
+/// and sending with `send`. When the request provably never left basal, the
+/// route is opened again and the request sent once more; a second such failure
+/// is returned. Two failures qualify:
+/// - the daemon refused the bind `scope_changed` or `scope_not_synced` (the
+///   client has already retried these until its own deadline). Either means
+///   no route was bound, so no request was sent; `scope_changed` means the run
+///   scope's record changed while the bind was in flight, for example when
+///   its owner re-pointed the scope's parent;
+/// - the request was refused `StaleRouteHandle`, which the client returns
+///   before writing a request frame: the cached route belongs to a closed
+///   route or to a connection that has since been restored. `evict` drops it
+///   so the next open binds a fresh route.
+///
+/// Every other failure, including a `scope_changed` error frame the provider
+/// sent after receiving the request, is returned without a resend: that
+/// request may have reached the provider.
+fn send_with_one_reopen<H: Copy>(
+    mut open: impl FnMut() -> Result<H, WireError>,
+    mut send: impl FnMut(H) -> Result<Vec<u8>, CallError>,
+    mut evict: impl FnMut(H),
+) -> Result<Vec<u8>, WireError> {
+    use crate::flow_refusal::RefusalReason;
+    let mut reopened = false;
+    loop {
+        let handle = match open() {
+            Ok(handle) => handle,
+            Err(WireError::Typed(refusal))
+                if !reopened
+                    && matches!(
+                        refusal.reason,
+                        RefusalReason::ScopeChanged | RefusalReason::ScopeNotSynced
+                    ) =>
+            {
+                reopened = true;
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        match send(handle) {
+            Err(error @ CallError::StaleRouteHandle(_)) => {
+                evict(handle);
+                if reopened {
+                    return Err(map_error(error));
+                }
+                reopened = true;
+            }
+            result => return result.map_err(map_error),
+        }
     }
 }
 
@@ -1366,6 +1427,22 @@ mod tests {
                     break;
                 }
                 let end_scope = body["method"] == "end_scope";
+                if body["name"] == "changed_after_send" {
+                    // The provider received the request and answers with an
+                    // Error frame whose code is scope_changed.
+                    let error = Frame::build(
+                        FrameType::Error,
+                        Flags::new(false, Priority::Passive, false),
+                        frame.header.channel,
+                        frame.header.epoch,
+                        frame.header.corr,
+                        serde_json::to_vec(&json!({"code":"scope_changed","message":"changed"}))
+                            .unwrap(),
+                    )
+                    .unwrap();
+                    write_frame(&mut stream, &error).await.unwrap();
+                    continue;
+                }
                 if body["op"] == "route.open" && let Some((entered, release)) = pause.take() {
                     entered.send(()).unwrap();
                     release.await.unwrap();
@@ -1595,6 +1672,241 @@ mod tests {
                     .count(),
                 1
             );
+            transport.configure_flow("codemode:run", None);
+        });
+    }
+
+    /// Registers the run scope `codemode:run` targeting `mock`, and the
+    /// options a codemode tool call carries.
+    fn run_scope(transport: &SubcTransport) -> RunToolOptions {
+        transport.configure_flow(
+            "codemode:run",
+            Some(crate::flow_scope::RegisteredScope {
+                selector: crate::flow_scope::FlowScope {
+                    owner: subc_protocol::Principal::Reserved {
+                        module_id: "prefrontal-core".into(),
+                    },
+                    scope_ref: "run-scope".into(),
+                    epoch: 19,
+                },
+                targets: ["mock".into()].into_iter().collect(),
+            }),
+        );
+        RunToolOptions {
+            identity: BindIdentity::new("/agent/project", "agent:other", "invoking-session"),
+            reply_timeout: Duration::from_secs(5),
+        }
+    }
+
+    fn requests_named(calls: &Mutex<Vec<(u16, Value)>>, name: &str) -> usize {
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, body)| body["name"] == name)
+            .count()
+    }
+
+    /// The route basal has cached for `mock` on the run scope.
+    fn cached_run_route(
+        transport: &SubcTransport,
+        options: &RunToolOptions,
+    ) -> subc_client_rs::RouteHandle {
+        transport
+            .routes
+            .lock()
+            .unwrap()
+            .prepare(
+                "codemode:run",
+                &RouteTarget::ToolProvider {
+                    module_id: "mock".into(),
+                },
+                Some(&options.identity),
+            )
+            .unwrap()
+            .handle
+            .expect("an earlier call's route is cached")
+    }
+
+    /// What `send_with_one_reopen` did: how many opens and sends it made.
+    fn reopen_trace(
+        mut opens: Vec<Result<u8, WireError>>,
+        mut sends: Vec<Result<Vec<u8>, CallError>>,
+    ) -> (Result<Vec<u8>, WireError>, usize, usize) {
+        opens.reverse();
+        sends.reverse();
+        let (mut opened, mut sent) = (0, 0);
+        let result = send_with_one_reopen(
+            || {
+                opened += 1;
+                opens.pop().expect("no more opens expected")
+            },
+            |_| {
+                sent += 1;
+                sends.pop().expect("no more sends expected")
+            },
+            |_| {},
+        );
+        (result, opened, sent)
+    }
+
+    fn bind_refused(reason: crate::flow_refusal::RefusalReason) -> WireError {
+        WireError::Typed(crate::flow_refusal::FlowRefusal::new(
+            reason, "mock", "echo",
+        ))
+    }
+
+    #[test]
+    fn run_tool_bind_refused_scope_changed_reopens_once_and_sends_one_request() {
+        use crate::flow_refusal::RefusalReason::{ScopeChanged, ScopeNotSynced};
+        for reason in [ScopeChanged, ScopeNotSynced] {
+            let (result, opened, sent) = reopen_trace(
+                vec![Err(bind_refused(reason)), Ok(1)],
+                vec![Ok(b"{}".to_vec())],
+            );
+            assert_eq!(result, Ok(b"{}".to_vec()), "{reason:?}");
+            assert_eq!((opened, sent), (2, 1), "{reason:?}");
+        }
+    }
+
+    #[test]
+    fn run_tool_second_bind_refusal_is_returned_without_a_send() {
+        use crate::flow_refusal::RefusalReason::ScopeChanged;
+        let (result, opened, sent) = reopen_trace(
+            vec![
+                Err(bind_refused(ScopeChanged)),
+                Err(bind_refused(ScopeChanged)),
+            ],
+            vec![],
+        );
+        assert!(
+            matches!(result, Err(WireError::Typed(ref refusal)) if refusal.reason == ScopeChanged)
+        );
+        assert_eq!((opened, sent), (2, 0));
+    }
+
+    #[test]
+    fn run_tool_other_bind_refusals_and_sent_requests_are_never_retried() {
+        use crate::flow_refusal::RefusalReason::{ScopeChanged, ScopeEnded};
+        // A terminal bind refusal is not re-opened.
+        let (result, opened, sent) = reopen_trace(vec![Err(bind_refused(ScopeEnded))], vec![]);
+        assert!(matches!(result, Err(WireError::Typed(_))));
+        assert_eq!((opened, sent), (1, 0));
+        // The provider received the request and answered scope_changed: the
+        // answer is returned, never followed by a second request.
+        let (result, opened, sent) = reopen_trace(
+            vec![Ok(1)],
+            vec![Err(CallError::Module(subc_protocol::ErrorBody::new(
+                "scope_changed",
+                "changed",
+            )))],
+        );
+        assert!(
+            matches!(result, Err(WireError::Typed(ref refusal)) if refusal.reason == ScopeChanged)
+        );
+        assert_eq!((opened, sent), (1, 1));
+    }
+
+    #[test]
+    fn run_tool_provider_scope_changed_frame_after_send_is_not_resent() {
+        with_scoped_transport(|transport, opens, calls, _| {
+            let options = run_scope(&transport);
+            let result = transport.tool_for_run(
+                "codemode:run",
+                "mock",
+                "changed_after_send",
+                json!({}),
+                "run:call:1",
+                &options,
+            );
+            assert!(
+                matches!(&result, Err(WireError::Typed(refusal)) if refusal.reason == crate::flow_refusal::RefusalReason::ScopeChanged),
+                "{result:?}"
+            );
+            assert_eq!(requests_named(&calls, "changed_after_send"), 1);
+            assert_eq!(opens.lock().unwrap().len(), 1);
+            transport.configure_flow("codemode:run", None);
+        });
+    }
+
+    /// A cached route that died (closed here; a dropped connection leaves its
+    /// handle stale the same way) is refused `StaleRouteHandle` before any
+    /// frame is written, so the same call re-opens a fresh route and the
+    /// provider still sees the request exactly once.
+    #[test]
+    fn run_tool_dead_route_reopens_once_and_the_provider_sees_one_request() {
+        with_scoped_transport(|transport, opens, calls, _| {
+            let options = run_scope(&transport);
+            let call = |key: &str| {
+                transport.tool_for_run(
+                    "codemode:run",
+                    "mock",
+                    "echo",
+                    json!({"k":key}),
+                    key,
+                    &options,
+                )
+            };
+            assert_eq!(call("run:call:1").unwrap(), json!({"k":"run:call:1"}));
+            let handle = cached_run_route(&transport, &options);
+            transport
+                .handle
+                .block_on(transport.consumer.close_handle(&handle, Default::default()))
+                .unwrap();
+            assert_eq!(call("run:call:2").unwrap(), json!({"k":"run:call:2"}));
+            assert_eq!(opens.lock().unwrap().len(), 2, "a fresh route was opened");
+            assert_eq!(requests_named(&calls, "echo"), 2, "one request per call");
+            transport.configure_flow("codemode:run", None);
+        });
+    }
+
+    /// After a connection is restored, a later call in the same run opens a
+    /// fresh route instead of reusing the handle from the old connection.
+    #[test]
+    fn run_tool_after_a_reconnect_opens_a_fresh_route() {
+        with_scoped_transport(|transport, opens, calls, _| {
+            let options = run_scope(&transport);
+            let call = |key: &str| {
+                transport.tool_for_run(
+                    "codemode:run",
+                    "mock",
+                    "echo",
+                    json!({"k":key}),
+                    key,
+                    &options,
+                )
+            };
+            assert_eq!(call("run:call:1").unwrap(), json!({"k":"run:call:1"}));
+            assert_eq!(call("run:call:2").unwrap(), json!({"k":"run:call:2"}));
+            assert_eq!(opens.lock().unwrap().len(), 1, "a live route is reused");
+            // A dropped connection takes its routes with it; the restore then
+            // clears every handle basal cached for the old connection.
+            let handle = cached_run_route(&transport, &options);
+            transport
+                .handle
+                .block_on(transport.consumer.close_handle(&handle, Default::default()))
+                .unwrap();
+            transport.routes.lock().unwrap().connection_restored();
+            assert!(
+                transport
+                    .routes
+                    .lock()
+                    .unwrap()
+                    .prepare(
+                        "codemode:run",
+                        &RouteTarget::ToolProvider {
+                            module_id: "mock".into()
+                        },
+                        Some(&options.identity)
+                    )
+                    .unwrap()
+                    .handle
+                    .is_none(),
+                "no handle from the old connection is kept"
+            );
+            assert_eq!(call("run:call:3").unwrap(), json!({"k":"run:call:3"}));
+            assert_eq!(opens.lock().unwrap().len(), 2, "a fresh route was opened");
+            assert_eq!(requests_named(&calls, "echo"), 3);
             transport.configure_flow("codemode:run", None);
         });
     }

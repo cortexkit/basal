@@ -1016,11 +1016,12 @@ fn every_non_scope_wire_error_is_recorded_then_rejected_without_ending_run() {
 
 #[test]
 fn each_scope_loss_records_the_refusal_preserves_earlier_ok_and_interrupts() {
+    // ScopeChanged is not here: it leaves the run scope live, so it ends only
+    // its call (see the next test).
     for reason in [
         RefusalReason::ScopeEnded,
         RefusalReason::ScopeNotLive,
         RefusalReason::ScopeNotSynced,
-        RefusalReason::ScopeChanged,
     ] {
         let f = Fixture::new();
         f.standard();
@@ -1043,6 +1044,41 @@ fn each_scope_loss_records_the_refusal_preserves_earlier_ok_and_interrupts() {
         assert!(f.parent.try_recv().is_err());
         f.assert_order();
     }
+}
+
+/// A `scope_changed` that reaches the supervisor came after the transport's
+/// one re-open, or from the provider after it received the request. Either way
+/// the call is refused, it is not dispatched again, and the run goes on.
+#[test]
+fn scope_changed_refuses_only_its_call_and_the_run_continues() {
+    let f = Fixture::new();
+    f.standard();
+    f.issue(0, "read", json!(null));
+    f.attempt()
+        .reply
+        .send(Err(WireError::Typed(FlowRefusal::new(
+            RefusalReason::ScopeChanged,
+            "notes",
+            "read",
+        ))))
+        .unwrap();
+    rejection(f.delivery(), "read", "refused", "scope_changed");
+    assert!(
+        f.attempts.try_recv().is_err(),
+        "the call is not dispatched again"
+    );
+    assert_eq!(f.calls()[0].outcome, Outcome::Refused);
+    assert_eq!(f.calls()[0].code.as_deref(), Some("scope_changed"));
+    assert_eq!(
+        f.supervisor.result("r").unwrap().unwrap()["status"],
+        "running"
+    );
+    f.issue(1, "read", json!(null));
+    f.attempt().reply.send(Ok(json!(1))).unwrap();
+    f.delivery();
+    assert_eq!(f.calls()[1].outcome, Outcome::Ok);
+    f.finish("1");
+    assert_eq!(f.terminal()["status"], "completed");
 }
 
 #[test]

@@ -1574,3 +1574,37 @@ timeout_s = 600
 file = "crates/basal-host/src/core_host.rs"
 old = "                None | Some(Value::Null) => None,\n                Some(_) => Some(approved_hash()?),"
 new = "                None | Some(Value::Null) => Some(approved_hash()?), // NON-VACUITY BREAK\n                Some(_) => Some(approved_hash()?),"
+
+[[control]]
+id = "run-tool-scope-changed-bind-not-reopened"
+guards = "a codemode tool call whose bind is refused scope_changed re-opens once and sends one request"
+test_file = "crates/basal-host/src/transport.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+select = { filter = "transport::tests::run_tool_" }
+expect_red = ["transport::tests::run_tool_bind_refused_scope_changed_reopens_once_and_sends_one_request", "transport::tests::run_tool_second_bind_refusal_is_returned_without_a_send"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/transport.rs"
+old = "if !reopened\n                    && matches!("
+new = "if false && !reopened // NON-VACUITY BREAK\n                    && matches!("
+
+[[control]]
+id = "run-tool-dead-route-not-reopened"
+guards = "a codemode tool call on a dead cached route re-opens once and the provider sees one request"
+test_file = "crates/basal-host/src/transport.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+select = { filter = "transport::tests::run_tool_" }
+expect_red = ["transport::tests::run_tool_dead_route_reopens_once_and_the_provider_sees_one_request"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/transport.rs"
+old = "                if reopened {\n                    return Err(map_error(error));\n                }"
+new = "                if true || reopened { // NON-VACUITY BREAK\n                    return Err(map_error(error));\n                }"
