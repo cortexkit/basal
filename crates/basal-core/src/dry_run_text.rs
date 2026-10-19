@@ -440,14 +440,18 @@ fn describe(manifest: &Manifest, call: &Value) -> Option<String> {
                 .map(str::to_owned)
                 .or_else(|| text_field(args, &["agent"]))
                 .unwrap_or_default();
-            let lead = if call["sink"]["effective"] == "wake" {
-                format!("Wake {}", quote(&agent))
+            if args["withdraw"] == true {
+                format!("Withdraw the pending digest item for {}", quote(&agent))
             } else {
-                format!("Add a digest item for {}", quote(&agent))
-            };
-            match text_field(args, &["item", "title"]) {
-                Some(title) => format!("{lead}: {}", quote(&title)),
-                None => lead,
+                let lead = if call["sink"]["effective"] == "wake" {
+                    format!("Wake {}", quote(&agent))
+                } else {
+                    format!("Add a digest item for {}", quote(&agent))
+                };
+                match text_field(args, &["item", "title"]) {
+                    Some(title) => format!("{lead}: {}", quote(&title)),
+                    None => lead,
+                }
             }
         }
         "sink.wait.resolve" => format!(

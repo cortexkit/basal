@@ -2,6 +2,8 @@
 #[path = "hosts/board_sink.rs"]
 mod board_sink;
 mod common;
+#[path = "hosts/digest_withdraw.rs"]
+mod digest_withdraw;
 #[path = "hosts/wait_resolve.rs"]
 mod wait_resolve;
 mod wire;

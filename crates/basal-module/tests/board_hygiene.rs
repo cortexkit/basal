@@ -32,6 +32,7 @@ struct BoardHost {
     writes: Mutex<Vec<Value>>,
     refuse: AtomicUsize,
     replacement_supported: AtomicBool,
+    withdrawal_supported: AtomicBool,
     /// `work.unsettled` reply pages in order; none means one empty page.
     unsettled: Mutex<Vec<Value>>,
     /// Refuse `work.unsettled` reads of this page index and later with this body.
@@ -115,29 +116,38 @@ impl BoardHost {
                 }})
             }
             CallKind::Primitive(Primitive::SinkDigest) => {
-                let item = &args["item"];
-                assert!(item["title"].as_str().unwrap().chars().count() <= 200);
-                assert!(item["body"].as_str().unwrap().len() <= 4096);
-                assert!(serde_json::to_vec(&item["data"]).unwrap().len() <= 8192);
-                assert!(serde_json::to_vec(item).unwrap().len() <= 16384);
-                assert!(
-                    item.get("links")
-                        .is_none_or(|links| links.as_array().unwrap().len() <= 8)
-                );
-                assert!(args.get("options").is_none_or(Value::is_null));
-                if let Some(key) = args.get("replace_key") {
-                    assert!((1..=200).contains(&key.as_str().unwrap().len()));
+                if args["withdraw"] == true {
+                    assert!(args.get("item").is_none());
+                    assert!(args.get("action").is_none());
+                    assert!((1..=200).contains(&args["replace_key"].as_str().unwrap().len()));
+                    json!({"disposition":"not_found","fire_id":null,"replayed":false})
+                } else {
+                    let item = &args["item"];
+                    assert!(item["title"].as_str().unwrap().chars().count() <= 200);
+                    assert!(item["body"].as_str().unwrap().len() <= 4096);
+                    assert!(serde_json::to_vec(&item["data"]).unwrap().len() <= 8192);
+                    assert!(serde_json::to_vec(item).unwrap().len() <= 16384);
+                    assert!(
+                        item.get("links")
+                            .is_none_or(|links| links.as_array().unwrap().len() <= 8)
+                    );
+                    assert!(args.get("options").is_none_or(Value::is_null));
+                    if let Some(key) = args.get("replace_key") {
+                        assert!((1..=200).contains(&key.as_str().unwrap().len()));
+                    }
+                    json!({"ok":true})
                 }
-                self.writes.lock().unwrap().push(args);
-                if self.refuse.swap(0, Ordering::Relaxed) > 0 {
-                    return Some(HostOutcome::rejected(text(
-                        json!({"code":"sink_target_not_in_audience","message":"moved"}),
-                    )));
-                }
-                json!({"ok":true})
             }
             _ => return None,
         };
+        if matches!(&request.kind, CallKind::Primitive(Primitive::SinkDigest)) {
+            self.writes.lock().unwrap().push(args);
+            if self.refuse.swap(0, Ordering::Relaxed) > 0 {
+                return Some(HostOutcome::rejected(text(
+                    json!({"code":"sink_target_not_in_audience","message":"moved"}),
+                )));
+            }
+        }
         Some(HostOutcome::fulfilled(text(value)))
     }
 }
@@ -150,6 +160,8 @@ impl Host for BoardHost {
     fn supports_core_capability(&self, capability: &str) -> bool {
         capability == basal_host::core_host::FLOW_DIGEST_REPLACE_KEY_V1
             && self.replacement_supported.load(Ordering::Relaxed)
+            || capability == basal_host::core_host::FLOW_DIGEST_WITHDRAW_V1
+                && self.withdrawal_supported.load(Ordering::Relaxed)
     }
     fn classify(&self, kind: &CallKind) -> CallClass {
         self.mock.classify(kind)
@@ -197,6 +209,7 @@ impl Test {
     fn new(boards: Vec<Value>) -> Self {
         let host = Arc::new(BoardHost::default());
         host.replacement_supported.store(true, Ordering::Relaxed);
+        host.withdrawal_supported.store(true, Ordering::Relaxed);
         *host.boards.lock().unwrap() = boards;
         let catalog = MockCatalog::standard();
         catalog.set_flow_capable("prefrontal-core", true);
@@ -294,7 +307,7 @@ fn published_manifest_has_global_minimal_grants_and_five_minute_schedule() {
     let manifest = Manifest::parse(MANIFEST).unwrap();
     let value = serde_json::to_value(manifest).unwrap();
     assert_eq!(value["id"], "board-hygiene");
-    assert_eq!(value["version"], 13);
+    assert_eq!(value["version"], 14);
     assert_eq!(value["board_read"], json!(["$audience"]));
     assert_eq!(value["audience"], json!({"kind":"global"}));
     assert_eq!(
@@ -508,7 +521,7 @@ fn new_member_wakes_and_is_listed_for_each_rule() {
 }
 
 #[test]
-fn leaving_members_and_empty_lists_update_silently() {
+fn leaving_members_and_empty_lists_withdraw_their_digest_items() {
     for name in RULES {
         let mut t = active_test(vec![candidates(name, 3)]);
         t.run(BASE + 8 * HOUR);
@@ -520,11 +533,26 @@ fn leaving_members_and_empty_lists_update_silently() {
         t.host.boards.lock().unwrap().clear();
         let empty = t.run(BASE + 10 * HOUR);
         assert_eq!(empty.len(), 1, "{name}");
-        assert_eq!(empty[0]["action"], "silent", "{name}");
-        assert_eq!(empty[0]["item"]["body"], "Nothing is outstanding.");
-        assert_eq!(empty[0]["item"]["data"]["entries"], json!([]));
+        assert_eq!(empty[0]["withdraw"], true, "{name}");
+        assert!(empty[0].get("item").is_none(), "{name}");
+        assert!(empty[0].get("action").is_none(), "{name}");
+        assert_eq!(empty[0]["replace_key"], format!("board_nudge:ag_a:{name}"));
         assert!(t.run(BASE + 11 * HOUR).is_empty());
     }
+}
+
+#[test]
+fn empty_lists_fall_back_to_silent_empty_replace_when_withdraw_is_unsupported() {
+    let mut t = active_test(vec![candidates("eta_passed", 3)]);
+    t.run(BASE + 8 * HOUR);
+    *t.host.boards.lock().unwrap() = vec![];
+    t.host.withdrawal_supported.store(false, Ordering::Relaxed);
+    let fallback = t.run(BASE + 9 * HOUR);
+    assert_eq!(fallback.len(), 1);
+    assert_eq!(fallback[0]["action"], "silent");
+    assert_eq!(fallback[0]["item"]["body"], "Nothing is outstanding.");
+    assert_eq!(fallback[0]["item"]["data"]["entries"], json!([]));
+    assert_eq!(fallback[0]["replace_key"], "board_nudge:ag_a:eta_passed");
 }
 
 #[test]
@@ -549,8 +577,8 @@ fn resolved_retired_and_moved_items_do_not_create_cleanup_wakes() {
     t.host.boards.lock().unwrap()[0]["board"]["laneBlocks"][0]["status"] = json!("retired");
     let emptied = t.run(BASE + 3 * HOUR);
     assert_eq!(emptied.len(), 1);
-    assert_eq!(emptied[0]["action"], "silent");
-    assert_eq!(emptied[0]["item"]["data"]["total_count"], 0);
+    assert_eq!(emptied[0]["withdraw"], true);
+    assert!(emptied[0].get("item").is_none());
 }
 
 #[test]
@@ -719,11 +747,15 @@ fn paging_reads_all_boards_and_prunes_disappeared_agents_lanes_items_and_conditi
             .unwrap()
             .remove("eta_ms");
     }
-    // Only the four changed owners get a (silent) update; the other 29 lists
+    // Only the four changed owners get silent updates or withdrawals; the other 29 lists
     // are unchanged and are not rewritten.
     let updated = t.run(BASE + MIN);
     assert_eq!(updated.len(), 4);
-    assert!(updated.iter().all(|write| write["action"] == "silent"));
+    assert!(
+        updated
+            .iter()
+            .all(|write| write["action"] == "silent" || write["withdraw"] == true)
+    );
     let keys = t.keys();
     for agent in ["ag_00", "ag_01", "ag_02", "ag_03"] {
         assert!(!keys.iter().any(|key| key.contains(agent)), "{keys:?}");
@@ -735,7 +767,7 @@ fn paging_reads_all_boards_and_prunes_disappeared_agents_lanes_items_and_conditi
     t.host.boards.lock().unwrap().clear();
     let emptied = t.run(BASE + 2 * MIN);
     assert_eq!(emptied.len(), 29);
-    assert!(emptied.iter().all(|write| write["action"] == "silent"));
+    assert!(emptied.iter().all(|write| write["withdraw"] == true));
     assert!(t.keys().iter().all(|key| key.starts_with("index:")));
     let entries: Vec<Value> =
         t.f.module
@@ -1551,8 +1583,8 @@ fn a_merged_delivery_nudges_its_owner_twenty_minutes_after_it_is_first_seen() {
     t.unsettled(vec![vector("reply-empty.json")]);
     let cleared = t.run(BASE + 6 * HOUR);
     assert_eq!(cleared.len(), 1);
-    assert_eq!(cleared[0]["action"], "silent");
-    assert_eq!(cleared[0]["item"]["data"]["total_count"], 0);
+    assert_eq!(cleared[0]["withdraw"], true);
+    assert!(cleared[0].get("item").is_none());
     assert_eq!(t.seen(), None);
     assert!(t.keys().iter().all(|key| key.starts_with("index:")));
 }

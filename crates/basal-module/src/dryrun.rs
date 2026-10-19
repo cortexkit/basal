@@ -915,9 +915,10 @@ fn captured(detail: &str) -> HostOutcome {
 
 impl Host for CaptureHost {
     fn supports_core_capability(&self, capability: &str) -> bool {
-        // Wait resolutions are captured even in live mode. Previewing them
-        // therefore needs no deployed core capability and makes no core call.
+        // Wait resolutions and digest withdrawals are captured without a live
+        // core request, so their previews need no deployed core capability.
         capability == basal_host::core_host::FLOW_WAIT_RESOLVE_V1
+            || capability == basal_host::core_host::FLOW_DIGEST_WITHDRAW_V1
     }
 
     fn classify(&self, kind: &CallKind) -> CallClass {

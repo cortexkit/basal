@@ -258,6 +258,28 @@ replacement behavior belongs to core: within one flow, a write with the same
 key replaces that agent's earlier undelivered item; after delivery, the next
 write starts fresh.
 
+A flow may withdraw that pending item without replacing it with a placeholder:
+`await sink.digest.withdraw(agent, { replace_key })`. It uses the same digest
+sink grant and the same 1-to-200-byte, no-control-character key validation as a
+write. Basal journals the request before sending it and requires core's
+`flow-digest-withdraw/v1` catalog capability; without it, the call is refused
+unsent with `digest_withdraw_unsupported`, which a script may catch and handle
+with a silent empty replacement. The core reply's `disposition` is `withdrawn`,
+`already_delivered` or `not_found`; all three are successful outcomes.
+A withdrawal has no item, action or status tag. It uses the same `sink.digest`
+wire operation and digest grant as a write.
+
+```js
+try {
+  await sink.digest.withdraw('BASAL', { replace_key: 'nightly-ci:123' });
+} catch (e) {
+  if (e.data.code !== 'digest_withdraw_unsupported') throw e;
+  await sink.digest('BASAL', { title: '0 items', body: 'Nothing is outstanding.' }, 'silent', {
+    replace_key: 'nightly-ci:123',
+  });
+}
+```
+
 Basal sends the tag to prefrontal-core as top-level `status_tag`, not in the
 item or its `data`. Without a tag that field is omitted and the wire request
 is unchanged. The journal freezes it with the request, so crash replay resends

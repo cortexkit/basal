@@ -433,6 +433,26 @@ async function run() {
     }
   }
 
+  let withdrawalUnsupportedLogged = false;
+  async function clearList(agent, item) {
+    const key = replacementKey(item.data);
+    if (key === null) return send(agent, item, 'silent');
+    try {
+      await sink.digest.withdraw(agent, {replace_key: key});
+      return true;
+    } catch (error) {
+      if (error.data?.code !== 'digest_withdraw_unsupported') {
+        log('board hygiene digest withdrawal refused', {agent, code: error.data?.code ?? String(error)});
+        return false;
+      }
+      if (!withdrawalUnsupportedLogged) {
+        log('board hygiene digest withdrawal unsupported', {code: error.data.code});
+        withdrawalUnsupportedLogged = true;
+      }
+      return send(agent, item, 'silent');
+    }
+  }
+
   function collect(rule, agent, lane, item, since, recipient, work) {
     const key = memoryKey(recipient, rule);
     if (key === null) {
@@ -584,14 +604,17 @@ async function run() {
       }
     }
   }
-  // Clear empty lists silently before freeing their membership quota. Unsupported
-  // replacement still uses the same silent fallback, so cleanup never wakes an owner.
+  // Remove empty lists' pending items before freeing their membership quota.
+  // A catalog without withdrawal support gets a silent empty replacement instead,
+  // so cleanup never wakes an owner.
   for (const index of indexes) {
     for (const key of [...index]) {
       if (groups.has(key)) continue;
       if (works === null && key.endsWith(':unsettled_merged')) continue;
       const previous = await kv.get(key);
-      if (previous?.agent && previous?.rule) await send(previous.agent, digest(previous.agent, previous.rule, []), 'silent');
+      if (previous?.agent && previous?.rule) {
+        await clearList(previous.agent, digest(previous.agent, previous.rule, []));
+      }
       await forget(key);
     }
   }

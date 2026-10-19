@@ -243,6 +243,29 @@ fn a_digest_below_wake_is_an_added_item_and_a_status_names_its_agent() {
 }
 
 #[test]
+fn a_digest_withdrawal_is_named_in_the_capture_preview() {
+    let withdrawal = call(
+        0,
+        "sink.digest",
+        json!({"agent":"SYNAPSE","withdraw":true,"options":{"replace_key":"daily-report"}}),
+        captured(),
+        "captured",
+    );
+    let runs = vec![run(
+        &due(0),
+        "succeeded",
+        Value::Null,
+        false,
+        vec![withdrawal],
+    )];
+    let text = render(&hourly_manifest(), &summary(day_window(1, 1), runs));
+    assert_eq!(
+        text.would,
+        ["Withdraw the pending digest item for 'SYNAPSE'"]
+    );
+}
+
+#[test]
 fn a_script_that_throws_before_any_call_is_one_problem() {
     let runs = vec![run(
         &due(0),

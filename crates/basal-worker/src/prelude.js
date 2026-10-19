@@ -278,6 +278,18 @@
     }
   }
 
+  function digest(agent, item, action, options) {
+    return callPrimitive(SINK_DIGEST, { agent, item, action, options });
+  }
+  ObjectDefineProperty(digest, 'withdraw', {
+    value(agent, options) {
+      return callPrimitive(SINK_DIGEST, { agent, withdraw: true, options });
+    },
+    writable: false,
+    enumerable: false,
+    configurable: false,
+  });
+
   const api = {
     ops: {
       call(module, op, args, options) {
@@ -303,9 +315,7 @@
       return callPrimitive(LLM, request);
     },
     sink: {
-      digest(agent, item, action, options) {
-        return callPrimitive(SINK_DIGEST, { agent, item, action, options });
-      },
+      digest,
       status(agent, value) {
         return callPrimitive(SINK_STATUS, { agent, value });
       },

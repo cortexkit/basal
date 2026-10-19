@@ -1124,3 +1124,20 @@ timeout_s = 600
 file = "crates/basal-core/src/manifest.rs"
 old = "if facts.text {"
 new = "if false && facts.text { // NON-VACUITY BREAK"
+
+[[control]]
+id = "digest-withdraw-core-capability-gate"
+guards = "a digest withdrawal is refused unsent without core's advertised withdrawal capability"
+test_file = "crates/basal-module/tests/board_hygiene.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test board_hygiene"
+select = { tests = ["empty_lists_fall_back_to_silent_empty_replace_when_withdraw_is_unsupported", "leaving_members_and_empty_lists_withdraw_their_digest_items"] }
+expect_red = ["empty_lists_fall_back_to_silent_empty_replace_when_withdraw_is_unsupported"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/driver.rs"
+old = "&& !self\n                .rt\n                .shared\n                .host\n                .supports_core_capability(basal_host::core_host::FLOW_DIGEST_WITHDRAW_V1)"
+new = "&& false // NON-VACUITY BREAK"
