@@ -271,6 +271,9 @@ fn withdrawal_journals_before_send_and_replays_identical_intent_after_cut() {
             |row| row.get(0),
         )
         .unwrap();
+    // Close the read-only handle now: on Windows an open SQLite file blocks
+    // the store directory's removal at the end of the test.
+    drop(connection);
     let stored: Value = serde_json::from_str(&stored_text).unwrap();
     assert_eq!(stored["withdraw"], true);
     assert_eq!(stored["replace_key"], "daily-report");
