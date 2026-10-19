@@ -1294,9 +1294,17 @@ fn completed_red_updates_the_existing_item_then_green_updates_silently() {
             .iter()
             .all(|w| w["replace_key"] == "ci:cortexkit/basal:42:1")
     );
+    // The run finishing red adds no new failed job, so it must not wake again.
+    assert_eq!(writes[1]["action"], "silent");
     assert_eq!(
         writes[1]["item"]["title"],
         "cortexkit/basal: CI failed on main"
+    );
+    assert!(
+        writes[1]["item"]["body"]
+            .as_str()
+            .unwrap()
+            .contains("finished red (failure)")
     );
     assert_eq!(writes[2]["action"], "silent");
     assert_eq!(
