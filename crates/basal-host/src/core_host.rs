@@ -54,12 +54,10 @@ pub fn intent(kind: Primitive, args: &Value, ctx: IntentContext<'_>) -> Value {
                     "call_position":position,"agent":args["agent"],
                     "replace_key":args["options"]["replace_key"],"withdraw":true});
             }
+            // Keep Core's required claim=null until basal sends digest writes to inbox.post, whose input has no claim field.
             let mut request = json!({"flow_id":flow_id,"flow_version":version,"run_id":run_id,"call_position":position,
             "agent":args["agent"],"action":args["action"],
             "due_at":due_at,"created_at":created_at,"item":args["item"],"claim":null});
-            if let Some(tag) = args.get("options").and_then(|o| o.get("status_tag")) {
-                request["status_tag"] = tag.clone();
-            }
             if let Some(replace_key) = args.get("options").and_then(|o| o.get("replace_key")) {
                 request["replace_key"] = replace_key.clone();
             }

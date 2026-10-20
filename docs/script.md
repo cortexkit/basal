@@ -238,15 +238,7 @@ these four fields. `data` and `links` may be omitted, and then default to
 empty. Core refuses a missing `title` or `body`, or any field not listed
 here, with `sink_item_invalid`, and the refusal names the field.
 
-The optional fourth argument may contain `{ status_tag: 'NI' }`. The tag must
-match `[A-Z]{1,4}`; malformed values (including `null`) are refused with
-`status_tag_invalid`. The recipient's digest sink grant must have a
-`status_group`, or basal refuses the write with `status_tag_without_group`
-before preparing or sending a core request. The same checks apply in dry runs
-and to the `$audience` sink grant. To use the default action with a tag, pass
-`undefined` as the third argument.
-
-The options object may also contain `replace_key`. It must be a string of 1 to
+The options object may contain `replace_key`. It must be a string of 1 to
 200 UTF-8 bytes with no control characters; otherwise basal refuses the call
 before dispatch with `invalid_arguments`. Basal sends it as the top-level
 `replace_key` field beside `item`, and journals it with the core request. Basal
@@ -266,8 +258,8 @@ write. Basal journals the request before sending it and requires core's
 unsent with `digest_withdraw_unsupported`, which a script may catch and handle
 with a silent empty replacement. The core reply's `disposition` is `withdrawn`,
 `already_delivered` or `not_found`; all three are successful outcomes.
-A withdrawal has no item, action or status tag. It uses the same `sink.digest`
-wire operation and digest grant as a write.
+A withdrawal has no item or action. It uses the same `sink.digest` wire
+operation and digest grant as a write.
 
 ```js
 try {
@@ -279,11 +271,6 @@ try {
   });
 }
 ```
-
-Basal sends the tag to prefrontal-core as top-level `status_tag`, not in the
-item or its `data`. Without a tag that field is omitted and the wire request
-is unchanged. The journal freezes it with the request, so crash replay resends
-the same bytes.
 
 The item fields are:
 
@@ -308,10 +295,10 @@ const item = {
   links: [{ kind: 'url', url: 'https://github.com/cortexkit/basal/actions/runs/123' }],
 };
 try {
-  await sink.digest('BASAL', item, 'wake', { status_tag: 'NI', replace_key: 'nightly-ci:123' });
+  await sink.digest('BASAL', item, 'wake', { replace_key: 'nightly-ci:123' });
 } catch (e) {
   if (e.data.code !== 'digest_replace_key_unsupported') throw e;
-  await sink.digest('BASAL', item, 'wake', { status_tag: 'NI' });
+  await sink.digest('BASAL', item, 'wake');
 }
 ```
 

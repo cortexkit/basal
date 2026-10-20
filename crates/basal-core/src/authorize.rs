@@ -306,16 +306,25 @@ pub fn check(
                     }
                 };
                 let options = args.get("options");
-                if withdrawing {
-                    if args.get("item").is_some()
-                        || args.get("action").is_some()
-                        || options
-                            .and_then(|options| options.get("status_tag"))
-                            .is_some()
-                    {
+                if let Some(options) = options {
+                    let Some(options) = options.as_object() else {
                         return Err(Refusal::new(
                             codes::INVALID_ARGUMENTS,
-                            "a digest withdrawal must not include an item, action, or status_tag",
+                            "digest options must be an object",
+                        ));
+                    };
+                    if let Some(option) = options.keys().find(|key| key.as_str() != "replace_key") {
+                        return Err(Refusal::new(
+                            codes::INVALID_ARGUMENTS,
+                            format!("unknown digest option {option:?}"),
+                        ));
+                    }
+                }
+                if withdrawing {
+                    if args.get("item").is_some() || args.get("action").is_some() {
+                        return Err(Refusal::new(
+                            codes::INVALID_ARGUMENTS,
+                            "a digest withdrawal must not include an item or action",
                         ));
                     }
                     if options
@@ -337,31 +346,6 @@ pub fn check(
                         codes::INVALID_ARGUMENTS,
                         "options.replace_key must be a 1 to 200 byte string without control characters",
                     ));
-                }
-                if let Some(tag) = args.get("options").and_then(|o| o.get("status_tag")) {
-                    if !tag
-                        .as_str()
-                        .is_some_and(crate::manifest::valid_status_label)
-                    {
-                        return Err(Refusal::new(
-                            "status_tag_invalid",
-                            "status_tag must match [A-Z]{1,4}",
-                        ));
-                    }
-                    let target = if manifest.audience.is_some() {
-                        crate::manifest::AUDIENCE_TARGET
-                    } else {
-                        agent
-                    };
-                    if !manifest
-                        .digest_sinks()
-                        .any(|s| s.agent == target && s.status_group.is_some())
-                    {
-                        return Err(Refusal::new(
-                            "status_tag_without_group",
-                            "a status_tag requires the sink grant's status_group",
-                        ));
-                    }
                 }
                 if manifest.audience.is_some() {
                     return if manifest.digest_sinks().next().is_none() {

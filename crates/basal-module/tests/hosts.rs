@@ -739,57 +739,6 @@ fn routing_host_runs_install_decision_facts_ops_and_sinks_end_to_end() {
     assert_eq!(fake.calls("sink.status").len(), 1);
 }
 
-fn refused_status_tag(group: Option<&str>, tag: Value, expected: &str) {
-    let fake = Fake::new();
-    let consent = Arc::new(CoreConsent::new(fake.clone()));
-    let f = worker_fixture(fake.clone(), consent.clone(), "status-tag-refusal");
-    let mut m = manifest();
-    if let Some(group) = group {
-        m["sinks"][0]["status_group"] = json!(group);
-    }
-    let script = format!(
-        "try {{ await sink.digest('SYNAPSE',{{title:'x',body:'y'}},'silent',{{status_tag:{tag}}}); }} catch(e) {{ return e.data.code; }} return 'sent';"
-    );
-    let installed = common::install(&f, &Caller::Operator, &script, &m);
-    assert_eq!(installed["dry_run"]["runs"][0]["result"], expected);
-    approve(&fake, &f.module);
-    let run = common::admit(&f, "host-flow", "tag");
-    f.module.engine.run_until_idle(50).unwrap();
-    let done = f.module.rt.run(&run).unwrap();
-    assert_eq!(done.state, RunState::Succeeded);
-    assert_eq!(
-        serde_json::from_str::<Value>(done.result.as_ref().unwrap()).unwrap(),
-        expected
-    );
-    assert!(
-        fake.calls("sink.digest").is_empty(),
-        "refusal is provably unsent"
-    );
-    let calls = f.module.rt.calls(&run).unwrap();
-    assert_eq!(calls.len(), 1);
-    assert!(calls[0].request.is_none(), "no wire request was prepared");
-}
-
-#[test]
-fn status_tag_without_group_is_refused_before_send() {
-    refused_status_tag(None, json!("NI"), "status_tag_without_group");
-}
-
-#[test]
-fn malformed_status_tag_is_refused_before_send() {
-    for tag in [
-        json!(""),
-        json!("ABCDE"),
-        json!("ni"),
-        json!("N1"),
-        json!("É"),
-        json!(null),
-        json!(3),
-    ] {
-        refused_status_tag(Some("GH"), tag, "status_tag_invalid");
-    }
-}
-
 #[test]
 fn digest_replace_key_validation_refuses_invalid_values_unsent() {
     let fake = Fake::new();
@@ -894,52 +843,27 @@ fn digest_replace_key_is_top_level_when_core_catalog_capability_is_present() {
 }
 
 #[test]
-fn digest_status_tag_is_top_level_and_absence_preserves_wire_bytes() {
+fn digest_status_tag_and_claim_options_are_refused_before_send() {
     let fake = Fake::new();
     let consent = Arc::new(CoreConsent::new(fake.clone()));
-    let f = worker_fixture(fake.clone(), consent.clone(), "status-tag-wire");
-    let mut m = manifest();
-    m["sinks"][0]["status_group"] = json!("GH");
-    common::install(
-        &f,
-        &Caller::Operator,
-        "await sink.digest('SYNAPSE',{title:'x',body:'y',data:{n:1}},'silent',{status_tag:'NRPR'}); await sink.digest('SYNAPSE',{title:'x',body:'y',data:{n:1}},'silent'); return 1;",
-        &m,
-    );
-    let card = &fake.calls("flow.install_request")[0]["params"]["flow_install"];
-    let approved_manifest: Value =
-        serde_json::from_str(card["manifest_json"].as_str().unwrap()).unwrap();
-    assert_eq!(approved_manifest["sinks"][0]["status_group"], "GH");
-    assert_eq!(
-        card["code_hash"],
-        basal_core::ids::hex(&basal_core::ids::code_hash(
-            card["script"].as_str().unwrap(),
-            card["manifest_json"].as_str().unwrap()
-        ))
-    );
+    let f = worker_fixture(fake.clone(), consent.clone(), "removed-digest-options");
+    let script = "const options=[{status_tag:'NI'},{claim:'episode'}]; const results=[]; for (const option of options) { try { await sink.digest('SYNAPSE',{title:'x',body:'y'},'silent',option); results.push('sent'); } catch (e) { results.push(e.data.code); } } return results;";
+    common::install(&f, &Caller::Operator, script, &manifest());
     approve(&fake, &f.module);
-    let run = common::admit(&f, "host-flow", "tag");
+    let run = common::admit(&f, "host-flow", "removed-options");
     f.module.engine.run_until_idle(50).unwrap();
-    assert_eq!(f.module.rt.run(&run).unwrap().state, RunState::Succeeded);
-    let sent = fake.calls("sink.digest");
-    assert_eq!(sent.len(), 2);
-    let expected = json!({"flow_id":"host-flow","flow_version":1,"run_id":run,"call_position":1,
-        "agent":"SYNAPSE","action":"silent","due_at":common::T0,"created_at":common::T0,
-        "item":{"title":"x","body":"y","data":{"n":1}},"claim":null});
+    let done = f.module.rt.run(&run).unwrap();
+    assert_eq!(done.state, RunState::Succeeded);
     assert_eq!(
-        sent[1]["params"].to_string().as_bytes(),
-        expected.to_string().as_bytes()
+        serde_json::from_str::<Value>(done.result.as_ref().unwrap()).unwrap(),
+        json!(["invalid_arguments", "invalid_arguments"])
     );
-    let mut tagged = expected;
-    tagged["call_position"] = json!(0);
-    tagged["status_tag"] = json!("NRPR");
-    assert_eq!(sent[0]["params"], tagged);
-    assert!(
-        sent[0]["params"]["item"]["data"]
-            .get("status_tag")
-            .is_none()
-    );
+    assert!(fake.calls("sink.digest").is_empty());
+    let calls = f.module.rt.calls(&run).unwrap();
+    assert_eq!(calls.len(), 2);
+    assert!(calls.iter().all(|call| call.request.is_none()));
 }
+
 #[test]
 fn transport_failures_reach_journal_with_safe_retries_only() {
     for (op, failure, state, sends) in [
@@ -1042,7 +966,7 @@ fn journaled_sink_intent_is_byte_identical_after_a_cut() {
     for (op, script, pending_registry) in [
         (
             "sink.digest",
-            "await sink.digest('SYNAPSE',{title:'x',body:'y'},'piggyback',{status_tag:'NI',replace_key:'article:42'}); return 1;",
+            "await sink.digest('SYNAPSE',{title:'x',body:'y'},'piggyback',{replace_key:'article:42'}); return 1;",
             false,
         ),
         (
@@ -1101,14 +1025,13 @@ fn journaled_sink_intent_is_byte_identical_after_a_cut() {
             Arc::new(ProcessSpawner::new(&pool)),
         )
         .unwrap();
-        let mut tagged_manifest = manifest();
-        tagged_manifest["sinks"][0]["status_group"] = json!("GH");
-        tagged_manifest["board"] = json!([{"agent":"SYNAPSE","title":"Work"}]);
+        let mut test_manifest = manifest();
+        test_manifest["board"] = json!([{"agent":"SYNAPSE","title":"Work"}]);
         module
             .handle(
                 &Caller::Operator,
                 "flow.install",
-                json!({"script":script,"manifest":tagged_manifest.to_string()}),
+                json!({"script":script,"manifest":test_manifest.to_string()}),
             )
             .unwrap();
         approve(&fake, &module);
@@ -1186,8 +1109,8 @@ fn journaled_sink_intent_is_byte_identical_after_a_cut() {
             sent[1].to_string().as_bytes()
         );
         if op == "sink.digest" {
-            assert_eq!(sent[0]["params"]["status_tag"], "NI");
-            assert_eq!(sent[1]["params"]["status_tag"], "NI");
+            assert_eq!(sent[0]["params"]["claim"], Value::Null);
+            assert_eq!(sent[1]["params"]["claim"], Value::Null);
             assert_eq!(sent[0]["params"]["replace_key"], "article:42");
             assert_eq!(sent[1]["params"]["replace_key"], "article:42");
             assert_eq!(sent[1]["params"]["created_at"], common::T0);
