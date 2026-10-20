@@ -280,7 +280,7 @@ wire field is inferred.
 |---|---|---|---|---|
 | `agent` | agent name or `$audience` | yes | | A known static agent without an audience; exactly `$audience` with one. |
 | `digest_max` | `"silent"`, `"piggyback"` or `"wake"` | yes | | The most intrusive action approved for the sink. An omitted action uses this cap, in both live dispatch and dry runs. Basal refuses static writes above the cap; audience writes go to core for delivery admission. |
-| `status_group` | string matching `[A-Z]{1,4}` | no | absent | Groups undelivered tagged digest items in the agent's status segment, for example `GH NI3 NRPR13`. Part of the hashed manifest shown on the approval card; checked at install and dry run. Only this grant permits per-write `status_tag`. |
+| `status_group` | string matching `[A-Z]{1,4}` | no | absent | Names the group core uses when composing the agent's status line. Part of the hashed manifest shown on the approval card; checked at install and dry run. |
 | `break_through` | boolean | no | `false` | Shown on the card as requested. Only the operator grants it, through policy. |
 
 The same `sinks` array may contain a targetless wait grant:

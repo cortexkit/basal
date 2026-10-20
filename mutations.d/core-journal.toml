@@ -1143,22 +1143,6 @@ old = "value.as_bytes().to_vec()"
 new = "value.to_string_lossy().as_bytes().to_vec() // NON-VACUITY BREAK"
 
 [[control]]
-id = "digest-status-tag-replay"
-guards = "a crash reissue preserves the journaled digest tag"
-test_file = "crates/basal-module/tests/hosts.rs"
-runner = "cargo"
-package = "basal-module"
-platforms = ["macos"]
-target = "--test hosts"
-expect_red = ["journaled_sink_intent_is_byte_identical_after_a_cut"]
-only = true
-build_timeout_s = 3600
-timeout_s = 600
-file = "crates/basal-core/src/model.rs"
-old = "self.request.clone().unwrap_or_else(|| self.args.clone())"
-new = "{ let mut value: serde_json::Value = serde_json::from_str(self.request.as_ref().unwrap_or(&self.args).as_str()).unwrap(); if let Some(object) = value.as_object_mut() { object.remove(\"status_tag\"); } JsonText::new(value.to_string()).unwrap() } // NON-VACUITY BREAK"
-
-[[control]]
 id = "install-request-migration-drops-history"
 guards = "the install-request migration retains old local cards without inventing core attempts"
 file = "crates/basal-core/src/schema.rs"

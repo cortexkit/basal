@@ -1011,36 +1011,20 @@ old = ".is_none_or(|d| d.kind != Some(basal_host::catalog::OpKind::Query))"
 new = ".is_none_or(|_d| false) // NON-VACUITY BREAK"
 
 [[control]]
-id = "digest-status-tag-needs-group"
-guards = "a digest status tag without a group is refused before send"
+id = "digest-removed-options-refused-before-send"
+guards = "removed digest options are refused before any core request is prepared"
 test_file = "crates/basal-module/tests/hosts.rs"
 runner = "cargo"
 package = "basal-module"
-platforms = ["macos"]
+platforms = ["linux"]
 target = "--test hosts"
-expect_red = ["status_tag_without_group_is_refused_before_send"]
+expect_red = ["digest_status_tag_and_claim_options_are_refused_before_send"]
 only = true
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/authorize.rs"
-old = "if !manifest\n                        .digest_sinks()\n                        .any(|s| s.agent == target && s.status_group.is_some())"
-new = "if false && !manifest\n                        .digest_sinks()\n                        .any(|s| s.agent == target && s.status_group.is_some()) // NON-VACUITY BREAK"
-
-[[control]]
-id = "digest-status-tag-validation"
-guards = "malformed digest status tags are refused before send"
-test_file = "crates/basal-module/tests/hosts.rs"
-runner = "cargo"
-package = "basal-module"
-platforms = ["macos"]
-target = "--test hosts"
-expect_red = ["malformed_status_tag_is_refused_before_send"]
-only = true
-build_timeout_s = 3600
-timeout_s = 600
-file = "crates/basal-core/src/authorize.rs"
-old = "if !tag\n                        .as_str()\n                        .is_some_and(crate::manifest::valid_status_label)"
-new = "if false && !tag\n                        .as_str()\n                        .is_some_and(crate::manifest::valid_status_label) // NON-VACUITY BREAK"
+old = "if let Some(option) = options.keys().find(|key| key.as_str() != \"replace_key\") {"
+new = "if let Some(option) = options.keys().find(|_key| false) { // NON-VACUITY BREAK"
 
 [[control]]
 id = "digest-replace-key-catalog-capability-gate"

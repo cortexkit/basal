@@ -1382,38 +1382,6 @@ edits = [
 ]
 
 [[control]]
-id = "digest-status-tag-top-level"
-guards = "digest status tags reach core outside item data"
-test_file = "crates/basal-module/tests/hosts.rs"
-runner = "cargo"
-package = "basal-module"
-platforms = ["macos"]
-target = "--test hosts"
-expect_red = ["digest_status_tag_is_top_level_and_absence_preserves_wire_bytes", "journaled_sink_intent_is_byte_identical_after_a_cut"]
-only = true
-build_timeout_s = 3600
-timeout_s = 600
-file = "crates/basal-host/src/core_host.rs"
-old = "request[\"status_tag\"] = tag.clone();"
-new = "request[\"item\"][\"data\"][\"status_tag\"] = tag.clone(); // NON-VACUITY BREAK"
-
-[[control]]
-id = "digest-status-tag-omission"
-guards = "untagged digest writes preserve the existing request bytes"
-test_file = "crates/basal-module/tests/hosts.rs"
-runner = "cargo"
-package = "basal-module"
-platforms = ["macos"]
-target = "--test hosts"
-expect_red = ["digest_status_tag_is_top_level_and_absence_preserves_wire_bytes", "core_requests_match_c3_c4_field_for_field", "digest_replace_key_is_top_level_when_core_catalog_capability_is_present"]
-only = true
-build_timeout_s = 3600
-timeout_s = 600
-file = "crates/basal-host/src/core_host.rs"
-old = "if let Some(tag) = args.get(\"options\").and_then(|o| o.get(\"status_tag\")) {"
-new = "request[\"status_tag\"] = Value::Null; // NON-VACUITY BREAK\n            if let Some(tag) = args.get(\"options\").and_then(|o| o.get(\"status_tag\")) {"
-
-[[control]]
 id = "install-six-state-decoder-refuses-pending"
 guards = "the install-status decoder includes unapproved card states as well as active, revoked and unknown"
 file = "crates/basal-host/src/core_host.rs"
