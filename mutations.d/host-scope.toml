@@ -308,6 +308,8 @@ new = '''if flow.starts_with("codemode:") && scope.is_some() { return Vec::new()
 
 [[control]]
 id = "codemode-host-route-release"
+hub = "A released codemode route key loses its authority, asserted by the route integration test and by the transport's run-custody test that late_results fails after release"
+hub_targets = ["basal_host"]
 guards = "a released codemode route key retains authority to dispatch"
 test_file = "crates/basal-host/tests/flow_scope_routes.rs"
 runner = "cargo"
@@ -315,7 +317,7 @@ package = "basal-host"
 platforms = ["linux"]
 target = "--test flow_scope_routes"
 expect_red = ["configure_flow_releases_a_codemode_route_key_without_releasing_other_users"]
-only = true
+only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/flow_scope.rs"
