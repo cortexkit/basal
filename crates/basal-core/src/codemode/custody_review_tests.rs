@@ -390,7 +390,7 @@ fn consent_not_started_detail_allows_only_the_program_to_choose_a_fresh_call() {
     let mut entry = late_entry(&first.key, "approved", Value::Null);
     entry["kind"] = json!("not_started");
     entry["reason"] = json!("consent");
-    entry["detail"] = json!({"outcome":"approved","site":"example.test"});
+    entry["detail"] = json!({"consent":"approved","site":"example.test"});
     pull.reply
         .send(Ok(late_page("i1", 1, vec![entry])))
         .unwrap();
@@ -400,7 +400,7 @@ fn consent_not_started_detail_allows_only_the_program_to_choose_a_fresh_call() {
     assert_eq!(error["code"], "not_started");
     assert_eq!(
         error["detail"],
-        json!({"outcome":"approved","site":"example.test"})
+        json!({"consent":"approved","site":"example.test"})
     );
     assert_eq!(f.calls()[0].outcome, Outcome::Withdrawn);
     assert!(

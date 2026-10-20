@@ -115,7 +115,7 @@ impl Transport for Core {
                 let scope = self.opens.lock().unwrap()[0]["run_id"].clone();
                 let entries = if ready && self.consent_provider.load(Ordering::SeqCst) {
                     vec![
-                        json!({"kind":"not_started","owner":"reserved:prefrontal-core","ref":scope,"scope_epoch":19,"custodian":"reserved:basal","call_key":key,"event_id":"consent-result","settled_at":100,"reason":"consent","detail":{"outcome":"approved"}}),
+                        json!({"kind":"not_started","owner":"reserved:prefrontal-core","ref":scope,"scope_epoch":19,"custodian":"reserved:basal","call_key":key,"event_id":"consent-result","settled_at":100,"reason":"consent","detail":{"consent":"approved"}}),
                     ]
                 } else if ready {
                     vec![
@@ -885,7 +885,7 @@ fn consent_approval_rejects_not_started_and_the_program_chooses_a_new_call() {
         let answer;
         try { answer = await tools.echo({n:20}); }
         catch (error) {
-            if (error.code !== 'not_started' || error.detail.outcome !== 'approved') throw error;
+            if (error.code !== 'not_started' || error.detail.consent !== 'approved') throw error;
             answer = await tools.echo({n:22});
         }
         return answer.n + 20;

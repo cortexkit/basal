@@ -1,6 +1,6 @@
 # Codemode
 
-Basal provides one agent-facing tool, `codemode({code, description?, limits?})`, on its tool route, where the daemon verifies the caller's principal and stamps its agent and scope identities. A short JavaScript program can await the agent's own tools, capture console output and return one JSON result. prefrontal-core, which manages agents and their tool grants, grants access to codemode and opens the run scope; basal owns the description, run records, budgets and rendered result. Tool schemas come from the daemon catalog, and each provider decides allow, ask and deny using the daemon-recorded agent identity and run scope, just as for a direct call. Model tools are a later extension.
+Basal provides one agent-facing tool, `codemode({code, description?, limits?})`, on its tool route, where the daemon verifies the caller's principal and stamps its agent and scope identities. A short JavaScript program can await the agent's own tools, capture console output and return one JSON result. prefrontal-core, which manages agents and their tool grants, grants access to codemode and opens the run scope; basal owns the description, run records, budgets and rendered result. Tool schemas come from the daemon catalog, and each provider decides allow, ask and deny using the daemon-recorded agent identity and run scope, just as for a direct call. Basal also provides `tools.model` and `tools.classify`, which call Broca on the run's scope within a per-run model budget.
 
 A keyed call derives its run ID from the stamped agent and call key; retries attach without replay. A keyless call executes once under an OS-random ID and warns that its reply cannot be recovered. Basal's parent process (outside the confined worker) caps wall time at 30 minutes plus a separate cumulative 10 minutes waiting only on people: the worker must be blocked and every in-flight tool call waiting for a person's approval or decision. It closes the scope before cancellation kills its worker, and interrupts leftover runs at startup. Long keyed calls can return before the program finishes; `late_results` lets the caller retrieve the finished result later, and `tool.withdraw` cancels the run. Codemode runs on macOS, Linux and Windows under each OS's full worker confinement. See [the tool and role operations](ops.md#codemode).
 
@@ -125,7 +125,7 @@ the unanswered call as unknown.
 
 Cerebellum does not execute an approval-gated action after the person wait: the
 page, coordinates or other state may have changed. Approval instead arrives as
-`not_started` with provider detail such as `{outcome: "approved"}`. Basal records
+`not_started` with provider detail `{consent: "approved"}` (Cerebellum's other values are `denied`, `withdrawn` and `expired`). Basal records
 `withdrawn` and rejects the promise with `error.code === "not_started"` and that
 object in `error.detail`. The grant is now active, so the program can choose a new
 call without a second approval card. Denial is a terminal refusal; do not treat it
@@ -139,7 +139,7 @@ let view;
 try {
   view = await tools.browser_use({action: "snapshot"});
 } catch (error) {
-  if (error.code !== "not_started" || error.detail?.outcome !== "approved") {
+  if (error.code !== "not_started" || error.detail?.consent !== "approved") {
     throw error;
   }
   // This new call observes the current page under the newly approved grant.
