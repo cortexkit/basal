@@ -1068,7 +1068,9 @@ runner = "cargo"
 package = "basal-module"
 platforms = ["linux"]
 target = "--test hosts"
-expect_red = ["digest_replace_key_validation_refuses_invalid_values_unsent"]
+# A withdrawal carries the same replace_key and goes through the same check, so
+# its validation test is a second guard of this property.
+expect_red = ["digest_replace_key_validation_refuses_invalid_values_unsent", "digest_withdraw::digest_withdraw_validates_required_keys_and_the_digest_grant"]
 only = true
 build_timeout_s = 3600
 timeout_s = 600
