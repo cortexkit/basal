@@ -113,6 +113,12 @@ pub struct Options {
     /// Off unless a test is about the install gate: the mock consent plane
     /// is not core, so no core approved these tests' flows.
     pub install_gate: InstallGate,
+    /// The most schedule fires an install's capture dry run replays. None
+    /// keeps the production default of ten. A test about flow behaviour, not
+    /// about the install card, can set 0: each replayed fire runs the whole
+    /// script in a worker, which a test that installs many fresh fixtures
+    /// pays for every time.
+    pub dry_run_max_fires: Option<usize>,
 }
 
 impl Default for Options {
@@ -133,6 +139,7 @@ impl Default for Options {
             budgets: basal_proto::Budgets::default(),
             pool_wait_timeout: None,
             install_gate: InstallGate::Off,
+            dry_run_max_fires: None,
         }
     }
 }
@@ -201,7 +208,13 @@ pub fn fixture_with_store(
             max_concurrent_activations: o.max_concurrent,
             pass_interval: o.engine_pass_interval,
         },
-        dry_run: DryRunConfig::new(dir.join("dry-run")),
+        dry_run: {
+            let mut dry_run = DryRunConfig::new(dir.join("dry-run"));
+            if let Some(max_fires) = o.dry_run_max_fires {
+                dry_run.max_fires = max_fires;
+            }
+            dry_run
+        },
     };
     let mut store = None;
     let module = Module::start_with_store(

@@ -213,6 +213,17 @@ struct Test {
 }
 impl Test {
     fn new(boards: Vec<Value>) -> Self {
+        // The rule tests run the flow itself. The install card's capture
+        // replay has its own test below. In capture mode every replayed fire
+        // stops at its first board read, so repeating that ten-fire replay
+        // for each fresh fixture checks nothing new; it cost about a fifth of
+        // this file's serial runtime.
+        Self::build(boards, Some(0))
+    }
+    fn with_install_dry_run(boards: Vec<Value>) -> Self {
+        Self::build(boards, None)
+    }
+    fn build(boards: Vec<Value>, dry_run_max_fires: Option<usize>) -> Self {
         let host = Arc::new(BoardHost::default());
         host.replacement_supported.store(true, Ordering::Relaxed);
         host.withdrawal_supported.store(true, Ordering::Relaxed);
@@ -241,6 +252,7 @@ impl Test {
                     transport: Arc::new(basal_module::unconfigured::UnconfiguredTransport),
                     hooks: Arc::new(NoHooks),
                 }),
+                dry_run_max_fires,
                 ..Options::with_worker()
             },
         );
@@ -338,7 +350,7 @@ fn published_manifest_has_global_minimal_grants_and_five_minute_schedule() {
 
 #[test]
 fn install_card_dry_run_text_matches_its_committed_fixture() {
-    let t = Test::new(Vec::new());
+    let t = Test::with_install_dry_run(Vec::new());
     let card = t.f.module.rt.cards("board-hygiene").unwrap().remove(0);
     let fields: Value = serde_json::from_str(&card.card).unwrap();
     // Every replayed run stops at its first board read, which a dry run
