@@ -648,7 +648,15 @@ impl Driver {
         let request = ActivationRequest {
             activation_id: 1,
             profile: Profile::Codemode,
-            tools: self.start.tools.keys().cloned().collect(),
+            // Dropped tools keep their names so a call to one reaches the
+            // parent and rejects with a typed reason, not a TypeError.
+            tools: self
+                .start
+                .tools
+                .keys()
+                .chain(self.start.unavailable.keys())
+                .cloned()
+                .collect(),
             prelude_hash: self.shared.prelude_hash,
             script: self.run.program.clone(),
             trigger: JsonText::null(),
@@ -1181,7 +1189,12 @@ impl Driver {
             self.run.output.push_str(&line);
         } else if !self.output_truncated {
             self.output_truncated = true;
-            self.run.warnings = json!([{"code":"output_truncated", "message":"console output exceeded the byte limit"}]).to_string();
+            // Appended, so warnings recorded earlier (such as tools dropped
+            // at admission) stay in the result.
+            let mut warnings: Vec<Value> = serde_json::from_str(&self.run.warnings)
+                .map_err(|e| CoreError::Corrupt(e.to_string()))?;
+            warnings.push(json!({"code":"output_truncated", "message":"console output exceeded the byte limit"}));
+            self.run.warnings = serde_json::to_string(&warnings).unwrap();
         }
         self.shared.store.write(|tx| {
             tx.execute("UPDATE codemode_runs SET output = ?2, warnings = ?3 WHERE run_id = ?1 AND status = 'running'",
@@ -1207,6 +1220,22 @@ impl Driver {
         })?;
         if self.invocations > self.start.limits.tool_calls {
             return self.end(exhausted(Budget::ToolCalls));
+        }
+        if let Some(dropped) = self.start.unavailable.get(name) {
+            let mut mapped = Mapped::rejected(
+                Outcome::ToolUnavailable,
+                "tool_unavailable",
+                &dropped.message,
+            );
+            mapped.detail = Some(json!({"reason":dropped.reason,"module":dropped.module}));
+            self.insert(
+                &call,
+                CallStart::Settled {
+                    outcome: Outcome::ToolUnavailable,
+                    code: Some("tool_unavailable"),
+                },
+            )?;
+            return self.deliver(&call, mapped);
         }
         let Some(tool) = self.start.tools.get(name) else {
             return self.refuse(call, Outcome::Refused, "unknown_tool", true);

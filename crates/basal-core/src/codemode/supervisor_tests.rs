@@ -8,7 +8,7 @@ use basal_host::flow_scope::RegisteredScope;
 use basal_host::{MockCatalog, OpDecl, OpKind};
 use basal_proto::{Confinement, PROTOCOL_VERSION, Primitive, Welcome};
 
-use super::super::admission::{Limits, Tool};
+use super::super::admission::{Limits, Tool, Unavailable};
 use super::super::catalog::compile_input_schema;
 use super::super::store::tests::{DIGEST, new_run};
 use crate::store::Durability;
@@ -488,6 +488,15 @@ impl Fixture {
         }
     }
     fn start(&self, tools: &[(&str, &str, &str, Value)], limits: Limits, deadline: i64) {
+        self.start_with(tools, Default::default(), limits, deadline);
+    }
+    fn start_with(
+        &self,
+        tools: &[(&str, &str, &str, Value)],
+        unavailable: BTreeMap<String, Unavailable>,
+        limits: Limits,
+        deadline: i64,
+    ) {
         let mut new = new_run("r");
         new.catalog_digest = DIGEST;
         new.deadline_ms = deadline;
@@ -527,6 +536,7 @@ impl Fixture {
                 Start {
                     scope,
                     tools,
+                    unavailable,
                     limits,
                     wall_deadline_ms: deadline,
                 },
@@ -697,7 +707,7 @@ fn shutdown_refuses_to_start_a_new_driver() {
             selector: serde_json::from_value(json!({"owner":{"kind":"reserved","module_id":"core"}, "ref":"scope-r", "epoch":7})).unwrap(),
             targets: Default::default(),
         },
-        tools: Default::default(), limits: Limits::default(), wall_deadline_ms: 10000,
+        tools: Default::default(), unavailable: Default::default(), limits: Limits::default(), wall_deadline_ms: 10000,
     }).unwrap_err();
     assert_eq!(
         error.to_string(),
@@ -1610,6 +1620,54 @@ fn configured_tool_budget_is_enforced_before_the_unknown_tool_check() {
 }
 
 #[test]
+fn a_tool_dropped_at_admission_rejects_typed_and_named_while_others_still_run() {
+    let f = Fixture::new();
+    let unavailable = [(
+        "apply_patch".to_owned(),
+        Unavailable {
+            module: "aft".into(),
+            reason: "catalog_unreadable",
+            message: "codemode can't use apply_patch from provider aft: unreadable".into(),
+        },
+    )]
+    .into_iter()
+    .collect();
+    f.start_with(
+        &[("read", "notes", "read", json!({}))],
+        unavailable,
+        Limits::default(),
+        10_000,
+    );
+    let ParentMessage::Activate(request) = f.parent.recv_timeout(TIMEOUT).unwrap() else {
+        panic!()
+    };
+    // The program sees the dropped name, so calling it reaches the parent.
+    assert_eq!(request.tools, ["read", "apply_patch"]);
+    f.issue(0, "apply_patch", json!({}));
+    let delivery = f.delivery();
+    let value: Value = serde_json::from_str(delivery.value.as_str()).unwrap();
+    rejection(
+        delivery,
+        "apply_patch",
+        "tool_unavailable",
+        "tool_unavailable",
+    );
+    assert_eq!(
+        value["detail"],
+        json!({"reason":"catalog_unreadable","module":"aft"})
+    );
+    assert!(value["message"].as_str().unwrap().contains("provider aft"));
+    assert!(f.attempts.try_recv().is_err(), "nothing was sent");
+    let call = &f.calls()[0];
+    assert_eq!(call.code.as_deref(), Some("tool_unavailable"));
+    f.issue(1, "read", json!({"n":1}));
+    f.attempt().reply.send(Ok(json!(true))).unwrap();
+    assert_eq!(f.delivery().settlement, Settlement::Fulfilled);
+    f.finish("null");
+    assert_eq!(f.terminal()["status"], "completed");
+}
+
+#[test]
 fn queued_readiness_refusal_has_no_intent_and_wall_expiring_during_readiness_never_sends() {
     let f = Fixture::new();
     f.standard();
@@ -1709,6 +1767,7 @@ fn panicking_driver_terminates_and_start_rejects_duplicate_or_terminal_runs() {
             targets: Default::default(),
         },
         tools: Default::default(),
+        unavailable: Default::default(),
         limits: Limits::default(),
         wall_deadline_ms: 10_000,
     };

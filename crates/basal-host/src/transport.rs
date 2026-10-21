@@ -200,6 +200,24 @@ pub trait Transport: Send + Sync {
         arguments: Value,
         call_key: &str,
     ) -> Result<Value, WireError>;
+    /// Sends one unscoped tool-route request on a route bound with `identity`
+    /// instead of basal's own generic identity, then closes that route. The
+    /// identity is bind configuration (project root, harness label, session),
+    /// never authority: the daemon still stamps the route as basal's.
+    ///
+    /// Test transports that do not model bind identities keep the default,
+    /// which sends through `tool`.
+    fn tool_as(
+        &self,
+        identity: &BindIdentity,
+        module: &str,
+        name: &str,
+        arguments: Value,
+        call_key: &str,
+    ) -> Result<Value, WireError> {
+        let _ = identity;
+        self.tool(module, name, arguments, call_key)
+    }
 }
 
 pub type RunScopeEnded = dyn Fn(&str) + Send + Sync;
@@ -1093,6 +1111,48 @@ impl Transport for SubcTransport {
             false,
         )
     }
+    fn tool_as(
+        &self,
+        identity: &BindIdentity,
+        module: &str,
+        name: &str,
+        arguments: Value,
+        call_key: &str,
+    ) -> Result<Value, WireError> {
+        let body = serde_json::to_vec(&tool_body(name, arguments, call_key)?)
+            .map_err(|e| WireError::NeverSent(e.to_string()))?;
+        let options = || CallOptions {
+            timeout: self.timeout,
+            ..Default::default()
+        };
+        self.handle.block_on(async {
+            let handle = self
+                .consumer
+                .open_route(
+                    RouteTarget::ToolProvider {
+                        module_id: module.into(),
+                    },
+                    identity.clone(),
+                    options(),
+                )
+                .await
+                .map_err(map_error)?;
+            let result = self
+                .consumer
+                .request(&handle, body, options())
+                .await
+                .map_err(map_error)
+                .and_then(|bytes| decode_response(&bytes, false));
+            // Callers pass identities that are not reused (one per codemode
+            // run), so the route is closed rather than left in the client's
+            // route cache.
+            let _ = self
+                .consumer
+                .close_handle(&handle, Default::default())
+                .await;
+            result
+        })
+    }
 }
 
 /// Sends one codemode tool request, opening (or reusing) its route with `open`
@@ -1644,6 +1704,32 @@ mod tests {
             assert_eq!(reads.len(), 2);
             assert_eq!(reads[0].0, 11);
             assert_eq!(reads[1].0, 12);
+        });
+    }
+
+    #[test]
+    fn tool_as_binds_an_unscoped_route_with_the_given_identity_and_closes_it() {
+        with_scoped_transport(|transport, opens, calls, _| {
+            let identity = BindIdentity::new("/agent/project", "runner", "basal:codemode:run-1");
+            assert_eq!(
+                transport
+                    .tool_as(&identity, "aft", "echo", json!({"n":1}), "key-1")
+                    .unwrap(),
+                json!({"n":1})
+            );
+            let opens = opens.lock().unwrap();
+            assert_eq!(opens.len(), 1);
+            assert!(opens[0].get("scope").is_none());
+            assert_eq!(
+                opens[0]["identity"],
+                serde_json::to_value(&identity).unwrap()
+            );
+            let calls = calls.lock().unwrap();
+            let sent = calls
+                .iter()
+                .find(|(_, body)| body["name"] == "echo")
+                .unwrap();
+            assert_eq!(sent.0, 11, "sent on the route opened with the identity");
         });
     }
 

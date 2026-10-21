@@ -25,6 +25,7 @@ struct Core {
     refusal: Mutex<Option<WireError>>,
     mismatch: Mutex<bool>,
     identities: Mutex<Vec<subc_protocol::BindIdentity>>,
+    catalog_identities: Mutex<Vec<subc_protocol::BindIdentity>>,
     store: Mutex<Option<Arc<basal_core::Store>>>,
     held_provider: AtomicBool,
     format_unreadable: AtomicBool,
@@ -198,8 +199,33 @@ impl Transport for Core {
             _ => panic!("unexpected management op {op}"),
         }
     }
-    fn tool(&self, module: &str, name: &str, _: Value, _: &str) -> Result<Value, WireError> {
+    fn tool(&self, _: &str, name: &str, _: Value, _: &str) -> Result<Value, WireError> {
+        // Like AFT, the provider refuses basal's generic `basal` harness.
+        assert!(
+            matches!(name, "role.describe" | "tool.catalog"),
+            "unscoped action send"
+        );
+        Err(WireError::NeverSent(
+            "config_divergence: configure payload invalid field 'harness'".into(),
+        ))
+    }
+    fn tool_as(
+        &self,
+        identity: &subc_protocol::BindIdentity,
+        module: &str,
+        name: &str,
+        _: Value,
+        _: &str,
+    ) -> Result<Value, WireError> {
         assert_eq!(module, "mock");
+        // Catalog reads bind as a headless runner in the caller's project
+        // root, never with the caller's own harness or session.
+        assert_eq!(identity.harness, "runner");
+        assert!(identity.session.starts_with("basal:codemode:"));
+        self.catalog_identities
+            .lock()
+            .unwrap()
+            .push(identity.clone());
         if self.format_unreadable.load(Ordering::SeqCst)
             && matches!(name, "role.describe" | "tool.catalog")
         {
@@ -817,6 +843,16 @@ fn forwarded_bind_identity_is_configuration_not_agent_authority() {
         .unwrap();
     assert_eq!(result["structuredContent"]["status"], "completed");
     assert_eq!(rig.core.identities.lock().unwrap().as_slice(), [expected]);
+    // The admission-time catalog reads bind as a headless runner in the
+    // caller's project root, not with the caller's harness or session.
+    let reads = rig.core.catalog_identities.lock().unwrap().clone();
+    assert_eq!(reads.len(), 2, "role.describe and tool.catalog");
+    for read in &reads {
+        assert_eq!(read.project_root, std::path::Path::new("/other/workspace"));
+        assert_eq!(read.harness, "runner");
+        assert_eq!(read.project_id, None);
+        assert!(read.session.starts_with("basal:codemode:"));
+    }
     assert_eq!(rig.core.opens.lock().unwrap()[0]["agent_id"], "agent");
     *rig.core.mismatch.lock().unwrap() = true;
     let result = rig
@@ -913,26 +949,50 @@ fn consent_approval_rejects_not_started_and_the_program_chooses_a_new_call() {
 }
 
 #[test]
-fn unreadable_legacy_result_catalog_refuses_before_start_with_a_retry_message() {
-    let rig = rig("legacy-format-unreadable", true);
+fn an_unreadable_provider_catalog_drops_its_tools_and_the_run_still_starts() {
+    let rig = rig("legacy-format-unreadable", false);
     rig.core.format_unreadable.store(true, Ordering::SeqCst);
-    let result = call(
-        &rig,
-        "unreadable-format",
-        "return 1;",
-        Duration::from_secs(10),
-    );
-    assert!(rig.fixture.module.codemode_pool.handouts().is_empty());
-    assert_eq!(result["structuredContent"]["status"], "failed");
+    let program = r#"
+        try { await tools.echo({n:1}); }
+        catch (error) { return [error.code, error.detail.reason, error.detail.module]; }
+        return "sent";
+    "#;
+    let result = call(&rig, "unreadable-format", program, Duration::from_secs(10));
     assert_eq!(
-        result["structuredContent"]["error"]["code"],
+        result["structuredContent"]["status"], "completed",
+        "{result}"
+    );
+    assert_eq!(
+        result["structuredContent"]["value"],
+        json!(["tool_unavailable", "catalog_unreadable", "mock"])
+    );
+    assert_eq!(
+        result["structuredContent"]["calls"][0]["outcome"],
+        "tool_unavailable"
+    );
+    let warnings = result["structuredContent"]["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert_eq!(warnings[0]["code"], "tools_unavailable");
+    assert_eq!(
+        warnings[0]["reason"],
         basal_host::run_scope::RefusalReason::CatalogUnreadable.code()
     );
+    assert_eq!(warnings[0]["module"], "mock");
+    assert_eq!(warnings[0]["tools"], json!(["echo"]));
     assert!(
-        result["structuredContent"]["error"]["message"]
+        warnings[0]["message"]
             .as_str()
             .unwrap()
             .contains("retrying the run may succeed")
     );
-    assert_eq!(rig.core.state.lock().unwrap().0, 0);
+    let text = result["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("Warning: codemode can't use echo from provider mock"),
+        "{text}"
+    );
+    assert_eq!(
+        rig.core.state.lock().unwrap().0,
+        0,
+        "the dropped tool was never sent"
+    );
 }

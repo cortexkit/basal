@@ -61,6 +61,14 @@ Protocol errors remain protocol Error frames: unserved call modes
 admission refusals preserve their existing codes, messages and optional detail.
 They do not acquire a ToolResult in the Error frame's detail.
 
+A provider that does not serve a tool in codemode, or whose tool catalog can't be
+read or is invalid, does not refuse the run. Admission drops the affected tools
+(one tool for `provider_not_opted_in` or `call_mode_unsupported`, every tool from
+that provider for `catalog_unreadable` or `invalid_answer`) and records a
+`tools_unavailable` warning naming the provider, the dropped tools and the reason.
+A program call to a dropped tool rejects with `tool_unavailable` and
+`detail: {"reason": "<reason>", "module": "<provider>"}`; nothing is sent.
+
 A terminal program failure, uncaught tool refusal, budget stop or cancellation
 is a content result with `isError: true` and a stable `errorCode`. Its model text
 is unchanged, including partial output and known call outcomes. A caught tool
@@ -115,9 +123,9 @@ rejects the promise.
 
 Basal decodes held replies with tool-provider 0.9.3 only when that specific tool
 opts into `result_format: "content/v1"`. A route capability is not a format guess:
-legacy tools retain their original JSON bodies. If any provider catalog is unreadable,
-admission refuses before the program starts with a retry-may-succeed message; there
-is no guessed raw fallback. `consent`, `login_handoff`,
+legacy tools retain their original JSON bodies. If a provider catalog is unreadable,
+admission drops that provider's tools with a retry-may-succeed warning and the run
+starts with its other tools; there is no guessed raw fallback. `consent`, `login_handoff`,
 `login_capture` and unknown well-formed held reasons all keep the await pending.
 Transient transport failures retry custody reads, not tool actions; a reconnect
 reopens only the same run-scoped custody route. Definitive scope end still ends

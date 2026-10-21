@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use cortexkit_role_tool_provider::catalog::{CatalogAnswer, check_modes, serves_call_mode};
 use cortexkit_role_tool_provider::{CALL_MODES_CAPABILITY, CallMode};
 
-use crate::subc_catalog::{CORE, read_tool_catalog};
+use crate::subc_catalog::{CORE, read_tool_catalog_as};
 use crate::transport::{Transport, WireError};
 
 pub const WALL_MS: i64 = 30 * 60 * 1_000;
@@ -83,7 +83,29 @@ fn call<T: Serialize, R: for<'de> Deserialize<'de>>(
 /// `call-modes/v1`.
 pub const LEGACY_RUN_SCOPES_CAPABILITY: &str = "agent-run-scopes/v1";
 
-/// Why basal refused to put one catalog entry in a codemode run.
+/// The harness label on the routes basal binds to read a provider's
+/// `role.describe` and `tool.catalog` at codemode admission. AFT accepts only
+/// host harness names in a bind (`opencode`, `pi`, `runner`, `mcp:<client>`,
+/// `fed:<fingerprint>`) and refuses basal's own generic `basal` label;
+/// `runner` is AFT's label for headless executors. The harness is bind
+/// configuration only: the daemon still stamps the route as basal's.
+pub const CATALOG_READ_HARNESS: &str = "runner";
+
+/// The bind identity for a codemode run's admission-time catalog reads: the
+/// invoking caller's project root, the `runner` harness and a session naming
+/// the run. Tool calls inside the run use the caller's forwarded identity.
+pub fn catalog_read_identity(
+    project_root: &std::path::Path,
+    run_id: &str,
+) -> subc_protocol::BindIdentity {
+    subc_protocol::BindIdentity::new(
+        project_root,
+        CATALOG_READ_HARNESS,
+        format!("basal:codemode:{run_id}"),
+    )
+}
+
+/// Why basal left one catalog entry out of a codemode run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefusalReason {
     /// The provider declares neither `agent-run-scopes/v1` nor `call-modes/v1`.
@@ -101,7 +123,7 @@ pub enum RefusalReason {
 }
 
 impl RefusalReason {
-    /// The error code a refused run reports.
+    /// The reason code a dropped tool reports.
     pub fn code(self) -> &'static str {
         match self {
             Self::NotOptedIn => "provider_not_opted_in",
@@ -110,42 +132,46 @@ impl RefusalReason {
             Self::InvalidAnswer => "invalid_answer",
         }
     }
+
+    /// Whether the reason is about the provider's whole answer rather than
+    /// one tool. Such a provider has every one of its entries dropped, since
+    /// no result format can be trusted from an answer basal could not read
+    /// or that is invalid.
+    fn whole_provider(self) -> bool {
+        matches!(self, Self::CatalogUnreadable | Self::InvalidAnswer)
+    }
 }
 
-/// One catalog entry basal will not let a codemode run call, naming the
-/// provider module, the run's tool name and the provider's op.
+/// Catalog entries basal dropped from a codemode run, all from one provider
+/// and for one reason. The run still starts with the other entries.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ToolRefusal {
+pub struct CatalogGap {
     pub reason: RefusalReason,
     pub module: String,
-    pub tool: String,
-    pub op: String,
+    /// The run's names for the dropped tools, in catalog order.
+    pub tools: Vec<String>,
     /// Plain-language detail, such as the read error or the failing check.
     pub problem: String,
 }
 
-impl ToolRefusal {
+impl CatalogGap {
     pub fn message(&self) -> String {
         format!(
-            "codemode can't use tool {} ({}.{}): {}",
-            self.tool, self.module, self.op, self.problem
+            "codemode can't use {} from provider {}: {}",
+            self.tools.join(", "),
+            self.module,
+            self.problem
         )
     }
 }
 
-/// Why the run's tool catalog could not be built.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CatalogError {
-    /// The daemon catalog or core's entries could not be used.
-    Wire(WireError),
-    /// A provider does not serve one of the entries in codemode.
-    Tool(ToolRefusal),
-}
-
-impl From<WireError> for CatalogError {
-    fn from(error: WireError) -> Self {
-        Self::Wire(error)
-    }
+/// The tools a codemode run may call, and the entries left out of it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedCatalog {
+    /// The usable entries, each `{name, module, op, input_schema,
+    /// result_format?}`, in the order core sent them.
+    pub catalog: Value,
+    pub gaps: Vec<CatalogGap>,
 }
 
 /// Whether the provider serves `entry` in codemode, as it declares it. A
@@ -155,17 +181,11 @@ impl From<WireError> for CatalogError {
 /// answer once read, so a provider listed for several entries is read once.
 fn codemode_served(
     transport: &dyn Transport,
+    identity: &subc_protocol::BindIdentity,
     module: &Value,
     entry: &CatalogEntry,
     answers: &mut BTreeMap<String, Result<CatalogAnswer, WireError>>,
-) -> Result<Option<cortexkit_role_tool_provider::result::ResultFormat>, ToolRefusal> {
-    let refuse = |reason, problem: String| ToolRefusal {
-        reason,
-        module: entry.module.clone(),
-        tool: entry.tool.clone(),
-        op: entry.op.clone(),
-        problem,
-    };
+) -> Result<Option<cortexkit_role_tool_provider::result::ResultFormat>, (RefusalReason, String)> {
     let provides = |token: &str| {
         module["capabilities"]["provides"]
             .as_array()
@@ -173,19 +193,18 @@ fn codemode_served(
     };
     let legacy = provides(LEGACY_RUN_SCOPES_CAPABILITY);
     if !legacy && !provides(CALL_MODES_CAPABILITY) {
-        return Err(refuse(
+        return Err((
             RefusalReason::NotOptedIn,
             format!(
-                "provider {} declares neither {CALL_MODES_CAPABILITY} nor {LEGACY_RUN_SCOPES_CAPABILITY}",
-                entry.module
+                "it declares neither {CALL_MODES_CAPABILITY} nor {LEGACY_RUN_SCOPES_CAPABILITY}"
             ),
         ));
     }
     let answer = answers
         .entry(entry.module.clone())
-        .or_insert_with(|| read_tool_catalog(transport, &entry.module));
+        .or_insert_with(|| read_tool_catalog_as(transport, identity, &entry.module));
     let answer = answer.as_ref().map_err(|error| {
-        refuse(
+        (
             RefusalReason::CatalogUnreadable,
             format!("its tool.catalog could not be read: {error:?}; retrying the run may succeed"),
         )
@@ -194,7 +213,7 @@ fn codemode_served(
     // only that tool's entry.
     for tool in &answer.tools {
         check_modes(tool).map_err(|problem| {
-            refuse(
+            (
                 RefusalReason::InvalidAnswer,
                 format!("its tool.catalog answer is invalid: {problem}"),
             )
@@ -202,21 +221,21 @@ fn codemode_served(
     }
     let mut listed = answer.tools.iter().filter(|tool| tool.name == entry.op);
     let Some(tool) = listed.next() else {
-        return Err(refuse(
+        return Err((
             RefusalReason::ModeNotServed,
-            "its tool.catalog does not list the tool".into(),
+            format!("its tool.catalog does not list {}", entry.op),
         ));
     };
     if listed.next().is_some() {
-        return Err(refuse(
+        return Err((
             RefusalReason::InvalidAnswer,
-            "its tool.catalog lists the tool more than once".into(),
+            format!("its tool.catalog lists {} more than once", entry.op),
         ));
     }
     if !legacy && !serves_call_mode(tool, &CallMode::Codemode) {
-        return Err(refuse(
+        return Err((
             RefusalReason::ModeNotServed,
-            "the tool's modes do not include codemode".into(),
+            format!("the modes of {} do not include codemode", entry.op),
         ));
     }
     Ok(tool.result_format.clone())
@@ -225,32 +244,45 @@ fn codemode_served(
 /// Resolve only tools declared by the daemon, not schemas carried by core or
 /// script input. Basal inserts its own model tools separately.
 ///
-/// Every entry must be served in codemode by its provider (see
-/// `codemode_served`); one entry that is not refuses the whole catalog.
-/// Every provider catalog is read to freeze result formats, including legacy
+/// Core's entries must name tools the daemon catalog declares, once each, and
+/// never codemode itself; any entry that does not fails the whole catalog.
+///
+/// An entry its provider does not serve in codemode (see `codemode_served`)
+/// is dropped and named in a gap; the run still gets the other entries. When
+/// a provider's `role.describe` or `tool.catalog` can't be read, or its answer
+/// is invalid, every entry from that provider is dropped: basal never guesses
+/// a result format. Every provider catalog is read, including legacy
 /// providers whose capability admits codemode without per-tool mode opt-in.
-/// Each module is read once, with requests bounded by the transport timeout;
-/// callers must not hold a store lock across this function.
+///
+/// The reads bind with `identity` (see `catalog_read_identity`). Each module
+/// is read once, with requests bounded by the transport timeout; callers must
+/// not hold a store lock across this function.
 pub fn catalog(
     transport: &dyn Transport,
+    identity: &subc_protocol::BindIdentity,
     daemon: &Value,
     entries: &[CatalogEntry],
-) -> Result<Value, CatalogError> {
+) -> Result<ResolvedCatalog, WireError> {
     let modules = daemon["modules"]
         .as_array()
         .ok_or_else(|| WireError::Unreadable("daemon catalog has no modules".into()))?;
     let mut answers = BTreeMap::new();
-    let mut resolved = Vec::new();
+    // Each usable entry with its provider, so a provider that fails on a later
+    // entry can still have its earlier entries removed.
+    let mut usable: Vec<(&str, Value)> = Vec::new();
+    let mut gaps: Vec<CatalogGap> = Vec::new();
+    // Providers whose whole answer is unusable, in the order first seen.
+    let mut failed: Vec<(&str, RefusalReason, String)> = Vec::new();
     for entry in entries {
         if entry.tool == "codemode" || (entry.module == "basal" && entry.op == "codemode") {
-            return Err(WireError::Unreadable("recursive codemode catalog entry".into()).into());
+            return Err(WireError::Unreadable(
+                "recursive codemode catalog entry".into(),
+            ));
         }
         let module = modules
             .iter()
             .find(|module| module["module_id"] == entry.module)
             .ok_or_else(|| WireError::NeverSent(format!("provider {} is absent", entry.module)))?;
-        let result_format =
-            codemode_served(transport, module, entry, &mut answers).map_err(CatalogError::Tool)?;
         let roles: Vec<subc_protocol::manifest::ProviderRole> =
             serde_json::from_value(module["roles"].clone())
                 .map_err(|e| WireError::Unreadable(e.to_string()))?;
@@ -267,15 +299,58 @@ pub fn catalog(
             WireError::NeverSent(format!("tool {}.{} is absent", entry.module, entry.op))
         })?;
         if schemas.next().is_some() {
-            return Err(WireError::Unreadable("ambiguous tool declaration".into()).into());
+            return Err(WireError::Unreadable("ambiguous tool declaration".into()));
         }
-        let mut resolved_tool = serde_json::json!({"name":entry.tool,"module":entry.module,"op":entry.op,"input_schema":schema});
-        if let Some(format) = result_format {
-            resolved_tool["result_format"] = serde_json::to_value(format).unwrap();
+        if failed.iter().any(|(module, ..)| *module == entry.module) {
+            continue;
         }
-        resolved.push(resolved_tool);
+        match codemode_served(transport, identity, module, entry, &mut answers) {
+            Ok(result_format) => {
+                let mut resolved = serde_json::json!({"name":entry.tool,"module":entry.module,"op":entry.op,"input_schema":schema});
+                if let Some(format) = result_format {
+                    resolved["result_format"] = serde_json::to_value(format).unwrap();
+                }
+                usable.push((&entry.module, resolved));
+            }
+            Err((reason, problem)) if reason.whole_provider() => {
+                failed.push((&entry.module, reason, problem));
+            }
+            Err((reason, problem)) => {
+                match gaps.iter_mut().find(|gap| {
+                    gap.module == entry.module && gap.reason == reason && gap.problem == problem
+                }) {
+                    Some(gap) => gap.tools.push(entry.tool.clone()),
+                    None => gaps.push(CatalogGap {
+                        reason,
+                        module: entry.module.clone(),
+                        tools: vec![entry.tool.clone()],
+                        problem,
+                    }),
+                }
+            }
+        }
     }
-    Ok(Value::Array(resolved))
+    // A failed provider's gap names all of its entries and replaces any
+    // per-tool gap recorded for it before the failure was seen.
+    let is_failed = |module: &str| failed.iter().any(|(failed, ..)| *failed == module);
+    usable.retain(|(module, _)| !is_failed(module));
+    gaps.retain(|gap| !is_failed(&gap.module));
+    for (module, reason, problem) in &failed {
+        gaps.push(CatalogGap {
+            reason: *reason,
+            module: (*module).to_owned(),
+            tools: entries
+                .iter()
+                .filter(|entry| entry.module == *module)
+                .map(|entry| entry.tool.clone())
+                .collect(),
+            problem: problem.clone(),
+        });
+    }
+    Ok(ResolvedCatalog {
+        catalog: Value::Array(usable.into_iter().map(|(_, tool)| tool).collect()),
+        gaps,
+    })
 }
 
 #[cfg(test)]
@@ -324,25 +399,64 @@ mod call_mode_tests {
     use super::*;
     use serde_json::json;
     use std::sync::Mutex;
+    use subc_protocol::BindIdentity;
 
-    /// A provider `mock` whose `tool.catalog` answer is set by each test.
-    /// The daemon catalog is passed to `catalog` directly, so this transport
-    /// only answers the provider's own role ops and records each one.
+    /// Providers whose `tool.catalog` answers are set by each test. The
+    /// daemon catalog is passed to `catalog` directly, so this transport only
+    /// answers the providers' own role ops and records each one. Like AFT, it
+    /// refuses a bind whose harness is not a host harness name, so a read
+    /// with basal's generic `basal` identity never gets an answer.
     struct Provider {
-        catalog: Result<Value, WireError>,
-        calls: Mutex<Vec<String>>,
+        catalogs: BTreeMap<String, Result<Value, WireError>>,
+        calls: Mutex<Vec<(String, String)>>,
+        identities: Mutex<Vec<BindIdentity>>,
     }
 
     impl Provider {
         fn answering(catalog: Result<Value, WireError>) -> Self {
+            Self::answering_each([("mock", catalog)])
+        }
+        fn answering_each<const N: usize>(catalogs: [(&str, Result<Value, WireError>); N]) -> Self {
             Self {
-                catalog,
+                catalogs: catalogs
+                    .into_iter()
+                    .map(|(module, catalog)| (module.to_owned(), catalog))
+                    .collect(),
                 calls: Mutex::new(Vec::new()),
+                identities: Mutex::new(Vec::new()),
             }
         }
+        /// The role ops sent to `mock`, in order.
         fn calls(&self) -> Vec<String> {
-            self.calls.lock().unwrap().clone()
+            self.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(module, _)| module == "mock")
+                .map(|(_, name)| name.clone())
+                .collect()
         }
+        fn answer(&self, module: &str, name: &str) -> Result<Value, WireError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((module.into(), name.into()));
+            match name {
+                "role.describe" => Ok(
+                    json!({"majors":[{"version":"tool-provider/v1","ops":["role.describe","tool.catalog"],
+                        "stability":"alpha"}],"implementation_version":"1"}),
+                ),
+                "tool.catalog" => self.catalogs[module].clone(),
+                other => panic!("unexpected role op {other}"),
+            }
+        }
+    }
+
+    /// AFT's bind check: the harness must be a host harness name.
+    fn host_harness(harness: &str) -> bool {
+        matches!(harness, "opencode" | "pi" | "runner")
+            || harness.starts_with("mcp:")
+            || harness.starts_with("fed:")
     }
 
     impl Transport for Provider {
@@ -352,29 +466,47 @@ mod call_mode_tests {
         fn management(&self, _: &str, op: &str, _: Value) -> Result<Value, WireError> {
             panic!("unexpected management op {op}")
         }
-        fn tool(&self, module: &str, name: &str, _: Value, _: &str) -> Result<Value, WireError> {
-            assert_eq!(module, "mock");
-            self.calls.lock().unwrap().push(name.into());
-            match name {
-                "role.describe" => Ok(
-                    json!({"majors":[{"version":"tool-provider/v1","ops":["role.describe","tool.catalog"],
-                        "stability":"alpha"}],"implementation_version":"1"}),
-                ),
-                "tool.catalog" => self.catalog.clone(),
-                other => panic!("unexpected role op {other}"),
-            }
+        fn tool(&self, _: &str, _: &str, _: Value, _: &str) -> Result<Value, WireError> {
+            // basal's generic route identity uses the `basal` harness.
+            Err(WireError::NeverSent(
+                "config_divergence: configure payload invalid field 'harness'".into(),
+            ))
         }
+        fn tool_as(
+            &self,
+            identity: &BindIdentity,
+            module: &str,
+            name: &str,
+            _: Value,
+            _: &str,
+        ) -> Result<Value, WireError> {
+            self.identities.lock().unwrap().push(identity.clone());
+            if !host_harness(&identity.harness) {
+                return Err(WireError::NeverSent(
+                    "config_divergence: configure payload invalid field 'harness'".into(),
+                ));
+            }
+            self.answer(module, name)
+        }
+    }
+
+    fn identity() -> BindIdentity {
+        catalog_read_identity(std::path::Path::new("/agent/project"), "run-1")
+    }
+
+    fn provider_module(module: &str, provides: &[&str]) -> Value {
+        json!({"module_id":module,"capabilities":{"provides":provides},"roles":[
+            {"role":"tool_provider","tools":[
+                {"name":"read","execution_mode":"pure","schema":{"type":"object"}},
+                {"name":"write","execution_mode":"mutating","schema":{"type":"object"}}
+            ],"identity_scope":[],"concurrency":"serial","emits_push":false,"sub_supervises":false}
+        ]})
     }
 
     /// A daemon catalog listing `mock`, declaring `provides`, with the tools
     /// `read` and `write`.
     fn daemon(provides: &[&str]) -> Value {
-        json!({"modules":[{"module_id":"mock","capabilities":{"provides":provides},"roles":[
-            {"role":"tool_provider","tools":[
-                {"name":"read","execution_mode":"pure","schema":{"type":"object"}},
-                {"name":"write","execution_mode":"mutating","schema":{"type":"object"}}
-            ],"identity_scope":[],"concurrency":"serial","emits_push":false,"sub_supervises":false}
-        ]}]})
+        json!({"modules":[provider_module("mock", provides)]})
     }
 
     /// One `tool.catalog` tool entry named `name`, with `modes` set to
@@ -393,18 +525,54 @@ mod call_mode_tests {
     }
 
     fn entry(op: &str) -> CatalogEntry {
+        module_entry("mock", op)
+    }
+
+    fn module_entry(module: &str, op: &str) -> CatalogEntry {
         CatalogEntry {
-            tool: format!("mock_{op}"),
-            module: "mock".into(),
+            tool: format!("{module}_{op}"),
+            module: module.into(),
             op: op.into(),
         }
     }
 
-    fn refusal(result: Result<Value, CatalogError>) -> ToolRefusal {
-        match result {
-            Err(CatalogError::Tool(refusal)) => refusal,
-            other => panic!("expected a tool refusal, got {other:?}"),
-        }
+    fn resolve(provider: &Provider, daemon: &Value, entries: &[CatalogEntry]) -> ResolvedCatalog {
+        catalog(provider, &identity(), daemon, entries).expect("the catalog resolves")
+    }
+
+    fn names(resolved: &ResolvedCatalog) -> Vec<&str> {
+        resolved
+            .catalog
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect()
+    }
+
+    /// The only gap in `resolved`.
+    fn gap(resolved: &ResolvedCatalog) -> &CatalogGap {
+        assert_eq!(resolved.gaps.len(), 1, "{:?}", resolved.gaps);
+        &resolved.gaps[0]
+    }
+
+    #[test]
+    fn catalog_reads_bind_as_a_runner_with_the_callers_project_root() {
+        let provider =
+            Provider::answering(Ok(answer(vec![tool("read", Some(json!(["codemode"])))])));
+        let resolved = resolve(
+            &provider,
+            &daemon(&[CALL_MODES_CAPABILITY]),
+            &[entry("read")],
+        );
+        assert_eq!(names(&resolved), ["mock_read"]);
+        assert!(resolved.gaps.is_empty());
+        let expected = BindIdentity::new("/agent/project", "runner", "basal:codemode:run-1");
+        assert_eq!(
+            provider.identities.lock().unwrap().as_slice(),
+            [expected.clone(), expected],
+            "role.describe and tool.catalog both bind as the runner"
+        );
     }
 
     #[test]
@@ -413,19 +581,13 @@ mod call_mode_tests {
             tool("read", Some(json!(["classic", "codemode"]))),
             tool("write", Some(json!(["codemode"]))),
         ])));
-        let resolved = catalog(
+        let resolved = resolve(
             &provider,
             &daemon(&[CALL_MODES_CAPABILITY]),
             &[entry("read"), entry("write")],
-        )
-        .expect("both tools serve codemode");
-        let names: Vec<&str> = resolved
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|tool| tool["name"].as_str().unwrap())
-            .collect();
-        assert_eq!(names, ["mock_read", "mock_write"]);
+        );
+        assert_eq!(names(&resolved), ["mock_read", "mock_write"]);
+        assert!(resolved.gaps.is_empty());
         assert_eq!(
             provider.calls(),
             ["role.describe", "tool.catalog"],
@@ -434,7 +596,7 @@ mod call_mode_tests {
     }
 
     #[test]
-    fn a_call_modes_tool_that_does_not_list_codemode_is_refused_by_name() {
+    fn a_call_modes_tool_that_does_not_list_codemode_is_dropped_by_name() {
         for modes in [
             None,
             Some(json!(["classic"])),
@@ -444,33 +606,31 @@ mod call_mode_tests {
                 tool("read", Some(json!(["codemode"]))),
                 tool("write", modes.clone()),
             ])));
-            // One refused entry refuses the whole catalog, even after an
-            // admitted one.
-            let refused = refusal(catalog(
+            // Only the tool that does not serve codemode is dropped.
+            let resolved = resolve(
                 &provider,
                 &daemon(&[CALL_MODES_CAPABILITY]),
                 &[entry("read"), entry("write")],
-            ));
-            assert_eq!(refused.reason, RefusalReason::ModeNotServed, "{modes:?}");
-            assert_eq!(refused.reason.code(), "call_mode_unsupported");
-            assert_eq!(
-                (
-                    refused.module.as_str(),
-                    refused.tool.as_str(),
-                    refused.op.as_str()
-                ),
-                ("mock", "mock_write", "write")
             );
-            assert!(refused.message().contains("mock_write (mock.write)"));
+            assert_eq!(names(&resolved), ["mock_read"], "{modes:?}");
+            let dropped = gap(&resolved);
+            assert_eq!(dropped.reason, RefusalReason::ModeNotServed, "{modes:?}");
+            assert_eq!(dropped.reason.code(), "call_mode_unsupported");
+            assert_eq!(
+                (dropped.module.as_str(), dropped.tools.as_slice()),
+                ("mock", ["mock_write".to_owned()].as_slice())
+            );
+            assert!(dropped.message().contains("mock_write from provider mock"));
         }
         let unlisted = Provider::answering(Ok(answer(vec![tool("read", None)])));
-        let refused = refusal(catalog(
+        let resolved = resolve(
             &unlisted,
             &daemon(&[CALL_MODES_CAPABILITY]),
             &[entry("write")],
-        ));
-        assert_eq!(refused.reason, RefusalReason::ModeNotServed);
-        assert_eq!(refused.op, "write");
+        );
+        assert!(names(&resolved).is_empty());
+        assert_eq!(gap(&resolved).reason, RefusalReason::ModeNotServed);
+        assert_eq!(gap(&resolved).tools, ["mock_write"]);
     }
 
     #[test]
@@ -482,30 +642,45 @@ mod call_mode_tests {
                 read,
                 tool("write", Some(json!(["codemode"]))),
             ])));
-            let resolved = catalog(
+            let resolved = resolve(
                 &provider,
                 &daemon(&[capability]),
                 &[entry("read"), entry("write")],
-            )
-            .unwrap();
-            assert_eq!(resolved[0]["result_format"], "content/v1");
-            assert!(resolved[1].get("result_format").is_none());
+            );
+            assert_eq!(resolved.catalog[0]["result_format"], "content/v1");
+            assert!(resolved.catalog[1].get("result_format").is_none());
             assert_eq!(provider.calls(), ["role.describe", "tool.catalog"]);
         }
     }
 
     #[test]
-    fn an_unreadable_legacy_catalog_refuses_admission_without_guessing_format() {
+    fn an_unreadable_provider_is_dropped_while_another_provider_still_resolves() {
         // Run routes advertise content/v1 and held-reply/v1, so even legacy
-        // providers must disclose each result_format before the run starts.
-        let provider = Provider::answering(Err(WireError::TimedOut("offline".into())));
-        let refused = refusal(catalog(
+        // providers must disclose each result_format: an unreadable one has
+        // every entry dropped rather than a guessed format.
+        let provider = Provider::answering_each([
+            ("mock", Err(WireError::TimedOut("offline".into()))),
+            (
+                "other",
+                Ok(answer(vec![tool("read", Some(json!(["codemode"])))])),
+            ),
+        ]);
+        let daemon = json!({"modules":[
+            provider_module("mock", &[LEGACY_RUN_SCOPES_CAPABILITY]),
+            provider_module("other", &[CALL_MODES_CAPABILITY]),
+        ]});
+        let resolved = resolve(
             &provider,
-            &daemon(&[LEGACY_RUN_SCOPES_CAPABILITY]),
-            &[entry("read"), entry("write")],
-        ));
-        assert_eq!(refused.reason, RefusalReason::CatalogUnreadable);
-        assert!(refused.message().contains("retrying the run may succeed"));
+            &daemon,
+            &[entry("read"), module_entry("other", "read"), entry("write")],
+        );
+        assert_eq!(names(&resolved), ["other_read"]);
+        let dropped = gap(&resolved);
+        assert_eq!(dropped.reason, RefusalReason::CatalogUnreadable);
+        assert_eq!(dropped.reason.code(), "catalog_unreadable");
+        assert_eq!(dropped.module, "mock");
+        assert_eq!(dropped.tools, ["mock_read", "mock_write"]);
+        assert!(dropped.message().contains("retrying the run may succeed"));
         assert_eq!(provider.calls(), ["role.describe", "tool.catalog"]);
     }
 
@@ -513,15 +688,15 @@ mod call_mode_tests {
     fn a_readable_legacy_catalog_does_not_require_per_tool_mode_opt_in() {
         let provider =
             Provider::answering(Ok(answer(vec![tool("read", None), tool("write", None)])));
-        let resolved = catalog(
+        let resolved = resolve(
             &provider,
             &daemon(&[LEGACY_RUN_SCOPES_CAPABILITY]),
             &[entry("read"), entry("write")],
-        )
-        .unwrap();
-        assert_eq!(resolved.as_array().unwrap().len(), 2);
+        );
+        assert_eq!(names(&resolved), ["mock_read", "mock_write"]);
         assert!(
             resolved
+                .catalog
                 .as_array()
                 .unwrap()
                 .iter()
@@ -530,22 +705,24 @@ mod call_mode_tests {
     }
 
     #[test]
-    fn a_provider_declaring_neither_capability_is_refused() {
+    fn a_provider_declaring_neither_capability_is_dropped_unread() {
         let provider =
             Provider::answering(Ok(answer(vec![tool("read", Some(json!(["codemode"])))])));
-        let refused = refusal(catalog(
+        let resolved = resolve(
             &provider,
             &daemon(&["flow-scopes/v1"]),
-            &[entry("read")],
-        ));
-        assert_eq!(refused.reason, RefusalReason::NotOptedIn);
-        assert_eq!(refused.reason.code(), "provider_not_opted_in");
-        assert_eq!(refused.tool, "mock_read");
+            &[entry("read"), entry("write")],
+        );
+        assert!(names(&resolved).is_empty());
+        let dropped = gap(&resolved);
+        assert_eq!(dropped.reason, RefusalReason::NotOptedIn);
+        assert_eq!(dropped.reason.code(), "provider_not_opted_in");
+        assert_eq!(dropped.tools, ["mock_read", "mock_write"]);
         assert!(provider.calls().is_empty(), "no catalog read");
     }
 
     #[test]
-    fn an_invalid_modes_list_refuses_the_answer_as_invalid() {
+    fn an_invalid_answer_drops_every_entry_from_its_provider() {
         for modes in [
             json!([]),
             json!(["codemode", "codemode"]),
@@ -557,33 +734,40 @@ mod call_mode_tests {
                 tool("read", Some(json!(["codemode"]))),
                 tool("write", Some(modes.clone())),
             ])));
-            let refused = refusal(catalog(
+            let resolved = resolve(
                 &provider,
                 &daemon(&[CALL_MODES_CAPABILITY]),
                 &[entry("read")],
-            ));
-            assert_eq!(refused.reason, RefusalReason::InvalidAnswer, "{modes}");
-            assert_eq!(refused.reason.code(), "invalid_answer");
+            );
+            assert!(names(&resolved).is_empty(), "{modes}");
+            let dropped = gap(&resolved);
+            assert_eq!(dropped.reason, RefusalReason::InvalidAnswer, "{modes}");
+            assert_eq!(dropped.reason.code(), "invalid_answer");
             assert!(
-                refused.problem.contains("write modes"),
+                dropped.problem.contains("write modes"),
                 "{}",
-                refused.problem
+                dropped.problem
             );
         }
+        // `write` is listed twice. `read` was usable before that was seen,
+        // and is dropped with it.
         let twice = Provider::answering(Ok(answer(vec![
             tool("read", Some(json!(["codemode"]))),
-            tool("read", Some(json!(["codemode"]))),
+            tool("write", Some(json!(["codemode"]))),
+            tool("write", Some(json!(["codemode"]))),
         ])));
-        let refused = refusal(catalog(
+        let resolved = resolve(
             &twice,
             &daemon(&[CALL_MODES_CAPABILITY]),
-            &[entry("read")],
-        ));
-        assert_eq!(refused.reason, RefusalReason::InvalidAnswer);
+            &[entry("read"), entry("write")],
+        );
+        assert!(names(&resolved).is_empty());
+        assert_eq!(gap(&resolved).reason, RefusalReason::InvalidAnswer);
+        assert_eq!(gap(&resolved).tools, ["mock_read", "mock_write"]);
     }
 
     #[test]
-    fn an_unreadable_catalog_is_refused_and_never_admitted() {
+    fn an_unreadable_catalog_is_dropped_and_never_admitted() {
         for failure in [
             Err(WireError::TimedOut("no reply".into())),
             Err(WireError::Unknown("route closed".into())),
@@ -591,18 +775,57 @@ mod call_mode_tests {
             Ok(answer(vec![tool("read", Some(json!("codemode")))])),
         ] {
             let provider = Provider::answering(failure.clone());
-            let refused = refusal(catalog(
+            let resolved = resolve(
                 &provider,
                 &daemon(&[CALL_MODES_CAPABILITY]),
                 &[entry("read")],
-            ));
+            );
+            assert!(names(&resolved).is_empty(), "{failure:?}");
             assert_eq!(
-                refused.reason,
+                gap(&resolved).reason,
                 RefusalReason::CatalogUnreadable,
                 "{failure:?}"
             );
-            assert_eq!(refused.reason.code(), "catalog_unreadable");
-            assert_eq!(refused.tool, "mock_read");
+            assert_eq!(gap(&resolved).tools, ["mock_read"]);
+        }
+    }
+
+    #[test]
+    fn invalid_core_entries_still_fail_the_whole_catalog() {
+        let provider =
+            Provider::answering(Ok(answer(vec![tool("read", Some(json!(["codemode"])))])));
+        let mut ambiguous = daemon(&[CALL_MODES_CAPABILITY]);
+        let duplicate = ambiguous["modules"][0]["roles"][0].clone();
+        ambiguous["modules"][0]["roles"]
+            .as_array_mut()
+            .unwrap()
+            .push(duplicate);
+        let recursive = CatalogEntry {
+            tool: "codemode".into(),
+            module: "basal".into(),
+            op: "codemode".into(),
+        };
+        for (daemon, bad) in [
+            (daemon(&[CALL_MODES_CAPABILITY]), recursive),
+            (
+                daemon(&[CALL_MODES_CAPABILITY]),
+                module_entry("absent", "read"),
+            ),
+            (daemon(&[CALL_MODES_CAPABILITY]), entry("delete")),
+            (ambiguous, entry("read")),
+        ] {
+            // An unreadable provider listed first does not hide the invalid
+            // entry after it.
+            let unreadable = Provider::answering(Err(WireError::TimedOut("offline".into())));
+            for provider in [&provider, &unreadable] {
+                let result = catalog(
+                    provider,
+                    &identity(),
+                    &daemon,
+                    &[entry("read"), bad.clone()],
+                );
+                assert!(result.is_err(), "{bad:?}: {result:?}");
+            }
         }
     }
 }
