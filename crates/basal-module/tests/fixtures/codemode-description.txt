@@ -7,4 +7,15 @@ Run a short JavaScript program that calls your own tools and returns one result.
 - There is no file, network, shell or other global access except through your tools.
 - Limits: 10 s of JavaScript CPU, 30 min wall time (time spent waiting on a person doesn't count, up to 10 min), 200 tool calls.
 
+A call that waited for consent may come back not run: it rejects with `error.code` `not_started`, and `error.detail.consent` `approved` means consent was granted but the page may have changed. Catch that, take a fresh snapshot, and act again:
+```js
+try {
+  await tools.browser_use({action: "type", ref, text, snapshot_id});
+} catch (e) {
+  if (e.code !== "not_started" || e.detail?.consent !== "approved") throw e;
+  const fresh = await tools.browser_use({action: "snapshot"});
+  // find the element again in `fresh`, then repeat the call with its ref and snapshot_id
+}
+```
+
 The result lists each call with its outcome. A call whose outcome is unknown was never retried, so check before repeating it.
