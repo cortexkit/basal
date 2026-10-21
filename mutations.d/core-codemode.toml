@@ -2627,3 +2627,37 @@ timeout_s = 600
 file = "crates/basal-core/src/codemode/admission.rs"
 old = "            &invocation.bind_identity.project_root,\n"
 new = "            std::path::Path::new(\"/\"), // NON-VACUITY BREAK\n"
+
+[[control]]
+id = "codemode-catalog-read-head-scope"
+guards = "codemode admission reads provider catalogs on the run scope core opened, not the invoking head scope, whose binds are classic"
+test_file = "crates/basal-module/tests/codemode.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test codemode"
+select = { tests = ["admission_reads_catalogs_on_the_run_scope_core_opened", "core_scope_shapes_and_stamp_mismatch_prevent_worker_start"] }
+expect_red = ["admission_reads_catalogs_on_the_run_scope_core_opened"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/codemode/admission.rs"
+old = "let run_scope_selector = selector.selector();"
+new = "let run_scope_selector = subc_protocol::scope::ScopeSelector::new(selector.owner.clone(), invocation.invoking_scope.reference.clone(), Some(invocation.invoking_scope.epoch)); // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-permanent-catalog-refusal-suggests-retry"
+guards = "a provider that refuses codemode's catalog read permanently is named in the run's warning without a retry suggestion"
+test_file = "crates/basal-module/tests/codemode.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test codemode"
+select = { tests = ["an_unreadable_provider_catalog_drops_its_tools_and_the_run_still_starts", "core_scope_shapes_and_stamp_mismatch_prevent_worker_start"] }
+expect_red = ["an_unreadable_provider_catalog_drops_its_tools_and_the_run_still_starts"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/run_scope.rs"
+old = "let hint = if catalog_read_may_recover(error) {"
+new = "let hint = if true || catalog_read_may_recover(error) { // NON-VACUITY BREAK"

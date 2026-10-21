@@ -684,17 +684,23 @@ pub fn admit_tool(
         .map_err(|e| json!({"code":e.code,"message":e.message}))?;
         let daemon = transport.catalog().map_err(super::scope::error_value)?;
         // Reading each opted-in provider's own tool catalog makes live calls,
-        // so it runs here, outside every store write. The reads are unscoped,
-        // as basal's other catalog reads are: the run scope is not registered
-        // with the transport until the run starts. They bind as a headless
-        // runner in the caller's project root, which providers such as AFT
-        // accept; the program's own tool calls later use the caller's
-        // forwarded identity on the run scope.
+        // so it runs here, outside every store write. The reads go over the
+        // run's own scope, which core registered before answering the open:
+        // the daemon stamps a run scope's binds with the codemode call mode,
+        // and providers such as cerebellum admit basal only there. They bind
+        // as a headless runner in the caller's project root, which providers
+        // such as AFT accept; the program's own tool calls later use the
+        // caller's forwarded identity on the same scope.
         let read_identity = run_scope::catalog_read_identity(
             &invocation.bind_identity.project_root,
             invocation.run_id,
         );
-        let resolved = run_scope::catalog(transport, &read_identity, &daemon, &opened.catalog)
+        let run_scope_selector = selector.selector();
+        let read = run_scope::CatalogRead {
+            scope: &run_scope_selector,
+            identity: &read_identity,
+        };
+        let resolved = run_scope::catalog(transport, &read, &daemon, &opened.catalog)
             .map_err(super::scope::error_value)?;
         let gaps = resolved.gaps;
         let resolved = super::models::add_catalog(&resolved.catalog)

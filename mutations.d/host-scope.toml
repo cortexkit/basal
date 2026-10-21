@@ -597,7 +597,7 @@ new = "let legacy = provides(LEGACY_RUN_SCOPES_CAPABILITY); if legacy { return O
 
 [[control]]
 id = "run-scope-catalog-read-generic-identity"
-guards = "codemode admission reads provider catalogs on a route bound as a runner, which a provider refusing basal's generic harness still answers"
+guards = "codemode admission reads provider catalogs on the run scope's route bound as a runner, never through basal's generic unscoped route"
 test_file = "crates/basal-host/src/run_scope.rs"
 runner = "cargo"
 package = "basal-host"
@@ -609,8 +609,8 @@ only = true
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/run_scope.rs"
-old = ".or_insert_with(|| read_tool_catalog_as(transport, identity, &entry.module));"
-new = ".or_insert_with(|| { let _ = identity; crate::subc_catalog::read_tool_catalog(transport, &entry.module) }); // NON-VACUITY BREAK"
+old = "read_tool_catalog_on_run(transport, read.scope, read.identity, &entry.module)"
+new = "{ let _ = read; crate::subc_catalog::read_tool_catalog(transport, &entry.module) } // NON-VACUITY BREAK"
 
 [[control]]
 id = "run-scope-catalog-read-harness"
@@ -628,23 +628,6 @@ timeout_s = 600
 file = "crates/basal-host/src/run_scope.rs"
 old = 'pub const CATALOG_READ_HARNESS: &str = "runner";'
 new = 'pub const CATALOG_READ_HARNESS: &str = "basal"; // NON-VACUITY BREAK'
-
-[[control]]
-id = "transport-tool-as-binds-given-identity"
-guards = "a tool request sent with an explicit bind identity opens its route with that identity, not basal's own"
-test_file = "crates/basal-host/src/transport.rs"
-runner = "cargo"
-package = "basal-host"
-platforms = ["linux"]
-target = "--lib"
-select = { tests = ["transport::tests::tool_as_binds_an_unscoped_route_with_the_given_identity_and_closes_it", "transport::tests::grant_polling_never_uses_an_unscoped_route"] }
-expect_red = ["transport::tests::tool_as_binds_an_unscoped_route_with_the_given_identity_and_closes_it"]
-only = true
-build_timeout_s = 3600
-timeout_s = 600
-file = "crates/basal-host/src/transport.rs"
-old = "                    identity.clone(),\n                    options(),\n"
-new = "                    self.identity.clone(), // NON-VACUITY BREAK\n                    options(),\n"
 
 [[control]]
 id = "run-scope-failed-provider-keeps-earlier-entries"
@@ -679,3 +662,124 @@ timeout_s = 600
 file = "crates/basal-host/src/run_scope.rs"
 old = 'return Err(WireError::Unreadable("ambiguous tool declaration".into()));'
 new = 'continue; // NON-VACUITY BREAK'
+
+[[control]]
+id = "transport-run-scope-role-binds-given-identity"
+guards = "a run-scoped role request opens its route with the identity it is given, not basal's own"
+test_file = "crates/basal-host/src/transport.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["transport::tests::role_on_run_scope_binds_the_run_scope_with_no_call_key_and_closes_it", "transport::tests::grant_polling_never_uses_an_unscoped_route"] }
+expect_red = ["transport::tests::role_on_run_scope_binds_the_run_scope_with_no_call_key_and_closes_it"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/transport.rs"
+scope = { after = "// The same route shape the run's own tool calls open: the", before = "\n    }\n" }
+old = "                    identity.clone(),\n                    scope.clone(),\n"
+new = "                    self.identity.clone(), // NON-VACUITY BREAK\n                    scope.clone(),\n"
+
+[[control]]
+id = "run-scope-catalog-read-unscoped"
+guards = "codemode catalog reads open their route under the run scope, so the daemon stamps the bind codemode and a cerebellum-like provider admits it"
+test_file = "crates/basal-host/src/run_scope_wire_tests.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["transport::run_scope_wire_tests::admission_reads_and_run_calls_reach_each_provider_as_codemode", "transport::tests::grant_polling_never_uses_an_unscoped_route"] }
+expect_red = ["transport::run_scope_wire_tests::admission_reads_and_run_calls_reach_each_provider_as_codemode"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/transport.rs"
+scope = { after = "// The same route shape the run's own tool calls open: the", before = "\n    }\n" }
+old = ".open_route_scoped(\n                    RouteTarget::ToolProvider {\n                        module_id: module.into(),\n                    },\n                    identity.clone(),\n                    scope.clone(),\n"
+new = ".open_route(\n                    RouteTarget::ToolProvider {\n                        module_id: module.into(),\n                    },\n                    { let _ = scope; identity.clone() }, // NON-VACUITY BREAK\n"
+
+[[control]]
+id = "run-scope-catalog-read-envelope-call-key"
+guards = "codemode catalog role requests carry no envelope call_key, which a cerebellum-like provider refuses"
+test_file = "crates/basal-host/src/run_scope_wire_tests.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["transport::run_scope_wire_tests::admission_reads_and_run_calls_reach_each_provider_as_codemode", "transport::tests::grant_polling_never_uses_an_unscoped_route"] }
+expect_red = ["transport::run_scope_wire_tests::admission_reads_and_run_calls_reach_each_provider_as_codemode"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/transport.rs"
+old = "        // A role request names no call key in its envelope.\n        let body = serde_json::to_vec(&subc_protocol::tool_call::ToolCallRequest::new(\n            name, arguments,\n        ))\n"
+new = "        let body = serde_json::to_vec(&tool_body(name, arguments, \"basal-catalog-read\")?) // NON-VACUITY BREAK\n"
+
+[[control]]
+id = "catalog-read-unknown-request-member"
+guards = "a tool.catalog request carries only members the tool-provider role defines, which a cerebellum-like provider checks"
+test_file = "crates/basal-host/src/run_scope_wire_tests.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["transport::run_scope_wire_tests::admission_reads_and_run_calls_reach_each_provider_as_codemode", "run_scope::tests::exact_run_scope_wire_shapes"] }
+expect_red = ["transport::run_scope_wire_tests::admission_reads_and_run_calls_reach_each_provider_as_codemode"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/subc_catalog.rs"
+old = "let request = serde_json::to_value(CatalogRequest::new(params))"
+new = "let request = serde_json::to_value(CatalogRequest::new(params)).map(|mut request| { request[\"modes\"] = json!([\"codemode\"]); request }) // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-run-tool-call-unscoped"
+guards = "a codemode program's tool call is sent on the run scope's route, so the provider sees call mode codemode, never on basal's unscoped classic route"
+test_file = "crates/basal-host/src/run_scope_wire_tests.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["transport::run_scope_wire_tests::admission_reads_and_run_calls_reach_each_provider_as_codemode", "transport::tests::grant_polling_never_uses_an_unscoped_route"] }
+expect_red = ["transport::run_scope_wire_tests::admission_reads_and_run_calls_reach_each_provider_as_codemode"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/transport.rs"
+old = "let deadline = std::time::Instant::now() + options.reply_timeout;"
+new = "if true { return self.call(target, serde_json::from_slice(&body).unwrap(), false); } // NON-VACUITY BREAK\n        let deadline = std::time::Instant::now() + options.reply_timeout;"
+
+[[control]]
+id = "run-scope-catalog-read-retry-hint-always"
+guards = "a catalog read failure suggests retrying the run only when the failure may clear"
+test_file = "crates/basal-host/src/run_scope.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["run_scope::call_mode_tests::only_a_recoverable_catalog_read_failure_suggests_retrying_the_run", "run_scope::call_mode_tests::an_unreadable_provider_is_dropped_while_another_provider_still_resolves"] }
+expect_red = ["run_scope::call_mode_tests::only_a_recoverable_catalog_read_failure_suggests_retrying_the_run"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/run_scope.rs"
+old = "let hint = if catalog_read_may_recover(error) {"
+new = "let hint = if true || catalog_read_may_recover(error) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "run-scope-catalog-read-permanent-refusal-recoverable"
+guards = "a permanent catalog read refusal such as principal_denied is not marked recoverable"
+test_file = "crates/basal-host/src/run_scope.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["run_scope::call_mode_tests::only_a_recoverable_catalog_read_failure_suggests_retrying_the_run", "run_scope::call_mode_tests::an_unreadable_provider_is_dropped_while_another_provider_still_resolves"] }
+expect_red = ["run_scope::call_mode_tests::only_a_recoverable_catalog_read_failure_suggests_retrying_the_run"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/run_scope.rs"
+old = "cortexkit_role_tool_provider::errors::is_transient(code)"
+new = "{ let _ = code; true } // NON-VACUITY BREAK"

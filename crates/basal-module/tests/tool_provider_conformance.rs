@@ -126,6 +126,16 @@ impl Transport for MockCore {
             _ => panic!("unscoped action"),
         }
     }
+    fn role_on_run_scope(
+        &self,
+        _: &subc_protocol::scope::ScopeSelector,
+        _: &subc_protocol::BindIdentity,
+        module: &str,
+        name: &str,
+        arguments: Value,
+    ) -> Result<Value, WireError> {
+        self.tool(module, name, arguments, "")
+    }
     fn tool_for_run(
         &self,
         run: &str,
