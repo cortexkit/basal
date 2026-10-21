@@ -9,6 +9,24 @@ warnings, module-event triggers, module calls for a target agent and the digest
 item shape, then two deliberate limits of the script runtime and public facts
 across a global audience.
 
+## Size limits for one run
+
+Every host call's arguments, request and result are journaled, so a run can
+replay after a crash without repeating a call. That journal sets the limits:
+
+- **One call's arguments:** at most 256 KiB. A larger argument is refused as
+  a journaled rejection before it is parsed.
+- **One call's result:** at most 512 KiB. A larger result is recorded as a
+  rejection with code `result_too_large` before anything parses it. Page reads
+  that can grow, and keep each page well under the cap.
+- **One run's journal:** at most 16 MiB across all its calls. A call that would
+  pass it fails the run.
+- **Calls:** at most 10,000 per run.
+
+A terminal run's journal is kept for seven days, and longer while a call or
+decision card still needs it, then deleted. These limits apply to every flow
+and template on this basal.
+
 ## Install and dry-run warnings
 
 Flow installs and dry runs report `macos_protected_root` when an `fs.read`,
