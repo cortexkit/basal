@@ -161,6 +161,19 @@ fn frame(kind: FrameType, channel: u16, corr: u64, body: Value) -> Frame {
 }
 
 type Pending = Arc<Mutex<HashMap<(u16, u64), mpsc::UnboundedSender<Frame>>>>;
+
+/// How long any single harness wait may take before the test fails.
+const HARNESS_WAIT: Duration = Duration::from_secs(180);
+
+/// Awaits `future`, or fails the test naming `what` once `HARNESS_WAIT`
+/// passes. Every wait on the provider or its socket goes through this, so a
+/// stuck provider fails the test that hit it, with that wait's name, instead
+/// of holding the whole serial run until an outer timeout kills it.
+async fn bounded<T>(what: &str, future: impl std::future::Future<Output = T>) -> T {
+    tokio::time::timeout(HARNESS_WAIT, future)
+        .await
+        .unwrap_or_else(|_| panic!("{what}: no answer within {HARNESS_WAIT:?}"))
+}
 struct Wire {
     writer: tokio::sync::Mutex<tokio::net::tcp::OwnedWriteHalf>,
     pending: Pending,
@@ -172,9 +185,12 @@ impl Wire {
         let corr = self.corr.fetch_add(1, Ordering::SeqCst);
         let (send, receive) = mpsc::unbounded_channel();
         self.pending.lock().unwrap().insert((channel, corr), send);
-        write_frame(
-            &mut *self.writer.lock().await,
-            &frame(FrameType::Request, channel, corr, body),
+        bounded(
+            "writing a request to the provider",
+            write_frame(
+                &mut *self.writer.lock().await,
+                &frame(FrameType::Request, channel, corr, body),
+            ),
         )
         .await
         .unwrap();
@@ -210,16 +226,19 @@ impl Route {
         let (corr, mut receive) = self.wire.send(self.channel, body).await;
         if cancel {
             tokio::time::sleep(Duration::from_millis(20)).await;
-            write_frame(
-                &mut *self.wire.writer.lock().await,
-                &frame(FrameType::Cancel, self.channel, corr, json!({})),
+            bounded(
+                "writing a cancel to the provider",
+                write_frame(
+                    &mut *self.wire.writer.lock().await,
+                    &frame(FrameType::Cancel, self.channel, corr, json!({})),
+                ),
             )
             .await
             .unwrap();
         }
         let mut frames = Vec::new();
         loop {
-            let observed = tokio::time::timeout(Duration::from_secs(180), receive.recv())
+            let observed = tokio::time::timeout(HARNESS_WAIT, receive.recv())
                 .await
                 .map_err(|_| RouteFailure::new("reply timeout"))?
                 .ok_or_else(|| RouteFailure::new("provider closed"))?;
@@ -288,7 +307,7 @@ impl Subject {
     async fn join_stopped(&self) {
         let tasks = std::mem::take(&mut *self.stopped.lock().unwrap());
         for task in tasks {
-            if let Err(error) = tokio::time::timeout(Duration::from_secs(180), task)
+            if let Err(error) = tokio::time::timeout(HARNESS_WAIT, task)
                 .await
                 .expect("provider teardown timed out")
             {
@@ -425,7 +444,9 @@ impl Harness for Subject {
             .unwrap();
             serving.await.unwrap();
         });
-        let (mut stream, _) = listener.accept().await.unwrap();
+        let (mut stream, _) = bounded("the provider connecting", listener.accept())
+            .await
+            .unwrap();
         authenticate_server(
             &mut stream,
             &info.key,
@@ -435,7 +456,10 @@ impl Harness for Subject {
         )
         .await
         .unwrap();
-        let hello = read_frame(&mut stream).await.unwrap().unwrap();
+        let hello = bounded("the provider's HELLO", read_frame(&mut stream))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(hello.header.ty, FrameType::Hello);
         write_frame(&mut stream,&frame(FrameType::HelloAck,0,hello.header.corr,json!({"negotiated_ver":subc_protocol::PROTOCOL_VERSION,"subc_ops":[],"subc_capabilities":[]}))).await.unwrap();
         let (mut read, write) = stream.into_split();
@@ -465,7 +489,7 @@ impl Harness for Subject {
             reader: Some(reader),
             stopped: self.stopped.clone(),
         };
-        tokio::time::timeout(Duration::from_secs(180), async {
+        bounded("the provider becoming ready", async {
             prepared.await.unwrap();
             // Host setup finishes before the handler publishes its ready phase.
             // Wait for protocol readiness before allowing any tool routes.
@@ -486,8 +510,7 @@ impl Harness for Subject {
                 }
             }
         })
-        .await
-        .unwrap();
+        .await;
         Ok(live)
     }
     async fn route(&self, handle: &Live, stamp: &RouteStamp) -> Result<Route, HarnessError> {
@@ -559,7 +582,9 @@ impl Subject {
             .wire
             .send(0, serde_json::to_value(bind).unwrap())
             .await;
-        let response = reply.recv().await.unwrap();
+        let response = bounded("the provider's route bind reply", reply.recv())
+            .await
+            .expect("the provider closed before answering the route bind");
         handle.wire.pending.lock().unwrap().remove(&(0, corr));
         assert_eq!(response.header.ty, FrameType::Response, "{response:?}");
         Ok(Route {

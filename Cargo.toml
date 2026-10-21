@@ -96,3 +96,15 @@ rcgen = "0.13"
 
 [profile.release]
 opt-level = 3
+
+# Optimise the bundled C engines in dev and test builds too. Every test store
+# open runs basal's whole SQLite migration chain, and every flow run executes
+# its script in QuickJS; unoptimised, those two dominated the serial test
+# suite. Measured on a 4-vCPU Linux host, opt-level 3 made a fresh store open
+# 85 ms -> 35 ms. Release builds already use opt-level 3, so this changes
+# only speed, and tests now run the same optimised C that ships.
+[profile.dev.package.libsqlite3-sys]
+opt-level = 3
+
+[profile.dev.package.rquickjs-sys]
+opt-level = 3
