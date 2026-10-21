@@ -151,13 +151,11 @@ impl Daemon {
                     ));
                 }
             }
-            "aft" => {
-                if !host_harness(open["identity"]["harness"].as_str().unwrap_or("")) {
-                    return Err(error_body(
-                        "config_divergence",
-                        "configure payload invalid field 'harness'",
-                    ));
-                }
+            "aft" if !host_harness(open["identity"]["harness"].as_str().unwrap_or("")) => {
+                return Err(error_body(
+                    "config_divergence",
+                    "configure payload invalid field 'harness'",
+                ));
             }
             _ => {}
         }
