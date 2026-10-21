@@ -548,14 +548,14 @@ new = "let _ = &cache_key; // NON-VACUITY BREAK"
 
 [[control]]
 id = "run-scope-classic-only-tool-admitted"
-guards = "a call-modes provider's tool whose modes leave out codemode is refused by name"
+guards = "a call-modes provider's tool whose modes leave out codemode is dropped by name"
 test_file = "crates/basal-host/src/run_scope.rs"
 runner = "cargo"
 package = "basal-host"
 platforms = ["linux"]
 target = "--lib"
 select = { filter = "run_scope::" }
-expect_red = ["run_scope::call_mode_tests::a_call_modes_tool_that_does_not_list_codemode_is_refused_by_name"]
+expect_red = ["run_scope::call_mode_tests::a_call_modes_tool_that_does_not_list_codemode_is_dropped_by_name"]
 only = true
 build_timeout_s = 3600
 timeout_s = 600
@@ -588,9 +588,94 @@ runner = "cargo"
 package = "basal-host"
 platforms = ["linux"]
 target = "--lib"
-select = { tests = ["run_scope::call_mode_tests::an_unreadable_legacy_catalog_refuses_admission_without_guessing_format", "run_scope::call_mode_tests::a_call_modes_provider_whose_tool_lists_codemode_is_admitted"] }
-expect_red = ["run_scope::call_mode_tests::an_unreadable_legacy_catalog_refuses_admission_without_guessing_format"]
+select = { tests = ["run_scope::call_mode_tests::an_unreadable_provider_is_dropped_while_another_provider_still_resolves", "run_scope::call_mode_tests::a_call_modes_provider_whose_tool_lists_codemode_is_admitted"] }
+expect_red = ["run_scope::call_mode_tests::an_unreadable_provider_is_dropped_while_another_provider_still_resolves"]
 only = true
 file = "crates/basal-host/src/run_scope.rs"
 old = "let legacy = provides(LEGACY_RUN_SCOPES_CAPABILITY);"
 new = "let legacy = provides(LEGACY_RUN_SCOPES_CAPABILITY); if legacy { return Ok(None); } // NON-VACUITY BREAK"
+
+[[control]]
+id = "run-scope-catalog-read-generic-identity"
+guards = "codemode admission reads provider catalogs on a route bound as a runner, which a provider refusing basal's generic harness still answers"
+test_file = "crates/basal-host/src/run_scope.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["run_scope::call_mode_tests::catalog_reads_bind_as_a_runner_with_the_callers_project_root", "run_scope::call_mode_tests::a_provider_declaring_neither_capability_is_dropped_unread", "run_scope::tests::exact_run_scope_wire_shapes"] }
+expect_red = ["run_scope::call_mode_tests::catalog_reads_bind_as_a_runner_with_the_callers_project_root"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/run_scope.rs"
+old = ".or_insert_with(|| read_tool_catalog_as(transport, identity, &entry.module));"
+new = ".or_insert_with(|| { let _ = identity; crate::subc_catalog::read_tool_catalog(transport, &entry.module) }); // NON-VACUITY BREAK"
+
+[[control]]
+id = "run-scope-catalog-read-harness"
+guards = "codemode catalog reads bind with the runner harness, not basal's generic label"
+test_file = "crates/basal-host/src/run_scope.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["run_scope::call_mode_tests::catalog_reads_bind_as_a_runner_with_the_callers_project_root", "run_scope::call_mode_tests::a_provider_declaring_neither_capability_is_dropped_unread", "run_scope::tests::exact_run_scope_wire_shapes"] }
+expect_red = ["run_scope::call_mode_tests::catalog_reads_bind_as_a_runner_with_the_callers_project_root"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/run_scope.rs"
+old = 'pub const CATALOG_READ_HARNESS: &str = "runner";'
+new = 'pub const CATALOG_READ_HARNESS: &str = "basal"; // NON-VACUITY BREAK'
+
+[[control]]
+id = "transport-tool-as-binds-given-identity"
+guards = "a tool request sent with an explicit bind identity opens its route with that identity, not basal's own"
+test_file = "crates/basal-host/src/transport.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["transport::tests::tool_as_binds_an_unscoped_route_with_the_given_identity_and_closes_it", "transport::tests::grant_polling_never_uses_an_unscoped_route"] }
+expect_red = ["transport::tests::tool_as_binds_an_unscoped_route_with_the_given_identity_and_closes_it"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/transport.rs"
+old = "                    identity.clone(),\n                    options(),\n"
+new = "                    self.identity.clone(), // NON-VACUITY BREAK\n                    options(),\n"
+
+[[control]]
+id = "run-scope-failed-provider-keeps-earlier-entries"
+guards = "a provider whose catalog answer turns out invalid has every entry dropped, including entries resolved before the failure was seen"
+test_file = "crates/basal-host/src/run_scope.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["run_scope::call_mode_tests::an_invalid_answer_drops_every_entry_from_its_provider", "run_scope::call_mode_tests::a_call_modes_tool_that_does_not_list_codemode_is_dropped_by_name"] }
+expect_red = ["run_scope::call_mode_tests::an_invalid_answer_drops_every_entry_from_its_provider"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/run_scope.rs"
+old = "usable.retain(|(module, _)| !is_failed(module));"
+new = "// NON-VACUITY BREAK: usable entries of a failed provider are kept"
+
+[[control]]
+id = "run-scope-ambiguous-declaration-skipped"
+guards = "an ambiguous daemon tool declaration still fails the whole codemode catalog rather than being dropped"
+test_file = "crates/basal-host/src/run_scope.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["run_scope::call_mode_tests::invalid_core_entries_still_fail_the_whole_catalog", "run_scope::call_mode_tests::a_call_modes_provider_whose_tool_lists_codemode_is_admitted"] }
+expect_red = ["run_scope::call_mode_tests::invalid_core_entries_still_fail_the_whole_catalog"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/run_scope.rs"
+old = 'return Err(WireError::Unreadable("ambiguous tool declaration".into()));'
+new = 'continue; // NON-VACUITY BREAK'

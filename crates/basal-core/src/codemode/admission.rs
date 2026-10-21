@@ -73,12 +73,26 @@ pub struct Tool {
     pub result_format: Option<cortexkit_role_tool_provider::result::ResultFormat>,
 }
 
+/// A tool core put in the run's catalog that basal dropped because its
+/// provider does not serve it in codemode or its catalog could not be used.
+/// The program still sees the name; calling it rejects with
+/// `tool_unavailable`, naming the provider and the reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unavailable {
+    pub module: String,
+    /// The `run_scope::RefusalReason` code, such as `catalog_unreadable`.
+    pub reason: &'static str,
+    pub message: String,
+}
+
 /// Permission to register `codemode:<run_id>` and start its fresh worker.
 /// This is deliberately not cloneable: duplicate admits never get a token.
 #[derive(Debug)]
 pub struct Start {
     pub scope: RegisteredScope,
     pub tools: BTreeMap<String, Tool>,
+    /// Dropped tools by name, never also in `tools`.
+    pub unavailable: BTreeMap<String, Unavailable>,
     pub limits: Limits,
     pub wall_deadline_ms: i64,
 }
@@ -213,6 +227,7 @@ pub fn admit(
                         .collect(),
                 },
                 tools,
+                unavailable: BTreeMap::new(),
                 limits,
                 wall_deadline_ms,
             })
@@ -426,15 +441,7 @@ fn catalog(value: &Value) -> Checked<BTreeMap<String, Tool>> {
             ));
         }
         let name = name.ok_or_else(|| invalid("name must be a string"))?;
-        if !valid_name(name) {
-            return Err(invalid("invalid tool name"));
-        }
-        if matches!(
-            name,
-            "__proto__" | "constructor" | "prototype" | "tools" | "console"
-        ) {
-            return Err(invalid("reserved tool name"));
-        }
+        check_name(name).map_err(invalid)?;
         if tools.contains_key(name) {
             return Err(invalid("duplicate tool name"));
         }
@@ -470,6 +477,54 @@ fn catalog(value: &Value) -> Checked<BTreeMap<String, Tool>> {
         );
     }
     Ok(tools)
+}
+
+/// The names a program may use for a tool: a JavaScript identifier that is
+/// not one of the names the codemode prelude reserves.
+fn check_name(name: &str) -> std::result::Result<(), &'static str> {
+    if !valid_name(name) {
+        return Err("invalid tool name");
+    }
+    if matches!(
+        name,
+        "__proto__" | "constructor" | "prototype" | "tools" | "console"
+    ) {
+        return Err("reserved tool name");
+    }
+    Ok(())
+}
+
+/// The dropped tools by name. Their names reach the program just as usable
+/// tools' names do, so they pass the same name checks and may not repeat a
+/// usable tool's name.
+fn unavailable_tools(
+    gaps: &[basal_host::run_scope::CatalogGap],
+    tools: &BTreeMap<String, Tool>,
+) -> Checked<BTreeMap<String, Unavailable>> {
+    let mut unavailable = BTreeMap::new();
+    for gap in gaps {
+        for name in &gap.tools {
+            let invalid = |reason: &str| {
+                Refusal::new(
+                    "invalid_catalog",
+                    format!("catalog entry {name:?}: {reason}"),
+                )
+            };
+            check_name(name).map_err(invalid)?;
+            if tools.contains_key(name) || unavailable.contains_key(name) {
+                return Err(invalid("duplicate tool name"));
+            }
+            unavailable.insert(
+                name.clone(),
+                Unavailable {
+                    module: gap.module.clone(),
+                    reason: gap.reason.code(),
+                    message: gap.message(),
+                },
+            );
+        }
+    }
+    Ok(unavailable)
 }
 
 fn valid_name(name: &str) -> bool {
@@ -629,22 +684,37 @@ pub fn admit_tool(
         .map_err(|e| json!({"code":e.code,"message":e.message}))?;
         let daemon = transport.catalog().map_err(super::scope::error_value)?;
         // Reading each opted-in provider's own tool catalog makes live calls,
-        // so it runs here, outside every store write.
-        let resolved = run_scope::catalog(transport, &daemon, &opened.catalog).map_err(
-            |error| match error {
-                run_scope::CatalogError::Wire(error) => super::scope::error_value(error),
-                run_scope::CatalogError::Tool(refusal) => {
-                    json!({"code":refusal.reason.code(),"message":refusal.message()})
-                }
-            },
-        )?;
-        let resolved = super::models::add_catalog(&resolved)
+        // so it runs here, outside every store write. The reads are unscoped,
+        // as basal's other catalog reads are: the run scope is not registered
+        // with the transport until the run starts. They bind as a headless
+        // runner in the caller's project root, which providers such as AFT
+        // accept; the program's own tool calls later use the caller's
+        // forwarded identity on the run scope.
+        let read_identity = run_scope::catalog_read_identity(
+            &invocation.bind_identity.project_root,
+            invocation.run_id,
+        );
+        let resolved = run_scope::catalog(transport, &read_identity, &daemon, &opened.catalog)
+            .map_err(super::scope::error_value)?;
+        let gaps = resolved.gaps;
+        let resolved = super::models::add_catalog(&resolved.catalog)
             .map_err(|e| json!({"code":"invalid_catalog","message":e}))?;
         let tools = catalog(&resolved).map_err(|e| json!({"code":e.code,"message":e.message}))?;
+        let unavailable = unavailable_tools(&gaps, &tools)
+            .map_err(|e| json!({"code":e.code,"message":e.message}))?;
+        let warnings: Vec<Value> = gaps
+            .iter()
+            .map(|gap| {
+                json!({"code":"tools_unavailable","module":gap.module,"reason":gap.reason.code(),
+                    "tools":gap.tools,"message":gap.message()})
+            })
+            .collect();
+        // The digest covers only the tools the program can call; dropped
+        // tools are reported in the warnings instead.
         let digest = catalog_digest(&resolved).unwrap();
         store.write(|tx| {
-            tx.execute("UPDATE codemode_runs SET catalog=?2,catalog_digest=?3,scope=?4 WHERE run_id=?1 AND status='running'",
-                rusqlite::params![invocation.run_id,resolved.to_string(),digest,serde_json::to_string(&selector).unwrap()])?;
+            tx.execute("UPDATE codemode_runs SET catalog=?2,catalog_digest=?3,scope=?4,warnings=?5 WHERE run_id=?1 AND status='running'",
+                rusqlite::params![invocation.run_id,resolved.to_string(),digest,serde_json::to_string(&selector).unwrap(),serde_json::to_string(&warnings).unwrap()])?;
             Ok(())
         }).map_err(|e| json!({"code":"storage_unavailable","message":e.to_string()}))?;
         Ok(Start {
@@ -662,6 +732,7 @@ pub fn admit_tool(
                     .collect(),
             },
             tools,
+            unavailable,
             limits,
             wall_deadline_ms: started.saturating_add(limits.wall_ms.unwrap_or(run_scope::WALL_MS)),
         })

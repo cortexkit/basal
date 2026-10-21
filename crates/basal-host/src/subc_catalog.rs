@@ -89,11 +89,30 @@ pub fn read_tool_catalog(
     transport: &dyn Transport,
     module: &str,
 ) -> Result<cortexkit_role_tool_provider::catalog::CatalogAnswer, WireError> {
+    read_tool_catalog_with(&mut |name, arguments, key| transport.tool(module, name, arguments, key))
+}
+
+/// `read_tool_catalog`, with both requests sent on a route bound with
+/// `identity` rather than basal's own generic identity. Providers such as AFT
+/// refuse a bind whose harness is not one they recognise.
+pub fn read_tool_catalog_as(
+    transport: &dyn Transport,
+    identity: &subc_protocol::BindIdentity,
+    module: &str,
+) -> Result<cortexkit_role_tool_provider::catalog::CatalogAnswer, WireError> {
+    read_tool_catalog_with(&mut |name, arguments, key| {
+        transport.tool_as(identity, module, name, arguments, key)
+    })
+}
+
+fn read_tool_catalog_with(
+    send: &mut dyn FnMut(&str, Value, &str) -> Result<Value, WireError>,
+) -> Result<cortexkit_role_tool_provider::catalog::CatalogAnswer, WireError> {
     use cortexkit_role_tool_provider::catalog::{
         CatalogAnswer, CatalogRequest, params_for_capabilities,
     };
     use cortexkit_role_tool_provider::describe::{check_describe, select_tool_capabilities};
-    let describe = transport.tool(module, "role.describe", json!({}), &role_call_key())?;
+    let describe = send("role.describe", json!({}), &role_call_key())?;
     let describe = check_describe(&describe)
         .map_err(|problems| WireError::Unreadable(format!("role.describe: {problems:?}")))?;
     // A provider that filters its catalog by capability tag answers an
@@ -105,7 +124,7 @@ pub fn read_tool_catalog(
     };
     let request = serde_json::to_value(CatalogRequest::new(params))
         .map_err(|e| WireError::NeverSent(e.to_string()))?;
-    let answer = transport.tool(module, "tool.catalog", request, &role_call_key())?;
+    let answer = send("tool.catalog", request, &role_call_key())?;
     let answer: CatalogAnswer = serde_json::from_value(answer)
         .map_err(|e| WireError::Unreadable(format!("tool.catalog answer: {e}")))?;
     Ok(answer)

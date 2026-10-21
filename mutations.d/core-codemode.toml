@@ -757,9 +757,9 @@ expect_red = ["codemode::admission::tests::reserved_tool_names_are_refused_and_n
 only = false
 file = "crates/basal-core/src/codemode/admission.rs"
 old = '''if matches!(
-            name,
-            "__proto__" | "constructor" | "prototype" | "tools" | "console"
-        ) {'''
+        name,
+        "__proto__" | "constructor" | "prototype" | "tools" | "console"
+    ) {'''
 new = "if false { // NON-VACUITY BREAK"
 
 [[control]]
@@ -2559,3 +2559,71 @@ only = true
 file = "crates/basal-core/src/codemode/custody.rs"
 old = "position.pending.as_mut().unwrap().reread = true;"
 new = "position.pending.as_mut().unwrap().reread = false; // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-dropped-tool-falls-to-unknown"
+guards = "a program call to a tool dropped at admission rejects as tool_unavailable naming the provider and reason"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["codemode::supervisor::tests::a_tool_dropped_at_admission_rejects_typed_and_named_while_others_still_run", "codemode::supervisor::tests::configured_tool_budget_is_enforced_before_the_unknown_tool_check"] }
+expect_red = ["codemode::supervisor::tests::a_tool_dropped_at_admission_rejects_typed_and_named_while_others_still_run"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "if let Some(dropped) = self.start.unavailable.get(name) {"
+new = "if let Some(dropped) = self.start.unavailable.get(name).filter(|_| false) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-dropped-tool-name-hidden"
+guards = "the program still sees a dropped tool's name, so calling it reaches the parent instead of throwing a TypeError"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["codemode::supervisor::tests::a_tool_dropped_at_admission_rejects_typed_and_named_while_others_still_run", "codemode::supervisor::tests::supervisor_registers_routes_records_before_delivery_and_releases"] }
+expect_red = ["codemode::supervisor::tests::a_tool_dropped_at_admission_rejects_typed_and_named_while_others_still_run"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = ".chain(self.start.unavailable.keys())"
+new = ".chain(std::iter::empty::<&String>()) // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-dropped-tool-warnings-lost"
+guards = "tools dropped at codemode admission are named in the run's warnings"
+test_file = "crates/basal-module/tests/codemode.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test codemode"
+select = { tests = ["an_unreadable_provider_catalog_drops_its_tools_and_the_run_still_starts", "forwarded_bind_identity_is_configuration_not_agent_authority"] }
+expect_red = ["an_unreadable_provider_catalog_drops_its_tools_and_the_run_still_starts"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/codemode/admission.rs"
+old = "serde_json::to_string(&warnings).unwrap()])?;"
+new = "\"[]\"])?; // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-catalog-read-ignores-caller-root"
+guards = "codemode admission reads provider catalogs in the invoking caller's project root"
+test_file = "crates/basal-module/tests/codemode.rs"
+runner = "cargo"
+package = "basal-module"
+platforms = ["linux"]
+target = "--test codemode"
+select = { tests = ["forwarded_bind_identity_is_configuration_not_agent_authority", "an_unreadable_provider_catalog_drops_its_tools_and_the_run_still_starts"] }
+expect_red = ["forwarded_bind_identity_is_configuration_not_agent_authority"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-core/src/codemode/admission.rs"
+old = "            &invocation.bind_identity.project_root,\n"
+new = "            std::path::Path::new(\"/\"), // NON-VACUITY BREAK\n"
