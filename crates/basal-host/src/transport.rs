@@ -200,23 +200,32 @@ pub trait Transport: Send + Sync {
         arguments: Value,
         call_key: &str,
     ) -> Result<Value, WireError>;
-    /// Sends one unscoped tool-route request on a route bound with `identity`
-    /// instead of basal's own generic identity, then closes that route. The
-    /// identity is bind configuration (project root, harness label, session),
-    /// never authority: the daemon still stamps the route as basal's.
+    /// Sends one tool-provider role request (`role.describe`, `tool.catalog`)
+    /// to `module` on a route opened under a codemode run's own scope
+    /// `scope` and bound with `identity`, then closes that route.
     ///
-    /// Test transports that do not model bind identities keep the default,
-    /// which sends through `tool`.
-    fn tool_as(
+    /// The daemon derives the call mode from the scope it stamps on the bind:
+    /// a run scope (one carrying `run_id`) makes the call `codemode`. Opening
+    /// under the run scope is therefore what makes a provider see a codemode
+    /// call; an unscoped route reaches it as `classic`. Role requests carry no
+    /// envelope `call_key`: providers refuse one there as `invalid_request`.
+    /// The identity is bind configuration (project root, harness label,
+    /// session), never authority.
+    ///
+    /// The default refuses without sending, so a transport that cannot open
+    /// run-scoped routes never falls back to an unscoped read.
+    fn role_on_run_scope(
         &self,
+        scope: &subc_protocol::scope::ScopeSelector,
         identity: &BindIdentity,
         module: &str,
         name: &str,
         arguments: Value,
-        call_key: &str,
     ) -> Result<Value, WireError> {
-        let _ = identity;
-        self.tool(module, name, arguments, call_key)
+        let _ = (scope, identity, module, name, arguments);
+        Err(WireError::NeverSent(
+            "run-scoped role requests unavailable".into(),
+        ))
     }
 }
 
@@ -446,11 +455,7 @@ impl SubcTransport {
                 if flow.starts_with("codemode:")
                     && matches!(target, RouteTarget::ToolProvider { .. })
                 {
-                    options = options
-                        .with_consumer_capability("content/v1")
-                        .expect("static capability")
-                        .with_consumer_capability("held-reply/v1")
-                        .expect("static capability");
+                    options = run_tool_route_options(options);
                 }
                 let handle = self
                     .consumer
@@ -1111,16 +1116,19 @@ impl Transport for SubcTransport {
             false,
         )
     }
-    fn tool_as(
+    fn role_on_run_scope(
         &self,
+        scope: &subc_protocol::scope::ScopeSelector,
         identity: &BindIdentity,
         module: &str,
         name: &str,
         arguments: Value,
-        call_key: &str,
     ) -> Result<Value, WireError> {
-        let body = serde_json::to_vec(&tool_body(name, arguments, call_key)?)
-            .map_err(|e| WireError::NeverSent(e.to_string()))?;
+        // A role request names no call key in its envelope.
+        let body = serde_json::to_vec(&subc_protocol::tool_call::ToolCallRequest::new(
+            name, arguments,
+        ))
+        .map_err(|e| WireError::NeverSent(e.to_string()))?;
         let options = || CallOptions {
             timeout: self.timeout,
             ..Default::default()
@@ -1128,15 +1136,27 @@ impl Transport for SubcTransport {
         self.handle.block_on(async {
             let handle = self
                 .consumer
-                .open_route(
+                // The same route shape the run's own tool calls open: the
+                // run's scope and the consumer capabilities a run declares,
+                // so the provider answers for the binds the program will use.
+                .open_route_scoped(
                     RouteTarget::ToolProvider {
                         module_id: module.into(),
                     },
                     identity.clone(),
-                    options(),
+                    scope.clone(),
+                    run_tool_route_options(options()),
                 )
                 .await
-                .map_err(map_error)?;
+                .map_err(|error| {
+                    // Keep the provider's bind refusal code (for example
+                    // `principal_denied`), so the caller can tell a permanent
+                    // refusal from a transient one.
+                    match error.route_open_refusal() {
+                        Some(body) => refusal(body.clone()),
+                        None => map_error(error),
+                    }
+                })?;
             let result = self
                 .consumer
                 .request(&handle, body, options())
@@ -1153,6 +1173,16 @@ impl Transport for SubcTransport {
             result
         })
     }
+}
+
+/// The consumer capabilities every tool-provider route of a codemode run
+/// declares: content-format results and held replies.
+fn run_tool_route_options(options: CallOptions) -> CallOptions {
+    options
+        .with_consumer_capability("content/v1")
+        .expect("static capability")
+        .with_consumer_capability("held-reply/v1")
+        .expect("static capability")
 }
 
 /// Sends one codemode tool request, opening (or reusing) its route with `open`
@@ -1300,6 +1330,10 @@ pub fn management_bytes(op: &str, params: &[u8]) -> Result<Vec<u8>, WireError> {
     body.push(b'}');
     Ok(body)
 }
+
+#[cfg(test)]
+#[path = "run_scope_wire_tests.rs"]
+mod run_scope_wire_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1708,18 +1742,25 @@ mod tests {
     }
 
     #[test]
-    fn tool_as_binds_an_unscoped_route_with_the_given_identity_and_closes_it() {
+    fn role_on_run_scope_binds_the_run_scope_with_no_call_key_and_closes_it() {
         with_scoped_transport(|transport, opens, calls, _| {
             let identity = BindIdentity::new("/agent/project", "runner", "basal:codemode:run-1");
+            let scope = subc_protocol::scope::ScopeSelector::new(
+                subc_protocol::Principal::Reserved {
+                    module_id: "prefrontal-core".into(),
+                },
+                "run-1",
+                Some(19),
+            );
             assert_eq!(
                 transport
-                    .tool_as(&identity, "aft", "echo", json!({"n":1}), "key-1")
+                    .role_on_run_scope(&scope, &identity, "aft", "echo", json!({"n":1}))
                     .unwrap(),
                 json!({"n":1})
             );
             let opens = opens.lock().unwrap();
             assert_eq!(opens.len(), 1);
-            assert!(opens[0].get("scope").is_none());
+            assert_eq!(opens[0]["scope"], serde_json::to_value(&scope).unwrap());
             assert_eq!(
                 opens[0]["identity"],
                 serde_json::to_value(&identity).unwrap()
@@ -1729,7 +1770,8 @@ mod tests {
                 .iter()
                 .find(|(_, body)| body["name"] == "echo")
                 .unwrap();
-            assert_eq!(sent.0, 11, "sent on the route opened with the identity");
+            assert_eq!(sent.0, 11, "sent on the route opened under the run scope");
+            assert!(sent.1.get("call_key").is_none(), "{}", sent.1);
         });
     }
 

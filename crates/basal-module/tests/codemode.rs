@@ -26,6 +26,11 @@ struct Core {
     mismatch: Mutex<bool>,
     identities: Mutex<Vec<subc_protocol::BindIdentity>>,
     catalog_identities: Mutex<Vec<subc_protocol::BindIdentity>>,
+    /// The daemon's stamp for each run scope core opened, with the invoking
+    /// scope the run was opened from, keyed by scope ref.
+    run_stamps: Mutex<std::collections::BTreeMap<String, (ScopeStamp, Value)>>,
+    /// The scope each admission-time catalog read was sent under.
+    catalog_scopes: Mutex<Vec<subc_protocol::scope::ScopeSelector>>,
     store: Mutex<Option<Arc<basal_core::Store>>>,
     held_provider: AtomicBool,
     format_unreadable: AtomicBool,
@@ -167,10 +172,18 @@ impl Transport for Core {
                 } else {
                     params["agent_id"].as_str().unwrap()
                 };
+                let stamp = json!({"owner":{"kind":"reserved","module_id":"prefrontal-core"},"ref":id,"scope_epoch":19,"kind":"ephemeral",
+                        "attributes":{"agent_id":agent,"run_id":id},"owner_authorized":true});
+                self.run_stamps.lock().unwrap().insert(
+                    id.into(),
+                    (
+                        serde_json::from_value(stamp.clone()).unwrap(),
+                        params["invoking_scope"].clone(),
+                    ),
+                );
                 self.host.set_scope_description(Principal::Reserved { module_id:"prefrontal-core".into() },id,Ok(serde_json::from_value(json!({
                     "status":"live","scope_epoch":19,"daemon_incarnation":"test","owner_synced":true,"owner_configured":true,
-                    "scope":{"owner":{"kind":"reserved","module_id":"prefrontal-core"},"ref":id,"scope_epoch":19,"kind":"ephemeral",
-                        "attributes":{"agent_id":agent,"run_id":id},"owner_authorized":true}})).unwrap()));
+                    "scope":stamp})).unwrap()));
                 // A matching daemon stamp from a previously published scope
                 // cannot override core refusing the codemode grant. Keep that
                 // stamp valid so this test exercises the refusal itself.
@@ -200,24 +213,55 @@ impl Transport for Core {
         }
     }
     fn tool(&self, _: &str, name: &str, _: Value, _: &str) -> Result<Value, WireError> {
-        // Like AFT, the provider refuses basal's generic `basal` harness.
+        // An unscoped route reaches the provider as a classic call from
+        // basal, which a cerebellum-like provider refuses.
         assert!(
             matches!(name, "role.describe" | "tool.catalog"),
             "unscoped action send"
         );
-        Err(WireError::NeverSent(
-            "config_divergence: configure payload invalid field 'harness'".into(),
-        ))
+        Err(WireError::Refused {
+            code: "principal_denied".into(),
+            message: "basal may call only on a codemode run scope".into(),
+        })
     }
-    fn tool_as(
+    fn role_on_run_scope(
         &self,
+        scope: &subc_protocol::scope::ScopeSelector,
         identity: &subc_protocol::BindIdentity,
         module: &str,
         name: &str,
-        _: Value,
-        _: &str,
+        arguments: Value,
     ) -> Result<Value, WireError> {
         assert_eq!(module, "mock");
+        self.catalog_scopes.lock().unwrap().push(scope.clone());
+        // Like cerebellum, the provider admits basal only on a codemode run's
+        // own scope: an ephemeral scope with run_id and no flow_id, owned by
+        // an authorized prefrontal-core, whose call mode the daemon derives
+        // as codemode, and whose parent is the live head scope it was opened
+        // from.
+        let stamps = self.run_stamps.lock().unwrap();
+        let admitted = stamps.get(&scope.scope_ref).filter(|(stamp, invoking)| {
+            scope.owner == stamp.owner
+                && scope.scope_epoch == Some(stamp.scope_epoch)
+                && stamp.kind == subc_protocol::scope::ScopeKind::Ephemeral
+                && stamp.attributes.run_id.is_some()
+                && stamp.attributes.flow_id.is_none()
+                && stamp.owner
+                    == (Principal::Reserved {
+                        module_id: "prefrontal-core".into(),
+                    })
+                && stamp.owner_authorized
+                && subc_protocol::call_mode::derive_call_mode(Some(stamp))
+                    == subc_protocol::call_mode::CallMode::Codemode
+                && *invoking == json!({"ref":"agent-scope","epoch":7})
+        });
+        if admitted.is_none() {
+            return Err(WireError::Refused {
+                code: "principal_denied".into(),
+                message: "basal may call only on a codemode run scope".into(),
+            });
+        }
+        drop(stamps);
         // Catalog reads bind as a headless runner in the caller's project
         // root, never with the caller's own harness or session.
         assert_eq!(identity.harness, "runner");
@@ -226,16 +270,19 @@ impl Transport for Core {
             .lock()
             .unwrap()
             .push(identity.clone());
-        if self.format_unreadable.load(Ordering::SeqCst)
-            && matches!(name, "role.describe" | "tool.catalog")
-        {
-            return Err(WireError::TimedOut("provider catalog unavailable".into()));
+        if self.format_unreadable.load(Ordering::SeqCst) {
+            // A permanent refusal, which retrying the run does not change.
+            return Err(WireError::Refused {
+                code: "principal_denied".into(),
+                message: "provider catalog refused".into(),
+            });
         }
         match name {
             "role.describe" => Ok(
                 json!({"majors":[{"version":"tool-provider/v1","ops":["role.describe","tool.catalog"],"stability":"alpha"}],"implementation_version":"test"}),
             ),
             "tool.catalog" => {
+                assert_eq!(arguments, json!({"params":{}}));
                 let mut tool = json!({"name":"echo","schema_digest":"0".repeat(64),"semantics":1,"capabilities":[],"input_schema":{}});
                 if self.held_provider.load(Ordering::SeqCst) {
                     tool["result_format"] = json!("content/v1");
@@ -873,6 +920,44 @@ fn forwarded_bind_identity_is_configuration_not_agent_authority() {
 }
 
 #[test]
+fn admission_reads_catalogs_on_the_run_scope_core_opened() {
+    let rig = rig("catalog-run-scope", false);
+    rig.core.release();
+    let result = call(
+        &rig,
+        "catalog-scope",
+        "return await tools.echo({n:1});",
+        Duration::from_secs(10),
+    );
+    assert_eq!(
+        result["structuredContent"]["status"], "completed",
+        "{result}"
+    );
+    assert!(
+        result["structuredContent"]["warnings"]
+            .as_array()
+            .is_none_or(Vec::is_empty),
+        "{result}"
+    );
+    let run_id = rig.core.opens.lock().unwrap()[0]["run_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let expected = subc_protocol::scope::ScopeSelector::new(
+        Principal::Reserved {
+            module_id: "prefrontal-core".into(),
+        },
+        run_id,
+        Some(19),
+    );
+    assert_eq!(
+        rig.core.catalog_scopes.lock().unwrap().as_slice(),
+        [expected.clone(), expected],
+        "role.describe and tool.catalog both go over the run's own scope"
+    );
+}
+
+#[test]
 fn held_provider_late_content_resumes_the_program_with_its_structured_value() {
     let rig = rig("held-late-value", false);
     rig.core.held_provider.store(true, Ordering::SeqCst);
@@ -979,11 +1064,13 @@ fn an_unreadable_provider_catalog_drops_its_tools_and_the_run_still_starts() {
     );
     assert_eq!(warnings[0]["module"], "mock");
     assert_eq!(warnings[0]["tools"], json!(["echo"]));
+    // The provider refused the read permanently, so the warning does not
+    // suggest retrying the run.
+    let message = warnings[0]["message"].as_str().unwrap();
+    assert!(message.contains("principal_denied"), "{message}");
     assert!(
-        warnings[0]["message"]
-            .as_str()
-            .unwrap()
-            .contains("retrying the run may succeed")
+        !message.contains("retrying the run may succeed"),
+        "{message}"
     );
     let text = result["content"][0]["text"].as_str().unwrap();
     assert!(

@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use cortexkit_role_tool_provider::catalog::{CatalogAnswer, check_modes, serves_call_mode};
 use cortexkit_role_tool_provider::{CALL_MODES_CAPABILITY, CallMode};
 
-use crate::subc_catalog::{CORE, read_tool_catalog_as};
+use crate::subc_catalog::{CORE, read_tool_catalog_on_run};
 use crate::transport::{Transport, WireError};
 
 pub const WALL_MS: i64 = 30 * 60 * 1_000;
@@ -88,7 +88,8 @@ pub const LEGACY_RUN_SCOPES_CAPABILITY: &str = "agent-run-scopes/v1";
 /// host harness names in a bind (`opencode`, `pi`, `runner`, `mcp:<client>`,
 /// `fed:<fingerprint>`) and refuses basal's own generic `basal` label;
 /// `runner` is AFT's label for headless executors. The harness is bind
-/// configuration only: the daemon still stamps the route as basal's.
+/// configuration only: the daemon still stamps the route as basal's, under
+/// the run's scope.
 pub const CATALOG_READ_HARNESS: &str = "runner";
 
 /// The bind identity for a codemode run's admission-time catalog reads: the
@@ -103,6 +104,34 @@ pub fn catalog_read_identity(
         CATALOG_READ_HARNESS,
         format!("basal:codemode:{run_id}"),
     )
+}
+
+/// The scope and bind identity a codemode run's admission-time catalog reads
+/// use: the run's own scope, which core has registered before admission reads
+/// catalogs, and `catalog_read_identity`.
+pub struct CatalogRead<'a> {
+    pub scope: &'a subc_protocol::scope::ScopeSelector,
+    pub identity: &'a subc_protocol::BindIdentity,
+}
+
+/// Whether a failed catalog read may succeed if the run is retried: the
+/// connection was lost, the reply timed out, or the provider or daemon
+/// refused with a code the tool-provider role marks transient (such as
+/// `scope_not_synced` or `module_reloading`). A permanent refusal, such as
+/// `principal_denied`, or an answer basal can't read fails the same way again.
+pub fn catalog_read_may_recover(error: &WireError) -> bool {
+    match error {
+        WireError::TimedOut(_) | WireError::Unknown(_) => true,
+        WireError::Typed(refusal) => matches!(
+            refusal.reason,
+            crate::flow_refusal::RefusalReason::ScopeNotSynced
+                | crate::flow_refusal::RefusalReason::ScopeChanged
+        ),
+        WireError::Refused { code, .. } | WireError::RefusedDetails { code, .. } => {
+            cortexkit_role_tool_provider::errors::is_transient(code)
+        }
+        _ => false,
+    }
 }
 
 /// Why basal left one catalog entry out of a codemode run.
@@ -181,7 +210,7 @@ pub struct ResolvedCatalog {
 /// answer once read, so a provider listed for several entries is read once.
 fn codemode_served(
     transport: &dyn Transport,
-    identity: &subc_protocol::BindIdentity,
+    read: &CatalogRead<'_>,
     module: &Value,
     entry: &CatalogEntry,
     answers: &mut BTreeMap<String, Result<CatalogAnswer, WireError>>,
@@ -200,13 +229,18 @@ fn codemode_served(
             ),
         ));
     }
-    let answer = answers
-        .entry(entry.module.clone())
-        .or_insert_with(|| read_tool_catalog_as(transport, identity, &entry.module));
+    let answer = answers.entry(entry.module.clone()).or_insert_with(|| {
+        read_tool_catalog_on_run(transport, read.scope, read.identity, &entry.module)
+    });
     let answer = answer.as_ref().map_err(|error| {
+        let hint = if catalog_read_may_recover(error) {
+            "; retrying the run may succeed"
+        } else {
+            ""
+        };
         (
             RefusalReason::CatalogUnreadable,
-            format!("its tool.catalog could not be read: {error:?}; retrying the run may succeed"),
+            format!("its tool.catalog could not be read: {error:?}{hint}"),
         )
     })?;
     // An invalid modes list on any tool makes the whole answer invalid, not
@@ -254,12 +288,13 @@ fn codemode_served(
 /// a result format. Every provider catalog is read, including legacy
 /// providers whose capability admits codemode without per-tool mode opt-in.
 ///
-/// The reads bind with `identity` (see `catalog_read_identity`). Each module
-/// is read once, with requests bounded by the transport timeout; callers must
-/// not hold a store lock across this function.
+/// The reads go over the run's own scope and bind with the identity in `read`
+/// (see `CatalogRead`). Each module is read once, with requests bounded by
+/// the transport timeout; callers must not hold a store lock across this
+/// function.
 pub fn catalog(
     transport: &dyn Transport,
-    identity: &subc_protocol::BindIdentity,
+    read: &CatalogRead<'_>,
     daemon: &Value,
     entries: &[CatalogEntry],
 ) -> Result<ResolvedCatalog, WireError> {
@@ -304,7 +339,7 @@ pub fn catalog(
         if failed.iter().any(|(module, ..)| *module == entry.module) {
             continue;
         }
-        match codemode_served(transport, identity, module, entry, &mut answers) {
+        match codemode_served(transport, read, module, entry, &mut answers) {
             Ok(result_format) => {
                 let mut resolved = serde_json::json!({"name":entry.tool,"module":entry.module,"op":entry.op,"input_schema":schema});
                 if let Some(format) = result_format {
@@ -400,16 +435,21 @@ mod call_mode_tests {
     use serde_json::json;
     use std::sync::Mutex;
     use subc_protocol::BindIdentity;
+    use subc_protocol::scope::ScopeSelector;
 
     /// Providers whose `tool.catalog` answers are set by each test. The
     /// daemon catalog is passed to `catalog` directly, so this transport only
     /// answers the providers' own role ops and records each one. Like AFT, it
     /// refuses a bind whose harness is not a host harness name, so a read
-    /// with basal's generic `basal` identity never gets an answer.
+    /// with basal's generic `basal` identity never gets an answer. Like
+    /// cerebellum, it admits basal only on the run's own scope, refusing any
+    /// other route `principal_denied`, and refuses a `tool.catalog` request
+    /// carrying a member the role does not define.
     struct Provider {
         catalogs: BTreeMap<String, Result<Value, WireError>>,
         calls: Mutex<Vec<(String, String)>>,
         identities: Mutex<Vec<BindIdentity>>,
+        scopes: Mutex<Vec<ScopeSelector>>,
     }
 
     impl Provider {
@@ -424,6 +464,7 @@ mod call_mode_tests {
                     .collect(),
                 calls: Mutex::new(Vec::new()),
                 identities: Mutex::new(Vec::new()),
+                scopes: Mutex::new(Vec::new()),
             }
         }
         /// The role ops sent to `mock`, in order.
@@ -436,7 +477,7 @@ mod call_mode_tests {
                 .map(|(_, name)| name.clone())
                 .collect()
         }
-        fn answer(&self, module: &str, name: &str) -> Result<Value, WireError> {
+        fn answer(&self, module: &str, name: &str, arguments: &Value) -> Result<Value, WireError> {
             self.calls
                 .lock()
                 .unwrap()
@@ -446,7 +487,24 @@ mod call_mode_tests {
                     json!({"majors":[{"version":"tool-provider/v1","ops":["role.describe","tool.catalog"],
                         "stability":"alpha"}],"implementation_version":"1"}),
                 ),
-                "tool.catalog" => self.catalogs[module].clone(),
+                "tool.catalog" => {
+                    let allowed = [
+                        "params",
+                        "preset",
+                        "composition",
+                        "system_text",
+                        "digest_only",
+                    ];
+                    if let Some(member) = arguments.as_object().and_then(|members| {
+                        members.keys().find(|key| !allowed.contains(&key.as_str()))
+                    }) {
+                        return Err(WireError::Refused {
+                            code: "invalid_request".into(),
+                            message: format!("unknown catalog member {member}"),
+                        });
+                    }
+                    self.catalogs[module].clone()
+                }
                 other => panic!("unexpected role op {other}"),
             }
         }
@@ -467,27 +525,46 @@ mod call_mode_tests {
             panic!("unexpected management op {op}")
         }
         fn tool(&self, _: &str, _: &str, _: Value, _: &str) -> Result<Value, WireError> {
-            // basal's generic route identity uses the `basal` harness.
-            Err(WireError::NeverSent(
-                "config_divergence: configure payload invalid field 'harness'".into(),
-            ))
+            // An unscoped route reaches the provider as a classic call.
+            Err(WireError::Refused {
+                code: "principal_denied".into(),
+                message: "basal may call only on a codemode run scope".into(),
+            })
         }
-        fn tool_as(
+        fn role_on_run_scope(
             &self,
+            scope: &ScopeSelector,
             identity: &BindIdentity,
             module: &str,
             name: &str,
-            _: Value,
-            _: &str,
+            arguments: Value,
         ) -> Result<Value, WireError> {
             self.identities.lock().unwrap().push(identity.clone());
+            self.scopes.lock().unwrap().push(scope.clone());
+            if scope != &run_selector() {
+                return Err(WireError::Refused {
+                    code: "principal_denied".into(),
+                    message: "basal may call only on a codemode run scope".into(),
+                });
+            }
             if !host_harness(&identity.harness) {
                 return Err(WireError::NeverSent(
                     "config_divergence: configure payload invalid field 'harness'".into(),
                 ));
             }
-            self.answer(module, name)
+            self.answer(module, name, &arguments)
         }
+    }
+
+    /// The run scope core opened for `run-1`.
+    fn run_selector() -> ScopeSelector {
+        ScopeSelector::new(
+            subc_protocol::Principal::Reserved {
+                module_id: CORE.into(),
+            },
+            "run:1",
+            Some(9),
+        )
     }
 
     fn identity() -> BindIdentity {
@@ -537,7 +614,20 @@ mod call_mode_tests {
     }
 
     fn resolve(provider: &Provider, daemon: &Value, entries: &[CatalogEntry]) -> ResolvedCatalog {
-        catalog(provider, &identity(), daemon, entries).expect("the catalog resolves")
+        read_catalog(provider, daemon, entries).expect("the catalog resolves")
+    }
+
+    fn read_catalog(
+        provider: &Provider,
+        daemon: &Value,
+        entries: &[CatalogEntry],
+    ) -> Result<ResolvedCatalog, WireError> {
+        let (scope, identity) = (run_selector(), identity());
+        let read = CatalogRead {
+            scope: &scope,
+            identity: &identity,
+        };
+        catalog(provider, &read, daemon, entries)
     }
 
     fn names(resolved: &ResolvedCatalog) -> Vec<&str> {
@@ -572,6 +662,11 @@ mod call_mode_tests {
             provider.identities.lock().unwrap().as_slice(),
             [expected.clone(), expected],
             "role.describe and tool.catalog both bind as the runner"
+        );
+        assert_eq!(
+            provider.scopes.lock().unwrap().as_slice(),
+            [run_selector(), run_selector()],
+            "role.describe and tool.catalog both go over the run's own scope"
         );
     }
 
@@ -680,8 +775,46 @@ mod call_mode_tests {
         assert_eq!(dropped.reason.code(), "catalog_unreadable");
         assert_eq!(dropped.module, "mock");
         assert_eq!(dropped.tools, ["mock_read", "mock_write"]);
+        // A timeout may clear up, so the message says a retry may succeed.
         assert!(dropped.message().contains("retrying the run may succeed"));
         assert_eq!(provider.calls(), ["role.describe", "tool.catalog"]);
+    }
+
+    #[test]
+    fn only_a_recoverable_catalog_read_failure_suggests_retrying_the_run() {
+        let refused = |code: &str| WireError::Refused {
+            code: code.into(),
+            message: "refused".into(),
+        };
+        for (failure, recoverable) in [
+            (WireError::TimedOut("no reply".into()), true),
+            (WireError::Unknown("connection lost".into()), true),
+            (refused("module_reloading"), true),
+            (refused("scope_not_synced"), true),
+            (refused("principal_denied"), false),
+            (refused("run_parent_unavailable"), false),
+            (WireError::Unreadable("garbled".into()), false),
+        ] {
+            assert_eq!(
+                catalog_read_may_recover(&failure),
+                recoverable,
+                "{failure:?}"
+            );
+            let provider = Provider::answering(Err(failure.clone()));
+            let resolved = resolve(
+                &provider,
+                &daemon(&[CALL_MODES_CAPABILITY]),
+                &[entry("read")],
+            );
+            let dropped = gap(&resolved);
+            assert_eq!(dropped.reason, RefusalReason::CatalogUnreadable);
+            assert_eq!(
+                dropped.message().contains("retrying the run may succeed"),
+                recoverable,
+                "{failure:?}: {}",
+                dropped.message()
+            );
+        }
     }
 
     #[test]
@@ -818,12 +951,7 @@ mod call_mode_tests {
             // entry after it.
             let unreadable = Provider::answering(Err(WireError::TimedOut("offline".into())));
             for provider in [&provider, &unreadable] {
-                let result = catalog(
-                    provider,
-                    &identity(),
-                    &daemon,
-                    &[entry("read"), bad.clone()],
-                );
+                let result = read_catalog(provider, &daemon, &[entry("read"), bad.clone()]);
                 assert!(result.is_err(), "{bad:?}: {result:?}");
             }
         }

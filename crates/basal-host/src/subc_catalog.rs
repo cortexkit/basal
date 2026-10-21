@@ -89,30 +89,36 @@ pub fn read_tool_catalog(
     transport: &dyn Transport,
     module: &str,
 ) -> Result<cortexkit_role_tool_provider::catalog::CatalogAnswer, WireError> {
-    read_tool_catalog_with(&mut |name, arguments, key| transport.tool(module, name, arguments, key))
+    read_tool_catalog_with(&mut |name, arguments| {
+        transport.tool(module, name, arguments, &role_call_key())
+    })
 }
 
-/// `read_tool_catalog`, with both requests sent on a route bound with
-/// `identity` rather than basal's own generic identity. Providers such as AFT
-/// refuse a bind whose harness is not one they recognise.
-pub fn read_tool_catalog_as(
+/// `read_tool_catalog` for a codemode run: both requests go on a route
+/// opened under the run's own scope `scope` and bound with `identity`, so the
+/// provider sees the codemode call mode its run binds will carry, and they
+/// carry no envelope call key. Providers such as AFT refuse a bind whose
+/// harness is not one they recognise, and providers such as cerebellum admit
+/// basal only on a codemode run scope.
+pub fn read_tool_catalog_on_run(
     transport: &dyn Transport,
+    scope: &subc_protocol::scope::ScopeSelector,
     identity: &subc_protocol::BindIdentity,
     module: &str,
 ) -> Result<cortexkit_role_tool_provider::catalog::CatalogAnswer, WireError> {
-    read_tool_catalog_with(&mut |name, arguments, key| {
-        transport.tool_as(identity, module, name, arguments, key)
+    read_tool_catalog_with(&mut |name, arguments| {
+        transport.role_on_run_scope(scope, identity, module, name, arguments)
     })
 }
 
 fn read_tool_catalog_with(
-    send: &mut dyn FnMut(&str, Value, &str) -> Result<Value, WireError>,
+    send: &mut dyn FnMut(&str, Value) -> Result<Value, WireError>,
 ) -> Result<cortexkit_role_tool_provider::catalog::CatalogAnswer, WireError> {
     use cortexkit_role_tool_provider::catalog::{
         CatalogAnswer, CatalogRequest, params_for_capabilities,
     };
     use cortexkit_role_tool_provider::describe::{check_describe, select_tool_capabilities};
-    let describe = send("role.describe", json!({}), &role_call_key())?;
+    let describe = send("role.describe", json!({}))?;
     let describe = check_describe(&describe)
         .map_err(|problems| WireError::Unreadable(format!("role.describe: {problems:?}")))?;
     // A provider that filters its catalog by capability tag answers an
@@ -124,7 +130,7 @@ fn read_tool_catalog_with(
     };
     let request = serde_json::to_value(CatalogRequest::new(params))
         .map_err(|e| WireError::NeverSent(e.to_string()))?;
-    let answer = send("tool.catalog", request, &role_call_key())?;
+    let answer = send("tool.catalog", request)?;
     let answer: CatalogAnswer = serde_json::from_value(answer)
         .map_err(|e| WireError::Unreadable(format!("tool.catalog answer: {e}")))?;
     Ok(answer)
