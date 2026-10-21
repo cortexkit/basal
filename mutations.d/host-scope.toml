@@ -783,3 +783,20 @@ timeout_s = 600
 file = "crates/basal-host/src/run_scope.rs"
 old = "cortexkit_role_tool_provider::errors::is_transient(code)"
 new = "{ let _ = code; true } // NON-VACUITY BREAK"
+
+[[control]]
+id = "run-scope-run-parent-unavailable-not-recoverable"
+guards = "a run_parent_unavailable catalog refusal keeps the retry hint, because it clears once the head calls the provider"
+test_file = "crates/basal-host/src/run_scope.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["run_scope::call_mode_tests::only_a_recoverable_catalog_read_failure_suggests_retrying_the_run", "run_scope::call_mode_tests::a_readable_legacy_catalog_does_not_require_per_tool_mode_opt_in"] }
+expect_red = ["run_scope::call_mode_tests::only_a_recoverable_catalog_read_failure_suggests_retrying_the_run"]
+only = true
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/run_scope.rs"
+old = "            code == \"run_parent_unavailable\"\n                || cortexkit_role_tool_provider::errors::is_transient(code)"
+new = "            cortexkit_role_tool_provider::errors::is_transient(code) // NON-VACUITY BREAK"

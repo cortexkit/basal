@@ -495,6 +495,12 @@ fn the_fake_cerebellum_refuses_reads_off_the_run_scope_or_without_a_live_parent(
             "{}",
             resolved.gaps[0].problem
         );
+        // A head that calls cerebellum makes the next run's bind succeed.
+        assert!(
+            resolved.gaps[0]
+                .message()
+                .contains("retrying the run may succeed")
+        );
     });
 }
 

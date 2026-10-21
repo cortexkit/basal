@@ -119,6 +119,10 @@ pub struct CatalogRead<'a> {
 /// refused with a code the tool-provider role marks transient (such as
 /// `scope_not_synced` or `module_reloading`). A permanent refusal, such as
 /// `principal_denied`, or an answer basal can't read fails the same way again.
+///
+/// `run_parent_unavailable` also counts as recoverable: a provider such as
+/// cerebellum refuses a run's bind until the head has a live route to it, and
+/// that changes as soon as the head calls the provider.
 pub fn catalog_read_may_recover(error: &WireError) -> bool {
     match error {
         WireError::TimedOut(_) | WireError::Unknown(_) => true,
@@ -128,7 +132,8 @@ pub fn catalog_read_may_recover(error: &WireError) -> bool {
                 | crate::flow_refusal::RefusalReason::ScopeChanged
         ),
         WireError::Refused { code, .. } | WireError::RefusedDetails { code, .. } => {
-            cortexkit_role_tool_provider::errors::is_transient(code)
+            code == "run_parent_unavailable"
+                || cortexkit_role_tool_provider::errors::is_transient(code)
         }
         _ => false,
     }
@@ -792,7 +797,8 @@ mod call_mode_tests {
             (refused("module_reloading"), true),
             (refused("scope_not_synced"), true),
             (refused("principal_denied"), false),
-            (refused("run_parent_unavailable"), false),
+            // Clears once the head has a live route to the provider.
+            (refused("run_parent_unavailable"), true),
             (WireError::Unreadable("garbled".into()), false),
         ] {
             assert_eq!(
