@@ -39,7 +39,7 @@ jiff = { version = "0.2.37", default-features = false, features = ["std", "tzdb-
 cortexkit-test-support = "=0.1.10"
 # The fleet's storage mechanics: open with the single-writer lease, WAL and a
 # busy timeout, and versioned migrations. Pinned exactly, as astrocyte does.
-cortexkit-store = { version = "=0.2.4", features = ["sqlite"] }
+cortexkit-store = { version = "=0.2.5", features = ["sqlite"] }
 cortexkit-store-types = "0.2.2"
 cortexkit-role-tool-provider = "=0.9.3"
 cortexkit-role-tool-provider-conformance = "=0.9.3"

@@ -329,7 +329,7 @@ mod store_restore_tests {
     }
 
     #[test]
-    fn restoring_store_requires_its_persisted_lease_epoch() {
+    fn restored_store_opens_with_or_without_its_lease_file() {
         let root = basal_core::test_support::timestamp_scratch("store-restore", "lease");
         let source = root.join("source");
         std::fs::create_dir_all(&source).expect("create source data directory");
@@ -363,14 +363,18 @@ mod store_restore_tests {
         // Restart advances the lease and the next fenced database write to epoch 2.
         drop(Store::open(&source_db, Durability::throwaway()).expect("restart source store"));
 
+        // Restored onto a new Mac without its lease file: since cortexkit-store
+        // 0.2.5 the first open raises the new lease above the database's highest
+        // recorded epoch before any write, so the store opens and writes. Before
+        // that, the lease restarted at 1 and every fenced write was refused.
         let without_lease = root.join("restored-without-lease");
         copy_sqlite_store(&source, &without_lease);
-        let error = Store::open(without_lease.join("store.db"), Durability::throwaway())
-            .err()
-            .expect("a database copy without its epoch lease must refuse startup");
-        assert_eq!(
-            error.to_string(),
-            "store: fenced write rejected: this writer holds epoch 1 but the database was claimed by a newer writer at epoch 2"
+        let restored = Store::open(without_lease.join("store.db"), Durability::throwaway())
+            .expect("a database copied without its lease opens and takes a newer epoch");
+        drop(restored);
+        drop(
+            Store::open(without_lease.join("store.db"), Durability::throwaway())
+                .expect("the restored store reopens on its own new lease"),
         );
 
         let with_lease = root.join("restored-with-lease");
