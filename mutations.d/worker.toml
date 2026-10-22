@@ -1483,7 +1483,7 @@ package = "basal-worker"
 platforms = ["windows"]
 target = "--lib"
 expect_red = ["confinement::windows::allowlist::tests::the_cng_device_must_be_there_once_with_its_name_and_access"]
-select = { tests = ["confinement::windows::allowlist::tests::the_cng_device_must_be_there_once_with_its_name_and_access"] }
+select = { tests = ["confinement::windows::allowlist::tests::the_cng_device_must_be_there_once_with_its_name_and_access", "confinement::windows::allowlist::tests::each_images_measured_table_fits_its_own_profile"] }
 only = true
 build_timeout_s = 3600
 timeout_s = 600
@@ -1500,7 +1500,7 @@ package = "basal-worker"
 platforms = ["windows"]
 target = "--lib"
 expect_red = ["confinement::windows::allowlist::tests::the_cng_device_must_be_there_once_with_its_name_and_access"]
-select = { tests = ["confinement::windows::allowlist::tests::the_cng_device_must_be_there_once_with_its_name_and_access"] }
+select = { tests = ["confinement::windows::allowlist::tests::the_cng_device_must_be_there_once_with_its_name_and_access", "confinement::windows::allowlist::tests::each_images_measured_table_fits_its_own_profile"] }
 only = true
 build_timeout_s = 3600
 timeout_s = 600

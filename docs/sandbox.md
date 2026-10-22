@@ -222,24 +222,21 @@ permits at most **27 handles**:
 
 The production counts and creator chains are committed in
 [`windows-handle-provenance.md`](../crates/basal-worker/tests/data/windows-handle-provenance.md).
-CI measurements counted 25 pre-input handles per production release worker
+CI measurements counted 26 pre-input handles per production release worker
 and traced their creators in a production build without test-only options that
 can weaken the worker's startup checks. The images were `win25-vs2026` version
-`20260925.250.1` and `win22` version `20261004.326.1`. An image change requires
+`20261007.264.1` and `win22` version `20261012.333.1`. An image change requires
 remeasurement, not an automatic widening of the allowlist. Production used six
 Event handles per image, one below each seven-Event ceiling.
 
 `\Device\CNG` is the kernel CNG device. `bcryptprimitives.dll`, which Rust's
-standard library imports for `ProcessPrng`, opens it while the process loads,
-with read access only, and keeps the process-private handle to fetch random
-seed material from the kernel. It closes the handle itself when it detaches
-during `ExitProcess`. If startup closed the handle first, that second close was
-an invalid-handle reference, so a worker that ended on its own sometimes died
-with `0xc0000008` and was counted as a confinement fault. The CNG row was
-measured on both images, in every worker of CI run
-[39707491078](https://github.com/cortexkit/basal/actions/runs/39707491078);
-the committed provenance measurement predates it and counts the other 25
-handles.
+standard library imports for `ProcessPrng`, opens it from its `DllMain` while
+the process loads (`GetCngHandle`, called to seed its root random number
+generator from the kernel), with read access only, and keeps the
+process-private handle. It closes the handle itself when it detaches during
+`ExitProcess`. If startup closed the handle first, that second close was an
+invalid-handle reference, so a worker that ended on its own sometimes died with
+`0xc0000008` and was counted as a confinement fault.
 
 `\KnownDlls` is shared and read-only (query and traverse). Every other residual
 object beyond stdio is unnamed and was private to the worker in the measured
