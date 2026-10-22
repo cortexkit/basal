@@ -1620,3 +1620,23 @@ old = '''fn protected_root_warning(field: &str, path: &str) -> Option<Warning> {
 new = '''fn protected_root_warning(_field: &str, _path: &str) -> Option<Warning> {
     None // NON-VACUITY BREAK
 }'''
+
+[[control]]
+id = "install-approval-supersedes-older-pending-card"
+guards = "approving a newer version settles older pending cards in the approval transaction"
+file = "crates/basal-core/src/install.rs"
+old = "supersede_older_pending_cards(tx, flow_id, version, now_ms)?;"
+new = "// NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-module/tests/install_policy.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test install_policy"
+expect_red = ["approving_v3_supersedes_an_older_pending_install_card"]
+only = true
+platforms = ["linux"]
+timeout_s = 600
+build_timeout_s = 3600
+
+[control.select]
+tests = ["approving_v3_supersedes_an_older_pending_install_card", "startup_supersedes_stale_pending_card_without_checking_core_or_warning"]

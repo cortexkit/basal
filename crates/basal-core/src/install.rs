@@ -865,6 +865,54 @@ pub fn record(
     })
 }
 
+/// Close older unanswered cards when a newer version makes their approval
+/// impossible. Recovery uses the same update for versions already approved
+/// before this process started.
+pub(crate) fn supersede_older_pending_cards(
+    tx: &Transaction,
+    flow_id: &str,
+    approved_version: u32,
+    now_ms: i64,
+) -> Result<()> {
+    let approved_version = version_i64(approved_version);
+    tx.execute(
+        "UPDATE installs SET state='superseded', approval_ref='basal:superseded', \
+             approval_kind='unknown', install_check_error=NULL \
+         WHERE flow_id=?1 AND version < ?2 AND state='validated' \
+           AND EXISTS (SELECT 1 FROM install_cards c \
+                       WHERE c.flow_id=installs.flow_id AND c.version=installs.version \
+                         AND c.state='pending')",
+        params![flow_id, approved_version],
+    )?;
+    tx.execute(
+        "UPDATE install_cards SET state='stale', decided_by='basal', decided_at=?3 \
+         WHERE flow_id=?1 AND version < ?2 AND state='pending'",
+        params![flow_id, approved_version, now_ms],
+    )?;
+    Ok(())
+}
+
+/// Mark a pending card stale when its installed version has already been superseded.
+pub(crate) fn supersede_pending_card(
+    tx: &Transaction,
+    flow_id: &str,
+    version: u32,
+    now_ms: i64,
+) -> Result<()> {
+    tx.execute(
+        "UPDATE installs SET state='superseded', approval_ref='basal:superseded', \
+             approval_kind='unknown', install_check_error=NULL \
+         WHERE flow_id=?1 AND version=?2 AND state='validated'",
+        params![flow_id, version_i64(version)],
+    )?;
+    tx.execute(
+        "UPDATE install_cards SET state='stale', decided_by='basal', decided_at=?3 \
+         WHERE flow_id=?1 AND version=?2 AND state='pending'",
+        params![flow_id, version_i64(version), now_ms],
+    )?;
+    Ok(())
+}
+
 /// Approves an installed version whose code hash is `code_hash`. The
 /// previously approved version is superseded; runs already admitted under
 /// it keep running it.
@@ -945,6 +993,7 @@ fn approve_with_resolved_agents(
                 .unwrap_or(version),
         });
     }
+    supersede_older_pending_cards(tx, flow_id, version, now_ms)?;
     tx.execute(
         "UPDATE installs SET state = 'superseded' WHERE flow_id = ?1 AND state = 'approved'",
         [flow_id],

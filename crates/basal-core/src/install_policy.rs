@@ -123,6 +123,7 @@ impl Runtime {
         }
         let now = self.config().clock.now_ms();
         let schedule = &self.config().schedule;
+        let mut superseded = false;
         let result = self.store().write(|tx| {
             let eligible: bool = tx.query_row("SELECT state='validated' AND revoked_at IS NULL AND NOT EXISTS (SELECT 1 FROM install_cards c WHERE c.flow_id=i.flow_id AND c.version=i.version AND c.state<>'pending') FROM installs i WHERE flow_id=?1 AND version=?2", params![flow_id, version], |r| r.get(0))?;
             if !eligible {
@@ -147,10 +148,20 @@ impl Runtime {
             // Approving the exact bytes also transfers ownership, initializes
             // schedules and clears a core-imposed disable. Commit those changes
             // with provenance and card settlement, so a crash cannot split them.
-            install::approve(tx, flow_id, version, hash, &reference, now, schedule).map_err(|e| match e {
-                install::InstallError::Store(e) => e,
-                other => CoreError::Invalid(other.to_string()),
-            })?;
+            match install::approve(tx, flow_id, version, hash, &reference, now, schedule) {
+                Ok(_) => {}
+                Err(install::InstallError::StaleVersion { approved, .. }) => {
+                    if approved > version {
+                        install::supersede_older_pending_cards(tx, flow_id, approved, now)?;
+                    } else {
+                        install::supersede_pending_card(tx, flow_id, version, now)?;
+                    }
+                    superseded = true;
+                    return Ok(());
+                }
+                Err(install::InstallError::Store(error)) => return Err(error),
+                Err(other) => return Err(CoreError::Invalid(other.to_string())),
+            }
             let (kind, rule) = match &approval {
                 Some(InstallApproval::Policy { rule }) => ("policy", Some(rule.as_str())),
                 Some(InstallApproval::Card) => ("card", None),
@@ -168,7 +179,7 @@ impl Runtime {
             Err(error) => Err(error),
             Ok(()) => {
                 self.shared.signal.bump();
-                Ok(true)
+                Ok(!superseded)
             }
         }
     }
@@ -254,6 +265,7 @@ impl Runtime {
     /// At startup, check each undecided card and each pending policy request
     /// once. Lost hints and lost request replies are recovered without polling.
     pub fn recover_cardless_installs(&self) -> Result<()> {
+        self.supersede_older_pending_cards()?;
         let pending = self.store().read(|c| {
             let mut stmt = c.prepare("SELECT i.flow_id,i.version,i.code_hash FROM installs i WHERE i.state='validated' AND i.revoked_at IS NULL AND NOT EXISTS (SELECT 1 FROM install_cards c WHERE c.flow_id=i.flow_id AND c.version=i.version AND c.state<>'pending') ORDER BY i.flow_id,i.version")?;
             Ok(stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, u32>(1)?, r.get::<_, Vec<u8>>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -270,5 +282,29 @@ impl Runtime {
             }
         }
         Ok(())
+    }
+
+    fn supersede_older_pending_cards(&self) -> Result<()> {
+        let now = self.config().clock.now_ms();
+        self.store().write(|tx| {
+            let approved = {
+                let mut stmt = tx.prepare(
+                    "SELECT f.flow_id, f.approved_version FROM flows f \
+                     WHERE f.approved_version IS NOT NULL AND EXISTS (\
+                         SELECT 1 FROM install_cards c \
+                         WHERE c.flow_id=f.flow_id AND c.state='pending' \
+                           AND c.version < f.approved_version) \
+                     ORDER BY f.flow_id",
+                )?;
+                stmt.query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+            };
+            for (flow_id, version) in approved {
+                install::supersede_older_pending_cards(tx, &flow_id, version, now)?;
+            }
+            Ok(())
+        })
     }
 }
