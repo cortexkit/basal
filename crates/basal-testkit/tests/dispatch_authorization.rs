@@ -280,6 +280,35 @@ fn a_compromised_worker_cannot_issue_tool() {
 }
 
 #[test]
+fn a_compromised_worker_cannot_issue_sleep() {
+    let world = World::new("auth-sleep-worker");
+    let rt = runtime(&world);
+    let run_id = admit(&rt, &world, "return 1;");
+    let mut real = world.source.spawn().expect("worker");
+    let killed = Arc::new(AtomicBool::new(false));
+    let mut fake = Compromised {
+        welcome: real.welcome().clone(),
+        activated: false,
+        killed: killed.clone(),
+        message: WorkerMessage::HostCall(HostCall {
+            position: 0,
+            kind: CallKind::Primitive(Primitive::Sleep),
+            args: JsonText::new("1000").expect("small"),
+        }),
+    };
+    real.kill();
+    let end = rt.activate(&run_id, &mut fake).expect("activation");
+    assert!(
+        matches!(&end, ActivationEnd::Failed { kind, .. } if kind == "profile_violation"),
+        "{end:?}"
+    );
+    assert!(killed.load(Ordering::SeqCst), "the worker was not killed");
+    assert!(rt.calls(&run_id).expect("calls").is_empty());
+    assert_eq!(query_i64(&rt, "SELECT COUNT(*) FROM call_audit"), 0);
+    assert_eq!(world.mock.total_sends(), 0);
+}
+
+#[test]
 fn a_compromised_worker_cannot_send_console() {
     let world = World::new("auth-console-worker");
     let rt = runtime(&world);

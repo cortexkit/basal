@@ -55,9 +55,9 @@ build_timeout_s = 3600
 # proofs run once on Linux; workspace gates run the tests on all three supported OSes.
 [[control]]
 id = "codemode-protocol-version"
-hub = "Both the protocol version assertion and the fixed Welcome wire fixture pin version 11"
+hub = "Both the protocol version assertion and the fixed Welcome wire fixture pin version 12"
 hub_targets = ["basal_proto"]
-guards = "the worker wire requires protocol version 11 to carry wait resolution primitive code 26"
+guards = "the worker wire requires protocol version 12 to carry the codemode sleep primitive code 27"
 test_file = "crates/basal-proto/src/lib.rs"
 runner = "cargo"
 package = "basal-proto"
@@ -66,8 +66,8 @@ target = "--lib"
 expect_red = ["tests::codemode_wire_codes_preserve_shell_and_round_trip_tool_json", "tests::confinement_wire_tags_and_linux_fields_are_stable"]
 only = true
 file = "crates/basal-proto/src/limits.rs"
-old = "pub const PROTOCOL_VERSION: u32 = 11;"
-new = "pub const PROTOCOL_VERSION: u32 = 10; // NON-VACUITY BREAK"
+old = "pub const PROTOCOL_VERSION: u32 = 12;"
+new = "pub const PROTOCOL_VERSION: u32 = 11; // NON-VACUITY BREAK"
 
 [[control]]
 id = "codemode-address-space-headroom"

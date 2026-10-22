@@ -905,6 +905,17 @@ impl Activation<'_> {
                 false,
             );
         }
+        // Codemode's sleep has no place in a flow: a flow activation is
+        // journaled and replayed, and the flow prelude never offers it, so a
+        // worker that sends one is compromised. It is stopped before anything
+        // is journaled.
+        if call.kind.is_sleep() {
+            return self.fail(
+                "profile_violation",
+                format!("{} is not available to flows", call.kind),
+                false,
+            );
+        }
         if call.position < self.next_position {
             return self.on_reissued_sync(call);
         }

@@ -279,3 +279,94 @@ fn prelude_primitive_calls_match_the_rust_wire_codes() {
         expected.map(CallKind::Primitive)
     );
 }
+
+/// The Rust side refuses `sleep` in the flow profile even when a script has
+/// reached the native bridge directly, and the flow prelude defines neither
+/// pause helper.
+#[test]
+fn raw_bridge_cannot_issue_sleep_in_flow_profile() {
+    let link = Rc::new(RefCell::new(EchoLink::default()));
+    let script = "try { await new Promise(() => __rawBridge.issuePrimitive(27, '1')); } \
+                  catch (e) { return 'caught'; } return 'issued';";
+    let result = run_activation_with_raw_bridge(&request(Profile::Flow, script), link.clone());
+    assert_eq!(
+        result,
+        ActivationResult::Failed(Failure::ProfileViolation {
+            kind: CallKind::Primitive(Primitive::Sleep)
+        })
+    );
+    assert!(link.borrow().issued.is_empty(), "sleep reached the host");
+    let globals = run_activation(
+        &request(Profile::Flow, "return [typeof sleep, typeof waitFor];"),
+        Rc::new(RefCell::new(EchoLink::default())),
+    );
+    assert_eq!(
+        globals,
+        ActivationResult::Completed {
+            value: JsonText::new("[\"undefined\",\"undefined\"]").unwrap()
+        }
+    );
+}
+
+#[test]
+fn codemode_sleep_issues_the_rust_sleep_primitive() {
+    let link = Rc::new(RefCell::new(EchoLink::default()));
+    let result = run_activation(
+        &request(Profile::Codemode, "return await sleep(7);"),
+        link.clone(),
+    );
+    assert_eq!(
+        result,
+        ActivationResult::Completed {
+            value: JsonText::null()
+        }
+    );
+    let issued = &link.borrow().issued;
+    assert_eq!(issued.len(), 1);
+    assert_eq!(issued[0].kind, CallKind::Primitive(Primitive::Sleep));
+    assert_eq!(issued[0].args.as_str(), "7");
+}
+
+/// Answers each wait only after spending CPU time on the worker's thread,
+/// standing in for a parent that takes a while to complete a sleep.
+#[derive(Default)]
+struct SpinLink(EchoLink);
+
+impl HostLink for SpinLink {
+    fn issue(&mut self, call: &HostCall) -> Result<(), LinkError> {
+        self.0.issue(call)
+    }
+
+    fn issue_sync(&mut self, call: &HostCall, order: Option<u64>) -> Result<Outcome, LinkError> {
+        self.0.issue_sync(call, order)
+    }
+
+    fn wait(&mut self, awaiting: &[u64], order: Option<u64>) -> Result<WaitReply, LinkError> {
+        let start = crate::clock::thread_cpu_time();
+        while crate::clock::thread_cpu_time() - start < std::time::Duration::from_millis(40) {
+            std::hint::spin_loop();
+        }
+        self.0.wait(awaiting, order)
+    }
+}
+
+/// Time the worker spends waiting for a sleep to complete is outside the
+/// engine, so it is not charged to the JavaScript CPU budget even when the
+/// waiting thread is busy.
+#[test]
+fn sleep_waits_do_not_spend_the_js_cpu_budget() {
+    let mut req = request(
+        Profile::Codemode,
+        "await sleep(10); await sleep(10); await sleep(10); return 3;",
+    );
+    req.budgets.js_time_micros = 20_000;
+    let link = Rc::new(RefCell::new(SpinLink::default()));
+    let result = run_activation(&req, link.clone());
+    assert_eq!(
+        result,
+        ActivationResult::Completed {
+            value: JsonText::new("3").unwrap()
+        }
+    );
+    assert_eq!(link.borrow().0.issued.len(), 3);
+}

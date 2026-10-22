@@ -275,8 +275,8 @@ fn running_reply_is_valid_content_with_no_error_flag() {
 
 #[test]
 fn running_reply_names_each_held_call_and_what_the_person_must_do() {
-    let hold = |position, tool: &str, reason: Option<&str>| Hold {
-        position,
+    let hold = |index, tool: &str, reason: Option<&str>| Hold {
+        index,
         tool: tool.into(),
         reason: reason.map(str::to_owned),
     };

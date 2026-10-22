@@ -312,7 +312,7 @@ write_card --prepared
 
     def test_protocol_change_selects_stop_the_world(self):
         self.store(7)
-        for staged, live in [(7, 1), (6, 7), (7, 8), (8, 7), (11, 10), (10, 11)]:
+        for staged, live in [(7, 1), (6, 7), (7, 8), (8, 7), (11, 10), (10, 11), (12, 11), (11, 12)]:
             with self.subTest(staged=staged, live=live):
                 self.write_worker(self.stage, staged, staged=True)
                 self.write_worker(self.live, live)
@@ -328,7 +328,7 @@ write_card --prepared
 
     def test_matching_protocol_keeps_rolling_update(self):
         self.store(7)
-        for protocol in [1, 7, 8, 11]:
+        for protocol in [1, 7, 8, 11, 12]:
             with self.subTest(protocol=protocol):
                 self.write_worker(self.stage, protocol, staged=True)
                 self.write_worker(self.live, protocol)

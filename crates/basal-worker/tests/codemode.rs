@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use basal_proto::{
     ActivationRequest, ActivationResult, BudgetKind, Budgets, CallKind, Failure, HostCall,
-    JsonText, MAX_VALUE_BYTES, Outcome, ParentMessage, PreludeHash, Profile, Settlement,
+    JsonText, MAX_VALUE_BYTES, Outcome, ParentMessage, PreludeHash, Primitive, Profile, Settlement,
     WorkerMessage,
 };
 use basal_testkit::WorkerProcess;
@@ -408,4 +408,141 @@ fn codemode_js_cpu_budget_stops_loops() {
     assert!(report.calls.is_empty());
     let control = run(request("let n=0; for (let i=0;i<1000;i++) n++; return n;"));
     assert_eq!(value(&control), json!(1000));
+}
+
+/// The sleeps a program asked the parent for, as their requested milliseconds.
+fn sleeps(report: &Report) -> Vec<u64> {
+    report
+        .calls
+        .iter()
+        .map(|call| {
+            assert_eq!(call.kind, CallKind::Primitive(Primitive::Sleep));
+            call.args.as_str().parse().expect("sleep takes an integer")
+        })
+        .collect()
+}
+
+#[test]
+fn codemode_sleep_takes_0_to_10000_ms_and_refuses_anything_else() {
+    let report = run(request(
+        r#"
+        const slept = [];
+        for (const ms of [0, 1, 10000]) slept.push(await sleep(ms));
+        const refused = [];
+        for (const ms of [-1, 10001, 1.5, NaN, Infinity, '5', undefined, null]) {
+            try { await sleep(ms); refused.push('slept'); }
+            catch (e) { refused.push(e instanceof RangeError ? e.message : String(e)); }
+        }
+        const fixed = ['sleep', 'waitFor'].map(name => {
+            const d = Object.getOwnPropertyDescriptor(globalThis, name);
+            return typeof d.value === 'function' && !d.writable && !d.configurable;
+        });
+        return [slept, refused, fixed];
+    "#,
+    ));
+    let message = "sleep(ms) takes an integer from 0 to 10000 milliseconds";
+    assert_eq!(
+        value(&report),
+        json!([[null, null, null], vec![message; 8], [true, true]])
+    );
+    assert_eq!(sleeps(&report), [0, 1, 10000]);
+}
+
+#[test]
+fn codemode_wait_for_returns_the_first_truthy_value() {
+    let report = run(request(
+        r#"
+        let n = 0;
+        const sync = await waitFor(() => { n++; return n >= 3 ? {n} : 0; });
+        let m = 0;
+        const later = await waitFor(async () => { m++; return m >= 2 && 'ready'; }, {interval: 300});
+        return [sync, later];
+    "#,
+    ));
+    assert_eq!(value(&report), json!([{"n": 3}, "ready"]));
+    assert_eq!(sleeps(&report), [500, 500, 300]);
+}
+
+#[test]
+fn codemode_wait_for_propagates_what_the_condition_throws() {
+    let report = run(request(
+        r#"
+        let n = 0;
+        try {
+            await waitFor(() => { n++; if (n === 2) { const e = new Error('boom'); e.code = 'mine'; throw e; } return false; });
+            return 'returned';
+        } catch (e) { return [e.message, e.code, n]; }
+    "#,
+    ));
+    assert_eq!(value(&report), json!(["boom", "mine", 2]));
+    assert_eq!(sleeps(&report), [500]);
+}
+
+#[test]
+fn codemode_wait_for_raises_intervals_below_250_ms_to_250() {
+    let report = run(request(
+        r#"
+        const out = [];
+        for (const interval of [1, 0, 249]) {
+            try { await waitFor(() => false, {timeout: 1000, interval}); out.push('returned'); }
+            catch (e) { out.push([e.code, e.message]); }
+        }
+        try { await waitFor(() => false, {interval: -1}); } catch (e) { out.push(e instanceof RangeError); }
+        return out;
+    "#,
+    ));
+    let gave_up = json!([
+        "wait_timeout",
+        "waitFor gave up after 1000 ms and 5 attempts"
+    ]);
+    assert_eq!(
+        value(&report),
+        json!([gave_up.clone(), gave_up.clone(), gave_up, true])
+    );
+    assert_eq!(sleeps(&report), [250; 12]);
+}
+
+#[test]
+fn codemode_wait_for_caps_the_timeout_at_30_seconds_and_names_its_attempts() {
+    let report = run(request(
+        r#"
+        const out = [];
+        let called = false;
+        try { await waitFor(() => { called = true; }, {timeout: 30001}); }
+        catch (e) { out.push([e instanceof RangeError, e.message, called]); }
+        for (const options of [undefined, {timeout: 30000, interval: 10000}, {timeout: 30000, interval: 20000}, {timeout: 0}]) {
+            try { await waitFor(() => false, options); out.push('returned'); }
+            catch (e) { out.push([e.code, e.message]); }
+        }
+        return out;
+    "#,
+    ));
+    assert_eq!(
+        value(&report),
+        json!([
+            [
+                true,
+                "waitFor timeout must be an integer from 0 to 30000 milliseconds",
+                false
+            ],
+            [
+                "wait_timeout",
+                "waitFor gave up after 30000 ms and 61 attempts"
+            ],
+            [
+                "wait_timeout",
+                "waitFor gave up after 30000 ms and 4 attempts"
+            ],
+            [
+                "wait_timeout",
+                "waitFor gave up after 30000 ms and 3 attempts"
+            ],
+            ["wait_timeout", "waitFor gave up after 0 ms and 1 attempt"]
+        ])
+    );
+    let mut expected = vec![500; 60];
+    // A 20 s interval is slept in sleeps of at most 10 s.
+    expected.extend([10000; 3]);
+    expected.extend([10000; 3]);
+    assert_eq!(sleeps(&report), expected);
 }

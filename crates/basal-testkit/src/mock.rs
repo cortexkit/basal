@@ -183,6 +183,8 @@ impl ScriptHost {
                     Settlement::Rejected,
                     text(&json!({"message": "synchronous call issued asynchronously"})),
                 ),
+                // A test parent completes a codemode pause at once.
+                Primitive::Sleep => ready(Settlement::Fulfilled, JsonText::null()),
                 // The built-ins echo their arguments: this parent has no
                 // manifest, so nothing here touches a file or the network.
                 Primitive::FsRead

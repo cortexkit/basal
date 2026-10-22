@@ -1732,3 +1732,38 @@ only = true
 file = "crates/basal-worker/src/codemode_prelude.js"
 old = "for (const key of ['code', 'outcome', 'detail']) {"
 new = "for (const key of ['code', 'outcome']) { // NON-VACUITY BREAK"
+
+# Codemode pauses: sleep's 10 s cap and waitFor's 250 ms interval floor.
+[[control]]
+id = "codemode-sleep-ten-second-cap"
+guards = "codemode sleep refuses more than 10,000 ms"
+test_file = "crates/basal-worker/tests/codemode.rs"
+runner = "cargo"
+package = "basal-worker"
+platforms = ["linux"]
+target = "--test codemode"
+expect_red = ["codemode_sleep_takes_0_to_10000_ms_and_refuses_anything_else"]
+only = true
+select = { tests = ["codemode_sleep_takes_0_to_10000_ms_and_refuses_anything_else", "codemode_wait_for_returns_the_first_truthy_value", "codemode_wait_for_propagates_what_the_condition_throws", "codemode_wait_for_raises_intervals_below_250_ms_to_250", "codemode_wait_for_caps_the_timeout_at_30_seconds_and_names_its_attempts"] }
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-worker/src/codemode_prelude.js"
+old = "ms > MAX_SLEEP_MS) {"
+new = "ms > MAX_SLEEP_MS + 1) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-wait-for-interval-floor"
+guards = "waitFor raises intervals below 250 ms to 250"
+test_file = "crates/basal-worker/tests/codemode.rs"
+runner = "cargo"
+package = "basal-worker"
+platforms = ["linux"]
+target = "--test codemode"
+expect_red = ["codemode_wait_for_raises_intervals_below_250_ms_to_250"]
+only = true
+select = { tests = ["codemode_sleep_takes_0_to_10000_ms_and_refuses_anything_else", "codemode_wait_for_returns_the_first_truthy_value", "codemode_wait_for_propagates_what_the_condition_throws", "codemode_wait_for_raises_intervals_below_250_ms_to_250", "codemode_wait_for_caps_the_timeout_at_30_seconds_and_names_its_attempts"] }
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-worker/src/codemode_prelude.js"
+old = "const MIN_INTERVAL_MS = 250;"
+new = "const MIN_INTERVAL_MS = 1; // NON-VACUITY BREAK"
