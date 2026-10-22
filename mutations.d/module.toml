@@ -2915,3 +2915,43 @@ expect_red = ["catalog_capability_filter_selects_flow_and_refuses_invalid_reques
 only = true
 timeout_s = 600
 build_timeout_s = 3600
+
+[[control]]
+id = "codemode-running-held-route-gate"
+guards = "unfinished keyed calls are held only when the route declares both content/v1 and held-reply/v1"
+file = "crates/basal-module/src/codemode.rs"
+old = "if cortexkit_role_tool_provider::consumer_reads_held_reply_v1(consumer_capabilities) {"
+new = "if cortexkit_role_tool_provider::consumer_reads_held_reply_v1(consumer_capabilities) || true { // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-module/tests/codemode.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test codemode"
+expect_red = ["running_reply_is_held_only_when_the_route_declared_both_capabilities"]
+only = true
+platforms = ["linux"]
+timeout_s = 600
+build_timeout_s = 3600
+
+[control.select]
+tests = ["running_reply_is_held_only_when_the_route_declared_both_capabilities", "running_reply_mirrors_the_consent_held_call_reason"]
+
+[[control]]
+id = "codemode-running-held-person-reason"
+guards = "unfinished keyed replies mirror the reason of a person-held call instead of always claiming running"
+file = "crates/basal-module/src/codemode.rs"
+old = ".find_map(|hold| hold.reason.as_deref())"
+new = '.find_map(|hold| hold.reason.as_deref().map(|_| "running")) // NON-VACUITY BREAK'
+edits = []
+test_file = "crates/basal-module/tests/codemode.rs"
+runner = "cargo"
+package = "basal-module"
+target = "--test codemode"
+expect_red = ["running_reply_mirrors_the_consent_held_call_reason"]
+only = true
+platforms = ["linux"]
+timeout_s = 600
+build_timeout_s = 3600
+
+[control.select]
+tests = ["running_reply_is_held_only_when_the_route_declared_both_capabilities", "running_reply_mirrors_the_consent_held_call_reason"]

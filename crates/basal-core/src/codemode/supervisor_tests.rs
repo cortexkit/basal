@@ -2467,16 +2467,10 @@ fn onward_content_results_map_structured_text_and_errors_and_reject_malformed_he
 }
 
 #[test]
-fn late_not_started_expired_unknown_and_error_results_are_terminal_without_retry() {
+fn late_not_started_expired_and_error_results_are_terminal_without_retry() {
     for (kind, result, outcome, code) in [
         ("not_started", None, Outcome::Withdrawn, "not_started"),
         ("expired", None, Outcome::OutcomeUnknown, "result_expired"),
-        (
-            "future_kind",
-            None,
-            Outcome::OutcomeUnknown,
-            "late_result_unknown",
-        ),
         (
             "result",
             Some(

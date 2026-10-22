@@ -259,7 +259,7 @@ fn oversized_console_and_summaries_truncate_text_explicitly_on_utf8_boundaries()
 
 #[test]
 fn running_reply_is_valid_content_with_no_error_flag() {
-    let result = running("codemode:example", &[]);
+    let result = running("codemode:example", &[], None);
     let decoded: ToolResult = serde_json::from_value(result.clone()).unwrap();
     validate(&decoded).unwrap();
     assert_eq!(
@@ -288,6 +288,7 @@ fn running_reply_names_each_held_call_and_what_the_person_must_do() {
             hold(4, "other", Some("site_review")),
             hold(5, "quiet", None),
         ],
+        None,
     );
     let decoded: ToolResult = serde_json::from_value(result.clone()).unwrap();
     validate(&decoded).unwrap();
@@ -300,6 +301,37 @@ fn running_reply_names_each_held_call_and_what_the_person_must_do() {
         json!({"status":"running","run_id":"codemode:example"})
     );
     assert!(result.get("isError").is_none());
+}
+
+#[test]
+fn held_running_reply_preserves_open_person_wait_reasons() {
+    let caps = vec!["content/v1".into(), "held-reply/v1".into()];
+    for reason in ["consent", "login_handoff", "login_capture", "site_review"] {
+        let result = running(
+            "codemode:example",
+            &[
+                Hold {
+                    index: 0,
+                    tool: "quiet".into(),
+                    reason: None,
+                },
+                Hold {
+                    index: 1,
+                    tool: "browser".into(),
+                    reason: Some(reason.into()),
+                },
+                Hold {
+                    index: 2,
+                    tool: "other".into(),
+                    reason: Some("later_person_action".into()),
+                },
+            ],
+            Some(&caps),
+        );
+        assert_eq!(result["held"]["reason"], reason);
+        let decoded: ToolResult = serde_json::from_value(result).unwrap();
+        validate(&decoded).unwrap();
+    }
 }
 
 #[test]

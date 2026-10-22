@@ -110,7 +110,9 @@ impl Module {
         };
         match self.codemode.wait(&id, timeout)? {
             Some(result) => Ok(result),
-            None if keyed => Ok(self.codemode.running(&id)),
+            None if keyed => Ok(self
+                .codemode
+                .running(&id, context.consumer_capabilities.as_deref())),
             None => Err(subc_protocol::ErrorBody::new(
                 "outcome_unknown",
                 "keyless reply was lost",

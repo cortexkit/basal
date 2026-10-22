@@ -365,6 +365,169 @@ fn call(rig: &Rig, key: &str, code: &str, wait: Duration) -> Value {
         .unwrap()
 }
 
+fn held_context() -> Context {
+    Context {
+        consumer_capabilities: Some(vec!["content/v1".into(), "held-reply/v1".into()]),
+        ..context()
+    }
+}
+
+#[test]
+fn running_reply_is_held_only_when_the_route_declared_both_capabilities() {
+    let rig = rig("running-held-gating", false);
+    let request = ToolCallRequest::new(
+        "codemode",
+        json!({"code":"return await tools.echo({n:42});"}),
+    )
+    .with_call_key("running-held");
+    rig.fixture
+        .module
+        .handle_tool(&context(), request.clone(), Duration::ZERO)
+        .unwrap();
+    rig.core.wait_sent(1);
+    rig.fixture.clock.advance(26_000);
+    for capabilities in [
+        None,
+        Some(vec![]),
+        Some(vec!["content/v1".into()]),
+        Some(vec!["held-reply/v1".into()]),
+        held_context().consumer_capabilities,
+    ] {
+        let supported = capabilities.as_ref().is_some_and(|caps| caps.len() == 2);
+        let context = Context {
+            consumer_capabilities: capabilities,
+            ..context()
+        };
+        let reply = rig
+            .fixture
+            .module
+            .handle_tool(&context, request.clone(), Duration::ZERO)
+            .unwrap();
+        assert_eq!(reply["structuredContent"]["status"], "running");
+        assert_eq!(
+            reply["structuredContent"]["run_id"],
+            basal_module::codemode::run_id("agent", "running-held")
+        );
+        assert_eq!(
+            reply.get("held"),
+            supported.then(|| json!({"reason":"running"})).as_ref()
+        );
+        assert!(
+            !reply["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("Waiting on the person")
+        );
+    }
+    rig.core.release();
+    let final_reply = rig
+        .fixture
+        .module
+        .handle_tool(&held_context(), request, Duration::from_secs(180))
+        .unwrap();
+    assert_eq!(final_reply["structuredContent"]["value"], json!({"n":42}));
+    assert!(final_reply.get("held").is_none());
+    let page = rig
+        .fixture
+        .module
+        .handle_tool(
+            &held_context(),
+            ToolCallRequest::new("late_results", json!({"since":null})),
+            Duration::ZERO,
+        )
+        .unwrap();
+    assert_eq!(page["entries"][0]["call_key"], "running-held");
+    assert_eq!(page["entries"][0]["result"], final_reply);
+}
+
+#[test]
+fn running_reply_mirrors_the_consent_held_call_reason() {
+    let rig = rig("running-held-consent", false);
+    rig.core.held_provider.store(true, Ordering::SeqCst);
+    rig.core.consent_provider.store(true, Ordering::SeqCst);
+    let request = ToolCallRequest::new(
+        "codemode",
+        json!({"code":"return await tools.echo({n:1});"}),
+    )
+    .with_call_key("person-held");
+    rig.fixture
+        .module
+        .handle_tool(&held_context(), request.clone(), Duration::ZERO)
+        .unwrap();
+    rig.core.wait_sent(1);
+    let state = rig.core.state.lock().unwrap();
+    let (state, timeout) = rig
+        .core
+        .changed
+        .wait_timeout_while(state, Duration::from_secs(180), |_| {
+            rig.core.late_reads.load(Ordering::SeqCst) == 0
+        })
+        .unwrap();
+    assert!(!timeout.timed_out(), "held call never reached late intake");
+    drop(state);
+    rig.fixture.clock.advance(26_000);
+    let reply = rig
+        .fixture
+        .module
+        .handle_tool(&held_context(), request.clone(), Duration::ZERO)
+        .unwrap();
+    rig.core.release();
+    rig.fixture
+        .module
+        .handle_tool(&held_context(), request, Duration::from_secs(180))
+        .unwrap();
+    assert_eq!(reply["held"], json!({"reason":"consent"}));
+    assert!(
+        reply["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("echo (call 1) needs their consent")
+    );
+}
+
+#[test]
+fn withdraw_by_original_key_cancels_a_running_held_reply() {
+    let rig = rig("running-held-withdraw", false);
+    let request = ToolCallRequest::new(
+        "codemode",
+        json!({"code":"return await tools.echo({n:1});"}),
+    )
+    .with_call_key("withdraw-held");
+    rig.fixture
+        .module
+        .handle_tool(&held_context(), request.clone(), Duration::ZERO)
+        .unwrap();
+    rig.core.wait_sent(1);
+    rig.fixture.clock.advance(26_000);
+    let reply = rig
+        .fixture
+        .module
+        .handle_tool(&held_context(), request.clone(), Duration::ZERO)
+        .unwrap();
+    assert_eq!(reply["held"]["reason"], "running");
+    let withdrawn = rig
+        .fixture
+        .module
+        .handle_tool(
+            &held_context(),
+            ToolCallRequest::new("tool.withdraw", json!({"call_key":"withdraw-held"})),
+            Duration::ZERO,
+        )
+        .unwrap();
+    assert_eq!(
+        withdrawn,
+        json!({"answer":"already_started","outcome":"unknown"})
+    );
+    let final_reply = rig
+        .fixture
+        .module
+        .handle_tool(&held_context(), request, Duration::ZERO)
+        .unwrap();
+    assert_eq!(final_reply["structuredContent"]["status"], "cancelled");
+    assert!(final_reply.get("held").is_none());
+    rig.core.release();
+}
+
 #[test]
 fn core_scope_shapes_and_stamp_mismatch_prevent_worker_start() {
     let rig = rig("tool-scope-mismatch", false);
@@ -464,7 +627,7 @@ fn keyless_calls_run_twice_have_no_withdrawal_or_late_result_and_warn() {
             .fixture
             .module
             .handle_tool(
-                &context(),
+                &held_context(),
                 ToolCallRequest::new(
                     "codemode",
                     json!({"code":"return await tools.echo({n:1});"}),
@@ -473,6 +636,7 @@ fn keyless_calls_run_twice_have_no_withdrawal_or_late_result_and_warn() {
             )
             .unwrap();
         assert_eq!(result["structuredContent"]["status"], "completed");
+        assert!(result.get("held").is_none());
         assert_eq!(result["structuredContent"]["keyless"], true);
         assert!(
             result["content"][0]["text"]

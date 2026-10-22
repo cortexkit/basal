@@ -2676,3 +2676,23 @@ only = true
 file = "crates/basal-core/src/codemode/supervisor.rs"
 old = "if rejections.contains_key(&position) =>"
 new = "if false && rejections.contains_key(&position) => // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-progress-entry-does-not-settle"
+guards = "progress and future non-result late entries do not settle or poison calls and the cursor advances past them"
+file = "crates/basal-core/src/codemode/custody.rs"
+old = "if !matches!("
+new = "if false && !matches!( // NON-VACUITY BREAK"
+edits = []
+test_file = "crates/basal-core/src/codemode/custody_intake_tests.rs"
+runner = "cargo"
+package = "basal-core"
+target = "--lib"
+expect_red = ["codemode::supervisor::held::intake_tests::progress_before_result_on_the_same_key_is_consumed_without_malformed_logging"]
+only = true
+platforms = ["linux"]
+timeout_s = 600
+build_timeout_s = 3600
+
+[control.select]
+tests = ["codemode::supervisor::held::intake_tests::progress_before_result_on_the_same_key_is_consumed_without_malformed_logging", "codemode::supervisor::held::intake_tests::malformed_entry_does_not_poison_the_following_valid_entry"]
