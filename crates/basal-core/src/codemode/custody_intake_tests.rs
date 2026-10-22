@@ -78,7 +78,39 @@ fn page(entries: Vec<Value>) -> Value {
     json!({"entries":entries,"cursor":{"provider_incarnation":"i1","seq":10},"more":false})
 }
 
-fn skip_entry(bad: Value) {
+#[derive(Clone, Default)]
+struct IntakeLogs(Arc<Mutex<Vec<(tracing::Level, String)>>>);
+
+impl tracing::Subscriber for IntakeLogs {
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        struct Message(String);
+        impl tracing::field::Visit for Message {
+            fn record_debug(&mut self, _: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                self.0.push_str(&format!("{value:?};"));
+            }
+        }
+        let mut message = Message(String::new());
+        event.record(&mut message);
+        self.0
+            .lock()
+            .unwrap()
+            .push((*event.metadata().level(), message.0));
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+fn skip_entry(bad: Value) -> Vec<(tracing::Level, String)> {
+    let logs = IntakeLogs::default();
+    let _subscriber = tracing::subscriber::set_default(logs.clone());
     let custody = Arc::new(Custody::default());
     let receiver = target(&custody, "a");
     let acked = Arc::new(AtomicUsize::new(0));
@@ -105,6 +137,9 @@ fn skip_entry(bad: Value) {
             Some(json!("good")),
             "bad identity entries must not be delivered"
         );
+        let mapped = held::map_entry(entry, None).unwrap();
+        assert_eq!(mapped.outcome, Outcome::Ok);
+        assert_eq!(mapped.value.unwrap().as_str(), "\"good\"");
         taking.remove("provider", "a", 0);
         ack.send(()).unwrap();
     });
@@ -119,6 +154,7 @@ fn skip_entry(bad: Value) {
         1,
         "the cursor advances past the skipped entry"
     );
+    logs.0.lock().unwrap().clone()
 }
 #[test]
 fn foreign_scope_entry_is_skipped_and_the_page_is_acked() {
@@ -134,7 +170,25 @@ fn foreign_custodian_entry_is_skipped_and_the_page_is_acked() {
 }
 #[test]
 fn malformed_entry_does_not_poison_the_following_valid_entry() {
-    skip_entry(json!({"kind":"result","result":"bad"}));
+    let logs = skip_entry(json!({"kind":"result","result":"bad"}));
+    assert!(logs.iter().any(
+        |(level, text)| *level == tracing::Level::WARN && text.contains("malformed late entry")
+    ));
+}
+
+#[test]
+fn progress_before_result_on_the_same_key_is_consumed_without_malformed_logging() {
+    for kind in ["progress", "future_update"] {
+        let mut progress = entry("a", "progress");
+        progress["kind"] = json!(kind);
+        progress.as_object_mut().unwrap().remove("result");
+        progress["text"] = json!("Still working");
+        let logs = skip_entry(progress);
+        assert_eq!(logs.len(), 1, "{logs:?}");
+        assert_eq!(logs[0].0, tracing::Level::DEBUG);
+        assert!(logs[0].1.contains("skipping non-terminal late entry"));
+        assert!(!logs[0].1.contains("malformed"));
+    }
 }
 
 #[test]

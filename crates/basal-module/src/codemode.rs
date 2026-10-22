@@ -232,8 +232,8 @@ impl Codemode {
 
     /// The reply for a keyed call whose program is still running when the
     /// foreground wait ends.
-    pub(crate) fn running(&self, id: &str) -> Value {
-        running(id, &self.supervisor.holds(id))
+    pub(crate) fn running(&self, id: &str, consumer_capabilities: Option<&[String]>) -> Value {
+        running(id, &self.supervisor.holds(id), consumer_capabilities)
     }
 
     pub(crate) fn cancel(&self, id: &str) -> Result<(), ErrorBody> {
@@ -591,18 +591,25 @@ fn running_text(holds: &[Hold]) -> String {
     )
 }
 
-pub(crate) fn running(id: &str, holds: &[Hold]) -> Value {
-    bounded_result(
-        cortexkit_role_tool_provider::result::ToolResult::new(vec![
-            cortexkit_role_tool_provider::result::ContentPart::text(running_text(holds)),
-        ])
-        .with_structured_content(
-            json!({"status":"running","run_id":id})
-                .as_object()
-                .unwrap()
-                .clone(),
-        ),
-    )
+pub(crate) fn running(id: &str, holds: &[Hold], consumer_capabilities: Option<&[String]>) -> Value {
+    let mut reply = cortexkit_role_tool_provider::result::ToolResult::new(vec![
+        cortexkit_role_tool_provider::result::ContentPart::text(running_text(holds)),
+    ])
+    .with_structured_content(
+        json!({"status":"running","run_id":id})
+            .as_object()
+            .unwrap()
+            .clone(),
+    );
+    if cortexkit_role_tool_provider::consumer_reads_held_reply_v1(consumer_capabilities) {
+        // Switch to the shared running reason constant once tool-provider publishes it.
+        let reason = holds
+            .iter()
+            .find_map(|hold| hold.reason.as_deref())
+            .unwrap_or("running");
+        reply = reply.with_held(cortexkit_role_tool_provider::result::HeldReply::new(reason));
+    }
+    bounded_result(reply)
 }
 
 fn serialized_size(value: &impl serde::Serialize) -> usize {

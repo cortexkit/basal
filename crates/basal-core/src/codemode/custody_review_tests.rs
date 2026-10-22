@@ -26,7 +26,7 @@ fn legacy_content_members_remain_opaque_in_direct_and_late_results() {
         100,
     )
     .with_result(body.clone());
-    let mapped = held::map_entry(entry, None);
+    let mapped = held::map_entry(entry, None).unwrap();
     assert_eq!(mapped.outcome, Outcome::Ok);
     assert_eq!(
         serde_json::from_str::<Value>(mapped.value.unwrap().as_str()).unwrap(),
@@ -147,6 +147,43 @@ fn final_run_completion_waits_for_a_successful_late_ack() {
     retry.reply.send(Ok(json!({}))).unwrap();
     assert_eq!(f.terminal()["status"], "completed");
     assert_eq!(f.calls()[0].outcome, Outcome::Ok);
+}
+
+#[test]
+fn progress_and_future_entries_before_the_result_do_not_settle_the_call() {
+    let f = Fixture::new();
+    let (call, pull) = f.provider_held();
+    let result = late_entry(
+        &call.key,
+        "final",
+        json!({"content":[{"type":"text","text":"done"}],"structuredContent":{"n":42}}),
+    );
+    let mut progress = result.clone();
+    progress["kind"] = json!("progress");
+    progress.as_object_mut().unwrap().remove("result");
+    progress["text"] = json!("Still working");
+    let mut future = progress.clone();
+    future["kind"] = json!("future_update");
+    // Reusing an event ID must not let a non-result hide the following result.
+    pull.reply
+        .send(Ok(late_page("i1", 3, vec![progress, future, result])))
+        .unwrap();
+    let delivery = f.delivery();
+    assert_eq!(delivery.settlement, Settlement::Fulfilled);
+    assert_eq!(
+        serde_json::from_str::<Value>(delivery.value.as_str()).unwrap(),
+        json!({"n":42})
+    );
+    let ack = f.custody_attempt("late_results.ack");
+    assert_eq!(
+        ack.input["through"],
+        json!({"provider_incarnation":"i1","seq":3})
+    );
+    ack.reply.send(Ok(json!({}))).unwrap();
+    f.finish("42");
+    assert_eq!(f.terminal()["status"], "completed");
+    assert_eq!(f.calls()[0].outcome, Outcome::Ok);
+    assert!(f.attempts.try_recv().is_err());
 }
 
 fn early_late(kind: &str) {

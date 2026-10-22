@@ -253,6 +253,7 @@ impl BasalHandler {
             return tool_outcome(outcome);
         }
         let keyed = request.call_key.is_some();
+        let consumer_capabilities = context.consumer_capabilities.clone();
         let cancellation = ctx.cancellation_token();
         let codemode = module.codemode.clone();
         let start = tokio::task::spawn_blocking(move || {
@@ -277,7 +278,7 @@ impl BasalHandler {
         tokio::select! {
             outcome = waiting => match outcome {
                 Ok(Ok(Some(result))) => tool_result_response(result, accepts_content_v1),
-                Ok(Ok(None)) if keyed => tool_result_response(module.codemode.running(&id), accepts_content_v1),
+                Ok(Ok(None)) if keyed => tool_result_response(module.codemode.running(&id, consumer_capabilities.as_deref()), accepts_content_v1),
                 Ok(Ok(None)) => tool_error(subc_protocol::ErrorBody::new("outcome_unknown","keyless codemode reply was lost")),
                 Ok(Err(error)) => tool_error(error),
                 Err(error) => tool_error(subc_protocol::ErrorBody::new("internal",error.to_string())),

@@ -394,6 +394,18 @@ impl Custody {
                     continue;
                 }
             };
+            if !matches!(
+                entry.kind(),
+                EntryKind::Result | EntryKind::NotStarted | EntryKind::Expired
+            ) {
+                // Consume progress and future non-result entries without ending the call.
+                tracing::debug!(
+                    provider = module,
+                    kind = entry.kind,
+                    "skipping non-terminal late entry"
+                );
+                continue;
+            }
             if entry.custodian != "reserved:basal" {
                 tracing::warn!(provider = module, "skipping foreign late-result custodian");
                 continue;

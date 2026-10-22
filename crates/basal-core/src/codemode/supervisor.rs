@@ -755,10 +755,13 @@ impl Driver {
                 Some(Event::Cancel(ack)) => self.cancel(ack)?,
                 Some(Event::Answer(answer)) => self.answer(answer)?,
                 Some(Event::LateAnswer { call, entry, ack }) => {
+                    let format = self.result_format(&call);
+                    let Some(mapped) = held::map_entry(entry, format.as_ref()) else {
+                        let _ = ack.send(());
+                        continue;
+                    };
                     self.mark_held(call.position, true)?;
                     self.mark_held(call.position, false)?;
-                    let format = self.result_format(&call);
-                    let mapped = held::map_entry(entry, format.as_ref());
                     self.settle_answer(
                         Answer {
                             call,

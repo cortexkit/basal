@@ -69,8 +69,8 @@ pub(super) use custody::{Custody, Target};
 pub(super) fn map_entry(
     entry: LateEntry,
     format: Option<&cortexkit_role_tool_provider::result::ResultFormat>,
-) -> Mapped {
-    match entry.kind() {
+) -> Option<Mapped> {
+    Some(match entry.kind() {
         EntryKind::NotStarted => {
             let mut mapped = Mapped::rejected(
                 Outcome::Withdrawn,
@@ -106,12 +106,12 @@ pub(super) fn map_entry(
             "result_expired",
             "provider result expired before intake",
         ),
-        EntryKind::Unknown(_) => Mapped::rejected(
-            Outcome::OutcomeUnknown,
-            "late_result_unknown",
-            "provider returned an unknown late entry kind",
-        ),
-    }
+        // Progress and future non-result kinds are consumed without settling the call.
+        _ => {
+            tracing::debug!(kind = entry.kind, "skipping non-terminal late entry");
+            return None;
+        }
+    })
 }
 
 /// Withdrawal is cleanup after a run stops, so it has a short independent

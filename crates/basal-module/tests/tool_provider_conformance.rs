@@ -45,6 +45,9 @@ struct MockCore {
     approval_capability: std::sync::atomic::AtomicBool,
     approval_queries: Mutex<Vec<String>>,
     consent: MockConsent,
+    action_gate: Mutex<Option<bool>>,
+    action_entered: tokio::sync::Notify,
+    action_changed: std::sync::Condvar,
 }
 impl Transport for MockCore {
     fn flow_read_exact(
@@ -150,6 +153,15 @@ impl Transport for MockCore {
         let path = std::path::PathBuf::from(input["path"].as_str().unwrap());
         assert!(path.starts_with(&self.marker_root));
         std::fs::write(path, b"executed").unwrap();
+        let gate = self.action_gate.lock().unwrap();
+        if gate.is_some() {
+            self.action_entered.notify_one();
+            let (_gate, timeout) = self
+                .action_changed
+                .wait_timeout_while(gate, HARNESS_WAIT, |gate| *gate == Some(false))
+                .unwrap();
+            assert!(!timeout.timed_out(), "tool action was never released");
+        }
         Ok(json!(42))
     }
 }
@@ -302,6 +314,7 @@ impl ToolRoute for Route {
 
 #[derive(Default)]
 struct Subject {
+    foreground: Option<Duration>,
     core: Mutex<Option<Arc<MockCore>>>,
     stopped: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
     // The provider runs inside this test binary, so the serving process's
@@ -432,7 +445,7 @@ impl Harness for Subject {
                 hooks: Arc::new(basal_core::NoHooks),
             }),
         )
-        .with_tool_foreground(Duration::from_millis(50))
+        .with_tool_foreground(self.foreground.unwrap_or(Duration::from_millis(50)))
         .with_store_failure_action({
             let store_failure = self.store_failure.clone();
             Box::new(move |why| {
@@ -611,6 +624,7 @@ impl ToolProviderSubject for Subject {
             Capability::CallKey,
             Capability::SchemaPin,
             Capability::HeldCalls,
+            Capability::HeldReplyV1,
             Capability::Cancellation,
             Capability::LateResults,
             Capability::CallModes,
@@ -747,8 +761,13 @@ async fn basal_tool_provider_conforms_for_declared_capabilities() {
             "late_results_ack",
             "crash_after_prepared_not_started",
             "crash_after_authorized_not_started",
-            // Basal consumes held replies but does not advertise provider-side
-            // approval execution or the held-reply capability on its own tool.
+            "user_commands_reply",
+            "user_commands_repeat",
+            "user_commands_codemode_refused",
+            "user_commands_flow_refused",
+            "user_commands_accepted_late",
+            // The shared held-reply case requires provider-owned approval execution;
+            // basal instead waits for providers and core to release their holds.
             "tool_result_held_reply_route_gating"
         ]
         .into_iter()
@@ -763,6 +782,80 @@ async fn content_route(subject: &Subject, live: &Live, stamp: RouteStamp) -> Rou
         .route_with_consumer_capabilities(live, &stamp, &["content/v1".into()])
         .await
         .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn real_route_running_held_reply_uses_bind_capabilities_and_retains_final_content() {
+    let root = common::scratch("running-held-route");
+    let subject = Subject {
+        foreground: Some(Duration::ZERO),
+        ..Default::default()
+    };
+    let live = subject.spawn(&root).await.unwrap();
+    for (index, caps) in [
+        vec![],
+        vec!["content/v1".into()],
+        vec!["held-reply/v1".into()],
+        vec!["held-reply/v1".into(), "content/v1".into()],
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let route = subject
+            .route_with_consumer_capabilities(&live, &principals().stamp("reserved:broca"), &caps)
+            .await
+            .unwrap();
+        let key = format!("running-route-{index}");
+        let marker = root.join(format!("action-{index}.marker"));
+        *live.core.action_gate.lock().unwrap() = Some(false);
+        let code = format!(
+            "return await tools.write_marker({{path:{}}});",
+            serde_json::to_string(&marker.to_string_lossy()).unwrap()
+        );
+        let request = json!({"name":"codemode","arguments":{"code":code},"call_key":key});
+        response(&route, request.clone()).await;
+        bounded("tool action entry", live.core.action_entered.notified()).await;
+        live.core.clock.advance(26_000);
+        let reply = response(&route, request).await;
+        assert_eq!(
+            reply.get("held"),
+            (index == 3).then(|| json!({"reason":"running"})).as_ref()
+        );
+        if caps.contains(&"content/v1".into()) {
+            assert_eq!(reply["structuredContent"]["status"], "running");
+            assert!(
+                reply["content"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Still running")
+            );
+        } else {
+            assert_eq!(reply["status"], "running");
+            assert!(reply["text"].as_str().unwrap().contains("Still running"));
+        }
+        *live.core.action_gate.lock().unwrap() = Some(true);
+        live.core.action_changed.notify_all();
+        let final_route =
+            content_route(&subject, &live, principals().stamp("reserved:broca")).await;
+        let final_reply = complete(&final_route, &key).await;
+        assert!(final_reply.get("held").is_none());
+        let page = response(
+            &final_route,
+            json!({"name":"late_results","arguments":{"since":null}}),
+        )
+        .await;
+        let entry = page["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["call_key"] == key)
+            .unwrap();
+        assert_eq!(entry["result"], final_reply);
+        assert_eq!(std::fs::read(marker).unwrap(), b"executed");
+    }
+    drop(live);
+    subject.join_stopped().await;
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 async fn response(route: &Route, body: Value) -> Value {

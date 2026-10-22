@@ -94,8 +94,16 @@ the run id, and `termination_reason` (the terminal status, including any budget
 suffix). Duration, call count and person-wait time are the run's budget
 accounting fields, not a separate CPU or token measurement.
 
-A keyed call that exceeds the foreground wait returns a valid content result
-with `structuredContent: {"status": "running", "run_id": "codemode:..."}`. Its
+A keyed call that exceeds the 25-second foreground wait returns an interim content
+result with `structuredContent: {"status": "running", "run_id": "codemode:..."}`.
+On a route that declared both `content/v1` and `held-reply/v1`, it also carries
+`held: {"reason": "running"}` so the custodian retrieves the final answer through
+`late_results`. When person-held calls have provider reasons, basal instead mirrors
+the first available reason in call order, including open provider reasons such
+as `consent`, `login_handoff` and `login_capture`; if none has a reason, it uses `running`. `running` means work continues
+without asking the person or agent to act. Without both route declarations,
+basal keeps the unmarked running reply (and the legacy shape without `content/v1`).
+Keyless calls wait for the final answer and never receive a held reply. The interim
 text names each call held on a person, for example `Waiting on the person:
 browser_use (call 2) needs their consent. The program resumes when they answer;
 a run waits on people for at most 10 minutes in total. When the program
