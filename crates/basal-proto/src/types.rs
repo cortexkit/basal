@@ -166,10 +166,15 @@ pub enum Primitive {
     GitDiff,
     NetFetch,
     InstanceEnd,
+    /// A codemode pause: the parent delivers `null` after the requested
+    /// milliseconds. The worker has no timers, so a program waits by asking
+    /// the parent. Flows never get it, because a flow activation is journaled
+    /// and replayed and a pause has no recorded outcome to replay.
+    Sleep,
 }
 
 impl Primitive {
-    pub const ALL: [Primitive; 24] = [
+    pub const ALL: [Primitive; 25] = [
         Self::Now,
         Self::Random,
         Self::Facts,
@@ -194,6 +199,7 @@ impl Primitive {
         Self::GitDiff,
         Self::NetFetch,
         Self::InstanceEnd,
+        Self::Sleep,
     ];
 
     /// The wire code. Zero is reserved for module ops in [`CallKind`].
@@ -223,6 +229,7 @@ impl Primitive {
             Self::InstanceEnd => 24,
             Self::SinkBoard => 25,
             Self::SinkWaitResolve => 26,
+            Self::Sleep => 27,
         }
     }
 
@@ -257,6 +264,7 @@ impl Primitive {
             Self::GitDiff => "git.diff",
             Self::NetFetch => "net.fetch",
             Self::InstanceEnd => "instance.end",
+            Self::Sleep => "sleep",
         }
     }
 
@@ -310,6 +318,11 @@ impl CallKind {
 
     pub fn is_shell(&self) -> bool {
         matches!(self, Self::Primitive(Primitive::Sh))
+    }
+
+    /// A codemode pause, which only the codemode profile may issue.
+    pub fn is_sleep(&self) -> bool {
+        matches!(self, Self::Primitive(Primitive::Sleep))
     }
 }
 

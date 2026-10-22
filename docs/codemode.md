@@ -4,6 +4,43 @@ Basal provides one agent-facing tool, `codemode({code, description?, limits?})`,
 
 A keyed call derives its run ID from the stamped agent and call key; retries attach without replay. A keyless call executes once under an OS-random ID and warns that its reply cannot be recovered. Basal's parent process (outside the confined worker) caps wall time at 30 minutes plus a separate cumulative 10 minutes waiting only on people: the worker must be blocked and every in-flight tool call waiting for a person's approval or decision. It closes the scope before cancellation kills its worker, and interrupts leftover runs at startup. Long keyed calls can return before the program finishes; `late_results` lets the caller retrieve the finished result later, and `tool.withdraw` cancels the run. Codemode runs on macOS, Linux and Windows under each OS's full worker confinement. See [the tool and role operations](ops.md#codemode).
 
+## Pauses
+
+The worker has no timers. A program pauses with two globals, defined before
+program code runs and not on `tools`, so no provider's tool name can clash
+with them:
+
+- `await sleep(ms)` waits `ms` milliseconds, an integer from 0 to 10,000;
+  anything else throws a `RangeError` naming the limit. The worker sends the
+  request to basal's parent, which completes it when the time has passed on
+  the run's clock. A sleep counts against the run's 30-minute wall time, never
+  against the 10 s JavaScript CPU budget or the 200-call budget, and has no
+  row in the call summary. If the wall deadline comes first, the run ends at
+  the deadline as `budget_exhausted:wall`; cancelling the run ends a sleep at
+  once. Time while a program is sleeping is never person-wait time, even when
+  its tool calls are all held on a person.
+- `await waitFor(condition, {timeout, interval})` calls `condition()` (which
+  may be async) and returns its first truthy value; an error `condition`
+  throws propagates unchanged. Between attempts it sleeps `interval` ms
+  (default 500; lower values are raised to 250), with the last sleep cut short
+  to end at the timeout. When an attempt returns a falsy value once `timeout`
+  ms have passed (default 30,000, at most 30,000; a larger value throws a
+  `RangeError`), it throws an `Error` whose `code` is `wait_timeout` and whose
+  message names the timeout and the number of attempts. Elapsed time is the larger of the time the
+  worker's clock shows has passed and the total time slept. Tool calls made inside `condition` count against
+  the call budget as usual.
+
+```js
+const view = await waitFor(async () => {
+  const snapshot = await tools.browser_use({action: "snapshot"});
+  return snapshot.title === "Done" && snapshot;
+}, {timeout: 20000, interval: 1000});
+```
+
+Flows have neither helper: a flow activation is journaled and replayed, and a
+pause has no outcome to replay. A flow worker that asks for a sleep is stopped
+with `profile_violation`.
+
 ## Results
 
 `codemode` opts into the fleet tool-provider `content/v1` contract through its
@@ -65,7 +102,7 @@ a run waits on people for at most 10 minutes in total. When the program
 finishes, basal retains its final result for this call.` Without held calls it
 reads `Still running: the program had not finished when this reply was due.`
 followed by the same last sentence. Call numbers count from 1 in the order the
-program made its calls. The final result is retrieved through `late_results`. Role-operation envelopes are not
+program made its tool calls; sleeps are not counted. The final result is retrieved through `late_results`. Role-operation envelopes are not
 themselves content results; their nested completed results are.
 
 ## Errors and refusals

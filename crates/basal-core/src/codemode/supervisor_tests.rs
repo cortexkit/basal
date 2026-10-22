@@ -2231,7 +2231,7 @@ fn provider_held_reply_stays_pending_until_late_value_and_counts_person_wait() {
     assert_eq!(
         f.supervisor.holds("r"),
         [Hold {
-            position: 0,
+            index: 0,
             tool: "read".into(),
             reason: Some("consent".into()),
         }]
@@ -2550,3 +2550,186 @@ fn wall_deadline_with_a_held_call_withdraws_even_when_worker_is_not_blocked() {
 
 #[path = "custody_review_tests.rs"]
 mod custody_review;
+
+impl Fixture {
+    fn sleep(&self, position: u64, args: &str) {
+        self.worker
+            .send(WorkerMessage::HostCall(HostCall {
+                position,
+                kind: CallKind::Primitive(Primitive::Sleep),
+                args: JsonText::new(args).unwrap(),
+            }))
+            .unwrap();
+    }
+
+    /// Returns once the driver has handled every event sent before this call.
+    /// Worker frames reach the driver in order and a manual clock move queues
+    /// its event before returning, so a console line stored after them proves
+    /// they were handled, without waiting on real time.
+    fn settled(&self, marker: &str) {
+        let line = format!("{marker}\n");
+        self.worker
+            .send(WorkerMessage::Console { line: line.clone() })
+            .unwrap();
+        let until = Instant::now() + TIMEOUT;
+        while !self.supervisor.result("r").unwrap().unwrap()["output"]
+            .as_str()
+            .unwrap()
+            .ends_with(&line)
+        {
+            assert!(Instant::now() < until, "{marker} was not stored");
+            thread::yield_now();
+        }
+    }
+}
+
+#[test]
+fn a_sleep_completes_when_the_clock_reaches_it_and_is_not_a_tool_call() {
+    let f = Fixture::new();
+    f.start(
+        &[("read", "notes", "read", json!({}))],
+        Limits {
+            tool_calls: 1,
+            ..Limits::default()
+        },
+        FAR_DEADLINE,
+    );
+    f.parent.recv_timeout(TIMEOUT).unwrap();
+    f.sleep(0, "250");
+    f.settled("issued");
+    assert!(
+        f.parent.try_recv().is_err(),
+        "the sleep ended before its time"
+    );
+    f.clock.advance(249);
+    f.settled("almost");
+    assert!(
+        f.parent.try_recv().is_err(),
+        "the sleep ended a millisecond early"
+    );
+    f.clock.advance(1);
+    let woke = f.delivery();
+    assert_eq!(
+        (woke.position, woke.settlement, woke.value.as_str()),
+        (0, Settlement::Fulfilled, "null")
+    );
+    // More sleeps still leave the whole one-call budget to the tool call.
+    f.sleep(1, "0");
+    assert_eq!(f.delivery().position, 1);
+    f.sleep(2, "10000");
+    f.settled("long");
+    f.clock.advance(10_000);
+    assert_eq!(f.delivery().position, 2);
+    assert!(f.calls().is_empty(), "a sleep wrote a call row");
+    f.issue(3, "read", json!({}));
+    f.attempt()
+        .reply
+        .send(Err(WireError::RefusedDetails {
+            code: "no_session".into(),
+            message: "No session.".into(),
+            detail: json!({}),
+        }))
+        .unwrap();
+    assert_eq!(f.delivery().settlement, Settlement::Rejected);
+    f.worker
+        .send(WorkerMessage::Finished {
+            activation_id: 1,
+            result: ActivationResult::Failed(Failure::ScriptHostRejection {
+                position: 3,
+                message: "HostError: No session.".into(),
+            }),
+        })
+        .unwrap();
+    let result = f.terminal();
+    // The first tool call is call 1, although three sleeps came before it.
+    assert_eq!(
+        result["error"],
+        json!({"code":"no_session","message":"read (call 1) failed: No session."})
+    );
+    assert_eq!(result["call_count"], 1);
+    assert_eq!(f.calls().len(), 1);
+    f.assert_order();
+}
+
+#[test]
+fn a_sleep_outside_0_to_10000_ms_from_the_worker_is_a_profile_violation() {
+    for args in ["10001", "-1", "1.5", "null", "\"5\""] {
+        let f = Fixture::new();
+        f.standard();
+        f.sleep(0, args);
+        let result = f.terminal();
+        assert_eq!(result["status"], "failed", "{args}");
+        assert_eq!(result["error"]["code"], "profile_violation", "{args}");
+        assert!(f.calls().is_empty());
+        f.assert_order();
+    }
+}
+
+#[test]
+fn a_sleep_running_past_the_wall_deadline_ends_the_run_as_wall_exhausted() {
+    let f = Fixture::new();
+    f.start(
+        &[("read", "notes", "read", json!({}))],
+        Limits::default(),
+        1_000,
+    );
+    f.parent.recv_timeout(TIMEOUT).unwrap();
+    f.sleep(0, "10000");
+    f.settled("sleeping");
+    f.clock.set(999);
+    f.settled("before the deadline");
+    assert!(f.parent.try_recv().is_err());
+    // The clock reaches the sleep's own end too, but the deadline came first.
+    f.clock.set(10_100);
+    let result = f.terminal();
+    assert_eq!(result["status"], "budget_exhausted:wall");
+    assert_eq!(result["error"]["code"], "budget_exhausted:wall");
+    f.assert_order();
+    assert!(
+        !matches!(f.parent.try_recv(), Ok(ParentMessage::Deliver(_))),
+        "the sleep was completed after the deadline"
+    );
+}
+
+#[test]
+fn cancelling_a_run_ends_its_sleep_at_once() {
+    let f = Fixture::new();
+    f.standard();
+    f.sleep(0, "10000");
+    f.settled("sleeping");
+    let result = f.supervisor.cancel("r").unwrap().unwrap();
+    assert_eq!(result["status"], "cancelled");
+    assert_eq!(f.clock.now_ms(), 100, "the cancel needed no clock move");
+    f.assert_order();
+    assert!(
+        !matches!(f.parent.try_recv(), Ok(ParentMessage::Deliver(_))),
+        "a cancelled sleep was completed"
+    );
+}
+
+#[test]
+fn a_pending_sleep_keeps_held_time_off_the_person_wait_budget() {
+    let f = Fixture::new();
+    f.start(
+        &[("read", "notes", "read", json!({}))],
+        Limits::default(),
+        FAR_DEADLINE,
+    );
+    f.parent.recv_timeout(TIMEOUT).unwrap();
+    f.issue(0, "read", json!({}));
+    let held = f.attempt();
+    f.supervisor.held("r", 0, true).unwrap();
+    f.sleep(1, "10000");
+    block_worker(&f);
+    // Every tool call is held on a person, but the program is also sleeping,
+    // so this time is the program's own wait, not the person's.
+    f.clock.advance(5_000);
+    f.supervisor.held("r", 0, true).unwrap();
+    f.clock.advance(5_000);
+    assert_eq!(f.delivery().position, 1);
+    f.supervisor.held("r", 0, false).unwrap();
+    held.reply.send(Ok(json!(1))).unwrap();
+    assert_eq!(f.delivery().position, 0);
+    f.finish("1");
+    assert_eq!(f.terminal()["person_wait_ms"], 0);
+}

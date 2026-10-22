@@ -84,7 +84,7 @@ mod tests {
 
     #[test]
     fn codemode_wire_codes_preserve_shell_and_round_trip_tool_json() {
-        assert_eq!(PROTOCOL_VERSION, 11);
+        assert_eq!(PROTOCOL_VERSION, 12);
         // Checked at run time, not in a const block, so lowering the ceiling
         // fails this test instead of the build, and the mutation control for
         // the ceiling sees a red test.
@@ -322,8 +322,8 @@ mod tests {
     }
 
     fn confinement_payload(suffix: &[u8]) -> Vec<u8> {
-        // A version-11 Welcome with an empty engine name and two zero hashes.
-        let mut payload = vec![101, 0, 0, 0, 11, 0, 0, 0, 0];
+        // A version-12 Welcome with an empty engine name and two zero hashes.
+        let mut payload = vec![101, 0, 0, 0, 12, 0, 0, 0, 0];
         payload.extend_from_slice(&[0; 64]);
         payload.extend_from_slice(suffix);
         payload
@@ -643,6 +643,22 @@ mod tests {
                 field: "delivered value"
             })
         );
+    }
+
+    #[test]
+    fn sleep_has_its_own_wire_code_and_is_asynchronous() {
+        assert_eq!(Primitive::Sleep.code(), 27);
+        assert_eq!(Primitive::from_code(27), Some(Primitive::Sleep));
+        assert!(CallKind::Primitive(Primitive::Sleep).is_sleep());
+        assert!(!CallKind::Primitive(Primitive::Sh).is_sleep());
+        let message = WorkerMessage::HostCall(HostCall {
+            position: 3,
+            kind: CallKind::Primitive(Primitive::Sleep),
+            args: text("250"),
+        });
+        let frame = encode_worker_frame(&message).unwrap();
+        assert_eq!(frame[13], 27);
+        assert_eq!(read_worker_message(&mut frame.as_slice()).unwrap(), message);
     }
 
     #[test]

@@ -1,8 +1,10 @@
-// The codemode environment has only catalog tools and console output. Native
-// entry points and pending promises stay private to this activation's closure.
+// The codemode environment has only catalog tools, console output and the
+// sleep and waitFor pauses. Native entry points and pending promises stay
+// private to this activation's closure.
 (function (native, names) {
   'use strict';
   const issueTool = native.issueTool;
+  const issuePrimitive = native.issuePrimitive;
   const emitConsole = native.console;
   const G = globalThis;
   const define = Object.defineProperty;
@@ -15,6 +17,9 @@
   const stringify = JSON.stringify;
   const StringCtor = String;
   const NumberCtor = Number;
+  const isInteger = Number.isInteger;
+  const mathMax = Math.max;
+  const mathMin = Math.min;
   const ErrorCtor = Error;
   const TypeErrorCtor = TypeError;
   const RangeErrorCtor = RangeError;
@@ -194,6 +199,68 @@
     emitConsole(parts.join(' ') + '\n');
   }, enumerable: true });
   define(G, 'console', { value: console, writable: false, configurable: false });
+
+  // Pauses. The worker has no timers, so `sleep` asks the parent, which
+  // delivers null once the time has passed on the run's wall clock. A sleep
+  // uses neither the JavaScript CPU budget nor the tool-call budget.
+  const SLEEP_PRIMITIVE = 27; // Primitive::Sleep's wire code in basal-proto.
+  const MAX_SLEEP_MS = 10000;
+  const MAX_WAIT_MS = 30000;
+  const MIN_INTERVAL_MS = 250;
+  function pause(ms) {
+    return register(issuePrimitive(SLEEP_PRIMITIVE, StringCtor(ms)), 'sleep');
+  }
+  define(G, 'sleep', { value: async function sleep(ms) {
+    if (!isInteger(ms) || ms < 0 || ms > MAX_SLEEP_MS) {
+      throw new RangeErrorCtor('sleep(ms) takes an integer from 0 to ' + MAX_SLEEP_MS + ' milliseconds');
+    }
+    await pause(ms);
+  }, writable: false, configurable: false });
+  function waitTimeout(timeout, attempts) {
+    const error = new ErrorCtor('waitFor gave up after ' + timeout + ' ms and ' + attempts +
+      (attempts === 1 ? ' attempt' : ' attempts'));
+    define(error, 'code', { value: 'wait_timeout', writable: true, enumerable: true, configurable: true });
+    return error;
+  }
+  // Calls `condition` until it returns a truthy value, sleeping up to
+  // `interval` ms between attempts (never past the timeout). When an attempt
+  // returns a falsy value after `timeout` ms have passed, it gives up. Elapsed
+  // time is the larger of the worker clock's reading and the total time
+  // slept, so the deadline holds even when a test parent completes sleeps at
+  // once.
+  define(G, 'waitFor', { value: async function waitFor(condition, options) {
+    if (typeof condition !== 'function') throw new TypeErrorCtor('waitFor(condition) takes a function');
+    let timeout = MAX_WAIT_MS;
+    let interval = 500;
+    if (options !== undefined && options !== null) {
+      if (options.timeout !== undefined) timeout = options.timeout;
+      if (options.interval !== undefined) interval = options.interval;
+    }
+    if (!isInteger(timeout) || timeout < 0 || timeout > MAX_WAIT_MS) {
+      throw new RangeErrorCtor('waitFor timeout must be an integer from 0 to ' + MAX_WAIT_MS + ' milliseconds');
+    }
+    if (!isInteger(interval) || interval < 0) {
+      throw new RangeErrorCtor('waitFor interval must be a non-negative integer of milliseconds');
+    }
+    interval = mathMax(interval, MIN_INTERVAL_MS);
+    const start = nativeNow();
+    let slept = 0;
+    let attempts = 0;
+    for (;;) {
+      attempts++;
+      const value = await condition();
+      if (value) return value;
+      const remaining = timeout - mathMax(nativeNow() - start, slept);
+      if (remaining <= 0) throw waitTimeout(timeout, attempts);
+      let step = mathMin(interval, remaining);
+      slept += step;
+      while (step > 0) {
+        const chunk = mathMin(step, MAX_SLEEP_MS);
+        await pause(chunk);
+        step -= chunk;
+      }
+    }
+  }, writable: false, configurable: false });
 
   // Permit ordinary Error subclasses and own Object-method overrides without
   // making the shared prototypes writable after the worker hardens the roots.

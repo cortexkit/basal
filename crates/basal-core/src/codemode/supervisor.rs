@@ -43,6 +43,10 @@ use crate::store::Store;
 const IN_FLIGHT: usize = 8;
 const QUEUED_BYTES: usize = 4 * 1024 * 1024;
 const RESULT_BYTES: usize = 16_384;
+/// The longest single `sleep` a program may ask for. The worker's prelude
+/// refuses longer ones; the parent checks again, so a worker that bypassed
+/// the prelude cannot hold a longer pause.
+const MAX_SLEEP_MS: u64 = 10_000;
 
 /// Everything that can wake a run's driver, in the order it happened.
 enum Event {
@@ -159,8 +163,9 @@ pub type TerminalHook = dyn Fn(&str, Value) -> Result<()> + Send + Sync;
 /// A tool call a running program is awaiting while a person decides.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hold {
-    /// The call's zero-based position in the run.
-    pub position: u64,
+    /// The call's zero-based index among the run's tool calls, in the order
+    /// the program made them. Sleeps are not counted.
+    pub index: u64,
     pub tool: String,
     /// The provider's snake_case reason, such as `consent`, when its held
     /// reply named one.
@@ -579,6 +584,13 @@ struct Driver {
     rejections: BTreeMap<u64, Rejection>,
     /// The reason each provider gave when it held a call on a person.
     hold_reasons: BTreeMap<u64, String>,
+    /// Pending sleeps as (due time on the run's clock, position), earliest
+    /// first. The driver's event wait ends at the earliest one.
+    sleeps: BTreeSet<(i64, u64)>,
+    /// Each tool call's 1-based number among the run's tool calls. Sleeps
+    /// take positions too, so messages number tool calls from this map
+    /// rather than from positions.
+    tool_numbers: BTreeMap<u64, u64>,
     blocked: bool,
     person_wait_ms: i64,
     last_tick_ms: i64,
@@ -620,6 +632,8 @@ impl Driver {
             tool_calls: BTreeMap::new(),
             rejections: BTreeMap::new(),
             hold_reasons: BTreeMap::new(),
+            sleeps: BTreeSet::new(),
+            tool_numbers: BTreeMap::new(),
             blocked: false,
             person_wait_ms: 0,
             last_tick_ms,
@@ -718,6 +732,10 @@ impl Driver {
             if self.wall()? {
                 break;
             }
+            self.wake_sleepers()?;
+            if self.stopping {
+                break;
+            }
             self.drain()?;
             if self.stopping {
                 break;
@@ -799,18 +817,23 @@ impl Driver {
         Ok(())
     }
 
-    /// Sleeps until an event or the injected wall deadline. Provider intake
-    /// workers own their polling timers; the driver wakes on their deliveries.
+    /// Sleeps until an event, the applicable deadline (the injected wall
+    /// deadline, or the person-wait budget while only people are awaited) or
+    /// the earliest program sleep falling due. Provider intake workers own their polling
+    /// timers; the driver wakes on their deliveries.
     fn next_event(&mut self) -> Option<Event> {
-        let remaining = if self.person_only() {
+        let deadline = if self.person_only() {
             basal_host::run_scope::PERSON_WAIT_MS.saturating_sub(self.person_wait_ms)
         } else {
             self.start
                 .wall_deadline_ms
                 .saturating_add(self.person_wait_ms)
                 .saturating_sub(self.shared.clock.now_ms())
-        }
-        .max(0);
+        };
+        let sleep = self.sleeps.first().map_or(i64::MAX, |(due, _)| {
+            due.saturating_sub(self.shared.clock.now_ms())
+        });
+        let remaining = deadline.min(sleep).max(0);
         let wait = Duration::from_millis(remaining as u64);
         let event = self.events.recv_timeout(wait).ok();
         #[cfg(test)]
@@ -905,7 +928,7 @@ impl Driver {
                         .or_default()
                         .entry(position)
                         .or_insert_with(|| Hold {
-                            position,
+                            index: self.tool_numbers.get(&position).map_or(position, |n| n - 1),
                             tool: name.clone(),
                             reason: self.hold_reasons.get(&position).cloned(),
                         });
@@ -1198,8 +1221,62 @@ impl Driver {
         Ok(self.stopping)
     }
 
+    /// Whether the program is waiting only on people. A pending sleep is the
+    /// program's own wait, so it keeps the time on the wall budget.
     fn person_only(&self) -> bool {
-        self.blocked && self.in_flight > 0 && self.held_positions.len() == self.in_flight
+        self.blocked
+            && self.in_flight > 0
+            && self.held_positions.len() == self.in_flight
+            && self.sleeps.is_empty()
+    }
+
+    /// Starts a program sleep. It is not a tool call: it has no call row and
+    /// counts against neither the call budget nor the worker's CPU budget,
+    /// only the run's wall time, which `wall` checks before any sleep is
+    /// woken, so a sleep running past the deadline ends the run there.
+    fn sleep(&mut self, call: HostCall) -> Result<()> {
+        let ms = serde_json::from_str::<Value>(call.args.as_str())
+            .ok()
+            .and_then(|value| value.as_u64())
+            .filter(|ms| *ms <= MAX_SLEEP_MS);
+        let Some(ms) = ms else {
+            return self.end(failed(
+                "profile_violation",
+                format!("sleep takes an integer from 0 to {MAX_SLEEP_MS} milliseconds"),
+            ));
+        };
+        let due = self.shared.clock.now_ms().saturating_add(ms as i64);
+        self.sleeps.insert((due, call.position));
+        Ok(())
+    }
+
+    /// Completes every sleep whose time has come, earliest first.
+    fn wake_sleepers(&mut self) -> Result<()> {
+        let now = self.shared.clock.now_ms();
+        while let Some(&(due, position)) = self.sleeps.first() {
+            if due > now || self.stopping {
+                break;
+            }
+            self.sleeps.pop_first();
+            self.blocked = false;
+            #[cfg(test)]
+            self.shared.worker_blocked.store(false, Ordering::SeqCst);
+            self.delivery_order += 1;
+            if let Err(error) =
+                self.worker
+                    .as_mut()
+                    .unwrap()
+                    .send(&ParentMessage::Deliver(Delivery {
+                        position,
+                        settlement: Settlement::Fulfilled,
+                        value: JsonText::null(),
+                        delivery_order: self.delivery_order,
+                    }))
+            {
+                self.end(failed("worker_lost", error.to_string()))?;
+            }
+        }
+        Ok(())
     }
 
     fn message(&mut self, message: WorkerMessage) -> Result<()> {
@@ -1268,6 +1345,9 @@ impl Driver {
     }
 
     fn call(&mut self, call: HostCall) -> Result<()> {
+        if call.kind.is_sleep() {
+            return self.sleep(call);
+        }
         let CallKind::Tool { name } = &call.kind else {
             return self.end(failed(
                 "profile_violation",
@@ -1275,6 +1355,7 @@ impl Driver {
             ));
         };
         self.invocations += 1;
+        self.tool_numbers.insert(call.position, self.invocations);
         self.shared.store.write(|tx| {
             tx.execute(
                 "UPDATE codemode_runs SET tool_call_count=?2 WHERE run_id=?1 AND status='running'",
@@ -1623,7 +1704,10 @@ impl Driver {
                     code: mapped.code.clone().unwrap_or_else(|| "tool_error".into()),
                     message: rejection_message(
                         name,
-                        call.position,
+                        self.tool_numbers
+                            .get(&call.position)
+                            .copied()
+                            .unwrap_or(call.position + 1),
                         &mapped.message,
                         mapped.reason.as_deref(),
                     ),
@@ -1982,7 +2066,8 @@ struct Rejection {
 /// readable line of bounded size.
 const REJECTION_MESSAGE_BYTES: usize = 4096;
 
-fn rejection_message(tool: &str, position: u64, message: &str, reason: Option<&str>) -> String {
+/// `number` is the call's 1-based number among the run's tool calls.
+fn rejection_message(tool: &str, number: u64, message: &str, reason: Option<&str>) -> String {
     let mut text = message
         .lines()
         .map(str::trim)
@@ -2010,9 +2095,9 @@ fn rejection_message(tool: &str, position: u64, message: &str, reason: Option<&s
         text.push('…');
     }
     if text.is_empty() {
-        format!("{tool} (call {}) failed.", position + 1)
+        format!("{tool} (call {number}) failed.")
     } else {
-        format!("{tool} (call {}) failed: {text}", position + 1)
+        format!("{tool} (call {number}) failed: {text}")
     }
 }
 

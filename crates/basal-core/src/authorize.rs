@@ -260,6 +260,10 @@ pub fn check(
                 }
             }
             Primitive::Sh => Err(Refusal::denied("sh is not available to flows")),
+            Primitive::Sleep => Err(Refusal::new(
+                "profile_violation",
+                "sleep is not available to flows",
+            )),
             Primitive::Facts => {
                 let agent = agent_arg(args, *p)?;
                 let Some(grant) = &manifest.facts else {

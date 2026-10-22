@@ -231,11 +231,11 @@ impl Shared {
                 detail: "call issued after the activation halted".into(),
             }));
         }
-        // Unattended flows must never reach a shell. The prelude does not
-        // install the `sh` global in the flow profile; this check refuses a
-        // shell call again in case a script reaches the native bridge by some
-        // other route.
-        if bridge.profile == Profile::Flow && kind.is_shell() {
+        // Unattended flows must never reach a shell, and never sleep: a flow
+        // activation is journaled and replayed, and a pause has nothing to
+        // replay. The flow prelude installs neither; this check refuses both
+        // again in case a script reaches the native bridge by some other route.
+        if bridge.profile == Profile::Flow && (kind.is_shell() || kind.is_sleep()) {
             return Err(failed(Failure::ProfileViolation { kind }));
         }
         if args.len() > bridge.max_value {

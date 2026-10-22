@@ -579,7 +579,7 @@ fn running_text(holds: &[Hold]) -> String {
             format!(
                 "{} (call {}) {}",
                 hold.tool,
-                hold.position + 1,
+                hold.index + 1,
                 held_need(hold.reason.as_deref())
             )
         })
