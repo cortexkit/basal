@@ -2661,3 +2661,18 @@ timeout_s = 600
 file = "crates/basal-host/src/run_scope.rs"
 old = "let hint = if catalog_read_may_recover(error) {"
 new = "let hint = if true || catalog_read_may_recover(error) { // NON-VACUITY BREAK"
+
+[[control]]
+id = "codemode-uncaught-rejection-tool-code"
+guards = "a program ending on an uncaught tool rejection reports that call's tool, position, code and message as plain text"
+test_file = "crates/basal-core/src/codemode/supervisor_tests.rs"
+runner = "cargo"
+package = "basal-core"
+platforms = ["linux"]
+target = "--lib"
+select = { tests = ["codemode::supervisor::tests::uncaught_tool_rejection_ends_the_run_with_the_provider_code_as_plain_text", "codemode::supervisor::tests::script_error_is_the_plain_javascript_message"] }
+expect_red = ["codemode::supervisor::tests::uncaught_tool_rejection_ends_the_run_with_the_provider_code_as_plain_text"]
+only = true
+file = "crates/basal-core/src/codemode/supervisor.rs"
+old = "if rejections.contains_key(&position) =>"
+new = "if false && rejections.contains_key(&position) => // NON-VACUITY BREAK"

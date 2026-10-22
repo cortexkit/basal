@@ -577,6 +577,8 @@ struct Driver {
     /// The tool, provider code and message of each call that rejected, so a
     /// program ending on an uncaught rejection reports them as plain text.
     rejections: BTreeMap<u64, Rejection>,
+    /// The reason each provider gave when it held a call on a person.
+    hold_reasons: BTreeMap<u64, String>,
     blocked: bool,
     person_wait_ms: i64,
     last_tick_ms: i64,
@@ -617,6 +619,7 @@ impl Driver {
             held_positions: BTreeSet::new(),
             tool_calls: BTreeMap::new(),
             rejections: BTreeMap::new(),
+            hold_reasons: BTreeMap::new(),
             blocked: false,
             person_wait_ms: 0,
             last_tick_ms,
@@ -904,7 +907,7 @@ impl Driver {
                         .or_insert_with(|| Hold {
                             position,
                             tool: name.clone(),
-                            reason: None,
+                            reason: self.hold_reasons.get(&position).cloned(),
                         });
                 }
                 self.shared.store.write(|tx| {
@@ -1043,17 +1046,8 @@ impl Driver {
                     if self.wall()? {
                         return Ok(());
                     }
+                    self.hold_reasons.insert(answer.call.position, reason);
                     self.mark_held(answer.call.position, true)?;
-                    if let Some(hold) = self
-                        .shared
-                        .holds
-                        .lock()
-                        .unwrap()
-                        .get_mut(&self.run.run_id)
-                        .and_then(|run| run.get_mut(&answer.call.position))
-                    {
-                        hold.reason = Some(reason);
-                    }
                     self.start_intake(answer.call.position)?;
                     return Ok(());
                 }
@@ -1076,6 +1070,7 @@ impl Driver {
         self.flight_positions.remove(&answer.call.position);
         self.held_positions.remove(&answer.call.position);
         self.forget_hold(answer.call.position);
+        self.hold_reasons.remove(&answer.call.position);
         if let Some((module, _)) = self.tool_calls.remove(&answer.call.position) {
             self.shared
                 .custody

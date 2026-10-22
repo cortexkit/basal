@@ -37,8 +37,11 @@ result body:
 Consumers build model input from ordered `content` parts only, never from
 `structuredContent`. Codemode emits one text part. For a run that fits the
 size bound it holds, in order: the status/duration/call-count/person-wait line,
-the error if present, the JSON return value if present, console output, the
-call-summary table, then warnings. The JSON return value is capped at 16 KiB and
+the error if present (`Error (<code>): <message>`, plus an `Error detail:` line
+with the provider detail as JSON when there is one), the JSON return value if
+present, console output under `Output:` when there is any, the call-summary
+table (a header, a `--- | --- | --- | ---` separator and one row per call) when
+the program made calls, then warnings. The JSON return value is capped at 16 KiB and
 console output at 64 KiB by the worker. No text is synthesized from the machine
 fields by the consumer.
 
@@ -49,9 +52,14 @@ suffix). Duration, call count and person-wait time are the run's budget
 accounting fields, not a separate CPU or token measurement.
 
 A keyed call that exceeds the foreground wait returns a valid content result
-with `structuredContent: {"status": "running", "run_id": "codemode:..."}` and the
-text `running: the final result will be retained in late_results.` The final
-result is retrieved through `late_results`. Role-operation envelopes are not
+with `structuredContent: {"status": "running", "run_id": "codemode:..."}`. Its
+text names each call held on a person, for example `Waiting on the person:
+browser_use (call 2) needs their consent. The program resumes when they answer;
+a run waits on people for at most 10 minutes in total. When the program
+finishes, basal retains its final result for this call.` Without held calls it
+reads `Still running: the program had not finished when this reply was due.`
+followed by the same last sentence. Call numbers count from 1 in the order the
+program made its calls. The final result is retrieved through `late_results`. Role-operation envelopes are not
 themselves content results; their nested completed results are.
 
 ## Errors and refusals
@@ -71,7 +79,23 @@ A program call to a dropped tool rejects with `tool_unavailable` and
 
 A terminal program failure, uncaught tool refusal, budget stop or cancellation
 is a content result with `isError: true` and a stable `errorCode`. Its model text
-is unchanged, including partial output and known call outcomes. A caught tool
+keeps partial output and known call outcomes.
+
+When a program fails because it left a tool call's rejection uncaught, the run
+error carries that call's code (the provider's own, such as `no_session`, or
+basal's, such as `tool_unavailable`) and a one-line plain-text message naming
+the tool and call: `browser_use (call 1) failed: No session. Call
+browser.launch, then retry the browser action. Reason: no browser session is
+open.` Any other thrown error is code `script` with the JavaScript `Name:
+message`; codemode hides stack traces, so no line is given. Engine failures keep
+their codes with a plain-text message.
+
+A program that reads a name `tools` does not have, such as `tools.work`, gets a
+`TypeError` naming it and listing the run's tools, for example `tools.work is not
+available in this codemode run. Available tools: bash, echo (2). Not every tool
+is available inside programs yet.` `Object.keys(tools)`, `name in tools` and
+`typeof tools.<listed name>` work as usual, and `then`, `toJSON` and symbol keys
+read as undefined, so `await tools` and `JSON.stringify(tools)` don't throw. A caught tool
 refusal does not turn a successfully completed program into a failure; the call
 summary still records the refusal. Persisted terminal run-scope failures also
 retain their codes and details in the content result.
