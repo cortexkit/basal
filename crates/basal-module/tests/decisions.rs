@@ -1,6 +1,6 @@
 //! Operator decision cards end to end: the module raises them on the fake
-//! core's consent plane through `CoreConsent`, and core's answers come back
-//! through `elicitation.answers`, as for install cards.
+//! consent/v1 provider through `CingulateConsent`, and the provider's answers
+//! come back through `consent.answers`.
 
 mod common;
 mod wire;
@@ -11,14 +11,15 @@ use std::time::Duration;
 
 use basal_core::decisions::{self, CardState};
 use basal_core::{Clock, Config, Durability, Hooks, NoHooks, RateLimits, RunState};
-use basal_host::core_consent::{CoreConsent, decision_request};
+use basal_host::cingulate_consent::CingulateConsent;
+use basal_host::core_consent::decision_request;
 use basal_host::core_host::CoreHost;
 use basal_host::routing::{ModuleOpsHost, RoutingHost};
 use basal_host::subc_catalog::SubcCatalog;
 use basal_host::transport::{Transport, WireError};
 use basal_host::{
     Consent, DecisionAnswer, DecisionCard, DecisionContext, DecisionEvent, DecisionKind,
-    DecisionOption, DecisionSink, DisabledReason, SinkError, UnknownReason,
+    DecisionOption, DecisionPath, DecisionSink, DisabledReason, SinkError, UnknownReason,
 };
 use basal_module::caller::Caller;
 use basal_module::dryrun::DryRunConfig;
@@ -50,7 +51,7 @@ impl DecisionSink for Detached {
     fn decide(&self, _: &DecisionEvent) -> Result<(), SinkError> {
         Err(SinkError("no module is running".into()))
     }
-    fn answer(&self, _: &DecisionAnswer) -> Result<(), SinkError> {
+    fn answer_on(&self, _: &DecisionPath, _: &DecisionAnswer) -> Result<(), SinkError> {
         Err(SinkError("no module is running".into()))
     }
 }
@@ -59,9 +60,15 @@ impl DecisionSink for Detached {
 /// Cutting earlier would only test the inventory read, not a failed apply.
 struct CutOnAnswer(basal_core::Runtime);
 impl DecisionSink for CutOnAnswer {
-    fn has_open_cards(&self) -> Result<bool, SinkError> {
+    fn decision_paths(&self) -> Result<Vec<DecisionPath>, SinkError> {
         self.0
-            .has_open_cards()
+            .decision_paths()
+            .map_err(|e| SinkError(e.to_string()))
+    }
+
+    fn has_open_cards_on(&self, path: &DecisionPath) -> Result<bool, SinkError> {
+        self.0
+            .has_open_cards_on(path)
             .map_err(|e| SinkError(e.to_string()))
     }
 
@@ -69,21 +76,21 @@ impl DecisionSink for CutOnAnswer {
         Err(SinkError("only a decision answer is expected".into()))
     }
 
-    fn answer(&self, answer: &DecisionAnswer) -> Result<(), SinkError> {
+    fn answer_on(&self, path: &DecisionPath, answer: &DecisionAnswer) -> Result<(), SinkError> {
         self.0.store().cut();
         self.0
-            .answer_decision(answer)
+            .answer_decision_on(path, answer)
             .map(|_| ())
             .map_err(|e| SinkError(e.to_string()))
     }
 }
 
 /// A module over one store that can be crashed and started again, against
-/// the fake core.
+/// the fake core and its fake consent/v1 provider.
 struct Rig {
     dir: PathBuf,
     fake: Arc<Fake>,
-    consent: Arc<CoreConsent>,
+    consent: Arc<CingulateConsent>,
     config: ModuleConfig,
     pool: PoolConfig,
     module: Option<Module>,
@@ -127,8 +134,8 @@ impl Rig {
                 .expect("set deterministic fixture store id");
             drop(store);
         }
-        let fake = Fake::new();
-        let consent = Arc::new(CoreConsent::new(fake.clone()));
+        let fake = Fake::new().with_consent_provider();
+        let consent = Arc::new(CingulateConsent::new(fake.clone()));
         let mut rig = Self {
             dir,
             fake,
@@ -445,8 +452,8 @@ fn each_reconcile_option_and_the_default_on_expiry_apply_through_the_journaled_p
         // is raised for it.
         rig.pass();
         assert_eq!(rig.fake.all_decision_cards().len(), 1, "{choice:?}");
-        // Core executes nothing for these cards, so basal reports nothing.
-        assert!(rig.fake.calls("elicitation.report_execution").is_empty());
+        // Nothing is executed for these cards, so basal reports nothing.
+        assert!(rig.fake.calls("consent.report_execution").is_empty());
     }
 }
 
@@ -544,7 +551,7 @@ fn each_unknown_site_records_its_reason_and_the_card_shows_it() {
     );
 }
 
-/// Core answers an expired card with state `expired` and the card's default
+/// The provider answers an expired card with state `expired` and the card's default
 /// id as its choice. basal reads every expiry as the decline, whatever id
 /// it names: nothing happens and the decision stays visible.
 #[test]
@@ -556,7 +563,7 @@ fn an_expiry_is_the_decline_whatever_choice_it_names() {
     assert_eq!(expired["state"], "expired");
     assert_eq!(
         expired["answered_choice_id"], "leave",
-        "core names the default"
+        "the provider names the default"
     );
     // Even an expiry that named an action would change nothing.
     rig.fake.decisions.lock().unwrap().answers.clear();
@@ -587,7 +594,7 @@ fn a_duplicate_answer_changes_nothing() {
         // A lost acknowledgement leaves retry debt even after this answer
         // closes the last card. The next poll must fetch the redelivered page.
         rig.fake.enqueue(
-            "elicitation.ack",
+            "consent.ack",
             vec![Err(WireError::NeverSent(
                 "the acknowledgement was lost".into(),
             ))],
@@ -599,17 +606,19 @@ fn a_duplicate_answer_changes_nothing() {
         let before = rig.m().rt.run(&run).unwrap();
         rig.fake.deliver(answer.clone());
         rig.fake.deliver(answer.clone());
-        let pages = rig.fake.calls("elicitation.answers").len();
-        let acks = rig.fake.calls("elicitation.ack").len();
+        let pages = rig.fake.calls("consent.answers").len();
+        let acks = rig.fake.calls("consent.ack").len();
         rig.poll();
-        assert_eq!(rig.fake.calls("elicitation.answers").len(), pages + 1);
-        assert_eq!(rig.fake.calls("elicitation.ack").len(), acks + 1);
+        assert_eq!(rig.fake.calls("consent.answers").len(), pages + 1);
+        // The durable cursor's lost acknowledgement is sent again first, then
+        // the redelivered page's.
+        assert_eq!(rig.fake.calls("consent.ack").len(), acks + 2);
         rig.pass();
         assert_eq!(rig.posts(), posts, "{choice}");
         assert_eq!(rig.m().rt.run(&run).unwrap().state, before.state);
         let elicitation = answer["elicitation_id"].as_str().unwrap();
         assert_eq!(rig.audit(elicitation).len(), 1, "{choice}: applied once");
-        assert!(rig.fake.calls("elicitation.ack").len() >= 2);
+        assert!(rig.fake.calls("consent.ack").len() >= 2);
     }
 }
 
@@ -725,11 +734,11 @@ fn a_changed_decision_updates_its_card_and_another_unknown_call_gets_its_own() {
 
 #[test]
 fn a_crash_between_the_intent_and_core_accepting_still_shows_exactly_one_card() {
-    // Core never received the request.
+    // The provider never received the request.
     let mut rig = Rig::new("decision-crash-unsent", None);
     rig.install(POST);
     rig.fake.enqueue(
-        "elicitation.request",
+        "consent.request",
         vec![Err(WireError::NeverSent("the socket closed".into()))],
     );
     let run = rig.lose_post();
@@ -747,7 +756,7 @@ fn a_crash_between_the_intent_and_core_accepting_still_shows_exactly_one_card() 
         Some(cards[0].0.as_str())
     );
 
-    // Core accepted the card and the reply was lost.
+    // The provider accepted the card and the reply was lost.
     let mut rig = Rig::new("decision-crash-accepted", None);
     rig.fake.decisions.lock().unwrap().lose_replies = 1;
     let run = rig.lost_post(POST);
@@ -757,7 +766,7 @@ fn a_crash_between_the_intent_and_core_accepting_still_shows_exactly_one_card() 
     rig.start(Arc::new(NoHooks));
     rig.pass();
     let cards = rig.fake.decision_cards(&key);
-    assert_eq!(cards.len(), 1, "core's dedup key shows one card");
+    assert_eq!(cards.len(), 1, "the provider's dedup key shows one card");
     assert_eq!(cards[0].1.len(), 2, "raised once more after the restart");
     assert_eq!(
         rig.card(&key).elicitation_id.as_deref(),
@@ -772,8 +781,8 @@ fn a_crash_between_receiving_an_answer_and_applying_it_applies_it_exactly_once()
     let run = rig.lost_post(POST);
     let key = decisions::reconcile_key(FLOW, &run, 0);
     let answer = rig.fake.answer_decision(&key, Some("not_applied"));
-    let acks = rig.fake.calls("elicitation.ack").len();
-    let pages = rig.fake.calls("elicitation.answers").len();
+    let acks = rig.fake.calls("consent.ack").len();
+    let pages = rig.fake.calls("consent.answers").len();
     // The store fails under the answer: nothing is recorded, and the page
     // is not acknowledged, so core keeps the answer.
     rig.consent
@@ -784,15 +793,15 @@ fn a_crash_between_receiving_an_answer_and_applying_it_applies_it_exactly_once()
         rig.m().rt.store().is_cut(),
         "answer application was reached"
     );
-    assert_eq!(rig.fake.calls("elicitation.answers").len(), pages + 1);
-    assert_eq!(rig.fake.calls("elicitation.ack").len(), acks);
+    assert_eq!(rig.fake.calls("consent.answers").len(), pages + 1);
+    assert_eq!(rig.fake.calls("consent.ack").len(), acks);
     rig.crash();
     rig.start(Arc::new(NoHooks));
     assert_eq!(rig.card(&key).state, CardState::Open);
     // Keep retry debt after applying the answer so a duplicate page is
     // actually read, even though no card remains open.
     rig.fake.enqueue(
-        "elicitation.ack",
+        "consent.ack",
         vec![Err(WireError::NeverSent(
             "the acknowledgement was lost".into(),
         ))],
@@ -800,11 +809,11 @@ fn a_crash_between_receiving_an_answer_and_applying_it_applies_it_exactly_once()
     assert!(rig.consent.poll_once().is_err());
     assert_eq!(rig.card(&key).state, CardState::Applied);
     rig.pass();
-    // Core delivering the same page again changes nothing.
+    // The provider delivering the same page again changes nothing.
     rig.fake.deliver(answer.clone());
-    let pages = rig.fake.calls("elicitation.answers").len();
+    let pages = rig.fake.calls("consent.answers").len();
     rig.poll();
-    assert_eq!(rig.fake.calls("elicitation.answers").len(), pages + 1);
+    assert_eq!(rig.fake.calls("consent.answers").len(), pages + 1);
     rig.pass();
     assert_eq!(rig.state(&run), RunState::Succeeded);
     assert_eq!(rig.posts(), 2, "sent again exactly once");
@@ -1144,7 +1153,7 @@ fn the_request_builder_preserves_core_vector_fields_and_adds_facts() {
         // option effects, and that fact labels and values are strings.
         let fake = Fake::new();
         assert!(
-            fake.management("prefrontal-core", "elicitation.request", built)
+            fake.management(wire::CONSENT, "consent.request", built)
                 .is_ok(),
             "{file}"
         );
@@ -1300,9 +1309,9 @@ fn the_phone_fixture_vectors_are_generated_by_the_engine_card_builders() {
         }
         assert!(
             Fake::new()
-                .management("prefrontal-core", "elicitation.request", request.clone())
+                .management(wire::CONSENT, "consent.request", request.clone())
                 .is_ok(),
-            "the fake core accepts {file}"
+            "the fake provider accepts {file}"
         );
         assert_eq!(request["scope"], json!({"flow_id":card.flow_id}));
         assert_eq!(
@@ -1441,10 +1450,10 @@ fn decision_requests_follow_core_rules_and_the_fake_core_refuses_any_other() {
     ] {
         assert!(decision_request(&bad).is_err(), "{bad:?}");
     }
-    // The fake core takes the good request and refuses every breach of
-    // core's rules, with core's code.
+    // The fake provider takes the good request and refuses every breach of
+    // the contract's rules, with core's code.
     let fake = Fake::new();
-    let core = |request: Value| fake.management("prefrontal-core", "elicitation.request", request);
+    let core = |request: Value| fake.management(wire::CONSENT, "consent.request", request);
     assert!(core(sent.clone()).is_ok());
     let invalid = "elicitation_invalid_request";
     let fail_closed = "elicitation_fail_closed_required";
@@ -1514,7 +1523,7 @@ fn decision_requests_follow_core_rules_and_the_fake_core_refuses_any_other() {
         Err(WireError::Refused { code, .. }) if code == "elicitation_requester_refused"
     ));
     *fake.requester.lock().unwrap() = wire::BASAL.into();
-    // `choose` belongs to flow_decision cards only.
+    // The provider takes flow_decision cards only.
     let mut install = sent.clone();
     install["kind"] = json!("flow_install");
     assert!(matches!(core(install), Err(WireError::Refused { .. })));
@@ -1522,8 +1531,8 @@ fn decision_requests_follow_core_rules_and_the_fake_core_refuses_any_other() {
     let id = core(sent).unwrap()["elicitation_id"].clone();
     assert!(matches!(
         fake.management(
-            "prefrontal-core",
-            "elicitation.report_execution",
+            wire::CONSENT,
+            "consent.report_execution",
             json!({"elicitation_id":id,"execution":"executed"})
         ),
         Err(WireError::Refused { code, .. }) if code == "elicitation_invalid_execution"
@@ -1588,11 +1597,14 @@ fn repeated_grant_loss_raises_one_card_and_enable_retracts_it_after_restart() {
     assert!(rig.fake.calls("grants.offer").is_empty());
     *rig.fake.post_barrier.lock().unwrap() = None;
     rig.m().rt.enable_flow(FLOW).unwrap();
-    assert_eq!(rig.m().rt.decision_withdrawals().unwrap().len(), 1);
+    assert_eq!(rig.m().rt.decision_withdrawals_on().unwrap().len(), 1);
     rig.crash();
     rig.start(Arc::new(NoHooks));
     rig.pass();
-    assert!(rig.m().rt.decision_withdrawals().unwrap().is_empty());
-    assert_eq!(rig.fake.calls("elicitation.withdraw").len(), 1);
+    assert!(rig.m().rt.decision_withdrawals_on().unwrap().is_empty());
+    assert_eq!(
+        rig.fake.calls_to(wire::CONSENT, "consent.withdraw").len(),
+        1
+    );
     assert!(rig.fake.decisions.lock().unwrap().open.is_empty());
 }

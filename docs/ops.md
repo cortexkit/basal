@@ -58,7 +58,7 @@ Reply:
 ```
 `warnings` is an array of warning objects (`kind`, `module`, `op`, all strings), or null if unavailable. `dry_run` has the same summary shape documented below for `flow.dry_run`, or `{error: string}` if the capture failed, or null if unavailable.
 
-Installation records a version and asks prefrontal-core to authorize it through `flow.install_request`, with a `flow_install` consent body containing the exact code, manifest and attested author. Core owns the install record and files its card through cingulate when available, otherwise through its own provider. basal never sends install cards through `elicitation.request` or directly to cingulate. The reply `outcome: card_raised` names `flow_id`, `version` and `attempt`, not an elicitation id; basal saves that triple. Generic elicitation replies are not accepted. Decision cards (`flow_decision`, including `grant_lost`) still use the catalogued consent provider and its answer feed.
+Installation records a version and asks prefrontal-core to authorize it through `flow.install_request`, with a `flow_install` consent body containing the exact code, manifest and attested author. Core owns the install record and files its card through cingulate when available, otherwise through its own provider. basal never sends install cards directly to cingulate. The reply `outcome: card_raised` names `flow_id`, `version` and `attempt`, not an elicitation id; basal saves that triple. A reply of any other shape is not accepted. Decision cards (`flow_decision`, including `grant_lost`) use the catalogued consent provider and its answer feed.
 
 When core's daemon catalog entry lists the capability `flow-install-dry-run-text/v1`, the `flow_install` body also carries `dry_run_text`: the install dry run in plain words, which core and cingulate show as written. Without the capability basal sends exactly the body above, without the key. The raw `dry_run_summary` is sent either way, unchanged, for audits. The card basal records always holds both. The shape is:
 ```json
@@ -599,41 +599,51 @@ auto-disabled flow, and lost grants. Each initial raise reads the daemon
 catalog: a provider advertising `consent/v1` receives `consent.request` on
 basal's attested `reserved:basal` route. If no provider advertises that
 capability, selection returns `Unavailable` naming `consent/v1`; no path is
-committed and the card stays pending for retry. Core rejects new-card raises on
-its legacy `elicitation.request` endpoint with `elicitation_frozen`, so basal
-reports the missing provider instead of sending a request that core will refuse.
-Install cards still go through core.
+committed and the card stays pending for retry. prefrontal-core holds no
+decision cards (its `elicitation.*` ops are gone), so there is no other
+endpoint to fall back to. Install cards still go through core's
+`flow.install_request`.
 
 The selected path is committed before sending, including requests whose replies
-may be lost. A card never changes paths. Updates use its original endpoint and
-`dedup_key`; older cards already recorded on the legacy path keep using core's
-`elicitation.request` for updates. Withdrawals use the original
-endpoint and current card id. Cingulate refreshes identical content in place,
+may be lost. A card never changes paths. Updates use its original provider and
+`dedup_key`. Withdrawals use the original provider and current card id. Cingulate refreshes identical content in place,
 but changed content replaces the pending card with a new id. Basal records that
 replacement id and rejects answers to older bodies or known superseded ids. If a
 replacement request reply is lost, an answer can supply the new id only for an
 outstanding cingulate grant-loss card whose answer body exactly matches the
 current revision. This prevents an answer to older or unrelated content from
-claiming the replacement id. Legacy cards retain their existing id checks.
+claiming the replacement id.
 
-Both answer feeds remain active while they have open cards. Basal applies each
-answer durably and idempotently before acknowledging it on its own path. The
-cingulate feed uses `consent.answers` continuations and a durable cursor, then
-`consent.ack` through the fully processed page, including empty final pages that
-cover withdrawals. A failed apply keeps the page unacknowledged; a failed ack
-is retried even after the last card closes or basal restarts. Retention
-tombstones close only their matching owned card and never apply a choice.
+Each provider's answer feed is read only while basal has an open card on it,
+or while a failed poll on that provider still needs a retry. If no card is open
+when basal starts, no poller is started: no thread, no timer and no page read.
+The first card raised starts it. Once every card is closed, the poller waits
+without a timer and reads nothing until the next card is raised. Basal applies each answer durably and idempotently before
+acknowledging it on its own provider. The feed uses `consent.answers`
+continuations and a durable cursor, then `consent.ack` through the fully
+processed page, including empty final pages that cover withdrawals. A failed
+apply keeps the page unacknowledged; a failed ack is retried even after the
+last card closes. After a restart, a failed ack is sent again from the durable
+cursor before the next page is read on that provider, which happens once a card
+is open there again. Retention tombstones close only their matching owned card
+and never apply a choice.
 
 Adding or removing a `consent/v1` provider does not require changing the daemon
 catalog and basal's card state at the same time. If the provider is absent, new
 cards wait for retry; adding one later lets basal select it on a later pass.
-Previously recorded cingulate cards keep using their provider when it is
-reachable, while cards recorded as legacy by older builds keep their core
-answer, acknowledgement, update and withdrawal path. A listed but unreachable
-consent provider delays its cards rather than duplicating them on core. Catalog
-read failures also delay selection rather than guessing a path.
+Previously recorded cards keep using their provider when it is reachable. A
+listed but unreachable consent provider delays its cards rather than raising
+them on another provider. Catalog read failures also delay selection rather
+than guessing a path.
 
-The decision body remains core's validated v2 body on either endpoint;
+Store schema 37 removes the legacy path. Cards that older builds recorded on
+core's `legacy` path go back to unselected: an open one also drops its core id
+and accepted revision, so the next pass raises it on a `consent/v1` provider;
+a closed one keeps its id as history. Withdrawals and answer cursors on the
+legacy path are dropped. The store then refuses any path other than
+`consent:<provider>` on decision cards, withdrawals and answer cursors.
+
+The decision body remains core's validated v2 body;
 cingulate checks the envelope but stores that body opaquely. Flow decisions
 cannot use `consent.report_execution` under the requester contract, so basal
 acknowledges settlements without reporting execution. The byte-pinned requester
@@ -677,8 +687,8 @@ full UTC date and time, so refusals on different days are distinguishable.
 `check_now` schedules an immediate scoped diagnostic; `keep_disabled` stops
 polling for that grant. Expiry or silence applies neither choice and keeps
 background polling. Once the grant returns, basal marks the card stale and
-durably queues withdrawal on the card's raising path (`consent.withdraw` or
-`elicitation.withdraw`), retrying while that provider is unavailable. An
+durably queues withdrawal on the card's raising provider (`consent.withdraw`),
+retrying while that provider is unavailable. An
 oversized hash fallback raises no card.
 
 An `agent_retired` refusal fails the run and disables the flow without a

@@ -107,7 +107,12 @@ async fn sample(source: &Path, label: &str) -> Value {
             let body: Value = serde_json::from_slice(&frame.body).unwrap();
             let reply = if body["op"] == "route.open" {
                 json!({"op":"route.open","route_channel":11,"route_epoch":1})
-            } else if body["method"] == "elicitation.answers" {
+            } else if body["method"]
+                .as_str()
+                .is_some_and(|method| method.ends_with(".answers"))
+            {
+                // Any answer page read counts, whichever provider or op the
+                // binary under test polls; with no card open there are none.
                 answered.fetch_add(1, Ordering::Relaxed);
                 json!({"result":{"records":[],"cursor":0}})
             } else if body["method"] == "catalog" {

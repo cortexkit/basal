@@ -326,19 +326,24 @@ fn a_decision_answer_wakes_the_sleeping_engine() {
                 })
                 .unwrap();
             let card = rt.decision_cards().unwrap().pop().unwrap();
+            let path = basal_host::MockConsent::path();
+            rt.select_decision_path(card.seq, &path).unwrap();
             rt.decision_raised(card.seq, card.revision, "answer-id")
                 .unwrap();
-            rt.answer_decision(&basal_host::DecisionAnswer {
-                grant_context: None,
-                elicitation_id: "answer-id".into(),
-                choice: Some(basal_core::decisions::KEEP.into()),
-                dedup_key: Some(card.dedup_key),
-                decision: basal_host::DecisionKind::Reenable,
-                run_id: None,
-                call_key: None,
-                flow_id: "control".into(),
-                version: 1,
-            })
+            rt.answer_decision_on(
+                &path,
+                &basal_host::DecisionAnswer {
+                    grant_context: None,
+                    elicitation_id: "answer-id".into(),
+                    choice: Some(basal_core::decisions::KEEP.into()),
+                    dedup_key: Some(card.dedup_key),
+                    decision: basal_host::DecisionKind::Reenable,
+                    run_id: None,
+                    call_key: None,
+                    flow_id: "control".into(),
+                    version: 1,
+                },
+            )
             .unwrap();
         },
         true,

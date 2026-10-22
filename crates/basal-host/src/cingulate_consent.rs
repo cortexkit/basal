@@ -1,8 +1,8 @@
-//! New decision cards require a catalogued `consent/v1` provider; install cards
-//! stay on prefrontal-core. Stored legacy cards keep their core endpoint for
-//! updates, withdrawals and answers even if the daemon catalog later changes.
+//! Decision cards go only to a catalogued `consent/v1` provider; install cards
+//! stay on prefrontal-core. A stored card keeps its provider for updates,
+//! withdrawals and answers even if the daemon catalog later changes. With no
+//! provider in the catalog a new card stays pending and is raised again later.
 use crate::core_consent::{CoreConsent, decision_request, error};
-use crate::subc_catalog::CORE;
 use crate::transport::Transport;
 use crate::{
     Consent, ConsentError, DecisionCard, DecisionPath, DecisionSink, InstallCard, InstallOutcome,
@@ -18,7 +18,7 @@ pub struct CingulateConsent {
 impl CingulateConsent {
     pub fn new(transport: Arc<dyn Transport>) -> Self {
         Self {
-            core: CoreConsent::for_catalog(transport.clone()),
+            core: CoreConsent::new(transport.clone()),
             transport,
         }
     }
@@ -65,19 +65,12 @@ impl Consent for CingulateConsent {
         ))
     }
 
-    fn raise_decision(&self, card: &DecisionCard) -> Result<String, ConsentError> {
-        self.raise_decision_on(&self.decision_path()?, card)
-    }
-
     fn raise_decision_on(
         &self,
         path: &DecisionPath,
         card: &DecisionCard,
     ) -> Result<String, ConsentError> {
-        let (provider, method) = match path {
-            DecisionPath::Legacy => (CORE, "elicitation.request"),
-            DecisionPath::Consent(provider) => (provider.as_str(), "consent.request"),
-        };
+        let DecisionPath::Consent(provider) = path;
         // consent.request checks only the envelope. Keep decision_request's full
         // core v2 body validation even though Cingulate stores the body opaquely.
         let request = decision_request(card)?;
@@ -87,7 +80,7 @@ impl Consent for CingulateConsent {
         self.core.raised();
         let reply = self
             .transport
-            .management(provider, method, request)
+            .management(provider, "consent.request", request)
             .map_err(error)?;
         let id = reply["elicitation_id"]
             .as_str()
@@ -98,13 +91,10 @@ impl Consent for CingulateConsent {
     }
 
     fn withdraw_decision_on(&self, path: &DecisionPath, id: &str) -> Result<(), ConsentError> {
-        let (provider, method) = match path {
-            DecisionPath::Legacy => (CORE, "elicitation.withdraw"),
-            DecisionPath::Consent(provider) => (provider.as_str(), "consent.withdraw"),
-        };
+        let DecisionPath::Consent(provider) = path;
         let reply = self
             .transport
-            .management(provider, method, json!({"elicitation_id":id}))
+            .management(provider, "consent.withdraw", json!({"elicitation_id":id}))
             .map_err(error)?;
         if !matches!(
             reply["state"].as_str(),

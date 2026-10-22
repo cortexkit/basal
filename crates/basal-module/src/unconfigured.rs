@@ -13,8 +13,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use basal_host::{
-    CallClass, CallRequest, Catalog, Consent, ConsentError, DecisionCard, DecisionSink, Dispatched,
-    EventDecl, Host, InstallCard, OpDecl, Sent, TransportError,
+    CallClass, CallRequest, Catalog, Consent, ConsentError, DecisionSink, Dispatched, EventDecl,
+    Host, InstallCard, OpDecl, Sent, TransportError,
 };
 use basal_proto::CallKind;
 
@@ -148,12 +148,6 @@ pub struct UnconfiguredConsent;
 
 impl Consent for UnconfiguredConsent {
     fn raise(&self, _card: &InstallCard) -> Result<basal_host::InstallOutcome, ConsentError> {
-        Err(ConsentError::Unavailable(
-            "no consent adapter is configured in this build of ck-basal".to_owned(),
-        ))
-    }
-
-    fn raise_decision(&self, _card: &DecisionCard) -> Result<String, ConsentError> {
         Err(ConsentError::Unavailable(
             "no consent adapter is configured in this build of ck-basal".to_owned(),
         ))

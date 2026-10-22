@@ -825,15 +825,15 @@ guards = "independent consent stores may issue colliding elicitation ids"
 test_file = "crates/basal-module/tests/consent_paths.rs"
 runner = "cargo"
 package = "basal-module"
-platforms = ["macos"]
+platforms = ["linux"]
 target = "--test consent_paths"
-expect_red = ["answers_on_both_paths_apply_once_and_ack_their_own_owner"]
+expect_red = ["answers_on_two_providers_apply_once_and_ack_their_own_owner"]
 select = "expected"
 only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/decisions.rs"
-old = "WHERE elicitation_id = ?1 AND COALESCE(consent_path,'legacy') = ?2 ORDER BY seq DESC"
+old = "WHERE elicitation_id = ?1 AND consent_path = ?2 ORDER BY seq DESC"
 new = "WHERE elicitation_id = ?1 AND ?2 IS NOT NULL ORDER BY seq DESC /* NON-VACUITY BREAK */"
 
 [[control]]
@@ -842,7 +842,7 @@ guards = "the current cingulate grant replacement survives a lost acceptance rep
 test_file = "crates/basal-module/tests/consent_paths.rs"
 runner = "cargo"
 package = "basal-module"
-platforms = ["macos"]
+platforms = ["linux"]
 target = "--test consent_paths"
 expect_red = ["lost_replacement_reply_recovers_only_the_current_cingulate_grant_answer"]
 select = "expected"
@@ -850,8 +850,8 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-core/src/decisions.rs"
-old = 'let replacement = matches!('
-new = 'let replacement = false && matches!( // NON-VACUITY BREAK'
+old = 'let replacement = card.kind == DecisionKind::GrantLost'
+new = 'let replacement = false && card.kind == DecisionKind::GrantLost // NON-VACUITY BREAK'
 
 [[control]]
 id = "consent-reject-superseded-id"
@@ -889,36 +889,16 @@ old = '&& answer.grant_context.as_ref() != Some(&card.context()?)'
 new = '&& false /* NON-VACUITY BREAK */'
 
 [[control]]
-id = "consent-no-legacy-replacement-recovery"
-guards = "legacy cards retain their strict differing-id refusal"
-test_file = "crates/basal-module/tests/consent_paths.rs"
-runner = "cargo"
-package = "basal-module"
-platforms = ["macos"]
-target = "--test consent_paths"
-expect_red = ["legacy_path_never_recovers_a_differing_id_even_with_current_grant_context"]
-select = "expected"
-only = false
-build_timeout_s = 3600
-timeout_s = 600
-file = "crates/basal-core/src/decisions.rs"
-old = '''matches!(
-            card.consent_path,
-            Some(basal_host::DecisionPath::Consent(_))
-        )'''
-new = 'true /* NON-VACUITY BREAK */'
-
-[[control]]
 id = "consent-apply-once"
-hub = "Settled decision answers are idempotent on replay on either endpoint"
+hub = "Settled decision answers are idempotent on replay on every provider"
 hub_targets = ["decisions"]
 guards = "duplicate and redelivered settlements do not apply another decision"
 test_file = "crates/basal-module/tests/consent_paths.rs"
 runner = "cargo"
 package = "basal-module"
-platforms = ["macos"]
+platforms = ["linux"]
 target = "--test consent_paths"
-expect_red = ["answers_on_both_paths_apply_once_and_ack_their_own_owner"]
+expect_red = ["answers_on_two_providers_apply_once_and_ack_their_own_owner"]
 only = false
 build_timeout_s = 3600
 timeout_s = 600

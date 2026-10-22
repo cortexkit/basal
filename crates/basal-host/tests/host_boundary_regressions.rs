@@ -5,7 +5,8 @@ use basal_host::selector::decode_selection;
 use basal_host::subc_catalog::{CORE, SubcCatalog};
 use basal_host::transport::{Transport, WireError};
 use basal_host::{
-    CallRequest, Consent, DecisionAnswer, DecisionEvent, DecisionSink, Host, SinkError,
+    CallRequest, Consent, DecisionAnswer, DecisionEvent, DecisionPath, DecisionSink, Host,
+    SinkError,
 };
 use basal_proto::{CallKind, JsonText};
 use serde_json::{Value, json};
@@ -31,9 +32,9 @@ impl Transport for Wire {
     fn management(&self, _: &str, op: &str, _: Value) -> Result<Value, WireError> {
         self.calls.lock().unwrap().push(op.into());
         Ok(match op {
-            "elicitation.answers" => self.pages.lock().unwrap().pop_front().unwrap(),
+            "consent.answers" => self.pages.lock().unwrap().pop_front().unwrap(),
             "agent.list" => self.agents.lock().unwrap().pop_front().unwrap(),
-            "elicitation.ack" => json!({"ok":true}),
+            "consent.ack" => json!({"ok":true}),
             "echo" | "board.read" => json!({"done":true}),
             _ => panic!("unexpected operation {op}"),
         })
@@ -140,11 +141,21 @@ fn core_dispatch_reads_scope_capability_and_op_from_one_snapshot() {
 }
 #[derive(Default)]
 struct Sink(Mutex<Vec<DecisionAnswer>>);
+fn cingulate() -> DecisionPath {
+    DecisionPath::Consent("cingulate".into())
+}
 impl DecisionSink for Sink {
+    fn decision_paths(&self) -> Result<Vec<DecisionPath>, SinkError> {
+        Ok(vec![cingulate()])
+    }
+    fn has_open_cards_on(&self, _: &DecisionPath) -> Result<bool, SinkError> {
+        Ok(true)
+    }
     fn decide(&self, _: &DecisionEvent) -> Result<(), SinkError> {
         panic!("install decisions must not arrive on the answer feed")
     }
-    fn answer(&self, answer: &DecisionAnswer) -> Result<(), SinkError> {
+    fn answer_on(&self, path: &DecisionPath, answer: &DecisionAnswer) -> Result<(), SinkError> {
+        assert_eq!(*path, cingulate());
         self.0.lock().unwrap().push(answer.clone());
         Ok(())
     }
@@ -167,20 +178,8 @@ fn bad_answer_does_not_block_later_valid_decisions_or_acknowledge_the_bad_one() 
             .lock()
             .unwrap()
             .iter()
-            .any(|op| op == "elicitation.ack")
+            .any(|op| op == "consent.ack")
     );
-}
-#[test]
-fn idle_consent_page_does_not_send_an_ack() {
-    let wire = Arc::new(Wire::default());
-    wire.pages
-        .lock()
-        .unwrap()
-        .push_back(json!({"cursor":0,"records":[]}));
-    let consent = CoreConsent::new(wire.clone());
-    consent.attach(Arc::new(Sink::default()));
-    consent.poll_once().unwrap();
-    assert_eq!(*wire.calls.lock().unwrap(), ["elicitation.answers"]);
 }
 #[test]
 fn nullable_model_variant_is_the_absent_variant() {

@@ -311,13 +311,6 @@ impl DecisionSink for DecisionApplier {
             .expire_decision_on(path, id)
             .map_err(|e| SinkError(e.to_string()))
     }
-    fn has_open_cards(&self) -> Result<bool, SinkError> {
-        let rt = self.rt.lock().unwrap_or_else(|p| p.into_inner());
-        rt.as_ref()
-            .ok_or_else(|| SinkError("the module is stopped".into()))?
-            .has_open_cards()
-            .map_err(|e| SinkError(e.to_string()))
-    }
     fn decide(&self, event: &DecisionEvent) -> Result<(), SinkError> {
         let rt = self.rt.lock().unwrap_or_else(|p| p.into_inner());
         let rt = rt
@@ -365,10 +358,6 @@ impl DecisionSink for DecisionApplier {
                 Ok(())
             }
         }
-    }
-
-    fn answer(&self, answer: &DecisionAnswer) -> Result<(), SinkError> {
-        self.answer_on(&basal_host::DecisionPath::Legacy, answer)
     }
 
     fn answer_on(

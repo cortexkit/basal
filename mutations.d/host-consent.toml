@@ -271,22 +271,6 @@ old = "ConsentError::Refused(format!(\"{code}: {message}\"))"
 new = "ConsentError::Unavailable(format!(\"{code}: {message}\"))"
 
 [[control]]
-id = "hosts-expiry-tombstone-identity-is-not-retrieved"
-guards = "hosts: expiry tombstone identity is not retrieved"
-test_file = "crates/basal-module/tests/hosts.rs"
-runner = "cargo"
-package = "basal-module"
-platforms = ["macos"]
-target = "--test hosts"
-expect_red = ["expired_answer_tombstones_read_the_owned_record_before_ack"]
-only = false
-build_timeout_s = 3600
-timeout_s = 600
-file = "crates/basal-host/src/core_consent.rs"
-old = "record.get(\"flow_install\").is_none()"
-new = "false"
-
-[[control]]
 id = "hosts-consent-hash-changed"
 guards = "hosts: consent hash changed"
 test_file = "crates/basal-module/tests/hosts.rs"
@@ -357,10 +341,10 @@ new = "if let Err(e) = sink.answer_on(path, &answer).or(Ok::<(), crate::SinkErro
 id = "poison-consent-answer-blocks-valid-decisions"
 guards = "Malformed consent answers are retained without blocking independent valid records in the page"
 file = "crates/basal-host/src/core_consent.rs"
-old = '''tracing::warn!(elicitation_id = ?record.get("elicitation_id"), %error, "consent answer was not applied; retaining page for retry");
-            problem.get_or_insert(error);'''
-new = '''tracing::warn!(elicitation_id = ?record.get("elicitation_id"), %error, "consent answer was not applied; retaining page for retry");
-            return Err(error); // NON-VACUITY BREAK'''
+old = '''if let Err(error) = apply_record(sink, path, record) {
+                problem.get_or_insert(error);'''
+new = '''if let Err(error) = apply_record(sink, path, record) {
+                return Err(error); // NON-VACUITY BREAK'''
 edits = []
 test_file = "crates/basal-host/tests/host_boundary_regressions.rs"
 runner = "cargo"
@@ -376,8 +360,8 @@ build_timeout_s = 3600
 id = "consent-polls-without-owned-open-cards"
 guards = "Steady-state idle consent makes zero answer or acknowledgement RPCs"
 file = "crates/basal-host/src/core_consent.rs"
-old = "Ok(state.retry_page.load(Ordering::Acquire)"
-new = "Ok(true || state.retry_page.load(Ordering::Acquire) /* NON-VACUITY BREAK: poll while idle */"
+old = "if !retry && !sink.has_open_cards_on(&path).map_err(sink_error)? {"
+new = "if false { // NON-VACUITY BREAK: poll a provider with no open card"
 edits = []
 test_file = "crates/basal-host/src/core_consent_tests.rs"
 runner = "cargo"
@@ -434,7 +418,7 @@ guards = "advertised consent capability selects its provider"
 test_file = "crates/basal-module/tests/consent_paths.rs"
 runner = "cargo"
 package = "basal-module"
-platforms = ["macos"]
+platforms = ["linux"]
 target = "--test consent_paths"
 expect_red = ["new_cards_require_an_advertised_consent_capability"]
 select = "expected"
@@ -443,11 +427,11 @@ build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/cingulate_consent.rs"
 old = 'return Ok(DecisionPath::Consent(provider.to_owned()));'
-new = 'let _ = provider; return Ok(DecisionPath::Legacy); // NON-VACUITY BREAK'
+new = 'let _ = provider; return Ok(DecisionPath::Consent("prefrontal-core".into())); // NON-VACUITY BREAK'
 
-# prefrontal-core refuses new decision cards on elicitation.request; keep them pending so basal can retry when a consent/v1 provider is advertised.
+# prefrontal-core holds no decision cards; keep them pending so basal can retry when a consent/v1 provider is advertised.
 [[control]]
-id = "no-consent-provider-does-not-fall-back-to-legacy-raise"
+id = "no-consent-provider-does-not-fall-back-to-core"
 guards = "without consent/v1, a new decision card remains pending without a core raise"
 test_file = "crates/basal-host/src/cingulate_consent_tests.rs"
 runner = "cargo"
@@ -463,24 +447,24 @@ file = "crates/basal-host/src/cingulate_consent.rs"
 old = '''Err(ConsentError::Unavailable(
             "no provider advertises consent/v1".into(),
         ))'''
-new = "Ok(DecisionPath::Legacy) // NON-VACUITY BREAK"
+new = 'Ok(DecisionPath::Consent("prefrontal-core".into())) // NON-VACUITY BREAK'
 
 [[control]]
 id = "consent-drain-both-paths"
-guards = "both legacy and consent answers are applied during overlap"
+guards = "answers from every consent provider with open cards are applied"
 test_file = "crates/basal-module/tests/consent_paths.rs"
 runner = "cargo"
 package = "basal-module"
-platforms = ["macos"]
+platforms = ["linux"]
 target = "--test consent_paths"
-expect_red = ["answers_on_both_paths_apply_once_and_ack_their_own_owner"]
+expect_red = ["answers_on_two_providers_apply_once_and_ack_their_own_owner"]
 select = "expected"
 only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/core_consent.rs"
-old = 'DecisionPath::Legacy => poll_page(state),'
-new = 'DecisionPath::Legacy => Ok(()), // NON-VACUITY BREAK'
+old = 'for path in paths {'
+new = 'for path in paths.into_iter().take(1) { // NON-VACUITY BREAK'
 
 [[control]]
 id = "consent-ack-own-path"
@@ -488,9 +472,9 @@ guards = "consent settlements are acknowledged only on their owning provider"
 test_file = "crates/basal-module/tests/consent_paths.rs"
 runner = "cargo"
 package = "basal-module"
-platforms = ["macos"]
+platforms = ["linux"]
 target = "--test consent_paths"
-expect_red = ["answers_on_both_paths_apply_once_and_ack_their_own_owner"]
+expect_red = ["answers_on_two_providers_apply_once_and_ack_their_own_owner"]
 select = "expected"
 only = false
 build_timeout_s = 3600
@@ -505,7 +489,7 @@ guards = "rollback retains reads for cards on an unlisted consent provider"
 test_file = "crates/basal-module/tests/consent_paths.rs"
 runner = "cargo"
 package = "basal-module"
-platforms = ["macos"]
+platforms = ["linux"]
 target = "--test consent_paths"
 expect_red = ["provider_disappearance_keeps_old_answers_and_leaves_new_cards_pending"]
 select = "expected"
@@ -513,9 +497,9 @@ only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/core_consent.rs"
-old = 'let result = match &path {'
-new = '''if matches!(&path, DecisionPath::Consent(_)) && state.transport.catalog().map_err(error)?["modules"].as_array().is_some_and(|m| m.is_empty()) { continue; } // NON-VACUITY BREAK
-        let result = match &path {'''
+old = 'let DecisionPath::Consent(provider) = &path;'
+new = '''if state.transport.catalog().map_err(error)?["modules"].as_array().is_some_and(|m| m.is_empty()) { continue; } // NON-VACUITY BREAK
+        let DecisionPath::Consent(provider) = &path;'''
 
 [[control]]
 id = "consent-follow-page-cursor"
@@ -594,19 +578,19 @@ new = 'if let Some(problem) = None::<&str> { // NON-VACUITY BREAK'
 
 [[control]]
 id = "consent-retry-final-ack-after-restart"
-guards = "a failed final consent ack survives the last card closing and restart"
+guards = "a failed final consent ack is sent again from the durable cursor once a card is open on that provider after a restart"
 test_file = "crates/basal-module/tests/consent_paths.rs"
 runner = "cargo"
 package = "basal-module"
-platforms = ["macos"]
+platforms = ["linux"]
 target = "--test consent_paths"
-expect_red = ["failed_final_ack_is_retried_from_the_durable_cursor_after_restart"]
+expect_red = ["failed_final_ack_is_retried_from_the_durable_cursor_when_a_card_opens"]
 select = "expected"
 only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/core_consent.rs"
-old = 'if self.state.catalog_decisions {'
+old = 'if since > 0 {'
 new = 'if false { // NON-VACUITY BREAK'
 
 [[control]]
@@ -644,42 +628,78 @@ old = 'self.core.raised();'
 new = 'let _ = &self.core; // NON-VACUITY BREAK'
 
 [[control]]
-id = "consent-legacy-adapter-no-reraise"
-guards = "a legacy-only adapter cannot re-raise a card owned by a consent provider"
+id = "consent-install-adapter-no-raise"
+guards = "an adapter without a consent/v1 provider never reports a decision card as raised"
 test_file = "crates/basal-host/src/cingulate_consent_tests.rs"
 runner = "cargo"
 package = "basal-host"
 platforms = ["linux"]
 target = "--lib"
-expect_red = ["cingulate_consent::tests::a_legacy_only_adapter_cannot_move_an_owned_consent_card"]
+expect_red = ["cingulate_consent::tests::the_core_install_adapter_never_sends_a_decision_card"]
 select = "expected"
 only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/consent.rs"
-old = '''return Err(ConsentError::Unavailable(
-                "this adapter cannot raise on the recorded consent path".into(),
-            ));'''
-new = 'return self.raise_decision(card); // NON-VACUITY BREAK'
+old = '''Err(ConsentError::Unavailable(
+            "this adapter cannot raise decision cards".into(),
+        ))'''
+new = 'Ok("raised".into()) // NON-VACUITY BREAK'
 
 [[control]]
-id = "consent-legacy-adapter-no-withdraw"
-guards = "a legacy-only adapter cannot withdraw a card owned by a consent provider"
+id = "consent-install-adapter-no-withdraw"
+guards = "an adapter without a consent/v1 provider never reports a decision card as withdrawn"
 test_file = "crates/basal-host/src/cingulate_consent_tests.rs"
 runner = "cargo"
 package = "basal-host"
 platforms = ["linux"]
 target = "--lib"
-expect_red = ["cingulate_consent::tests::a_legacy_only_adapter_cannot_move_an_owned_consent_card"]
+expect_red = ["cingulate_consent::tests::the_core_install_adapter_never_sends_a_decision_card"]
 select = "expected"
 only = false
 build_timeout_s = 3600
 timeout_s = 600
 file = "crates/basal-host/src/consent.rs"
-old = '''return Err(ConsentError::Unavailable(
-                "this adapter cannot withdraw on the recorded consent path".into(),
-            ));'''
-new = 'return self.withdraw_decision(elicitation_id); // NON-VACUITY BREAK'
+old = '''Err(ConsentError::Unavailable(
+            "this adapter cannot withdraw decision cards".into(),
+        ))'''
+new = 'Ok(()) // NON-VACUITY BREAK'
+
+[[control]]
+id = "consent-idle-starts-no-poller"
+guards = "with no open decision card, attaching the sink starts no consent poller and reads no page"
+test_file = "crates/basal-host/src/core_consent_tests.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["core_consent::polling_tests::no_poller_runs_while_no_card_is_open_and_a_raise_starts_it"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = "if !matches!(poll_allowed(&self.state), Ok(false)) {"
+new = "if true { // NON-VACUITY BREAK: start the poller with no open card"
+
+[[control]]
+id = "consent-raise-starts-poller"
+guards = "the first raised decision card starts the consent poller"
+test_file = "crates/basal-host/src/core_consent_tests.rs"
+runner = "cargo"
+package = "basal-host"
+platforms = ["linux"]
+target = "--lib"
+expect_red = ["core_consent::polling_tests::no_poller_runs_while_no_card_is_open_and_a_raise_starts_it"]
+select = "expected"
+only = false
+build_timeout_s = 3600
+timeout_s = 600
+file = "crates/basal-host/src/core_consent.rs"
+old = '''    pub(crate) fn raised(&self) {
+        self.start_polling();'''
+new = '''    pub(crate) fn raised(&self) {
+        // NON-VACUITY BREAK: a raise does not start the poller'''
 
 # Core owns install cards; these controls replay the request and hint contract.
 [[control]]
@@ -695,26 +715,6 @@ platforms = ["linux"]
 target = "--test install_policy"
 expect_red = ["install_cards_only_use_core_install_request_and_never_wake_answer_polling"]
 select = { tests = ["install_cards_only_use_core_install_request_and_never_wake_answer_polling", "unknown_install_outcome_is_an_error_even_with_a_valid_hash_or_card_id"] }
-only = true
-build_timeout_s = 3600
-timeout_s = 600
-
-[[control]]
-id = "install-feed-applies-retired-install-answer"
-guards = "install answers can no longer drive approvals through the decision feed"
-file = "crates/basal-host/src/core_consent.rs"
-old = '''if record.get("flow_install").is_some() {
-        return Ok(());
-    }'''
-new = '''if record.get("flow_install").is_some() {
-        return sink.decide(&crate::DecisionEvent { card_id: "retired".into(), decision: crate::CardDecision::Approve, decided_by: "retired".into() }).map_err(sink_error); // NON-VACUITY BREAK
-    }'''
-test_file = "crates/basal-module/tests/hosts.rs"
-runner = "cargo"
-package = "basal-module"
-platforms = ["linux"]
-target = "--test hosts"
-expect_red = ["install_answers_are_ignored_in_the_decision_feed"]
 only = true
 build_timeout_s = 3600
 timeout_s = 600

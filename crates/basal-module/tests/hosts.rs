@@ -674,7 +674,16 @@ struct Decisions {
     answers: Mutex<Vec<basal_host::DecisionAnswer>>,
     fail: Mutex<bool>,
 }
+fn cingulate() -> basal_host::DecisionPath {
+    basal_host::DecisionPath::Consent("cingulate".into())
+}
 impl DecisionSink for Decisions {
+    fn decision_paths(&self) -> Result<Vec<basal_host::DecisionPath>, SinkError> {
+        Ok(vec![cingulate()])
+    }
+    fn has_open_cards_on(&self, _: &basal_host::DecisionPath) -> Result<bool, SinkError> {
+        Ok(true)
+    }
     fn decide(&self, d: &DecisionEvent) -> Result<(), SinkError> {
         if *self.fail.lock().unwrap() {
             return Err(SinkError("disk cut".into()));
@@ -682,7 +691,12 @@ impl DecisionSink for Decisions {
         self.events.lock().unwrap().push(d.clone());
         Ok(())
     }
-    fn answer(&self, answer: &basal_host::DecisionAnswer) -> Result<(), SinkError> {
+    fn answer_on(
+        &self,
+        path: &basal_host::DecisionPath,
+        answer: &basal_host::DecisionAnswer,
+    ) -> Result<(), SinkError> {
+        assert_eq!(*path, cingulate());
         if *self.fail.lock().unwrap() {
             return Err(SinkError("disk cut".into()));
         }
@@ -697,11 +711,11 @@ fn decisions_ack_only_after_sink_commit_and_survive_restart() {
     *sink.fail.lock().unwrap() = true;
     let record = json!({"elicitation_id":"el-decision","state":"answered","answered_choice_id":"reenable","flow_decision":{"decision":"reenable","flow_id":"f","version":1}});
     let page = json!({"records":[record],"cursor":9});
-    fake.enqueue("elicitation.answers", vec![Ok(page.clone()), Ok(page)]);
+    fake.enqueue("consent.answers", vec![Ok(page.clone()), Ok(page)]);
     let consent = CoreConsent::new(fake.clone());
     consent.attach(sink.clone());
     assert!(consent.poll_once().is_err());
-    assert!(fake.calls("elicitation.ack").is_empty());
+    assert!(fake.calls("consent.ack").is_empty());
     drop(consent);
     *sink.fail.lock().unwrap() = false;
     let restarted = CoreConsent::new(fake.clone());
@@ -713,7 +727,7 @@ fn decisions_ack_only_after_sink_commit_and_survive_restart() {
     );
     assert!(sink.events.lock().unwrap().is_empty());
     assert_eq!(
-        fake.calls("elicitation.ack")[0]["params"],
+        fake.calls_to("cingulate", "consent.ack")[0]["params"],
         json!({"cursor":9})
     );
 }
@@ -1254,32 +1268,6 @@ fn denylist_and_paged_agent_registry_fail_closed() {
     assert!(cat.agent_known("ALF").is_err());
 }
 #[test]
-fn install_answers_are_ignored_in_the_decision_feed() {
-    let fake = Fake::new();
-    let sink = Arc::new(Decisions::default());
-    let consent = CoreConsent::new(fake.clone());
-    consent.attach(sink.clone());
-    for (state, choice) in [
-        ("answered", "approve"),
-        ("answered", "decline"),
-        ("expired", ""),
-    ] {
-        fake.enqueue("elicitation.answers",vec![Ok(json!({"records":[{"state":state,"answered_choice_id":choice,"flow_install":{"flow_id":"f","version":1,"code_hash":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}],"cursor":1}))]);
-        consent.poll_once().unwrap();
-    }
-    assert!(sink.events.lock().unwrap().is_empty());
-    assert!(sink.answers.lock().unwrap().is_empty());
-    fake.enqueue(
-        "elicitation.answers",
-        vec![Ok(
-            json!({"records":[{"state":"answered","answered_choice_id":"surprise"}],"cursor":2}),
-        )],
-    );
-    assert!(consent.poll_once().is_err());
-    assert_eq!(fake.calls("elicitation.ack").len(), 3);
-}
-
-#[test]
 fn sink_reply_missing_fields_and_wrong_types_are_unknown_outcomes() {
     for (p, v) in [
         (
@@ -1407,26 +1395,6 @@ fn operator_keyed_tools_retry_but_unfenceable_tools_do_not() {
     assert_eq!(
         sent[0]["call_key"],
         f.module.rt.calls(&run).unwrap()[0].idempotency_key
-    );
-}
-
-#[test]
-fn expired_answer_tombstones_read_the_owned_record_before_ack() {
-    let fake = Fake::new();
-    let sink = Arc::new(Decisions::default());
-    let consent = CoreConsent::new(fake.clone());
-    consent.attach(sink.clone());
-    fake.enqueue("elicitation.answers",vec![Ok(json!({"records":[{"elicitation_id":"el_old","state":"expired","settled_at":10}],"cursor":2}))]);
-    fake.enqueue("elicitation.await",vec![Ok(json!({"elicitation_id":"el_old","state":"expired","flow_decision":{"decision":"reenable","flow_id":"old","version":1}}))]);
-    consent.poll_once().unwrap();
-    assert_eq!(
-        fake.calls("elicitation.await")[0]["params"],
-        json!({"elicitation_id":"el_old","timeout_ms":0})
-    );
-    assert_eq!(sink.answers.lock().unwrap()[0].choice, None);
-    assert_eq!(
-        fake.calls("elicitation.ack")[0]["params"],
-        json!({"cursor":2})
     );
 }
 

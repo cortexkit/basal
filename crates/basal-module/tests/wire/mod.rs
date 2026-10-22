@@ -14,7 +14,7 @@ pub struct Fake {
     /// Core's `flow_install` rows by (flow, version): the approved code
     /// hash and whether the operator revoked it.
     pub installs: Mutex<BTreeMap<(String, i64), (String, bool)>>,
-    /// Core's `flow_decision` cards.
+    /// The `flow_decision` cards the fake consent/v1 provider holds.
     pub decisions: Mutex<DecisionCards>,
     /// The principal the daemon attests for the caller. The real transport
     /// carries it on the route; here a test sets it.
@@ -22,11 +22,11 @@ pub struct Fake {
     pub post_barrier: Mutex<Option<Arc<std::sync::Barrier>>>,
 }
 
-/// The `flow_decision` cards the fake's core holds, and the answers it
-/// keeps until basal acknowledges them.
+/// The `flow_decision` cards the fake consent/v1 provider ([`CONSENT`])
+/// holds, and the answers it keeps until basal acknowledges them.
 #[derive(Default)]
 pub struct DecisionCards {
-    /// Every card core ever created: (elicitation id, dedup key, the
+    /// Every card the provider ever created: (elicitation id, dedup key, the
     /// requests that created or updated it, newest last).
     pub cards: Vec<(String, String, Vec<Value>)>,
     /// Open cards by dedup key, as an index into `cards`.
@@ -35,10 +35,24 @@ pub struct DecisionCards {
     pub answers: Vec<(i64, Value)>,
     pub cursor: i64,
     /// Requests to accept and then lose the reply of, as if the reply was
-    /// cut after core committed the card.
+    /// cut after the provider committed the card.
     pub lose_replies: u32,
 }
+/// The module id of the fake's consent/v1 provider.
+pub const CONSENT: &str = "cingulate";
+
 impl Fake {
+    /// Lists [`CONSENT`] in the catalog as a `consent/v1` provider, so new
+    /// decision cards are raised on it.
+    pub fn with_consent_provider(self: Arc<Self>) -> Arc<Self> {
+        self.catalog.lock().unwrap()["modules"]
+            .as_array_mut()
+            .unwrap()
+            .push(
+                json!({"module_id":CONSENT,"capabilities":{"provides":["consent/v1"]},"roles":[]}),
+            );
+        self
+    }
     pub fn new() -> Arc<Self> {
         let f = Arc::new(Self::default());
         *f.requester.lock().unwrap() = BASAL.into();
@@ -117,24 +131,11 @@ impl Fake {
                 json!({"selected":{"model":{"providerID":"registry-provider","modelID":"registry-model"}},"decisionID":format!("decision:{}",params["sendID"].as_str().unwrap_or("")),"runner":{"provider":"fake","model":"test"}}),
             ),
             "route.set_decision_outcome" => Ok(json!({"ok":true})),
-            "elicitation.request" if params["kind"] == "flow_decision" => {
-                self.flow_decision_request(params)
-            }
-            // Core takes `choose` only on flow_decision cards.
-            "elicitation.request"
-                if params["options"]
-                    .as_array()
-                    .is_some_and(|o| o.iter().any(|o| o["effect"] == "choose")) =>
-            {
-                Err(WireError::Refused {
-                    code: "elicitation_invalid_request".into(),
-                    message: "choose is only valid for flow_decision".into(),
-                })
-            }
+            "consent.request" => self.flow_decision_request(params),
             "flow.install_request" => flow_install_request(&self.scopes.lock().unwrap(), params),
             "flow.install_status" => install_status(&self.installs.lock().unwrap(), params),
-            "elicitation.report_execution" => self.report_execution(params),
-            "elicitation.withdraw" => {
+            "consent.report_execution" => self.report_execution(params),
+            "consent.withdraw" => {
                 let mut decisions = self.decisions.lock().unwrap();
                 let index = decisions
                     .cards
@@ -145,14 +146,19 @@ impl Fake {
                 }
                 Ok(json!({"state":"withdrawn","elicitation_id":params["elicitation_id"]}))
             }
-            "elicitation.answers" => {
+            // Every unacknowledged answer after `since`, in one page.
+            "consent.answers" => {
+                let since = params["since"].as_i64().unwrap_or(0);
                 let decisions = self.decisions.lock().unwrap();
-                let records: Vec<Value> =
-                    decisions.answers.iter().map(|(_, r)| r.clone()).collect();
-                let cursor = decisions.answers.last().map(|(c, _)| *c).unwrap_or(0);
-                Ok(json!({"records":records,"cursor":cursor}))
+                let records: Vec<Value> = decisions
+                    .answers
+                    .iter()
+                    .filter(|(c, _)| *c > since)
+                    .map(|(_, r)| r.clone())
+                    .collect();
+                Ok(json!({"records":records,"cursor":decisions.cursor.max(since)}))
             }
-            "elicitation.ack" => {
+            "consent.ack" => {
                 let cursor = params["cursor"].as_i64().unwrap_or(0);
                 self.decisions
                     .lock()
@@ -331,11 +337,12 @@ fn flow_install_request(
     }
 }
 
-/// The only requester core lets raise `flow_decision` cards.
+/// The only requester the provider lets raise `flow_decision` cards.
 pub const BASAL: &str = "reserved:basal";
 
-/// The keys core's `ConsentRequest` decodes (prefrontal-core-store
-/// `elicitation.rs` at tag `flow-decision-card-v2`); it refuses any other.
+/// The keys of the `flow_decision` request contract, as prefrontal-core's
+/// `ConsentRequest` decoded them (prefrontal-core-store `elicitation.rs` at
+/// tag `flow-decision-card-v2`); the fake provider refuses any other.
 const REQUEST_KEYS: &[&str] = &[
     "flow_install",
     "flow_decision",
@@ -495,11 +502,16 @@ fn text<'a>(value: &'a Value, name: &str) -> Result<&'a str, String> {
         .ok_or_else(|| format!("{name}: expected a string"))
 }
 
-/// Core's checks of a `flow_decision` request, written from core's rules
-/// (`ConsentRequest::decode` and `validate`) rather than from basal's
-/// encoder. A refusal is `(code, message)`.
+/// The checks of a `flow_decision` request, written from the contract's rules
+/// (prefrontal-core's `ConsentRequest::decode` and `validate`) rather than
+/// from basal's encoder. A refusal is `(code, message)`.
 fn check_flow_decision(params: &Value) -> Result<(), (&'static str, String)> {
     let invalid = |m: String| ("elicitation_invalid_request", m);
+    if params["kind"] != "flow_decision" {
+        return Err(invalid(
+            "the consent provider takes flow_decision cards only".into(),
+        ));
+    }
     // Refused even as null: the card is the operator's alone.
     for key in ["session_ref", "parent_session_ref"] {
         if params.get(key).is_some() {
@@ -640,8 +652,8 @@ fn check_flow_decision(params: &Value) -> Result<(), (&'static str, String)> {
 }
 
 impl Fake {
-    /// Core taking a `flow_decision` request: refused unless the requester
-    /// is basal and the request passes core's checks; under the key of a
+    /// The provider taking a `flow_decision` request: refused unless the
+    /// requester is basal and the request passes the contract's checks; under the key of a
     /// card still open, that card is updated and keeps its id; otherwise a
     /// new card is created.
     fn flow_decision_request(&self, params: &Value) -> Result<Value, WireError> {
@@ -683,8 +695,8 @@ impl Fake {
         Ok(json!({"elicitation_id": d.cards[index].0}))
     }
 
-    /// Core refuses an execution report for a `flow_decision` card: core
-    /// executes nothing for these cards, so there is nothing to report.
+    /// The provider refuses an execution report for a `flow_decision` card:
+    /// nothing is executed for these cards, so there is nothing to report.
     fn report_execution(&self, params: &Value) -> Result<Value, WireError> {
         let id = params["elicitation_id"].as_str().unwrap_or_default();
         let decision = self
@@ -703,7 +715,7 @@ impl Fake {
         Ok(json!({"elicitation_id": id}))
     }
 
-    /// Every flow_decision card core created under `key`.
+    /// Every flow_decision card the provider created under `key`.
     pub fn decision_cards(&self, key: &str) -> Vec<(String, Vec<Value>)> {
         self.decisions
             .lock()
@@ -715,13 +727,13 @@ impl Fake {
             .collect()
     }
 
-    /// Every flow_decision card core created.
+    /// Every flow_decision card the provider created.
     pub fn all_decision_cards(&self) -> Vec<(String, String, Vec<Value>)> {
         self.decisions.lock().unwrap().cards.clone()
     }
 
     /// The operator answers the open card under `key` with `choice`, or the
-    /// card expires (`None`), and the card closes. As core does, an expiry
+    /// card expires (`None`), and the card closes. An expiry
     /// is written into the answer log with state `expired` and the card's
     /// default (decline) option as its choice. The answer waits for basal;
     /// it is returned.
@@ -741,7 +753,7 @@ impl Fake {
         record
     }
 
-    /// Puts an answer record on core's answer page (again).
+    /// Puts an answer record on the provider's answer page (again).
     pub fn deliver(&self, record: Value) {
         let mut d = self.decisions.lock().unwrap();
         d.cursor += 1;
@@ -774,6 +786,9 @@ impl Transport for Fake {
         Ok(self.catalog.lock().unwrap().clone())
     }
     fn management(&self, module: &str, op: &str, params: Value) -> Result<Value, WireError> {
+        if op.starts_with("consent.") {
+            assert_eq!(module, CONSENT, "{op} goes to the consent provider");
+        }
         self.records
             .lock()
             .unwrap()

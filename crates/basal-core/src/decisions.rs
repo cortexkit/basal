@@ -797,7 +797,7 @@ pub fn mark_raised(tx: &Transaction, seq: i64, revision: u64, elicitation_id: &s
          raised_revision = MAX(COALESCE(raised_revision, 0), ?2) WHERE seq = ?1",
         params![seq, revision, elicitation_id],
     )?;
-    tx.execute("INSERT OR IGNORE INTO decision_withdrawals SELECT COALESCE(consent_path,'legacy'), ?2 FROM decision_cards WHERE seq=?1 AND kind='grant_lost' AND state='stale'", params![seq,elicitation_id])?;
+    tx.execute("INSERT OR IGNORE INTO decision_withdrawals SELECT consent_path, ?2 FROM decision_cards WHERE seq=?1 AND kind='grant_lost' AND state='stale' AND consent_path IS NOT NULL", params![seq,elicitation_id])?;
     Ok(())
 }
 
@@ -826,7 +826,7 @@ fn find(
     let path = path.key();
     if let Some(card) = first(
         conn,
-        "WHERE elicitation_id = ?1 AND COALESCE(consent_path,'legacy') = ?2 ORDER BY seq DESC",
+        "WHERE elicitation_id = ?1 AND consent_path = ?2 ORDER BY seq DESC",
         params![answer.elicitation_id, path],
     )? {
         return Ok(Some(card));
@@ -834,7 +834,7 @@ fn find(
     if let Some(key) = &answer.dedup_key
         && let Some(card) = first(
             conn,
-            "WHERE dedup_key = ?1 AND COALESCE(consent_path,'legacy') = ?2 ORDER BY state = 'open' DESC, seq DESC",
+            "WHERE dedup_key = ?1 AND consent_path = ?2 ORDER BY state = 'open' DESC, seq DESC",
             params![key, path],
         )?
     {
@@ -850,34 +850,26 @@ fn find(
             };
             first(
                 conn,
-                "WHERE kind='grant_lost' AND dedup_key=?1 AND COALESCE(consent_path,'legacy') = ?2 ORDER BY state='open' DESC,seq DESC",
+                "WHERE kind='grant_lost' AND dedup_key=?1 AND consent_path = ?2 ORDER BY state='open' DESC,seq DESC",
                 params![grant_lost_key(&answer.flow_id, provider, grant), path],
             )
         }
         DecisionKind::Reconcile => first(
             conn,
             "WHERE kind = 'reconcile' AND flow_id = ?1 AND run_id = ?2 AND call_key = ?3 \
-             AND COALESCE(consent_path,'legacy') = ?4 ORDER BY state = 'open' DESC, seq DESC",
+             AND consent_path = ?4 ORDER BY state = 'open' DESC, seq DESC",
             params![answer.flow_id, answer.run_id, answer.call_key, path],
         ),
         DecisionKind::Reenable => first(
             conn,
-            "WHERE kind = 'reenable' AND flow_id = ?1 AND COALESCE(consent_path,'legacy') = ?2 ORDER BY instance DESC",
+            "WHERE kind = 'reenable' AND flow_id = ?1 AND consent_path = ?2 ORDER BY instance DESC",
             params![answer.flow_id, path],
         ),
     }
 }
 
-/// Applies an answer, in `tx`. Returns what happened and, when the answer
-/// made a run runnable, that run.
-pub fn answer(
-    tx: &Transaction,
-    answer: &DecisionAnswer,
-    now_ms: i64,
-) -> Result<(Answered, Option<String>)> {
-    answer_on(tx, &basal_host::DecisionPath::Legacy, answer, now_ms)
-}
-
+/// Applies an answer from the provider on `path`, in `tx`. Returns what
+/// happened and, when the answer made a run runnable, that run.
 pub fn answer_on(
     tx: &Transaction,
     path: &basal_host::DecisionPath,
@@ -919,10 +911,7 @@ pub fn answer_on(
         // A lost replacement reply can leave the previous id here. The answer
         // must match the latest stored grant context while its revision is still
         // unaccepted on that provider, and not reuse a known superseded id.
-        let replacement = matches!(
-            card.consent_path,
-            Some(basal_host::DecisionPath::Consent(_))
-        ) && card.kind == DecisionKind::GrantLost
+        let replacement = card.kind == DecisionKind::GrantLost
             && card.raised_revision.is_some_and(|r| r < card.revision)
             && !known_superseded;
         if !replacement {
@@ -1030,7 +1019,7 @@ pub fn answer_on(
 impl Runtime {
     pub fn decision_paths(&self) -> Result<Vec<basal_host::DecisionPath>> {
         self.store().read(|c| {
-            let mut paths = vec![basal_host::DecisionPath::Legacy];
+            let mut paths = Vec::new();
             let keys = c.prepare("SELECT DISTINCT consent_path FROM decision_cards WHERE consent_path IS NOT NULL UNION SELECT consent_path FROM decision_answer_cursors UNION SELECT consent_path FROM decision_withdrawals")?
                 .query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
             for key in keys {
@@ -1043,10 +1032,12 @@ impl Runtime {
     }
 
     pub fn has_open_cards_on(&self, path: &basal_host::DecisionPath) -> Result<bool> {
-        self.store().read(|c| Ok(c.query_row(
-            "SELECT EXISTS(SELECT 1 FROM decision_cards WHERE state='open' AND COALESCE(consent_path,'legacy')=?1)",
+        self.store().read(|c| {
+            Ok(c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM decision_cards WHERE state='open' AND consent_path=?1)",
             [path.key()], |r| r.get(0),
-        )?))
+        )?)
+        })
     }
 
     /// Claim an endpoint before sending. A competing raise or a retry sees the
@@ -1144,18 +1135,6 @@ impl Runtime {
         })
     }
 
-    pub fn decision_withdrawals(&self) -> Result<Vec<String>> {
-        self.store().read(|conn| {
-            Ok(conn
-                .prepare("SELECT elicitation_id FROM decision_withdrawals ORDER BY elicitation_id")?
-                .query_map([], |r| r.get(0))?
-                .collect::<rusqlite::Result<_>>()?)
-        })
-    }
-
-    pub fn decision_withdrawn(&self, elicitation_id: &str) -> Result<()> {
-        self.decision_withdrawn_on(&basal_host::DecisionPath::Legacy, elicitation_id)
-    }
     /// Brings the reconcile card intents up to date and returns the cards
     /// to raise, in one transaction.
     pub fn decisions_due(&self) -> Result<Vec<DecisionRecord>> {
@@ -1172,12 +1151,9 @@ impl Runtime {
             .write(|tx| mark_raised(tx, seq, revision, elicitation_id))
     }
 
-    /// Applies an answer to a decision card. A store error leaves the card
-    /// open, so the consent plane can deliver the answer again.
-    pub fn answer_decision(&self, decision: &DecisionAnswer) -> Result<Answered> {
-        self.answer_decision_on(&basal_host::DecisionPath::Legacy, decision)
-    }
-
+    /// Applies an answer from the provider on `path` to a decision card. A
+    /// store error leaves the card open, so the provider can deliver the
+    /// answer again.
     pub fn answer_decision_on(
         &self,
         path: &basal_host::DecisionPath,
@@ -1248,10 +1224,12 @@ pub(crate) fn close_stale_grants(tx: &Transaction, flow_id: &str, now_ms: i64) -
         if stands(tx, &card)? {
             continue;
         }
-        if let Some(id) = &card.elicitation_id {
+        // A card with an id was raised on its recorded provider; one without
+        // never reached a provider and has nothing to withdraw.
+        if let (Some(id), Some(path)) = (&card.elicitation_id, &card.consent_path) {
             tx.execute(
                 "INSERT OR IGNORE INTO decision_withdrawals(consent_path,elicitation_id) VALUES (?1,?2)",
-                params![card.consent_path.as_ref().unwrap_or(&basal_host::DecisionPath::Legacy).key(), id],
+                params![path.key(), id],
             )?;
         }
         tx.execute(
